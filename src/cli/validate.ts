@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig } from "../config/load.js";
-import { loadWorkflow } from "../workflow/load.js";
+import { loadWorkflow, WorkflowLoadError } from "../workflow/load.js";
 import { validate, type Problem } from "../workflow/validate.js";
 
 const execFileAsync = promisify(execFile);
@@ -39,7 +39,18 @@ async function isEnvExposed(dir: string): Promise<boolean> {
 }
 
 export async function runValidate(dir: string): Promise<{ ok: boolean; problems: Problem[] }> {
-  const { workflow, steps } = await loadWorkflow(dir);
+  // A workflow that fails to load is itself the thing `validate` exists to
+  // report — §11.1-§11.2 — so a load failure must become a Problem here
+  // rather than propagate as an unhandled rejection past this function.
+  let workflow: Awaited<ReturnType<typeof loadWorkflow>>["workflow"];
+  let steps: Awaited<ReturnType<typeof loadWorkflow>>["steps"];
+  try {
+    ({ workflow, steps } = await loadWorkflow(dir));
+  } catch (e) {
+    const rule = e instanceof WorkflowLoadError ? e.rule : "schema";
+    return { ok: false, problems: [{ rule, message: (e as Error).message }] };
+  }
+
   const problems = validate(workflow, steps);
 
   // The config is optional for `validate`, so a workflow can be checked in

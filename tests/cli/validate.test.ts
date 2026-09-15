@@ -12,8 +12,25 @@ describe("landrace validate", () => {
   });
 
   it("returns the problems it found, not just a boolean", async () => {
-    const r = await runValidate("tests/fixtures/duplicate-id").catch((e) => e as Error);
-    expect(String(r)).toMatch(/duplicate stage id/);
+    const r = await runValidate("tests/fixtures/duplicate-id");
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContainEqual(
+      expect.objectContaining({ rule: "duplicate-id", message: expect.stringMatching(/duplicate stage id/) }),
+    );
+  });
+
+  it("reports a missing step file as a problem instead of throwing", async () => {
+    const r = await runValidate("tests/fixtures/missing-step");
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContainEqual(
+      expect.objectContaining({ rule: "missing-step", message: expect.stringMatching(/does not exist/) }),
+    );
+  });
+
+  it("reports a schema failure as a problem instead of throwing", async () => {
+    const r = await runValidate("tests/fixtures/bad-schema");
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContainEqual(expect.objectContaining({ rule: "schema" }));
   });
 });
 
