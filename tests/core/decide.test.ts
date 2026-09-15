@@ -1,7 +1,7 @@
 import { decide } from "../../src/core/decide.js";
 import type { Snapshot, Stage, Workflow } from "../../src/core/types.js";
 
-const run = (o: object = {}) => ({ counters: {}, outputs: {}, lastOutputValid: null, ...o });
+const run = (o: object = {}) => ({ counters: {}, outputs: {}, lastOutputValid: null, failedStages: [], ...o });
 const snap = (o: object): Snapshot => o as Snapshot;
 
 const stages: Stage[] = [
@@ -77,7 +77,7 @@ describe("decide", () => {
   });
 
   it("routes a rejected output straight to the handling stage, never retrying", () => {
-    const s = snap({ run: run({ stage: "spec", lastOutputValid: false }) });
+    const s = snap({ run: run({ stage: "spec", lastOutputValid: false, failedStages: ["spec"] }) });
     expect(decide(wf, s)).toMatchObject({ action: "transition", to: stages[2] });
   });
 });

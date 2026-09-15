@@ -161,23 +161,18 @@ function graphIsAnalysable(w: Workflow): boolean {
 }
 
 /**
- * Strongly connected components of the run.stage graph, via Tarjan's
- * algorithm — linear in stages + edges. The naive predecessor enumerated
- * every simple path and let a dedupe pass afterwards collapse the results;
- * on a densely connected graph the number of simple paths is combinatorial
- * (measured: 24 stages with 3 inbound triggers each recorded 4.4M paths in
- * 1.4s, and 10 densely connected stages exhausted memory and crashed), so
- * the dedupe was papering over an exponential blowup rather than eliminating
- * one.
+ * Strongly connected components of a graph given as an adjacency map, via
+ * Tarjan's algorithm — linear in nodes + edges. The naive predecessor to
+ * this whole approach enumerated every simple path and let a dedupe pass
+ * afterwards collapse the results; on a densely connected graph the number
+ * of simple paths is combinatorial (measured: 24 stages with 3 inbound
+ * triggers each recorded 4.4M paths in 1.4s, and 10 densely connected
+ * stages exhausted memory and crashed), so the dedupe was papering over an
+ * exponential blowup rather than eliminating one. Generic over the
+ * adjacency map (rather than hardcoded to the full run.stage graph) so it
+ * can also run over just the *unbounded* edges — see unboundedCycles.
  */
-function stronglyConnectedComponents(w: Workflow): string[][] {
-  const adjacency = adjacencyOf(w);
-  const nodes = new Set<string>(w.stages.map((s) => s.id));
-  for (const [from, to] of edges(w)) {
-    nodes.add(from);
-    nodes.add(to);
-  }
-
+function stronglyConnectedComponents(nodes: Set<string>, adjacency: Map<string, string[]>): string[][] {
   let counter = 0;
   const index = new Map<string, number>();
   const lowlink = new Map<string, number>();
@@ -220,13 +215,51 @@ function stronglyConnectedComponents(w: Workflow): string[][] {
 }
 
 /**
- * A strongly connected component is a real cycle when it has more than one
- * stage, or when its single stage has a self-edge (a stage bounded only by
- * looping onto itself). Every other size-1 component is not a cycle at all.
+ * Adjacency built from only the edges whose own trigger does *not* bound a
+ * run.counters.* path — the "unbounded" edges. A cycle counts as bounded
+ * when at least one of its edges is bounded (the existing rule), so
+ * dropping every bounded edge can only break a cycle that relied on one of
+ * them, never manufacture a new one: a cycle that survives in this reduced
+ * graph is, exactly, an unbounded cycle in the real graph.
+ *
+ * This is also what fixes the SCC-merging regression: computing boundedness
+ * once per whole strongly-connected component let one bounded loop silence
+ * an unbounded loop sharing a hub stage with it (hub -> a -> b -> hub
+ * bounded, hub -> c -> d -> hub not, both merge into one SCC through hub,
+ * and "any trigger anywhere in the component bounds a counter" cleared the
+ * whole thing). Filtering by edge first means the SCC computed below can
+ * only still contain hub, c, d — the bounded b -> hub edge is gone, so a
+ * and b are no longer part of any cycle in this graph at all.
  */
-function realCycles(w: Workflow): string[][] {
-  const adjacency = adjacencyOf(w);
-  return stronglyConnectedComponents(w)
+function unboundedAdjacencyOf(w: Workflow): Map<string, string[]> {
+  const adjacency = new Map<string, string[]>();
+  for (const stage of w.stages) {
+    for (const t of stage.triggers ?? []) {
+      const from = t.when["run.stage"];
+      if (typeof from === "string" && !boundsACounter(t.when)) {
+        adjacency.set(from, [...(adjacency.get(from) ?? []), stage.id]);
+      }
+    }
+  }
+  return adjacency;
+}
+
+/**
+ * The workflow's unbounded cycles: strongly connected components of the
+ * unbounded-edges-only graph, each of which is, by construction, a cycle
+ * none of whose edges bound a counter — precisely the set that must be
+ * reported. A component is a real cycle when it has more than one stage, or
+ * when its single stage has a (still-unbounded) self-edge; every other
+ * size-1 component is not a cycle at all.
+ */
+function unboundedCycles(w: Workflow): string[][] {
+  const adjacency = unboundedAdjacencyOf(w);
+  const nodes = new Set<string>(w.stages.map((s) => s.id));
+  for (const [from, tos] of adjacency) {
+    nodes.add(from);
+    for (const to of tos) nodes.add(to);
+  }
+  return stronglyConnectedComponents(nodes, adjacency)
     .filter((c) => c.length > 1 || (adjacency.get(c[0] as string) ?? []).includes(c[0] as string))
     .map((c) => [...c].sort());
 }
@@ -309,13 +342,8 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
       }
     }
 
-    for (const members of realCycles(w)) {
-      const conditions = w.stages
-        .filter((s) => members.includes(s.id))
-        .flatMap((s) => (s.triggers ?? []).map((t) => t.when));
-      if (!conditions.some(boundsACounter)) {
-        problems.push({ rule: "cycle-bound", message: cycleMessage(members) });
-      }
+    for (const members of unboundedCycles(w)) {
+      problems.push({ rule: "cycle-bound", message: cycleMessage(members) });
     }
 
     // Reachability from the entry stage, over the same edges() graph

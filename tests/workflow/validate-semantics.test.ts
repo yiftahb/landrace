@@ -97,6 +97,29 @@ describe("semantic validation", () => {
     expect(cycleProblems).toHaveLength(1);
   });
 
+  it("reports an unbounded cycle even when it shares a hub stage with a bounded one", () => {
+    // hub -> a -> b -> hub is bounded (the b -> hub edge, i.e. hub's trigger
+    // naming "b", carries a run.counters bound). hub -> c -> d -> hub is not
+    // bounded anywhere. Both loops pass through "hub", so a whole-component
+    // SCC check would let the bounded loop silence the unbounded one; this
+    // must still report the c/d loop as unbounded.
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "hub", entry: true, triggers: [
+        { when: { "run.stage": "b", "run.counters.hub": { $lt: 5 } } },
+        { when: { "run.stage": "d" } },
+      ] },
+      { id: "a", triggers: [{ when: { "run.stage": "hub" } }] },
+      { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "c", triggers: [{ when: { "run.stage": "hub" } }] },
+      { id: "d", triggers: [{ when: { "run.stage": "c" } }] },
+    ] };
+    const cycleProblems = validateSemantics(w, noSteps).filter((p) => p.rule === "cycle-bound");
+    expect(cycleProblems).toHaveLength(1);
+    expect(cycleProblems[0]?.message).toBe(
+      "the cycle among stages c, d, hub is not bounded by a run.counters.* comparison",
+    );
+  });
+
   it("handles a densely connected graph of many stages quickly instead of enumerating every simple path", () => {
     // Every stage triggers off every other stage: one strongly connected
     // component of 12 members. The old path-enumeration implementation was

@@ -9,14 +9,14 @@ import type { Run, Snapshot, Stage, SubState } from "./types.js";
  * whichever stage the run happens to carry as `lastOutputValid` — deriveRun
  * scopes that field to the `stage` it was given, but locate() can place this
  * ticket at a *different* stage (a custom identity predicate), and this
- * function must answer for the stage it was actually asked about. A run
- * built by hand without failedStages (as plenty of tests do) falls back to
- * the single-stage lastOutputValid field, matching the old behaviour.
+ * function must answer for the stage it was actually asked about.
+ * failedStages is required on Run precisely so there is no fallback path
+ * back to the whole-run lastOutputValid check that caused that bug: every
+ * Run — hand-built in a test or produced by deriveRun — must say so.
  */
 export function assess(s: Snapshot, stage: Stage): SubState {
-  const run = (s.run ?? { counters: {}, outputs: {} }) as Run;
-  const failed = run.failedStages ? run.failedStages.includes(stage.id) : run.lastOutputValid === false;
-  if (failed) return "failed";
+  const run = (s.run ?? { counters: {}, outputs: {}, failedStages: [] }) as Run;
+  if (run.failedStages.includes(stage.id)) return "failed";
   if (!stage.step) return "complete";
   return run.outputs[stage.id] === undefined ? "pending" : "complete";
 }
