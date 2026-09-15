@@ -238,7 +238,12 @@ describe("runStep", () => {
       expect((r as Fail).kind).toBe("unavailable");
     });
 
-    it("tags a screening block as unavailable — the executor was never even invoked", async () => {
+    // N2 (fix round 2): a screening block is a *verdict*, not an outage — the
+    // screener ran fine and said no. Tagging it "unavailable" (round 1's
+    // mistake) meant converge posted no durable record for it, so a security
+    // refusal cost a screener call every poll forever and never reached
+    // `blocked`, which §15 of the spec says a screening failure must do.
+    it("tags a screening block as refused — the screener ran and said no, which is a verdict, not an outage", async () => {
       const spy: Executor = { id: "s", run: async () => ({ text: "", sessionId: null }) };
       const screener: Executor = {
         id: "screen",
@@ -248,7 +253,7 @@ describe("runStep", () => {
         step, stageId: "spec", round: 1, snapshot, executor: spy,
         signal: new AbortController().signal, screen: { executor: screener },
       });
-      expect((r as Fail).kind).toBe("unavailable");
+      expect((r as Fail).kind).toBe("refused");
     });
 
     it("tags a missing json block as contract — the model ran and broke the shape", async () => {
@@ -350,5 +355,67 @@ describe("runStep", () => {
     const r = await run(`\`\`\`json\n{"kind":${JSON.stringify(huge)}}\n\`\`\``);
     expect(r).toMatchObject({ ok: false });
     expect((r as Fail).reason.length).toBeLessThan(300);
+  });
+
+  // N1 (fix round 2) — `reason: (e as Error).message` does not evaluate to
+  // undefined on a non-Error rejection, it *throws*, from inside the very
+  // catch block whose job is to describe the failure — I4's exact defect,
+  // newly created on the path that exists to make an outage legible. An
+  // outage is precisely when a library is likely to reject with something
+  // that is not an Error.
+  describe("a non-Error rejection from the executor does not crash runStep", () => {
+    it("survives a thrown null", async () => {
+      const boom: Executor = { id: "b", run: async () => { throw null; } };
+      const r = await run("", { executor: boom });
+      expect(r).toMatchObject({ ok: false, kind: "unavailable" });
+      expect((r as Fail).reason).toBeTruthy();
+    });
+
+    it("survives a thrown bare string", async () => {
+      const boom: Executor = { id: "b", run: async () => { throw "socket hang up"; } };
+      const r = await run("", { executor: boom });
+      expect(r).toMatchObject({ ok: false, kind: "unavailable" });
+      expect((r as Fail).reason).toContain("socket hang up");
+    });
+  });
+
+  // C2 residual — the ambiguity regex was byte-identical to screen.ts's, so
+  // it inherited the same narrow recognition: a restatement in one fence
+  // shape plus a real answer in a shape the old regex could not see counted
+  // as exactly one candidate. Fixed by switching to the shared, permissive
+  // extractor (json-block.ts) both files now import.
+  describe("recognises a sibling candidate in a fence shape the old narrow regex could not see", () => {
+    const restatement = 'Recalling the format:\n```json\n{"kind":"spec"}\n```\n';
+
+    it("a ~~~json real answer", async () => {
+      const r = await run(`${restatement}My actual answer:\n~~~json\n{"kind":"questions"}\n~~~`);
+      expect(r).toMatchObject({ ok: false, kind: "contract" });
+    });
+
+    it("a ```JSON real answer (different casing)", async () => {
+      const r = await run(`${restatement}My actual answer:\n\`\`\`JSON\n{"kind":"questions"}\n\`\`\``);
+      expect(r).toMatchObject({ ok: false, kind: "contract" });
+    });
+
+    it("a bare {...} real answer with no fence at all", async () => {
+      const r = await run(`${restatement}My actual answer: {"kind":"questions"}`);
+      expect(r).toMatchObject({ ok: false, kind: "contract" });
+    });
+
+    it("an unterminated ```json real answer with no closing fence", async () => {
+      const r = await run(`${restatement}My actual answer:\n\`\`\`json\n{"kind":"questions"}\n(cut off)`);
+      expect(r).toMatchObject({ ok: false, kind: "contract" });
+    });
+  });
+
+  // N7 — stripFences and extractJson used to match independently and could
+  // disagree, so a recognised block in a fence shape stripFences' own
+  // (narrower, backtick-only) regex could not see left the fence markers
+  // sitting in the posted body as debris. The shared extractor returns the
+  // exact span it parsed, and that same span — not a second regex — is what
+  // gets removed to build the body.
+  it("strips exactly the span it parsed, even for a fence shape a backtick-only stripper would have missed", async () => {
+    const r = await run('Summary line.\n~~~json\n{"kind":"spec"}\n~~~');
+    expect((r as Ok).effects[0]?.body).toBe("Summary line.");
   });
 });

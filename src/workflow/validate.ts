@@ -380,20 +380,42 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
 
   // assess() marks a stage with a `step` complete only once
   // run.outputs[stage.id] exists, and that can only ever be populated by an
-  // "output"-kind entry — which only a declared `output:` contract can ever
-  // produce (src/runner/step.ts returns no effects at all for a step with
-  // none). A stage like this is therefore unreachable-past: decide() invokes
-  // it, forever, on every single pass, no matter how many times it runs.
-  // This was live in .landrace/workflow.yaml for build, code-review and
-  // fix-review — 30 paid opus invocations in one converge() call, then the
-  // same again on the next poll.
+  // "output"-kind entry recorded against *this stage's own id* — which only
+  // a declared `output:` contract can ever produce (src/runner/step.ts
+  // returns no effects at all for a step with none). A stage like this is
+  // therefore unreachable-past: decide() invokes it, forever, on every
+  // single pass, no matter how many times it runs. This was live in
+  // .landrace/workflow.yaml for build, code-review and fix-review — 30 paid
+  // opus invocations in one converge() call, then the same again on the
+  // next poll.
+  //
+  // Declaring an output block is necessary but not sufficient: a route's own
+  // `effect` can override the `kind` runStep would otherwise default to
+  // "output", or the `stage` it would otherwise default to the stage's own
+  // id (src/runner/step.ts: `{ kind: "output", ...expanded }`). A step whose
+  // *every* route does one of those can never produce a same-stage "output"
+  // entry either, and is exactly as stuck as one with no output block at
+  // all — just less visibly so, since `output:` is right there in the file.
   for (const stage of w.stages) {
     if (!stage.step) continue;
     const step = steps.get(stage.step);
-    if (step && !step.output) {
+    if (!step) continue;
+    if (!step.output) {
       problems.push({
         rule: "step-output-required",
         message: `stage "${stage.id}" names a step with no declared output, so assess() can never mark it complete and it can never be left`,
+      });
+      continue;
+    }
+    const producesOwnOutput = step.output.routes.some((route) => {
+      const kind = route.effect.kind;
+      const target = route.effect.stage;
+      return (kind === undefined || kind === "output") && (target === undefined || target === stage.id);
+    });
+    if (!producesOwnOutput) {
+      problems.push({
+        rule: "step-output-required",
+        message: `stage "${stage.id}"'s step declares an output, but every route retargets "kind" or "stage" away from this stage's own "output" entry, so assess() can never mark it complete either`,
       });
     }
   }

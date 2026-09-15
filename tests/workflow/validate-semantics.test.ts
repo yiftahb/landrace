@@ -184,6 +184,57 @@ describe("semantic validation", () => {
     expect(rules(w)).not.toContain("step-output-required");
   });
 
+  // N5 — declaring an output block is not sufficient: assess() only counts
+  // an entry of kind "output" against *this* stage's own id, and a route's
+  // effect can override both fields. A step whose only route retargets
+  // `kind` away from "output" (or `stage` away from its own stage) can still
+  // never complete, the same way a step with no output block at all cannot —
+  // the runtime invoked-set guard catches this too (defence in depth), but
+  // the validator is where an author should learn it, before it ever runs.
+  it("flags a stage whose only route overrides kind: off \"output\", so it can never actually complete", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { done: {} },
+        routes: [{ when: { kind: "done" }, effect: { type: "tracker.comment", kind: "note" } }],
+      },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    expect(rules(w, steps)).toContain("step-output-required");
+  });
+
+  it("flags a stage whose only route retargets stage: to a different stage", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { done: {} },
+        routes: [{ when: { kind: "done" }, effect: { type: "tracker.comment", stage: "elsewhere" } }],
+      },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    expect(rules(w, steps)).toContain("step-output-required");
+  });
+
+  it("does not flag a step where at least one route produces a genuine same-stage output entry", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { done: {}, note: {} },
+        routes: [
+          // Overrides away from "output" — this route alone would flag.
+          { when: { kind: "note" }, effect: { type: "tracker.comment", kind: "note" } },
+          // Leaves kind/stage at their defaults — this one is enough to save it.
+          { when: { kind: "done" }, effect: { type: "tracker.comment" } },
+        ],
+      },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    expect(rules(w, steps)).not.toContain("step-output-required");
+  });
+
   it("flags a stage that is structurally connected but unreachable from the entry stage", () => {
     // b and c point at each other, but nothing (not even indirectly) leads
     // to either of them from the entry stage a.

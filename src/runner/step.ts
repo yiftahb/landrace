@@ -3,22 +3,30 @@ import { isReservedId } from "../conventions.js";
 import type { Executor } from "../hooks/types.js";
 import type { Step } from "../workflow/load.js";
 import { screenPrompt } from "../agent/screen.js";
+import { extractJsonBlock } from "../agent/json-block.js";
+import { messageOf } from "./errors.js";
 import type { Logger } from "./events.js";
 
 /**
- * `kind` is CLAUDE.md's own distinction made explicit: "contract" is a step
- * that ran and produced something the engine cannot act on — malformed json,
- * an undeclared shape, an ambiguous parse or route — the case the hard-fail
- * rule is about. "unavailable" is a step that never ran at all — screened
- * out before invocation, or the executor itself threw (a network blip, a
- * timeout, a Ctrl-C) — the opposite case the same rule exists to keep
- * distinct. Collapsing the two meant an aborted run was recorded exactly
- * like a rejected one, permanently poisoning a stage that had produced
- * nothing to reject.
+ * `kind` is CLAUDE.md's own distinction made explicit, in three parts:
+ * - "contract": the step ran and produced something the engine cannot act
+ *   on — malformed json, an undeclared shape, an ambiguous parse or route.
+ *   The hard-fail rule is about exactly this case.
+ * - "unavailable": the step never ran at all — the executor itself threw (a
+ *   network blip, a timeout, a Ctrl-C). Nothing was produced, so nothing was
+ *   rejected; a durable record here would misreport an outage as a broken
+ *   contract and permanently poison a stage that never got to try.
+ * - "refused": screened out *before* invocation. This looks like
+ *   "unavailable" (the executor never ran either), but it is not an outage —
+ *   the screener ran fine and returned a verdict. A screening refusal must
+ *   be durable and terminal (routed to `blocked`, per spec §15), not a
+ *   silent, free-to-repeat retry: treating it as "unavailable" turned a
+ *   security refusal into a paid screener call on every single poll,
+ *   forever, with nothing ever left on the ticket for anyone to see.
  */
 export type StepResult =
   | { ok: true; effects: Effect[]; sessionId: string | null }
-  | { ok: false; kind: "contract" | "unavailable"; reason: string };
+  | { ok: false; kind: "contract" | "unavailable" | "refused"; reason: string };
 
 /**
  * `part in obj` walks the prototype chain, so a path like `toString` or
@@ -72,33 +80,6 @@ const expand = (value: unknown, vars: Record<string, string>): unknown =>
     ? value.replace(/\{([a-zA-Z0-9_]+)\}/g, (whole, k: string) => (Object.hasOwn(vars, k) ? String(vars[k]) : whole))
     : value;
 
-type Extracted = { kind: "none" } | { kind: "many"; count: number } | { kind: "one"; value: Record<string, unknown> | null };
-
-/**
- * Exactly one fenced json object, never the first and never the last:
- * ambiguity halts here exactly as it does in screen.ts (screenPrompt), which
- * fixed this same defect one commit before this file was first written.
- * Every shipped step prompt shows the agent the json shape it should reply
- * with, so a model that restates the format before giving its real answer
- * produces two fenced blocks with no attacker required — `matchAll` sees
- * both instead of a single `.exec()` silently taking the first.
- */
-function extractJson(text: string): Extracted {
-  const matches = [...text.matchAll(/```json\s*(\{[\s\S]*?\})\s*```/g)];
-  const [only, ...rest] = matches;
-  if (!only) return { kind: "none" };
-  if (rest.length > 0) return { kind: "many", count: matches.length };
-  const raw = only[1];
-  if (!raw) return { kind: "one", value: null };
-  try {
-    return { kind: "one", value: JSON.parse(raw) as Record<string, unknown> };
-  } catch {
-    return { kind: "one", value: null };
-  }
-}
-
-const stripFences = (text: string): string => text.replace(/```json[\s\S]*?```/g, "").trim();
-
 /**
  * An agent-chosen value is unbounded — a 200,000-character discriminator
  * produces a reason of the same size, which converge embeds verbatim into a
@@ -138,11 +119,10 @@ export async function runStep(opts: {
     });
     if (!verdict.ok) {
       log?.("screen.blocked", { stage: stageId, round, reason: verdict.reason });
-      // Screened out before invocation: the executor never ran, so nothing
-      // was produced to reject. This is "unavailable", not "contract" — a
-      // permanent record here would misreport a refusal-to-invoke as a
-      // broken output.
-      return { ok: false, kind: "unavailable", reason: `prompt screening blocked this step: ${verdict.reason}` };
+      // A verdict, not an outage: the screener ran and said no. "refused",
+      // not "unavailable" — this must be durable and terminal (see the
+      // StepResult doc comment), never a silent, free-to-repeat retry.
+      return { ok: false, kind: "refused", reason: `prompt screening blocked this step: ${verdict.reason}` };
     }
     log?.("screen.passed", { stage: stageId, round });
   }
@@ -156,15 +136,23 @@ export async function runStep(opts: {
   } catch (e) {
     // The executor itself failed — timeout, quota, an abort signal from a
     // Ctrl-C. Nothing was produced, so this is the "never ran" case, not a
-    // rejected contract.
-    return { ok: false, kind: "unavailable", reason: (e as Error).message };
+    // rejected contract. `messageOf`, not `(e as Error).message`: an outage
+    // is precisely when a library is likely to reject with something that
+    // is not an Error, and that access would throw from inside this catch,
+    // escaping runStep entirely instead of describing the failure.
+    return { ok: false, kind: "unavailable", reason: messageOf(e) };
   }
 
   // A step with no declared output contributes no effects; the workflow routes
   // it by trigger instead.
   if (!step.output) return { ok: true, effects: [], sessionId };
 
-  const extracted = extractJson(text);
+  // Shared with screen.ts (json-block.ts): a single copy of the same
+  // permissive-recognise/strict-parse recogniser, so a restatement of the
+  // step's own format in one fence style plus a real answer in a style a
+  // narrower regex could not see can no longer count as "exactly one
+  // candidate" here while some other, independent regex disagrees elsewhere.
+  const extracted = extractJsonBlock(text);
   if (extracted.kind === "none") {
     return { ok: false, kind: "contract", reason: "the step produced no json block" };
   }
@@ -217,14 +205,23 @@ export async function runStep(opts: {
   }
 
   const vars = { round: String(round), stage: stageId, shape };
-  const body = stripFences(text);
+  // The exact span extractJsonBlock parsed — not a second, independently-run
+  // regex — is what gets removed to build the body. Two regexes matching
+  // different spans is how a recognised block whose own value happened to
+  // contain fence-shaped text could route correctly and still post a body
+  // full of leftover fence markers: extraction and stripping must agree
+  // because they are now the same operation, not two that can drift apart.
+  const [blockStart, blockEnd] = extracted.span;
+  const body = (text.slice(0, blockStart) + text.slice(blockEnd)).trim();
 
   // One route, one effect — deliberately, not a gap. No shipped step needs
-  // fan-out (publish the artifact *and* post a comment for the same output),
-  // and when one does, the answer is a route schema change to let one route
-  // declare `effects:` plural, not two routes matching the same shape to get
-  // two effects — two routes matching one output is exactly the ambiguity
-  // halted above, so it must stay a way to get halted, not a way to fan out.
+  // fan-out (publish the artifact *and* post a comment for the same output)
+  // today — recheck `.landrace/steps/*.md` before trusting that claim to
+  // still hold — and when one does, the answer is a route schema change to
+  // let one route declare `effects:` plural, not two routes matching the
+  // same shape to get two effects: two routes matching one output is
+  // exactly the ambiguity halted above, so it must stay a way to get
+  // halted, not a way to fan out.
   const expanded = Object.fromEntries(
     Object.entries(route.effect).map(([k, v]) => [k, expand(v, vars)]),
   ) as Effect;

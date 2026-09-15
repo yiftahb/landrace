@@ -2,6 +2,7 @@ import { decide, planEffects, reconcile, type Effect, type Snapshot, type Workfl
 import type { Executor, HookContext, PreHook } from "../hooks/types.js";
 import type { Step } from "../workflow/load.js";
 import type { Dispatcher } from "./effects.js";
+import { messageOf } from "./errors.js";
 import type { Logger } from "./events.js";
 import { buildSnapshot } from "./snapshot.js";
 import { runStep } from "./step.js";
@@ -50,15 +51,29 @@ function malformedBody(reason: string): string {
 export async function converge(ticket: number, deps: ConvergeDeps): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
 
-  // A fixed-point check scoped to this one call, not a ledger: "state is
-  // derived, never stored" still holds because nothing here survives past
-  // the return. Its job is narrower than validate.ts's step-output-required
-  // rule (which only catches a step declaring no output at all, and only
-  // before the workflow ever runs) — this also catches the general case, a
-  // hook whose apply() "succeeds" but leaves nothing readable back, at
-  // runtime, for any reason. Without it that case invokes (and pays for) the
-  // same round on every single pass up to maxPasses, which is exactly what
-  // happened against the shipped workflow: 30 opus invocations in one call.
+  // A termination bound, exactly like the `pass` counter above it — not a
+  // ledger, and the honest reason it does not violate "state is derived,
+  // never stored" is not that "nothing survives past the return" (a real
+  // ledger with a short TTL would satisfy that same description and still be
+  // exactly the ledger this design forbids). The reason is narrower: this
+  // set only ever bounds how many times *this call* repeats a decision it
+  // has already acted on, the same way the `pass` loop bounds how many
+  // times this call runs at all — it is never consulted to answer "what is
+  // true", only "have I already spent this call's budget on this". Its job
+  // is narrower than validate.ts's step-output-required rule (which only
+  // catches a step declaring no output at all, and only before the workflow
+  // ever runs) — this also catches the general case, a hook whose apply()
+  // "succeeds" but leaves nothing readable back, at runtime, for any reason.
+  //
+  // Measured effect against the shipped workflow: 30 paid opus invocations
+  // per converge() call, down to 1. That is 30x better, not solved — a
+  // crash mid-call loses this set along with everything else about the
+  // call, and the next poll starts a fresh one and pays for one invocation
+  // again before hitting the same bound. Closing that the rest of the way is
+  // exactly the "state is derived, never stored" constraint working as
+  // intended: the durable fix is validate.ts rejecting the workflow that
+  // produces this shape at all, and giving the step a real output contract,
+  // not a bigger or longer-lived set here.
   const invoked = new Set<string>();
 
   for (let pass = 1; pass <= maxPasses; pass++) {
@@ -71,8 +86,19 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
     }
 
     // Re-read rather than simulate what our own writes did: one model of what
-    // an effect means, not two that can disagree.
-    const snapshot = await buildSnapshot({ ticket, hooks: deps.pre, ctx: deps.ctx });
+    // an effect means, not two that can disagree. Wrapped: the GitHub pre
+    // hook does real network I/O, so a pre hook failing here (already
+    // attributed by buildSnapshot itself) is the *likely* shape of a broken
+    // dependency, not an exotic one, and nothing previously caught it —
+    // CLAUDE.md says errors report, they do not crash.
+    let snapshot: Snapshot;
+    try {
+      snapshot = await buildSnapshot({ ticket, hooks: deps.pre, ctx: deps.ctx });
+    } catch (e) {
+      const reason = messageOf(e);
+      deps.log("snapshot.failed", { ticket, reason });
+      return { passes: pass, settled: "halt", why: reason };
+    }
     const decision = decide(deps.workflow, snapshot);
 
     deps.log("ticket.evaluated", {
@@ -120,6 +146,11 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
       if (invoked.has(key)) {
         const reason = `stage "${stage.id}" round ${round} was already invoked this call and left nothing readable; not retrying`;
         deps.log("step.rejected", { ticket, stage: stage.id, round, reason });
+        // The malformed path posts a durable record; a stage stuck here is
+        // just as much a reason an operator needs to see something on the
+        // ticket, not just a line in a log they may never open.
+        const posted = await tryApply([malformedEffect(stage.id, round, reason)], ticket, snapshot, deps);
+        if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
         return { passes: pass, settled: "halt", why: reason };
       }
       invoked.add(key);
@@ -135,8 +166,8 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
         deps.log("step.rejected", { ticket, stage: stage.id, round, kind: result.kind, reason: result.reason });
 
         if (result.kind === "unavailable") {
-          // The step never ran at all — screened out, or the executor threw
-          // (a network blip, a timeout, a Ctrl-C). Nothing was produced, so
+          // The step never ran at all — the executor itself threw (a
+          // network blip, a timeout, a Ctrl-C). Nothing was produced, so
           // there is nothing to reject: no durable record, so the next tick
           // re-derives "pending" from the tracker and legitimately retries.
           // A record here would be CLAUDE.md's hard-fail rule pointed the
@@ -145,12 +176,17 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
           return { passes: pass, settled: "halt", why: result.reason };
         }
 
-        // "contract": the step ran and broke it. Recorded and stopped; the
-        // engine routes it on the next pass by whatever trigger reads
-        // run.lastOutputValid, but this path never decides anything, and it
-        // never invokes the step again in this same call — that is the
-        // whole point of a hard fail: a rejected round looks nothing like a
-        // round that never ran, so nothing here retries it.
+        // "contract" (the step ran and broke it) and "refused" (screened out
+        // before it ever ran) both land here, and deliberately so: a
+        // screening refusal is a verdict, not an outage — durable and
+        // terminal, the same as a broken contract, never a silent retry (see
+        // the "refused" case in step.ts's StepResult doc comment for why).
+        // Recorded and stopped either way; the engine routes it on the next
+        // pass by whatever trigger reads run.lastOutputValid, but this path
+        // never decides anything, and it never invokes the step again in
+        // this same call — that is the whole point of a hard fail: a
+        // rejected round looks nothing like a round that never ran, so
+        // nothing here retries it.
         const posted = await tryApply(
           [malformedEffect(stage.id, round, result.reason)],
           ticket, snapshot, deps,
@@ -169,6 +205,16 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
       // the money for this round is already spent by the time control
       // reaches this line. Closing that window needs a marker written
       // *before* the agent runs, which is its own brief.
+      //
+      // This reasoning holds only because the sole effect on this path is
+      // the step's own fresh output for *this* round — something that, by
+      // construction, cannot have already landed (assess() would not have
+      // said "pending" otherwise). It does not generalise to "never
+      // reconcile before applying": a route whose effect is something
+      // legitimately already satisfied elsewhere — an idempotent artifact
+      // publish, say — would need reconciling here, because for that effect
+      // "already satisfied" is a real, checkable fact about the world, not
+      // a question this same round's own output could ever have answered.
       const applied = await tryApply(result.effects, ticket, snapshot, deps);
       if (!applied.ok) {
         deps.log("effect.failed", { ticket, reason: applied.reason });
@@ -236,7 +282,7 @@ function tryReconcile(
   try {
     return { ok: true, surviving: reconcile(snapshot, planned, satisfied) };
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: messageOf(e) };
   }
 }
 
@@ -251,7 +297,7 @@ async function tryApply(
     await applyAll(effects, ticket, snapshot, deps);
     return { ok: true };
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: messageOf(e) };
   }
 }
 

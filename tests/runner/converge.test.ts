@@ -1,5 +1,5 @@
 import { converge } from "../../src/runner/converge.js";
-import { createDispatcher } from "../../src/runner/effects.js";
+import { createDispatcher, type Dispatcher } from "../../src/runner/effects.js";
 import { createLogger } from "../../src/runner/events.js";
 import { definePostHook, definePreHook, type HookContext } from "../../src/hooks/types.js";
 import type { Executor } from "../../src/hooks/types.js";
@@ -232,6 +232,25 @@ describe("converge", () => {
     }));
     expect(r.settled).toBe("halt");
     expect(invocations).toBe(1);
+  });
+
+  // N6 (fix round 2) — the invoked-set halt above left no durable record, the
+  // same gap M2 was raised to close for an unloaded step, in the same
+  // commit. An operator looking at a ticket stuck here saw nothing.
+  it("posts a durable record when the invoked-set guard trips, not just a log line", async () => {
+    const w = world();
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = { prompt: "write the spec" };
+    const executor: Executor = { id: "silent", run: async () => ({ text: "no json block", sessionId: null }) };
+    await converge(1, deps(w, { workflow: stepWorkflow, steps: new Map([["spec", step]]), executor, maxPasses: 30 }));
+    expect(w.entries.some((e) => String(e.marker ?? "").startsWith("malformed:spec"))).toBe(true);
   });
 
   // C3 — CLAUDE.md's hard-fail rule is about *output*: a step whose output
@@ -490,5 +509,109 @@ describe("converge", () => {
       expect(reads).toBe(0);
       expect(r).toMatchObject({ passes: 0, settled: "halt" });
     });
+  });
+
+  // N1 (fix round 2) — `reason: (e as Error).message` in tryReconcile/tryApply
+  // does not evaluate to undefined on a non-Error rejection, it *throws* —
+  // I4's exact defect, reintroduced on the very path built to make a broken
+  // hook legible instead of a crash. `effects.ts`'s own dispatcher happens to
+  // re-wrap a hook's throw into a real Error first, which would hide this
+  // specific bug behind that wrapping — so these use a hand-rolled Dispatcher
+  // that throws directly, the same way a Dispatcher implementation that does
+  // not go through effects.ts's createDispatcher legitimately could.
+  describe("a non-Error rejection from a hand-rolled Dispatcher does not crash converge", () => {
+    it("survives satisfied() throwing null directly", async () => {
+      const raw: Dispatcher = {
+        satisfied: () => { throw null; },
+        apply: async () => {},
+        handlerFor: () => null,
+      };
+      const r = await converge(1, deps(world(), { dispatcher: raw }));
+      expect(r.settled).toBe("halt");
+      expect(r.why).toBeTruthy();
+    });
+
+    it("survives apply() rejecting with null directly", async () => {
+      const raw: Dispatcher = {
+        satisfied: () => false,
+        apply: async () => { throw null; },
+        handlerFor: () => null,
+      };
+      const r = await converge(1, deps(world(), { dispatcher: raw }));
+      expect(r.settled).toBe("halt");
+      expect(r.why).toBeTruthy();
+    });
+  });
+
+  // N3 — buildSnapshot() was called outside any try in converge, so a pre
+  // hook's failure (already attributed and wrapped into a proper Error by
+  // buildSnapshot itself) still escaped converge entirely as an unhandled
+  // rejection. The GitHub pre hook does network I/O, so this is the likely
+  // shape of a real failure, not an exotic one.
+  it("halts (without throwing) when a pre hook fails, with the attributed message", async () => {
+    const bad = definePreHook({ id: "bad", run: () => { throw new Error("tracker down"); } });
+    const r = await converge(1, deps(world(), { pre: [bad] }));
+    expect(r.settled).toBe("halt");
+    expect(r.why).toMatch(/tracker down/);
+  });
+
+  // The same N1 class one level deeper: a pre hook is free to reject with
+  // something that is not an Error too, and buildSnapshot's own wrapping
+  // must not itself crash trying to describe that.
+  it("halts (without throwing) when a pre hook rejects with a non-Error value", async () => {
+    const bad = definePreHook({ id: "bad", run: () => { throw null; } });
+    const r = await converge(1, deps(world(), { pre: [bad] }));
+    expect(r.settled).toBe("halt");
+    expect(r.why).toBeTruthy();
+  });
+
+  // N2 — a screening refusal is a verdict, not an outage: durable, terminal,
+  // routed to blocked (spec §15). Classifying it as "unavailable" (round 1's
+  // mistake) meant no durable record ever landed, so every single poll paid
+  // for another screener call, forever, with nothing on the ticket to show
+  // for it. Proof across three separate converge() calls on the same ticket,
+  // matching the brief's own repro shape.
+  it("posts a durable record for a screening refusal, so a later poll routes to blocked instead of re-screening forever", async () => {
+    const w = world();
+    let screenerCalls = 0;
+    let agentCalls = 0;
+    const screenedWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [
+        {
+          id: "spec", step: "spec", entry: true,
+          triggers: [{ when: { "run.stage": null } }],
+          on_enter: [{ type: "tracker.status", value: "spec" }],
+        },
+        {
+          id: "blocked",
+          triggers: [{ when: { "run.lastOutputValid": false } }],
+          on_enter: [{ type: "tracker.status", value: "blocked" }],
+        },
+      ],
+    };
+    const step: Step = {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+    };
+    const agentExecutor: Executor = { id: "agent", run: async () => { agentCalls++; return { text: "", sessionId: null }; } };
+    const screener: Executor = {
+      id: "screen",
+      run: async () => { screenerCalls++; return { text: '```json\n{"verdict":"suspicious","reason":"nope"}\n```', sessionId: null }; },
+    };
+
+    const results = [];
+    for (let i = 0; i < 3; i++) {
+      results.push(await converge(1, deps(w, {
+        workflow: screenedWorkflow, steps: new Map([["spec", step]]),
+        executor: agentExecutor, screen: { executor: screener },
+      })));
+    }
+
+    expect(screenerCalls).toBe(1);
+    expect(agentCalls).toBe(0);
+    expect(w.entries.length).toBeGreaterThan(0);
+    expect([...w.labels]).toContain("lr:stage:blocked");
+    expect(results[2]?.settled).not.toBe("halt");
   });
 });

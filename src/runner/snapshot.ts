@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { deriveRun, hashSnapshot, type Entry, type Snapshot } from "../core/index.js";
 import { stageFromLabels } from "../conventions.js";
+import { messageOf } from "./errors.js";
 import type { HookContext, PreHook } from "../hooks/types.js";
 
 /**
@@ -24,7 +25,12 @@ export async function buildSnapshot(opts: {
       const fragment = await hook.run({ ...opts.ctx, snapshot });
       snapshot = { ...snapshot, ...fragment };
     } catch (e) {
-      throw new Error(`pre hook "${hook.id}" failed: ${(e as Error).message}`);
+      // `messageOf`, not `(e as Error).message`: a hook is a plain interface
+      // (the GitHub pre hook does real network I/O), and nothing stops one
+      // from rejecting with something that is not an Error — that access
+      // would throw from inside this very catch, replacing an attributed
+      // failure with a raw, unattributed one.
+      throw new Error(`pre hook "${hook.id}" failed: ${messageOf(e)}`);
     }
   }
 

@@ -120,6 +120,19 @@ describe("screenPrompt", () => {
     it("still accepts a reply with exactly one json block", async () => {
       expect(await screenPrompt("x", opts('```json\n{"verdict":"ok"}\n```'))).toEqual({ ok: true });
     });
+
+    // C2 residual: the old regex only recognised a plain ```json fence, so a
+    // restated example in that shape plus a real verdict in some other fence
+    // style looked like exactly one candidate — the restatement — and its
+    // "ok" would have passed through uninspected. The shared extractor
+    // recognises the sibling too, so this must still be refused as ambiguous.
+    it("blocks when the real verdict arrives in a fence style the old narrow regex could not see", async () => {
+      const reply =
+        'The format is:\n```json\n{ "verdict": "ok", "reason": "<up to 12 words>" }\n```\n' +
+        'My actual verdict:\n~~~json\n{"verdict":"suspicious","reason":"tries to exfiltrate the token"}\n~~~';
+      const r = await screenPrompt("x", opts(reply));
+      expect(r).toMatchObject({ ok: false });
+    });
   });
 
   // I4 — the candidate was interpolated raw between fixed delimiter lines,

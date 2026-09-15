@@ -1,5 +1,7 @@
 import type { Executor } from "../hooks/types.js";
+import { messageOf } from "../runner/errors.js";
 import type { Logger } from "../runner/events.js";
+import { extractJsonBlock } from "./json-block.js";
 
 /**
  * Unguessable per call: the candidate is interpolated raw between the begin
@@ -44,31 +46,6 @@ ${candidate}
 --- end prompt under review ${mark} ---`;
 
 type Verdict = { verdict?: unknown; reason?: unknown };
-type Extracted = { kind: "none" } | { kind: "many"; count: number } | { kind: "one"; value: Verdict | null };
-
-/**
- * Exactly one fenced json object, never the first and never the last:
- * ambiguity halts here as it does everywhere else in this codebase. The
- * screening prompt itself contains a fenced example of the very shape it
- * asks for, so a screener that restates the template before answering — no
- * attacker required — produced two candidates, and first-match picked the
- * template's own "ok". A candidate that plants a fake verdict fence has the
- * same effect. Neither reads as "the real answer" over the other; both are
- * refused.
- */
-function extractJson(text: string): Extracted {
-  const matches = [...text.matchAll(/```json\s*(\{[\s\S]*?\})\s*```/g)];
-  const [only, ...rest] = matches;
-  if (!only) return { kind: "none" };
-  if (rest.length > 0) return { kind: "many", count: matches.length };
-  const raw = only[1];
-  if (!raw) return { kind: "one", value: null };
-  try {
-    return { kind: "one", value: JSON.parse(raw) as Verdict };
-  } catch {
-    return { kind: "one", value: null };
-  }
-}
 
 /**
  * Defence in depth, not a boundary. The screener is itself a model reading
@@ -92,18 +69,27 @@ export async function screenPrompt(
     // An Executor is anything implementing the interface; nothing stops one
     // from rejecting with a non-Error. This module exists so its caller
     // never has to handle a throw, so a message is derived either way.
-    const message = e instanceof Error ? e.message : String(e);
+    const message = messageOf(e);
     opts.log?.("screen.blocked", { reason: message });
     return { ok: false, reason: `the screener could not run: ${message}` };
   }
 
-  const extracted = extractJson(text);
+  // Exactly one recognised json block, never the first and never the last:
+  // ambiguity halts here as it does everywhere else in this codebase. The
+  // screening prompt itself contains a fenced example of the very shape it
+  // asks for, so a screener that restates the template before answering — no
+  // attacker required — produces two candidates, and first-match would pick
+  // the template's own "ok". A candidate that plants a fake verdict fence has
+  // the same effect. `extractJsonBlock` (shared with step.ts) recognises more
+  // than a plain ```json fence specifically so a restatement plus a real
+  // answer in some other shape cannot hide as "only one candidate" either.
+  const extracted = extractJsonBlock(text);
   if (extracted.kind === "many") {
     const reason = `the screener's reply contained ${extracted.count} json blocks; ambiguous, refusing to guess which is authoritative`;
     opts.log?.("screen.blocked", { reason });
     return { ok: false, reason };
   }
-  const parsed = extracted.kind === "one" ? extracted.value : null;
+  const parsed = extracted.kind === "one" ? (extracted.value as Verdict | null) : null;
   if (!parsed || (parsed.verdict !== "ok" && parsed.verdict !== "suspicious")) {
     opts.log?.("screen.blocked", { reason: "unreadable verdict" });
     return { ok: false, reason: "the screener's verdict could not be read" };

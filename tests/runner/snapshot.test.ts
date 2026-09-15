@@ -71,6 +71,21 @@ describe("buildSnapshot", () => {
     ).rejects.toThrow(/pre hook "flaky".*no network/);
   });
 
+  // N1/N3 class: `(e as Error).message` on a non-Error rejection does not
+  // evaluate to undefined, it *throws* — from inside the very catch block
+  // whose job is to attribute the failure. A hook is a plain interface, and
+  // nothing stops one (especially one doing real network I/O) from rejecting
+  // with something that is not an Error.
+  it("does not itself crash when the hook rejects with a non-Error value", async () => {
+    await expect(
+      buildSnapshot({
+        ticket: 1,
+        hooks: [definePreHook({ id: "flaky", run: () => { throw null; } })],
+        ctx: ctx(),
+      }),
+    ).rejects.toThrow(/pre hook "flaky"/);
+  });
+
   it("records the snapshot hash, which the decision cache reads later", async () => {
     const s = await buildSnapshot({
       ticket: 1, hooks: [], ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
