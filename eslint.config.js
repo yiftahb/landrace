@@ -5,6 +5,15 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // Plain node scripts used as test doubles (e.g. tests/agent/fake-agent.mjs
+    // stands in for the real `claude` binary) — not compiled, so they need
+    // their node globals declared directly rather than inherited from ts-jest.
+    files: ["tests/**/*.mjs"],
+    languageOptions: {
+      globals: { process: "readonly", setTimeout: "readonly", console: "readonly" },
+    },
+  },
+  {
     files: ["src/core/**/*.ts"],
     rules: {
       "no-restricted-imports": ["error", {
