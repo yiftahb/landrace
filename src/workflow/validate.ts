@@ -24,6 +24,21 @@ export function validateStructure(w: Workflow): Problem[] {
     }
   }
 
+  // decide() skips a candidate stage equal to the current stage — a trigger
+  // anchored on its own stage can therefore never fire, no matter how it
+  // looks on paper. A workflow that relies on one deadlocks silently instead
+  // of erroring, so this must be caught here rather than at runtime.
+  for (const stage of w.stages) {
+    for (const t of stage.triggers ?? []) {
+      if (t.when["run.stage"] === stage.id) {
+        problems.push({
+          rule: "self-loop",
+          message: `stage "${stage.id}" has a trigger anchored on its own stage ("run.stage": "${stage.id}"), which can never fire`,
+        });
+      }
+    }
+  }
+
   for (const stage of w.stages) {
     for (const condition of [stage.identity, stage.requires, ...(stage.triggers ?? []).map((t) => t.when)]) {
       if (!condition) continue;

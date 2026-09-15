@@ -27,4 +27,12 @@ describe("structural validation", () => {
     const w = wf([{ id: "a", entry: true }, { id: "b", terminal: true, triggers: [{ when: { x: { $where: "1" } } }] }]);
     expect(rules(w)).toContain("operator");
   });
+
+  it("flags a trigger anchored on its own stage — it can never fire and the stage deadlocks", () => {
+    const w = wf([
+      { id: "a", entry: true, terminal: true },
+      { id: "revise", triggers: [{ when: { "run.stage": "revise", "run.counters.revise": { $lt: 3 } } }] },
+    ]);
+    expect(rules(w)).toContain("self-loop");
+  });
 });
