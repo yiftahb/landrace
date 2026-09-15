@@ -96,4 +96,15 @@ describe("semantic validation", () => {
     const cycleProblems = validateSemantics(w, noSteps).filter((p) => p.rule === "cycle-bound");
     expect(cycleProblems).toHaveLength(1);
   });
+
+  it("flags a stage that is structurally connected but unreachable from the entry stage", () => {
+    // b and c point at each other, but nothing (not even indirectly) leads
+    // to either of them from the entry stage a.
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, terminal: true },
+      { id: "b", triggers: [{ when: { "run.stage": "c" } }] },
+      { id: "c", triggers: [{ when: { "run.stage": "b" } }] },
+    ] };
+    expect(rules(w)).toContain("reachability");
+  });
 });

@@ -35,4 +35,12 @@ describe("structural validation", () => {
     ]);
     expect(rules(w)).toContain("self-loop");
   });
+
+  it("flags a trigger naming a stage id that does not exist in the workflow", () => {
+    const w = wf([
+      { id: "a", entry: true, terminal: true },
+      { id: "b", triggers: [{ when: { "run.stage": "typo" } }] },
+    ]);
+    expect(rules(w)).toContain("unknown-stage");
+  });
 });

@@ -40,6 +40,22 @@ export function validateStructure(w: Workflow): Problem[] {
     }
   }
 
+  // A trigger can name a stage id that was mistyped or renamed; nothing else
+  // in the schema would catch that, since `when` is an open condition
+  // document, not a reference the schema can resolve.
+  const ids = new Set(w.stages.map((s) => s.id));
+  for (const stage of w.stages) {
+    for (const t of stage.triggers ?? []) {
+      const from = t.when["run.stage"];
+      if (typeof from === "string" && !ids.has(from)) {
+        problems.push({
+          rule: "unknown-stage",
+          message: `stage "${stage.id}" has a trigger naming stage "${from}", which is not in the workflow`,
+        });
+      }
+    }
+  }
+
   for (const stage of w.stages) {
     for (const condition of [stage.identity, stage.requires, ...(stage.triggers ?? []).map((t) => t.when)]) {
       if (!condition) continue;
@@ -84,6 +100,29 @@ function edges(w: Workflow): Array<[string, string]> {
   return out;
 }
 
+function adjacencyOf(w: Workflow): Map<string, string[]> {
+  const adjacency = new Map<string, string[]>();
+  for (const [from, to] of edges(w)) adjacency.set(from, [...(adjacency.get(from) ?? []), to]);
+  return adjacency;
+}
+
+/** Every stage id reachable from `start`, following edges(), start included. */
+function reachableFrom(start: string, w: Workflow): Set<string> {
+  const adjacency = adjacencyOf(w);
+  const seen = new Set<string>([start]);
+  const queue = [start];
+  while (queue.length > 0) {
+    const node = queue.shift() as string;
+    for (const next of adjacency.get(node) ?? []) {
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return seen;
+}
+
 /** True when a trigger's run.stage mention is a plain top-level string edges() can use. */
 function isPlainAnchor(when: Condition): boolean {
   return typeof when["run.stage"] === "string";
@@ -93,11 +132,12 @@ function isPlainAnchor(when: Condition): boolean {
  * True when the graph edges() derives can be trusted. A trigger mentioning
  * run.stage anywhere in its condition — top-level or nested under an operator
  * like $or — that is not a plain top-level string is invisible to edges(), so
- * the derived graph is silently missing edges around it. dead-end and
- * cycle-bound both reason over that derived graph, so both must abstain for
- * the whole graph in that case rather than report on a graph they cannot see
- * all of: a false positive (or false confidence) on a legitimate workflow is
- * worse than a missed problem the runtime will surface anyway.
+ * the derived graph is silently missing edges around it. dead-end,
+ * cycle-bound and the reachability BFS all reason over that derived graph, so
+ * all three must abstain for the whole graph in that case rather than report
+ * on a graph they cannot see all of: a false positive (or false confidence)
+ * on a legitimate workflow is worse than a missed problem the runtime will
+ * surface anyway.
  */
 function graphIsAnalysable(w: Workflow): boolean {
   return !w.stages.some((stage) =>
@@ -177,6 +217,24 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
           rule: "cycle-bound",
           message: `the cycle ${canonical.join(" -> ")} is not bounded by a run.counters.* comparison`,
         });
+      }
+    }
+
+    // Reachability from the entry stage, over the same edges() graph
+    // dead-end and cycle-bound above already trust. Only meaningful with
+    // exactly one entry stage — a missing/duplicate entry is reported
+    // separately by validateStructure.
+    const entries = w.stages.filter((s) => s.entry);
+    const entry = entries[0];
+    if (entry && entries.length === 1) {
+      const reachable = reachableFrom(entry.id, w);
+      for (const stage of w.stages) {
+        if (!reachable.has(stage.id)) {
+          problems.push({
+            rule: "reachability",
+            message: `stage "${stage.id}" is not reachable from the entry stage "${entry.id}"`,
+          });
+        }
       }
     }
   }
