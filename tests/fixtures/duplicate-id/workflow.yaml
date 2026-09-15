@@ -1,0 +1,13 @@
+version: 1
+name: duplicate-id
+stages:
+  - id: spec
+    entry: true
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+  - id: spec
+    terminal: true
+    triggers:
+      - name: done
+        when: { "outputs.spec": { $exists: true } }

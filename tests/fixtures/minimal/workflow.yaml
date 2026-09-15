@@ -1,0 +1,14 @@
+version: 1
+name: minimal
+stages:
+  - id: spec
+    entry: true
+    step: steps/spec.md
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+  - id: done
+    terminal: true
+    triggers:
+      - name: spec written
+        when: { "outputs.spec": { $exists: true } }
