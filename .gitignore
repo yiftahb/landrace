@@ -3,3 +3,4 @@ poc/
 node_modules/
 dist/
 .env
+.landrace/.env

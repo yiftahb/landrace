@@ -1,0 +1,24 @@
+version: 1
+
+agent:
+  adapter: claude
+  model: opus
+  isolation: worktree
+
+tracker:
+  repo: yiftahb/landrace
+  candidates: "is:issue is:open"
+
+tick:
+  interval: 60s
+  concurrency: 3
+
+security:
+  screen: true
+  model: haiku
+
+log:
+  redact: [githubToken]
+
+secrets:
+  githubToken: $GITHUB_TOKEN

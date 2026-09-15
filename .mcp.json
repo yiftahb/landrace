@@ -2,7 +2,7 @@
   "mcpServers": {
     "landrace": {
       "command": "node",
-      "args": ["poc/mcp.mjs"]
+      "args": ["dist/cli.js", "mcp"]
     }
   }
 }
