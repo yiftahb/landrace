@@ -68,6 +68,26 @@ function edges(w: Workflow): Array<[string, string]> {
   return out;
 }
 
+/** True when a trigger's run.stage mention is a plain top-level string edges() can use. */
+function isPlainAnchor(when: Condition): boolean {
+  return typeof when["run.stage"] === "string";
+}
+
+/**
+ * True when the graph edges() derives can be trusted. A trigger mentioning
+ * run.stage anywhere in its condition — top-level or nested under an operator
+ * like $or — that is not a plain top-level string is invisible to edges(), so
+ * the derived graph is silently missing edges around it. dead-end and
+ * cycle-bound both reason over that derived graph, so both must abstain for
+ * the whole graph in that case rather than report on a graph they cannot see
+ * all of: a false positive (or false confidence) on a legitimate workflow is
+ * worse than a missed problem the runtime will surface anyway.
+ */
+function graphIsAnalysable(w: Workflow): boolean {
+  return !w.stages.some((stage) =>
+    (stage.triggers ?? []).some((t) => pathsIn(t.when).includes("run.stage") && !isPlainAnchor(t.when)));
+}
+
 function cycles(w: Workflow): string[][] {
   const adjacency = new Map<string, string[]>();
   for (const [from, to] of edges(w)) adjacency.set(from, [...(adjacency.get(from) ?? []), to]);
@@ -83,6 +103,19 @@ function cycles(w: Workflow): string[][] {
   };
   for (const stage of w.stages) walk(stage.id, []);
   return found;
+}
+
+/**
+ * Rotate a cycle to start at its lexicographically smallest stage id, so every
+ * rotation of the same logical cycle (the DFS in cycles() reports one per
+ * starting stage) canonicalises to the same sequence and the same message,
+ * and dedupe() collapses them into a single problem.
+ */
+function canonicalizeCycle(cycle: string[]): string[] {
+  let min = cycle[0] ?? "";
+  for (const id of cycle) if (id < min) min = id;
+  const minIndex = cycle.indexOf(min);
+  return [...cycle.slice(minIndex), ...cycle.slice(0, minIndex)];
 }
 
 const boundsACounter = (c: Condition): boolean =>
@@ -106,30 +139,31 @@ const identityOf = (s: Stage): Condition => s.identity ?? { "run.stage": s.id };
 export function validateSemantics(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {
   const problems: Problem[] = [];
 
-  // A non-terminal stage nothing leads away from is a trap. Only decidable for
-  // triggers anchored on run.stage; an unanchored trigger could fire anywhere,
-  // so its presence makes the graph un-analysable and the rule abstains.
-  const anchored = edges(w);
-  const unanchored = w.stages.some((st) =>
-    (st.triggers ?? []).some((t) => typeof t.when["run.stage"] !== "string"));
-  if (!unanchored) {
+  // A non-terminal stage nothing leads away from is a trap, and an unbounded
+  // cycle is a stuck workflow. Both are only decidable when the run.stage
+  // graph edges() derives is trustworthy in full — see graphIsAnalysable.
+  const analysable = graphIsAnalysable(w);
+
+  if (analysable) {
+    const anchored = edges(w);
     for (const stage of w.stages) {
       if (stage.terminal) continue;
       if (!anchored.some(([from]) => from === stage.id)) {
         problems.push({ rule: "dead-end", message: `stage "${stage.id}" has no way out and is not terminal` });
       }
     }
-  }
 
-  for (const cycle of cycles(w)) {
-    const conditions = w.stages
-      .filter((s) => cycle.includes(s.id))
-      .flatMap((s) => (s.triggers ?? []).map((t) => t.when));
-    if (!conditions.some(boundsACounter)) {
-      problems.push({
-        rule: "cycle-bound",
-        message: `the cycle ${cycle.join(" -> ")} is not bounded by a run.counters.* comparison`,
-      });
+    for (const cycle of cycles(w)) {
+      const canonical = canonicalizeCycle(cycle);
+      const conditions = w.stages
+        .filter((s) => canonical.includes(s.id))
+        .flatMap((s) => (s.triggers ?? []).map((t) => t.when));
+      if (!conditions.some(boundsACounter)) {
+        problems.push({
+          rule: "cycle-bound",
+          message: `the cycle ${canonical.join(" -> ")} is not bounded by a run.counters.* comparison`,
+        });
+      }
     }
   }
 

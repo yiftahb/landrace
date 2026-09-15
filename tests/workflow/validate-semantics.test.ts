@@ -62,4 +62,38 @@ describe("semantic validation", () => {
     ] };
     expect(rules(w, noSteps, undefined)).not.toContain("path-coverage");
   });
+
+  it("abstains cycle-bound and dead-end across the whole graph when a trigger nests run.stage inside $or", () => {
+    // a <-> b is a genuinely unbounded loop expressed with plain top-level
+    // anchors — on its own it would trip cycle-bound. Stage c's trigger hides
+    // its run.stage mentions inside $or, which edges() cannot see, so the
+    // derived graph is missing edges and both rules must abstain entirely
+    // rather than report on the part they can see.
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
+      { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "c", triggers: [{ when: { $or: [{ "run.stage": "a" }, { "run.stage": "b" }] } }] },
+    ] };
+    const found = rules(w);
+    expect(found).not.toContain("cycle-bound");
+    expect(found).not.toContain("dead-end");
+  });
+
+  it("fully analyses a graph whose triggers use only plain top-level run.stage anchors", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
+      { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+    ] };
+    expect(rules(w)).toContain("cycle-bound");
+  });
+
+  it("reports a three-stage cycle exactly once regardless of which stage the DFS starts from", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": "c" } }] },
+      { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "c", triggers: [{ when: { "run.stage": "b" } }] },
+    ] };
+    const cycleProblems = validateSemantics(w, noSteps).filter((p) => p.rule === "cycle-bound");
+    expect(cycleProblems).toHaveLength(1);
+  });
 });
