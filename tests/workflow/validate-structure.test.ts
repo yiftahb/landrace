@@ -1,4 +1,5 @@
 import { validateStructure } from "../../src/workflow/validate.js";
+import type { Step } from "../../src/workflow/load.js";
 import type { Workflow } from "../../src/core/types.js";
 
 const wf = (stages: Workflow["stages"]): Workflow => ({ version: 1, name: "t", stages });
@@ -42,5 +43,18 @@ describe("structural validation", () => {
       { id: "b", triggers: [{ when: { "run.stage": "typo" } }] },
     ]);
     expect(rules(w)).toContain("unknown-stage");
+  });
+
+  it("rejects a disallowed operator in a step's route condition", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "",
+      output: {
+        discriminator: "kind",
+        shapes: { spec: {} },
+        routes: [{ when: { kind: { $where: "evil()" } }, effect: { type: "x" } }],
+      },
+    }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    expect(validateStructure(w, steps).map((p) => p.rule)).toContain("operator");
   });
 });

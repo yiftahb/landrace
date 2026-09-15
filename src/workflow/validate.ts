@@ -8,7 +8,7 @@ export interface Problem {
   message: string;
 }
 
-export function validateStructure(w: Workflow): Problem[] {
+export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
   const problems: Problem[] = [];
 
   const entries = w.stages.filter((s) => s.entry);
@@ -72,6 +72,22 @@ export function validateStructure(w: Workflow): Problem[] {
       assertAllowedOperators(rule.when);
     } catch (e) {
       problems.push({ rule: "operator", message: `eligibility rule: ${(e as Error).message}` });
+    }
+  }
+
+  // The allowlist is structural, so it must cover every condition a workflow
+  // author can write — including a step's route conditions, not just stage
+  // and eligibility conditions. Routes are not compiled/executed in this
+  // plan, so this is not yet exploitable, but the next plan does compile
+  // them, and the allowlist should not have a documented gap by then.
+  for (const stage of w.stages) {
+    const step = stage.step ? steps.get(stage.step) : undefined;
+    for (const route of step?.output?.routes ?? []) {
+      try {
+        assertAllowedOperators(route.when);
+      } catch (e) {
+        problems.push({ rule: "operator", message: `step ${stage.step}, route: ${(e as Error).message}` });
+      }
     }
   }
 
@@ -335,5 +351,5 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
 }
 
 export function validate(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {
-  return dedupe([...validateStructure(w), ...validateSemantics(w, steps, provided)]);
+  return dedupe([...validateStructure(w, steps), ...validateSemantics(w, steps, provided)]);
 }
