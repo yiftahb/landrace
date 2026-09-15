@@ -21,4 +21,4 @@ next pass, and you resolving your own critic is how a review becomes theatre.
 
 Commit locally. The orchestrator pushes.
 
-End with a fenced json block: `{"kind": "addressed"}`.
+End with a fenced json block whose only field is `kind`, set to `addressed`.

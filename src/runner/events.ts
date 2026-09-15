@@ -28,8 +28,14 @@ export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
  */
 export const MIN_SECRET_LENGTH = 8;
 
-/** Values, never names: splitting a log line on "githubToken" redacts nothing. */
-function redactValue(value: unknown, secrets: string[]): unknown {
+/**
+ * Values, never names: splitting a log line on "githubToken" redacts
+ * nothing. Exported so the same redaction the logger applies to every event
+ * can also be applied to text composed *outside* the logger — a tracker
+ * comment body built from an executor's error message, say, which reaches a
+ * public, durable record the log's own redaction never touches.
+ */
+export function redactValue(value: unknown, secrets: string[]): unknown {
   if (typeof value === "string") {
     return secrets.reduce((acc, s) => acc.split(s).join("[redacted]"), value);
   }

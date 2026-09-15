@@ -27,8 +27,8 @@ Their message:
 {run.lastHuman.body}
 ---
 
-Reply with a fenced json block and nothing before it:
-`{"intent": "approve", "reason": "<up to 12 words>"}`
+Reply with a fenced json block and nothing before it, with an `intent` field
+and a `reason` field of up to 12 words.
 
 `intent` is exactly one of `approve`, `revise`, `question`, `unclear`.
 

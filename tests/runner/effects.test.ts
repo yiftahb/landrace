@@ -94,4 +94,32 @@ describe("createDispatcher", () => {
     expect(() => d.satisfied({} as Snapshot, { type: "notion.push" })).not.toThrow();
     expect(d.satisfied({} as Snapshot, { type: "notion.push" })).toBe(false);
   });
+
+  // Round 3: `(err as Error).message` is reachable here — any post hook
+  // throwing a non-Error hits it — and the try/catch one level up
+  // (converge's tryReconcile/tryApply) does stop it from crashing the
+  // process, but only after the attribution this dispatcher exists to add
+  // is already lost: the caller sees a raw, unattributed message instead of
+  // "post hook X failed checking/applying Y: ...".
+  it("still attributes to the right hook when satisfied() throws a non-Error", () => {
+    const boom = definePostHook({
+      id: "broken", handles: ["tracker.status"],
+      satisfied: () => { throw null; },
+      apply: async () => {},
+    });
+    const d = createDispatcher([boom]);
+    expect(() => d.satisfied({} as Snapshot, { type: "tracker.status" }))
+      .toThrow(/post hook "broken" failed checking "tracker.status"/);
+  });
+
+  it("still attributes to the right hook when apply() rejects with a non-Error", async () => {
+    const boom = definePostHook({
+      id: "broken", handles: ["tracker.status"],
+      satisfied: () => false,
+      apply: async () => { throw "socket hang up"; },
+    });
+    const d = createDispatcher([boom]);
+    await expect(d.apply({ type: "tracker.status" }, ctx()))
+      .rejects.toThrow(/post hook "broken" failed applying "tracker\.status": socket hang up/);
+  });
 });

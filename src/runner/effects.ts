@@ -1,4 +1,5 @@
 import type { Effect, Snapshot } from "../core/index.js";
+import { messageOf } from "./errors.js";
 import type { HookContext, PostHook } from "../hooks/types.js";
 
 export interface Dispatcher {
@@ -33,14 +34,20 @@ export function createDispatcher(hooks: PostHook[]): Dispatcher {
     // false: treating a check failure as "not satisfied" would re-apply an
     // effect that may already have landed, silently duplicating it. Rethrowing
     // aborts just this ticket's tick (tick() catches per ticket) and names the
-    // broken hook, mirroring apply()'s wording.
+    // broken hook, mirroring apply()'s wording. `messageOf`, not
+    // `(err as Error).message`: a hook is a plain interface, and nothing
+    // stops one from throwing a non-Error — that raw access does not
+    // crash this dispatcher (the caller's own try/catch still stops it going
+    // further), but it does lose the attribution this function exists to
+    // add, surfacing a bare "Cannot read properties of null" instead of
+    // naming which hook and effect actually failed.
     satisfied(s, e) {
       const hook = handlerFor(e.type);
       if (!hook) return false;
       try {
         return hook.satisfied(s, e);
       } catch (err) {
-        throw new Error(`post hook "${hook.id}" failed checking "${e.type}": ${(err as Error).message}`);
+        throw new Error(`post hook "${hook.id}" failed checking "${e.type}": ${messageOf(err)}`);
       }
     },
 
@@ -50,7 +57,7 @@ export function createDispatcher(hooks: PostHook[]): Dispatcher {
       try {
         await hook.apply(e, ctx);
       } catch (err) {
-        throw new Error(`post hook "${hook.id}" failed applying "${e.type}": ${(err as Error).message}`);
+        throw new Error(`post hook "${hook.id}" failed applying "${e.type}": ${messageOf(err)}`);
       }
     },
   };

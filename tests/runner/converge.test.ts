@@ -614,4 +614,47 @@ describe("converge", () => {
     expect([...w.labels]).toContain("lr:stage:blocked");
     expect(results[2]?.settled).not.toBe("halt");
   });
+
+  // N2's reclassification routes a screening failure through
+  // malformedEffect, so the screening executor's own error text — including
+  // one that failed to run at all, not just one that returned a verdict —
+  // now lands in a durable, *public* tracker comment. The shipped executor's
+  // real message is "agent exited N: <up to 400 chars of stderr>", and a
+  // secret can appear in stderr the same way it can appear anywhere else a
+  // subprocess writes. Redaction until now was log-sink only; a comment body
+  // is composed and posted entirely outside the logger.
+  it("redacts a secret out of the screening executor's own error text before posting it", async () => {
+    const w = world();
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+    };
+    const secretValue = "sk-supersecrettoken1234567890";
+    const brokenScreener: Executor = {
+      id: "screen",
+      run: async () => { throw new Error(`agent exited 1: leaked ${secretValue} in stderr`); },
+    };
+    const agentExecutor: Executor = { id: "agent", run: async () => ({ text: "unused", sessionId: null }) };
+
+    await converge(1, deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", step]]),
+      executor: agentExecutor, screen: { executor: brokenScreener },
+      ctx: {
+        ticket: 1, config: {} as HookContext["config"], secrets: new Map([["token", secretValue]]),
+        signal: new AbortController().signal, log: () => {},
+      },
+    }));
+
+    const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"));
+    expect(posted).toBeDefined();
+    expect(String(posted?.body ?? "")).not.toContain(secretValue);
+  });
 });

@@ -53,6 +53,20 @@ describe("landrace validate", () => {
     const r = await runValidate(".landrace");
     expect(r.problems.filter((p) => p.rule === "step-output-required")).toEqual([]);
   });
+
+  // Round-3 Important: a step's own prompt printing a literal object (e.g.
+  // `` `{"kind": "done"}` `` in build.md) is an honest completion away from
+  // triggering the false-"many" it causes if the model echoes that exact
+  // line back — the discriminator-key fix on the extractor makes it a real
+  // (if unlikely) candidate, and two claimed candidates is still ambiguous.
+  // The step files should describe the shape in prose, not print it.
+  it("does not print a literal json object in any shipped step's prompt", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    for (const step of steps.values()) {
+      expect(step.prompt).not.toMatch(/\{\s*"[a-zA-Z_]+"\s*:/);
+    }
+    expect(steps.size).toBeGreaterThan(0);
+  });
 });
 
 describe("landrace next", () => {

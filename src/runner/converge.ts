@@ -3,7 +3,7 @@ import type { Executor, HookContext, PreHook } from "../hooks/types.js";
 import type { Step } from "../workflow/load.js";
 import type { Dispatcher } from "./effects.js";
 import { messageOf } from "./errors.js";
-import type { Logger } from "./events.js";
+import { MIN_SECRET_LENGTH, redactValue, type Logger } from "./events.js";
 import { buildSnapshot } from "./snapshot.js";
 import { runStep } from "./step.js";
 
@@ -38,9 +38,29 @@ const DEFAULT_MAX_PASSES = 30;
  */
 const MAX_MALFORMED_BODY = 4000;
 
-function malformedBody(reason: string): string {
-  const full = `## Step output rejected\n\n${reason}. Nothing was retried.`;
+function malformedBody(reason: string, redactValues: string[]): string {
+  // `reason` is not our own text: it can carry the screening executor's own
+  // error output verbatim ("agent exited N: <up to 400 chars of stderr>"),
+  // and stderr can contain a secret the same way any subprocess output can.
+  // This comment is public and durable, and redaction until now was
+  // log-sink only — a body composed here goes straight to the tracker,
+  // bypassing the logger's own redaction entirely.
+  const redacted = redactValue(reason, redactValues) as string;
+  const full = `## Step output rejected\n\n${redacted}. Nothing was retried.`;
   return full.length > MAX_MALFORMED_BODY ? `${full.slice(0, MAX_MALFORMED_BODY)}\n\n…[truncated]` : full;
+}
+
+/**
+ * The same secret *values* `createLogger` redacts with — `ctx.secrets` is
+ * the resolved name -> value map every hook already receives, so this reuses
+ * it rather than threading a second, separately-constructed list through
+ * `ConvergeDeps`. Values shorter than `MIN_SECRET_LENGTH` are skipped rather
+ * than rejected: `createLogger` throws on one at construction time, but this
+ * is an independent consumer of the same raw map, not the list's owner, and
+ * a value that short would redact everywhere in this text too.
+ */
+function redactValuesFrom(secrets: ReadonlyMap<string, string>): string[] {
+  return [...secrets.values()].filter((v) => v.trim().length >= MIN_SECRET_LENGTH);
 }
 
 /**
@@ -50,6 +70,7 @@ function malformedBody(reason: string): string {
  */
 export async function converge(ticket: number, deps: ConvergeDeps): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
+  const redactValues = redactValuesFrom(deps.ctx.secrets);
 
   // A termination bound, exactly like the `pass` counter above it — not a
   // ledger, and the honest reason it does not violate "state is derived,
@@ -129,7 +150,7 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
         // and an operator watching the ticket deserves the same trace.
         if (stage) {
           const posted = await tryApply(
-            [malformedEffect(stage.id, round, reason)],
+            [malformedEffect(stage.id, round, reason, redactValues)],
             ticket, snapshot, deps,
           );
           if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
@@ -149,7 +170,7 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
         // The malformed path posts a durable record; a stage stuck here is
         // just as much a reason an operator needs to see something on the
         // ticket, not just a line in a log they may never open.
-        const posted = await tryApply([malformedEffect(stage.id, round, reason)], ticket, snapshot, deps);
+        const posted = await tryApply([malformedEffect(stage.id, round, reason, redactValues)], ticket, snapshot, deps);
         if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
         return { passes: pass, settled: "halt", why: reason };
       }
@@ -188,7 +209,7 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
         // rejected round looks nothing like a round that never ran, so
         // nothing here retries it.
         const posted = await tryApply(
-          [malformedEffect(stage.id, round, result.reason)],
+          [malformedEffect(stage.id, round, result.reason, redactValues)],
           ticket, snapshot, deps,
         );
         if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
@@ -257,11 +278,11 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
   return { passes: maxPasses, settled: "cap" };
 }
 
-function malformedEffect(stage: string, round: number, reason: string): Effect {
+function malformedEffect(stage: string, round: number, reason: string, redactValues: string[]): Effect {
   return {
     type: "tracker.comment", kind: "malformed", stage, round,
     marker: `malformed:${stage}:${round}`,
-    body: malformedBody(reason),
+    body: malformedBody(reason, redactValues),
   };
 }
 

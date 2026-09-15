@@ -24,5 +24,5 @@ resolve.
 You own the threads you raised. Resolve one only when you are satisfied it has
 been addressed — never because someone replied to it.
 
-When you are done raising or resolving threads, end with a fenced json block:
-`{"kind": "reviewed"}`.
+When you are done raising or resolving threads, end with a fenced json block
+whose only field is `kind`, set to `reviewed`.

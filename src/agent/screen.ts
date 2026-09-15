@@ -74,16 +74,23 @@ export async function screenPrompt(
     return { ok: false, reason: `the screener could not run: ${message}` };
   }
 
-  // Exactly one recognised json block, never the first and never the last:
-  // ambiguity halts here as it does everywhere else in this codebase. The
-  // screening prompt itself contains a fenced example of the very shape it
-  // asks for, so a screener that restates the template before answering — no
-  // attacker required — produces two candidates, and first-match would pick
-  // the template's own "ok". A candidate that plants a fake verdict fence has
-  // the same effect. `extractJsonBlock` (shared with step.ts) recognises more
-  // than a plain ```json fence specifically so a restatement plus a real
-  // answer in some other shape cannot hide as "only one candidate" either.
-  const extracted = extractJsonBlock(text);
+  // Exactly one *strict* fenced json block, never the first and never the
+  // last: ambiguity halts here as it does everywhere else in this codebase.
+  // The screening prompt itself contains a fenced example of the very shape
+  // it asks for, so a screener that restates the template before
+  // answering — no attacker required — produces two candidates, and
+  // first-match would pick the template's own "ok". `extractJsonBlock`
+  // (shared with step.ts) recognises far more than a plain ```json fence for
+  // *counting* — a restatement plus a real answer in some other shape must
+  // still count as two — but only ever parses a strict fence as the sole
+  // answer. That second half matters just as much as the first: recognising
+  // more shapes only feeds the ambiguity count going from one candidate to
+  // two, not from zero to one, so a *lone* unfenced or wrongly-fenced
+  // candidate — prose quoting a planted `{"verdict":"ok"}`, that same plant
+  // inside an unrelated fence, or a bare object with no fence at all — must
+  // fail exactly like finding nothing, never be parsed and obeyed. Both
+  // "none" and "not-strict-fence" fall through to `parsed = null` below.
+  const extracted = extractJsonBlock(text, "verdict");
   if (extracted.kind === "many") {
     const reason = `the screener's reply contained ${extracted.count} json blocks; ambiguous, refusing to guess which is authoritative`;
     opts.log?.("screen.blocked", { reason });

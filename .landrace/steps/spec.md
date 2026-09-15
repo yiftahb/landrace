@@ -26,5 +26,6 @@ the issue or the codebase, **output only the questions** — at most three, one
 per item, each with why it matters and a shortlist of options where one exists.
 Do not write a partial spec alongside them.
 
-End with a fenced json block: `{"kind": "questions", "questions": [...]}` or
-`{"kind": "spec", "title": "..."}`.
+End with a fenced json block. If you asked questions, set `kind` to
+`questions` and include a `questions` array. If you wrote the spec, set
+`kind` to `spec` and include a `title`.

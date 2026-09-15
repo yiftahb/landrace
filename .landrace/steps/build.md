@@ -22,5 +22,5 @@ yourself is a wasted round.
 Commit locally only. You have no credentials and cannot push; the orchestrator
 pushes your branch and opens the pull request.
 
-Summarise what you did in your own words, then end with a fenced json block:
-`{"kind": "done"}`.
+Summarise what you did in your own words, then end with a fenced json block
+whose only field is `kind`, set to `done`.

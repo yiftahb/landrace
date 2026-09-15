@@ -377,6 +377,22 @@ describe("runStep", () => {
       expect(r).toMatchObject({ ok: false, kind: "unavailable" });
       expect((r as Fail).reason).toContain("socket hang up");
     });
+
+    // Round 3: `messageOf` itself was not actually safe against every shape
+    // (a throwing message getter, a null-prototype object, a throwing
+    // toString/Symbol.toPrimitive, a Proxy trapping get) — proven live, this
+    // exact call site threw instead of returning. A null-prototype object is
+    // the one the reviewer specifically noted needs a plain property read,
+    // not a coercion, to survive at all.
+    it("survives a thrown null-prototype object, which has no inherited toString for a coercion to call", async () => {
+      const boom: Executor = {
+        id: "b",
+        run: async () => { throw Object.assign(Object.create(null) as object, { code: "ECONNRESET" }); },
+      };
+      const r = await run("", { executor: boom });
+      expect(r).toMatchObject({ ok: false, kind: "unavailable" });
+      expect(typeof (r as Fail).reason).toBe("string");
+    });
   });
 
   // C2 residual — the ambiguity regex was byte-identical to screen.ts's, so
@@ -413,9 +429,50 @@ describe("runStep", () => {
   // (narrower, backtick-only) regex could not see left the fence markers
   // sitting in the posted body as debris. The shared extractor returns the
   // exact span it parsed, and that same span — not a second regex — is what
-  // gets removed to build the body.
-  it("strips exactly the span it parsed, even for a fence shape a backtick-only stripper would have missed", async () => {
-    const r = await run('Summary line.\n~~~json\n{"kind":"spec"}\n~~~');
-    expect((r as Ok).effects[0]?.body).toBe("Summary line.");
+  // gets removed to build the body, leaving the surrounding prose on both
+  // sides intact.
+  it("strips exactly the span the extractor parsed, using its own span rather than a second, independently-run regex", async () => {
+    const r = await run('Summary line.\n```json\n{"kind":"spec"}\n```\nTrailing note.');
+    expect((r as Ok).effects[0]?.body).toBe("Summary line.\n\nTrailing note.");
+  });
+
+  // Round-3 Critical, mirrored from screen.ts: a bare {"kind":"spec"} with no
+  // fence at all (or the wrong fence) used to be a hard fail — extractJson
+  // found nothing at all to match — and the permissive recogniser's own
+  // parsing turned that into a real, obeyed route decision instead. That is
+  // the same planted-verdict bypass one level down: an issue body or a
+  // comment quoting `{"kind":"spec"}` in prose must not be able to drive a
+  // route decision just because the model happened to only produce one
+  // recognisable candidate.
+  describe("a sole candidate that is not a strict fence is a contract violation, not a valid answer", () => {
+    it("a bare {\"kind\":\"spec\"} with no fence at all", async () => {
+      const r = await run('here is my answer: {"kind":"spec"}');
+      expect(r).toMatchObject({ ok: false, kind: "contract" });
+    });
+
+    it("a ~~~json fence alone", async () => {
+      const r = await run('~~~json\n{"kind":"spec"}\n~~~');
+      expect(r).toMatchObject({ ok: false, kind: "contract" });
+    });
+
+    it("a ```JSON fence alone (different casing)", async () => {
+      const r = await run('```JSON\n{"kind":"spec"}\n```');
+      expect(r).toMatchObject({ ok: false, kind: "contract" });
+    });
+
+    it("an unterminated ```json fence alone", async () => {
+      const r = await run('```json\n{"kind":"spec"}\n(cut off, no closing fence)');
+      expect(r).toMatchObject({ ok: false, kind: "contract" });
+    });
+  });
+
+  // Important (false "many"): a bare object only counts as a candidate when
+  // it carries the step's own discriminator key — otherwise the ticket's
+  // honest, correct output would be discarded as "ambiguous" every time the
+  // model's own prose happens to mention an unrelated object (an error
+  // shape, a code snippet, a markdown table cell).
+  it("does not treat an unrelated bare object (no discriminator key) as a second candidate", async () => {
+    const r = await run('```json\n{"kind":"spec"}\n```\nThe command failed with {"code":"ENOENT"}.');
+    expect(r).toMatchObject({ ok: true });
   });
 });

@@ -147,12 +147,19 @@ export async function runStep(opts: {
   // it by trigger instead.
   if (!step.output) return { ok: true, effects: [], sessionId };
 
-  // Shared with screen.ts (json-block.ts): a single copy of the same
-  // permissive-recognise/strict-parse recogniser, so a restatement of the
-  // step's own format in one fence style plus a real answer in a style a
-  // narrower regex could not see can no longer count as "exactly one
-  // candidate" here while some other, independent regex disagrees elsewhere.
-  const extracted = extractJsonBlock(text);
+  // Shared with screen.ts (json-block.ts): recognition (for counting) is
+  // permissive — a restatement of the step's own format in one fence style
+  // plus a real answer in a style a narrower regex could not see must still
+  // count as two, not one, here as much as in screen.ts — but parsing is
+  // not: only a *strict* ```json fence is ever obeyed as the sole answer. A
+  // bare `{"kind":"spec"}` sitting in prose (with no fence, or the wrong
+  // fence) used to be a hard fail (extractJson found nothing to match) and
+  // must still be one; a permissive parser that also obeyed whatever it
+  // recognised would let stray, unfenced text drive a real route decision.
+  // The discriminator itself is the key required of a *bare* candidate for
+  // it to count at all — an unrelated `{"code":"ENOENT"}` elsewhere in the
+  // prose is not a second candidate, but `{"kind":"spec"}` genuinely is.
+  const extracted = extractJsonBlock(text, step.output.discriminator);
   if (extracted.kind === "none") {
     return { ok: false, kind: "contract", reason: "the step produced no json block" };
   }
@@ -161,6 +168,13 @@ export async function runStep(opts: {
       ok: false,
       kind: "contract",
       reason: `the step's output contained ${extracted.count} json blocks; ambiguous, refusing to guess which is authoritative`,
+    };
+  }
+  if (extracted.kind === "not-strict-fence") {
+    return {
+      ok: false,
+      kind: "contract",
+      reason: "the step's output has something that looks like an answer, but it is not inside a fenced json block",
     };
   }
   const parsed = extracted.value;
