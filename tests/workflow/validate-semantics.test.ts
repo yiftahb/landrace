@@ -155,6 +155,35 @@ describe("semantic validation", () => {
     expect(rules(w)).not.toContain("cycle-bound");
   });
 
+  // C1 — a stage with a step but no declared output can never be marked
+  // complete by assess() (it only ever sees run.outputs[stage.id] ===
+  // undefined), so decide() invokes it forever. This was live in the shipped
+  // .landrace/workflow.yaml for build, code-review and fix-review: 30 paid
+  // opus invocations in a single converge() call, then the same again on the
+  // next poll. Under current assess() semantics such a stage is
+  // unreachable-past, so it belongs with the other reachability rules.
+  it("flags a stage whose step declares no output, since assess() can never mark it complete", () => {
+    const steps = new Map<string, Step>([["s.md", { prompt: "go" }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, step: "s.md", triggers: [{ when: { "run.outputs.a": { $exists: true } } }] },
+    ] };
+    expect(rules(w, steps)).toContain("step-output-required");
+  });
+
+  it("does not flag a stage with a step that does declare an output", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { done: {} }, routes: [{ when: { kind: "done" }, effect: { type: "x" } }] },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    expect(rules(w, steps)).not.toContain("step-output-required");
+  });
+
+  it("does not flag a stage with no step at all", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, terminal: true }] };
+    expect(rules(w)).not.toContain("step-output-required");
+  });
+
   it("flags a stage that is structurally connected but unreachable from the entry stage", () => {
     // b and c point at each other, but nothing (not even indirectly) leads
     // to either of them from the entry stage a.

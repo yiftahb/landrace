@@ -1,6 +1,13 @@
 ---
 capabilities: [repo:read]
 model: opus
+output:
+  discriminator: kind
+  shapes:
+    reviewed: {}
+  routes:
+    - when: { kind: reviewed }
+      effect: { type: tracker.comment, marker: "reviewed:{round}" }
 ---
 
 Review the changes on the pull request for #{ticket.number} against its spec at
@@ -16,3 +23,6 @@ resolve.
 
 You own the threads you raised. Resolve one only when you are satisfied it has
 been addressed — never because someone replied to it.
+
+When you are done raising or resolving threads, end with a fenced json block:
+`{"kind": "reviewed"}`.

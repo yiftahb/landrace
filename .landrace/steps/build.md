@@ -2,6 +2,13 @@
 skills: [superpowers:executing-plans]
 capabilities: [repo:read, repo:write]
 model: opus
+output:
+  discriminator: kind
+  shapes:
+    done: {}
+  routes:
+    - when: { kind: done }
+      effect: { type: tracker.comment, marker: "done:{round}" }
 ---
 
 Implement the spec for #{ticket.number}: {ticket.title}.
@@ -14,3 +21,6 @@ yourself is a wasted round.
 
 Commit locally only. You have no credentials and cannot push; the orchestrator
 pushes your branch and opens the pull request.
+
+Summarise what you did in your own words, then end with a fenced json block:
+`{"kind": "done"}`.

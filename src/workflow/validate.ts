@@ -378,6 +378,26 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     }
   }
 
+  // assess() marks a stage with a `step` complete only once
+  // run.outputs[stage.id] exists, and that can only ever be populated by an
+  // "output"-kind entry — which only a declared `output:` contract can ever
+  // produce (src/runner/step.ts returns no effects at all for a step with
+  // none). A stage like this is therefore unreachable-past: decide() invokes
+  // it, forever, on every single pass, no matter how many times it runs.
+  // This was live in .landrace/workflow.yaml for build, code-review and
+  // fix-review — 30 paid opus invocations in one converge() call, then the
+  // same again on the next poll.
+  for (const stage of w.stages) {
+    if (!stage.step) continue;
+    const step = steps.get(stage.step);
+    if (step && !step.output) {
+      problems.push({
+        rule: "step-output-required",
+        message: `stage "${stage.id}" names a step with no declared output, so assess() can never mark it complete and it can never be left`,
+      });
+    }
+  }
+
   for (const stage of w.stages) {
     const step = stage.step ? steps.get(stage.step) : undefined;
     const output = step?.output;

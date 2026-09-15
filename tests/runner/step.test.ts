@@ -9,6 +9,7 @@ import type { Snapshot } from "../../src/core/index.js";
 // Narrowing to the union's own `ok: true` member first sidesteps that without
 // laundering the assertion through `unknown`.
 type Ok = Extract<StepResult, { ok: true }>;
+type Fail = Extract<StepResult, { ok: false }>;
 
 const snapshot = { ticket: { number: 7, title: "Add export" }, run: { counters: {} } } as unknown as Snapshot;
 const agent = (text: string): Executor => ({ id: "f", run: async () => ({ text, sessionId: "sid-2" }) });
@@ -199,5 +200,155 @@ describe("runStep", () => {
     };
     const r = await run('```json\n{"kind":"spec"}\n```', { step: templated });
     expect((r as Ok).effects[0]?.marker).toBe("{ticket.title}");
+  });
+
+  // C2 — the same first-match defect commit 01578c3 fixed in screen.ts one
+  // commit before this one. A single non-global `.exec()` finds only the
+  // *first* fenced block, so a model that restates the format before
+  // answering (no attacker required — every shipped step prompt shows the
+  // agent its own output shape) silently routes on the wrong block, and
+  // stripFences deletes both, so the posted comment shows no trace of the
+  // mistake at all.
+  it("halts when the step's reply contains more than one json block, rather than routing on the first", async () => {
+    const reply =
+      'Recalling the format:\n```json\n{"kind":"spec"}\n```\n' +
+      'My actual answer:\n```json\n{"kind":"questions"}\n```';
+    const r = await run(reply);
+    expect(r).toMatchObject({ ok: false });
+    expect((r as Fail).reason).toMatch(/2 json blocks/);
+    expect((r as Fail).reason).toMatch(/ambiguous/);
+  });
+
+  it("still accepts a reply with exactly one json block", async () => {
+    const r = await run('```json\n{"kind":"spec"}\n```');
+    expect(r).toMatchObject({ ok: true });
+  });
+
+  // C3 — CLAUDE.md's hard-fail rule is about *output*: a step whose output
+  // was rejected has produced nothing. A step that never ran (the executor
+  // itself threw — network blip, Ctrl-C, quota) is the opposite case, and
+  // collapsing the two meant a Ctrl-C during a build permanently poisoned the
+  // stage with a false "your output was rejected" record. `kind` lets the
+  // caller (converge) tell the two apart: "unavailable" never ran at all and
+  // is safe to retry; "contract" produced something and broke the contract.
+  describe("the failure carries a kind, so a caller can tell a broken contract from a step that never ran", () => {
+    it("tags an executor throw as unavailable — nothing was produced, so nothing was rejected", async () => {
+      const boom: Executor = { id: "b", run: async () => { throw new Error("The operation was aborted"); } };
+      const r = await run("", { executor: boom });
+      expect((r as Fail).kind).toBe("unavailable");
+    });
+
+    it("tags a screening block as unavailable — the executor was never even invoked", async () => {
+      const spy: Executor = { id: "s", run: async () => ({ text: "", sessionId: null }) };
+      const screener: Executor = {
+        id: "screen",
+        run: async () => ({ text: '```json\n{"verdict":"suspicious","reason":"nope"}\n```', sessionId: null }),
+      };
+      const r = await runStep({
+        step, stageId: "spec", round: 1, snapshot, executor: spy,
+        signal: new AbortController().signal, screen: { executor: screener },
+      });
+      expect((r as Fail).kind).toBe("unavailable");
+    });
+
+    it("tags a missing json block as contract — the model ran and broke the shape", async () => {
+      const r = await run("just prose");
+      expect((r as Fail).kind).toBe("contract");
+    });
+
+    it("tags an undeclared discriminator value as contract", async () => {
+      const r = await run('```json\n{"kind":"nonsense"}\n```');
+      expect((r as Fail).kind).toBe("contract");
+    });
+
+    it("tags an ambiguous multi-block reply as contract", async () => {
+      const r = await run('```json\n{"kind":"spec"}\n```\n```json\n{"kind":"questions"}\n```');
+      expect((r as Fail).kind).toBe("contract");
+    });
+
+    it("tags an ambiguous route match as contract", async () => {
+      const ambiguous: Step = {
+        prompt: "go",
+        output: {
+          discriminator: "kind",
+          shapes: { spec: {} },
+          routes: [
+            { when: { kind: "spec" }, effect: { type: "artifact.publish", artifact: "spec" } },
+            { when: {}, effect: { type: "tracker.comment", marker: "spec:{round}" } },
+          ],
+        },
+      };
+      const r = await run('```json\n{"kind":"spec"}\n```', { step: ambiguous });
+      expect((r as Fail).kind).toBe("contract");
+    });
+  });
+
+  // I1 — `shape in step.output.shapes` reads the prototype chain, so an
+  // output the model was never offered ("toString", "constructor",
+  // "hasOwnProperty", "valueOf", "__proto__") passes the "is this a declared
+  // shape" gate and reaches a catch-all route for real. `{ when: {} }` is the
+  // natural way to write a single-shape step's route, so this is reachable
+  // with no attacker required, exactly the case I1 exists to catch.
+  it("rejects an inherited Object.prototype key masquerading as a declared shape", async () => {
+    const single: Step = {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { spec: {} },
+        routes: [{ when: {}, effect: { type: "tracker.comment", marker: "note:{shape}" } }],
+      },
+    };
+    for (const poison of ["toString", "constructor", "hasOwnProperty", "valueOf", "__proto__"]) {
+      const r = await run(`\`\`\`json\n{"kind":"${poison}"}\n\`\`\``, { step: single });
+      expect(r).toMatchObject({ ok: false });
+    }
+  });
+
+  // I2 — `vars[k] ?? whole` in the effect-field expander (and the equivalent
+  // `part in cur` in renderPrompt's resolver) also reads the prototype chain.
+  // `{toString}`, `{constructor}` and `{__proto__}` are not in the round/
+  // stage/shape whitelist, but the old lookup found *something* there anyway
+  // and stringified it into the field — contradicting the earlier claim that
+  // only round/stage/shape are ever substituted.
+  it("does not resolve {toString}/{constructor}/{__proto__} in an effect field through the prototype chain", async () => {
+    const templated: Step = {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { spec: {} },
+        routes: [
+          { when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "m:{toString}:{constructor}:{__proto__}" } },
+        ],
+      },
+    };
+    const r = await run('```json\n{"kind":"spec"}\n```', { step: templated });
+    expect((r as Ok).effects[0]?.marker).toBe("m:{toString}:{constructor}:{__proto__}");
+  });
+
+  it("does not resolve {toString}/{constructor}/{__proto__} in the rendered prompt through the prototype chain", () => {
+    expect(renderPrompt("{toString} {constructor} {__proto__}", snapshot))
+      .toBe("{toString} {constructor} {__proto__}");
+  });
+
+  // M4 — String(shape) on a non-string discriminator misreports the value:
+  // {"kind": ["spec"]} reads in the error as if the value were the bare
+  // string "spec", hiding that the actual problem is the wrong *type*.
+  it("reports a non-string discriminator value legibly instead of misreading it as a string", async () => {
+    const r = await run('```json\n{"kind":["spec"]}\n```');
+    expect(r).toMatchObject({ ok: false });
+    expect((r as Fail).reason).toContain('["spec"]');
+  });
+
+  // I3 — String(shape) is unbounded: a 200,000-character discriminator value
+  // produced a reason of the same size, which converge embeds verbatim into
+  // a tracker comment body, exceeding GitHub's real length limit and making
+  // the rejection record itself unpostable — the stage then stays pending
+  // and is re-invoked (and re-paid for) forever, at a length the model's own
+  // output chooses.
+  it("bounds the reason's length even when the discriminator value is enormous", async () => {
+    const huge = "x".repeat(200_000);
+    const r = await run(`\`\`\`json\n{"kind":${JSON.stringify(huge)}}\n\`\`\``);
+    expect(r).toMatchObject({ ok: false });
+    expect((r as Fail).reason.length).toBeLessThan(300);
   });
 });

@@ -1,6 +1,13 @@
 ---
 capabilities: [repo:read, repo:write]
 model: opus
+output:
+  discriminator: kind
+  shapes:
+    addressed: {}
+  routes:
+    - when: { kind: addressed }
+      effect: { type: tracker.comment, marker: "addressed:{round}" }
 ---
 
 Address the open review threads on the pull request for #{ticket.number}.
@@ -13,3 +20,5 @@ outcomes.
 next pass, and you resolving your own critic is how a review becomes theatre.
 
 Commit locally. The orchestrator pushes.
+
+End with a fenced json block: `{"kind": "addressed"}`.

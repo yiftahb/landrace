@@ -7,7 +7,7 @@ export type EventName =
   | "ticket.evaluated" | "ticket.skipped"
   | "step.invoked" | "step.completed" | "step.rejected"
   | "agent.event"
-  | "effect.planned" | "effect.applied" | "effect.discarded"
+  | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
   | "lock.acquired" | "lock.denied" | "lock.stolen"
   | "screen.passed" | "screen.blocked";
 
