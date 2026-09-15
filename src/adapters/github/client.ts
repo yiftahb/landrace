@@ -40,28 +40,54 @@ export function createGitHubTracker(opts: {
    * stranger's, so it is resolved once from the token and cached: it cannot
    * change under a fixed token, and every tick reads markers.
    */
-  let login = opts.bot?.trim() ?? "";
+  const configured = opts.bot?.trim() ?? "";
+  let login = "";
+
   async function botLogin(): Promise<string> {
     if (login) return login;
-    let user: { login?: string };
+
+    // Asked even when tracker.bot is set. A GitHub App's installation token
+    // resolves to that app's own bot user, so a legitimate override matches
+    // and only a typo differs — and an unverified typo switched the whole
+    // authorship guard off: our own output stopped counting as ours and every
+    // paid step was re-invoked, forever.
+    let resolved = "";
+    let failure = "";
     try {
-      user = await request<{ login?: string }>("GET", "https://api.github.com/user");
+      const user = await request<unknown>("GET", "https://api.github.com/user");
+      const candidate = (user as { login?: unknown } | null)?.login;
+      // Shape-checked inside the guarded path: a non-string login used to
+      // throw a TypeError past this handler, so the operator saw
+      // "login.trim is not a function" instead of what to do about it.
+      if (typeof candidate === "string" && candidate.trim()) resolved = candidate.trim();
+      else failure = "GET /user returned no login";
     } catch (e) {
-      // Fail closed. A fallback that treated every marker as someone else's
-      // would make the engine believe no step had ever run and re-invoke
-      // every paid step, forever.
-      throw new Error(
-        `cannot resolve the account landrace posts as: ${String(e)}. ` +
-        `Check the token, or set tracker.bot in landrace.yaml if it is a GitHub App.`,
-      );
+      failure = String(e);
     }
-    const resolved = user?.login?.trim() ?? "";
+
+    if (configured) {
+      if (resolved && resolved.toLowerCase() !== configured.toLowerCase()) {
+        throw new Error(
+          `tracker.bot is "${configured}" but this token posts as "${resolved}". ` +
+          "One of the two is wrong, and a login that is not the one we post under makes " +
+          "our own comments read as a stranger's — every step would be re-invoked forever.",
+        );
+      }
+      // Matched, or /user could not answer at all: the second is the case the
+      // override exists for.
+      login = configured;
+      return login;
+    }
+
     if (!resolved) {
+      // Fail closed. A fallback that treated every marker as someone else's
+      // would make the engine believe no step had ever run.
       throw new Error(
-        "cannot resolve the account landrace posts as: GET /user returned no login. " +
-        "Set tracker.bot in landrace.yaml to the name comments are posted under.",
+        `cannot resolve the account landrace posts as: ${failure}. ` +
+        "Check the token, or set tracker.bot in landrace.yaml if it is a GitHub App.",
       );
     }
+
     login = resolved;
     return login;
   }

@@ -22,9 +22,25 @@ describe("the tracker resolves the login it posts as", () => {
     expect(calls).toEqual(["https://api.github.com/user"]);
   });
 
-  it("uses a configured bot name without calling the API", async () => {
+  it("verifies a configured bot name against the token rather than trusting it", async () => {
+    const fetchImpl = (async () => okUser("Landrace[bot]")) as unknown as typeof fetch;
+    const tracker = createGitHubTracker({ repo: "acme/widgets", token: "t", bot: "landrace[bot]", fetchImpl });
+    expect(await tracker.botLogin()).toBe("landrace[bot]");
+  });
+
+  it("halts naming both logins when the configured name is a typo", async () => {
+    // One character wrong in YAML used to switch the whole authorship guard
+    // off: our own output stopped counting as ours and every step was
+    // re-invoked, forever.
+    const fetchImpl = (async () => okUser("landrace-bot")) as unknown as typeof fetch;
+    const tracker = createGitHubTracker({ repo: "acme/widgets", token: "t", bot: "landrace-bo", fetchImpl });
+    await expect(tracker.botLogin()).rejects.toThrow(/"landrace-bo"[\s\S]*"landrace-bot"/);
+  });
+
+  it("falls back to the configured name only when the API cannot answer", async () => {
+    // The case the override exists for: a token whose /user is not reachable.
     const fetchImpl = (async () => {
-      throw new Error("must not be called");
+      throw new Error("getaddrinfo ENOTFOUND api.github.com");
     }) as unknown as typeof fetch;
     const tracker = createGitHubTracker({ repo: "acme/widgets", token: "t", bot: "landrace[bot]", fetchImpl });
     expect(await tracker.botLogin()).toBe("landrace[bot]");
@@ -32,6 +48,16 @@ describe("the tracker resolves the login it posts as", () => {
 
   it("refuses to run rather than guess when the login cannot be resolved", async () => {
     const fetchImpl = (async () => new Response("bad credentials", { status: 401 })) as unknown as typeof fetch;
+    const tracker = createGitHubTracker({ repo: "acme/widgets", token: "t", fetchImpl });
+    await expect(tracker.botLogin()).rejects.toThrow(/cannot resolve the account landrace posts as[\s\S]*tracker\.bot/);
+  });
+
+  it("reports the remedy when /user returns a login of the wrong type", async () => {
+    // Used to throw "user?.login?.trim is not a function" from outside the
+    // guarded path, so the CLI printed a TypeError instead of what to do.
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ login: 42 }), { status: 200, headers: { "Content-Type": "application/json" } })
+    ) as unknown as typeof fetch;
     const tracker = createGitHubTracker({ repo: "acme/widgets", token: "t", fetchImpl });
     await expect(tracker.botLogin()).rejects.toThrow(/cannot resolve the account landrace posts as[\s\S]*tracker\.bot/);
   });

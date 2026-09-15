@@ -5,14 +5,43 @@ import { LABELS, neutraliseMarkers, renderMarker, stageFromLabels, STAGE_LABEL_P
 import { entriesFromComments } from "./markers.js";
 
 const labels = (s: Snapshot): string[] => ((s.ticket as { labels?: string[] })?.labels ?? []);
-const comments = (s: Snapshot): Array<{ body: string }> =>
-  ((s.ticket as { comments?: Array<{ body: string }> })?.comments ?? []);
+
+interface SnapshotComment {
+  body?: string;
+  user?: { login?: string } | null;
+}
+const comments = (s: Snapshot): SnapshotComment[] =>
+  ((s.ticket as { comments?: SnapshotComment[] })?.comments ?? []);
+
+/**
+ * Who we post as, as the pre hook recorded it this tick. satisfied() is
+ * synchronous by contract, so it cannot resolve the login itself; the
+ * snapshot is where the state a decision reads belongs anyway.
+ *
+ * Absent means we cannot tell whether an effect has landed, and the two ways
+ * of guessing are both wrong: "satisfied" silently drops the work, "not
+ * satisfied" re-posts a comment on every tick. Halting is the third option,
+ * and the dispatcher attributes the throw to this hook.
+ */
+function botLoginOf(s: Snapshot): string {
+  const bot = (s.tracker as { bot?: unknown } | undefined)?.bot;
+  if (typeof bot !== "string" || !bot.trim()) {
+    throw new Error("the snapshot does not record the login landrace posts as, so no effect can be checked");
+  }
+  return bot.trim().toLowerCase();
+}
+
+const wroteIt = (c: SnapshotComment, bot: string): boolean =>
+  typeof c.user?.login === "string" && c.user.login.toLowerCase() === bot;
 
 /** Observe: turn a GitHub issue into the snapshot the engine reads. */
 export const githubPreHook = (tracker: TrackerPort) =>
   definePreHook({
     id: "github",
-    provides: ["ticket.number", "ticket.title", "ticket.body", "ticket.labels", "ticket.comments", "entries"],
+    provides: [
+      "ticket.number", "ticket.title", "ticket.body", "ticket.labels", "ticket.comments",
+      "entries", "tracker.bot",
+    ],
     async run({ ticket }) {
       const issue = await tracker.getIssue(ticket);
       const raw = await tracker.listComments(ticket);
@@ -30,6 +59,9 @@ export const githubPreHook = (tracker: TrackerPort) =>
           comments: raw,
         },
         entries: entriesFromComments(raw, bot),
+        // Recorded because the post hook's satisfied() is synchronous and
+        // needs to know which comments are ours.
+        tracker: { bot },
       };
     },
   });
@@ -46,6 +78,10 @@ export const githubPostHook = (tracker: TrackerPort) =>
     satisfied(snapshot: Snapshot, effect: Effect): boolean {
       const present = labels(snapshot);
       switch (effect.type) {
+        // The two label cases read labels, which only an account with write
+        // access can set — unlike a comment, which anyone can post. Forging
+        // one is the operator-tools problem (lr: labels are refused there),
+        // not an authorship question this hook can answer.
         case "tracker.label": {
           const add = (effect.add as string[]) ?? [];
           const remove = (effect.remove as string[]) ?? [];
@@ -54,8 +90,14 @@ export const githubPostHook = (tracker: TrackerPort) =>
         case "tracker.status":
           // GitHub has no status field; position is a stage label.
           return present.includes(LABELS.stage(String(effect.value)));
-        case "tracker.comment":
-          return comments(snapshot).some((c) => c.body.includes(String(effect.marker)));
+        case "tracker.comment": {
+          // Only a comment *we* wrote can mean our comment effect has landed.
+          // Reading any comment let a stranger who guessed the marker string
+          // suppress the effect for good, because reconcile drops it.
+          const bot = botLoginOf(snapshot);
+          const marker = String(effect.marker);
+          return comments(snapshot).some((c) => wroteIt(c, bot) && (c.body ?? "").includes(marker));
+        }
         default:
           return false;
       }
