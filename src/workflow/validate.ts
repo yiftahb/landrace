@@ -238,13 +238,51 @@ function cycleMessage(members: string[]): string {
   return `the cycle among stages ${members.join(", ")} is not bounded by a run.counters.* comparison`;
 }
 
-const boundsACounter = (c: Condition): boolean =>
-  Object.entries(c).some(([path, value]) =>
-    path.startsWith("run.counters.") &&
-    typeof value === "object" && value !== null &&
-    ("$lt" in value || "$lte" in value));
+/**
+ * True when some condition bounds a run.counters.* path with an upper bound.
+ * Recurses into every level of the condition — including nested under $and,
+ * $or and $not — consistently with graphIsAnalysable and
+ * assertAllowedOperators, which both look at a condition in full rather than
+ * only its top-level keys. A bound written as
+ * `{ $and: [{ "run.counters.a": { $lt: 3 } }] }` is exactly as real a bound
+ * as a top-level one, and a top-level-only scan would false-flag it as
+ * unbounded.
+ */
+function boundsACounter(c: Condition): boolean {
+  let found = false;
+  const visit = (node: unknown): void => {
+    if (found) return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (node === null || typeof node !== "object") return;
+    for (const [path, value] of Object.entries(node as Record<string, unknown>)) {
+      if (
+        path.startsWith("run.counters.") &&
+        typeof value === "object" && value !== null &&
+        ("$lt" in value || "$lte" in value)
+      ) {
+        found = true;
+        return;
+      }
+      visit(value);
+    }
+  };
+  visit(c);
+  return found;
+}
 
-/** Two conditions can hold together unless they demand different values for one path. */
+/**
+ * Two conditions are treated as compatible unless they demand different
+ * *literal scalar* values for the same path. This is an over-approximation,
+ * not a definition of disjointness: it has no notion of numeric ranges, so
+ * two conditions with mutually exclusive $lt/$gt bounds on the same path
+ * (e.g. one requiring { $lt: 5 } and the other { $gt: 10 }) still come back
+ * "not disjoint" and get flagged below, even though no value can satisfy
+ * both. That is a known, deliberate limitation — interval reasoning is out
+ * of scope — not a bug to chase; the "identity" problem message says so.
+ */
 function disjoint(a: Condition, b: Condition): boolean {
   return Object.entries(a).some(([path, value]) => {
     if (!(path in b)) return false;
@@ -321,7 +359,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
       if (!disjoint(identityOf(a), identityOf(b))) {
         problems.push({
           rule: "identity",
-          message: `stages "${a.id}" and "${b.id}" can both be the current position`,
+          message: `stages "${a.id}" and "${b.id}" can both be the current position (this check only compares literal scalars, so a genuine $lt/$gt range split can false-positive here)`,
         });
       }
     }

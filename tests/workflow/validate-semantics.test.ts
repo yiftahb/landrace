@@ -122,6 +122,16 @@ describe("semantic validation", () => {
     expect(cycleProblems).toHaveLength(1);
   });
 
+  it("recognizes a counter bound nested under $and, not just at the top level", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [
+        { when: { "run.stage": "b", $and: [{ "run.counters.a": { $lt: 3 } }] } },
+      ] },
+      { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+    ] };
+    expect(rules(w)).not.toContain("cycle-bound");
+  });
+
   it("flags a stage that is structurally connected but unreachable from the entry stage", () => {
     // b and c point at each other, but nothing (not even indirectly) leads
     // to either of them from the entry stage a.
