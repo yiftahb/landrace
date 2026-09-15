@@ -144,34 +144,82 @@ function graphIsAnalysable(w: Workflow): boolean {
     (stage.triggers ?? []).some((t) => pathsIn(t.when).includes("run.stage") && !isPlainAnchor(t.when)));
 }
 
-function cycles(w: Workflow): string[][] {
-  const adjacency = new Map<string, string[]>();
-  for (const [from, to] of edges(w)) adjacency.set(from, [...(adjacency.get(from) ?? []), to]);
+/**
+ * Strongly connected components of the run.stage graph, via Tarjan's
+ * algorithm — linear in stages + edges. The naive predecessor enumerated
+ * every simple path and let a dedupe pass afterwards collapse the results;
+ * on a densely connected graph the number of simple paths is combinatorial
+ * (measured: 24 stages with 3 inbound triggers each recorded 4.4M paths in
+ * 1.4s, and 10 densely connected stages exhausted memory and crashed), so
+ * the dedupe was papering over an exponential blowup rather than eliminating
+ * one.
+ */
+function stronglyConnectedComponents(w: Workflow): string[][] {
+  const adjacency = adjacencyOf(w);
+  const nodes = new Set<string>(w.stages.map((s) => s.id));
+  for (const [from, to] of edges(w)) {
+    nodes.add(from);
+    nodes.add(to);
+  }
 
-  const found: string[][] = [];
-  const walk = (node: string, path: string[]): void => {
-    const seenAt = path.indexOf(node);
-    if (seenAt !== -1) {
-      found.push(path.slice(seenAt));
-      return;
+  let counter = 0;
+  const index = new Map<string, number>();
+  const lowlink = new Map<string, number>();
+  const onStack = new Set<string>();
+  const stack: string[] = [];
+  const components: string[][] = [];
+
+  const strongconnect = (v: string): void => {
+    index.set(v, counter);
+    lowlink.set(v, counter);
+    counter++;
+    stack.push(v);
+    onStack.add(v);
+
+    for (const next of adjacency.get(v) ?? []) {
+      if (!index.has(next)) {
+        strongconnect(next);
+        lowlink.set(v, Math.min(lowlink.get(v) as number, lowlink.get(next) as number));
+      } else if (onStack.has(next)) {
+        lowlink.set(v, Math.min(lowlink.get(v) as number, index.get(next) as number));
+      }
     }
-    for (const next of adjacency.get(node) ?? []) walk(next, [...path, node]);
+
+    if (lowlink.get(v) === index.get(v)) {
+      const component: string[] = [];
+      let member: string;
+      do {
+        member = stack.pop() as string;
+        onStack.delete(member);
+        component.push(member);
+      } while (member !== v);
+      components.push(component);
+    }
   };
-  for (const stage of w.stages) walk(stage.id, []);
-  return found;
+
+  for (const node of nodes) {
+    if (!index.has(node)) strongconnect(node);
+  }
+  return components;
 }
 
 /**
- * Rotate a cycle to start at its lexicographically smallest stage id, so every
- * rotation of the same logical cycle (the DFS in cycles() reports one per
- * starting stage) canonicalises to the same sequence and the same message,
- * and dedupe() collapses them into a single problem.
+ * A strongly connected component is a real cycle when it has more than one
+ * stage, or when its single stage has a self-edge (a stage bounded only by
+ * looping onto itself). Every other size-1 component is not a cycle at all.
  */
-function canonicalizeCycle(cycle: string[]): string[] {
-  let min = cycle[0] ?? "";
-  for (const id of cycle) if (id < min) min = id;
-  const minIndex = cycle.indexOf(min);
-  return [...cycle.slice(minIndex), ...cycle.slice(0, minIndex)];
+function realCycles(w: Workflow): string[][] {
+  const adjacency = adjacencyOf(w);
+  return stronglyConnectedComponents(w)
+    .filter((c) => c.length > 1 || (adjacency.get(c[0] as string) ?? []).includes(c[0] as string))
+    .map((c) => [...c].sort());
+}
+
+function cycleMessage(members: string[]): string {
+  if (members.length === 1) {
+    return `stage "${members[0]}" is only bounded by looping onto itself, with no run.counters.* comparison`;
+  }
+  return `the cycle among stages ${members.join(", ")} is not bounded by a run.counters.* comparison`;
 }
 
 const boundsACounter = (c: Condition): boolean =>
@@ -207,16 +255,12 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
       }
     }
 
-    for (const cycle of cycles(w)) {
-      const canonical = canonicalizeCycle(cycle);
+    for (const members of realCycles(w)) {
       const conditions = w.stages
-        .filter((s) => canonical.includes(s.id))
+        .filter((s) => members.includes(s.id))
         .flatMap((s) => (s.triggers ?? []).map((t) => t.when));
       if (!conditions.some(boundsACounter)) {
-        problems.push({
-          rule: "cycle-bound",
-          message: `the cycle ${canonical.join(" -> ")} is not bounded by a run.counters.* comparison`,
-        });
+        problems.push({ rule: "cycle-bound", message: cycleMessage(members) });
       }
     }
 

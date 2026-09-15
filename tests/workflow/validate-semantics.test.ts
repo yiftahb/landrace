@@ -97,6 +97,31 @@ describe("semantic validation", () => {
     expect(cycleProblems).toHaveLength(1);
   });
 
+  it("handles a densely connected graph of many stages quickly instead of enumerating every simple path", () => {
+    // Every stage triggers off every other stage: one strongly connected
+    // component of 12 members. The old path-enumeration implementation was
+    // combinatorial in the number of simple paths through a graph like this
+    // (measured: 4.4M paths for 24 stages with only 3 inbound triggers
+    // each, and a memory crash at just 10 densely connected stages); Tarjan's
+    // algorithm is linear in stages + edges, so this must stay fast and
+    // report sensibly regardless of density.
+    const n = 12;
+    const ids = Array.from({ length: n }, (_, i) => `s${i}`);
+    const stages: Workflow["stages"] = ids.map((id, i) => ({
+      id,
+      entry: i === 0,
+      triggers: ids.filter((other) => other !== id).map((other) => ({ when: { "run.stage": other } })),
+    }));
+    const w: Workflow = { version: 1, name: "t", stages };
+
+    const start = Date.now();
+    const cycleProblems = validateSemantics(w, noSteps).filter((p) => p.rule === "cycle-bound");
+    expect(Date.now() - start).toBeLessThan(2000);
+    // One strongly connected component containing every stage is one real
+    // cycle, so exactly one problem, not one per simple path through it.
+    expect(cycleProblems).toHaveLength(1);
+  });
+
   it("flags a stage that is structurally connected but unreachable from the entry stage", () => {
     // b and c point at each other, but nothing (not even indirectly) leads
     // to either of them from the entry stage a.
