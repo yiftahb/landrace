@@ -1,0 +1,5 @@
+docs/
+poc/
+node_modules/
+dist/
+.env
