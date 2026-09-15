@@ -1,0 +1,84 @@
+import { entriesFromComments } from "../../src/adapters/github/markers.js";
+import { parseMarker, renderMarker } from "../../src/conventions.js";
+import { canonicalize } from "../../src/core/normalize.js";
+import type { Snapshot } from "../../src/core/types.js";
+
+const BOT = "landrace-bot";
+const comment = (body: string) => ({ id: 1, body, created_at: "2026-01-01T00:00:01Z", user: { login: BOT } });
+
+/** ~10 KB of comment whose marker JSON nests 5000 arrays deep. */
+const deepMarkerBody = (depth: number) =>
+  `here\n\n<!-- landrace {"stage":"spec","kind":"output","round":1,"deep":${"[".repeat(depth)}${"]".repeat(depth)}} -->`;
+
+const deepData = (depth: number): unknown => {
+  let v: unknown = 1;
+  for (let i = 0; i < depth; i++) v = [v];
+  return v;
+};
+
+describe("deep marker JSON cannot poison a ticket", () => {
+  it("treats a 5000-deep marker as no marker at all", () => {
+    expect(parseMarker(deepMarkerBody(5000))).toBeNull();
+  });
+
+  it("reads the comment as a person's instead of crashing the tick", () => {
+    const [entry] = entriesFromComments([comment(deepMarkerBody(5000))], BOT);
+    expect(entry).toMatchObject({ kind: "human", byAgent: false });
+  });
+
+  it("rejects a marker that is small but still too deeply nested", () => {
+    expect(parseMarker(deepMarkerBody(50))).toBeNull();
+  });
+
+  it("rejects an oversized marker payload", () => {
+    const fat = `x\n\n<!-- landrace {"stage":"spec","kind":"output","round":1,"pad":"${"a".repeat(9000)}"} -->`;
+    expect(parseMarker(fat)).toBeNull();
+  });
+
+  it("still reads an ordinary nested marker", () => {
+    const m = { stage: "triage", kind: "output", round: 1, triage: { intent: "approve", notes: ["a", "b"] } };
+    expect(parseMarker(`draft${renderMarker(m)}`)).toMatchObject(m);
+  });
+
+  it("canonicalize reports deep data instead of blowing the stack", () => {
+    const s = { ticket: deepData(5000) } as unknown as Snapshot;
+    let thrown: unknown;
+    try {
+      canonicalize(s);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).not.toBeInstanceOf(RangeError);
+    expect((thrown as Error).message).toMatch(/nested/i);
+  });
+});
+
+describe("scanning a comment for its trailing marker costs the same whatever the body", () => {
+  // 64 KB of marker openings with no closing brace anywhere: every start
+  // position made the old lazy scan run to the end of the body.
+  const junk = "<!-- landrace {".repeat(4369);
+
+  const median = (body: string) => {
+    parseMarker(body); // warm up the regex and the JIT
+    const runs = [1, 2, 3, 4, 5].map(() => {
+      const t0 = performance.now();
+      parseMarker(body);
+      return performance.now() - t0;
+    }).sort((a, b) => a - b);
+    return runs[2] as number;
+  };
+
+  it("parses a 64 KB adversarial body in well under 5 ms", () => {
+    expect(junk.length).toBeGreaterThan(65_000);
+    expect(parseMarker(junk)).toBeNull();
+    expect(median(junk)).toBeLessThan(5);
+  });
+
+  it("still finds a genuine marker appended after all that", () => {
+    const doc = { stage: "spec", kind: "output", round: 3 };
+    const body = junk + renderMarker(doc);
+    expect(parseMarker(body)).toMatchObject(doc);
+    expect(median(body)).toBeLessThan(5);
+  });
+});
