@@ -7,14 +7,17 @@ The whole design rests on one idea — **the model does the work, the state mach
 ## Architecture
 
 ```
+src/namespace.ts   every type in the system, and nothing else
 src/core/         pure decision engine — no I/O, no clock, no randomness
 src/workflow/     load and validate workflow definitions
-src/adapters/     tracker implementations, reached by id
-src/hooks/        the define* contracts
+src/hooks/        the define* contracts and the loader that imports .landrace/hooks/*.ts
+src/runner/       tick, converge, lock, effect dispatch
 src/config/       landrace.yaml + .env
 src/mcp/          operator tools over stdio
-src/cli/          validate, next, mcp
+src/cli/          validate, next, mcp, start, status
 src/conventions.ts  label and marker vocabulary shared by all of the above
+
+.landrace/hooks/  the integrations — GitHub included. Not part of the engine.
 ```
 
 ## Rules
@@ -39,9 +42,34 @@ There is no `on_exit`, and there must not be. Effects are a function of the stat
 
 Every effect needs a `satisfied()` beside its `apply()`, in the same hook. An effect without one gets re-applied on every tick.
 
-### Adapters are reached by id, never imported
+### The engine ships no integrations
 
-Nothing outside `src/adapters/` may import a tracker implementation; a test enforces it. A second tracker is a new entry in the adapter registry and nothing else. Shared vocabulary — label names, the marker format — lives in `src/conventions.ts`, because a Jira adapter would use the same names.
+There is no GitHub code in `src/`. Talking to a tracker, publishing a page, reading a
+pull request — all of it lives in `.landrace/hooks/*.ts`, written against the `define*`
+contracts and loaded by path from `workflow.yaml`. The engine's half of the bargain is
+that it never needs to know which tracker it is driving; that is what makes a workflow
+portable and a second tracker a file rather than a fork. Shared vocabulary — label
+names, the marker format — lives in `src/conventions.ts`, because a Jira hook would use
+the same names.
+
+If you are about to import a vendor SDK into `src/`, you are writing a hook.
+
+### Every type lives in `src/namespace.ts`
+
+One file declares every interface and type alias in the system; modules import their
+types from it and export only values. A type inferred from a runtime value — a Zod
+schema, for instance — is still declared there, in a `export type X = z.infer<typeof
+schema>` line that imports the schema in type position. `namespace.ts` itself exports
+no runtime value, which is what lets the pure core import from it freely.
+
+### Ask the graph before you grep
+
+Every question about this codebase — where a symbol is defined, what calls it, how a
+value flows, what the layers are — goes to `codebase-memory-mcp` first: `search_graph`,
+`trace_path`, `get_code_snippet`, `query_graph`, `get_architecture`, `search_code`. If
+the repository is not indexed yet, run `index_repository` first. Grep, glob and Read
+remain right for prose, config and anything that is not code, and you always Read a
+file before editing it.
 
 ### A broken step output is a hard fail, never a retry
 

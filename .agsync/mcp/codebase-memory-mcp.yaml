@@ -1,0 +1,6 @@
+name: codebase-memory-mcp
+description: >-
+  Codebase knowledge graph for this repository: search_graph, trace_path,
+  get_code_snippet, query_graph, get_architecture, search_code, index_repository.
+  Every question about where code lives or what calls what goes here first.
+command: codebase-memory-mcp
