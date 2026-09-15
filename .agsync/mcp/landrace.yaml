@@ -1,0 +1,7 @@
+name: landrace
+description: >-
+  This project's own orchestrator. Read what the workflow is doing with a ticket,
+  open and update tickets, and reply on them — without leaving the editor.
+  Served by the package's own CLI, so it always matches the checked-out code.
+command: node
+args: ["dist/cli.js", "mcp"]

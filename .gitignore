@@ -4,3 +4,7 @@ node_modules/
 dist/
 .env
 .landrace/.env
+
+# agsync:begin
+.mcp.json
+# agsync:end

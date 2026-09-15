@@ -46,11 +46,13 @@ node dist/cli.js validate .landrace
 
 `validate` proves the workflow sound before anything runs it, and fails if a secret does not resolve or if your `.env` is not gitignored.
 
-To drive tickets from your editor, register the MCP server — `.mcp.json` in this repo already does:
+To drive tickets from your editor, generate the MCP config:
 
-```json
-{ "mcpServers": { "landrace": { "command": "node", "args": ["dist/cli.js", "mcp"] } } }
+```bash
+agsync sync
 ```
+
+The server is defined in `.agsync/mcp/landrace.yaml` and `agsync` writes it out per agent — `.mcp.json` for Claude, `.codex/config.toml` for Codex. The generated files are gitignored, so run `agsync sync` after cloning.
 
 Then ask your client things like *"what's waiting on me?"*, *"open a ticket for CSV export"*, or *"reply on #12 that the scope is too broad"*.
 
@@ -166,11 +168,13 @@ landrace mcp [-w <dir>]                  # MCP server over stdio
 ## Development
 
 ```bash
-pnpm test        # 127 tests
+pnpm test        # 130 tests
 pnpm typecheck
 pnpm lint
 pnpm build
 ```
+
+Agent instructions and MCP config are managed by [agsync](https://github.com/yiftahb/agsync). Edit `.agsync/instructions.md` or `.agsync/mcp/*.yaml` and run `agsync sync` — never edit `AGENTS.md`, `CLAUDE.md` or `.mcp.json` directly, they are generated.
 
 ## License
 

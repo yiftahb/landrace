@@ -16,7 +16,7 @@ agents:
     instructions: { enabled: true }
     skills: { enabled: true }
     commands: { enabled: true }
-    mcp: { enabled: false }   # .mcp.json is hand-written: it points at this package's own server
+    mcp: { enabled: true }
   codex:
     instructions: { enabled: true }
     skills: { enabled: true }
