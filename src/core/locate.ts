@@ -7,8 +7,13 @@ export type Location =
   | { kind: "ambiguous"; ids: string[] }
   | { kind: "unknown"; id: string };
 
-/** Default identity: you are here if the tracker says so. */
-const identityOf = (stage: Stage) => stage.identity ?? { "run.stage": stage.id };
+/**
+ * Default identity: you are here if the tracker says so.
+ * Exported so workflow/validate.ts checks the same definition locate() uses
+ * to place a ticket — two copies of this default previously let the
+ * validator and the engine silently disagree about where a ticket is.
+ */
+export const identityOf = (stage: Stage) => stage.identity ?? { "run.stage": stage.id };
 
 export function locate(w: Workflow, s: Snapshot): Location {
   const matches = w.stages.filter((stage) => compile(identityOf(stage))(s));

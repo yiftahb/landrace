@@ -1,3 +1,4 @@
+import { identityOf } from "../core/locate.js";
 import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
 import type { Condition, Stage, Workflow } from "../core/types.js";
 import type { Step } from "./load.js";
@@ -148,8 +149,6 @@ function disjoint(a: Condition, b: Condition): boolean {
     return comparable(value) && comparable(other) && value !== other;
   });
 }
-
-const identityOf = (s: Stage): Condition => s.identity ?? { "run.stage": s.id };
 
 export function validateSemantics(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {
   const problems: Problem[] = [];
