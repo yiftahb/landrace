@@ -1,5 +1,6 @@
 import { deriveRun } from "../../src/core/derive.js";
-import type { Entry } from "../../src/core/types.js";
+import { assess } from "../../src/core/assess.js";
+import type { Entry, Snapshot, Stage } from "../../src/core/types.js";
 
 let t = 0;
 const at = () => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)).toISOString();
@@ -78,5 +79,44 @@ describe("deriveRun", () => {
     const later = out("spec", 1);
     const earlier: Entry = { ...human(), at: "2025-01-01T00:00:00Z" };
     expect(deriveRun([later, earlier], "spec").lastEvent.actor).toBe("agent");
+  });
+
+  describe("failedStages, exposed independently of the `stage` argument", () => {
+    it("lists every stage with a rejected round, not only the one lastOutputValid answers for", () => {
+      const r = deriveRun([out("spec", 1), malformed("review", 1)], "spec");
+      expect(r.failedStages).toEqual(["review"]);
+      // lastOutputValid still answers only for "spec", unaffected by review's rejection.
+      expect(r.lastOutputValid).toBeNull();
+    });
+
+    it("agrees with lastOutputValid when assessing the stage the run was derived for", () => {
+      const r = deriveRun([malformed("spec", 1)], "spec");
+      expect(r.lastOutputValid).toBe(false);
+      expect(r.failedStages).toContain("spec");
+    });
+  });
+});
+
+describe("assess uses deriveRun's per-stage failedStages, not the stage lastOutputValid answers for", () => {
+  // Regression for the bug verified in review: deriveRun is called with the
+  // raw snapshot's own run.stage (here "spec"), but decide() places the
+  // ticket independently via locate()'s identity predicates, which can name
+  // a *different* stage (here "review") when a workflow uses a custom
+  // identity. assess() must answer about the stage it is actually asked
+  // about, not leak "spec"'s rejection into "review"'s subState.
+  it("does not leak a different stage's rejection into the assessed stage's subState", () => {
+    const entries = [malformed("spec", 1), out("review", 1)];
+    const run = deriveRun(entries, "spec");
+    const snapshot: Snapshot = { run } as Snapshot;
+    const reviewStage: Stage = { id: "review", step: "steps/review.md" };
+    expect(assess(snapshot, reviewStage)).toBe("complete");
+  });
+
+  it("still reports failed when assessing the stage that was actually rejected", () => {
+    const entries = [malformed("spec", 1), out("review", 1)];
+    const run = deriveRun(entries, "spec");
+    const snapshot: Snapshot = { run } as Snapshot;
+    const specStage: Stage = { id: "spec", step: "steps/spec.md" };
+    expect(assess(snapshot, specStage)).toBe("failed");
   });
 });

@@ -40,21 +40,31 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * it happens to be logged before or after the "output" entry for that same
    * round — a hook can write them in either order. So validity is judged per
    * (stage, round): compare the highest malformed round to the highest output
-   * round for the current stage, not by which entry has the latest timestamp.
+   * round for that stage, not by which entry has the latest timestamp.
    *
    * A stage can also be rejected with no output entry at all — a step whose
    * output fails its contract gets a "malformed" entry *instead of* an
    * output entry. Treating a missing round as -Infinity, rather than as "no
    * verdict", is what keeps that case invalid instead of silently retried.
+   *
+   * This is computed for every stage the entries mention, not only the
+   * `stage` argument: assess() places a stage independently via locate()'s
+   * identity predicates, which can diverge from `stage` (the tracker's own
+   * notion of "current stage") when a workflow uses a custom identity. A
+   * validity keyed only to `stage` would then answer assess()'s question
+   * about a *different* stage — leaking one stage's rejection into another's
+   * subState. failedStages is the per-stage answer; lastOutputValid keeps
+   * answering the same single-stage question as before, for triggers that
+   * read run.lastOutputValid directly and for snapshots built by hand
+   * without a failedStages array.
    */
-  const outRound = stage !== null ? outputsByStage.get(stage)?.round : undefined;
-  const malRound = stage !== null ? maxMalformedRoundByStage.get(stage) : undefined;
-  const lastOutputValid =
-    outRound === undefined && malRound === undefined
-      ? null
-      : (malRound ?? -Infinity) >= (outRound ?? -Infinity)
-        ? false
-        : null;
+  const failedStages: string[] = [];
+  for (const s of new Set([...outputsByStage.keys(), ...maxMalformedRoundByStage.keys()])) {
+    const outRound = outputsByStage.get(s)?.round;
+    const malRound = maxMalformedRoundByStage.get(s);
+    if ((malRound ?? -Infinity) >= (outRound ?? -Infinity)) failedStages.push(s);
+  }
+  const lastOutputValid: false | null = stage !== null && failedStages.includes(stage) ? false : null;
 
   /** Per-stage: an unblock recorded against a different stage must not reset this one's budget. */
   const unblockedAt = ordered
@@ -68,6 +78,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     lastEvent: { actor: last ? (last.byAgent ? "agent" : "human") : null, at: last?.at ?? null },
     lastHuman,
     lastOutputValid,
+    failedStages,
     unblockedAt,
   };
 }

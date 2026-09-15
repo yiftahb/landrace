@@ -33,7 +33,10 @@ export interface Run {
   outputs: { [stage: string]: unknown };
   lastEvent: { actor: "agent" | "human" | null; at: string | null };
   lastHuman: Entry | null;
-  lastOutputValid: boolean | null;
+  /** Never true: a step is either invalid (false) or has no verdict (null), never affirmatively "valid". */
+  lastOutputValid: false | null;
+  /** Every stage with a rejected round, independent of which stage `lastOutputValid` answers for. */
+  failedStages: string[];
   unblockedAt: number;
 }
 
