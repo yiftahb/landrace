@@ -1,6 +1,27 @@
-import type { Entry } from "../core/types.js";
+/**
+ * Shared vocabulary: the labels the workflow uses to record position, and the
+ * marker we stamp on everything we write. Neither belongs to a tracker — a Jira
+ * adapter would use the same names — so neither lives in `src/adapters/`.
+ */
 
-/** What we stamp on everything we write, so we can recognise it later. */
+export const LABELS = {
+  eligible: "lr:auto",
+  working: "lr:working",
+  awaiting: "lr:awaiting",
+  blocked: "lr:blocked",
+  approved: "lr:approved",
+  stage: (id: string) => `lr:stage:${id}`,
+} as const;
+
+const STAGE_RE = /^lr:stage:(.+)$/;
+export const STAGE_LABEL_PREFIX = "lr:stage:";
+
+/** Position is a label, so two of them means we cannot place the ticket. */
+export function stageFromLabels(labels: string[]): { stage: string | null; ambiguous: boolean } {
+  const found = labels.map((l) => STAGE_RE.exec(l)?.[1]).filter((s): s is string => Boolean(s));
+  return { stage: found[0] ?? null, ambiguous: found.length > 1 };
+}
+
 export interface Marker {
   stage: string;
   kind: string;
@@ -42,30 +63,9 @@ export function stripMarker(body: string): string {
 }
 
 /**
- * Agent output must not be able to emit our control tokens. Escaped rather than
- * deleted: a document explaining the marker format should still show it, just
- * visibly and inertly.
+ * Text we did not author must not be able to emit our control tokens. Escaped
+ * rather than deleted: a document explaining the format should still show it,
+ * just visibly and inertly.
  */
 export const neutraliseMarkers = (body: string): string =>
   body.replace(markerRe(), (m) => `&lt;${m.slice(1, -1)}&gt;`);
-
-export interface RawComment {
-  id: number;
-  body: string;
-  created_at: string;
-  user?: { login?: string } | null;
-}
-
-/**
- * Turn a tracker's comments into the engine's tracker-agnostic records. A
- * comment carrying a marker is ours; one without is a person's. This is the
- * only place GitHub's comment format is known — core never learns it.
- */
-export function entriesFromComments(comments: RawComment[]): Entry[] {
-  return comments.map((c) => {
-    const marker = parseMarker(c.body ?? "");
-    return marker
-      ? { stage: marker.stage, kind: marker.kind, round: marker.round, data: marker, at: c.created_at, byAgent: true }
-      : { stage: "-", kind: "human", round: 0, data: { body: c.body, author: c.user?.login ?? "?", id: c.id }, at: c.created_at, byAgent: false };
-  });
-}

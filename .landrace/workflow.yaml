@@ -1,6 +1,12 @@
 version: 1
 name: landrace
 
+# Adapters are named, not imported. Replacing GitHub means naming a different
+# adapter here — nothing in the engine changes.
+hooks:
+  pre: [github]
+  post: [github]
+
 eligible:
   - when: { "ticket.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"

@@ -1,5 +1,5 @@
 import { createTools } from "../../src/mcp/tools.js";
-import { renderMarker } from "../../src/github/markers.js";
+import { renderMarker } from "../../src/conventions.js";
 import { createFakeGitHub } from "./fake-github.js";
 
 describe("mcp tools", () => {

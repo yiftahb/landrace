@@ -6,6 +6,7 @@ agent:
   isolation: worktree
 
 tracker:
+  adapter: github
   repo: yiftahb/landrace
   candidates: "is:issue is:open"
 

@@ -1,39 +1,10 @@
-export interface Issue {
-  number: number;
-  title: string;
-  body: string | null;
-  state: string;
-  html_url: string;
-  labels: Array<string | { name?: string }>;
-  pull_request?: unknown;
-}
+import type { Comment, Issue, TrackerPort } from "../types.js";
 
-export interface Comment {
-  id: number;
-  body: string;
-  created_at: string;
-  user?: { login?: string } | null;
-}
-
-export interface GitHubClient {
-  listIssues(query: { labels?: string[]; state?: string }): Promise<Issue[]>;
-  getIssue(n: number): Promise<Issue>;
-  createIssue(fields: { title: string; body?: string; labels?: string[] }): Promise<Issue>;
-  updateIssue(n: number, fields: { title?: string; body?: string; state?: string }): Promise<Issue>;
-  listComments(n: number): Promise<Comment[]>;
-  createComment(n: number, body: string): Promise<Comment>;
-  addLabels(n: number, labels: string[]): Promise<void>;
-  removeLabel(n: number, label: string): Promise<void>;
-}
-
-export const labelNames = (issue: Issue): string[] =>
-  (issue.labels ?? []).map((l) => (typeof l === "string" ? l : (l.name ?? ""))).filter(Boolean);
-
-export function createGitHubClient(opts: {
+export function createGitHubTracker(opts: {
   repo: string;
   token: string;
   fetchImpl?: typeof fetch;
-}): GitHubClient {
+}): TrackerPort {
   const { repo, token } = opts;
   const doFetch = opts.fetchImpl ?? fetch;
   if (!/^[^/]+\/[^/]+$/.test(repo)) throw new Error(`repo must be "owner/name", got "${repo}"`);

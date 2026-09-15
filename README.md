@@ -77,6 +77,7 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `agent.adapter` | — | Which coding agent to invoke (`claude`) |
 | `agent.model` | — | Default model; a step may override it |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` |
+| `tracker.adapter` | `github` | Which tracker adapter to use |
 | `tracker.repo` | — | `owner/name` |
 | `tracker.candidates` | — | Search that decides which tickets are even looked at |
 | `tick.interval` | `60s` | How often to run |
@@ -160,6 +161,7 @@ landrace mcp [-w <dir>]                  # MCP server over stdio
 - Predicate operators are allowlisted structurally, before a condition reaches the evaluator.
 - Everything a step writes is escaped before posting, so an agent cannot emit Landrace's own control tokens.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.
+- Trackers sit behind an adapter reached by id. Nothing outside `src/adapters/` may import one, and a test enforces it — so a second tracker is a new adapter and nothing else.
 
 ## Development
 

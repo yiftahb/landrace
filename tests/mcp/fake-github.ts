@@ -1,7 +1,8 @@
-import type { Comment, GitHubClient, Issue } from "../../src/github/client.js";
+import type { Comment, Issue, TrackerAdapter, TrackerPort } from "../../src/adapters/index.js";
+import { entriesFromComments } from "../../src/adapters/github/index.js";
 
 /** An in-memory tracker implementing the same interface the real client does. */
-export function createFakeGitHub(seed: Array<Partial<Issue>> = []): GitHubClient & {
+function createFakeTracker(seed: Array<Partial<Issue>> = []): TrackerPort & {
   issues: Map<number, Issue>;
   comments: Map<number, Comment[]>;
 } {
@@ -26,7 +27,8 @@ export function createFakeGitHub(seed: Array<Partial<Issue>> = []): GitHubClient
     if (!i) throw new Error(`GET /issues/${n} → 404`);
     return i;
   };
-  const names = (i: Issue) => i.labels.map((l) => (typeof l === "string" ? l : (l.name ?? "")));
+  const names = (i: Issue): string[] =>
+    i.labels.map((l) => (typeof l === "string" ? l : (l.name ?? "")));
 
   return {
     issues,
@@ -63,5 +65,24 @@ export function createFakeGitHub(seed: Array<Partial<Issue>> = []): GitHubClient
       const issue = must(n);
       issue.labels = names(issue).filter((l) => l !== label);
     },
+  };
+}
+
+/**
+ * The same adapter shape the operator tools consume, backed by memory. Using the
+ * real adapter interface is the point: a fake that implements something narrower
+ * would let a leak through the boundary go unnoticed.
+ */
+export function createFakeGitHub(
+  seed: Array<Partial<Issue>> = [],
+): TrackerAdapter & TrackerPort & { issues: Map<number, Issue>; comments: Map<number, Comment[]> } {
+  const tracker = createFakeTracker(seed);
+  return {
+    ...tracker,
+    id: "fake",
+    tracker,
+    pre: { id: "fake", run: () => ({}) },
+    post: { id: "fake", handles: [], satisfied: () => false, apply: async () => {} },
+    entriesOf: async (n) => entriesFromComments(await tracker.listComments(n)),
   };
 }

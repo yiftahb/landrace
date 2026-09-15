@@ -1,8 +1,6 @@
 import { deriveRun } from "../core/derive.js";
-import type { GitHubClient } from "../github/client.js";
-import { labelNames } from "../github/client.js";
-import { LABELS, stageFromLabels } from "../github/labels.js";
-import { entriesFromComments, neutraliseMarkers } from "../github/markers.js";
+import { labelNames, type Issue, type TrackerAdapter } from "../adapters/index.js";
+import { LABELS, neutraliseMarkers, stageFromLabels } from "../conventions.js";
 
 export interface Tools {
   waiting(): Promise<Array<{ ticket: number; title: string; url: string }>>;
@@ -28,8 +26,9 @@ export interface Tools {
   reply(ticket: number, message: string): Promise<unknown>;
 }
 
-export function createTools(gh: GitHubClient): Tools {
-  const summarise = (issue: Parameters<typeof labelNames>[0]) => ({
+export function createTools(adapter: TrackerAdapter): Tools {
+  const gh = adapter.tracker;
+  const summarise = (issue: Issue) => ({
     ticket: issue.number,
     title: issue.title,
     url: issue.html_url,
@@ -40,14 +39,14 @@ export function createTools(gh: GitHubClient): Tools {
   return {
     async waiting() {
       const issues = await gh.listIssues({ labels: [LABELS.awaiting] });
-      return issues.map((i) => ({ ticket: i.number, title: i.title, url: i.html_url }));
+      return issues.map((i: Issue) => ({ ticket: i.number, title: i.title, url: i.html_url }));
     },
 
     async status(ticket) {
       const issue = await gh.getIssue(ticket);
       const labels = labelNames(issue);
       const { stage, ambiguous } = stageFromLabels(labels);
-      const run = deriveRun(entriesFromComments(await gh.listComments(ticket)), stage);
+      const run = deriveRun(await adapter.entriesOf(ticket), stage);
 
       return {
         ...summarise(issue),
