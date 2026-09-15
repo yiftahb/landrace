@@ -62,7 +62,10 @@ export interface Marker {
  *    tick, over up to 100 comments.
  *
  * The window is derived from the payload cap rather than chosen separately,
- * so a marker large enough to be accepted is always small enough to be seen.
+ * and it *is* the size cap on reading: a marker larger than the window cannot
+ * have its opening inside it, so it is never seen. A second length check in
+ * parseMarker was unreachable, and an unreachable guard kept for reassurance
+ * is a guard nobody can test.
  */
 const MARKER_MAX_PAYLOAD = 8 * 1024;
 const MARKER_MAX_DEPTH = 8;
@@ -71,7 +74,22 @@ const TAIL_WINDOW = MARKER_MAX_PAYLOAD + 256;
 const markerRe = () => /<!--\s*landrace\s+(\{.*?\})\s*-->/gs;
 const TRAILING_RE = /^<!--\s*landrace\s+(\{[\s\S]*\})\s*-->$/;
 
-export const renderMarker = (m: Marker): string => `\n\n<!-- landrace ${JSON.stringify(m)} -->`;
+/**
+ * Throws rather than emit a marker the reader would not see. A marker past the
+ * caps is not rejected on the way back in — it is *invisible*, so our own
+ * comment reads as a human's, the step looks like it never ran, and it is
+ * re-invoked on every tick forever. Failing at write time is loud and local.
+ */
+export const renderMarker = (m: Marker): string => {
+  const json = JSON.stringify(m);
+  if (json.length > MARKER_MAX_PAYLOAD) {
+    throw new Error(`marker is too large to be read back: ${json.length} > ${MARKER_MAX_PAYLOAD} characters`);
+  }
+  if (tooDeep(m, 1)) {
+    throw new Error(`marker is too deep to be read back: over ${MARKER_MAX_DEPTH} levels of nesting`);
+  }
+  return `\n\n<!-- landrace ${json} -->`;
+};
 
 interface Trailing {
   index: number;
@@ -111,8 +129,10 @@ function tooDeep(value: unknown, depth: number): boolean {
 }
 
 export function parseMarker(body: string): Marker | null {
+  // No size check here: the tail window above is the size cap, and
+  // renderMarker refuses to write anything this reader could not see.
   const m = trailing(body);
-  if (!m || m.json.length > MARKER_MAX_PAYLOAD) return null;
+  if (!m) return null;
   try {
     const parsed: unknown = JSON.parse(m.json);
     if (typeof parsed !== "object" || parsed === null) return null;

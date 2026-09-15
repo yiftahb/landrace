@@ -78,7 +78,11 @@ describe("the repo is an owner/name pair and nothing else", () => {
     expect(build("Acme-Corp/my_repo-2")).not.toThrow();
   });
 
-  for (const repo of ["o/n#x", "o/n?x", "o/n%2Fp", "o@h/n", "o/n/p", "o/", "/n", "o n/x"]) {
+  // "." is legal inside a name, so the class that allows "my.repo" also
+  // allowed a ".." segment, which WHATWG URL normalisation collapses before
+  // the request goes out: "../user" reached a real, different endpoint.
+  for (const repo of ["o/n#x", "o/n?x", "o/n%2Fp", "o@h/n", "o/n/p", "o/", "/n", "o n/x",
+                      "o/..", "../x", "../user", "o/.", ".git/x", "o/.hidden"]) {
     it(`rejects "${repo}", which would silently retarget the requests`, () => {
       expect(build(repo)).toThrow(/owner\/name/);
     });

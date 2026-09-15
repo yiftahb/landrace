@@ -9,10 +9,14 @@ export function createGitHubTracker(opts: {
 }): TrackerPort {
   const { repo, token } = opts;
   const doFetch = opts.fetchImpl ?? fetch;
-  // [^/] also admitted "?", "#", "%2F" and "@": `repo: "o/n#x"` silently
-  // retargeted every request at /repos/o/n. The host is pinned, so this was
-  // never cross-host, but a request should go where the config says.
-  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
+  // [^/] admitted "?", "#", "%2F" and "@", so `repo: "o/n#x"` silently
+  // retargeted every request at /repos/o/n; allowing "." anywhere then left
+  // the ".." segment, which WHATWG URL normalisation collapses before the
+  // request goes out ("../user" reached a real, different endpoint). A dot is
+  // legal inside a name and never at the start of one. The host is pinned, so
+  // none of this was ever cross-host — but a request should go where the
+  // config says it goes.
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(repo)) {
     throw new Error(`repo must be "owner/name", got "${repo}"`);
   }
 

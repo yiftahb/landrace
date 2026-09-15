@@ -55,3 +55,38 @@ describe("redaction works on the secret, not on its name", () => {
     expect(JSON.stringify(seen)).toContain(TOKEN);
   });
 });
+
+describe("a redaction value too short to be a secret is refused, not applied", () => {
+  it("would shred every log line, so a whitespace value is a build-time error", () => {
+    // `.env` values get quoted and exported by hand; " " and "\n" both arrived
+    // here, and splitting a log line on them redacted between every character.
+    for (const value of [" ", "\n", "", "tok"]) {
+      expect(() => createLogger({ sink: () => {}, redactValues: [value] })).toThrow(/8 characters/);
+    }
+  });
+
+  it("names the secret whose configured value is too short", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "landrace-redact-"));
+    await writeFile(join(dir, "landrace.yaml"), `version: 1
+agent: { adapter: claude }
+tracker: { repo: acme/widgets }
+log: { redact: [githubToken] }
+secrets: { githubToken: $GITHUB_TOKEN }
+`);
+    await writeFile(join(dir, ".env"), "GITHUB_TOKEN= \n");
+    const loaded = await loadConfig(dir);
+    expect(() => redactionValues(loaded)).toThrow(/githubToken/);
+  });
+
+  it("serialises an Error instead of logging an empty object", () => {
+    // Object.entries skips message and stack, so an error logged as a value
+    // became {} — and a token inside it never reached the redactor either.
+    const seen: LandraceEvent[] = [];
+    createLogger({ sink: (e) => seen.push(e), redactValues: [TOKEN] })(
+      "step.rejected", { cause: new Error(`401 for ${TOKEN}`) });
+    const logged = JSON.stringify(seen);
+    expect(logged).toContain("401 for [redacted]");
+    expect(logged).not.toContain(TOKEN);
+    expect(seen[0]?.cause).toMatchObject({ name: "Error" });
+  });
+});

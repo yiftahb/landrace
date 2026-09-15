@@ -30,7 +30,9 @@ describe("deep marker JSON cannot poison a ticket", () => {
     expect(parseMarker(deepMarkerBody(50))).toBeNull();
   });
 
-  it("rejects an oversized marker payload", () => {
+  // The tail window *is* the size cap: a marker larger than it cannot have its
+  // opening inside the window, so it is never seen.
+  it("does not see a marker too large to fit the tail window", () => {
     const fat = `x\n\n<!-- landrace {"stage":"spec","kind":"output","round":1,"pad":"${"a".repeat(9000)}"} -->`;
     expect(parseMarker(fat)).toBeNull();
   });
@@ -80,5 +82,24 @@ describe("scanning a comment for its trailing marker costs the same whatever the
     const body = junk + renderMarker(doc);
     expect(parseMarker(body)).toMatchObject(doc);
     expect(median(body)).toBeLessThan(5);
+  });
+});
+
+describe("we never write a marker we could not read back", () => {
+  it("refuses to render a payload larger than the reader will look at", () => {
+    expect(() => renderMarker({ stage: "spec", kind: "output", round: 1, pad: "a".repeat(9000) }))
+      .toThrow(/too large/i);
+  });
+
+  it("refuses to render a marker nested deeper than the reader accepts", () => {
+    let nested: unknown = "x";
+    for (let i = 0; i < 20; i++) nested = { nested };
+    expect(() => renderMarker({ stage: "spec", kind: "output", round: 1, nested }))
+      .toThrow(/too deep/i);
+  });
+
+  it("reads back everything it agrees to write", () => {
+    const m = { stage: "spec", kind: "output", round: 1, pad: "a".repeat(8000) };
+    expect(parseMarker(`body${renderMarker(m)}`)).toMatchObject(m);
   });
 });

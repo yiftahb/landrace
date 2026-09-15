@@ -19,10 +19,27 @@ export interface LandraceEvent {
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
+/**
+ * Shorter than any real credential, and long enough that a value this short is
+ * a configuration mistake rather than a secret: a quoted or shell-exported
+ * `.env` value of " " or "\n" got through the old empty-string filter and
+ * redacted between every character of every log line.
+ */
+export const MIN_SECRET_LENGTH = 8;
+
 /** Values, never names: splitting a log line on "githubToken" redacts nothing. */
 function redactValue(value: unknown, secrets: string[]): unknown {
   if (typeof value === "string") {
     return secrets.reduce((acc, s) => acc.split(s).join("[redacted]"), value);
+  }
+  // Object.entries skips message and stack, both non-enumerable, so an error
+  // logged as a value serialised to {} — and a token inside its message never
+  // reached the redactor either.
+  if (value instanceof Error) {
+    return redactValue(
+      { name: value.name, message: value.message, ...(value.stack === undefined ? {} : { stack: value.stack }) },
+      secrets,
+    );
   }
   if (Array.isArray(value)) return value.map((v) => redactValue(v, secrets));
   if (value && typeof value === "object") {
@@ -46,8 +63,18 @@ export function createLogger(opts: {
   redactValues?: string[];
   sink?: (e: LandraceEvent) => void;
 } = {}): Logger {
-  // An empty string would match everywhere and redact the whole log.
-  const secrets = (opts.redactValues ?? []).filter((s) => s.length > 0);
+  // Refused, not skipped: skipping would leave a real secret unredacted, and
+  // accepting would shred the log. The value itself is never named in the
+  // error, only its position.
+  const secrets = opts.redactValues ?? [];
+  secrets.forEach((value, i) => {
+    if (value.trim().length < MIN_SECRET_LENGTH) {
+      throw new Error(
+        `redactValues[${i}] is ${value.trim().length} characters after trimming; ` +
+        `a redaction value shorter than ${MIN_SECRET_LENGTH} characters would match everywhere`,
+      );
+    }
+  });
   const sink = opts.sink ?? ((e: LandraceEvent) => console.log(JSON.stringify(e)));
 
   return (name, data = {}) => {

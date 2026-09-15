@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { expand, parseEnvFile } from "./env.js";
+import { MIN_SECRET_LENGTH } from "../runner/events.js";
 import { runtimeConfigSchema, type RuntimeConfig } from "./schema.js";
 
 export interface LoadedConfig {
@@ -28,7 +29,17 @@ export function redactionValues({ config, secretValues }: LoadedConfig): string[
       `${known.length ? ` — declared secrets: ${known.join(", ")}` : " — no secrets are declared"}`,
     );
   }
-  return config.log.redact.map((name) => secretValues.get(name) as string);
+  const values = config.log.redact.map((name) => [name, secretValues.get(name) as string] as const);
+  // This is the only place that knows a value's *name*, so it is the only
+  // place that can say which secret is misconfigured.
+  const tooShort = values.filter(([, v]) => v.trim().length < MIN_SECRET_LENGTH).map(([n]) => n);
+  if (tooShort.length) {
+    throw new Error(
+      `secret(s) ${tooShort.map((n) => `"${n}"`).join(", ")} resolve to fewer than ${MIN_SECRET_LENGTH} ` +
+      "characters, which is too short to redact by — the log would be shredded rather than cleaned",
+    );
+  }
+  return values.map(([, v]) => v);
 }
 
 export async function loadConfig(dir: string): Promise<LoadedConfig> {

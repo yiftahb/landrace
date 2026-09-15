@@ -17,14 +17,9 @@ describe("createLogger", () => {
 
   it("redacts inside arrays too", () => {
     const seen: LandraceEvent[] = [];
-    createLogger({ sink: (e) => seen.push(e), redactValues: ["tok"] })("agent.event", { argv: ["a", "tok"] });
-    expect(JSON.stringify(seen)).not.toContain('"tok"');
-  });
-
-  it("ignores an empty redaction entry rather than redacting everything", () => {
-    const seen: LandraceEvent[] = [];
-    createLogger({ sink: (e) => seen.push(e), redactValues: [""] })("tick.started", { a: "hello" });
-    expect(seen[0]).toMatchObject({ a: "hello" });
+    createLogger({ sink: (e) => seen.push(e), redactValues: ["ghp_tokenvalue"] })(
+      "agent.event", { argv: ["a", "ghp_tokenvalue"] });
+    expect(JSON.stringify(seen)).not.toContain("ghp_tokenvalue");
   });
 
   it("drops agent.event unless debug is on, and keeps everything else", () => {
