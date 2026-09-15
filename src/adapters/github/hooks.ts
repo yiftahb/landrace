@@ -16,6 +16,7 @@ export const githubPreHook = (tracker: TrackerPort) =>
     async run({ ticket }) {
       const issue = await tracker.getIssue(ticket);
       const raw = await tracker.listComments(ticket);
+      const bot = await tracker.botLogin();
       const names = labelNames(issue);
       return {
         ticket: {
@@ -28,7 +29,7 @@ export const githubPreHook = (tracker: TrackerPort) =>
           stage: stageFromLabels(names).stage,
           comments: raw,
         },
-        entries: entriesFromComments(raw),
+        entries: entriesFromComments(raw, bot),
       };
     },
   });

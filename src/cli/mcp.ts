@@ -14,7 +14,16 @@ export async function runMcp(dir: string): Promise<void> {
 
   // Reached by id, never imported: the operator tools depend on TrackerPort,
   // not on which tracker is behind it.
-  const adapter = createTrackerAdapter(config.tracker.adapter, { repo: config.tracker.repo, token });
+  const adapter = createTrackerAdapter(config.tracker.adapter, {
+    repo: config.tracker.repo,
+    token,
+    ...(config.tracker.bot === undefined ? {} : { bot: config.tracker.bot }),
+  });
+
+  // Resolved here, not lazily: a marker counts as control state only because
+  // this account wrote it, so a token whose login we cannot read must stop the
+  // process with a message rather than let every marker read as a stranger's.
+  await adapter.tracker.botLogin();
   const server = createMcpServer(createTools(adapter));
   await server.connect(new StdioServerTransport());
 }

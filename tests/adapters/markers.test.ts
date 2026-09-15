@@ -46,21 +46,25 @@ describe("entriesFromComments", () => {
     const entries = entriesFromComments([
       { id: 1, body: `draft${renderMarker(doc)}`, created_at: at(1), user: { login: "bot" } },
       { id: 2, body: "looks good", created_at: at(2), user: { login: "yiftahb" } },
-    ]);
+    ], "bot");
     expect(entries[0]).toMatchObject({ stage: "spec", kind: "output", round: 2, byAgent: true });
     expect(entries[1]).toMatchObject({ kind: "human", byAgent: false });
   });
 
-  it("decides authorship by the marker, not the login", () => {
-    // We post with a human's token, so the login tells us nothing.
+  // The test that used to stand here asserted the opposite — "authorship is
+  // decided by the marker, not the login" — and that assumption was the
+  // vulnerability: any commenter could complete a stage, block a ticket or run
+  // a counter up by pasting a marker. Authorship is now the login, and
+  // tests/security/marker-forgery.test.ts is where the attacks live.
+  it("reads a marker from the account we post as, whoever else is talking", () => {
     const [entry] = entriesFromComments([
       { id: 1, body: `x${renderMarker(doc)}`, created_at: at(1), user: { login: "yiftahb" } },
-    ]);
+    ], "yiftahb");
     expect(entry?.byAgent).toBe(true);
   });
 
   it("keeps a human comment's text where a step can read it", () => {
-    const [entry] = entriesFromComments([{ id: 7, body: "B2B only", created_at: at(1), user: { login: "y" } }]);
+    const [entry] = entriesFromComments([{ id: 7, body: "B2B only", created_at: at(1), user: { login: "y" } }], "bot");
     expect(entry?.data).toMatchObject({ body: "B2B only", author: "y", id: 7 });
   });
 });

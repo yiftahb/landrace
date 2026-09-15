@@ -22,7 +22,7 @@ export interface TrackerAdapter {
  */
 export function createTrackerAdapter(
   id: string,
-  opts: { repo: string; token: string },
+  opts: { repo: string; token: string; bot?: string },
 ): TrackerAdapter {
   if (id !== "github") {
     throw new Error(`unknown tracker adapter "${id}" — known adapters: github`);
@@ -33,6 +33,8 @@ export function createTrackerAdapter(
     tracker,
     pre: githubPreHook(tracker),
     post: githubPostHook(tracker),
-    entriesOf: async (n) => entriesFromComments(await tracker.listComments(n)),
+    // The login is resolved once by the tracker and threaded from there:
+    // both readers of the comment stream must agree on who "we" are.
+    entriesOf: async (n) => entriesFromComments(await tracker.listComments(n), await tracker.botLogin()),
   };
 }

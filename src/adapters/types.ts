@@ -20,6 +20,11 @@ export interface Comment {
 }
 
 export interface TrackerPort {
+  /**
+   * The login this client posts as. Only a comment written by this account
+   * carries control state; anyone else's marker is just text they typed.
+   */
+  botLogin(): Promise<string>;
   listIssues(query: { labels?: string[]; state?: string }): Promise<Issue[]>;
   getIssue(n: number): Promise<Issue>;
   createIssue(fields: { title: string; body?: string; labels?: string[] }): Promise<Issue>;

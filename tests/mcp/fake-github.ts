@@ -33,6 +33,9 @@ function createFakeTracker(seed: Array<Partial<Issue>> = []): TrackerPort & {
   return {
     issues,
     comments,
+    // The fake posts under this login, so what it writes reads back as ours —
+    // exactly the relationship the real client has with its token.
+    async botLogin() { return "yiftahb"; },
     async listIssues({ labels = [], state = "open" }) {
       return [...issues.values()].filter(
         (i) => i.state === state && labels.every((l) => names(i).includes(l)),
@@ -83,6 +86,6 @@ export function createFakeGitHub(
     tracker,
     pre: { id: "fake", run: () => ({}) },
     post: { id: "fake", handles: [], satisfied: () => false, apply: async () => {} },
-    entriesOf: async (n) => entriesFromComments(await tracker.listComments(n)),
+    entriesOf: async (n) => entriesFromComments(await tracker.listComments(n), await tracker.botLogin()),
   };
 }
