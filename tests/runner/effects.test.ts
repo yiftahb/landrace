@@ -59,4 +59,39 @@ describe("createDispatcher", () => {
     await expect(createDispatcher([boom]).apply({ type: "x" }, ctx()))
       .rejects.toThrow(/post hook "boom".*rate limited/);
   });
+
+  it("names the hook and effect type when satisfied throws, instead of propagating raw", () => {
+    const boom = definePostHook({
+      id: "boom", handles: ["y"],
+      satisfied: () => { throw new Error("db unreachable"); },
+      apply: async () => {},
+    });
+    const d = createDispatcher([boom]);
+    expect(() => d.satisfied({} as Snapshot, { type: "y" }))
+      .toThrow(/post hook "boom" failed checking "y".*db unreachable/);
+  });
+
+  it("does not blame an unrelated hook, and lets other effect types keep checking normally", () => {
+    const boom = definePostHook({
+      id: "boom", handles: ["y"],
+      satisfied: () => { throw new Error("db unreachable"); },
+      apply: async () => {},
+    });
+    const d = createDispatcher([boom, labelHook()]);
+    expect(() => d.satisfied({} as Snapshot, { type: "y" })).toThrow(/post hook "boom"/);
+    try {
+      d.satisfied({} as Snapshot, { type: "y" });
+      throw new Error("expected satisfied to throw");
+    } catch (err) {
+      expect((err as Error).message).not.toMatch(/labels/);
+    }
+    const s = { ticket: { labels: ["lr:working"] } } as Snapshot;
+    expect(d.satisfied(s, { type: "tracker.label", add: "lr:working" })).toBe(true);
+  });
+
+  it("returns false, not a throw, for an effect with no handler", () => {
+    const d = createDispatcher([labelHook()]);
+    expect(() => d.satisfied({} as Snapshot, { type: "notion.push" })).not.toThrow();
+    expect(d.satisfied({} as Snapshot, { type: "notion.push" })).toBe(false);
+  });
 });

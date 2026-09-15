@@ -29,7 +29,20 @@ export function createDispatcher(hooks: PostHook[]): Dispatcher {
 
     // An effect nobody handles is not satisfied. Reporting it as satisfied
     // would silently drop the work; apply() then reports it loudly instead.
-    satisfied: (s, e) => handlerFor(e.type)?.satisfied(s, e) ?? false,
+    // But a handler that throws is attributed and rethrown, not swallowed as
+    // false: treating a check failure as "not satisfied" would re-apply an
+    // effect that may already have landed, silently duplicating it. Rethrowing
+    // aborts just this ticket's tick (tick() catches per ticket) and names the
+    // broken hook, mirroring apply()'s wording.
+    satisfied(s, e) {
+      const hook = handlerFor(e.type);
+      if (!hook) return false;
+      try {
+        return hook.satisfied(s, e);
+      } catch (err) {
+        throw new Error(`post hook "${hook.id}" failed checking "${e.type}": ${(err as Error).message}`);
+      }
+    },
 
     async apply(e, ctx) {
       const hook = handlerFor(e.type);
