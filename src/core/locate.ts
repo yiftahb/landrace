@@ -4,8 +4,7 @@ import type { Snapshot, Stage, Workflow } from "./types.js";
 export type Location =
   | { kind: "at"; stage: Stage }
   | { kind: "none" }
-  | { kind: "ambiguous"; ids: string[] }
-  | { kind: "unknown"; id: string };
+  | { kind: "ambiguous"; ids: string[] };
 
 /**
  * Default identity: you are here if the tracker says so.

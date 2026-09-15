@@ -40,12 +40,39 @@ export function compile(c: Condition): (s: Snapshot) => boolean {
   return (s: Snapshot) => test(s as never);
 }
 
-/** Every snapshot path a condition reads. Used by validate for coverage. */
+/**
+ * Every snapshot path a condition reads. Used by validate for coverage.
+ *
+ * Unlike walk() (which descends into every nested object indiscriminately —
+ * right for an operator scan, since $where can hide anywhere), this only
+ * collects keys in *operand position*: a condition document's own keys, and
+ * those of a sub-condition nested under $and/$or/$not. A key's own value is
+ * never descended into for further paths, because it is either a literal
+ * (`{ "outputs.spec": { title: "x" } }` demands the field equal that whole
+ * object — "title" is not itself a snapshot path) or an operator object like
+ * `{ $lt: 3 }` (whose keys are operators, not paths).
+ */
 export function pathsIn(c: Condition): string[] {
   const out = new Set<string>();
-  walk(c, (key) => {
-    if (!key.startsWith("$") && !/^\d+$/.test(key)) out.add(key);
-  });
+  const visit = (node: Condition): void => {
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "$and" || key === "$or") {
+        if (Array.isArray(value)) {
+          for (const sub of value) {
+            if (sub !== null && typeof sub === "object" && !Array.isArray(sub)) visit(sub as Condition);
+          }
+        }
+        continue;
+      }
+      if (key === "$not") {
+        if (value !== null && typeof value === "object" && !Array.isArray(value)) visit(value as Condition);
+        continue;
+      }
+      if (key.startsWith("$") || /^\d+$/.test(key)) continue;
+      out.add(key);
+    }
+  };
+  visit(c);
   return [...out];
 }
 

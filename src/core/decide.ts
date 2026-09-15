@@ -12,9 +12,6 @@ export function decide(w: Workflow, s: Snapshot): Decision {
   if (where.kind === "ambiguous") {
     return { action: "halt", why: `cannot place the ticket: ${where.ids.join(", ")} all match` };
   }
-  if (where.kind === "unknown") {
-    return { action: "halt", why: `stage "${where.id}" is not in the workflow` };
-  }
   if (where.kind === "none") {
     const entry = w.stages.find((x) => x.entry);
     if (!entry) return { action: "halt", why: "the workflow has no entry stage" };

@@ -31,6 +31,12 @@ describe("predicate", () => {
     expect(pathsIn({ "run.stage": "spec", $or: [{ "a.b": 1 }] }).sort()).toEqual(["a.b", "run.stage"]);
   });
 
+  it("does not treat a literal comparison object's own keys as paths", () => {
+    // "outputs.spec" demands the field equal the whole object { title: "x" };
+    // "title" is a key of that literal value, not a snapshot path itself.
+    expect(pathsIn({ "outputs.spec": { title: "x" } })).toEqual(["outputs.spec"]);
+  });
+
   it("distinguishes a path that is absent from one that is falsy", () => {
     expect(missingPaths({ "a.b": 1 }, {} as never)).toEqual(["a.b"]);
     expect(missingPaths({ "a.b": 1 }, { a: { b: false } } as never)).toEqual([]);
