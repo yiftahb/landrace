@@ -1,8 +1,7 @@
-import { mkdtemp, writeFile, mkdir, copyFile } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../../src/config/load.js";
-import { runValidate } from "../../src/cli/validate.js";
 
 const CONFIG = `version: 1
 agent: { adapter: claude, model: opus }
@@ -15,11 +14,8 @@ secrets: { githubToken: $GITHUB_TOKEN }
 
 async function fixture(env: string | null): Promise<string> {
   const dir = join(await mkdtemp(join(tmpdir(), "landrace-cfg-")), ".landrace");
-  await mkdir(join(dir, "steps"), { recursive: true });
+  await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "landrace.yaml"), CONFIG);
-  // runValidate needs a workflow too, so borrow the minimal fixture's.
-  await copyFile("tests/fixtures/minimal/workflow.yaml", join(dir, "workflow.yaml"));
-  await copyFile("tests/fixtures/minimal/steps/spec.md", join(dir, "steps", "spec.md"));
   if (env !== null) await writeFile(join(dir, ".env"), env);
   return dir;
 }
@@ -49,9 +45,8 @@ describe("loadConfig", () => {
     expect(JSON.stringify(config)).not.toContain("ghp_x");
   });
 
-  it("refuses to pass validation when .env is not gitignored", async () => {
-    const dir = await fixture("GITHUB_TOKEN=ghp_x");
-    const { problems } = await runValidate(dir);
-    expect(problems.some((p) => /not gitignored/.test(p.message))).toBe(true);
-  });
+  // The gitignore guard itself (runValidate's ".env exists but is not
+  // gitignored" check) is exercised against real git repositories in
+  // tests/cli/gitignore.test.ts — gitignore semantics (negation, nesting)
+  // cannot be verified against a bare fixture directory.
 });

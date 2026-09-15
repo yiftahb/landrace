@@ -1,8 +1,42 @@
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { loadConfig } from "../config/load.js";
 import { loadWorkflow } from "../workflow/load.js";
 import { validate, type Problem } from "../workflow/validate.js";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * True when `<dir>/.env` is an exposure risk: git can see it and says it is
+ * NOT ignored. Gitignore semantics — negation, nesting, precedence across
+ * multiple files — are a losing game to reimplement, so this asks git
+ * directly via `git check-ignore` rather than pattern-matching a .gitignore
+ * file by hand.
+ *
+ * `cwd` is set to `dir` itself (not the process's cwd) so git discovers the
+ * repository that actually contains the workflow folder — required both for
+ * a `dir` that sits below the process's cwd in a *different* repository (or
+ * no repository) and for one nested several levels below the repo root,
+ * where a root-level `**\/.env` pattern must still resolve correctly.
+ *
+ * Exit 0 means ignored (not exposed), exit 1 means tracked/not-ignored
+ * (exposed), and anything else — 128 for "not a git repository", or git
+ * missing from PATH entirely — means the question doesn't apply, so this
+ * returns "not exposed": neither situation can leak a credential into a
+ * git-tracked commit, and flagging one would be a false positive on an
+ * otherwise legitimate setup.
+ */
+async function isEnvExposed(dir: string): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["check-ignore", "-q", ".env"], { cwd: dir });
+    return false;
+  } catch (e) {
+    const code = (e as { code?: number | string }).code;
+    return code === 1;
+  }
+}
 
 export async function runValidate(dir: string): Promise<{ ok: boolean; problems: Problem[] }> {
   const { workflow, steps } = await loadWorkflow(dir);
@@ -19,15 +53,11 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
     /* no landrace.yaml: workflow-only validation */
   }
 
-  // A token in a committed file is the cheapest possible catastrophe. The
-  // .gitignore that governs `dir` lives in its parent (the project root that
-  // contains the workflow folder), not necessarily in the process's cwd.
-  const env = await readFile(join(dir, ".env"), "utf8").catch(() => null);
-  if (env !== null) {
-    const ignored = await readFile(join(dirname(dir), ".gitignore"), "utf8").catch(() => "");
-    if (!/(^|\n)\s*(\.landrace\/\.env|\.env|\*\*\/\.env)\s*(\n|$)/.test(ignored)) {
-      problems.push({ rule: "secret", message: `${join(dir, ".env")} exists but is not gitignored` });
-    }
+  // A token in a committed file is the cheapest possible catastrophe.
+  const envPath = join(dir, ".env");
+  const env = await readFile(envPath, "utf8").catch(() => null);
+  if (env !== null && (await isEnvExposed(dir))) {
+    problems.push({ rule: "secret", message: `${envPath} exists but is not gitignored` });
   }
 
   return { ok: problems.length === 0, problems };
