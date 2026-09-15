@@ -1,0 +1,23 @@
+version: "1"
+features:
+  instructions: true
+  skills: true
+  commands: true
+  mcp: true
+gitignore: mcpOnly
+skills:
+  - path: .agsync/skills/*
+commands:
+  - path: .agsync/commands/*
+mcp:
+  - path: .agsync/mcp/*.yaml
+agents:
+  claude:
+    instructions: { enabled: true }
+    skills: { enabled: true }
+    commands: { enabled: true }
+    mcp: { enabled: false }   # .mcp.json is hand-written: it points at this package's own server
+  codex:
+    instructions: { enabled: true }
+    skills: { enabled: true }
+
