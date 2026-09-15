@@ -1,14 +1,25 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClaudeExecutor } from "../../src/agent/claude.js";
 
-// Relative to the repo root: every existing test in this suite (e.g.
-// tests/workflow/load.test.ts) resolves fixtures the same way, and jest's
-// cwd during a run is the project root, so this needs no import.meta
-// machinery (which ts-jest's non-isolated ESM transform here does not
-// support — see jest.config.mjs).
-const bin = join(process.cwd(), "tests/agent/fake-agent.mjs");
+// File-relative, not cwd-relative: `jest --rootDir .. agent/claude.test.ts`
+// run from tests/ previously broke a process.cwd()-based path with ENOENT.
+// `import.meta.url` is the idiomatic ESM form of this, but it does not
+// compile here — ts-jest's non-isolated-modules diagnostics pass mis-detects
+// this "hybrid" (NodeNext) module kind as CommonJS and rejects import.meta
+// with TS1343, a known ts-jest limitation (its own TS151002 warning, printed
+// for every file in this suite, names the same "hybrid module kind" gap).
+// `__dirname` works because jest's runtime, despite the ESM preset, still
+// executes each test file inside jest-runtime's CommonJS module wrapper
+// (confirmed: `(module,exports,require,__dirname,__filename,jest)`), which
+// supplies a real, correct, file-relative `__dirname` — verified directly
+// rather than assumed, after the same import.meta.url form was re-tried and
+// re-failed four separate ways (single-file, full-suite, and with
+// isolatedModules forced on via both the ts-jest transform option and
+// tsconfig's own compilerOptions — both of which broke ESM output for every
+// file in the suite, confirmed and reverted).
+const bin = join(__dirname, "fake-agent.mjs");
 
 // The fake agent reads its script from `fake.json` in its cwd, not from
 // inherited env vars — the executor under test does not forward the parent's
@@ -21,7 +32,6 @@ const withCfg = (cfg: Record<string, unknown>): string => {
   return dir;
 };
 
-const exec = (over: Record<string, unknown> = {}) => createClaudeExecutor({ bin: process.execPath, ...over });
 const run = (
   prompt: string,
   over: Record<string, unknown> = {},
@@ -32,6 +42,17 @@ const run = (
     signal: new AbortController().signal,
     ...runOver,
   });
+
+const isAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 afterEach(() => {
   delete process.env.LANDRACE_TEST_SECRET;
@@ -62,11 +83,21 @@ describe("claude executor", () => {
     expect(r.text).toContain("--resume sid-9");
   });
 
-  it("restricts the agent by default: no shell, no edits", async () => {
+  it("restricts the agent by default, non-interactively: --restricted strips tools, plan mode makes no edits", async () => {
     const dir = withCfg({ out: "{{ARGV}}" });
     const argv = (await run("x", {}, { cwd: dir })).text;
     expect(argv).toContain("--restricted");
     expect(argv).toContain("--permission-mode plan");
+  });
+
+  it("spawns in the caller's own working directory when no cwd is given", async () => {
+    // No fixture cwd here on purpose: this is the one path the fixture swap
+    // (every other test passes an explicit cwd so fake.json is reachable)
+    // stopped exercising. Absent fake.json, the double's documented default
+    // is a valid, empty-templated response.
+    const r = await run("x");
+    expect(r.sessionId).toBe("sid-1");
+    expect(r.text).toBe("");
   });
 
   it("treats a non-zero exit as a failure, not as empty output", async () => {
@@ -84,6 +115,14 @@ describe("claude executor", () => {
     await expect(run("x", {}, { cwd: dir })).rejects.toThrow(/reported an error.*context limit/);
   });
 
+  it("rejects a session id that is not a string, instead of resolving a type lie", async () => {
+    // A number resolves fine against a declared `string | null` and would
+    // pass the argv guard whole on the next round's --resume — read validity
+    // before completeness, as everywhere else in this codebase.
+    const dir = withCfg({ sid: 12345 });
+    await expect(run("x", {}, { cwd: dir })).rejects.toThrow(/session_id/);
+  });
+
   it("kills a hung agent at the timeout instead of waiting forever", async () => {
     const dir = withCfg({ hang: true });
     await expect(run("x", { timeoutMs: 100 }, { cwd: dir })).rejects.toThrow(/exceeded 100ms/);
@@ -97,9 +136,74 @@ describe("claude executor", () => {
     await expect(p).rejects.toThrow(/agent aborted/);
   });
 
+  it("rejects immediately on an already-aborted signal, instead of running the agent anyway", async () => {
+    const dir = withCfg({ out: "should never run" });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(run("x", {}, { cwd: dir, signal: controller.signal } as never)).rejects.toThrow(/agent aborted/);
+  });
+
+  // C1 — a prompt larger than the ~64KB pipe buffer is the *normal* case (an
+  // issue body plus a diff), not an edge case: the existing timeout/abort
+  // tests above use the prompt "x", which is exactly why they never noticed
+  // that the pending stdin write raises EPIPE when the kill lands mid-write,
+  // and an unhandled 'error' on a stream throws — taking the whole host
+  // process down with it, not just this one promise.
+  describe("a prompt larger than the stdin pipe buffer", () => {
+    const bigPrompt = "x".repeat(5 * 1024 * 1024);
+
+    it("still rejects cleanly (does not crash the process) when killed at the timeout", async () => {
+      const dir = withCfg({ hang: true });
+      await expect(run(bigPrompt, { timeoutMs: 100 }, { cwd: dir })).rejects.toThrow();
+    });
+
+    it("still rejects cleanly (does not crash the process) when the caller aborts", async () => {
+      const dir = withCfg({ hang: true });
+      const controller = new AbortController();
+      const p = createClaudeExecutor({ bin }).run(bigPrompt, { round: 1, cwd: dir, signal: controller.signal });
+      setTimeout(() => controller.abort(), 30);
+      await expect(p).rejects.toThrow();
+    });
+  });
+
+  // C2 — a child that floods stdout must be capped and killed, not accumulate
+  // without bound until the string itself becomes unrepresentable and the
+  // process crashes from inside the stream's own 'data' handler.
+  it("caps stdout instead of buffering an unbounded flood, and rejects instead of hanging or crashing", async () => {
+    const dir = withCfg({ flood: 1_000_000, floodMax: 64 }); // up to 64MB, well past any sane cap
+    await expect(run("x", {}, { cwd: dir })).rejects.toThrow(/agent produced more than/);
+  }, 8000);
+
+  // I3 — a timeout must not orphan the grandchildren (bash, MCP servers) a
+  // real `claude` spawns: killing only the direct child leaves them ticking.
+  it("kills the whole process group, not just the direct child, so grandchildren do not outlive the timeout", async () => {
+    const dir = withCfg({ grandchild: true });
+    await expect(run("x", { timeoutMs: 300 }, { cwd: dir })).rejects.toThrow(/exceeded 300ms/);
+    await wait(300);
+    const pid = Number(readFileSync(join(dir, "grandchild.pid"), "utf8"));
+    expect(isAlive(pid)).toBe(false);
+  }, 8000);
+
   it("reports a missing binary as a startup failure", async () => {
     await expect(
-      exec({ bin: "/nonexistent/agent" }).run("x", { round: 1, signal: new AbortController().signal }),
+      createClaudeExecutor({ bin: "/nonexistent/agent" }).run("x", {
+        round: 1,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow(/could not start/);
+  });
+
+  it("reports a binary that exists but cannot be executed as a startup failure too", async () => {
+    // On macOS, spawn() throws *synchronously* for some non-executable
+    // files instead of emitting the usual async 'error' event, bypassing the
+    // handler that wraps ENOENT — an operator would otherwise see a bare,
+    // unnamed "spawn Unknown system error -8".
+    const dir = mkdtempSync(join(tmpdir(), "fake-agent-"));
+    dirs.push(dir);
+    const notExecutable = join(dir, "not-executable");
+    writeFileSync(notExecutable, "not a script", { mode: 0o644 });
+    await expect(
+      createClaudeExecutor({ bin: notExecutable }).run("x", { round: 1, signal: new AbortController().signal }),
     ).rejects.toThrow(/could not start/);
   });
 
@@ -127,8 +231,34 @@ describe("claude executor", () => {
     await expect(run("x", { permissionMode: "sudo" }, { cwd: dir })).rejects.toThrow(/refused permissionMode/);
   });
 
+  it("accepts the real CLI's other permission modes, not just the ones this project happens to use", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    const r = await run("x", { permissionMode: "auto" }, { cwd: dir });
+    expect(r.text).toContain("--permission-mode auto");
+  });
+
+  it("warns at startup when configured for bypassPermissions, since that disables every prompt", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      createClaudeExecutor({ permissionMode: "bypassPermissions" });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("bypassPermissions"));
+      warn.mockClear();
+      createClaudeExecutor({ permissionMode: "plan" });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("refuses a relative cwd", async () => {
     await expect(run("x", {}, { cwd: "relative/path" })).rejects.toThrow(/must be an absolute path/);
+  });
+
+  it("refuses a cwd that climbs out of where it lexically appears to be", async () => {
+    // `containedPath` (src/workflow/load.ts) already rejects a ".." segment
+    // for exactly this reason; reusing it here means an absolute path is not
+    // treated as automatically safe just because it passed isAbsolute().
+    await expect(run("x", {}, { cwd: "/tmp/lr56/../../etc" })).rejects.toThrow(/refused cwd/);
   });
 
   it("never lets the parent process's environment reach the agent", async () => {
@@ -136,5 +266,22 @@ describe("claude executor", () => {
     const dir = withCfg({ out: "secret=[{{ENV:LANDRACE_TEST_SECRET}}]" });
     const r = await run("x", {}, { cwd: dir });
     expect(r.text).toBe("secret=[]");
+  });
+
+  it("forwards USER, LOGNAME and SHELL, since the CLI's own keychain lookup and Bash tool need them", async () => {
+    const saved = { USER: process.env.USER, LOGNAME: process.env.LOGNAME, SHELL: process.env.SHELL };
+    process.env.USER = "test-user-xyz";
+    process.env.LOGNAME = "test-user-xyz";
+    process.env.SHELL = "/bin/test-shell";
+    try {
+      const dir = withCfg({ out: "[{{ENV:USER}}|{{ENV:LOGNAME}}|{{ENV:SHELL}}]" });
+      const r = await run("x", {}, { cwd: dir });
+      expect(r.text).toBe("[test-user-xyz|test-user-xyz|/bin/test-shell]");
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 });

@@ -28,7 +28,14 @@ export class WorkflowLoadError extends Error {
   }
 }
 
-const inside = (p: string, root: string): boolean => p === root || p.startsWith(root + sep);
+// `root + sep` doubles up when root is already the filesystem root ("/" + "/"
+// = "//"), which no absolute path starts with — every path was reported as
+// escaping "/" regardless of shape. Harmless before now: every caller passed
+// a real project directory as root, never "/" itself, until the claude
+// executor started reusing this for an already-absolute cwd (see
+// src/agent/claude.ts's assertCwd).
+const inside = (p: string, root: string): boolean =>
+  p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 
 /**
  * Shapes that are never a relative path inside a directory, checked before any

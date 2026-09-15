@@ -10,7 +10,13 @@ export default tseslint.config(
     // their node globals declared directly rather than inherited from ts-jest.
     files: ["tests/**/*.mjs"],
     languageOptions: {
-      globals: { process: "readonly", setTimeout: "readonly", console: "readonly" },
+      globals: {
+        process: "readonly",
+        console: "readonly",
+        setTimeout: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly",
+      },
     },
   },
   {
