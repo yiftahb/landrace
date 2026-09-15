@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import type { Workflow } from "../core/types.js";
@@ -28,6 +28,65 @@ export class WorkflowLoadError extends Error {
   }
 }
 
+const inside = (p: string, root: string): boolean => p === root || p.startsWith(root + sep);
+
+/**
+ * Shapes that are never a relative path inside a directory, checked before any
+ * resolution so each is reported as what it is rather than surfacing later as
+ * "that file does not exist" — a misdescription an operator would chase.
+ */
+function shapeProblem(p: string): string | null {
+  if (p.trim() === "") return "is empty";
+  if (isAbsolute(p) || p.startsWith("/")) return "is absolute";
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(p)) return "is a URL or a drive path, not a relative path";
+  if (p.includes("\\")) return "contains a backslash";
+  if (p.includes("%")) return "is percent-encoded";
+  const dotted = p.split("/").find((seg) => /^\.{2,}$/.test(seg));
+  if (dotted !== undefined) return `contains a "${dotted}" segment`;
+  return null;
+}
+
+export type ContainedPath =
+  | { ok: true; path: string }
+  | { ok: false; kind: "unsafe" | "missing"; reason: string };
+
+/**
+ * A configured path resolved to a real file inside `root`, or the reason it is
+ * not one.
+ *
+ * Path arithmetic alone is containment against a typo, not against a
+ * contributor: git tracks symlinks, so the same PR that edits workflow.yaml
+ * can add the link a lexically-contained path escapes through — both a
+ * symlinked file and a symlinked directory did, and validate reported the
+ * workflow as fine. Both ends are therefore compared after fs.realpath, and a
+ * path that does not exist is reported as missing rather than as contained.
+ *
+ * Exported because this applies to every configured path opened out of a repo
+ * file, not only a step file — a hook loader needs exactly this.
+ */
+export async function containedPath(root: string, relative: string): Promise<ContainedPath> {
+  const shape = shapeProblem(relative);
+  if (shape) return { ok: false, kind: "unsafe", reason: shape };
+
+  // A root that is itself reached through a link is still a legitimate root;
+  // what matters is that both sides are compared in the same, real terms.
+  const realRoot = await realpath(resolve(root)).catch(() => resolve(root));
+  const candidate = resolve(realRoot, relative);
+  if (!inside(candidate, realRoot)) return { ok: false, kind: "unsafe", reason: "resolves outside the directory" };
+
+  let real: string;
+  try {
+    real = await realpath(candidate);
+  } catch (e) {
+    if ((e as { code?: string }).code === "ENOENT") return { ok: false, kind: "missing", reason: "does not exist" };
+    return { ok: false, kind: "unsafe", reason: `cannot be resolved: ${(e as Error).message}` };
+  }
+
+  return inside(real, realRoot)
+    ? { ok: true, path: real }
+    : { ok: false, kind: "unsafe", reason: "is a link to something outside the directory" };
+}
+
 const FRONT_MATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 export function parseStep(source: string): Step {
@@ -53,32 +112,25 @@ export async function loadWorkflow(dir: string): Promise<{ workflow: Workflow; s
   }
 
   // A step's body goes straight into an agent's prompt, and workflow.yaml is a
-  // repo file a contributor's PR can edit: `step: ../../outside-secret.md`
-  // read that file and prompted with it. Containment is checked on the
-  // resolved path, before anything is read.
-  const root = resolve(dir);
-
+  // repo file a contributor's PR can edit: `step: ../../outside-secret.md`, or
+  // a symlink to the same place, read that file and prompted with it.
   const steps = new Map<string, Step>();
   for (const stage of workflow.stages) {
     if (!stage.step || steps.has(stage.step)) continue;
 
-    const resolved = resolve(root, stage.step);
-    if (isAbsolute(stage.step) || !(resolved === root || resolved.startsWith(root + sep))) {
+    const where = await containedPath(dir, stage.step);
+    if (!where.ok) {
       throw new WorkflowLoadError(
-        "step-path",
-        `stage "${stage.id}" names a step file outside the workflow directory: ${stage.step}`,
+        where.kind === "missing" ? "missing-step" : "step-path",
+        where.kind === "missing"
+          ? `stage "${stage.id}" names a step file that does not exist: ${stage.step}`
+          : `stage "${stage.id}" names a step file that ${where.reason}: ${stage.step}`,
       );
     }
 
-    let source: string;
-    try {
-      source = await readFile(resolved, "utf8");
-    } catch {
-      throw new WorkflowLoadError(
-        "missing-step",
-        `stage "${stage.id}" names a step file that does not exist: ${stage.step}`,
-      );
-    }
+    // Existence was decided above, by the same realpath the containment check
+    // used; a second "does it exist" guard here would be unreachable.
+    const source = await readFile(where.path, "utf8");
     steps.set(stage.step, parseStep(source));
   }
 
