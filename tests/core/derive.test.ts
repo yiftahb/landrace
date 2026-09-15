@@ -6,6 +6,8 @@ const at = () => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)).toISOString();
 const out = (stage: string, round: number, data: unknown = {}): Entry =>
   ({ stage, kind: "output", round, data, at: at(), byAgent: true });
 const human = (): Entry => ({ stage: "-", kind: "human", round: 0, at: at(), byAgent: false });
+const malformed = (stage: string, round: number): Entry =>
+  ({ stage, kind: "malformed", round, at: at(), byAgent: true });
 
 describe("deriveRun", () => {
   it("counts rounds, not entries — two entries for one round are one round", () => {
@@ -39,10 +41,37 @@ describe("deriveRun", () => {
     expect(deriveRun([out("spec", 1)], "spec").lastOutputValid).toBeNull();
   });
 
+  describe("lastOutputValid, judged per (stage, round)", () => {
+    it("is false for a malformed round that shares its round with the current output", () => {
+      expect(deriveRun([out("spec", 1), malformed("spec", 1)], "spec").lastOutputValid).toBe(false);
+    });
+
+    it("is false when a round was rejected and there is no output entry at all for it — a step must not silently re-run", () => {
+      expect(deriveRun([malformed("spec", 1)], "spec").lastOutputValid).toBe(false);
+    });
+
+    it("clears back to null once a newer round produces a good output", () => {
+      const bad = malformed("spec", 1);
+      const good = out("spec", 2);
+      expect(deriveRun([bad, good], "spec").lastOutputValid).toBeNull();
+    });
+
+    it("is false regardless of whether the malformed entry is timestamped before its output, same round", () => {
+      const badFirst = malformed("spec", 1);
+      const outputSecond = out("spec", 1);
+      expect(deriveRun([badFirst, outputSecond], "spec").lastOutputValid).toBe(false);
+    });
+  });
+
   it("reads the unblock point so a returned ticket gets a fresh budget", () => {
     const unblocked: Entry = { stage: "spec", kind: "unblocked", round: 3, at: at(), byAgent: true };
     expect(deriveRun([out("spec", 3), unblocked], "spec").unblockedAt).toBe(3);
     expect(deriveRun([out("spec", 1)], "spec").unblockedAt).toBe(0);
+  });
+
+  it("does not let an unblock recorded on a different stage leak into this stage's budget", () => {
+    const unblockedElsewhere: Entry = { stage: "review", kind: "unblocked", round: 5, at: at(), byAgent: true };
+    expect(deriveRun([out("spec", 1), unblockedElsewhere], "spec").unblockedAt).toBe(0);
   });
 
   it("orders by timestamp, not array position", () => {
