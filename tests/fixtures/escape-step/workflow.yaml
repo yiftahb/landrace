@@ -1,0 +1,14 @@
+version: 1
+name: escape-step
+stages:
+  - id: spec
+    entry: true
+    step: ../outside-secret.md
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+  - id: done
+    terminal: true
+    triggers:
+      - name: spec written
+        when: { "outputs.spec": { $exists: true } }

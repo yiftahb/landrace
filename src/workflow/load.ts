@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import type { Workflow } from "../core/types.js";
 import { stepFrontMatterSchema, workflowSchema, type StepFrontMatter } from "./schema.js";
@@ -16,7 +16,7 @@ export interface Step extends StepFrontMatter {
  * same shape as every other problem, instead of pattern-matching an error
  * message after the fact.
  */
-export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step";
+export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path";
 
 export class WorkflowLoadError extends Error {
   readonly rule: LoadFailureRule;
@@ -52,12 +52,27 @@ export async function loadWorkflow(dir: string): Promise<{ workflow: Workflow; s
     seen.add(stage.id);
   }
 
+  // A step's body goes straight into an agent's prompt, and workflow.yaml is a
+  // repo file a contributor's PR can edit: `step: ../../outside-secret.md`
+  // read that file and prompted with it. Containment is checked on the
+  // resolved path, before anything is read.
+  const root = resolve(dir);
+
   const steps = new Map<string, Step>();
   for (const stage of workflow.stages) {
     if (!stage.step || steps.has(stage.step)) continue;
+
+    const resolved = resolve(root, stage.step);
+    if (isAbsolute(stage.step) || !(resolved === root || resolved.startsWith(root + sep))) {
+      throw new WorkflowLoadError(
+        "step-path",
+        `stage "${stage.id}" names a step file outside the workflow directory: ${stage.step}`,
+      );
+    }
+
     let source: string;
     try {
-      source = await readFile(join(dir, stage.step), "utf8");
+      source = await readFile(resolved, "utf8");
     } catch {
       throw new WorkflowLoadError(
         "missing-step",

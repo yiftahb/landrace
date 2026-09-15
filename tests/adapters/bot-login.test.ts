@@ -43,3 +43,18 @@ describe("the tracker resolves the login it posts as", () => {
     await expect(tracker.botLogin()).rejects.toThrow(/no login/);
   });
 });
+
+describe("the repo is an owner/name pair and nothing else", () => {
+  const build = (repo: string) => () => createGitHubTracker({ repo, token: "t", bot: "b" });
+
+  it("accepts an ordinary repository", () => {
+    expect(build("acme/widgets.js")).not.toThrow();
+    expect(build("Acme-Corp/my_repo-2")).not.toThrow();
+  });
+
+  for (const repo of ["o/n#x", "o/n?x", "o/n%2Fp", "o@h/n", "o/n/p", "o/", "/n", "o n/x"]) {
+    it(`rejects "${repo}", which would silently retarget the requests`, () => {
+      expect(build(repo)).toThrow(/owner\/name/);
+    });
+  }
+});

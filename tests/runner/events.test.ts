@@ -9,7 +9,7 @@ describe("createLogger", () => {
 
   it("redacts a secret value wherever it appears", () => {
     const seen: LandraceEvent[] = [];
-    const log = createLogger({ sink: (e) => seen.push(e), redact: ["ghp_secret"] });
+    const log = createLogger({ sink: (e) => seen.push(e), redactValues: ["ghp_secret"] });
     log("step.invoked", { cmd: "claude --token ghp_secret", nested: { v: "ghp_secret" } });
     expect(JSON.stringify(seen)).not.toContain("ghp_secret");
     expect(JSON.stringify(seen)).toContain("[redacted]");
@@ -17,13 +17,13 @@ describe("createLogger", () => {
 
   it("redacts inside arrays too", () => {
     const seen: LandraceEvent[] = [];
-    createLogger({ sink: (e) => seen.push(e), redact: ["tok"] })("agent.event", { argv: ["a", "tok"] });
+    createLogger({ sink: (e) => seen.push(e), redactValues: ["tok"] })("agent.event", { argv: ["a", "tok"] });
     expect(JSON.stringify(seen)).not.toContain('"tok"');
   });
 
   it("ignores an empty redaction entry rather than redacting everything", () => {
     const seen: LandraceEvent[] = [];
-    createLogger({ sink: (e) => seen.push(e), redact: [""] })("tick.started", { a: "hello" });
+    createLogger({ sink: (e) => seen.push(e), redactValues: [""] })("tick.started", { a: "hello" });
     expect(seen[0]).toMatchObject({ a: "hello" });
   });
 

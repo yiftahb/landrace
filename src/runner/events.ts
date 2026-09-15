@@ -19,6 +19,7 @@ export interface LandraceEvent {
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
+/** Values, never names: splitting a log line on "githubToken" redacts nothing. */
 function redactValue(value: unknown, secrets: string[]): unknown {
   if (typeof value === "string") {
     return secrets.reduce((acc, s) => acc.split(s).join("[redacted]"), value);
@@ -34,11 +35,19 @@ function redactValue(value: unknown, secrets: string[]): unknown {
 
 export function createLogger(opts: {
   debug?: boolean;
-  redact?: string[];
+  /**
+   * The secret *values* to keep out of the log. Named for what they are: the
+   * shipped config lists secret *names* (`log.redact: [githubToken]`), and an
+   * earlier signature called this `redact`, so the names were passed straight
+   * through and a logged `Authorization: Bearer ghp_…` came out intact.
+   * Resolve names against loadConfig's secretValues — see redactionValues —
+   * before calling this.
+   */
+  redactValues?: string[];
   sink?: (e: LandraceEvent) => void;
 } = {}): Logger {
   // An empty string would match everywhere and redact the whole log.
-  const secrets = (opts.redact ?? []).filter((s) => s.length > 0);
+  const secrets = (opts.redactValues ?? []).filter((s) => s.length > 0);
   const sink = opts.sink ?? ((e: LandraceEvent) => console.log(JSON.stringify(e)));
 
   return (name, data = {}) => {

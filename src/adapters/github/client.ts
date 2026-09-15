@@ -9,7 +9,12 @@ export function createGitHubTracker(opts: {
 }): TrackerPort {
   const { repo, token } = opts;
   const doFetch = opts.fetchImpl ?? fetch;
-  if (!/^[^/]+\/[^/]+$/.test(repo)) throw new Error(`repo must be "owner/name", got "${repo}"`);
+  // [^/] also admitted "?", "#", "%2F" and "@": `repo: "o/n#x"` silently
+  // retargeted every request at /repos/o/n. The host is pinned, so this was
+  // never cross-host, but a request should go where the config says.
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
+    throw new Error(`repo must be "owner/name", got "${repo}"`);
+  }
 
   async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
     const res = await doFetch(url, {

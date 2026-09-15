@@ -12,6 +12,25 @@ export interface LoadedConfig {
   secretValues: Map<string, string>;
 }
 
+/**
+ * The secret values `log.redact` names. A logger redacts by value — a name
+ * matches nothing in a log line — so the resolution belongs here, next to the
+ * only map that holds the values. An unmatched name is a startup error: a
+ * silent no-op here is a secret in the log, which is the cheapest possible
+ * catastrophe.
+ */
+export function redactionValues({ config, secretValues }: LoadedConfig): string[] {
+  const unknown = config.log.redact.filter((name) => !secretValues.has(name));
+  if (unknown.length) {
+    const known = [...secretValues.keys()];
+    throw new Error(
+      `log.redact names ${unknown.map((n) => `"${n}"`).join(", ")}, which no secret defines` +
+      `${known.length ? ` — declared secrets: ${known.join(", ")}` : " — no secrets are declared"}`,
+    );
+  }
+  return config.log.redact.map((name) => secretValues.get(name) as string);
+}
+
 export async function loadConfig(dir: string): Promise<LoadedConfig> {
   const config = runtimeConfigSchema.parse(parse(await readFile(join(dir, "landrace.yaml"), "utf8")));
 

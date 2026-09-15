@@ -1,0 +1,14 @@
+version: 1
+name: absolute-step
+stages:
+  - id: spec
+    entry: true
+    step: /etc/passwd
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+  - id: done
+    terminal: true
+    triggers:
+      - name: spec written
+        when: { "outputs.spec": { $exists: true } }

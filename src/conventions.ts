@@ -13,6 +13,13 @@ export const LABELS = {
   stage: (id: string) => `lr:stage:${id}`,
 } as const;
 
+/** The engine's own label namespace. Anything under it is workflow state we write. */
+export const LABEL_NAMESPACE = "lr:";
+
+/** GitHub label names are compared case-insensitively, so this is too. */
+export const isEngineLabel = (label: string): boolean =>
+  label.trim().toLowerCase().startsWith(LABEL_NAMESPACE);
+
 const STAGE_RE = /^lr:stage:(.+)$/;
 export const STAGE_LABEL_PREFIX = "lr:stage:";
 

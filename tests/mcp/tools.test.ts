@@ -17,14 +17,16 @@ describe("mcp tools", () => {
     expect(r.labels).not.toContain("lr:auto");
   });
 
+  // The labels here used to be lr: ones, which is the editor writing workflow
+  // state; tests/security/mcp-authority.test.ts now pins that refusal.
   it("updates fields and labels together", async () => {
-    const gh = createFakeGitHub([{ number: 4, labels: ["lr:auto", "lr:awaiting"] }]);
+    const gh = createFakeGitHub([{ number: 4, labels: ["lr:auto", "needs-design"] }]);
     const r = (await createTools(gh).updateTicket(4, {
-      title: "Renamed", state: "closed", addLabels: ["lr:blocked"], removeLabels: ["lr:awaiting"],
+      title: "Renamed", state: "closed", addLabels: ["bug"], removeLabels: ["needs-design"],
     })) as Record<string, unknown>;
     expect(r).toMatchObject({ title: "Renamed", state: "closed" });
-    expect(r.labels).toEqual(expect.arrayContaining(["lr:auto", "lr:blocked"]));
-    expect(r.labels).not.toContain("lr:awaiting");
+    expect(r.labels).toEqual(expect.arrayContaining(["lr:auto", "bug"]));
+    expect(r.labels).not.toContain("needs-design");
   });
 
   it("lists only the tickets waiting on a human", async () => {
