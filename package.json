@@ -18,6 +18,7 @@
   "engines": {
     "node": ">=22"
   },
+  "packageManager": "pnpm@11.1.0",
   "scripts": {
     "build": "tsup",
     "test": "jest",
