@@ -36,7 +36,7 @@ describe("deriveRun", () => {
     expect(deriveRun([out("spec", 1), h], "spec").lastHuman).toEqual(h);
   });
 
-  it("marks output invalid when the newest agent entry is a rejection", () => {
+  it("marks output invalid when the current round was rejected, and null when it wasn't", () => {
     const bad: Entry = { stage: "spec", kind: "malformed", round: 1, at: at(), byAgent: true };
     expect(deriveRun([out("spec", 1), bad], "spec").lastOutputValid).toBe(false);
     expect(deriveRun([out("spec", 1)], "spec").lastOutputValid).toBeNull();
