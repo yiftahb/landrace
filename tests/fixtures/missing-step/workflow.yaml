@@ -1,0 +1,10 @@
+version: 1
+name: missing-step
+stages:
+  - id: spec
+    entry: true
+    step: steps/nope.md
+    terminal: true
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
