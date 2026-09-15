@@ -10,7 +10,7 @@ export default tseslint.config(
       "no-restricted-imports": ["error", {
         patterns: [
           { group: ["node:*"], message: "core is pure: no node builtins" },
-          { group: ["../workflow/*", "../cli/*", "../hooks/*", "../runner/*", "../agent/*"],
+          { group: ["**/workflow/*", "**/cli/*", "**/hooks/*", "**/runner/*", "**/agent/*"],
             message: "core must not depend on a sibling layer" },
         ],
       }],

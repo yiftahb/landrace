@@ -31,7 +31,7 @@ describe("core purity", () => {
   });
 
   it("core never imports a sibling layer", () => {
-    const offenders = files.filter((f) => /from "\.\.\/(workflow|cli|hooks|runner|agent)/.test(readFileSync(f, "utf8")));
+    const offenders = files.filter((f) => /from ["'][^"']*\/(workflow|cli|hooks|runner|agent)(\/|["'])/.test(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
   });
 });
