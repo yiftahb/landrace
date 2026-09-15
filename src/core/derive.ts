@@ -26,10 +26,19 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     if (!current || e.round >= current.round) outputsByStage.set(e.stage, e);
   }
 
-  const counters: Run["counters"] = {};
+  /*
+   * Null-prototype, because a stage id comes from outside: `outputs[s] = data`
+   * with s = "__proto__" on an object literal writes the prototype of every
+   * stage's outputs at once — invisible to Object.keys, yet read back by
+   * `outputs.<anything>`. Reserved ids are also rejected at the marker
+   * boundary; this half holds for any future path that reaches here. Nothing
+   * downstream may call x.hasOwnProperty(k) on these — use Object.hasOwn or
+   * `in`.
+   */
+  const counters = Object.create(null) as Run["counters"];
   for (const [s, rounds] of roundsByStage) counters[s] = rounds.size;
 
-  const outputs: Run["outputs"] = {};
+  const outputs = Object.create(null) as Run["outputs"];
   for (const [s, e] of outputsByStage) outputs[s] = e.data;
 
   const last = ordered.at(-1) ?? null;

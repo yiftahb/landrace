@@ -1,3 +1,4 @@
+import { isReservedId } from "../conventions.js";
 import { identityOf } from "../core/locate.js";
 import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
 import type { Condition, Stage, Workflow } from "../core/types.js";
@@ -17,6 +18,18 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
       rule: "entry",
       message: `expected exactly one stage with entry: true, found ${entries.length}`,
     });
+  }
+
+  // A stage id is used as an object key, so a reserved one is not a name but
+  // a write to a prototype. Rejected here as well as in parseMarker: a
+  // workflow file is a repo file, and a contributor's PR can edit it.
+  for (const stage of w.stages) {
+    if (isReservedId(stage.id)) {
+      problems.push({
+        rule: "stage-id",
+        message: `stage id "${stage.id}" is a reserved object key and cannot be a stage`,
+      });
+    }
   }
 
   for (const stage of w.stages) {

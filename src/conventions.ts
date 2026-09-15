@@ -22,6 +22,19 @@ export function stageFromLabels(labels: string[]): { stage: string | null; ambig
   return { stage: found[0] ?? null, ambiguous: found.length > 1 };
 }
 
+/**
+ * Ids that are not names but reachable keys on a plain object. A comment
+ * naming stage "__proto__" made `outputs[stage] = data` write the *prototype*
+ * of every stage's outputs at once: Object.keys() showed nothing, while
+ * `outputs.triage.intent` read "approve" and the engine transitioned. Blocked
+ * here, at the boundary, so no path into the engine can carry one — the
+ * null-prototype objects in deriveRun are the second half of that fix, not a
+ * substitute for it.
+ */
+export const RESERVED_IDS: readonly string[] = ["__proto__", "constructor", "prototype"];
+
+export const isReservedId = (id: string): boolean => RESERVED_IDS.includes(id);
+
 export interface Marker {
   stage: string;
   kind: string;
@@ -51,6 +64,7 @@ export function parseMarker(body: string): Marker | null {
     if (typeof parsed !== "object" || parsed === null) return null;
     const { stage, kind, round } = parsed as Partial<Marker>;
     if (typeof stage !== "string" || typeof kind !== "string" || typeof round !== "number") return null;
+    if (isReservedId(stage)) return null;
     return parsed as Marker;
   } catch {
     return null;
