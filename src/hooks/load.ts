@@ -29,6 +29,7 @@ const both = (a: Claim, b: Claim): string =>
 export function buildRegistry(modules: HookModule[]): Registry {
   const pre: PreHook[] = [];
   const post: PostHook[] = [];
+  const artifacts: ArtifactHook[] = [];
   const executors = new Map<string, Executor>();
   const preIds = new Map<string, Claim>();
   const postIds = new Map<string, Claim>();
@@ -80,6 +81,9 @@ export function buildRegistry(modules: HookModule[]): Registry {
           const hook = value as ArtifactHook;
           addPre(artifactPreHook(hook), module.specifier);
           addPost(hook, module.specifier);
+          // Kept whole beside its two halves: a briefing is neither snapshot
+          // state nor an effect, so the runner asks the hook itself for one.
+          artifacts.push(hook);
           break;
         }
         case "source": {
@@ -114,7 +118,7 @@ export function buildRegistry(modules: HookModule[]): Registry {
   // from "the first effect that happens to hit it" to load time.
   createDispatcher(post);
 
-  return { pre, post, source: source?.hook ?? null, operator: operator?.hook ?? null, executors };
+  return { pre, post, artifacts, source: source?.hook ?? null, operator: operator?.hook ?? null, executors };
 }
 
 /**

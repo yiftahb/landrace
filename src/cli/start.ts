@@ -136,6 +136,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       workflow,
       steps,
       pre: registry.pre,
+      artifacts: registry.artifacts,
       dispatcher: createDispatcher(registry.post),
       executor: executorFor(loaded.config, registry, log),
       ...(loaded.config.security.screen

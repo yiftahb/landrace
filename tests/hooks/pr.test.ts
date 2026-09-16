@@ -193,3 +193,126 @@ describe("a failed read is a failure, not an absent pull request", () => {
     await expect(elsewhere.pullRequestArtifact.read(ctx(1))).rejects.toThrow(/acme\/other/);
   });
 });
+
+/**
+ * The other half: the text `fix-review` is told to address, which the artifact
+ * deliberately refuses to carry as state.
+ *
+ * A thread body is the most attacker-reachable text in the system — anyone
+ * with comment access on the repository writes it — so it reaches the prompt
+ * and nothing else. The bounds here are the hook's own; the engine's
+ * `buildBriefing` is a backstop behind them.
+ */
+const brief = (gh: FakeTracker): NonNullable<ArtifactHook["brief"]> => {
+  const pr = gh.registry.post.find((h) => h.id === "pr") as ArtifactHook | undefined;
+  if (!pr?.brief) throw new Error("the pull request artifact briefs nothing");
+  return pr.brief.bind(pr);
+};
+
+describe("the open threads reach the prompt, and only the prompt", () => {
+  it("lists the body of every open thread, with the file and line it concerns", async () => {
+    const { gh, ctx } = world();
+    gh.openPull({
+      head: "landrace/1",
+      threads: [
+        { isResolved: false, body: "this leaks a file handle", path: "src/x.ts", line: 12 },
+        { isResolved: false, body: "off by one", path: "src/y.ts", line: 3 },
+      ],
+    });
+
+    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    expect(text).toContain("this leaks a file handle");
+    expect(text).toContain("src/x.ts:12");
+    expect(text).toContain("off by one");
+  });
+
+  /*
+   * The fixer is told to address what is *open*. A resolved thread is a
+   * finding the reviewer has already accepted as answered, and re-arguing it
+   * is how a review becomes theatre.
+   */
+  it("leaves out the threads the reviewer has already resolved", async () => {
+    const { gh, ctx } = world();
+    gh.openPull({
+      head: "landrace/1",
+      threads: [
+        { isResolved: true, body: "already settled" },
+        { isResolved: false, body: "still open" },
+      ],
+    });
+
+    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    expect(text).toContain("still open");
+    expect(text).not.toContain("already settled");
+  });
+
+  /*
+   * The same pagination bug the count had, in the other direction: with the
+   * first hundred threads resolved, a briefing that asked for the first twenty
+   * threads would show the fixer *nothing* while the gate said twenty findings
+   * were open — and a step told to address nothing answers "addressed".
+   */
+  it("finds the open threads behind a page of resolved ones", async () => {
+    const { gh, ctx } = world();
+    gh.openPull({
+      head: "landrace/1",
+      threads: [
+        ...Array.from({ length: 120 }, (_, i) => ({ isResolved: true, body: `settled ${i}` })),
+        { isResolved: false, body: "the one that matters" },
+      ],
+    });
+
+    expect((await brief(gh)(ctx(1))).threads ?? "").toContain("the one that matters");
+  });
+
+  it("carries at most a bounded number of threads, and says how many it left out", async () => {
+    const { gh, ctx } = world();
+    gh.openPull({
+      head: "landrace/1",
+      threads: Array.from({ length: 50 }, (_, i) => ({ isResolved: false, body: `finding ${i}` })),
+    });
+
+    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    expect(text).toContain("finding 0");
+    expect(text).not.toContain("finding 49");
+    expect(text).toMatch(/30 more open threads/);
+  });
+
+  it("cuts a thread body nobody bounded", async () => {
+    const { gh, ctx } = world();
+    gh.openPull({ head: "landrace/1", threads: [{ isResolved: false, body: "z".repeat(50_000) }] });
+
+    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    expect(text.length).toBeLessThan(5_000);
+    expect(text).toContain("…");
+  });
+
+  it("says so plainly when there is no pull request to brief on", async () => {
+    const { gh, ctx } = world();
+    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    expect(text).toMatch(/no pull request/i);
+  });
+
+  /*
+   * The cost, which is the reason this is not part of the artifact's `read`:
+   * the read runs on every converge pass, and this runs once per invocation.
+   */
+  it("costs nothing at all until a step is actually invoked", async () => {
+    const { gh, pr, ctx } = world();
+    gh.openPull({ head: "landrace/1", threads: threads([false, false]) });
+    await pr.read(ctx(1));
+    const afterRead = queries(gh).length;
+
+    await brief(gh)(ctx(1));
+    expect(queries(gh).length).toBeGreaterThan(afterRead);
+  });
+
+  it("reports a repository it cannot see rather than briefing an empty list", async () => {
+    const { gh, ctx } = world();
+    const other = githubHooks({ repo: "acme/other", token: "t", fetchImpl: gh.fetchImpl });
+    const hook = other.pullRequestArtifact.brief;
+    if (!hook) throw new Error("the pull request artifact briefs nothing");
+
+    await expect(hook(ctx(1))).rejects.toThrow(/answered with nothing at all/);
+  });
+});

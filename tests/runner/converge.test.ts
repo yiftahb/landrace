@@ -1,7 +1,7 @@
 import { converge } from "../../src/runner/converge.js";
 import { createDispatcher } from "../../src/runner/effects.js";
 import { createLogger } from "../../src/runner/events.js";
-import { definePostHook, definePreHook } from "../../src/hooks/contracts.js";
+import { defineArtifactHook, definePostHook, definePreHook } from "../../src/hooks/contracts.js";
 import type { HookContext } from "../../src/namespace.js";
 import type { Executor } from "../../src/namespace.js";
 import type { Step } from "../../src/namespace.js";
@@ -748,5 +748,91 @@ describe("converge", () => {
     const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"));
     expect(posted).toBeDefined();
     expect(String(posted?.body ?? "")).not.toContain(bareSecret);
+  });
+});
+
+/**
+ * A briefing is fetched for an invocation, not for a pass.
+ *
+ * §3.1 asks for artifact *state* every tick, and it is cheap because it is a
+ * handful of scalars. A briefing is the opposite: an unbounded read of a
+ * remote document, fetched so a step can act on the text. Built per pass it
+ * would be paid for on every one of up to thirty, for the passes where no step
+ * runs at all — which is most of them.
+ */
+describe("an artifact's briefing is built for the step, not for the pass", () => {
+  const stepWorkflow: Workflow = {
+    version: 1, name: "t",
+    stages: [
+      {
+        id: "a", entry: true, step: "s.md",
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [
+          { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}", body: "in" },
+          { type: "tracker.status", value: "a" },
+        ],
+      },
+      {
+        id: "b", terminal: true,
+        triggers: [{ when: { "run.stage": "a", "run.counters.a": { $gte: 1 } } }],
+        on_enter: [{ type: "tracker.status", value: "b" }],
+      },
+    ],
+  };
+  const step: Step = {
+    prompt: "Address these:\n{brief.pr.threads}",
+    output: {
+      discriminator: "kind",
+      shapes: { done: {} },
+      routes: [{ when: { kind: "done" }, effect: { type: "tracker.comment", marker: "out:{round}" } }],
+    },
+  };
+
+  const artifact = (brief: () => Record<string, string>) =>
+    defineArtifactHook({
+      id: "pr", handles: [], read: async () => ({}),
+      satisfied: () => false, apply: async () => {}, brief,
+    });
+
+  it("asks once per invocation however many passes the call takes", async () => {
+    const w = world();
+    const prompts: string[] = [];
+    let briefed = 0;
+    const r = await converge(1, deps(w, {
+      workflow: stepWorkflow,
+      steps: new Map([["s.md", step]]),
+      artifacts: [artifact(() => { briefed++; return { threads: "1. this leaks a handle" }; })],
+      executor: {
+        id: "f",
+        run: async (prompt: string) => { prompts.push(prompt); return { text: '```json\n{"kind":"done"}\n```', sessionId: null }; },
+      } as Executor,
+    }));
+
+    expect(r.settled).toBe("terminal");
+    expect(r.passes).toBeGreaterThan(1);
+    expect(briefed).toBe(1);
+    expect(prompts[0]).toContain("this leaks a handle");
+  });
+
+  /*
+   * A step asked to address findings it cannot see is the defect this whole
+   * mechanism exists to close, so a briefing that will not read must stop the
+   * ticket rather than quietly invoke the step with a placeholder where the
+   * findings should be — which is indistinguishable, from inside the agent,
+   * from a pull request with nothing on it.
+   */
+  it("halts before paying for the step when a briefing cannot be read", async () => {
+    const w = world();
+    let invoked = 0;
+    const r = await converge(1, deps(w, {
+      workflow: stepWorkflow,
+      steps: new Map([["s.md", step]]),
+      artifacts: [artifact(() => { throw new Error("the api said no"); })],
+      executor: { id: "f", run: async () => { invoked++; return { text: "", sessionId: null }; } } as Executor,
+    }));
+
+    expect(invoked).toBe(0);
+    expect(r.settled).toBe("halt");
+    expect(r.why).toMatch(/briefing for artifact "pr".*the api said no/);
   });
 });

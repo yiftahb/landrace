@@ -93,7 +93,7 @@ describe("mcp tools", () => {
  * success is worse than either.
  */
 describe("with no operator hook configured", () => {
-  const empty: Registry = { pre: [], post: [], source: null, operator: null, executors: new Map() };
+  const empty: Registry = { pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
   const tools = () => createTools(empty, createFakeTracker().ctx);
 
   it("reports that creating a ticket is not configured, and what to do about it", async () => {

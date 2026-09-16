@@ -157,6 +157,7 @@ async function run(
   const result = await converge(1, {
     workflow, steps,
     pre,
+    artifacts: gh.registry.artifacts,
     dispatcher: createDispatcher(post.map((h) => (opts.breakOn ? breakingOn(h, opts.breakOn) : h))),
     executor,
     ctx: {
@@ -202,6 +203,28 @@ describe("the §10 review cycle iterates", () => {
     expect(r.result.settled).not.toBe("cap");
     expect(r.result.passes).toBeLessThan(30);
     expect(r.labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+  });
+
+  /**
+   * The gap that made a fix round theatre: `fix-review` was told to address
+   * the open threads and was never shown one. The artifact carries a count and
+   * nothing else, deliberately — a thread body is written by anyone with
+   * comment access, and `artifacts.*` is hashed into the snapshot and read by
+   * every predicate — so the bodies reach the *prompt*, through the briefing,
+   * escaped and bounded, and reach nothing else.
+   */
+  it("shows the fixer the threads it is told to address, without putting them in the snapshot", async () => {
+    const gh = world(["lr:auto", "lr:stage:build"]);
+    const r = await run(gh);
+
+    const fixing = r.prompts.find((p) => p.stage === "fix-review")?.prompt ?? "";
+    expect(fixing).toContain("finding 0");
+    expect(fixing).toContain("finding 1");
+    expect(fixing).not.toContain("{brief.pr.threads}");
+
+    // And the reviewer, who raises findings rather than addressing them, is
+    // shown none: a briefing is prompt text for the step that asked for it.
+    expect(r.prompts.find((p) => p.stage === "code-review")?.prompt ?? "").not.toContain("finding 0");
   });
 
   it("records each entry exactly once, and numbers it with the round the step then runs", async () => {
@@ -460,13 +483,20 @@ describe("a ticket goes all the way round §10", () => {
   /*
    * What the artifact costs. §3.1 asks for artifact state every tick and
    * converge runs many passes per call, so this is the number that grows with
-   * the workflow: one GraphQL query per pass, and one contents read for the
-   * spec beside it — not one per review thread, and not one per round.
+   * the workflow: one GraphQL query per pass for the state, and one more per
+   * invocation of a step whose prompt actually names the pull request's
+   * briefing — not one per review thread, not one per round, and nothing at
+   * all for the four steps that have no use for the threads.
    */
-  it("costs one GraphQL query per converge pass", async () => {
+  it("costs one GraphQL query per pass, plus one per step that asks to see the threads", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const r = await run(gh);
 
-    expect(gh.requests.filter((q) => q.path === "/graphql").length).toBe(r.result.passes);
+    const briefed = r.invocations.filter((i) => i.stage === "fix-review").length;
+    expect(briefed).toBeGreaterThan(0);
+    expect(gh.requests.filter((q) => q.path === "/graphql").length).toBe(r.result.passes + briefed);
+    // The reviewer runs more often than the fixer and pays for no briefing:
+    // the four invocations of `code-review` add nothing to the number above.
+    expect(r.invocations.filter((i) => i.stage === "code-review").length).toBeGreaterThan(briefed);
   });
 });

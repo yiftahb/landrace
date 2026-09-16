@@ -30,9 +30,18 @@ function resolve(snapshot: unknown, path: string): unknown {
  * fields go through `expand` below instead of this, with a much narrower set
  * of substitutions.
  */
-export function renderPrompt(template: string, snapshot: Snapshot): string {
+export function renderPrompt(
+  template: string,
+  snapshot: Snapshot,
+  briefing?: Record<string, Record<string, string>>,
+): string {
+  // The briefing sits beside the snapshot under a name the engine reserves,
+  // and it wins: a hook that happened to put its own `brief` in the snapshot
+  // would otherwise decide what a step reads under that name, and which of the
+  // two won would depend on nothing anybody wrote down.
+  const scope: Snapshot = briefing === undefined ? snapshot : { ...snapshot, brief: briefing };
   return template.replace(/\{([a-zA-Z0-9_.]+)\}/g, (whole, path: string) => {
-    const value = resolve(snapshot, path);
+    const value = resolve(scope, path);
     return value === undefined || value === null ? whole : String(value);
   });
 }
@@ -76,18 +85,25 @@ export async function runStep(opts: {
   stageId: string;
   round: number;
   snapshot: Snapshot;
+  /**
+   * What the artifacts had to say about this invocation, as prompt text under
+   * `brief.<artifact>.<key>`. Never merged into `snapshot`: it is unbounded,
+   * attacker-written text that no predicate may route on and no hash covers.
+   */
+  briefing?: Record<string, Record<string, string>>;
   executor: Executor;
   signal: AbortSignal;
   screen?: { executor: Executor };
   log?: Logger;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
-  const prompt = renderPrompt(step.prompt, snapshot);
+  const prompt = renderPrompt(step.prompt, snapshot, opts.briefing);
 
   if (opts.screen) {
     // Screen the rendered prompt, never the template: the template is the
     // workflow author's own words and carries nothing an attacker wrote, but
-    // the snapshot substituted into it does (an issue body, a comment).
+    // the snapshot substituted into it does (an issue body, a comment) — and
+    // so does the briefing, which is the least trusted text of the three.
     // Screening the template would approve text nobody is ever sent, and
     // never look at the one part that is actually untrusted.
     const verdict = await screenPrompt(prompt, {

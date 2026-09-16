@@ -271,6 +271,24 @@ export interface PostHook {
  */
 export interface ArtifactHook extends PostHook {
   read(ctx: HookContext): Promise<Record<string, unknown>>;
+  /**
+   * The prose half: text for a step's prompt, and never state the engine
+   * decides from.
+   *
+   * `read` answers what the workflow routes on, which is why it is bounded to
+   * a handful of scalars — `artifacts.*` is hashed into the snapshot and
+   * addressed by every predicate, so a remote document's own text has no
+   * business there. But a step can be asked to act on that text: `fix-review`
+   * is told to address the open review threads on a pull request, and a count
+   * of them is not something it can act on.
+   *
+   * So this is fetched only when a step is about to run, filed under
+   * `brief.<id>.<key>` for the prompt to interpolate, escaped and bounded on
+   * the way in, and merged into no snapshot at all. What a briefing carries is
+   * the most attacker-reachable text in the system; what it cannot do is
+   * decide anything.
+   */
+  brief?(ctx: HookContext): Promise<Record<string, string>> | Record<string, string>;
 }
 
 /**
@@ -368,6 +386,13 @@ export interface Registry {
   /** Declaration order: a pre hook sees what the ones before it produced. */
   pre: PreHook[];
   post: PostHook[];
+  /**
+   * The artifact hooks themselves, kept whole beside the two phases they were
+   * filed into. Their observe half is already a pre hook and their act half a
+   * post hook; this is what the runner asks for a *briefing*, which belongs to
+   * neither phase because it is not snapshot state and not an effect.
+   */
+  artifacts: ArtifactHook[];
   source: Source | null;
   /** Optional. With none loaded, the MCP create and update tools say so rather than crashing or silently doing nothing. */
   operator: Operator | null;
@@ -462,6 +487,12 @@ export interface ConvergeDeps {
   workflow: Workflow;
   steps: Map<string, Step>;
   pre: PreHook[];
+  /**
+   * Asked for a briefing when — and only when — a step is about to be
+   * invoked. Optional, and an absent list simply leaves a `{brief.…}`
+   * placeholder visible in the prompt, the same as any other unknown path.
+   */
+  artifacts?: ArtifactHook[];
   dispatcher: Dispatcher;
   executor: Executor;
   screen?: { executor: Executor };

@@ -45,6 +45,9 @@ export interface FakeComment {
 export interface FakeThread {
   isResolved: boolean;
   body: string;
+  /** Where the finding sits. Optional: a thread on a file GitHub can no longer place carries neither. */
+  path?: string;
+  line?: number;
 }
 
 export interface FakePull {
@@ -195,7 +198,16 @@ export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTra
       // `body` rides along on every node: a server returns what it returns,
       // and "no thread text reaches the snapshot" has to be a property of the
       // hook rather than of what the fake happened to omit.
-      nodes: page.map((t) => ({ isResolved: t.isResolved, body: t.body })),
+      // Every field either query asks of a thread node, because the fake
+      // answers by variables rather than by parsing the query: the count's
+      // read takes `isResolved` alone, and the briefing takes the rest.
+      nodes: page.map((t) => ({
+        isResolved: t.isResolved,
+        body: t.body,
+        path: t.path ?? null,
+        line: t.line ?? null,
+        comments: { nodes: [{ body: t.body }] },
+      })),
     };
   };
 

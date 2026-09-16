@@ -694,6 +694,131 @@ async function readPr(gh: Client, repo: string, ticket: number): Promise<Record<
 }
 
 /**
+ * What the briefing carries, and it is not the same bound as the count's.
+ *
+ * Twenty findings is more than any one fix round can honestly address, and a
+ * thousand characters is a long review comment. The count stays exact however
+ * many there are — that is the gate — while the text is a working list, cut
+ * with a line saying how much was left out so the agent is never told there
+ * are three findings when there are fifty.
+ */
+const BRIEF_THREADS = 20;
+const BRIEF_BODY_CHARS = 1000;
+
+/**
+ * The open threads as prose, asked for only when a step is about to run.
+ *
+ * This is the one place thread text is fetched at all, and it is deliberately
+ * not part of PR_QUERY: that runs on every converge pass, feeds the snapshot,
+ * and must carry nothing anybody outside this repository wrote. A briefing
+ * runs once per invocation and feeds a prompt.
+ *
+ * `comments(first: 1)` is the finding itself — the thread's opening comment.
+ * The replies under it are the argument about the finding, including the
+ * fixer's own from last round, and a fixer re-reading its own reply is how a
+ * round loops without moving.
+ */
+const BRIEF_QUERY = `
+query($owner: String!, $name: String!, $head: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(headRefName: $head, states: [OPEN, MERGED], first: 1,
+                 orderBy: { field: CREATED_AT, direction: DESC }) {
+      nodes {
+        number
+        reviewThreads(first: ${THREAD_PAGE}, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved
+            path
+            line
+            comments(first: 1) { nodes { body } }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+interface BriefThread {
+  isResolved: boolean;
+  path: string | null;
+  line: number | null;
+  comments: { nodes: Array<{ body: string | null }> };
+}
+
+interface BriefNode {
+  number: number;
+  reviewThreads: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    nodes: BriefThread[];
+  };
+}
+
+interface BriefResponse {
+  repository: { pullRequests: { nodes: BriefNode[] } } | null;
+}
+
+const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text);
+
+/** "src/x.ts:12", "src/x.ts", or nothing at all — GitHub cannot always place a thread. */
+const where = (thread: BriefThread): string =>
+  thread.path === null ? "" : `${thread.path}${thread.line === null ? "" : `:${thread.line}`} — `;
+
+/**
+ * The open review threads, rendered for a prompt.
+ *
+ * Paged the same way the count is, and for the same reason pointed the other
+ * way: asking for the first twenty *threads* on a pull request whose first
+ * hundred are resolved would show the fixer nothing while the gate said twenty
+ * findings were open — and a step told to address nothing answers "addressed",
+ * which spends a round and moves the ticket on with the findings still there.
+ */
+async function briefPr(gh: Client, repo: string, ticket: number): Promise<Record<string, string>> {
+  const [owner = "", name = ""] = repo.split("/");
+  const head = prBranch(ticket);
+
+  let cursor: string | null = null;
+  const open: BriefThread[] = [];
+  let more = 0;
+
+  for (let page = 0; page < MAX_THREAD_PAGES; page++) {
+    const data: BriefResponse = await gh.graphql<BriefResponse>(BRIEF_QUERY, { owner, name, head, cursor });
+    // Same three failures the count tells apart, and for the same reason: an
+    // empty briefing and an unreadable one look identical to the agent.
+    if (!data.repository) {
+      throw new Error(`the repository "${repo}" answered with nothing at all; check the token's access to it`);
+    }
+    const node = data.repository.pullRequests.nodes[0];
+    if (!node) return { threads: "There is no pull request on this ticket's branch, so there is nothing to address." };
+
+    for (const thread of node.reviewThreads.nodes) {
+      if (thread.isResolved) continue;
+      if (open.length < BRIEF_THREADS) open.push(thread);
+      else more++;
+    }
+    if (!node.reviewThreads.pageInfo.hasNextPage) break;
+    cursor = node.reviewThreads.pageInfo.endCursor;
+  }
+
+  if (open.length === 0) {
+    return { threads: "No review thread on the pull request is open. Nothing here needs addressing." };
+  }
+
+  const listed = open.map((thread, i) => {
+    const body = thread.comments.nodes[0]?.body ?? "";
+    return `${i + 1}. ${where(thread)}${cut(body.trim(), BRIEF_BODY_CHARS)}`;
+  });
+
+  // Said out loud rather than left implicit: an agent shown twenty of fifty
+  // findings and told nothing would report the pull request addressed.
+  const tail = more === 0
+    ? ""
+    : `\n\n(${more} more open threads are not listed here. Address what is above; the rest come back next round.)`;
+
+  return { threads: listed.join("\n\n") + tail };
+}
+
+/**
  * The act half of an artifact nothing publishes.
  *
  * A pull request is opened by whoever pushes the branch, so this artifact is
@@ -737,6 +862,9 @@ export function githubHooks(opts: GitHubOptions): {
       id: PR,
       handles: [],
       read: ({ ticket }) => readPr(gh, opts.repo, ticket),
+      // The text half, fetched per invocation rather than per pass: what
+      // `fix-review` is told to address, which `read` will not carry.
+      brief: ({ ticket }) => briefPr(gh, opts.repo, ticket),
       satisfied: (_snapshot, effect) => nothingPublishes(effect),
       apply: (effect) => nothingPublishes(effect),
     }),
@@ -862,6 +990,11 @@ export const pullRequestArtifact = defineArtifactHook({
   id: PR,
   handles: [],
   read: async (ctx: HookContext) => hooksFor(ctx).pullRequestArtifact.read(ctx),
+  brief: async (ctx: HookContext) => {
+    const hook = hooksFor(ctx).pullRequestArtifact;
+    if (!hook.brief) throw new Error("the pull request artifact briefs nothing");
+    return hook.brief(ctx);
+  },
   satisfied: (_snapshot: Snapshot, effect: Effect) => nothingPublishes(effect),
   apply: async (effect: Effect) => nothingPublishes(effect),
 });

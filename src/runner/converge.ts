@@ -3,6 +3,7 @@ import { RECORD_EFFECT } from "../conventions.js";
 import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot } from "../namespace.js";
 import { messageOf } from "./errors.js";
 import { MIN_SECRET_LENGTH, redactValue } from "./events.js";
+import { buildBriefing } from "./artifacts.js";
 import { buildSnapshot } from "./snapshot.js";
 import { runStep } from "./step.js";
 
@@ -166,8 +167,28 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
       }
       invoked.add(key);
 
+      /*
+       * The artifacts' prose, fetched here and nowhere else: a briefing is an
+       * unbounded read of a remote document, so it is paid for once per
+       * invocation rather than on every one of up to thirty passes, most of
+       * which run no step at all.
+       *
+       * Before the invocation, and a failure halts rather than proceeding. A
+       * step asked to address findings it was not shown is the exact defect
+       * this closes, and from inside the agent "the briefing failed" is
+       * indistinguishable from "there is nothing to address".
+       */
+      let briefing: Record<string, Record<string, string>>;
+      try {
+        briefing = await buildBriefing(deps.artifacts ?? [], { ...deps.ctx, ticket, snapshot }, step.prompt);
+      } catch (e) {
+        const reason = messageOf(e);
+        deps.log("step.rejected", { ticket, stage: stage.id, round, reason });
+        return { passes: pass, settled: "halt", why: reason };
+      }
+
       const result = await runStep({
-        step, stageId: stage.id, round, snapshot,
+        step, stageId: stage.id, round, snapshot, briefing,
         executor: deps.executor, signal: deps.ctx.signal,
         ...(deps.screen ? { screen: deps.screen } : {}),
         log: deps.log,
