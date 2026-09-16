@@ -1,7 +1,7 @@
 import { definePostHook, definePreHook } from "../../hooks/types.js";
 import type { Effect, Snapshot } from "../../core/types.js";
 import { labelNames, type TrackerPort } from "../types.js";
-import { LABELS, neutraliseMarkers, renderMarker, stageFromLabels, STAGE_LABEL_PREFIX, type Marker } from "../../conventions.js";
+import { LABELS, neutraliseMarkers, parseMarker, renderMarker, stageFromLabels, STAGE_LABEL_PREFIX, type Marker } from "../../conventions.js";
 import { entriesFromComments } from "./markers.js";
 
 const labels = (s: Snapshot): string[] => ((s.ticket as { labels?: string[] })?.labels ?? []);
@@ -94,9 +94,19 @@ export const githubPostHook = (tracker: TrackerPort) =>
           // Only a comment *we* wrote can mean our comment effect has landed.
           // Reading any comment let a stranger who guessed the marker string
           // suppress the effect for good, because reconcile drops it.
+          //
+          // And only the marker we stamped, parsed and compared whole — never
+          // the token found somewhere in the body. A body is mostly the
+          // agent's own prose, and an output comment now carries the agent's
+          // own words inside the marker as well, so a substring scan hands
+          // the agent the token that means "this already happened": one
+          // round's prose containing "enter:spec:2" makes reconcile drop the
+          // next round's entry record, and a stage with no new entry record
+          // reads as complete and is never run again. The same scan also made
+          // "enter:x:1" satisfied by a comment recording "enter:x:10".
           const bot = botLoginOf(snapshot);
           const marker = String(effect.marker);
-          return comments(snapshot).some((c) => wroteIt(c, bot) && (c.body ?? "").includes(marker));
+          return comments(snapshot).some((c) => wroteIt(c, bot) && parseMarker(c.body ?? "")?.marker === marker);
         }
         default:
           return false;
