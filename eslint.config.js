@@ -47,13 +47,25 @@ export default tseslint.config(
         patterns: [
           noRelativeImports,
           { group: ["node:*"], message: "core is pure: no node builtins" },
-          // Named as a sibling layer is now written — `#workflow/load.js`, not
-          // `../workflow/load.js`. `regex`, not `group`: a group is matched
-          // with gitignore semantics, where a leading `#` starts a comment, so
-          // `group: ["#workflow/*"]` matches nothing and reports a pure core
-          // forever.
-          { regex: "^#(workflow|cli|hooks|runner|agent)/",
-            message: "core must not depend on a sibling layer" },
+          // An allow-list, not a deny-list, and that is the whole point. The
+          // deny-list this replaces named five directories — workflow, cli,
+          // hooks, runner, agent — and the absolute-imports refactor renamed
+          // the specifiers without it following: `#sandbox.js`, which shells
+          // out to git, and `#config/`, which reads files, both passed clean
+          // inside src/core. A list of the layers core may not see has to be
+          // edited every time a layer is added or renamed; a list of the three
+          // modules it may see does not.
+          //
+          // `regex`, not `group`: a group is matched with gitignore semantics,
+          // where a leading `#` starts a comment, so `group: ["#workflow/*"]`
+          // matches nothing and reports a pure core forever. The lookahead
+          // also excludes `node:` and `.`, which the two patterns above
+          // already report in their own words — matching them here as well
+          // would print two errors for one line.
+          { regex: "^(?!#core/|#namespace\\.js$|#conventions\\.js$|@ucast/|node:|\\.)",
+            message:
+              "core is pure and depends on no sibling layer: it may import only " +
+              "#core/*, #namespace.js, #conventions.js and @ucast/*" },
         ],
       }],
       // core re-derives a ticket's whole progress from external records on
