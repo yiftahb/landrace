@@ -2,7 +2,7 @@ import { entriesFromComments } from "../../src/conventions.js";
 import { parseMarker } from "../../src/conventions.js";
 import { decide } from "../../src/core/decide.js";
 import { deriveRun } from "../../src/core/derive.js";
-import type { Snapshot, Workflow } from "../../src/core/types.js";
+import type { Snapshot, Workflow } from "../../src/namespace.js";
 import { validateStructure } from "../../src/workflow/validate.js";
 
 /**

@@ -1,7 +1,7 @@
 import { entriesFromComments } from "../../src/conventions.js";
 import { parseMarker, renderMarker } from "../../src/conventions.js";
 import { canonicalize } from "../../src/core/normalize.js";
-import type { Snapshot } from "../../src/core/types.js";
+import type { Snapshot } from "../../src/namespace.js";
 
 const BOT = "landrace-bot";
 const comment = (body: string) => ({ id: 1, body, created_at: "2026-01-01T00:00:01Z", user: { login: BOT } });

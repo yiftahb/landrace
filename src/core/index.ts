@@ -1,4 +1,5 @@
-export * from "./types.js";
+/* Values only: core's types are declared in `src/namespace.ts`, like every
+ * other type in the system, and callers take them from there. */
 export { compile, assertAllowedOperators, pathsIn, missingPaths, ALLOWED_OPERATORS } from "./predicate.js";
 export { deriveRun } from "./derive.js";
 export { canonicalize, hashSnapshot } from "./normalize.js";

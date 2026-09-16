@@ -1,4 +1,4 @@
-import type { Effect, Snapshot } from "../core/types.js";
+import type { Effect, Snapshot } from "../namespace.js";
 import type { RuntimeConfig } from "../config/schema.js";
 
 /**

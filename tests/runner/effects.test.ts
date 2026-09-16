@@ -1,7 +1,7 @@
 import { createDispatcher } from "../../src/runner/effects.js";
 import { definePostHook } from "../../src/hooks/types.js";
 import type { HookContext } from "../../src/hooks/types.js";
-import type { Effect, Snapshot } from "../../src/core/index.js";
+import type { Effect, Snapshot } from "../../src/namespace.js";
 
 const ctx = (): HookContext => ({
   ticket: 1, snapshot: {}, config: {} as HookContext["config"],

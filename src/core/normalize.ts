@@ -1,4 +1,4 @@
-import type { Snapshot } from "./types.js";
+import type { Snapshot } from "../namespace.js";
 
 /**
  * Excluded from the hash: it changes every tick and means nothing to a

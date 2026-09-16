@@ -1,3 +1,26 @@
+/**
+ * Every type in the system, and nothing else.
+ *
+ * One file declares every interface and type alias; modules import their types
+ * from here and export only values. Two properties pay for the indirection:
+ *
+ *  - **It exports no runtime value.** That is what lets `src/core/**` import it
+ *    without importing a sibling layer — an `import type` is erased before a
+ *    module graph exists, so a core file that names a type declared next to a
+ *    hook's still has no edge to `src/hooks/`. `tests/namespace.test.ts`
+ *    enforces both halves: no type declared outside this file, and no value
+ *    declared inside it. Add a `const` here and core's purity boundary quietly
+ *    becomes a lie.
+ *  - **It is the whole vocabulary in one place.** A type inferred from a
+ *    runtime value — a Zod schema, the hook-kind list — is still declared here,
+ *    against a type-position import of the value it is inferred from. Those
+ *    imports are erased too, so the cycle they look like they create (this file
+ *    names `runtimeConfigSchema`, `src/config/schema.ts` names `RuntimeConfig`)
+ *    never exists at runtime.
+ */
+
+/* ------------------------------------------------------------------ core -- */
+
 /** Anything a hook can put in the snapshot. */
 export type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 
@@ -113,3 +136,8 @@ export interface Decision {
   trigger?: string;
   why?: string;
 }
+
+export type Location =
+  | { kind: "at"; stage: Stage }
+  | { kind: "none" }
+  | { kind: "ambiguous"; ids: string[] };

@@ -8,4 +8,4 @@
  */
 export * from "./types.js";
 export * from "../conventions.js";
-export type { Effect, Entry, Json, Snapshot } from "../core/types.js";
+export type { Effect, Entry, Json, Snapshot } from "../namespace.js";

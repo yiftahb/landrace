@@ -1,4 +1,4 @@
-import type { Effect, Snapshot } from "../core/index.js";
+import type { Effect, Snapshot } from "../namespace.js";
 import { messageOf } from "./errors.js";
 import type { HookContext, PostHook } from "../hooks/types.js";
 

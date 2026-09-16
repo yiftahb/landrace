@@ -1,10 +1,5 @@
 import { compile } from "./predicate.js";
-import type { Snapshot, Stage, Workflow } from "./types.js";
-
-export type Location =
-  | { kind: "at"; stage: Stage }
-  | { kind: "none" }
-  | { kind: "ambiguous"; ids: string[] };
+import type { Location, Snapshot, Stage, Workflow } from "../namespace.js";
 
 /**
  * Default identity: you are here if the tracker says so.

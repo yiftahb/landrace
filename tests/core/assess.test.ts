@@ -1,6 +1,6 @@
 import { assess } from "../../src/core/assess.js";
 import { deriveRun } from "../../src/core/derive.js";
-import type { Entry, Run, Snapshot, Stage } from "../../src/core/types.js";
+import type { Entry, Run, Snapshot, Stage } from "../../src/namespace.js";
 
 const stage: Stage = { id: "code-review", step: "steps/code-review.md" };
 

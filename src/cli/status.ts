@@ -1,5 +1,5 @@
 import { LABELS, stageFromLabels } from "../conventions.js";
-import type { Workflow } from "../core/index.js";
+import type { Workflow } from "../namespace.js";
 import type { Candidate } from "../hooks/types.js";
 import { statusLines, type StatusRow } from "../runner/status.js";
 import { eligibilityOf } from "../runner/tick.js";

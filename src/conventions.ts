@@ -4,7 +4,7 @@
  * back as the engine's. None of it belongs to a tracker — a Jira hook would
  * use the same names — so none of it lives in a hook.
  */
-import type { Entry } from "./core/types.js";
+import type { Entry } from "./namespace.js";
 
 export const LABELS = {
   eligible: "lr:auto",

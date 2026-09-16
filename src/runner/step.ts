@@ -1,4 +1,5 @@
-import { compile, type Effect, type Snapshot } from "../core/index.js";
+import { compile } from "../core/index.js";
+import type { Effect, Snapshot } from "../namespace.js";
 import { isReservedId, OUTPUT_KIND, outputValueProblem } from "../conventions.js";
 import type { Executor } from "../hooks/types.js";
 import type { Step } from "../workflow/load.js";

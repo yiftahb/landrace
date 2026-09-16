@@ -1,4 +1,4 @@
-import type { Workflow } from "../../src/core/index.js";
+import type { Workflow } from "../../src/namespace.js";
 import type { Candidate } from "../../src/hooks/types.js";
 import { statusRows } from "../../src/cli/status.js";
 

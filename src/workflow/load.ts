@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse } from "yaml";
-import type { Workflow } from "../core/types.js";
+import type { Workflow } from "../namespace.js";
 import { stepFrontMatterSchema, workflowSchema, type StepFrontMatter } from "./schema.js";
 
 export interface Step extends StepFrontMatter {

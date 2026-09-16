@@ -1,5 +1,5 @@
 import { ENTRY_KIND, OUTPUT_KIND } from "../conventions.js";
-import type { Entry, Run, StageRounds } from "./types.js";
+import type { Entry, Run, StageRounds } from "../namespace.js";
 
 /**
  * Everything the engine knows about a ticket's progress, computed from entries.

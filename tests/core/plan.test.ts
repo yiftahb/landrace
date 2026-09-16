@@ -1,6 +1,6 @@
 import { planEffects } from "../../src/core/plan.js";
 import { reconcile } from "../../src/core/reconcile.js";
-import type { Decision, Effect, Snapshot, Stage } from "../../src/core/types.js";
+import type { Decision, Effect, Snapshot, Stage } from "../../src/namespace.js";
 
 const target: Stage = {
   id: "review",

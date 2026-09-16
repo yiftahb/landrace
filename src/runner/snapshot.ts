@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { deriveRun, hashSnapshot, type Entry, type Snapshot } from "../core/index.js";
+import { deriveRun, hashSnapshot } from "../core/index.js";
+import type { Entry, Snapshot } from "../namespace.js";
 import { stageFromLabels } from "../conventions.js";
 import { messageOf } from "./errors.js";
 import type { HookContext, PreHook } from "../hooks/types.js";
