@@ -68,6 +68,12 @@ function messageOfAt(e: unknown, depth: number): string {
       // succeeded.
       const own = readMessage(e);
       if (own !== undefined && own !== "") return own;
+      // Known gap, not yet fixed: when `own` is `""` (an AggregateError's
+      // default message) and `firstAggregateMessage` comes back `undefined`
+      // because `.errors` itself threw, `own ?? FALLBACK` yields `""`, not
+      // FALLBACK — `??` treats `""` as present, not nullish. The caller then
+      // reports a reason of "the screener could not run: " with nothing
+      // after the colon.
       return firstAggregateMessage(e, depth) ?? own ?? FALLBACK;
     }
   } catch {

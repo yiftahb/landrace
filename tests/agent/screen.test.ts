@@ -56,6 +56,17 @@ describe("screenPrompt", () => {
     expect(r).toMatchObject({ ok: false });
   });
 
+  // Fix round 5: hasDuplicateKey's own depth bound, proven live at this call
+  // site too — a screener reply whose final fence nests ~3,500 objects deep
+  // used to throw RangeError out of screenPrompt instead of returning a
+  // verdict. It now fails closed as an ordinary unparseable block.
+  it("does not throw on a screener reply whose json block nests ~3,500 objects deep", async () => {
+    const nested = `\`\`\`json\n${'{"a":'.repeat(3500)}1${"}".repeat(3500)}\n\`\`\``;
+    const r = await screenPrompt("x", opts(nested));
+    expect(r).toMatchObject({ ok: false });
+    expect((r as { reason: string }).reason).toMatch(/could not be parsed/);
+  });
+
   it("fails closed when the screener itself errors", async () => {
     const boom: Executor = {
       id: "boom",

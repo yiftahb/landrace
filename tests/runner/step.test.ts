@@ -414,6 +414,19 @@ describe("runStep", () => {
     });
   });
 
+  // Fix round 5: hasDuplicateKey's own depth bound, proven live at this call
+  // site — a step whose reply carries ~3,500 nested objects in its final
+  // fence used to throw RangeError: Maximum call stack size exceeded out of
+  // runStep (and from converge, which has nothing to catch it with). It now
+  // fails closed as an ordinary unparseable contract, the same as any other
+  // fence content JSON.parse itself refuses.
+  it("does not throw on a step reply whose json block nests ~3,500 objects deep", async () => {
+    const nested = `\`\`\`json\n${"{\"a\":".repeat(3500)}1${"}".repeat(3500)}\n\`\`\``;
+    const r = await run(nested);
+    expect(r).toMatchObject({ ok: false, kind: "contract" });
+    expect((r as Fail).reason).toMatch(/could not be parsed/);
+  });
+
   // C2 residual — the ambiguity regex was byte-identical to screen.ts's, so
   // it inherited the same narrow recognition: a restatement in one fence
   // shape plus a real answer in a shape the old regex could not see counted
@@ -439,18 +452,19 @@ describe("runStep", () => {
       expect((r as Fail).reason).toMatch(/no json block/);
     });
 
-    // This one fails via a different path than its three siblings: the last
-    // "```" in the reply belongs to the wrong-case fence's own closing, but
-    // the lowercase-only opening search then finds the *restatement's*
-    // opening (the only lowercase ```json in the text) and pairs it with
-    // that closing — a nonsense span crossing both fences, which reliably
-    // fails to parse rather than being recognised as absent. Still a
-    // contract violation either way; naming it here so the nuance is not
-    // mistaken for a bug later.
+    // Fix round 5: trailingFence now walks forward through complete, sibling
+    // fences instead of pairing an independently-found closer with a
+    // backward-searched opener — so this now behaves the same as its three
+    // siblings (round 4's implementation produced "unparseable" here
+    // instead, via a cross-fence pairing artifact documented — and since
+    // corrected — in the report). The restatement closes cleanly on its
+    // own; "```JSON" is never matched at all (case-sensitive); nothing
+    // trails the restatement's own close, so the whole reply has no json
+    // block.
     it("a ```JSON real answer (different casing)", async () => {
       const r = await run(`${restatement}My actual answer:\n\`\`\`JSON\n{"kind":"questions"}\n\`\`\``);
       expect(r).toMatchObject({ ok: false, kind: "contract" });
-      expect((r as Fail).reason).toMatch(/could not be parsed/);
+      expect((r as Fail).reason).toMatch(/no json block/);
     });
 
     it("a bare {...} real answer with no fence at all", async () => {
