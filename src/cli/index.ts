@@ -1,10 +1,55 @@
 import { Command } from "commander";
+import { messageOf } from "../runner/errors.js";
+import { reexec, shouldReexec, STRIP_TYPES } from "./reexec.js";
 import { runValidate } from "./validate.js";
 import { runNext } from "./next.js";
 import { runMcp } from "./mcp.js";
+import { runStart } from "./start.js";
+import { runStatus } from "./status.js";
 
 const program = new Command();
 program.name("landrace").description("Local-first SDLC orchestrator");
+
+/**
+ * Run a command that imports hook modules, and report rather than crash.
+ *
+ * The one failure worth acting on instead of printing is a node too old to
+ * read a `.ts` file: `engines` says `>=22`, node strips types unflagged only
+ * from 22.18, and an operator on 22.13 would otherwise be told to add a flag
+ * to a command they did not write. So this re-runs itself once, with the flag
+ * and one line saying why — and never twice, so a failure that survives the
+ * flag is reported as itself (see shouldReexec).
+ *
+ * Safe where it happens: hooks are imported after the config and workflow are
+ * read and before the first request goes out, so the process being replaced
+ * here has done nothing but read files. Later — a hook that imports another
+ * module lazily, mid-tick — the retry starts the loop again, and re-entering a
+ * state replans its effects and reconcile drops the ones already applied.
+ */
+async function loadingHooks(what: string, run: () => Promise<void>): Promise<void> {
+  try {
+    await run();
+  } catch (e) {
+    if (shouldReexec(e, { execArgv: process.execArgv, env: process.env })) {
+      console.error(
+        `landrace: this node (${process.version}) cannot read the TypeScript hook modules, ` +
+        `so it is re-running itself with ${STRIP_TYPES}. Node 22.18 and newer need no flag.`,
+      );
+      process.exitCode = await reexec({
+        execPath: process.execPath,
+        execArgv: process.execArgv,
+        argv: process.argv.slice(1),
+        env: process.env,
+      });
+      return;
+    }
+    // A CLI reports; it does not exit through a stack trace. `messageOf`, not
+    // `(e as Error).message`: a hook is a plain interface and nothing stops one
+    // rejecting with a shape that throws on a property read.
+    console.error(`landrace ${what}: ${messageOf(e)}`);
+    process.exitCode = 1;
+  }
+}
 
 program
   .command("validate")
@@ -30,18 +75,38 @@ program
   });
 
 program
+  .command("start")
+  .description("watch the tracker and advance every eligible ticket")
+  .option("-w, --workflow <dir>", "workflow directory", ".landrace")
+  .option("--once", "run a single tick and exit")
+  .option("--debug", "print every event, the agent's included, and the snapshot behind each decision")
+  .action(async (opts: { workflow: string; once?: boolean; debug?: boolean }) => {
+    await loadingHooks("start", () =>
+      runStart(opts.workflow, {
+        ...(opts.once === undefined ? {} : { once: opts.once }),
+        ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+      }),
+    );
+  });
+
+program
+  .command("status")
+  .description("one line per candidate ticket, including why one was skipped")
+  .option("-w, --workflow <dir>", "workflow directory", ".landrace")
+  .action(async (opts: { workflow: string }) => {
+    await loadingHooks("status", async () => {
+      for (const line of await runStatus(opts.workflow)) console.log(line);
+    });
+  });
+
+program
   .command("mcp")
   .description("run the MCP server over stdio")
   .option("-w, --workflow <dir>", "workflow directory", ".landrace")
   .action(async (opts: { workflow: string }) => {
-    try {
-      await runMcp(opts.workflow);
-    } catch (e) {
-      // A CLI reports; it does not exit through a stack trace. The MCP client
-      // that spawned us shows stderr, so this is the only diagnostic a user gets.
-      console.error(`landrace mcp: ${(e as Error).message}`);
-      process.exitCode = 1;
-    }
+    // The MCP client that spawned us shows stderr, so what loadingHooks prints
+    // there is the only diagnostic a user gets.
+    await loadingHooks("mcp", () => runMcp(opts.workflow));
   });
 
 await program.parseAsync();

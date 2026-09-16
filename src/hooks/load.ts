@@ -154,11 +154,18 @@ export function buildRegistry(modules: HookModule[]): Registry {
  */
 export function importFailure(specifier: string, error: unknown): Error {
   if ((error as { code?: unknown } | null)?.code === "ERR_UNKNOWN_FILE_EXTENSION") {
-    return new Error(
-      `cannot import hook module "${specifier}": this Node cannot read a TypeScript file. ` +
-      "Node 22.18 and newer strip types with no flag; on an older 22.x, run node with " +
-      "--experimental-strip-types. Not tsx, jiti or ts-node — a loader that rewrites the module " +
-      "graph is exactly what should not sit under a hook.",
+    // The code rides along on the wrapper. `landrace start` and `landrace mcp`
+    // re-run themselves with --experimental-strip-types on exactly this
+    // failure, and a CLI that decided that by matching the sentence below
+    // would stop deciding it the first time someone improves the wording.
+    return Object.assign(
+      new Error(
+        `cannot import hook module "${specifier}": this Node cannot read a TypeScript file. ` +
+        "Node 22.18 and newer strip types with no flag; on an older 22.x, run node with " +
+        "--experimental-strip-types. Not tsx, jiti or ts-node — a loader that rewrites the module " +
+        "graph is exactly what should not sit under a hook.",
+      ),
+      { code: "ERR_UNKNOWN_FILE_EXTENSION" },
     );
   }
   return new Error(`cannot import hook module "${specifier}": ${messageOf(error)}`);
