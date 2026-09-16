@@ -7,14 +7,15 @@ The whole design rests on one idea — **the model does the work, the state mach
 ## Architecture
 
 ```
+src/namespace.ts   every type in the system, and nothing else
 src/core/         pure decision engine — no I/O, no clock, no randomness
 src/workflow/     load and validate workflow definitions
 src/hooks/        the define* contracts and the loader that imports .landrace/hooks/*.ts
 src/agent/        executors and prompt screening
-src/runner/       converge, step, effect dispatch, lock, events
+src/runner/       tick, converge, step, lock, effect dispatch, events
 src/config/       landrace.yaml + .env
 src/mcp/          operator tools over stdio
-src/cli/          validate, next, mcp
+src/cli/          validate, next, mcp, start, status
 src/conventions.ts  label and marker vocabulary shared by all of the above
 
 .landrace/hooks/  the integrations — GitHub included. Not part of the engine.
@@ -50,6 +51,22 @@ If you are about to import a vendor SDK into `src/`, you are writing a hook.
 
 A hook is classified by the brand its `define*` helper stamps, never by its shape. Two of anything singular — two sources, two operators, two hooks of a phase under one id — halts at load with both names, like every other ambiguity here.
 
+### Every type lives in `src/namespace.ts`
+
+One file declares every interface and type alias in the system; modules import their
+types from it and export only values. A type inferred from a runtime value — a Zod
+schema, for instance — is still declared there, in a `export type X = z.infer<typeof
+schema>` line that imports the schema in type position. `namespace.ts` itself exports
+no runtime value, which is what lets the pure core import from it freely.
+
+### Ask the graph before you grep
+
+Every question about this codebase — where a symbol is defined, what calls it, how a
+value flows, what the layers are — goes to `codebase-memory-mcp` first: `search_graph`,
+`trace_path`, `get_code_snippet`, `query_graph`, `get_architecture`, `search_code`. If
+the repository is not indexed yet, run `index_repository` first. Grep, glob and Read
+remain right for prose, config and anything that is not code, and you always Read a
+file before editing it.
 ### A broken step output is a hard fail, never a retry
 
 Malformed output halts the ticket with the reason. It is never retried and never treated as "hasn't run yet" — a step whose output was rejected has produced nothing, so without care it looks identical to one that never started, and the engine re-runs it forever. Read validity *before* completeness.
