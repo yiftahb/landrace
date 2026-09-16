@@ -5,10 +5,10 @@ import {
   OUTPUT_KIND,
   RECORD_EFFECT,
   unknownCapabilities,
-} from "../conventions.js";
-import { identityOf } from "../core/locate.js";
-import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
-import type { Condition, Problem, Stage, Step, Workflow } from "../namespace.js";
+} from "#conventions.js";
+import { identityOf } from "#core/locate.js";
+import { assertAllowedOperators, pathsIn } from "#core/predicate.js";
+import type { Condition, Problem, Stage, Step, Workflow } from "#namespace.js";
 
 export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
   const problems: Problem[] = [];

@@ -1,4 +1,4 @@
-import type { Run, Snapshot, Stage, SubState } from "../namespace.js";
+import type { Run, Snapshot, Stage, SubState } from "#namespace.js";
 
 /**
  * Invalid output is a property of the step, not of the position, and must be

@@ -1,6 +1,6 @@
-import type { Executor, Logger, Verdict } from "../namespace.js";
-import { messageOf } from "../runner/errors.js";
-import { extractJsonBlock } from "./json-block.js";
+import type { Executor, Logger, Verdict } from "#namespace.js";
+import { messageOf } from "#runner/errors.js";
+import { extractJsonBlock } from "#agent/json-block.js";
 
 /**
  * Unguessable per call: the candidate is interpolated raw between the begin

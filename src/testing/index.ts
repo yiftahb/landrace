@@ -10,6 +10,6 @@
  * the same whatever the tracker: a scripted agent, and a harness that drives
  * converge and writes down where the ticket went and what it was paid for.
  */
-export { createHarness } from "./harness.js";
-export { createExternalState } from "./external-state.js";
-export { scriptedExecutor } from "./scripted.js";
+export { createHarness } from "#testing/harness.js";
+export { createExternalState } from "#testing/external-state.js";
+export { scriptedExecutor } from "#testing/scripted.js";

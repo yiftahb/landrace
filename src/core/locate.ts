@@ -1,5 +1,5 @@
-import { compile } from "./predicate.js";
-import type { Location, Snapshot, Stage, Workflow } from "../namespace.js";
+import { compile } from "#core/predicate.js";
+import type { Location, Snapshot, Stage, Workflow } from "#namespace.js";
 
 /**
  * Default identity: you are here if the tracker says so.

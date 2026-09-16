@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { deriveRun, hashSnapshot } from "../core/index.js";
-import type { Entry, Snapshot } from "../namespace.js";
-import { stageFromLabels } from "../conventions.js";
-import { messageOf } from "./errors.js";
-import type { HookContext, PreHook } from "../namespace.js";
+import { deriveRun, hashSnapshot } from "#core/index.js";
+import type { Entry, Snapshot } from "#namespace.js";
+import { stageFromLabels } from "#conventions.js";
+import { messageOf } from "#runner/errors.js";
+import type { HookContext, PreHook } from "#namespace.js";
 
 /**
  * Pre hooks run in declaration order, each seeing what previous hooks produced.

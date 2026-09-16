@@ -1,4 +1,4 @@
-import type { Decision, Effect } from "../namespace.js";
+import type { Decision, Effect } from "#namespace.js";
 
 /**
  * An on_enter effect field may be templated only with what the engine itself

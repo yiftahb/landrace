@@ -3,9 +3,9 @@ import { mkdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import type { WorktreeState } from "../namespace.js";
-import { sandboxRoot } from "../sandbox.js";
-import { containedPath } from "../workflow/load.js";
+import type { WorktreeState } from "#namespace.js";
+import { sandboxRoot } from "#sandbox.js";
+import { containedPath } from "#workflow/load.js";
 
 const exec = promisify(execFile);
 

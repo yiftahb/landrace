@@ -9,6 +9,11 @@
     "declaration": true,
     "outDir": "dist",
     "skipLibCheck": true,
+    // Load-bearing, not tidiness: `#core/index.js` resolves through
+    // package.json's `imports` to a file inside this project, and TS refuses
+    // to resolve an import-map entry into the project without being told
+    // where the project starts — "the project root is ambiguous" (TS2210).
+    "rootDir": ".",
     // A hook module imports `landrace/hooks`, which Node resolves by package
     // self-reference to the built dist/hooks.js. Mapped to the source here so
     // a clean clone typechecks before it has ever been built.

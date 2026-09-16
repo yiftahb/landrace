@@ -1,4 +1,4 @@
-import type { Effect, Snapshot } from "../namespace.js";
+import type { Effect, Snapshot } from "#namespace.js";
 
 /**
  * Drop every effect the externals already satisfy. This is why there is no

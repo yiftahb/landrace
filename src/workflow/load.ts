@@ -1,8 +1,8 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse } from "yaml";
-import type { ContainedPath, LoadFailureRule, Step, Workflow } from "../namespace.js";
-import { stepFrontMatterSchema, workflowSchema } from "./schema.js";
+import type { ContainedPath, LoadFailureRule, Step, Workflow } from "#namespace.js";
+import { stepFrontMatterSchema, workflowSchema } from "#workflow/schema.js";
 
 export class WorkflowLoadError extends Error {
   readonly rule: LoadFailureRule;

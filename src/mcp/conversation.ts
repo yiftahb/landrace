@@ -1,15 +1,15 @@
-import { extractJsonBlock } from "../agent/json-block.js";
-import { screenPrompt } from "../agent/screen.js";
-import { CONVERSATION_KIND, neutraliseMarkers } from "../conventions.js";
+import { extractJsonBlock } from "#agent/json-block.js";
+import { screenPrompt } from "#agent/screen.js";
+import { CONVERSATION_KIND, neutraliseMarkers } from "#conventions.js";
 import type {
   Conversation,
   ConversationDeps,
   Entry,
   JoinedSession,
   Snapshot,
-} from "../namespace.js";
-import { withLock } from "../runner/lock.js";
-import { buildSnapshot } from "../runner/snapshot.js";
+} from "#namespace.js";
+import { withLock } from "#runner/lock.js";
+import { buildSnapshot } from "#runner/snapshot.js";
 
 /**
  * What a turn asks for beyond an answer: one bit, and the engine routes on it.

@@ -1,4 +1,4 @@
-import type { StatusRow } from "../namespace.js";
+import type { StatusRow } from "#namespace.js";
 
 /** Stands in for a ticket that has no position yet, so the column still lines up. */
 const NO_STAGE = "—";

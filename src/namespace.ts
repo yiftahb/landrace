@@ -20,9 +20,9 @@
  */
 
 import type { z } from "zod";
-import type { runtimeConfigSchema } from "./config/schema.js";
-import type { stepFrontMatterSchema } from "./workflow/schema.js";
-import type { HOOK_KINDS } from "./hooks/contracts.js";
+import type { runtimeConfigSchema } from "#config/schema.js";
+import type { stepFrontMatterSchema } from "#workflow/schema.js";
+import type { HOOK_KINDS } from "#hooks/contracts.js";
 
 /* ------------------------------------------------------------------ core -- */
 

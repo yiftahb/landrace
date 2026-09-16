@@ -1,13 +1,13 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadConfig, redactionValues } from "../config/load.js";
-import { loadHooks } from "../hooks/load.js";
-import type { RuntimeContext, Tools } from "../namespace.js";
-import { createMcpServer } from "../mcp/server.js";
-import { createTools } from "../mcp/tools.js";
-import { createLogger } from "../runner/events.js";
-import type { EventName } from "../namespace.js";
-import { loadWorkflow } from "../workflow/load.js";
-import { executorFor } from "./start.js";
+import { loadConfig, redactionValues } from "#config/load.js";
+import { loadHooks } from "#hooks/load.js";
+import type { RuntimeContext, Tools } from "#namespace.js";
+import { createMcpServer } from "#mcp/server.js";
+import { createTools } from "#mcp/tools.js";
+import { createLogger } from "#runner/events.js";
+import type { EventName } from "#namespace.js";
+import { loadWorkflow } from "#workflow/load.js";
+import { executorFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.

@@ -1,4 +1,4 @@
-import { checkEligible, missingPaths } from "../core/index.js";
+import { checkEligible, missingPaths } from "#core/index.js";
 import type {
   Candidate,
   ConvergeResult,
@@ -8,11 +8,11 @@ import type {
   TickOptions,
   TickRow,
   Workflow,
-} from "../namespace.js";
-import { converge } from "./converge.js";
-import { messageOf } from "./errors.js";
-import { withLock } from "./lock.js";
-import { oneLine } from "./status.js";
+} from "#namespace.js";
+import { converge } from "#runner/converge.js";
+import { messageOf } from "#runner/errors.js";
+import { withLock } from "#runner/lock.js";
+import { oneLine } from "#runner/status.js";
 
 /** Matches `tick.concurrency`'s own default, so the two cannot drift. */
 const DEFAULT_CONCURRENCY = 3;

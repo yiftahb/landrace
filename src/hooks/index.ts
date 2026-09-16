@@ -6,8 +6,8 @@
  * The loader is deliberately not here: importing hooks is the engine's job,
  * and a hook that loaded hooks would be a cycle waiting to happen.
  */
-export * from "./contracts.js";
-export * from "../conventions.js";
+export * from "#hooks/contracts.js";
+export * from "#conventions.js";
 
 /*
  * Named one by one rather than `export type *`: every type in the system is
@@ -35,4 +35,4 @@ export type {
   Source,
   TicketPatch,
   TrackerComment,
-} from "../namespace.js";
+} from "#namespace.js";

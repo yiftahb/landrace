@@ -1,5 +1,5 @@
-import type { Dispatcher, PostHook } from "../namespace.js";
-import { messageOf } from "./errors.js";
+import type { Dispatcher, PostHook } from "#namespace.js";
+import { messageOf } from "#runner/errors.js";
 
 export function createDispatcher(hooks: PostHook[]): Dispatcher {
   const byType = new Map<string, PostHook>();

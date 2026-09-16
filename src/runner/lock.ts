@@ -2,8 +2,8 @@ import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promis
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
-import type { Held, LockKind, LockOptions } from "../namespace.js";
-import { sandboxRoot } from "../sandbox.js";
+import type { Held, LockKind, LockOptions } from "#namespace.js";
+import { sandboxRoot } from "#sandbox.js";
 
 const DEFAULT_DEADLINE_MS = 15 * 60_000;
 

@@ -1,4 +1,4 @@
-import type { EventName, LandraceEvent, Logger } from "../namespace.js";
+import type { EventName, LandraceEvent, Logger } from "#namespace.js";
 
 /**
  * Printed only under `--debug` (spec §14).

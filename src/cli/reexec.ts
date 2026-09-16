@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { Reexec, Where } from "../namespace.js";
+import type { Reexec, Where } from "#namespace.js";
 
 /**
  * Running this process again, once, with the flag that lets node read a

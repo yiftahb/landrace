@@ -1,4 +1,4 @@
-import type { Executor, ScriptedAnswer } from "../namespace.js";
+import type { Executor, ScriptedAnswer } from "#namespace.js";
 
 /**
  * Canned output per stage, so every branch of a workflow is reachable on

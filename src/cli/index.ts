@@ -1,11 +1,11 @@
 import { Command } from "commander";
-import { messageOf } from "../runner/errors.js";
-import { reexec, shouldReexec, STRIP_TYPES } from "./reexec.js";
-import { runValidate } from "./validate.js";
-import { runNext } from "./next.js";
-import { runMcp } from "./mcp.js";
-import { runStart } from "./start.js";
-import { runStatus } from "./status.js";
+import { messageOf } from "#runner/errors.js";
+import { reexec, shouldReexec, STRIP_TYPES } from "#cli/reexec.js";
+import { runValidate } from "#cli/validate.js";
+import { runNext } from "#cli/next.js";
+import { runMcp } from "#cli/mcp.js";
+import { runStart } from "#cli/start.js";
+import { runStatus } from "#cli/status.js";
 
 const program = new Command();
 program.name("landrace").description("Local-first SDLC orchestrator");

@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { expand, parseEnvFile } from "./env.js";
-import { MIN_SECRET_LENGTH } from "../runner/events.js";
-import { runtimeConfigSchema } from "./schema.js";
-import type { LoadedConfig } from "../namespace.js";
+import { expand, parseEnvFile } from "#config/env.js";
+import { MIN_SECRET_LENGTH } from "#runner/events.js";
+import { runtimeConfigSchema } from "#config/schema.js";
+import type { LoadedConfig } from "#namespace.js";
 
 /**
  * The secret values `log.redact` names. A logger redacts by value — a name

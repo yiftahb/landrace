@@ -25,7 +25,12 @@ export default tseslint.config(
       "no-restricted-imports": ["error", {
         patterns: [
           { group: ["node:*"], message: "core is pure: no node builtins" },
-          { group: ["**/workflow/*", "**/cli/*", "**/hooks/*", "**/runner/*", "**/agent/*"],
+          // Named as a sibling layer is now written — `#workflow/load.js`, not
+          // `../workflow/load.js`. `regex`, not `group`: a group is matched
+          // with gitignore semantics, where a leading `#` starts a comment, so
+          // `group: ["#workflow/*"]` matches nothing and reports a pure core
+          // forever.
+          { regex: "^#(workflow|cli|hooks|runner|agent)/",
             message: "core must not depend on a sibling layer" },
         ],
       }],

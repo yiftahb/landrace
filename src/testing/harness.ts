@@ -1,6 +1,6 @@
-import { converge } from "../runner/converge.js";
-import { createDispatcher } from "../runner/effects.js";
-import { createLogger } from "../runner/events.js";
+import { converge } from "#runner/converge.js";
+import { createDispatcher } from "#runner/effects.js";
+import { createLogger } from "#runner/events.js";
 import type {
   Dispatcher,
   Harness,
@@ -10,8 +10,8 @@ import type {
   Logger,
   PostHook,
   StepCall,
-} from "../namespace.js";
-import { scriptedExecutor } from "./scripted.js";
+} from "#namespace.js";
+import { scriptedExecutor } from "#testing/scripted.js";
 
 /**
  * A ticket, driven through a workflow, with what happened written down.

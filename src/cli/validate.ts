@@ -2,13 +2,13 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { loadConfig } from "../config/load.js";
-import { loadHooks } from "../hooks/load.js";
-import { messageOf } from "../runner/errors.js";
-import { snapshotProvides } from "../runner/snapshot.js";
-import { loadWorkflow, WorkflowLoadError } from "../workflow/load.js";
-import { validate } from "../workflow/validate.js";
-import type { Problem } from "../namespace.js";
+import { loadConfig } from "#config/load.js";
+import { loadHooks } from "#hooks/load.js";
+import { messageOf } from "#runner/errors.js";
+import { snapshotProvides } from "#runner/snapshot.js";
+import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
+import { validate } from "#workflow/validate.js";
+import type { Problem } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 

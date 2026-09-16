@@ -1,7 +1,7 @@
-import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "../agent/claude.js";
-import { repositoryRoot } from "../agent/worktree.js";
-import { loadConfig, redactionValues } from "../config/load.js";
-import { loadHooks } from "../hooks/load.js";
+import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js";
+import { repositoryRoot } from "#agent/worktree.js";
+import { loadConfig, redactionValues } from "#config/load.js";
+import { loadHooks } from "#hooks/load.js";
 import type {
   BuildOptions,
   EventName,
@@ -13,16 +13,16 @@ import type {
   RuntimeConfig,
   StartOptions,
   Workflow,
-} from "../namespace.js";
-import { createDispatcher } from "../runner/effects.js";
-import { messageOf } from "../runner/errors.js";
-import { createLogger } from "../runner/events.js";
-import { snapshotProvides } from "../runner/snapshot.js";
-import { oneLine } from "../runner/status.js";
-import { tick } from "../runner/tick.js";
-import { loadWorkflow } from "../workflow/load.js";
-import { validate } from "../workflow/validate.js";
-import { STOP_SIGNALS } from "./reexec.js";
+} from "#namespace.js";
+import { createDispatcher } from "#runner/effects.js";
+import { messageOf } from "#runner/errors.js";
+import { createLogger } from "#runner/events.js";
+import { snapshotProvides } from "#runner/snapshot.js";
+import { oneLine } from "#runner/status.js";
+import { tick } from "#runner/tick.js";
+import { loadWorkflow } from "#workflow/load.js";
+import { validate } from "#workflow/validate.js";
+import { STOP_SIGNALS } from "#cli/reexec.js";
 
 const UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
 

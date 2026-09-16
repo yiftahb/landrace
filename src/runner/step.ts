@@ -1,5 +1,5 @@
-import { compile } from "../core/index.js";
-import type { Effect, Logger, Snapshot, Step, StepResult, WorktreeState } from "../namespace.js";
+import { compile } from "#core/index.js";
+import type { Effect, Logger, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   CAPABILITIES,
   isReservedId,
@@ -8,12 +8,12 @@ import {
   outputValueProblem,
   RECORD_EFFECT,
   unknownCapabilities,
-} from "../conventions.js";
-import type { Executor } from "../namespace.js";
-import { screenPrompt } from "../agent/screen.js";
-import { changedSince, worktreeState } from "../agent/worktree.js";
-import { extractJsonBlock } from "../agent/json-block.js";
-import { messageOf } from "./errors.js";
+} from "#conventions.js";
+import type { Executor } from "#namespace.js";
+import { screenPrompt } from "#agent/screen.js";
+import { changedSince, worktreeState } from "#agent/worktree.js";
+import { extractJsonBlock } from "#agent/json-block.js";
+import { messageOf } from "#runner/errors.js";
 
 /**
  * `part in obj` walks the prototype chain, so a path like `toString` or

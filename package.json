@@ -11,6 +11,11 @@
     "./hooks": "./dist/hooks.js",
     "./testing": "./dist/testing.js"
   },
+  "imports": {
+    "#tests/*.js": "./tests/*.ts",
+    "#landrace/*.js": "./.landrace/*.ts",
+    "#*.js": "./src/*.ts"
+  },
   "files": [
     "dist"
   ],

@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
-import { CAPABILITIES, mayWriteRepo, unknownCapabilities } from "../conventions.js";
-import { defineExecutor } from "../hooks/contracts.js";
-import type { Executor, Logger } from "../namespace.js";
-import { containedPath } from "../workflow/load.js";
+import { CAPABILITIES, mayWriteRepo, unknownCapabilities } from "#conventions.js";
+import { defineExecutor } from "#hooks/contracts.js";
+import type { Executor, Logger } from "#namespace.js";
+import { containedPath } from "#workflow/load.js";
 
 /**
  * A value that begins with "-" lands in a flag slot no matter which argv

@@ -1,12 +1,12 @@
-import { ensureWorktree, removeWorktree } from "../agent/worktree.js";
-import { decide, planEffects, reconcile } from "../core/index.js";
-import { RECORD_EFFECT } from "../conventions.js";
-import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot } from "../namespace.js";
-import { messageOf } from "./errors.js";
-import { MIN_SECRET_LENGTH, redactValue } from "./events.js";
-import { buildBriefing } from "./artifacts.js";
-import { buildSnapshot } from "./snapshot.js";
-import { runStep } from "./step.js";
+import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
+import { decide, planEffects, reconcile } from "#core/index.js";
+import { RECORD_EFFECT } from "#conventions.js";
+import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot } from "#namespace.js";
+import { messageOf } from "#runner/errors.js";
+import { MIN_SECRET_LENGTH, redactValue } from "#runner/events.js";
+import { buildBriefing } from "#runner/artifacts.js";
+import { buildSnapshot } from "#runner/snapshot.js";
+import { runStep } from "#runner/step.js";
 
 /** Generous. The real bound on a run is the workflow's iteration budget. */
 const DEFAULT_MAX_PASSES = 30;

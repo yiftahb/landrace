@@ -1,5 +1,5 @@
-import { compile } from "./predicate.js";
-import type { Snapshot, Workflow } from "../namespace.js";
+import { compile } from "#core/predicate.js";
+import type { Snapshot, Workflow } from "#namespace.js";
 
 /**
  * Eligibility is a decision with a reason, not a query filter. An ineligible

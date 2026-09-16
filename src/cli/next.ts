@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { decide, deriveRun, planEffects } from "../core/index.js";
-import type { Decision, Effect, Snapshot } from "../namespace.js";
-import { loadWorkflow } from "../workflow/load.js";
+import { decide, deriveRun, planEffects } from "#core/index.js";
+import type { Decision, Effect, Snapshot } from "#namespace.js";
+import { loadWorkflow } from "#workflow/load.js";
 
 export async function runNext(
   dir: string,

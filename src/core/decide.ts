@@ -1,8 +1,8 @@
-import { assess } from "./assess.js";
-import { checkEligible } from "./eligible.js";
-import { locate } from "./locate.js";
-import { compile } from "./predicate.js";
-import type { Decision, Run, Snapshot, Workflow } from "../namespace.js";
+import { assess } from "#core/assess.js";
+import { checkEligible } from "#core/eligible.js";
+import { locate } from "#core/locate.js";
+import { compile } from "#core/predicate.js";
+import type { Decision, Run, Snapshot, Workflow } from "#namespace.js";
 
 export function decide(w: Workflow, s: Snapshot): Decision {
   const eligibility = checkEligible(w, s);

@@ -1,9 +1,9 @@
 import { pathToFileURL } from "node:url";
-import { containedPath } from "../workflow/load.js";
-import { artifactPreHook } from "../runner/artifacts.js";
-import { createDispatcher } from "../runner/effects.js";
-import { messageOf } from "../runner/errors.js";
-import { hookKindOf } from "./contracts.js";
+import { containedPath } from "#workflow/load.js";
+import { artifactPreHook } from "#runner/artifacts.js";
+import { createDispatcher } from "#runner/effects.js";
+import { messageOf } from "#runner/errors.js";
+import { hookKindOf } from "#hooks/contracts.js";
 import type {
   ArtifactHook,
   Claim,
@@ -14,7 +14,7 @@ import type {
   PreHook,
   Registry,
   Source,
-} from "../namespace.js";
+} from "#namespace.js";
 
 const both = (a: Claim, b: Claim): string =>
   `"${a.id}" from "${a.from}" and "${b.id}" from "${b.from}"`;

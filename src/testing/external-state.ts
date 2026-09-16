@@ -9,9 +9,9 @@ import {
   STAGE_LABEL_PREFIX,
   stageFromLabels,
   STATUS_EFFECT,
-} from "../conventions.js";
-import { definePostHook, definePreHook } from "../hooks/contracts.js";
-import type { Effect, Entry, ExternalState, ExternalTicket, Marker, Snapshot, TrackerComment } from "../namespace.js";
+} from "#conventions.js";
+import { definePostHook, definePreHook } from "#hooks/contracts.js";
+import type { Effect, Entry, ExternalState, ExternalTicket, Marker, Snapshot, TrackerComment } from "#namespace.js";
 
 /**
  * The login everything the engine writes is posted under, so what it wrote

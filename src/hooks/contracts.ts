@@ -16,7 +16,7 @@ import type {
   PostHook,
   PreHook,
   Source,
-} from "../namespace.js";
+} from "#namespace.js";
 
 /**
  * Every kind the loader classifies. The list is the loader's vocabulary, and

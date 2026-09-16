@@ -32,7 +32,7 @@
  * quoting *carefully* — via indentation instead of backticks — does not
  * avoid this; only placement (not last) does.
  */
-import type { JsonFrame, JsonBlockResult } from "../namespace.js";
+import type { JsonFrame, JsonBlockResult } from "#namespace.js";
 
 /**
  * The last "```" in the text, provided nothing but whitespace follows it —

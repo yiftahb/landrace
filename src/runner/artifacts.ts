@@ -1,7 +1,7 @@
-import { isReservedId, neutraliseMarkers } from "../conventions.js";
-import { definePreHook } from "../hooks/contracts.js";
-import { messageOf } from "./errors.js";
-import type { ArtifactHook, HookContext, PreHook } from "../namespace.js";
+import { isReservedId, neutraliseMarkers } from "#conventions.js";
+import { definePreHook } from "#hooks/contracts.js";
+import { messageOf } from "#runner/errors.js";
+import type { ArtifactHook, HookContext, PreHook } from "#namespace.js";
 
 /**
  * Deep enough for any artifact a workflow reads through a dot-path, and far

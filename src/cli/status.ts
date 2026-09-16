@@ -1,8 +1,8 @@
-import { LABELS, stageFromLabels } from "../conventions.js";
-import type { Candidate, StatusRow, Workflow } from "../namespace.js";
-import { statusLines } from "../runner/status.js";
-import { eligibilityOf } from "../runner/tick.js";
-import { buildRuntime } from "./start.js";
+import { LABELS, stageFromLabels } from "#conventions.js";
+import type { Candidate, StatusRow, Workflow } from "#namespace.js";
+import { statusLines } from "#runner/status.js";
+import { eligibilityOf } from "#runner/tick.js";
+import { buildRuntime } from "#cli/start.js";
 
 /**
  * One row per candidate, answered from the labels the source already carried

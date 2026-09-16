@@ -1,5 +1,5 @@
 import { filter as mongoFilter } from "@ucast/mongo2js";
-import type { Condition, Snapshot } from "../namespace.js";
+import type { Condition, Snapshot } from "#namespace.js";
 
 export const ALLOWED_OPERATORS = [
   "$eq", "$ne", "$in", "$nin", "$lt", "$lte", "$gt", "$gte",
