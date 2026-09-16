@@ -17,16 +17,29 @@ Four things follow from that, and they are the reason to use this rather than a 
 
 ## Status
 
-**Early.** The pure decision core, the workflow format, the validator, the hook loader, the GitHub hook, agent execution and an MCP server are built and tested. The tick loop that polls and picks up tickets is not — so today Landrace can define and check a workflow, converge one ticket, and let you drive tickets from your editor, but nothing yet starts it on a schedule.
+**v1, unproven against a live repository.** Every part of the loop is built and
+tested — `landrace start` polls the tracker, locks a ticket, derives its state,
+runs the step, publishes what it produced and advances the workflow. The whole
+of the shipped workflow runs end to end in tests, including its failure paths.
+What has not happened is a run against a real repository with a real token, so
+treat the first one as a supervised experiment rather than a deployment.
 
 | | |
 |---|---|
 | Decision engine, workflow format, validator | ✅ built |
-| CLI: `validate`, `next`, `mcp` | ✅ built |
-| MCP server: read, create, update, comment on tickets | ✅ built |
+| CLI: `validate`, `next`, `mcp`, `start`, `status` | ✅ built |
+| MCP server: read, create, update, comment, ask, resolve | ✅ built |
 | Hook loader, GitHub hook, agent execution | ✅ built |
-| Tick loop: polling, concurrency, locking | ⏳ next |
-| Artifact publishing, conversation with a step, containers | ⏳ planned |
+| Tick loop: polling, concurrency, per-ticket locking | ✅ built |
+| Artifact publishing to GitHub Pages, PR review threads | ✅ built |
+| Worktree sandbox with enforced capabilities | ✅ built |
+| Conversation with a running step, over MCP | ✅ built |
+| Opening the pull request itself | ⏳ next |
+| Containers, OpenTelemetry, a second tracker | ⏳ planned |
+
+One gap worth knowing before you start it: **nothing pushes a branch or opens
+the pull request yet.** A workflow reaching `build` parks there until someone
+opens one, at which point the review cycle picks it up on its own.
 
 ## Install
 
@@ -161,15 +174,28 @@ Write the spec for {ticket.title}…
 | `operator` | A disallowed predicate operator, anywhere including nested |
 | `path-coverage` | A predicate reading a field no hook provides |
 
-Two of these abstain when the graph cannot be analysed, rather than guess. A validator that flags healthy workflows gets switched off.
+Every rule runs on every workflow. An earlier version abstained where a trigger
+could fire from anywhere, which turned out to mean *always* — the entry trigger
+every real workflow needs switched three rules off graph-wide. The graph rules
+now work from two derived views instead: a superset that treats an unanchored
+trigger as an edge from every stage, for `dead-end` and `reachability`, and the
+anchored edges alone for `cycle-bound`.
 
 ## CLI
 
 ```bash
+landrace start [-w <dir>] [--once]       # watch the tracker and advance every eligible ticket
+landrace status [-w <dir>]               # one line per ticket: where it is, and why one was skipped
 landrace validate [dir]                  # prove a workflow sound
 landrace next -w <dir> -s <snapshot>     # the decision for a snapshot, no I/O
 landrace mcp [-w <dir>]                  # MCP server over stdio
 ```
+
+`start` runs ticks on an interval and they overlap: the lock is per ticket, so a
+ticket busy with a ten-minute agent delays only itself. `--debug` prints every
+event, including the agent subprocess's own. Ctrl-C releases the locks and
+exits; press it twice and it says which lock it left behind for the next run to
+reclaim.
 
 ## Security
 
@@ -177,13 +203,15 @@ landrace mcp [-w <dir>]                  # MCP server over stdio
 - Predicate operators are allowlisted structurally, before a condition reaches the evaluator.
 - Everything a step writes is escaped before posting, so an agent cannot emit Landrace's own control tokens.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.
+- A step declares what it may do, and the declaration is enforced by diffing its worktree before and after — not by the flags handed to the agent, which a hook-registered executor never sees. A conversation turn is held to the same declaration as the step it continues.
+- Every agent invocation is screened first, including a turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it.
 - The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workflow directory before it is imported, both ends compared after `realpath`.
 - A comment carries control state only because Landrace's own account wrote it. The account is resolved from the token at startup and verified against any configured override; the process refuses to run rather than guess, because a login it cannot resolve would make its own records read as a stranger's.
 
 ## Development
 
 ```bash
-pnpm test        # 531 tests, over two passes
+pnpm test        # the full suite, over two passes
 pnpm typecheck
 pnpm lint
 pnpm build
