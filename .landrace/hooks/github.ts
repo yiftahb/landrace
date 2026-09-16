@@ -25,12 +25,15 @@ import {
   definePreHook,
   defineSource,
   entriesFromComments,
+  LABEL_EFFECT,
   LABELS,
   neutraliseMarkers,
   parseMarker,
+  RECORD_EFFECT,
   renderMarker,
   stageFromLabels,
   STAGE_LABEL_PREFIX,
+  STATUS_EFFECT,
   type ArtifactHook,
   type Candidate,
   type Effect,
@@ -364,15 +367,15 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
     // access can set — unlike a comment, which anyone can post. Forging one
     // is the operator-tools problem (lr: labels are refused there), not an
     // authorship question this hook can answer.
-    case "tracker.label": {
+    case LABEL_EFFECT: {
       const add = (effect.add as string[]) ?? [];
       const remove = (effect.remove as string[]) ?? [];
       return add.every((l) => present.includes(l)) && remove.every((l) => !present.includes(l));
     }
-    case "tracker.status":
+    case STATUS_EFFECT:
       // GitHub has no status field; position is a stage label.
       return present.includes(LABELS.stage(String(effect.value)));
-    case "tracker.comment": {
+    case RECORD_EFFECT: {
       // An unmarked comment is an operator's own turn, applied directly and
       // never planned by a stage — nothing on the ticket would say it had
       // already been posted, so reconciling one could only mean re-posting it
@@ -413,7 +416,7 @@ const PROVIDES = [
   "entries", "tracker.bot",
 ];
 
-const HANDLES = ["tracker.label", "tracker.status", "tracker.comment"];
+const HANDLES = [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT];
 
 /** Observe: turn a GitHub issue into the snapshot the engine reads. */
 async function readTicket(gh: Client, ticket: number): Promise<Record<string, unknown>> {
@@ -442,19 +445,19 @@ async function readTicket(gh: Client, ticket: number): Promise<Record<string, un
 /** Act: every write GitHub owns, each beside the check that says it has landed. */
 async function applyEffect(gh: Client, effect: Effect, ticket: number): Promise<void> {
   switch (effect.type) {
-    case "tracker.label": {
+    case LABEL_EFFECT: {
       for (const l of (effect.remove as string[]) ?? []) await gh.removeLabel(ticket, l);
       await gh.addLabels(ticket, (effect.add as string[]) ?? []);
       return;
     }
-    case "tracker.status": {
+    case STATUS_EFFECT: {
       const want = LABELS.stage(String(effect.value));
       const current = labelNames(await gh.getIssue(ticket)).filter((l) => l.startsWith(STAGE_LABEL_PREFIX));
       for (const stale of current.filter((l) => l !== want)) await gh.removeLabel(ticket, stale);
       await gh.addLabels(ticket, [want]);
       return;
     }
-    case "tracker.comment": {
+    case RECORD_EFFECT: {
       // No kind, no marker: an operator's reply is genuinely a human turn, and
       // stamping it would make the engine read a person's words as its own
       // record. Everything a stage plans names a kind.

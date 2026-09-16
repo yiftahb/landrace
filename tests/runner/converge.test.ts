@@ -836,3 +836,27 @@ describe("an artifact's briefing is built for the step, not for the pass", () =>
     expect(r.why).toMatch(/briefing for artifact "pr".*the api said no/);
   });
 });
+
+/**
+ * §14: the evaluation event says where the ticket *is*, and it has to say
+ * where it is going too.
+ *
+ * Without the destination the log cannot draw the position trail at all: the
+ * last transition of a run is never evaluated from its own destination —
+ * nothing evaluates a terminal ticket — so the stage a ticket actually ended
+ * in appears nowhere in the stream. Reading it back off the tracker instead
+ * means every reader of the log needs to know how that tracker stores a
+ * position, which is the one thing the engine refuses to know.
+ */
+describe("the evaluation event carries the stage the ticket moved to", () => {
+  it("names the destination of a transition, and null when it is not moving", async () => {
+    const seen: LandraceEvent[] = [];
+    await converge(1, deps(world(), { log: createLogger({ sink: (e) => seen.push(e) }) }));
+
+    const evaluated = seen.filter((e) => e.name === "ticket.evaluated");
+    expect(evaluated.map((e) => [e.stage, e.to])).toEqual([
+      [null, "a"],
+      ["a", "b"],
+    ]);
+  });
+});

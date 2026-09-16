@@ -88,9 +88,12 @@ describe("landrace next", () => {
     expect(r.decision.to?.id).toBe("spec");
     // The plan for entering a stage, with the round filled in from the
     // destination's own counter — nothing in `next` reads the network.
-    expect(r.effects).toEqual([{
-      type: "tracker.comment", kind: "enter", stage: "spec", round: 1,
-      marker: "enter:spec:1", body: "Writing the spec, round 1.",
-    }]);
+    expect(r.effects).toEqual([
+      {
+        type: "tracker.comment", kind: "enter", stage: "spec", round: 1,
+        marker: "enter:spec:1", body: "Writing the spec, round 1.",
+      },
+      { type: "tracker.status", value: "spec", stage: "spec", round: 1 },
+    ]);
   });
 });

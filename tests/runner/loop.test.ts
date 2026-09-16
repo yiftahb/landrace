@@ -1,9 +1,6 @@
-import { converge } from "../../src/runner/converge.js";
-import { createDispatcher } from "../../src/runner/effects.js";
-import { createLogger } from "../../src/runner/events.js";
-import type { Executor, HookContext, PostHook } from "../../src/namespace.js";
+import { createHarness } from "../../src/testing/index.js";
 import { deriveRun } from "../../src/core/index.js";
-import type { Effect, Logger, Marker } from "../../src/namespace.js";
+import type { Effect, Marker, ScriptedAnswer } from "../../src/namespace.js";
 import { parseMarker, stageFromLabels } from "../../src/conventions.js";
 import { loadWorkflow } from "../../src/workflow/load.js";
 import { createFakeTracker } from "../support/fake-tracker.js";
@@ -14,7 +11,7 @@ import { createFakeTracker } from "../support/fake-tracker.js";
  * and a hand-written copy of it would be free to drift from the file the
  * daemon actually loads — which is exactly where the cycle was broken.
  */
-type Answer = string | ((round: number) => string);
+type Answer = ScriptedAnswer;
 
 /*
  * The spec answer carries prose as well as its json block, because the prose
@@ -88,17 +85,6 @@ const resolveEveryThread = (gh: World): void => {
   for (const pull of gh.pulls.values()) for (const t of pull.threads) t.isResolved = true;
 };
 
-/** A post hook that fails one effect, to cut a transition's effect list in half mid-flight. */
-const breakingOn = (inner: PostHook, hit: (e: Effect) => boolean): PostHook => ({
-  id: inner.id,
-  handles: inner.handles,
-  satisfied: (s, e) => inner.satisfied(s, e),
-  apply: async (e, ctx) => {
-    if (hit(e)) throw new Error("the process died here");
-    return inner.apply(e, ctx);
-  },
-});
-
 async function run(
   gh: World,
   opts: {
@@ -110,67 +96,31 @@ async function run(
   } = {},
 ) {
   const { workflow, steps } = await loadWorkflow(".landrace");
-  const answers = { ...OUTPUT, ...opts.answers };
-
-  const invocations: Array<{ stage: string; round: number }> = [];
-  /** Where the ticket sat on each pass, without the repeats — the position trail §10 draws. */
-  const positions: string[] = [];
-  let current = "spec";
-  let round = 1;
-  const base = createLogger({ sink: () => {} });
-  const log: Logger = (type, data) => {
-    if (type === "step.invoked") {
-      const e = data as { stage: string; round: number };
-      current = String(e.stage);
-      round = Number(e.round);
-      invocations.push({ stage: current, round });
-    }
-    if (type === "ticket.evaluated") {
-      const at = (data as { stage: string | null }).stage;
-      if (typeof at === "string" && at !== positions.at(-1)) positions.push(at);
-    }
-    base(type, data);
-  };
-
   const { pre, post } = hooksOf(gh);
-  // Keyed by round as well as stage: the spec step's whole point is that one
-  // stage answers differently on a second pass, and a fixed answer per stage
-  // could never drive that.
-  const prompts: Array<{ stage: string; prompt: string }> = [];
-  const executor: Executor = {
-    id: "fake",
-    run: async (prompt) => {
-      prompts.push({ stage: current, prompt });
-      const answer = answers[current];
 
-      // The two things that happen *outside* the engine while a step runs.
-      // The push and the `gh pr create` that follow a build are nobody's hook
-      // yet, and resolving a thread is the reviewer's own act — §10 is
-      // explicit that the fixer never does it.
-      if (current === "build") openThePr(gh, opts.openThreads ?? 2);
-      if (current === "code-review" && round === opts.resolveOn) resolveEveryThread(gh);
-
-      return { text: (typeof answer === "function" ? answer(round) : answer) ?? "no output", sessionId: null };
-    },
-  };
-
-  const result = await converge(1, {
-    workflow, steps,
-    pre,
+  const harness = createHarness({
+    workflow, steps, pre, post,
     artifacts: gh.registry.artifacts,
-    dispatcher: createDispatcher(post.map((h) => (opts.breakOn ? breakingOn(h, opts.breakOn) : h))),
-    executor,
-    ctx: {
-      ticket: 1, config: {} as HookContext["config"], secrets: new Map(),
-      signal: new AbortController().signal, log: () => {},
+    answers: { ...OUTPUT, ...opts.answers },
+    // The two things that happen *outside* the engine while a step runs. The
+    // push and the `gh pr create` that follow a build are nobody's hook yet,
+    // and resolving a thread is the reviewer's own act — §10 is explicit that
+    // the fixer never does it.
+    during: ({ stage, round }) => {
+      if (stage === "build") openThePr(gh, opts.openThreads ?? 2);
+      if (stage === "code-review" && round === opts.resolveOn) resolveEveryThread(gh);
     },
-    log,
+    ...(opts.breakOn ? { interrupt: (effect: Effect) => opts.breakOn?.(effect) ?? false } : {}),
   });
+
+  const { result, calls, trail } = await harness.converge();
 
   const labels = gh.labelsOf(1);
   const comments = gh.comments.get(1) ?? [];
   return {
-    result, invocations, labels, prompts, positions,
+    result, labels, positions: trail,
+    invocations: calls.map(({ stage, round }) => ({ stage, round })),
+    prompts: calls.map(({ stage, prompt }) => ({ stage, prompt })),
     published: gh.published(),
     markers: comments.map((c) => parseMarker(c.body)).filter((m): m is Marker => m !== null),
     run: deriveRun(gh.entriesOf(1), stageFromLabels(labels).stage),
@@ -420,15 +370,15 @@ describe("a ticket goes all the way round §10", () => {
    * The position trail across several converge calls, without the repeat where
    * one call picks up where the last left off.
    *
-   * The final position comes from the ticket's own stage label, not from an
-   * evaluation: nothing evaluates the ticket after the last transition,
-   * because `done` removes `lr:auto` and the pass that follows finds it
-   * ineligible. Position is a label, so this reads the label.
+   * The final position comes out of the evaluation that *moved* the ticket
+   * there, not out of a later one: nothing evaluates the ticket again after
+   * the last transition, because `done` removes `lr:auto` and the next pass
+   * finds it ineligible. So the event says where it went as well as where it
+   * was, and a reader of the log never has to know how this tracker spells a
+   * position.
    */
-  const trail = (...runs: Array<{ positions: string[]; run: { stage: string | null } }>): string[] =>
-    [...runs.flatMap((r) => r.positions), runs.at(-1)?.run.stage ?? null]
-      .filter((at): at is string => at !== null)
-      .filter((at, i, all) => at !== all[i - 1]);
+  const trail = (...runs: Array<{ positions: string[] }>): string[] =>
+    runs.flatMap((r) => r.positions).filter((at, i, all) => at !== all[i - 1]);
 
   it("walks spec → review → done, and the pull request is what turns the second half", async () => {
     const gh = world(["lr:auto"]);

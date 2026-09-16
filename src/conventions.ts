@@ -72,6 +72,19 @@ export const OUTPUT_KIND = "output";
  */
 export const RECORD_EFFECT = "tracker.comment";
 
+/**
+ * The other two writes a tracker owns, named for the same reason and at the
+ * same level: a Jira hook handles `tracker.status` too, and a workflow carried
+ * from one tracker to another should not rewrite every `on_enter` in the file.
+ *
+ * Unlike RECORD_EFFECT the engine never plans one of these — a workflow does —
+ * but the in-memory tracker in `src/testing` has to handle exactly the set a
+ * real one does, and two spellings of a name is how a fake and the integration
+ * it stands in for drift apart without anybody noticing.
+ */
+export const STATUS_EFFECT = "tracker.status";
+export const LABEL_EFFECT = "tracker.label";
+
 /*
  * Caps on what a marker may carry, and on how much of a comment is even
  * looked at. Both exist because a comment body is untrusted text that is

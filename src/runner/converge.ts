@@ -116,6 +116,12 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
     deps.log("ticket.evaluated", {
       ticket, pass,
       stage: decision.stage?.id ?? null,
+      // Where it is going, beside where it is. The last transition of a run is
+      // never evaluated from its destination — nothing evaluates a terminal
+      // ticket — so without this the stage a ticket ended in appears nowhere
+      // in the stream, and the only other place to read it is the tracker's
+      // own idea of a position, which the engine deliberately does not know.
+      to: decision.to?.id ?? null,
       subState: decision.subState ?? null,
       decision: decision.action,
       why: decision.why ?? decision.trigger ?? null,

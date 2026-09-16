@@ -1,0 +1,122 @@
+import { converge } from "../runner/converge.js";
+import { createDispatcher } from "../runner/effects.js";
+import { createLogger } from "../runner/events.js";
+import type {
+  Dispatcher,
+  Harness,
+  HarnessOptions,
+  HarnessRun,
+  HookContext,
+  Logger,
+  PostHook,
+  StepCall,
+} from "../namespace.js";
+import { scriptedExecutor } from "./scripted.js";
+
+/**
+ * A ticket, driven through a workflow, with what happened written down.
+ *
+ * Everything here was copied between test files before it was a function: a
+ * logger that remembers which stage is running so the executor can answer as
+ * it, a position trail stitched out of the evaluation events, and a count of
+ * what each step was paid for. None of that is specific to a workflow or to a
+ * tracker, which is why it ships rather than living in one repository's tests.
+ *
+ * What it deliberately does not own is the world. The hooks come in from
+ * outside — the in-memory tracker beside this file, or a real integration over
+ * a fake HTTP boundary — because a harness that supplied its own tracker would
+ * only ever prove that a workflow works against that harness.
+ */
+export function createHarness(options: HarnessOptions): Harness {
+  const ticket = options.ticket ?? 1;
+  const calls: StepCall[] = [];
+  const trail: string[] = [];
+  let at = { stage: "", round: 1 };
+
+  const push = (stage: unknown): void => {
+    if (typeof stage === "string" && stage !== trail.at(-1)) trail.push(stage);
+  };
+
+  const base = options.log ?? createLogger({ sink: () => {} });
+  const log: Logger = (name, data = {}) => {
+    if (name === "step.invoked") {
+      at = { stage: String(data.stage), round: Number(data.round) };
+    }
+    if (name === "ticket.evaluated") {
+      // Where it was, then where it went. The destination is what makes the
+      // last transition of a run visible at all: nothing evaluates a ticket
+      // from the stage it finished in.
+      push(data.stage);
+      push(data.to);
+    }
+    base(name, data);
+  };
+
+  const scripted = scriptedExecutor(options.answers ?? {}, () => at);
+  const executor = {
+    id: "harness",
+    run: async (prompt: string, opts: { round: number; signal: AbortSignal }) => {
+      calls.push({ ...at, prompt });
+      // The two things that happen outside the engine while a step runs: a
+      // push, and a person. Before the answer, because that is when they
+      // happen — the pull request exists by the time the build says it is done.
+      await options.during?.(at);
+      return scripted.run(prompt, opts);
+    },
+  };
+
+  /** A post hook that dies at a chosen effect, to cut an effect list in half mid-flight. */
+  const breaking = (inner: PostHook, applied: () => number): PostHook => ({
+    id: inner.id,
+    handles: inner.handles,
+    satisfied: (s, e) => inner.satisfied(s, e),
+    apply: async (effect, ctx) => {
+      if (options.interrupt?.(effect, applied())) throw new Error("the process died here");
+      return inner.apply(effect, ctx);
+    },
+  });
+
+  const dispatcherFor = (): Dispatcher => {
+    if (!options.interrupt) return createDispatcher(options.post);
+    // Counted per call, not per harness: "the process died after three
+    // effects" is a fact about one run of the loop, and a second call after a
+    // crash is the resumption, not a continuation of the same count.
+    let applied = 0;
+    return createDispatcher(options.post.map((hook) => breaking(hook, () => ++applied)));
+  };
+
+  return {
+    calls: () => [...calls],
+    trail: () => [...trail],
+    counts: () =>
+      calls.reduce<{ [stage: string]: number }>((acc, call) => ({ ...acc, [call.stage]: (acc[call.stage] ?? 0) + 1 }), {}),
+
+    converge: async (): Promise<HarnessRun> => {
+      const from = { calls: calls.length, trail: trail.length };
+      const result = await converge(ticket, {
+        workflow: options.workflow,
+        steps: options.steps,
+        pre: options.pre,
+        ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+        dispatcher: dispatcherFor(),
+        executor,
+        ctx: {
+          ticket,
+          config: {} as HookContext["config"],
+          secrets: new Map<string, string>(),
+          signal: new AbortController().signal,
+          log: () => {},
+        },
+        log,
+        ...(options.maxPasses === undefined ? {} : { maxPasses: options.maxPasses }),
+      }).catch((e: unknown) => {
+        // A converge that throws is a defect in a hook, not a workflow
+        // outcome, and it has to read as one rather than as a rejected
+        // promise three awaits away from the test that caused it.
+        throw new Error(`converge threw rather than reporting: ${String(e)}`);
+      });
+
+      return { result, calls: calls.slice(from.calls), trail: trail.slice(from.trail) };
+    },
+  };
+}

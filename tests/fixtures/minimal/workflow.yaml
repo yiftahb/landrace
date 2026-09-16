@@ -8,9 +8,17 @@ stages:
       - name: fresh
         when: { "run.stage": null }
     on_enter:
+      # The entry record first, then the status that moves the position: a
+      # crash between them must leave the ticket at the previous stage, whose
+      # trigger replans the identical record.
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
+      - { type: tracker.status, value: spec }
   - id: done
     terminal: true
     triggers:
+      # run.outputs, not outputs: outputs live under run, so the bare path
+      # read nothing at all and this stage was unreachable.
       - name: spec written
-        when: { "outputs.spec": { $exists: true } }
+        when: { "run.outputs.spec": { $exists: true } }
+    on_enter:
+      - { type: tracker.status, value: done }

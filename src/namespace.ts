@@ -533,6 +533,103 @@ export interface TickRow {
 
 export type Eligibility = { eligible: true } | { eligible: false; reason: string };
 
+/* --------------------------------------------------------------- testing -- */
+
+/**
+ * What a scripted step answers. A function is handed the round, because the
+ * whole reason a stage loops is that it answers differently the second time —
+ * a fixed answer per stage could never drive `spec`'s questions-then-spec.
+ */
+export type ScriptedAnswer = string | ((round: number) => string);
+
+/** One invocation, as the harness saw it go out. */
+export interface StepCall {
+  stage: string;
+  round: number;
+  prompt: string;
+}
+
+export interface HarnessRun {
+  result: ConvergeResult;
+  /** The invocations this call made, in order. */
+  calls: StepCall[];
+  /** The positions this call passed through, with repeats collapsed. */
+  trail: string[];
+}
+
+export interface HarnessOptions {
+  workflow: Workflow;
+  steps: Map<string, Step>;
+  pre: PreHook[];
+  post: PostHook[];
+  artifacts?: ArtifactHook[];
+  /** What each stage's step answers. A stage that is invoked with nothing scripted is a gap, and says so. */
+  answers?: { [stage: string]: ScriptedAnswer };
+  ticket?: number;
+  /**
+   * What the world does while a step runs — a push, a pull request appearing,
+   * a person resolving a thread. Called after the invocation is decided and
+   * before the answer comes back, which is where those things actually happen.
+   *
+   * This is also the seam for anything the engine cannot do yet: nothing in
+   * `src/` pushes a branch or opens a pull request, so a test that needs one
+   * stands the push in here rather than pretending the build did it.
+   */
+  during?(call: { stage: string; round: number }): void | Promise<void>;
+  /**
+   * Kill the run at an effect, to prove a crash costs nothing. Handed each
+   * effect and how many have been applied in this call so far; true means the
+   * process died here.
+   */
+  interrupt?(effect: Effect, applied: number): boolean;
+  /** Somewhere for the events to go. The harness reads its own trail off them either way. */
+  log?: Logger;
+  maxPasses?: number;
+}
+
+export interface Harness {
+  /** One converge, as the daemon would run it. */
+  converge(): Promise<HarnessRun>;
+  /** Every position the ticket has passed through, across every call, repeats collapsed. */
+  trail(): string[];
+  /** Every invocation, across every call. */
+  calls(): StepCall[];
+  /** How many times each stage's step has run. */
+  counts(): { [stage: string]: number };
+}
+
+/** A ticket as the in-memory tracker holds it. */
+export interface ExternalTicket {
+  number: number;
+  title: string;
+  body: string;
+  labels: string[];
+  comments: TrackerComment[];
+}
+
+/**
+ * An in-memory stand-in for a tracker, speaking the conventions and no
+ * vendor's dialect at all.
+ *
+ * It is not a second copy of any integration — a real one's hooks are tested
+ * over a fake HTTP boundary, which is the only honest way to test *them*. This is what a workflow author has before any integration exists: a
+ * place for the labels, the records and the human turns to live, so the graph
+ * can be driven and its loops watched.
+ */
+export interface ExternalState {
+  pre: PreHook;
+  post: PostHook;
+  ticket(n: number): ExternalTicket;
+  comments(n: number): string[];
+  entriesOf(n: number): Entry[];
+  /** Where the ticket sits, as the engine would read it: out of a label. */
+  stage(n: number): string | null;
+  label(n: number, label: string): void;
+  unlabel(n: number, label: string): void;
+  /** A person says something, under their own name, so it reads as a human turn. */
+  say(n: number, text: string): void;
+}
+
 /* ----------------------------------------------------------------- agent -- */
 
 export type JsonBlockResult =
