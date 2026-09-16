@@ -12,20 +12,28 @@ import { buildRuntime } from "#cli/start.js";
  * The order the questions are asked in is the tick's own: eligibility first,
  * because a ticket the workflow does not claim is not ours to have an opinion
  * about, and then position — where two stage labels means the ticket cannot be
- * placed at all. Naming the first of the two here would print a position the
- * engine itself refuses to believe.
+ * placed at all.
+ *
+ * This used to say that naming the first of the two "would print a position
+ * the engine itself refuses to believe". The engine believed it and spent
+ * money on it: `stageFromLabels` returned `found[0]` whatever its own
+ * `ambiguous` flag said, and buildSnapshot — the one caller that acts — read
+ * only the stage. The engine now halts on the same fact this row reports, so
+ * the sentence is true and the two surfaces finally agree.
  */
 export function statusRows(workflow: Workflow, candidates: Candidate[]): StatusRow[] {
   return candidates.map((candidate) => {
     const eligibility = eligibilityOf(workflow, candidate);
-    const { stage, ambiguous } = stageFromLabels(candidate.labels);
+    const { stage, ambiguous, found } = stageFromLabels(candidate.labels);
     const row = { ticket: candidate.ticket, title: candidate.title };
 
     // The workflow's own `else`, never a label name of this file's choosing:
     // what "eligible" means belongs to the workflow, and a second copy of that
     // rule here is how a status table and an engine come to disagree.
     if (!eligibility.eligible) return { ...row, stage, note: `skipped: ${eligibility.reason}` };
-    if (ambiguous) return { ...row, stage: null, note: "halted: more than one lr:stage:* label" };
+    // Which ones, because taking one of them off is the fix and an operator
+    // reading a table cannot see the labels from here.
+    if (ambiguous) return { ...row, stage: null, note: `halted: more than one lr:stage:* label (${found.join(", ")})` };
 
     const labels = candidate.labels;
     const note = labels.includes(LABELS.blocked)

@@ -99,3 +99,23 @@ export async function buildSnapshot(opts: {
   // stripped, so it is stable across ticks that changed nothing.
   return { ...withRun, hash: hashSnapshot(withRun, opts.digest ?? sha256) };
 }
+
+/**
+ * Why this ticket cannot be placed at all, or null.
+ *
+ * Asked here rather than inside `decide`, because "how many positions is this
+ * ticket carrying" is a question about the tracker's own labels, and this is
+ * the layer that turns labels into `run.stage`. Asked by converge before it
+ * decides anything, because a ticket with two positions used to run a paid
+ * step at whichever one came first in the array — the engine acting on an
+ * ambiguity both operator surfaces were already refusing to resolve.
+ *
+ * A reason rather than a boolean: an operator reading a halted ticket needs
+ * to know which labels to take off it.
+ */
+export function positionProblem(snapshot: Snapshot): string | null {
+  const labels = ((snapshot.ticket as { labels?: string[] } | undefined)?.labels ?? []);
+  const { ambiguous, found } = stageFromLabels(labels);
+  if (!ambiguous) return null;
+  return `cannot place the ticket: it carries ${found.length} stage labels (${found.join(", ")}), and position is one`;
+}

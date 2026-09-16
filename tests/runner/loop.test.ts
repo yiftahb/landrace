@@ -222,6 +222,29 @@ describe("a crash between the entry record and the position it belongs to", () =
 });
 
 /**
+ * Ambiguity halts, and is never resolved by ordering — except that here it
+ * was. `stageFromLabels` computed `ambiguous` and returned `found[0]` anyway,
+ * and buildSnapshot is the one caller that acts on the answer: two stage
+ * labels ran a paid step at whichever one came first in the array, while
+ * `landrace status` and the MCP `status` tool both reported the very same
+ * ticket as unplaceable. Anyone with triage rights can add a label.
+ */
+describe("a ticket with two stage labels", () => {
+  it("halts either way round, rather than letting array order pick a stage and pay for it", async () => {
+    const forwards = await run(world(["lr:auto", "lr:stage:build", "lr:stage:done"]));
+    const backwards = await run(world(["lr:auto", "lr:stage:done", "lr:stage:build"]));
+
+    for (const r of [forwards, backwards]) {
+      expect(r.invocations).toEqual([]);
+      expect(r.positions).toEqual([]);
+      expect(r.result.settled).toBe("halt");
+      expect(r.result.why).toMatch(/build/);
+      expect(r.result.why).toMatch(/done/);
+    }
+  });
+});
+
+/**
  * A ticket's whole position is one label, and the swap that writes it is two
  * requests with an await in between — so a crash, a 502 on the add, or a
  * person with triage rights can leave a ticket with none at all. "No position"

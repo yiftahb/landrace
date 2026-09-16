@@ -25,10 +25,25 @@ export const isEngineLabel = (label: string): boolean =>
 const STAGE_RE = /^lr:stage:(.+)$/;
 export const STAGE_LABEL_PREFIX = "lr:stage:";
 
-/** Position is a label, so two of them means we cannot place the ticket. */
-export function stageFromLabels(labels: string[]): { stage: string | null; ambiguous: boolean } {
+/**
+ * Position is a label, so two of them means we cannot place the ticket.
+ *
+ * `stage` is null when there are two, not `found[0]`. Returning the first was
+ * the only first-match-wins in this codebase, and it was in the hot path of
+ * the one thing the design says it never does: `landrace status` and the MCP
+ * `status` tool both read `ambiguous` and reported the ticket as unplaceable,
+ * while buildSnapshot — the one caller that *acts* — read `.stage`, dropped
+ * the flag, and ran a paid step at whichever label happened to come first in
+ * the array. The same ticket with its two labels the other way round ran a
+ * different stage.
+ *
+ * `found` is returned so a halt can name which two, the way every other
+ * ambiguity in the engine names what it could not tell apart.
+ */
+export function stageFromLabels(labels: string[]): { stage: string | null; ambiguous: boolean; found: string[] } {
   const found = labels.map((l) => STAGE_RE.exec(l)?.[1]).filter((s): s is string => Boolean(s));
-  return { stage: found[0] ?? null, ambiguous: found.length > 1 };
+  const ambiguous = found.length > 1;
+  return { stage: ambiguous ? null : (found[0] ?? null), ambiguous, found };
 }
 
 /**

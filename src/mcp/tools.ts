@@ -92,7 +92,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       const snapshot = await snapshotOf(ticket);
       const issue = (snapshot.ticket ?? {}) as { title?: string; url?: string; state?: string; labels?: string[] };
       const labels = issue.labels ?? [];
-      const { stage, ambiguous } = stageFromLabels(labels);
+      const { stage, ambiguous, found } = stageFromLabels(labels);
       const run = snapshot.run;
 
       return {
@@ -102,7 +102,11 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
         state: issue.state ?? null,
         labels,
         stage,
-        ...(ambiguous ? { problem: "more than one lr:stage:* label — the ticket cannot be placed" } : {}),
+        // Which ones: taking one of them off is the fix, and the engine now
+        // halts on this same fact rather than picking one and paying for it.
+        ...(ambiguous
+          ? { problem: `more than one lr:stage:* label (${found.join(", ")}) — the ticket cannot be placed` }
+          : {}),
         eligible: labels.includes(LABELS.eligible),
         waitingOnYou: labels.includes(LABELS.awaiting),
         blocked: labels.includes(LABELS.blocked),

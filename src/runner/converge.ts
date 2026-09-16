@@ -5,7 +5,7 @@ import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot } from 
 import { messageOf } from "#runner/errors.js";
 import { MIN_SECRET_LENGTH, redactValue } from "#runner/events.js";
 import { buildBriefing } from "#runner/artifacts.js";
-import { buildSnapshot } from "#runner/snapshot.js";
+import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
 import { runStep } from "#runner/step.js";
 
 /** Generous. The real bound on a run is the workflow's iteration budget. */
@@ -138,6 +138,19 @@ async function converging(
     // decision below is always reported alongside the thing it was decided
     // from, and never at the price of a whole snapshot per pass in a quiet log.
     deps.log("snapshot.built", { ticket, pass, snapshot });
+
+    // Before anything is decided, because acting on an unplaceable ticket is
+    // what this closes: two `lr:stage:*` labels used to run a paid step at
+    // whichever one came first in the array, and the same ticket with them
+    // the other way round ran a different stage. Ambiguity halts here like
+    // every other ambiguity in this engine, and like both operator surfaces
+    // were already reporting for exactly this ticket.
+    const unplaceable = positionProblem(snapshot);
+    if (unplaceable) {
+      deps.log("ticket.evaluated", { ticket, pass, stage: null, decision: "halt", why: unplaceable });
+      return { passes: pass, settled: "halt", why: unplaceable };
+    }
+
     const decision = decide(deps.workflow, snapshot);
 
     deps.log("ticket.evaluated", {
