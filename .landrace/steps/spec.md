@@ -1,5 +1,4 @@
 ---
-skills: [superpowers:brainstorming, superpowers:writing-plans]
 capabilities: [repo:read]
 model: opus
 output:
@@ -22,6 +21,10 @@ Cover the problem and the proposed solution: what is broken or missing, what
 you propose to do about it, and how someone will know it worked.
 
 Rules:
+* Use the `superpowers:brainstorming` and `superpowers:writing-plans` skills.
+  Front matter cannot ask for them — nothing in this engine hands a skill to an
+  agent, so a `skills:` key there would be a claim nobody keeps. Said here, it
+  is at least read, and a skill that is not installed says so out loud.
 * Use codebase-memory-mcp to discover the codebase and understand the architecture.
 * Keep it simple and short, do not over engineer or over complicate.
 * No pre-text, post-text or slop.

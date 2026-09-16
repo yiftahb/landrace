@@ -41,6 +41,33 @@ describe("renderPrompt", () => {
   });
 });
 
+describe("the model a step declares", () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const watcher: Executor = {
+    id: "watch",
+    run: async (_prompt, opts) => {
+      seen.push(opts as unknown as Record<string, unknown>);
+      return { text: '```json\n{"kind":"spec"}\n```', sessionId: null };
+    },
+  };
+  beforeEach(() => { seen.length = 0; });
+
+  /*
+   * `triage.md` says `model: haiku` and every classification it ever made ran
+   * on opus, because nothing read the field. Front matter that names a model
+   * and does not get one is real money on every human reply.
+   */
+  it("reaches the executor", async () => {
+    await run("", { step: { ...step, model: "haiku" }, executor: watcher });
+    expect(seen[0]).toMatchObject({ model: "haiku" });
+  });
+
+  it("is absent when the step names none, so the operator's own default still decides", async () => {
+    await run("", { executor: watcher });
+    expect(seen[0]).not.toHaveProperty("model");
+  });
+});
+
 describe("runStep", () => {
   it("routes an output shape to the effect the step declared", async () => {
     const r = await run('done\n```json\n{"kind":"spec"}\n```');

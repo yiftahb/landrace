@@ -1,6 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse } from "yaml";
+import type { z } from "zod";
 import type { ContainedPath, LoadFailureRule, Step, Workflow } from "#namespace.js";
 import { stepFrontMatterSchema, workflowSchema } from "#workflow/schema.js";
 
@@ -76,23 +77,51 @@ export async function containedPath(root: string, relative: string): Promise<Con
     : { ok: false, kind: "unsafe", reason: "is a link to something outside the directory" };
 }
 
+/**
+ * A schema failure, said in one line an operator can act on.
+ *
+ * The unrecognised-key case is the one worth spelling out, because both
+ * schemas are strict and that is the whole point of them: a key the engine
+ * does not read is refused at load rather than parsed and silently dropped.
+ * `skills:`, `budget.spec` and `artifacts:` were each written in a real file,
+ * ignored, and never mentioned again — and `model: haiku` was ignored exactly
+ * the same way, at opus prices, on every human reply. `capabilities:` was
+ * always refused when nothing enforced it; this is the same rule, applied to
+ * every other field instead of only that one.
+ *
+ * Zod's own `.message` for a failure is a JSON dump of every issue, which is a
+ * stack trace by another name — and CLAUDE.md: errors report, they do not
+ * crash.
+ */
+function sayWhy(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => {
+      const at = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+      if (issue.code !== "unrecognized_keys") return `${at}${issue.message}`;
+      const named = issue.keys.map((k) => `"${k}"`).join(", ");
+      return (
+        `${at}${named} ${issue.keys.length > 1 ? "are" : "is"} not read by this engine; ` +
+        "a declaration nothing reads is a promise nothing keeps, so it is refused rather than ignored"
+      );
+    })
+    .join("; ");
+}
+
 const FRONT_MATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 export function parseStep(source: string): Step {
   const m = source.match(FRONT_MATTER);
   if (!m) throw new Error("a step file must begin with YAML front matter");
-  const front = stepFrontMatterSchema.parse(parse(m[1] as string) ?? {});
-  return { ...front, prompt: m[2] as string };
+  const front = stepFrontMatterSchema.safeParse(parse(m[1] as string) ?? {});
+  if (!front.success) throw new Error(`front matter is not valid: ${sayWhy(front.error)}`);
+  return { ...front.data, prompt: m[2] as string };
 }
 
 export async function loadWorkflow(dir: string): Promise<{ workflow: Workflow; steps: Map<string, Step> }> {
   const raw = parse(await readFile(join(dir, "workflow.yaml"), "utf8"));
-  let workflow: Workflow;
-  try {
-    workflow = workflowSchema.parse(raw) as Workflow;
-  } catch (e) {
-    throw new WorkflowLoadError("schema", (e as Error).message);
-  }
+  const parsed = workflowSchema.safeParse(raw);
+  if (!parsed.success) throw new WorkflowLoadError("schema", sayWhy(parsed.error));
+  const workflow = parsed.data as Workflow;
 
   const seen = new Set<string>();
   for (const stage of workflow.stages) {
@@ -120,7 +149,13 @@ export async function loadWorkflow(dir: string): Promise<{ workflow: Workflow; s
     // Existence was decided above, by the same realpath the containment check
     // used; a second "does it exist" guard here would be unreachable.
     const source = await readFile(where.path, "utf8");
-    steps.set(stage.step, parseStep(source));
+    try {
+      steps.set(stage.step, parseStep(source));
+    } catch (e) {
+      // Named, because "front matter is not valid" is unactionable when a
+      // workflow has five step files and the loader read them in graph order.
+      throw new WorkflowLoadError("schema", `step ${stage.step}: ${(e as Error).message}`);
+    }
   }
 
   return { workflow, steps };

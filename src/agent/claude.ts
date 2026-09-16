@@ -149,7 +149,7 @@ export function createClaudeExecutor(opts: {
 
   return defineExecutor({
     id: "claude",
-    async run(prompt, { round, resume, cwd, capabilities, signal }) {
+    async run(prompt, { round, resume, cwd, capabilities, model: stepModel, signal }) {
       if (signal.aborted) {
         // Nothing checked this before `spawn` in the first cut, so a run
         // cancelled before it started launched the (paid) agent anyway.
@@ -180,15 +180,20 @@ export function createClaudeExecutor(opts: {
       // than "asked nicely".
       const noTools = declared ? !mayWrite : restricted;
 
+      // The step's own declaration, or the operator's default when it made
+      // none — checked here rather than at construction alone, because a
+      // per-run value comes out of a repo file a contributor's PR can edit.
+      const chosenModel = stepModel ?? model;
+
       assertPermissionMode(mode);
-      if (model !== undefined) assertArgShape("model", model);
+      if (chosenModel !== undefined) assertArgShape("model", chosenModel);
       if (resume !== undefined) assertArgShape("resume", resume);
       const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
 
       // json output carries session_id; without it a conversation cannot continue.
       const args = ["-p", "--output-format", "json", "--permission-mode", mode];
       if (noTools) args.push("--restricted");
-      if (model !== undefined) args.push("--model", model);
+      if (chosenModel !== undefined) args.push("--model", chosenModel);
       if (resume !== undefined) args.push("--resume", resume);
 
       return new Promise((resolve, reject) => {

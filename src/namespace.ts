@@ -131,10 +131,10 @@ export interface Workflow {
   name: string;
   stages: Stage[];
   eligible?: EligibilityRule[];
-  budget?: { [key: string]: unknown };
+  /** The one budget the engine reads; every cap lives in the trigger that enforces it. */
+  budget?: { stepTimeout?: string | undefined };
   /** Module paths, relative to the workflow directory, in pre-hook declaration order. */
   hooks?: string[];
-  artifacts?: { [name: string]: { hook: string; ref: string } };
 }
 
 export type SubState = "pending" | "complete" | "failed";
@@ -320,6 +320,17 @@ export interface Executor {
       round: number;
       resume?: string;
       cwd?: string;
+      /**
+       * The model the *step* asked for, which wins over whatever default the
+       * executor was built with — the same way a step's capabilities win over
+       * the operator's permission mode. Absent means "the operator decides":
+       * a step that names no model must not be quietly pinned to one here.
+       *
+       * An executor that cannot honour a named model must refuse the run.
+       * Dropping it silently is how `triage.md`'s `model: haiku` came to be
+       * billed at opus on every human reply.
+       */
+      model?: string;
       /**
        * What the step declared it may do — the vocabulary is in
        * `src/conventions.ts`. An executor that cannot enforce one of these

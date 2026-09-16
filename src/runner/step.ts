@@ -228,6 +228,10 @@ export async function runStep(opts: {
       // is the most restricted one there is, and an executor reading
       // `undefined` would fall back to its own operator-wide default instead.
       capabilities: step.capabilities ?? [],
+      // Only when the step named one: absent is "the operator's default
+      // decides", and `model: undefined` is a different claim under
+      // exactOptionalPropertyTypes than no key at all.
+      ...(step.model === undefined ? {} : { model: step.model }),
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
     }));
   } catch (e) {

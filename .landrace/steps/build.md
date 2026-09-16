@@ -1,5 +1,4 @@
 ---
-skills: [superpowers:executing-plans]
 capabilities: [repo:read, repo:write]
 model: opus
 output:
@@ -15,7 +14,8 @@ Implement the spec for #{ticket.number}: {ticket.title}.
 
 The approved spec is at {artifacts.spec.url}.
 
-Work through it and commit as you go. Run the test suite and the lint checks
+Use the `superpowers:executing-plans` skill. Work through the spec and commit
+as you go. Run the test suite and the lint checks
 before you finish — a reviewer's round spent on something you could have caught
 yourself is a wasted round.
 

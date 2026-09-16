@@ -211,6 +211,23 @@ describe("claude executor", () => {
   // flag slot even inside a validated argv array, so each value that reaches
   // argv is checked against the shape it is actually allowed to have.
 
+  /*
+   * A step's own front matter wins over the operator's default, the same way
+   * its capabilities do. Without it, `triage.md`'s `model: haiku` was billed
+   * at the operator's `agent.model` on every single human reply.
+   */
+  it("lets the run's own model override the executor's default", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    const r = await run("x", { model: "opus" }, { cwd: dir, model: "haiku" });
+    expect(r.text).toContain("--model haiku");
+    expect(r.text).not.toContain("opus");
+  });
+
+  it("refuses a per-run model shaped like a flag, exactly as it refuses a configured one", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    await expect(run("x", {}, { cwd: dir, model: "--dangerous-flag" })).rejects.toThrow(/refused model/);
+  });
+
   it("refuses a model name shaped like a flag instead of passing it through to argv", async () => {
     const dir = withCfg({ out: "unreachable" });
     await expect(run("x", { model: "--dangerous-flag" }, { cwd: dir })).rejects.toThrow(/refused model/);

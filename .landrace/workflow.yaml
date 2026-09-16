@@ -16,11 +16,12 @@ eligible:
   - when: { "ticket.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
 
+# One key, because one key is read. The spec and review caps are the `$lt`
+# comparisons in the triggers below, where the validator can see them (§11.4)
+# and where editing one actually changes what happens — `spec: 3` here was a
+# number an operator could edit to no effect at all.
 budget:
-  spec: 3
-  review: 4
   stepTimeout: 10m
-  humanWait: 24h
 
 # Two rules govern every on_enter list below, and both are load-bearing.
 #
