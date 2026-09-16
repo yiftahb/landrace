@@ -1,6 +1,23 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
+/**
+ * Everything under src and tests is imported by subpath — `#core/index.js`,
+ * `#tests/support/fake-tracker.js` — resolved from package.json's `imports`
+ * map, which is the one table node, tsc, tsup and jest all read.
+ *
+ * A relative import is not the same specifier written differently: node, which
+ * runs `src` directly under type stripping, does not resolve `./reexec.js` to
+ * `reexec.ts` at all, so one relative line is a file the runtime cannot load
+ * while the bundler and the typechecker both say it is fine. Stated once and
+ * reused below, because the core block redeclares this rule and a rule
+ * redeclared is a rule replaced.
+ */
+const noRelativeImports = {
+  group: ["./*", "./**", "../*", "../**"],
+  message: "imports under src/ and tests/ are absolute: use a #subpath from package.json's imports map",
+};
+
 export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -20,10 +37,15 @@ export default tseslint.config(
     },
   },
   {
+    files: ["src/**/*.ts", "tests/**/*.ts"],
+    rules: { "no-restricted-imports": ["error", { patterns: [noRelativeImports] }] },
+  },
+  {
     files: ["src/core/**/*.ts"],
     rules: {
       "no-restricted-imports": ["error", {
         patterns: [
+          noRelativeImports,
           { group: ["node:*"], message: "core is pure: no node builtins" },
           // Named as a sibling layer is now written — `#workflow/load.js`, not
           // `../workflow/load.js`. `regex`, not `group`: a group is matched
