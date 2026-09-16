@@ -310,6 +310,26 @@ describe("semantic validation", () => {
     expect(rules(w, steps)).toContain("step-output-required");
   });
 
+  /*
+   * The overrides only reach a record the *route* carries. A route that sends
+   * its content off the tracker gets a record beside it that the workflow does
+   * not write, so `kind` there names the destination's own field and retargets
+   * nothing. Flagging it would report a healthy workflow as broken, which is
+   * how a validator gets switched off.
+   */
+  it("does not flag a route whose destination is not the tracker, whatever kind it names", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { spec: {} },
+        routes: [{ when: { kind: "spec" }, effect: { type: "artifact.publish", artifact: "spec", kind: "note" } }],
+      },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    expect(rules(w, steps)).not.toContain("step-output-required");
+  });
+
   it("flags a stage whose only route retargets stage: to a different stage", () => {
     const steps = new Map<string, Step>([["s.md", {
       prompt: "go",

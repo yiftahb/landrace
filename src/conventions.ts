@@ -62,6 +62,16 @@ export const ENTRY_KIND = "enter";
  */
 export const OUTPUT_KIND = "output";
 
+/**
+ * The effect type that leaves a durable record on the tracker.
+ *
+ * Tracker-agnostic in the same way the marker format is — a Jira hook handles
+ * the same type — and named here because the engine itself plans one in two
+ * places a workflow does not reach: a step whose route sends its content off
+ * the tracker still records that it ran, and a rejected output records why.
+ */
+export const RECORD_EFFECT = "tracker.comment";
+
 /*
  * Caps on what a marker may carry, and on how much of a comment is even
  * looked at. Both exist because a comment body is untrusted text that is

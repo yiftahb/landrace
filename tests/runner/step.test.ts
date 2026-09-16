@@ -47,6 +47,7 @@ describe("runStep", () => {
     expect(r).toMatchObject({ ok: true, sessionId: "sid-2" });
     expect((r as Ok).effects).toMatchObject([
       { type: "artifact.publish", artifact: "spec" },
+      { type: "tracker.comment", kind: "output" },
     ]);
   });
 
@@ -63,9 +64,48 @@ describe("runStep", () => {
   it("records a route effect as the step's output, so the stage can advance", async () => {
     // Without this the entry is written as a plain note, outputs.<stage> is
     // never set, and the workflow cannot leave the stage it just ran.
-    const r = await run('```json\n{"kind":"spec"}\n```');
+    const r = await run('```json\n{"kind":"questions"}\n```');
     expect((r as Ok).effects[0])
       .toMatchObject({ kind: "output", stage: "spec", round: 2 });
+  });
+
+  /**
+   * A route says where the step's *content* goes. That the step ran, and what
+   * it said, is the engine's own bookkeeping, and it is what assess() reads to
+   * decide the round is done — so it cannot be something a route can route
+   * away. Published to Pages with no record, the spec stage produced a page
+   * and stayed pending: the next poll re-derived it, paid for the step again,
+   * published the same document again, forever.
+   */
+  describe("a route that sends the content off the tracker still records the output", () => {
+    const publishing = async (text = '# The spec\n```json\n{"kind":"spec"}\n```') => (await run(text)) as Ok;
+
+    it("plans the publish first and the record second", async () => {
+      const r = await publishing();
+      expect(r.effects).toMatchObject([
+        { type: "artifact.publish", artifact: "spec", body: "# The spec" },
+        { type: "tracker.comment", kind: "output", stage: "spec", round: 2, marker: "output:spec:2", output: { kind: "spec" } },
+      ]);
+    });
+
+    /*
+     * The order is the recovery property, not a detail. Recorded first, a
+     * crash before the publish leaves a stage that reads as complete with
+     * nothing published, and the step's effects are never replanned — the
+     * document is lost for good. Published first, a crash before the record
+     * leaves the stage pending: the next tick pays for one more invocation,
+     * republishes identical content as a no-op, and records it.
+     */
+    it("carries the record's own fields on the record, not on the publish", async () => {
+      const [publish, record] = (await publishing()).effects;
+      expect(publish).not.toHaveProperty("output");
+      expect(record?.body).toEqual(expect.stringContaining("spec"));
+    });
+
+    it("does not record twice when the route already writes to the tracker", async () => {
+      const r = (await run('```json\n{"kind":"questions"}\n```')) as Ok;
+      expect(r.effects).toHaveLength(1);
+    });
   });
 
   it("rejects output whose discriminator is not a declared shape", async () => {

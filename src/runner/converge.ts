@@ -1,4 +1,5 @@
 import { decide, planEffects, reconcile } from "../core/index.js";
+import { RECORD_EFFECT } from "../conventions.js";
 import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot } from "../namespace.js";
 import { messageOf } from "./errors.js";
 import { MIN_SECRET_LENGTH, redactValue } from "./events.js";
@@ -276,7 +277,7 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
 
 function malformedEffect(stage: string, round: number, reason: string, redactValues: string[]): Effect {
   return {
-    type: "tracker.comment", kind: "malformed", stage, round,
+    type: RECORD_EFFECT, kind: "malformed", stage, round,
     marker: `malformed:${stage}:${round}`,
     body: malformedBody(reason, redactValues),
   };

@@ -17,8 +17,14 @@ import { createFakeTracker } from "../support/fake-tracker.js";
  */
 type Answer = string | ((round: number) => string);
 
+/*
+ * The spec answer carries prose as well as its json block, because the prose
+ * *is* the document: the block is stripped out and what is left is what gets
+ * published. An answer that is nothing but a block produced no spec, and the
+ * artifact hook refuses to put an empty page up.
+ */
 const OUTPUT: Record<string, Answer> = {
-  spec: '```json\n{"kind":"spec","title":"T"}\n```',
+  spec: '# The spec\n\nDo the thing.\n\n```json\n{"kind":"spec","title":"T"}\n```',
   triage: '```json\n{"intent":"approve"}\n```',
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
@@ -30,11 +36,15 @@ type World = ReturnType<typeof createFakeTracker>;
 const world = (labels: string[]): World =>
   createFakeTracker([{ number: 1, title: "Add export", body: "please", labels }]);
 
-/** The real GitHub hooks, as the loader classified them out of the hook module. */
+/**
+ * The real GitHub hooks, as the loader classified them out of the hook module:
+ * the tracker's two halves, and both halves of the spec artifact — a ticket
+ * cannot leave `spec` without something publishing what the step wrote.
+ */
 const hooksOf = (gh: World) => {
-  const [pre] = gh.registry.pre;
-  const [post] = gh.registry.post;
-  if (!pre || !post) throw new Error("the fake tracker registered no hooks");
+  const pre = gh.registry.pre;
+  const post = gh.registry.post;
+  if (pre.length !== 2 || post.length !== 2) throw new Error("the fake tracker registered the wrong hooks");
   return { pre, post };
 };
 
@@ -51,18 +61,25 @@ const say = (gh: World, body: string): void => {
 };
 
 /**
- * The PR the review cycle turns on. No artifact hook exists yet, so the facts
- * §10's gates read are supplied here — deliberately *unchanging* across the
- * loop: the fixer never resolves a thread (§10: the party that raised a
+ * The PR the review cycle turns on. No PR artifact hook exists yet, so the
+ * facts §10's gates read are supplied here — deliberately *unchanging* across
+ * the loop: the fixer never resolves a thread (§10: the party that raised a
  * finding closes it), so no external value distinguishes one review round
  * from the next.
+ *
+ * It merges into `artifacts` rather than replacing it, because the spec
+ * artifact's own read is already there: fragments merge with a shallow spread,
+ * so a second hook writing the whole key drops what the first one contributed.
  */
 const prHook = (openThreads: number) =>
   definePreHook({
     id: "pr",
-    provides: ["artifacts.pr.number", "artifacts.pr.openThreads", "artifacts.pr.merged", "artifacts.spec.url"],
-    run: () => ({
-      artifacts: { pr: { number: 7, openThreads, merged: false }, spec: { url: "https://example.invalid/spec" } },
+    provides: ["artifacts.pr.*"],
+    run: ({ snapshot }) => ({
+      artifacts: {
+        ...(snapshot.artifacts as Record<string, unknown> | undefined),
+        pr: { number: 7, openThreads, merged: false },
+      },
     }),
   });
 
@@ -114,8 +131,8 @@ async function run(
 
   const result = await converge(1, {
     workflow, steps,
-    pre: [pre, prHook(opts.openThreads ?? 2)],
-    dispatcher: createDispatcher([opts.breakOn ? breakingOn(post, opts.breakOn) : post]),
+    pre: [...pre, prHook(opts.openThreads ?? 2)],
+    dispatcher: createDispatcher(post.map((h) => (opts.breakOn ? breakingOn(h, opts.breakOn) : h))),
     executor,
     ctx: {
       ticket: 1, config: {} as HookContext["config"], secrets: new Map(),
@@ -128,6 +145,7 @@ async function run(
   const comments = gh.comments.get(1) ?? [];
   return {
     result, invocations, labels, prompts,
+    published: gh.published(),
     markers: comments.map((c) => parseMarker(c.body)).filter((m): m is Marker => m !== null),
     run: deriveRun(gh.entriesOf(1), stageFromLabels(labels).stage),
   };
@@ -219,7 +237,7 @@ describe("the spec phase routes on what the step actually said", () => {
     // questions or a spec, never both, and the gate reads which arrived".
     spec: (round) => round === 1
       ? '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```'
-      : '```json\n{"kind":"spec","title":"Export CSV"}\n```',
+      : '# Export CSV\n\nOne file, comma separated.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
   };
 
   it("reaches spec-questions because outputs.spec.kind resolved to questions", async () => {
@@ -242,6 +260,30 @@ describe("the spec phase routes on what the step actually said", () => {
     expect(r.run.outputs.spec).toEqual({ kind: "spec", title: "Export CSV" });
     expect(r.run.counters.spec).toBe(2);
     expect(r.labels).toContain("lr:stage:spec-human-review");
+
+    // The document is on the Pages branch, and the ticket carries only the
+    // record that it was written — §8.2's destination, in place of the comment
+    // it was rerouted to while no artifact hook existed.
+    expect(r.published.get("specs/1/index.md")).toBe("# Export CSV\n\nOne file, comma separated.");
+    expect((gh.comments.get(1) ?? []).map((c) => c.body).join("\n")).not.toContain("One file, comma separated");
+    expect(r.markers.some((m) => m.kind === "output" && m.stage === "spec" && m.round === 2)).toBe(true);
+  });
+
+  /*
+   * The stall this revert had to close. The route no longer writes to the
+   * tracker, so without a record beside it the stage produces a page and stays
+   * pending: converge catches the second attempt in the same call, and every
+   * poll after that pays for one more invocation of an opus step.
+   */
+  it("finishes the round rather than re-invoking a stage that published and recorded nothing", async () => {
+    const gh = world(["lr:auto"]);
+    await run(gh, { answers });
+    say(gh, "in-house, and CSV only");
+    const r = await run(gh, { answers });
+
+    expect(r.invocations).toEqual([{ stage: "spec", round: 2 }]);
+    expect(r.result.why ?? "").not.toMatch(/left nothing readable/);
+    expect(r.run.rounds.spec).toEqual({ entered: 2, output: 2 });
   });
 
   it("routes the reply through triage and on to build", async () => {
@@ -262,6 +304,10 @@ describe("the spec phase routes on what the step actually said", () => {
     // nothing — lastHuman is an Entry, and the comment text is on its `data` —
     // so the judge was shown its own placeholder and asked to classify it.
     expect(r.prompts.find((p) => p.stage === "triage")?.prompt).toContain("looks right, go ahead");
+    // `{artifacts.spec.url}` in build.md and code-review.md, filled by the
+    // artifact's own read rather than by a value a test supplied.
+    expect(r.prompts.find((p) => p.stage === "build")?.prompt)
+      .toContain("https://acme.github.io/widgets/specs/1/");
     // Through the spec phase and the whole review cycle in one call, settling
     // on the workflow's own budget rather than on the engine's pass cap.
     expect(r.result.settled).not.toBe("cap");

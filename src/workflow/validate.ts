@@ -1,4 +1,4 @@
-import { ENTRY_KIND, isReservedId, OUTPUT_KIND } from "../conventions.js";
+import { ENTRY_KIND, isReservedId, OUTPUT_KIND, RECORD_EFFECT } from "../conventions.js";
 import { identityOf } from "../core/locate.js";
 import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
 import type { Condition, Problem, Stage, Step, Workflow } from "../namespace.js";
@@ -403,13 +403,18 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   // opus invocations in one converge() call, then the same again on the
   // next poll.
   //
-  // Declaring an output block is necessary but not sufficient: a route's own
-  // `effect` can override the `kind` runStep would otherwise default to
-  // "output", or the `stage` it would otherwise default to the stage's own
-  // id (src/runner/step.ts: `{ kind: OUTPUT_KIND, ...expanded }`). A step whose
-  // *every* route does one of those can never produce a same-stage "output"
-  // entry either, and is exactly as stuck as one with no output block at
-  // all — just less visibly so, since `output:` is right there in the file.
+  // Declaring an output block is necessary but not sufficient: a route that
+  // writes to the tracker *is* the record, so its own `effect` can override
+  // the `kind` runStep would otherwise default to "output", or the `stage` it
+  // would otherwise default to the stage's own id. A step whose *every* route
+  // does one of those can never produce a same-stage "output" entry either,
+  // and is exactly as stuck as one with no output block at all — just less
+  // visibly so, since `output:` is right there in the file.
+  //
+  // A route to any other destination carries no record, so runStep plans one
+  // beside it with the kind and stage fixed, and the route's fields describe
+  // the destination rather than the record. There is nothing for such a route
+  // to retarget, and flagging one would report a healthy workflow as broken.
   /*
    * Every stage that runs a step records that it started it. Not only the
    * stages in a cycle: which those are is a question about the derived
@@ -441,6 +446,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
       continue;
     }
     const producesOwnOutput = step.output.routes.some((route) => {
+      if (route.effect.type !== RECORD_EFFECT) return true;
       const kind = route.effect.kind;
       const target = route.effect.stage;
       return (kind === undefined || kind === OUTPUT_KIND) && (target === undefined || target === stage.id);

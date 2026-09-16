@@ -1,6 +1,6 @@
 import { compile } from "../core/index.js";
 import type { Effect, Logger, Snapshot, Step, StepResult } from "../namespace.js";
-import { isReservedId, OUTPUT_KIND, outputValueProblem } from "../conventions.js";
+import { isReservedId, OUTPUT_KIND, outputValueProblem, RECORD_EFFECT } from "../conventions.js";
 import type { Executor } from "../namespace.js";
 import { screenPrompt } from "../agent/screen.js";
 import { extractJsonBlock } from "../agent/json-block.js";
@@ -238,27 +238,51 @@ export async function runStep(opts: {
   const [blockStart, blockEnd] = extracted.span;
   const body = (text.slice(0, blockStart) + text.slice(blockEnd)).trim();
 
-  // One route, one effect — deliberately, not a gap. No shipped step needs
-  // fan-out (publish the artifact *and* post a comment for the same output)
-  // today — recheck `.landrace/steps/*.md` before trusting that claim to
-  // still hold — and when one does, the answer is a route schema change to
-  // let one route declare `effects:` plural, not two routes matching the
-  // same shape to get two effects: two routes matching one output is
-  // exactly the ambiguity halted above, so it must stay a way to get
-  // halted, not a way to fan out.
+  // One route, one destination — deliberately, not a gap. A route says where
+  // the step's *content* goes; it never gets to say whether the result is
+  // recorded, which is why the record below is not fan-out a workflow can ask
+  // for. Two routes matching one output stays exactly the ambiguity halted
+  // above, and a step that genuinely needs two destinations wants a route
+  // schema change (`effects:` plural), not a second matching route.
   const expanded = Object.fromEntries(
     Object.entries(route.effect).map(([k, v]) => [k, expand(v, vars)]),
   ) as Effect;
-  // kind defaults to OUTPUT_KIND: this effect *is* the step's result, and the
-  // engine derives outputs.<stage> from entries of that kind. A route may
-  // override it, but forgetting it would leave the stage unable to advance.
-  //
-  // `output` goes on last, after the route's own fields, because it is the
-  // one field on this effect the workflow does not get to write: it is what
-  // the step actually produced, already cut to the declared shape. A route
-  // declaring `output:` would otherwise pin the state every later predicate
-  // reads to a constant chosen in the file.
-  const effect: Effect = { body, stage: stageId, round, kind: OUTPUT_KIND, ...expanded, output: value };
+  const destination: Effect = { body, stage: stageId, round, ...expanded };
 
-  return { ok: true, effects: [effect], sessionId };
+  /*
+   * The record of what the step produced, which is the engine's own
+   * bookkeeping rather than the workflow's: core counts these entries to
+   * derive the stage's round and its outputs, so a stage whose output is
+   * never recorded stays pending forever — it is re-derived, re-invoked and
+   * paid for on every poll, whatever it actually accomplished.
+   *
+   * A route that writes to the tracker carries the record itself; one that
+   * sends the content somewhere else — an artifact, a page — needs its own,
+   * because nothing it wrote is on the ticket to read back. `kind` defaults to
+   * OUTPUT_KIND and a route may override it, but `output` goes on last: it is
+   * the one field the workflow does not get to write, being what the step
+   * actually produced, already cut to the declared shape.
+   */
+  if (destination.type === RECORD_EFFECT) {
+    return { ok: true, effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value }], sessionId };
+  }
+
+  const record: Effect = {
+    type: RECORD_EFFECT,
+    kind: OUTPUT_KIND,
+    stage: stageId,
+    round,
+    // Its own marker namespace, so it cannot collide with one a route named.
+    marker: `${OUTPUT_KIND}:${stageId}:${round}`,
+    body: `Recorded the output of "${stageId}", round ${round}.`,
+    output: value,
+  };
+
+  // The destination first, and the order is the recovery property. Recorded
+  // first, a crash before the content is written leaves a stage that reads as
+  // complete with nothing published — and a step's effects are never replanned,
+  // so the document is lost for good. This way round, a crash costs one more
+  // invocation: the stage is still pending, the republish of identical content
+  // is a no-op, and the record follows.
+  return { ok: true, effects: [destination, record], sessionId };
 }
