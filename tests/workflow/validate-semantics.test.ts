@@ -1,6 +1,7 @@
 import { validate, validateSemantics } from "#workflow/validate.js";
 import { loadWorkflow } from "#workflow/load.js";
 import type { Effect, Step, Workflow } from "#namespace.js";
+import { fastest } from "#tests/support/timing.js";
 
 const noSteps = new Map<string, Step>();
 const rules = (w: Workflow, steps = noSteps, provided?: string[]) =>
@@ -277,9 +278,8 @@ describe("semantic validation", () => {
     }));
     const w: Workflow = { version: 1, name: "t", stages };
 
-    const start = Date.now();
+    expect(fastest(() => validateSemantics(w, noSteps))).toBeLessThan(2000);
     const cycleProblems = validateSemantics(w, noSteps).filter((p) => p.rule === "cycle-bound");
-    expect(Date.now() - start).toBeLessThan(2000);
     // One strongly connected component containing every stage is one real
     // cycle, so exactly one problem, not one per simple path through it.
     expect(cycleProblems).toHaveLength(1);

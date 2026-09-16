@@ -1,4 +1,5 @@
 import { extractJsonBlock } from "#agent/json-block.js";
+import { fastest } from "#tests/support/timing.js";
 
 // Fix round 4: the extractor is now the trailing-marker rule
 // (conventions.ts's parseMarker/trailing) applied to ```json fences instead
@@ -215,10 +216,8 @@ describe("extractJsonBlock", () => {
       const n = 50_000;
       const pairs = Array.from({ length: n }, (_, i) => `"k${i}":${i}`).join(",");
       const text = `\`\`\`json\n{${pairs}}\n\`\`\``;
-      const start = Date.now();
-      const r = extractJsonBlock(text);
-      expect(Date.now() - start).toBeLessThan(1000);
-      expect(r).toMatchObject({ kind: "found" });
+      expect(fastest(() => extractJsonBlock(text))).toBeLessThan(1000);
+      expect(extractJsonBlock(text)).toMatchObject({ kind: "found" });
     });
 
     it("does not throw on malformed, deeply unbalanced input", () => {
@@ -247,16 +246,12 @@ describe("extractJsonBlock", () => {
   // hours at the real 8MB cap). lastIndexOf/slice have no backtracking case.
   it("stays fast on a long run of backtick characters", () => {
     const big = "`".repeat(100_000) + "json\nnot actually json\n```";
-    const start = Date.now();
-    extractJsonBlock(big);
-    expect(Date.now() - start).toBeLessThan(1000);
+    expect(fastest(() => extractJsonBlock(big))).toBeLessThan(1000);
   });
 
   it("stays fast with many fences in a large document", () => {
     const one = '```json\n{"kind":"x"}\n```\nprose prose prose\n';
     const big = one.repeat(5000);
-    const start = Date.now();
-    extractJsonBlock(big);
-    expect(Date.now() - start).toBeLessThan(1000);
+    expect(fastest(() => extractJsonBlock(big))).toBeLessThan(1000);
   });
 });

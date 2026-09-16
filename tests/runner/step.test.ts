@@ -1,4 +1,5 @@
 import { renderPrompt, runStep } from "#runner/step.js";
+import { neutraliseMarkers } from "#conventions.js";
 import type { Executor } from "#namespace.js";
 import type { Snapshot, Step, StepResult } from "#namespace.js";
 
@@ -841,11 +842,36 @@ describe("the prose a step writes into a record", () => {
    * escapes the comment delimiters on the way out (neutraliseMarkers), and
    * escaping only ever grows the body. Judging the raw length would pass a
    * body that doubles on its way to the tracker and is refused there.
+   *
+   * The body has to be one only the escaped measure catches, or this asserts
+   * the property and cannot fail for it. It used to be 33,000 raw characters
+   * — already over the cap before escaping — so `recordBodyProblem` measuring
+   * `body.length` instead of `neutraliseMarkers(body).length` passed the
+   * whole suite, and the reason string says "once escaped" either way. The
+   * realistic input is a step writing about HTML, or about this project's own
+   * marker format, which code-review plausibly would.
    */
   it("is judged by its escaped length, because that is what a tracker is handed", async () => {
-    const r = await run(`${"-->".repeat(11_000)}\n\`\`\`json\n{"kind":"questions"}\n\`\`\``);
+    const prose = "-->".repeat(10_000);
+    expect(prose.length).toBeLessThan(32 * 1024);
+    expect(neutraliseMarkers(prose).length).toBeGreaterThan(32 * 1024);
+
+    const r = await run(`${prose}\n\`\`\`json\n{"kind":"questions"}\n\`\`\``);
     expect(r).toMatchObject({ ok: false, kind: "contract" });
-    expect((r as Fail).reason).toMatch(/escaped/);
+    // The number it names is the escaped one. Raw, it would be in the 30,000s
+    // and this body would have been let through.
+    expect((r as Fail).reason).toMatch(/is 6\d{4} characters once escaped/);
+  });
+
+  /*
+   * And the other half of telling the two measurements apart: the same raw
+   * length in prose that escaping does not grow is fine. Without this, the
+   * test above would also pass a guard that simply refused everything over
+   * 30,000 raw characters.
+   */
+  it("leaves the same raw length alone when escaping does not grow it", async () => {
+    const r = await run(`${long(30_000)}\n\`\`\`json\n{"kind":"questions"}\n\`\`\``);
+    expect(r).toMatchObject({ ok: true });
   });
 
   /*

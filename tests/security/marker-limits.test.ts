@@ -2,6 +2,7 @@ import { entriesFromComments } from "#conventions.js";
 import { parseMarker, renderMarker } from "#conventions.js";
 import { canonicalize } from "#core/normalize.js";
 import type { Snapshot } from "#namespace.js";
+import { fastest } from "#tests/support/timing.js";
 
 const BOT = "landrace-bot";
 const comment = (body: string) => ({ id: 1, body, created_at: "2026-01-01T00:00:01Z", user: { login: BOT } });
@@ -67,27 +68,17 @@ describe("scanning a comment for its trailing marker costs the same whatever the
   // timing guard that flakes is a timing guard somebody deletes.
   const junk = "<!-- landrace {".repeat(4369);
 
-  const median = (body: string) => {
-    parseMarker(body); // warm up the regex and the JIT
-    const runs = [1, 2, 3, 4, 5].map(() => {
-      const t0 = performance.now();
-      parseMarker(body);
-      return performance.now() - t0;
-    }).sort((a, b) => a - b);
-    return runs[2] as number;
-  };
-
   it("parses a 64 KB adversarial body in linear time, not quadratic", () => {
     expect(junk.length).toBeGreaterThan(65_000);
     expect(parseMarker(junk)).toBeNull();
-    expect(median(junk)).toBeLessThan(200);
+    expect(fastest(() => parseMarker(junk))).toBeLessThan(200);
   });
 
   it("still finds a genuine marker appended after all that", () => {
     const doc = { stage: "spec", kind: "output", round: 3 };
     const body = junk + renderMarker(doc);
     expect(parseMarker(body)).toMatchObject(doc);
-    expect(median(body)).toBeLessThan(200);
+    expect(fastest(() => parseMarker(body))).toBeLessThan(200);
   });
 });
 

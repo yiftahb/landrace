@@ -54,6 +54,24 @@ const isAlive = (pid: number): boolean => {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Poll until there is an answer, rather than sleeping for a fixed budget.
+ *
+ * A fixed sleep here is a bet on how fast a loaded machine can start a node
+ * process, and that bet is what flaked: 6 failures out of 6 with 14 busy
+ * cores alongside, 0 out of 6 idle. The cap is generous because it is not the
+ * thing being measured — it exists so a genuine regression fails with a
+ * sentence rather than hanging until jest gives up.
+ */
+const until = async <T>(answer: () => T | null, what: string, tries = 1_000): Promise<T> => {
+  for (let i = 0; i < tries; i++) {
+    const got = answer();
+    if (got !== null) return got;
+    await wait(10);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+};
+
 afterEach(() => {
   delete process.env.LANDRACE_TEST_SECRET;
   while (dirs.length) rmSync(dirs.pop() as string, { recursive: true, force: true });
@@ -174,15 +192,46 @@ describe("claude executor", () => {
     await expect(run("x", {}, { cwd: dir })).rejects.toThrow(/agent produced more than/);
   }, 8000);
 
-  // I3 — a timeout must not orphan the grandchildren (bash, MCP servers) a
-  // real `claude` spawns: killing only the direct child leaves them ticking.
-  it("kills the whole process group, not just the direct child, so grandchildren do not outlive the timeout", async () => {
+  /*
+   * I3 — a kill must not orphan the grandchildren (bash, MCP servers) a real
+   * `claude` spawns: signalling only the direct child leaves them ticking.
+   *
+   * Synchronised on the grandchild's own pid file, not on a stopwatch. This
+   * used to give the run a 300ms timeout and then sleep a flat 300ms before
+   * reading that file: on a loaded machine the fake agent's node startup does
+   * not fit inside 300ms, so the kill landed before the grandchild existed
+   * and the read failed with ENOENT — 6 times out of 6 with other work on the
+   * box, 0 out of 6 idle. It then read as "grandchildren outlive the kill",
+   * which is a security claim, and a security claim is the worst thing to
+   * have flake: a test that fails on a busy machine gets deleted, and then
+   * nothing is watching at all.
+   *
+   * The trigger is the abort rather than the timeout because it is the one a
+   * test can pull at the right moment. Both reach the same `killGroup`, and
+   * the timeout's own budget and message are pinned by the test above.
+   */
+  it("kills the whole process group, not just the direct child, so grandchildren do not outlive it", async () => {
     const dir = withCfg({ grandchild: true });
-    await expect(run("x", { timeoutMs: 300 }, { cwd: dir })).rejects.toThrow(/exceeded 300ms/);
-    await wait(300);
-    const pid = Number(readFileSync(join(dir, "grandchild.pid"), "utf8"));
+    const controller = new AbortController();
+    const started = createClaudeExecutor({ bin }).run("x", { round: 1, cwd: dir, signal: controller.signal });
+
+    const pid = await until(() => {
+      try {
+        return Number(readFileSync(join(dir, "grandchild.pid"), "utf8"));
+      } catch {
+        return null;
+      }
+    }, "the fake agent to spawn its grandchild");
+    expect(isAlive(pid)).toBe(true);
+
+    controller.abort();
+    await expect(started).rejects.toThrow(/agent aborted/);
+
+    // A shorter budget: SIGKILL to a process group is immediate, so this is
+    // the leg where waiting longer only delays a real regression's report.
+    await until(() => (isAlive(pid) ? null : true), "the grandchild to die with its group", 400);
     expect(isAlive(pid)).toBe(false);
-  }, 8000);
+  }, 20_000);
 
   it("reports a missing binary as a startup failure", async () => {
     await expect(

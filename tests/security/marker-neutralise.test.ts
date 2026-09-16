@@ -1,6 +1,7 @@
 import { neutraliseMarkers, parseMarker, renderMarker, stripMarker } from "#conventions.js";
 import { createTools } from "#mcp/tools.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
+import { fastest } from "#tests/support/timing.js";
 
 /**
  * Escaping a marker is only a control if it *converges*. The version this
@@ -170,32 +171,27 @@ describe("a relayed payload cannot come back as a record we wrote", () => {
  * load it was meant to be immune to. A test that fails on a busy machine gets
  * deleted, and then nothing is watching at all.
  *
- * Fastest of three runs, not the mean: every source of error here adds time,
- * so the minimum is the reading least contaminated by the rest of the suite,
- * and a quadratic scan has no fast run to hide behind.
+ * Fastest of a few runs, not the mean, and through the one helper every
+ * timing guard in this suite now shares (tests/support/timing.ts): every
+ * source of error here adds time, so the minimum is the reading least
+ * contaminated by the rest of the suite, and a quadratic scan has no fast run
+ * to hide behind.
  */
 describe("neutraliseMarkers costs the same per byte however adversarial the body", () => {
   const openings = (bytes: number) => "<!-- landrace {".repeat(Math.floor(bytes / 15));
 
-  const fastest = (body: string): number => {
-    neutraliseMarkers(body); // warm the JIT
-    return Math.min(...[1, 2, 3].map(() => {
-      const t0 = performance.now();
-      neutraliseMarkers(body);
-      return performance.now() - t0;
-    }));
-  };
-
   it("neutralises 2 MB of marker openings in milliseconds, not in a minute", () => {
     // Measured at 11.5 ms here; the lazy scan this replaced took 59,900 ms on
     // the same input. 2 s is ~170x above the one and ~30x below the other.
-    expect(fastest(openings(2 * 1024 * 1024))).toBeLessThan(2_000);
+    const body = openings(2 * 1024 * 1024);
+    expect(fastest(() => neutraliseMarkers(body))).toBeLessThan(2_000);
   }, 600_000);
 
   it("neutralises a body the size of the whole agent output cap", () => {
     // 8 MB is MAX_OUTPUT_BYTES itself — what a step can actually hand this
     // function, not a convenient size. Measured at 103 ms; quadratic it was
     // around a quarter of an hour, which is the outage this test exists for.
-    expect(fastest(openings(8 * 1024 * 1024))).toBeLessThan(5_000);
+    const body = openings(8 * 1024 * 1024);
+    expect(fastest(() => neutraliseMarkers(body))).toBeLessThan(5_000);
   }, 600_000);
 });
