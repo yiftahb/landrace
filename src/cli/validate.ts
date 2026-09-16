@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig } from "../config/load.js";
+import { loadHooks } from "../hooks/load.js";
+import { messageOf } from "../runner/errors.js";
+import { snapshotProvides } from "../runner/snapshot.js";
 import { loadWorkflow, WorkflowLoadError } from "../workflow/load.js";
 import { validate } from "../workflow/validate.js";
 import type { Problem } from "../namespace.js";
@@ -39,6 +42,38 @@ async function isEnvExposed(dir: string): Promise<boolean> {
   }
 }
 
+/**
+ * §11.8, which is the one rule that cannot be answered from the workflow file
+ * alone: every predicate path has to be covered by some hook's `provides`.
+ *
+ * Dormant until now — `runValidate` never passed `provided`, so the rule
+ * compared nothing to nothing and reported everything valid. That is not a
+ * hypothetical: the shipped workflow read `artifacts.pr.number` with no hook
+ * behind it, `landrace validate` said "valid", and a real ticket waited at
+ * `build` forever.
+ *
+ * A hook module that will not import is itself §11.1's "every referenced hook
+ * file resolves", so it is reported as a problem — and coverage then abstains,
+ * because calling every path in the workflow uncovered would bury the one
+ * problem that is real.
+ */
+async function coverage(
+  dir: string,
+  workflow: Awaited<ReturnType<typeof loadWorkflow>>["workflow"],
+  steps: Awaited<ReturnType<typeof loadWorkflow>>["steps"],
+): Promise<Problem[]> {
+  try {
+    const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
+    return validate(workflow, steps, snapshotProvides(registry.pre) ?? undefined);
+  } catch (e) {
+    // One exception: a node too old to read a TypeScript file is not a broken
+    // workflow, and the CLI answers it by re-running itself with the flag —
+    // which it can only do if the error reaches it.
+    if ((e as { code?: unknown } | null)?.code === "ERR_UNKNOWN_FILE_EXTENSION") throw e;
+    return [{ rule: "hooks", message: messageOf(e) }];
+  }
+}
+
 export async function runValidate(dir: string): Promise<{ ok: boolean; problems: Problem[] }> {
   // A workflow that fails to load is itself the thing `validate` exists to
   // report — §11.1-§11.2 — so a load failure must become a Problem here
@@ -52,7 +87,19 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
     return { ok: false, problems: [{ rule, message: (e as Error).message }] };
   }
 
-  const problems = validate(workflow, steps);
+  /*
+   * Everything answerable from the files alone, first and on its own.
+   *
+   * §11.8's path coverage is the one rule that needs the hooks — the union of
+   * what the integrations declare is its other half — and importing a hook
+   * module runs whatever is at its top level. So a workflow that is already
+   * unsound never gets that far, the same ordering `buildRuntime` keeps and
+   * for the same reason: the engine has already decided not to run this
+   * workflow, and running the user's code against it anyway would be a
+   * surprise nobody asked for.
+   */
+  const problems: Problem[] = validate(workflow, steps);
+  if (problems.length === 0) problems.push(...(await coverage(dir, workflow, steps)));
 
   // The config is optional for `validate`, so a workflow can be checked in
   // isolation — in CI, for instance, where no tracker credentials exist.

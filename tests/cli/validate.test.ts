@@ -47,18 +47,20 @@ describe("landrace validate", () => {
     expect(missingOutput).toEqual([]);
   });
 
-  // `validate` is the thing that is supposed to catch this before it ever
-  // reaches a converge loop — proved against the real file, not a fixture.
-  it("validates the shipped .landrace workflow clean, on every rule", async () => {
-    const r = await runValidate(".landrace");
-    // Every rule, not just the one that prompted this test. Filtering to a
-    // single rule let a later rule — entry-record, which catches a looping
-    // stage that records no entry and so silently runs its body once — pass
-    // this test while the shipped file actually violated it.
-    // "secret" is the one exception: it asks whether a token resolves in this
-    // environment, which is a fact about the machine, not about the workflow.
-    expect(r.problems.filter((p) => p.rule !== "secret")).toEqual([]);
-  });
+  /*
+   * "validates the shipped .landrace workflow clean, on every rule" — every
+   * rule, because filtering to one let a later rule pass this test while the
+   * shipped file actually violated it — now lives in
+   * tests/esm/cli-validate.test.ts, beside the rule that moved it.
+   *
+   * `validate` imports the hook modules to answer §11.8's path coverage, and
+   * the default pass's CommonJS runtime cannot resolve the `file:` URL the
+   * loader hands `import()`. Asked here, the shipped workflow would report a
+   * hook that would not load rather than the coverage it now proves.
+   *
+   * Every runValidate case left in this file names a fixture with no hooks, so
+   * nothing is imported and the coverage rule abstains.
+   */
 
   // Round-3 Important: a step's own prompt printing a literal object (e.g.
   // `` `{"kind": "done"}` `` in build.md) is an honest completion away from

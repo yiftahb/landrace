@@ -54,15 +54,21 @@ async function loadingHooks(what: string, run: () => Promise<void>): Promise<voi
 program
   .command("validate")
   .argument("[dir]", "workflow directory", ".landrace")
+  // Wrapped like `start`, because validate imports the hook modules now: path
+  // coverage is a question about the workflow *and* its integrations, and on a
+  // node that cannot read a .ts file the answer is to re-run with the flag,
+  // not to report the workflow as broken.
   .action(async (dir: string) => {
-    const { ok, problems } = await runValidate(dir);
-    if (ok) {
-      console.log(`${dir}: valid`);
-      return;
-    }
-    for (const p of problems) console.error(`  ${p.rule}: ${p.message}`);
-    console.error(`\n${problems.length} problem(s)`);
-    process.exitCode = 1;
+    await loadingHooks("validate", async () => {
+      const { ok, problems } = await runValidate(dir);
+      if (ok) {
+        console.log(`${dir}: valid`);
+        return;
+      }
+      for (const p of problems) console.error(`  ${p.rule}: ${p.message}`);
+      console.error(`\n${problems.length} problem(s)`);
+      process.exitCode = 1;
+    });
   });
 
 program

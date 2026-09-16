@@ -12,6 +12,55 @@ import type { HookContext, PreHook } from "../namespace.js";
  */
 const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
 
+/**
+ * What the engine itself puts in every snapshot, in the vocabulary a hook's
+ * `provides` uses.
+ *
+ * Declared here because this is the function that adds them — `now`, the
+ * derived `run`, and the hash over both. Without them §11's path-coverage rule
+ * would flag `run.stage`, a path every workflow reads and no hook provides,
+ * and a validator that flags healthy workflows gets switched off.
+ *
+ * Spelled out field by field rather than as a bare `run.*`, because the bug
+ * the rule exists to catch is a path that reads *nothing*: `outputs.spec.kind`
+ * and `lastEvent.actor` both looked right, matched nothing, and left half the
+ * shipped workflow unreachable. A test keeps this list level with what
+ * deriveRun actually returns.
+ */
+export const ENGINE_PROVIDES: readonly string[] = [
+  "now",
+  "hash",
+  "run.stage",
+  // Both forms, deliberately. A bare `run.counters*` would also cover
+  // `run.countersss`, and a lone `run.counters.*` would not cover the map
+  // itself — the point of the rule is that a path off by one letter is caught.
+  "run.counters", "run.counters.*",
+  "run.rounds", "run.rounds.*",
+  "run.outputs", "run.outputs.*",
+  "run.lastEvent", "run.lastEvent.*",
+  "run.lastHuman", "run.lastHuman.*",
+  "run.lastOutputValid",
+  "run.failedStages",
+  "run.unblockedAt",
+];
+
+/**
+ * Every snapshot path something claims to provide, or null to check none of
+ * them.
+ *
+ * Null is an abstention, and §4 says where it comes from: "Declare nothing and
+ * you opt out." The opt-out is for the whole graph rather than for the silent
+ * hook's own paths, because nothing can tell which paths a hook that declares
+ * nothing contributes — so checking the rest would mean reporting a possibly
+ * wrong result about a workflow that is fine. It is the same answer the
+ * cycle-bound rule gives for a trigger it cannot analyse.
+ */
+export function snapshotProvides(pre: PreHook[]): string[] | null {
+  if (pre.length === 0) return null;
+  if (pre.some((hook) => hook.provides === undefined)) return null;
+  return [...ENGINE_PROVIDES, ...pre.flatMap((hook) => hook.provides ?? [])];
+}
+
 export async function buildSnapshot(opts: {
   ticket: number;
   hooks: PreHook[];

@@ -1,4 +1,5 @@
-import { buildSnapshot } from "../../src/runner/snapshot.js";
+import { buildSnapshot, snapshotProvides } from "../../src/runner/snapshot.js";
+import { deriveRun } from "../../src/core/index.js";
 import { definePreHook } from "../../src/hooks/contracts.js";
 import type { HookContext } from "../../src/namespace.js";
 
@@ -107,5 +108,56 @@ describe("buildSnapshot", () => {
       ctx: ctx(),
     });
     expect(s.run).toMatchObject({ stage: null });
+  });
+});
+
+/**
+ * What `landrace validate` checks predicate paths against.
+ *
+ * §4's rule 8 is only as good as the union it is given, and the union has two
+ * halves: what the hooks declare, and what the engine itself puts in every
+ * snapshot. Handing it only the first would flag `run.stage` — a path every
+ * workflow reads and no hook provides — and a validator that flags healthy
+ * workflows gets switched off.
+ */
+describe("snapshotProvides", () => {
+  const declaring = (id: string, provides: string[]) => definePreHook({ id, provides, run: () => ({}) });
+
+  it("unions what the hooks declare with what the engine derives", () => {
+    const provided = snapshotProvides([declaring("a", ["ticket.labels"]), declaring("b", ["artifacts.pr.*"])]);
+
+    expect(provided).toEqual(expect.arrayContaining(["ticket.labels", "artifacts.pr.*", "run.stage", "run.counters.*"]));
+  });
+
+  /*
+   * §4: "Declare nothing and you opt out." Opting out is for the whole graph,
+   * not for that hook's own paths — the engine cannot tell which paths a
+   * silent hook contributes, so checking the rest would report a possibly
+   * wrong result. Abstaining is the same answer the cycle-bound rule gives
+   * when it cannot analyse a trigger.
+   */
+  it("abstains entirely when any loaded hook declares nothing", () => {
+    expect(snapshotProvides([declaring("a", ["ticket.labels"]), definePreHook({ id: "b", run: () => ({}) })]))
+      .toBeNull();
+  });
+
+  it("abstains when there are no hooks at all, rather than calling every path uncovered", () => {
+    expect(snapshotProvides([])).toBeNull();
+  });
+
+  /*
+   * A meta-guard, not a restatement: the engine's list is written by hand and
+   * `Run` is not. Add a field to deriveRun and forget this list, and validate
+   * starts flagging a workflow that reads it — which is the failure mode that
+   * gets a validator switched off.
+   */
+  it("covers every field the engine actually derives", () => {
+    const provided = snapshotProvides([definePreHook({ id: "a", provides: [], run: () => ({}) })]) ?? [];
+    const covered = (path: string) =>
+      provided.includes(path) || provided.some((k) => k.endsWith("*") && path.startsWith(k.slice(0, -1)));
+
+    const run = deriveRun([], null);
+    for (const field of Object.keys(run)) expect({ field, covered: covered(`run.${field}`) }).toEqual({ field, covered: true });
+    expect(covered("now")).toBe(true);
   });
 });
