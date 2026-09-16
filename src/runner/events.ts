@@ -72,12 +72,17 @@ export function createLogger(opts: {
 } = {}): Logger {
   // Refused, not skipped: skipping would leave a real secret unredacted, and
   // accepting would shred the log. The value itself is never named in the
-  // error, only its position.
-  const secrets = opts.redactValues ?? [];
+  // error, only its position. Trimmed once, here, and that trimmed form is
+  // what both the length check *and* the actual redaction use from this
+  // point on — checking the trimmed length and then redacting with the
+  // untrimmed value let a secret sourced from a quoted .env line (padded
+  // with whitespace) pass validation and then never match its own bare form
+  // anywhere it actually appeared in a log line.
+  const secrets = (opts.redactValues ?? []).map((v) => v.trim());
   secrets.forEach((value, i) => {
-    if (value.trim().length < MIN_SECRET_LENGTH) {
+    if (value.length < MIN_SECRET_LENGTH) {
       throw new Error(
-        `redactValues[${i}] is ${value.trim().length} characters after trimming; ` +
+        `redactValues[${i}] is ${value.length} characters after trimming; ` +
         `a redaction value shorter than ${MIN_SECRET_LENGTH} characters would match everywhere`,
       );
     }

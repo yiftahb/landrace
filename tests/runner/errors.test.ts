@@ -101,4 +101,34 @@ describe("messageOf", () => {
     const agg = new AggregateError([new Error("inner")], "the outer reason");
     expect(messageOf(agg)).toBe("the outer reason");
   });
+
+  // Fix round 4: three more shapes that escaped converge end to end (from
+  // step.ts:143 and screen.ts:72, per the brief) because messageOf's own
+  // doc comment overclaimed "no path that can throw" — these three throw.
+  describe("fix round 4: three more shapes that escaped end to end", () => {
+    it("an AggregateError with a throwing errors getter", () => {
+      // Empty own message (the common `new AggregateError([...])` shape) is
+      // what actually reaches the `.errors` read below — a non-empty own
+      // message returns early and never touches it, which would make this
+      // pass without exercising the guard it exists to prove.
+      const agg = new AggregateError([], "");
+      Object.defineProperty(agg, "errors", { get() { throw new Error("nested boom"); } });
+      expect(() => messageOf(agg)).not.toThrow();
+      expect(typeof messageOf(agg)).toBe("string");
+    });
+
+    it("an AggregateError cycling to itself, without a depth or visited bound", () => {
+      const agg = new AggregateError([], "");
+      Object.defineProperty(agg, "errors", { value: [agg], enumerable: true });
+      expect(() => messageOf(agg)).not.toThrow();
+      expect(typeof messageOf(agg)).toBe("string");
+    });
+
+    it("a revoked Proxy, where `instanceof Error` itself throws", () => {
+      const { proxy, revoke } = Proxy.revocable(new Error("will be revoked"), {});
+      revoke();
+      expect(() => messageOf(proxy)).not.toThrow();
+      expect(typeof messageOf(proxy)).toBe("string");
+    });
+  });
 });

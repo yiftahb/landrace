@@ -657,4 +657,44 @@ describe("converge", () => {
     expect(posted).toBeDefined();
     expect(String(posted?.body ?? "")).not.toContain(secretValue);
   });
+
+  // Fix round 4: redactValuesFrom filtered on the *trimmed* length but
+  // redacted with the *untrimmed* value — a secret sourced with surrounding
+  // whitespace (a quoted .env line) passed the length check and then never
+  // matched its own bare form anywhere it actually appeared in the posted
+  // body.
+  it("redacts a secret whose configured value has surrounding whitespace, matching its bare form", async () => {
+    const w = world();
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+    };
+    const bareSecret = "sk-paddedsecrettoken1234567890";
+    const brokenScreener: Executor = {
+      id: "screen",
+      run: async () => { throw new Error(`agent exited 1: leaked ${bareSecret} in stderr`); },
+    };
+    const agentExecutor: Executor = { id: "agent", run: async () => ({ text: "unused", sessionId: null }) };
+
+    await converge(1, deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", step]]),
+      executor: agentExecutor, screen: { executor: brokenScreener },
+      ctx: {
+        ticket: 1, config: {} as HookContext["config"], secrets: new Map([["token", `  ${bareSecret}  `]]),
+        signal: new AbortController().signal, log: () => {},
+      },
+    }));
+
+    const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"));
+    expect(posted).toBeDefined();
+    expect(String(posted?.body ?? "")).not.toContain(bareSecret);
+  });
 });

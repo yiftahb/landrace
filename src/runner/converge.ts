@@ -60,7 +60,12 @@ function malformedBody(reason: string, redactValues: string[]): string {
  * a value that short would redact everywhere in this text too.
  */
 function redactValuesFrom(secrets: ReadonlyMap<string, string>): string[] {
-  return [...secrets.values()].filter((v) => v.trim().length >= MIN_SECRET_LENGTH);
+  // Trimmed once, and that trimmed form is what is both measured *and*
+  // returned for actual redaction — checking the trimmed length while
+  // filtering the untrimmed value let a secret sourced with surrounding
+  // whitespace (a quoted .env line) pass the length check and then never
+  // match its own bare form anywhere it actually appeared in posted text.
+  return [...secrets.values()].map((v) => v.trim()).filter((v) => v.length >= MIN_SECRET_LENGTH);
 }
 
 /**

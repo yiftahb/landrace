@@ -15,6 +15,19 @@ describe("createLogger", () => {
     expect(JSON.stringify(seen)).toContain("[redacted]");
   });
 
+  // Fix round 4: the length check trims to decide whether a value is long
+  // enough, but redaction used the untrimmed value — a secret sourced from a
+  // quoted .env line (`TOKEN=" ghp_secret "`) validated fine on its trimmed
+  // length and then never matched the bare form of itself anywhere it
+  // actually appears in a log line, leaking it in full.
+  it("redacts a secret whose configured value has surrounding whitespace, matching its bare form", () => {
+    const seen: LandraceEvent[] = [];
+    const log = createLogger({ sink: (e) => seen.push(e), redactValues: ["  ghp_secretvalue123  "] });
+    log("step.invoked", { cmd: "claude --token ghp_secretvalue123" });
+    expect(JSON.stringify(seen)).not.toContain("ghp_secretvalue123");
+    expect(JSON.stringify(seen)).toContain("[redacted]");
+  });
+
   it("redacts inside arrays too", () => {
     const seen: LandraceEvent[] = [];
     createLogger({ sink: (e) => seen.push(e), redactValues: ["ghp_tokenvalue"] })(

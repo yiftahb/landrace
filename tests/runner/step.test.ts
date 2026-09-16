@@ -202,21 +202,21 @@ describe("runStep", () => {
     expect((r as Ok).effects[0]?.marker).toBe("{ticket.title}");
   });
 
-  // C2 — the same first-match defect commit 01578c3 fixed in screen.ts one
-  // commit before this one. A single non-global `.exec()` finds only the
-  // *first* fenced block, so a model that restates the format before
-  // answering (no attacker required — every shipped step prompt shows the
-  // agent its own output shape) silently routes on the wrong block, and
-  // stripFences deletes both, so the posted comment shows no trace of the
-  // mistake at all.
-  it("halts when the step's reply contains more than one json block, rather than routing on the first", async () => {
+  // Fix round 4 reverses this: round 3 (via commit 01578c3's sibling fix)
+  // treated a restated example plus a real answer as ambiguous and halted.
+  // The ruling now is the trailing-marker rule — the answer is the *last*
+  // strict fence with nothing after it — so this reply is no longer
+  // ambiguous at all: it routes on "questions", the model's real, final
+  // answer, and the earlier "recalling the format" fence is inert. Stated
+  // explicitly, per instruction, rather than silently adjusted: this used
+  // to halt and now succeeds.
+  it("routes on the last json block when the reply restates the format first, rather than halting as ambiguous", async () => {
     const reply =
       'Recalling the format:\n```json\n{"kind":"spec"}\n```\n' +
       'My actual answer:\n```json\n{"kind":"questions"}\n```';
     const r = await run(reply);
-    expect(r).toMatchObject({ ok: false });
-    expect((r as Fail).reason).toMatch(/2 json blocks/);
-    expect((r as Fail).reason).toMatch(/ambiguous/);
+    expect(r).toMatchObject({ ok: true });
+    expect((r as Ok).effects[0]).toMatchObject({ marker: "questions:2" });
   });
 
   it("still accepts a reply with exactly one json block", async () => {
@@ -266,8 +266,13 @@ describe("runStep", () => {
       expect((r as Fail).kind).toBe("contract");
     });
 
-    it("tags an ambiguous multi-block reply as contract", async () => {
-      const r = await run('```json\n{"kind":"spec"}\n```\n```json\n{"kind":"questions"}\n```');
+    // Fix round 4: a reply with two well-formed fences is no longer a
+    // "contract" failure — the trailing rule routes on the last one (see
+    // "routes on the last json block..." above). Kept here as the negative
+    // case that *is* still a contract violation: the trailing fence itself
+    // fails to parse.
+    it("tags an unparseable trailing json block as contract", async () => {
+      const r = await run('```json\n{not valid json\n```');
       expect((r as Fail).kind).toBe("contract");
     });
 
@@ -393,6 +398,20 @@ describe("runStep", () => {
       expect(r).toMatchObject({ ok: false, kind: "unavailable" });
       expect(typeof (r as Fail).reason).toBe("string");
     });
+
+    // Fix round 4: messageOf still threw for three more shapes (an
+    // AggregateError with a throwing errors getter, one cycling to itself,
+    // and a revoked Proxy) — proven live at exactly this call site. The
+    // revoked Proxy is the sharpest: `instanceof Error` itself throws for
+    // it, which sits outside every guard unless instanceof is wrapped too.
+    it("survives a thrown revoked Proxy, where instanceof Error itself throws", async () => {
+      const { proxy, revoke } = Proxy.revocable(new Error("will be revoked"), {});
+      revoke();
+      const boom: Executor = { id: "b", run: async () => { throw proxy; } };
+      const r = await run("", { executor: boom });
+      expect(r).toMatchObject({ ok: false, kind: "unavailable" });
+      expect(typeof (r as Fail).reason).toBe("string");
+    });
   });
 
   // C2 residual — the ambiguity regex was byte-identical to screen.ts's, so
@@ -400,27 +419,50 @@ describe("runStep", () => {
   // shape plus a real answer in a shape the old regex could not see counted
   // as exactly one candidate. Fixed by switching to the shared, permissive
   // extractor (json-block.ts) both files now import.
-  describe("recognises a sibling candidate in a fence shape the old narrow regex could not see", () => {
+  // These four are the round-2/3 "fence-variant" cases (restatement plus a
+  // real answer in a shape the old narrow regex could not see). Round 3
+  // treated the sibling as a second candidate and halted as ambiguous. Under
+  // the round-4 trailing rule the outcome is unchanged (still fails), but
+  // the mechanism is not: the restatement fence is never trailing (the
+  // "real answer" text follows it), and the "real answer" itself is never a
+  // *strict* fence (wrong character, wrong casing, no fence, unterminated)
+  // — so there is no strict trailing fence anywhere in the reply, and the
+  // step fails as "produced no json block", not as "ambiguous". Only the
+  // fifth round-2 variant (two adjacent, both-strict ```json fences) changed
+  // outcome — see "routes on the last json block..." above.
+  describe("a restatement plus a real answer in a fence shape that is never strict still fails, now as 'no json block' rather than 'ambiguous'", () => {
     const restatement = 'Recalling the format:\n```json\n{"kind":"spec"}\n```\n';
 
     it("a ~~~json real answer", async () => {
       const r = await run(`${restatement}My actual answer:\n~~~json\n{"kind":"questions"}\n~~~`);
       expect(r).toMatchObject({ ok: false, kind: "contract" });
+      expect((r as Fail).reason).toMatch(/no json block/);
     });
 
+    // This one fails via a different path than its three siblings: the last
+    // "```" in the reply belongs to the wrong-case fence's own closing, but
+    // the lowercase-only opening search then finds the *restatement's*
+    // opening (the only lowercase ```json in the text) and pairs it with
+    // that closing — a nonsense span crossing both fences, which reliably
+    // fails to parse rather than being recognised as absent. Still a
+    // contract violation either way; naming it here so the nuance is not
+    // mistaken for a bug later.
     it("a ```JSON real answer (different casing)", async () => {
       const r = await run(`${restatement}My actual answer:\n\`\`\`JSON\n{"kind":"questions"}\n\`\`\``);
       expect(r).toMatchObject({ ok: false, kind: "contract" });
+      expect((r as Fail).reason).toMatch(/could not be parsed/);
     });
 
     it("a bare {...} real answer with no fence at all", async () => {
       const r = await run(`${restatement}My actual answer: {"kind":"questions"}`);
       expect(r).toMatchObject({ ok: false, kind: "contract" });
+      expect((r as Fail).reason).toMatch(/no json block/);
     });
 
     it("an unterminated ```json real answer with no closing fence", async () => {
       const r = await run(`${restatement}My actual answer:\n\`\`\`json\n{"kind":"questions"}\n(cut off)`);
       expect(r).toMatchObject({ ok: false, kind: "contract" });
+      expect((r as Fail).reason).toMatch(/no json block/);
     });
   });
 
@@ -431,19 +473,22 @@ describe("runStep", () => {
   // exact span it parsed, and that same span — not a second regex — is what
   // gets removed to build the body, leaving the surrounding prose on both
   // sides intact.
+  // Fix round 4: the fence must now be the trailing thing in the reply (the
+  // trailing rule requires nothing but whitespace after it), so this no
+  // longer has trailing prose to strip on the far side — but the point
+  // (prefix prose is preserved, only the exact parsed span is removed)
+  // still holds.
   it("strips exactly the span the extractor parsed, using its own span rather than a second, independently-run regex", async () => {
-    const r = await run('Summary line.\n```json\n{"kind":"spec"}\n```\nTrailing note.');
-    expect((r as Ok).effects[0]?.body).toBe("Summary line.\n\nTrailing note.");
+    const r = await run('Summary line.\n```json\n{"kind":"spec"}\n```');
+    expect((r as Ok).effects[0]?.body).toBe("Summary line.");
   });
 
   // Round-3 Critical, mirrored from screen.ts: a bare {"kind":"spec"} with no
-  // fence at all (or the wrong fence) used to be a hard fail — extractJson
-  // found nothing at all to match — and the permissive recogniser's own
-  // parsing turned that into a real, obeyed route decision instead. That is
-  // the same planted-verdict bypass one level down: an issue body or a
-  // comment quoting `{"kind":"spec"}` in prose must not be able to drive a
-  // route decision just because the model happened to only produce one
-  // recognisable candidate.
+  // fence at all (or the wrong fence) used to be a hard fail, and the
+  // permissive recogniser's own parsing turned that into a real, obeyed
+  // route decision instead. Under the round-4 trailing rule the same four
+  // shapes still fail, now because none of them is a strict, trailing
+  // ```json fence — the underlying reason changed, the outcome did not.
   describe("a sole candidate that is not a strict fence is a contract violation, not a valid answer", () => {
     it("a bare {\"kind\":\"spec\"} with no fence at all", async () => {
       const r = await run('here is my answer: {"kind":"spec"}');
@@ -466,13 +511,14 @@ describe("runStep", () => {
     });
   });
 
-  // Important (false "many"): a bare object only counts as a candidate when
-  // it carries the step's own discriminator key — otherwise the ticket's
-  // honest, correct output would be discarded as "ambiguous" every time the
-  // model's own prose happens to mention an unrelated object (an error
-  // shape, a code snippet, a markdown table cell).
-  it("does not treat an unrelated bare object (no discriminator key) as a second candidate", async () => {
-    const r = await run('```json\n{"kind":"spec"}\n```\nThe command failed with {"code":"ENOENT"}.');
+  // Fix round 4 (FC3): bare objects are never candidates at all any more,
+  // regardless of position or whether they happen to share the
+  // discriminator key — round 3's "discriminator-keyed bare object" concept
+  // is gone along with the ambiguity count it existed to narrow. A mention
+  // earlier in the reply (an error shape, a code snippet) is simply inert,
+  // and the trailing fence is still the answer.
+  it("ignores a bare object mentioned earlier in the reply, regardless of what keys it happens to share with the discriminator", async () => {
+    const r = await run('The command failed with {"code":"ENOENT","kind":"error"}, but I still wrote the spec.\n```json\n{"kind":"spec"}\n```');
     expect(r).toMatchObject({ ok: true });
   });
 });
