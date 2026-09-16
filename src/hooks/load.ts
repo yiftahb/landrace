@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { containedPath } from "../workflow/load.js";
+import { artifactPreHook } from "../runner/artifacts.js";
 import { createDispatcher } from "../runner/effects.js";
 import { messageOf } from "../runner/errors.js";
 import { hookKindOf } from "./contracts.js";
@@ -75,9 +76,9 @@ export function buildRegistry(modules: HookModule[]): Registry {
         case "artifact": {
           // One object, both phases. §5 is explicit that there are still only
           // two, so an artifact is not a third phase — it is a post hook whose
-          // observe half the loader files for it.
+          // observe half the loader files for it, under `artifacts.<id>`.
           const hook = value as ArtifactHook;
-          addPre({ id: hook.id, run: (ctx) => hook.read(ctx) }, module.specifier);
+          addPre(artifactPreHook(hook), module.specifier);
           addPost(hook, module.specifier);
           break;
         }

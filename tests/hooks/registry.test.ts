@@ -73,7 +73,9 @@ describe("an artifact hook is one object in both phases", () => {
     handles: ["pr.comment"],
     satisfied: () => false,
     apply: async () => {},
-    read: async () => ({ artifacts: { pr: { number: 7 } } }),
+    // Its own state, not a snapshot fragment: where it lands is the loader's
+    // business, and tests/runner/artifacts.test.ts is where that bargain lives.
+    read: async () => ({ number: 7 }),
   });
 
   it("registers its read as a pre hook and itself as the post hook", async () => {
@@ -81,7 +83,7 @@ describe("an artifact hook is one object in both phases", () => {
 
     expect(r.pre.map((h) => h.id)).toEqual(["pr"]);
     expect(r.post[0]).toBe(artifact);
-    await expect(r.pre[0]?.run({} as HookContext)).resolves.toEqual({ artifacts: { pr: { number: 7 } } });
+    await expect(r.pre[0]?.run({ snapshot: {} } as HookContext)).resolves.toEqual({ artifacts: { pr: { number: 7 } } });
   });
 });
 
