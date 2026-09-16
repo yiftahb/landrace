@@ -1,6 +1,6 @@
 import { createClaudeExecutor } from "../agent/claude.js";
 import { loadConfig, redactionValues } from "../config/load.js";
-import type { RuntimeConfig } from "../config/schema.js";
+import type { RuntimeConfig } from "../namespace.js";
 import { loadHooks, type Registry } from "../hooks/load.js";
 import type { Executor, RuntimeContext, Source } from "../hooks/types.js";
 import type { ConvergeDeps } from "../runner/converge.js";

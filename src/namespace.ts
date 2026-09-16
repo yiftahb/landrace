@@ -19,6 +19,10 @@
  *    never exists at runtime.
  */
 
+import type { z } from "zod";
+import type { runtimeConfigSchema } from "./config/schema.js";
+import type { stepFrontMatterSchema } from "./workflow/schema.js";
+
 /* ------------------------------------------------------------------ core -- */
 
 /** Anything a hook can put in the snapshot. */
@@ -141,3 +145,84 @@ export type Location =
   | { kind: "at"; stage: Stage }
   | { kind: "none" }
   | { kind: "ambiguous"; ids: string[] };
+
+/* ----------------------------------------------------------- conventions -- */
+
+export interface Marker {
+  stage: string;
+  kind: string;
+  round: number;
+  /**
+   * On an OUTPUT_KIND marker, the step's own parsed value — the discriminator
+   * and the fields its declared shape names, and nothing else (runner/step.ts
+   * bounds it). This is what `outputs.<stage>.<field>` reads on the next tick;
+   * without it a step's result decided which effect was emitted and then
+   * vanished, so every trigger routing on an output field was dead.
+   */
+  output?: unknown;
+  [key: string]: unknown;
+}
+
+/** A marker at the very end of a body: where it starts, and its payload. */
+export interface Trailing {
+  index: number;
+  json: string;
+}
+
+/**
+ * One record as a tracker hands it over, and no more of it than marker parsing
+ * needs: a body, when it was written, and who wrote it. Structural rather than
+ * a tracker's own type, because a comment on an issue, a note on a ticket and
+ * a message on a thread are the same three facts under different names — the
+ * spellings here are the ones every tracker API that has them already uses.
+ */
+export interface TrackerComment {
+  id?: number | string | undefined;
+  body: string;
+  created_at: string;
+  user?: { login?: string } | null;
+}
+
+/* ---------------------------------------------------------------- config -- */
+
+/**
+ * `landrace.yaml`, parsed. Inferred from the schema rather than written twice:
+ * a hand-written copy is a second source of truth that only disagrees with the
+ * parser once something has already gone wrong.
+ */
+export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>;
+
+export interface LoadedConfig {
+  config: RuntimeConfig;
+  /** Secret names whose reference did not resolve. */
+  missing: string[];
+  /** Resolved values, kept apart from the config so they cannot be logged by accident. */
+  secretValues: Map<string, string>;
+}
+
+/* -------------------------------------------------------------- workflow -- */
+
+export type StepFrontMatter = z.infer<typeof stepFrontMatterSchema>;
+
+export interface Step extends StepFrontMatter {
+  prompt: string;
+}
+
+/**
+ * `runValidate` must report a broken workflow as a `Problem`, not let an
+ * exception escape past it (spec §11.1-§11.2: `validate`'s entire job is
+ * reporting). Tagging the failure with a `rule` — at the point each kind of
+ * failure is actually detected — is what lets the CLI turn it into the same
+ * shape as every other problem, instead of pattern-matching an error message
+ * after the fact.
+ */
+export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path";
+
+export type ContainedPath =
+  | { ok: true; path: string }
+  | { ok: false; kind: "unsafe" | "missing"; reason: string };
+
+export interface Problem {
+  rule: string;
+  message: string;
+}

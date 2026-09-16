@@ -3,15 +3,8 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { expand, parseEnvFile } from "./env.js";
 import { MIN_SECRET_LENGTH } from "../runner/events.js";
-import { runtimeConfigSchema, type RuntimeConfig } from "./schema.js";
-
-export interface LoadedConfig {
-  config: RuntimeConfig;
-  /** Secret names whose reference did not resolve. */
-  missing: string[];
-  /** Resolved values, kept apart from the config so they cannot be logged by accident. */
-  secretValues: Map<string, string>;
-}
+import { runtimeConfigSchema } from "./schema.js";
+import type { LoadedConfig } from "../namespace.js";
 
 /**
  * The secret values `log.redact` names. A logger redacts by value — a name

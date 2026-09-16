@@ -4,7 +4,7 @@
  * back as the engine's. None of it belongs to a tracker — a Jira hook would
  * use the same names — so none of it lives in a hook.
  */
-import type { Entry } from "./namespace.js";
+import type { Entry, Marker, TrackerComment, Trailing } from "./namespace.js";
 
 export const LABELS = {
   eligible: "lr:auto",
@@ -61,21 +61,6 @@ export const ENTRY_KIND = "enter";
  * route retargets it. Four files that must mean the same thing by one name.
  */
 export const OUTPUT_KIND = "output";
-
-export interface Marker {
-  stage: string;
-  kind: string;
-  round: number;
-  /**
-   * On an OUTPUT_KIND marker, the step's own parsed value — the discriminator
-   * and the fields its declared shape names, and nothing else (runner/step.ts
-   * bounds it). This is what `outputs.<stage>.<field>` reads on the next tick;
-   * without it a step's result decided which effect was emitted and then
-   * vanished, so every trigger routing on an output field was dead.
-   */
-  output?: unknown;
-  [key: string]: unknown;
-}
 
 /*
  * Caps on what a marker may carry, and on how much of a comment is even
@@ -161,11 +146,6 @@ export const renderMarker = (m: Marker): string => {
   return `\n\n<!-- landrace ${json} -->`;
 };
 
-interface Trailing {
-  index: number;
-  json: string;
-}
-
 /**
  * The marker at the very end of a body, if there is one.
  *
@@ -228,20 +208,6 @@ export function stripMarker(body: string): string {
  */
 export const neutraliseMarkers = (body: string): string =>
   body.replace(markerRe(), (m) => `&lt;${m.slice(1, -1)}&gt;`);
-
-/**
- * One record as a tracker hands it over, and no more of it than marker parsing
- * needs: a body, when it was written, and who wrote it. Structural rather than
- * a tracker's own type, because a comment on an issue, a note on a ticket and
- * a message on a thread are the same three facts under different names — the
- * spellings here are the ones every tracker API that has them already uses.
- */
-export interface TrackerComment {
-  id?: number | string | undefined;
-  body: string;
-  created_at: string;
-  user?: { login?: string } | null;
-}
 
 /**
  * What core reads as a record's payload — `run.outputs[stage]` for an output

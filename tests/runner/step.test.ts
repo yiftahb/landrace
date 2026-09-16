@@ -1,7 +1,6 @@
 import { renderPrompt, runStep, type StepResult } from "../../src/runner/step.js";
-import type { Step } from "../../src/workflow/load.js";
 import type { Executor } from "../../src/hooks/types.js";
-import type { Snapshot } from "../../src/namespace.js";
+import type { Snapshot, Step } from "../../src/namespace.js";
 
 // `Effect`'s index signature types every property as `unknown`, so casting a
 // `StepResult` straight to an ad hoc `{ effects: Array<{ marker: string }> }`

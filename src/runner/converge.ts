@@ -1,7 +1,6 @@
 import { decide, planEffects, reconcile } from "../core/index.js";
-import type { Effect, Snapshot, Workflow } from "../namespace.js";
+import type { Effect, Snapshot, Step, Workflow } from "../namespace.js";
 import type { Executor, HookContext, PreHook } from "../hooks/types.js";
-import type { Step } from "../workflow/load.js";
 import type { Dispatcher } from "./effects.js";
 import { messageOf } from "./errors.js";
 import { MIN_SECRET_LENGTH, redactValue, type Logger } from "./events.js";

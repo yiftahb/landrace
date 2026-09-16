@@ -1,13 +1,7 @@
 import { ENTRY_KIND, isReservedId, OUTPUT_KIND } from "../conventions.js";
 import { identityOf } from "../core/locate.js";
 import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
-import type { Condition, Stage, Workflow } from "../namespace.js";
-import type { Step } from "./load.js";
-
-export interface Problem {
-  rule: string;
-  message: string;
-}
+import type { Condition, Problem, Stage, Step, Workflow } from "../namespace.js";
 
 export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
   const problems: Problem[] = [];

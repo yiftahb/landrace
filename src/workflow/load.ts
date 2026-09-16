@@ -1,22 +1,8 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse } from "yaml";
-import type { Workflow } from "../namespace.js";
-import { stepFrontMatterSchema, workflowSchema, type StepFrontMatter } from "./schema.js";
-
-export interface Step extends StepFrontMatter {
-  prompt: string;
-}
-
-/**
- * `runValidate` must report a broken workflow as a `Problem`, not let an
- * exception escape past it (spec §11.1-§11.2: `validate`'s entire job is
- * reporting). Tagging the failure with a `rule` here — at the point each kind
- * of failure is actually detected — is what lets the CLI turn it into the
- * same shape as every other problem, instead of pattern-matching an error
- * message after the fact.
- */
-export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path";
+import type { ContainedPath, LoadFailureRule, Step, Workflow } from "../namespace.js";
+import { stepFrontMatterSchema, workflowSchema } from "./schema.js";
 
 export class WorkflowLoadError extends Error {
   readonly rule: LoadFailureRule;
@@ -52,10 +38,6 @@ function shapeProblem(p: string): string | null {
   if (dotted !== undefined) return `contains a "${dotted}" segment`;
   return null;
 }
-
-export type ContainedPath =
-  | { ok: true; path: string }
-  | { ok: false; kind: "unsafe" | "missing"; reason: string };
 
 /**
  * A configured path resolved to a real file inside `root`, or the reason it is

@@ -21,5 +21,3 @@ export const runtimeConfigSchema = z.object({
   log: z.object({ redact: z.array(z.string()).default([]) }).default({}),
   secrets: z.record(z.string()).default({}),
 });
-
-export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>;

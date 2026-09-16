@@ -44,5 +44,3 @@ export const stepFrontMatterSchema = z.object({
     routes: z.array(z.object({ when: condition, effect })),
   }).optional(),
 });
-
-export type StepFrontMatter = z.infer<typeof stepFrontMatterSchema>;

@@ -1,7 +1,6 @@
 import { buildRegistry, type Registry } from "../../src/hooks/load.js";
 import { entriesFromComments } from "../../src/conventions.js";
-import type { Entry } from "../../src/namespace.js";
-import type { RuntimeConfig } from "../../src/config/schema.js";
+import type { Entry, RuntimeConfig } from "../../src/namespace.js";
 import type { RuntimeContext } from "../../src/hooks/types.js";
 import { githubHooks } from "../../.landrace/hooks/github.js";
 

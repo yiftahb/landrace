@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Workflow } from "../../src/namespace.js";
+import type { Step, Workflow } from "../../src/namespace.js";
 import {
   definePreHook,
   defineSource,
@@ -15,7 +15,6 @@ import { createLogger, type LandraceEvent } from "../../src/runner/events.js";
 import { acquire, held, release } from "../../src/runner/lock.js";
 import { eligibilityOf, tick, type TickOptions } from "../../src/runner/tick.js";
 import { statusLines } from "../../src/runner/status.js";
-import type { Step } from "../../src/workflow/load.js";
 
 /**
  * One stage, entered and finished in a single pass, so what a test observes is

@@ -8,4 +8,11 @@
  */
 export * from "./types.js";
 export * from "../conventions.js";
-export type { Effect, Entry, Json, Snapshot } from "../namespace.js";
+
+/*
+ * Named one by one rather than `export type *`: every type in the system is
+ * declared in one file, and only some of them are a hook author's business.
+ * A hook that could name `ConvergeDeps` is a hook the engine's shape has
+ * leaked into.
+ */
+export type { Effect, Entry, Json, Marker, Snapshot, TrackerComment } from "../namespace.js";

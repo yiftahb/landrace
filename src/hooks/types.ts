@@ -1,5 +1,4 @@
-import type { Effect, Snapshot } from "../namespace.js";
-import type { RuntimeConfig } from "../config/schema.js";
+import type { Effect, RuntimeConfig, Snapshot } from "../namespace.js";
 
 /**
  * What a hook is handed. Secrets arrive resolved, so a hook never reads

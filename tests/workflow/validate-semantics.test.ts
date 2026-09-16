@@ -1,6 +1,5 @@
 import { validateSemantics } from "../../src/workflow/validate.js";
-import type { Step } from "../../src/workflow/load.js";
-import type { Effect, Workflow } from "../../src/namespace.js";
+import type { Effect, Step, Workflow } from "../../src/namespace.js";
 
 const noSteps = new Map<string, Step>();
 const rules = (w: Workflow, steps = noSteps, provided?: string[]) =>

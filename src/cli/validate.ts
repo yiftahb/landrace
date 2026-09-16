@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig } from "../config/load.js";
 import { loadWorkflow, WorkflowLoadError } from "../workflow/load.js";
-import { validate, type Problem } from "../workflow/validate.js";
+import { validate } from "../workflow/validate.js";
+import type { Problem } from "../namespace.js";
 
 const execFileAsync = promisify(execFile);
 
