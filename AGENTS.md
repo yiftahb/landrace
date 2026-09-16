@@ -17,6 +17,7 @@ src/config/       landrace.yaml + .env
 src/mcp/          operator tools over stdio
 src/cli/          validate, next, mcp, start, status
 src/conventions.ts  label and marker vocabulary shared by all of the above
+src/sandbox.ts     repository identity, and the tmp root locks and worktrees share
 
 .landrace/hooks/  the integrations — GitHub included. Not part of the engine.
 ```
@@ -50,6 +51,16 @@ There is no GitHub code in `src/`, and `tests/boundaries.test.ts` fails on the o
 If you are about to import a vendor SDK into `src/`, you are writing a hook.
 
 A hook is classified by the brand its `define*` helper stamps, never by its shape. Two of anything singular — two sources, two operators, two hooks of a phase under one id — halts at load with both names, like every other ambiguity here.
+
+### Imports are absolute
+
+Every import under `src/` and `tests/` goes through the `imports` map in
+`package.json` — `#core/index.js`, `#namespace.js`, `#tests/...`. Not tsconfig
+`paths`: this code runs three ways that have to agree, and raw Node executes
+`src` directly in the ESM test pass and the hook loader, where `paths` would not
+rewrite anything. A lint rule refuses a `../` import. Hooks in `.landrace/` are
+the exception and import `landrace/hooks`, which is what an external hook author
+writes.
 
 ### Every type lives in `src/namespace.ts`
 
