@@ -21,7 +21,7 @@
   "packageManager": "pnpm@11.1.0",
   "scripts": {
     "build": "tsup",
-    "test": "jest",
+    "test": "jest && node --experimental-vm-modules ./node_modules/jest/bin/jest.js -c jest.esm.config.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests",
     "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
