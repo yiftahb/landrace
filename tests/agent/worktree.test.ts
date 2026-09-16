@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   changedSince,
@@ -17,9 +17,10 @@ const run = promisify(execFile);
 const roots: string[] = [];
 
 /** A real repository with one commit, because every claim here is a claim about git. */
-async function repo(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "lr-wt-"));
-  roots.push(dir);
+async function repo(at?: string): Promise<string> {
+  const dir = at ?? (await mkdtemp(join(tmpdir(), "lr-wt-")));
+  if (at === undefined) roots.push(dir);
+  await mkdir(dir, { recursive: true });
   await run("git", ["init", "-q", "-b", "main"], { cwd: dir });
   await run("git", ["config", "user.email", "t@example.com"], { cwd: dir });
   await run("git", ["config", "user.name", "t"], { cwd: dir });
@@ -190,5 +191,103 @@ describe("worktree", () => {
       expect(changedSince(before, await worktreeState(path))).toEqual([]);
       await removeWorktree(14, root);
     });
+  });
+});
+
+/**
+ * Where a sandbox lives, and what is allowed to be deleted there.
+ *
+ * `rm -rf` on a path built from outside input is the highest-consequence line
+ * in this codebase, and the path used to be keyed on `basename(repoRoot)`:
+ * two checkouts called `widgets` resolved to one sandbox, and the second one
+ * to start deleted the first one's worktree out from under a running agent.
+ * That is the same defect fixed for the lock root in 9bad396, and the same
+ * identity fixes it. These tests are that collision, and the bound on the
+ * deletion itself, asked directly.
+ */
+describe("the sandbox path", () => {
+  let home: string;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "lr-repos-"));
+    roots.push(home);
+  });
+
+  /** A victim directory outside any sandbox, with something in it to lose. */
+  async function victim(): Promise<string> {
+    const dir = await mkdtemp(join(realpathSync(tmpdir()), "lr-victim-"));
+    roots.push(dir);
+    await writeFile(join(dir, "keep.txt"), "not yours to delete\n");
+    return dir;
+  }
+
+  it("does not hand two repositories with the same directory name one sandbox", async () => {
+    const mine = await repo(join(home, "mine", "widgets"));
+    const theirs = await repo(join(home, "theirs", "widgets"));
+
+    const ours = await ensureWorktree(30, mine);
+    await writeFile(join(ours, "mid-run.ts"), "export const midRun = true;\n");
+
+    // A different repository that happens to share a directory name, starting
+    // its own #30: it found a directory registered to nobody it could see and
+    // cleared it — the first repository's live worktree, mid-step.
+    const alsoTheirs = await ensureWorktree(30, theirs);
+    expect(alsoTheirs).not.toBe(ours);
+    expect(existsSync(join(ours, "mid-run.ts"))).toBe(true);
+    expect(await worktrees(mine)).toHaveLength(2);
+
+    await removeWorktree(30, theirs);
+    expect(existsSync(join(ours, "mid-run.ts"))).toBe(true);
+    await removeWorktree(30, mine);
+  });
+
+  /**
+   * The ticket is a number to TypeScript and a value out of a tracker hook at
+   * runtime, which is not the same claim. Cast, because the guard being asked
+   * about here is the one that has to hold when the type does not.
+   */
+  it("refuses a ticket whose path climbs out of the sandbox root", async () => {
+    const root = await repo(join(home, "one", "widgets"));
+    const outside = await victim();
+    const climb = `../../../${basename(outside)}` as unknown as number;
+
+    await expect(ensureWorktree(climb, root)).rejects.toThrow(/sandbox|outside|contain/i);
+    expect(existsSync(join(outside, "keep.txt"))).toBe(true);
+
+    // The removal half runs on every exit path, including the ones already
+    // unwinding from a failure, so it reports nothing — it simply must not
+    // delete this.
+    await removeWorktree(climb, root);
+    expect(existsSync(join(outside, "keep.txt"))).toBe(true);
+  });
+
+  /**
+   * The other way out: the path is an innocent `<root>/31`, and the root is
+   * the link. Path arithmetic sees nothing wrong, which is exactly why both
+   * ends are compared after realpath.
+   */
+  it("refuses a sandbox root that has been redirected out of its own tree", async () => {
+    const root = await repo(join(home, "two", "widgets"));
+    const outside = await victim();
+    await mkdir(join(outside, "31"), { recursive: true });
+    await writeFile(join(outside, "31", "keep.txt"), "not yours to delete\n");
+
+    // The real root, learned from a real sandbox, then replaced by a link to
+    // somewhere else — the residue a stray `ln -s` in $TMPDIR would leave.
+    const first = await ensureWorktree(32, root);
+    await removeWorktree(32, root);
+    const sandboxRoot = dirname(first);
+    await rm(sandboxRoot, { recursive: true, force: true });
+    await symlink(outside, sandboxRoot);
+
+    try {
+      await expect(ensureWorktree(31, root)).rejects.toThrow(/sandbox|outside|resolve/i);
+      expect(existsSync(join(outside, "31", "keep.txt"))).toBe(true);
+
+      await removeWorktree(31, root);
+      expect(existsSync(join(outside, "31", "keep.txt"))).toBe(true);
+    } finally {
+      await rm(sandboxRoot, { force: true });
+    }
   });
 });

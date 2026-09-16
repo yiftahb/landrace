@@ -1,23 +1,64 @@
 import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { mkdir, realpath, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 import type { WorktreeState } from "../namespace.js";
+import { sandboxRoot } from "../sandbox.js";
+import { containedPath } from "../workflow/load.js";
 
 const exec = promisify(execFile);
 
 /**
- * git reports worktree paths resolved, and on macOS /var is a symlink to
- * /private/var. Resolving up front is why the "does it already exist" check
- * below matches, instead of trying to re-add the same worktree every tick.
+ * `$TMPDIR/landrace/<repo>/worktrees/`, beside that repository's locks.
+ *
+ * `<repo>` is the resolved common git directory, digested — not
+ * `basename(repoRoot)`, which is what this was and which is a name, not an
+ * identity: two checkouts called `widgets` resolved to one sandbox, and the
+ * second one to start found a directory registered to no worktree it could
+ * see and cleared it. That was the other repository's live sandbox, deleted
+ * out from under a running agent. Same defect as the lock root, same
+ * identity, same helper.
+ *
+ * Created here rather than left to `git worktree add`, and then resolved:
+ * every path below is compared against this one, so a component of it
+ * replaced by a link has to be caught here, where the comparison is still
+ * possible. Otherwise the whole sandbox — and with it the `rm -rf` below —
+ * quietly relocates to wherever the link points, and each path under it still
+ * looks perfectly contained.
  */
-const ROOT = (): string => join(realpathSync(tmpdir()), "landrace", "worktrees");
+async function rootFor(repoRoot: string): Promise<string> {
+  const root = join(sandboxRoot(repoRoot), "worktrees");
+  await mkdir(root, { recursive: true });
+  const real = await realpath(root);
+  if (real !== root) {
+    throw new Error(`refusing to use ${root} as a sandbox root: it resolves to ${real}, outside the sandbox`);
+  }
+  return root;
+}
 
-const pathFor = (ticket: number, repoRoot: string): string =>
-  join(ROOT(), basename(repoRoot), String(ticket));
+/**
+ * Where #ticket's sandbox goes — proven to be inside this repository's own
+ * sandbox root before anything is created there and, more to the point,
+ * before anything is deleted there.
+ *
+ * `rm -rf` on a path assembled from outside input is the highest-consequence
+ * operation in this codebase, and a ticket is a number to the typechecker and
+ * a value out of a tracker hook at runtime, which are not the same claim.
+ * `containedPath` is the existing answer to exactly this shape: it rejects a
+ * segment that climbs out before resolving anything, and compares both ends
+ * after fs.realpath, so a path that exists but leads somewhere else is
+ * refused rather than followed.
+ */
+async function pathFor(ticket: number, repoRoot: string): Promise<string> {
+  const root = await rootFor(repoRoot);
+  const where = await containedPath(root, String(ticket));
+  if (where.ok) return where.path;
+  // Not there yet, which is the ordinary case — and the shape check and the
+  // containment check both ran before the lookup that said so.
+  if (where.kind === "missing") return join(root, String(ticket));
+  throw new Error(`refusing to touch a sandbox for #${ticket} under ${root}: that path ${where.reason}`);
+}
 
 /** git's own message, not a stack trace: an operator can act on "not a git repository". */
 async function git(args: string[], cwd: string, what: string): Promise<string> {
@@ -57,7 +98,7 @@ export async function repositoryRoot(dir: string): Promise<string> {
  * something.
  */
 export async function ensureWorktree(ticket: number, repoRoot: string): Promise<string> {
-  const path = pathFor(ticket, repoRoot);
+  const path = await pathFor(ticket, repoRoot);
   const listed = await git(["worktree", "list", "--porcelain"], repoRoot, `could not create a worktree for #${ticket}`);
   // Re-used, not rebuilt: a run that crashed mid-step left one registered, and
   // git refuses to add a second worktree at the same path anyway.
@@ -65,7 +106,8 @@ export async function ensureWorktree(ticket: number, repoRoot: string): Promise<
 
   // A directory that exists but is registered nowhere is the residue of a
   // `worktree remove` that was interrupted, or of a pruned registration. git
-  // would refuse to add onto it; the path is ours, so clearing it is safe.
+  // would refuse to add onto it; the path is ours — `pathFor` is what makes
+  // that a fact rather than an assumption — so clearing it is safe.
   await git(["worktree", "prune"], repoRoot, `could not create a worktree for #${ticket}`);
   await rm(path, { recursive: true, force: true });
   await git(
@@ -82,7 +124,11 @@ export async function ensureWorktree(ticket: number, repoRoot: string): Promise<
  * would replace the real failure with its own.
  */
 export async function removeWorktree(ticket: number, repoRoot: string): Promise<void> {
-  const path = pathFor(ticket, repoRoot);
+  // A path this refuses is one that is not ours, and there is nothing of ours
+  // at it to remove: doing nothing is the whole answer, and reporting it here
+  // would be reporting it from the unwind of something else.
+  const path = await pathFor(ticket, repoRoot).catch(() => null);
+  if (path === null) return;
   await exec("git", ["worktree", "remove", "--force", path], { cwd: repoRoot }).catch(() => undefined);
   // The registration and the directory can outlive each other — a remove that
   // failed because the repository moved leaves the directory behind, and that
