@@ -8,7 +8,11 @@
     "exactOptionalPropertyTypes": true,
     "declaration": true,
     "outDir": "dist",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    // A hook module imports `landrace/hooks`, which Node resolves by package
+    // self-reference to the built dist/hooks.js. Mapped to the source here so
+    // a clean clone typechecks before it has ever been built.
+    "paths": { "landrace/hooks": ["./src/hooks/index.ts"] }
   },
   "include": ["src", "tests"]
 }

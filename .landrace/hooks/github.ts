@@ -40,7 +40,15 @@ import {
   type Snapshot,
   type Source,
   type TicketPatch,
-} from "../../src/hooks/index.js"; // an installed consumer writes: from "landrace/hooks"
+} from "landrace/hooks";
+/*
+ * `landrace/hooks` resolves here by Node's package self-reference — the same
+ * specifier a consumer with landrace installed writes, and the reason this
+ * file is a copyable example rather than a repo-shaped one. It points at the
+ * built `dist/hooks.js`, so run `pnpm build` before running the CLI out of
+ * this repository; the test suite maps it to `src/` so it never waits on a
+ * build.
+ */
 
 /* ── GitHub's own shapes ────────────────────────────────────────────────── */
 
