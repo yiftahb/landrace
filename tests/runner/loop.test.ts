@@ -1,7 +1,6 @@
 import { converge } from "../../src/runner/converge.js";
 import { createDispatcher } from "../../src/runner/effects.js";
 import { createLogger } from "../../src/runner/events.js";
-import { definePreHook } from "../../src/hooks/contracts.js";
 import type { Executor, HookContext, PostHook } from "../../src/namespace.js";
 import { deriveRun } from "../../src/core/index.js";
 import type { Effect, Logger, Marker } from "../../src/namespace.js";
@@ -38,13 +37,16 @@ const world = (labels: string[]): World =>
 
 /**
  * The real GitHub hooks, as the loader classified them out of the hook module:
- * the tracker's two halves, and both halves of the spec artifact — a ticket
- * cannot leave `spec` without something publishing what the step wrote.
+ * the tracker's two halves, both halves of the spec artifact — a ticket cannot
+ * leave `spec` without something publishing what the step wrote — and the pull
+ * request artifact, which is every fact the review half of §10 routes on.
  */
 const hooksOf = (gh: World) => {
   const pre = gh.registry.pre;
   const post = gh.registry.post;
-  if (pre.length !== 2 || post.length !== 2) throw new Error("the fake tracker registered the wrong hooks");
+  const ids = pre.map((h) => h.id).join(",");
+  if (ids !== "github,pr,spec") throw new Error(`the fake tracker registered the wrong pre hooks: ${ids}`);
+  if (post.length !== 3) throw new Error("the fake tracker registered the wrong post hooks");
   return { pre, post };
 };
 
@@ -61,27 +63,30 @@ const say = (gh: World, body: string): void => {
 };
 
 /**
- * The PR the review cycle turns on. No PR artifact hook exists yet, so the
- * facts §10's gates read are supplied here — deliberately *unchanging* across
- * the loop: the fixer never resolves a thread (§10: the party that raised a
- * finding closes it), so no external value distinguishes one review round
- * from the next.
+ * What the world does around the ticket while the loop runs, on the in-memory
+ * GitHub the real artifact hook reads.
  *
- * It merges into `artifacts` rather than replacing it, because the spec
- * artifact's own read is already there: fragments merge with a shallow spread,
- * so a second hook writing the whole key drops what the first one contributed.
+ * Nothing here is a stand-in for an engine part: opening the pull request and
+ * resolving a thread are both things *people and pushes* do, and the engine
+ * reads them back. What this models is §10's own rule that the party who
+ * raised a finding closes it — so a fix round leaves `openThreads` exactly
+ * where it was, and only the next review round moves it.
  */
-const prHook = (openThreads: number) =>
-  definePreHook({
-    id: "pr",
-    provides: ["artifacts.pr.*"],
-    run: ({ snapshot }) => ({
-      artifacts: {
-        ...(snapshot.artifacts as Record<string, unknown> | undefined),
-        pr: { number: 7, openThreads, merged: false },
-      },
-    }),
+const BRANCH = "landrace/1";
+
+const openThePr = (gh: World, openThreads: number): void => {
+  if ([...gh.pulls.values()].some((p) => p.head === BRANCH)) return;
+  gh.openPull({
+    head: BRANCH,
+    number: 7,
+    headSha: "sha-1",
+    threads: Array.from({ length: openThreads }, (_, i) => ({ isResolved: false, body: `finding ${i}` })),
   });
+};
+
+const resolveEveryThread = (gh: World): void => {
+  for (const pull of gh.pulls.values()) for (const t of pull.threads) t.isResolved = true;
+};
 
 /** A post hook that fails one effect, to cut a transition's effect list in half mid-flight. */
 const breakingOn = (inner: PostHook, hit: (e: Effect) => boolean): PostHook => ({
@@ -96,12 +101,20 @@ const breakingOn = (inner: PostHook, hit: (e: Effect) => boolean): PostHook => (
 
 async function run(
   gh: World,
-  opts: { openThreads?: number; answers?: Record<string, Answer>; breakOn?: (e: Effect) => boolean } = {},
+  opts: {
+    openThreads?: number;
+    answers?: Record<string, Answer>;
+    breakOn?: (e: Effect) => boolean;
+    /** The review round on which the reviewer resolves what it raised. Never, by default. */
+    resolveOn?: number;
+  } = {},
 ) {
   const { workflow, steps } = await loadWorkflow(".landrace");
   const answers = { ...OUTPUT, ...opts.answers };
 
   const invocations: Array<{ stage: string; round: number }> = [];
+  /** Where the ticket sat on each pass, without the repeats — the position trail §10 draws. */
+  const positions: string[] = [];
   let current = "spec";
   let round = 1;
   const base = createLogger({ sink: () => {} });
@@ -111,6 +124,10 @@ async function run(
       current = String(e.stage);
       round = Number(e.round);
       invocations.push({ stage: current, round });
+    }
+    if (type === "ticket.evaluated") {
+      const at = (data as { stage: string | null }).stage;
+      if (typeof at === "string" && at !== positions.at(-1)) positions.push(at);
     }
     base(type, data);
   };
@@ -125,13 +142,21 @@ async function run(
     run: async (prompt) => {
       prompts.push({ stage: current, prompt });
       const answer = answers[current];
+
+      // The two things that happen *outside* the engine while a step runs.
+      // The push and the `gh pr create` that follow a build are nobody's hook
+      // yet, and resolving a thread is the reviewer's own act — §10 is
+      // explicit that the fixer never does it.
+      if (current === "build") openThePr(gh, opts.openThreads ?? 2);
+      if (current === "code-review" && round === opts.resolveOn) resolveEveryThread(gh);
+
       return { text: (typeof answer === "function" ? answer(round) : answer) ?? "no output", sessionId: null };
     },
   };
 
   const result = await converge(1, {
     workflow, steps,
-    pre: [...pre, prHook(opts.openThreads ?? 2)],
+    pre,
     dispatcher: createDispatcher(post.map((h) => (opts.breakOn ? breakingOn(h, opts.breakOn) : h))),
     executor,
     ctx: {
@@ -144,7 +169,7 @@ async function run(
   const labels = gh.labelsOf(1);
   const comments = gh.comments.get(1) ?? [];
   return {
-    result, invocations, labels, prompts,
+    result, invocations, labels, prompts, positions,
     published: gh.published(),
     markers: comments.map((c) => parseMarker(c.body)).filter((m): m is Marker => m !== null),
     run: deriveRun(gh.entriesOf(1), stageFromLabels(labels).stage),
@@ -349,5 +374,99 @@ describe("a halted ticket is handed back to a stage that records its entry", () 
     expect(handed.invocations[0]).toEqual({ stage: "spec", round: 1 });
     expect(entryRecords(handed.markers, "spec")).toEqual([1]);
     expect(handed.labels).not.toContain("lr:blocked");
+  });
+});
+
+/**
+ * The whole of §10, from a fresh ticket to `done`, over the in-memory GitHub.
+ *
+ * Nothing is seeded and nothing is injected: the position comes from a label,
+ * the rounds from records on the ticket, the spec from the Pages branch, and
+ * every gate in the review half from the pull request artifact's own read. The
+ * only things supplied from outside are the two a person and a push do — a
+ * pull request appearing after the build, and a merge.
+ */
+describe("a ticket goes all the way round §10", () => {
+  const answers: Record<string, Answer> = {
+    spec: (round) => round === 1
+      ? '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```'
+      : '# Export CSV\n\nOne file, comma separated.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
+  };
+
+  /**
+   * The position trail across several converge calls, without the repeat where
+   * one call picks up where the last left off.
+   *
+   * The final position comes from the ticket's own stage label, not from an
+   * evaluation: nothing evaluates the ticket after the last transition,
+   * because `done` removes `lr:auto` and the pass that follows finds it
+   * ineligible. Position is a label, so this reads the label.
+   */
+  const trail = (...runs: Array<{ positions: string[]; run: { stage: string | null } }>): string[] =>
+    [...runs.flatMap((r) => r.positions), runs.at(-1)?.run.stage ?? null]
+      .filter((at): at is string => at !== null)
+      .filter((at, i, all) => at !== all[i - 1]);
+
+  it("walks spec → review → done, and the pull request is what turns the second half", async () => {
+    const gh = world(["lr:auto"]);
+
+    const asked = await run(gh, { answers });
+    say(gh, "in-house, and CSV only");
+    const specced = await run(gh, { answers });
+    say(gh, "looks right, go ahead");
+    // The reviewer closes its own findings on its second pass — §10's "the
+    // party that raised a finding closes it", which is also the only thing
+    // that can end the loop.
+    const reviewed = await run(gh, { answers, resolveOn: 2 });
+
+    // A person merges it.
+    const pull = gh.pulls.get(7);
+    if (!pull) throw new Error("the build never opened a pull request");
+    pull.merged = true;
+    const done = await run(gh, { answers });
+
+    expect(trail(asked, specced, reviewed, done)).toEqual([
+      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build",
+      "code-review", "fix-review", "code-review", "pr-human-review", "done",
+    ]);
+    expect(reviewed.invocations).toEqual([
+      { stage: "triage", round: 1 },
+      { stage: "build", round: 1 },
+      { stage: "code-review", round: 1 },
+      { stage: "fix-review", round: 1 },
+      { stage: "code-review", round: 2 },
+    ]);
+    // Terminal: the engine's own labels are gone, so the next tick does not
+    // pick the ticket up again.
+    expect(done.labels).toEqual(["lr:stage:done"]);
+    expect(done.result.settled).not.toBe("cap");
+  });
+
+  /*
+   * The property the round-aware half of the engine leans on: a fix round
+   * changes nothing the gate reads. If anything here ever resolved a thread on
+   * the fixer's behalf, `pr-human-review` would be reached with findings still
+   * open on the pull request and nobody would be told.
+   */
+  it("leaves the thread count exactly where it was across every fix round", async () => {
+    const gh = world(["lr:auto", "lr:stage:build"]);
+    const r = await run(gh);
+
+    expect(r.invocations.filter((i) => i.stage === "fix-review").length).toBe(3);
+    expect([...gh.pulls.values()][0]?.threads.filter((t) => !t.isResolved).length).toBe(2);
+    expect(r.labels).toContain("lr:blocked");
+  });
+
+  /*
+   * What the artifact costs. §3.1 asks for artifact state every tick and
+   * converge runs many passes per call, so this is the number that grows with
+   * the workflow: one GraphQL query per pass, and one contents read for the
+   * spec beside it — not one per review thread, and not one per round.
+   */
+  it("costs one GraphQL query per converge pass", async () => {
+    const gh = world(["lr:auto", "lr:stage:build"]);
+    const r = await run(gh);
+
+    expect(gh.requests.filter((q) => q.path === "/graphql").length).toBe(r.result.passes);
   });
 });

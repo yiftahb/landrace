@@ -205,6 +205,32 @@ function createClient(opts: GitHubOptions) {
 
   return {
     botLogin,
+
+    /**
+     * The one question REST cannot answer: a review thread's `isResolved`.
+     *
+     * It is a POST to a different host path and its own error shape — a
+     * GraphQL failure is an HTTP 200 carrying an `errors` array — so it lives
+     * beside `call` rather than inside it. The login gate is the same one for
+     * the same reason: it is resolved once per client, and every entry point
+     * goes through it.
+     */
+    graphql: async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
+      await botLogin();
+      const body = await request<{ data?: T; errors?: Array<{ message?: unknown }> }>(
+        "POST",
+        "https://api.github.com/graphql",
+        { query, variables },
+      );
+      // Errors arrive with a 200 and are the whole answer: read past them and
+      // a query that failed looks exactly like one that found nothing.
+      if (body.errors?.length) {
+        throw new Error(`graphql: ${body.errors.map((e) => String(e.message ?? e)).join("; ")}`);
+      }
+      if (body.data === undefined || body.data === null) throw new Error("graphql: the response carried no data");
+      return body.data;
+    },
+
     async listIssues({ labels = [], state = "open" }: { labels?: string[]; state?: string }): Promise<Issue[]> {
       const q = new URLSearchParams({ state, per_page: "100" });
       if (labels.length) q.set("labels", labels.join(","));
@@ -549,6 +575,141 @@ function publishSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   return state.hash === hashOf(contentOf(effect));
 }
 
+/* ── the pull request, read over GraphQL ────────────────────────────────── */
+
+/** The artifact the review loop turns on. One name, for the snapshot path and the hook's id. */
+const PR = "pr";
+
+/**
+ * Derived from the ticket, never stored — the same rule the spec's path
+ * follows. There is no PR id to remember and nothing to repair: the branch
+ * names the ticket, and the pull request is whichever one has that head.
+ */
+const prBranch = (ticket: number): string => `landrace/${ticket}`;
+
+/**
+ * GitHub's own page size for a connection, and how many pages one read will
+ * pay for. A count that stopped at the first page would read a 150-thread pull
+ * request as having fewer findings than it has — and, with the first hundred
+ * resolved, as having none at all, which is a ticket leaving the review loop
+ * with open findings on it. Past the cap the honest answer is that the count
+ * could not be read, not a number we know is short.
+ */
+const THREAD_PAGE = 100;
+const MAX_THREAD_PAGES = 10;
+
+/**
+ * Thread resolution is GraphQL-only: REST exposes review comments but not
+ * `isResolved`. That is a hard requirement on this hook rather than an
+ * optimisation, because the review loop's gate is a *count* of unresolved
+ * threads — a structural fact nobody can write — and not a judge's verdict.
+ *
+ * Only what §10's triggers read is asked for. In particular no thread body:
+ * a body is written by anyone with comment access, and the snapshot is hashed,
+ * interpolated into prompts and carried into every predicate. What cannot be
+ * fetched cannot leak.
+ */
+const PR_QUERY = `
+query($owner: String!, $name: String!, $head: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(headRefName: $head, states: [OPEN, MERGED], first: 1,
+                 orderBy: { field: CREATED_AT, direction: DESC }) {
+      nodes {
+        number
+        merged
+        headRefOid
+        reviewThreads(first: ${THREAD_PAGE}, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { isResolved }
+        }
+      }
+    }
+  }
+}`;
+
+interface PrNode {
+  number: number;
+  merged: boolean;
+  headRefOid: string;
+  reviewThreads: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    nodes: Array<{ isResolved: boolean }>;
+  };
+}
+
+interface PrResponse {
+  repository: { pullRequests: { nodes: PrNode[] } } | null;
+}
+
+/**
+ * The pull request for a ticket's branch, as the facts §10 routes on: the
+ * number `code-review` requires, the head sha a fix round moves, whether it
+ * merged, and how many review threads are still open.
+ *
+ * `{}` when there is no pull request yet — not a null, and not an `exists`
+ * flag. `artifacts.pr.number` is what the gate reads, and absent has to read
+ * as absent.
+ *
+ * Note what is *not* here. No `reviewDecision`: nothing in the workflow reads
+ * it, and an artifact carrying more than its gates read is a remote document's
+ * shape reaching the snapshot. No thread bodies: see PR_QUERY.
+ */
+async function readPr(gh: Client, repo: string, ticket: number): Promise<Record<string, unknown>> {
+  const [owner = "", name = ""] = repo.split("/");
+  const head = prBranch(ticket);
+
+  let cursor: string | null = null;
+  let pull: PrNode | null = null;
+  let openThreads = 0;
+
+  for (let page = 0; page < MAX_THREAD_PAGES; page++) {
+    const data: PrResponse = await gh.graphql<PrResponse>(PR_QUERY, { owner, name, head, cursor });
+
+    // A repository a token cannot see answers with a 200, no errors and a null
+    // repository. Read as an empty answer it is indistinguishable from "no
+    // pull request yet", which parks every ticket at `build` saying nothing.
+    if (!data.repository) {
+      throw new Error(`the repository "${repo}" answered with nothing at all; check the token's access to it`);
+    }
+
+    // Two pull requests can share a head branch — one merged, one opened after
+    // it — so the newest is the current work. That is a total order on
+    // creation time, not a first-match-wins over an arbitrary list.
+    const node = data.repository.pullRequests.nodes[0];
+    if (!node) return {};
+
+    pull = node;
+    openThreads += node.reviewThreads.nodes.filter((t) => !t.isResolved).length;
+    if (!node.reviewThreads.pageInfo.hasNextPage) {
+      return { number: node.number, headSha: node.headRefOid, merged: node.merged, openThreads };
+    }
+    cursor = node.reviewThreads.pageInfo.endCursor;
+  }
+
+  throw new Error(
+    `the pull request #${pull?.number ?? "?"} has more than ${MAX_THREAD_PAGES * THREAD_PAGE} review threads, ` +
+    "so the open-thread count the review loop gates on cannot be read in one pass. " +
+    "Reporting the count of what was read would be reporting a number known to be short.",
+  );
+}
+
+/**
+ * The act half of an artifact nothing publishes.
+ *
+ * A pull request is opened by whoever pushes the branch, so this artifact is
+ * read-only and `handles` is empty: the dispatcher routes no effect type here
+ * and neither of these is reachable from the engine. They throw rather than
+ * returning a polite nothing, because the two silent answers are the two ways
+ * an unhandled effect goes wrong — "satisfied" drops the work, "not satisfied"
+ * re-applies it every tick.
+ */
+const nothingPublishes = (effect: Effect): never => {
+  throw new Error(
+    `nothing publishes the "${PR}" artifact — it is opened by whoever pushes the branch and only read here — ` +
+    `so "${String(effect.type)}" has no handler on this hook`,
+  );
+};
+
 /**
  * The integration, built over one client.
  *
@@ -563,11 +724,23 @@ export function githubHooks(opts: GitHubOptions): {
   post: PostHook;
   source: Source;
   operator: Operator;
+  pullRequestArtifact: ArtifactHook;
   specArtifact: ArtifactHook;
 } {
   const gh = createClient(opts);
 
   return {
+    // Named to sort after `pre`, for the reason spelled out on `specArtifact`
+    // below. As `prArtifact` it sorted *before* it ("prA" < "pre"), and the
+    // artifact phase ran ahead of the tracker read it is meant to sit beside.
+    pullRequestArtifact: defineArtifactHook({
+      id: PR,
+      handles: [],
+      read: ({ ticket }) => readPr(gh, opts.repo, ticket),
+      satisfied: (_snapshot, effect) => nothingPublishes(effect),
+      apply: (effect) => nothingPublishes(effect),
+    }),
+
     // Sorts after every other export on purpose: the loader files a module's
     // exports in sorted name order, and an artifact's read wants the tracker's
     // fragment already in the snapshot beside it.
@@ -676,6 +849,21 @@ export const post = definePostHook({
 export const source = defineSource({
   id: "github",
   list: async (ctx: RuntimeContext) => hooksFor(ctx).source.list(ctx),
+});
+
+/**
+ * The pull request for this ticket's branch, read every tick.
+ *
+ * The one artifact here that is read-only: §10's review loop routes on its
+ * number, its unresolved thread count and whether it merged, and none of those
+ * are things this workflow writes.
+ */
+export const pullRequestArtifact = defineArtifactHook({
+  id: PR,
+  handles: [],
+  read: async (ctx: HookContext) => hooksFor(ctx).pullRequestArtifact.read(ctx),
+  satisfied: (_snapshot: Snapshot, effect: Effect) => nothingPublishes(effect),
+  apply: async (effect: Effect) => nothingPublishes(effect),
 });
 
 /**

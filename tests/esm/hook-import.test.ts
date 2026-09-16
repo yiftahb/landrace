@@ -48,9 +48,11 @@ describe("hook modules are imported from disk and classified by their brand", ()
   it("loads the shipped tracker integration into every slot it fills", async () => {
     const registry = await loadHooks({ dir: ".landrace", modules: ["hooks/github.ts"] });
 
-    // Two pre hooks out of one module: the tracker's own, and the observe half
-    // of the spec artifact, which the loader files for it.
-    expect(registry.pre.map((h) => h.id)).toEqual(["github", "spec"]);
+    // Three pre hooks out of one module: the tracker's own, and the observe
+    // half of each artifact, which the loader files for them. The order is the
+    // module's sorted export names, and it is load-bearing — an artifact reads
+    // with the tracker's fragment already beside it, never ahead of it.
+    expect(registry.pre.map((h) => h.id)).toEqual(["github", "pr", "spec"]);
     expect(registry.post[0]?.handles).toEqual(
       expect.arrayContaining(["tracker.label", "tracker.status", "tracker.comment"]),
     );

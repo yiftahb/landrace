@@ -33,6 +33,29 @@ export interface FakeComment {
   user: { login: string };
 }
 
+/**
+ * A pull request and the review threads on it, as the GraphQL half of the API
+ * answers for them.
+ *
+ * `body` on a thread is deliberately modelled and deliberately returned: it is
+ * text anyone with comment access can write, and the property worth pinning is
+ * that none of it reaches the snapshot. A fake that never had any could not
+ * tell the difference.
+ */
+export interface FakeThread {
+  isResolved: boolean;
+  body: string;
+}
+
+export interface FakePull {
+  number: number;
+  /** The head branch. A PR is found by it, because the reference is derived from the ticket and never stored. */
+  head: string;
+  headSha: string;
+  merged: boolean;
+  threads: FakeThread[];
+}
+
 export interface FakeTracker {
   registry: Registry;
   /** A context the hooks ignore: they were built with explicit options, not read out of config. */
@@ -43,6 +66,13 @@ export interface FakeTracker {
   requests: FakeRequest[];
   /** Answer matching requests with a failure instead, for the failures a hook has to tell apart from "not there". */
   breakOn(match: (request: FakeRequest) => boolean, status?: number): void;
+  /**
+   * Answer every GraphQL query the way a failed one actually arrives: HTTP
+   * 200, an `errors` array, and a `data` that still parses — partial success
+   * is GraphQL's normal shape for a permission or field error, and it is why
+   * reading past the errors turns a failure into "no pull request".
+   */
+  graphqlError(message: string): void;
   /** What is published on the orphan branch right now, resolved through the git objects the hook wrote. */
   published(branch?: string): Map<string, string>;
   /** The login the fake posts under, so what it writes reads back as ours — the relationship the real client has with its token. */
@@ -53,6 +83,14 @@ export interface FakeTracker {
   /** Post as somebody else, the way a person would. */
   sayAs(login: string, ticket: number, body: string, at?: string): FakeComment;
   entriesOf(ticket: number): Entry[];
+  /** The pull requests that exist, by number. */
+  pulls: Map<number, FakePull>;
+  /** Open one on a head branch, the way a push and a `gh pr create` would. */
+  openPull(pull: { head: string; number?: number; headSha?: string; merged?: boolean; threads?: FakeThread[] }): FakePull;
+  /** Every GraphQL query that reached the boundary, with the variables it carried. */
+  graphql: Array<{ query: string; variables: Record<string, unknown> }>;
+  /** The boundary itself, so a test can point a second, differently configured client at the same in-memory GitHub. */
+  fetchImpl: typeof fetch;
 }
 
 export interface FakeRequest {
@@ -60,6 +98,13 @@ export interface FakeRequest {
   /** The path within the repository, e.g. "/git/blobs" — or the raw pathname for anything outside it. */
   path: string;
 }
+
+/**
+ * What GitHub's GraphQL API returns per page of review threads. Hard-coded
+ * rather than read off the query, because the page size is the API's, not the
+ * caller's: a hook that asked for a thousand at once would simply be refused.
+ */
+const THREAD_PAGE = 100;
 
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -125,8 +170,34 @@ export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTra
     return (commit && trees.get(commit.tree)) ?? new Map<string, string>();
   };
 
+  const pulls = new Map<number, FakePull>();
+  let nextPull = 100;
+
   const requests: FakeRequest[] = [];
+  const graphql: Array<{ query: string; variables: Record<string, unknown> }> = [];
   let broken: { match: (r: FakeRequest) => boolean; status: number } | null = null;
+  let graphqlFailure: string | null = null;
+
+  /**
+   * One page of review threads, as a connection.
+   *
+   * The cursor is the index of the next thread, stringified — GitHub's is
+   * opaque and base64, and a caller that parsed one would be relying on
+   * something it was promised nothing about, so the shape (opaque string in,
+   * opaque string out) is what matters here rather than the encoding.
+   */
+  const threadPage = (pull: FakePull, cursor: unknown) => {
+    const from = typeof cursor === "string" && cursor ? Number(cursor) : 0;
+    const page = pull.threads.slice(from, from + THREAD_PAGE);
+    const end = from + page.length;
+    return {
+      pageInfo: { hasNextPage: end < pull.threads.length, endCursor: String(end) },
+      // `body` rides along on every node: a server returns what it returns,
+      // and "no thread text reaches the snapshot" has to be a property of the
+      // hook rather than of what the fake happened to omit.
+      nodes: page.map((t) => ({ isResolved: t.isResolved, body: t.body })),
+    };
+  };
 
   /** Only the endpoints the hooks actually call, answering the way GitHub does. */
   const fetchImpl = (async (input: string | URL, init?: RequestInit): Promise<Response> => {
@@ -142,6 +213,47 @@ export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTra
     }
 
     if (url.pathname === "/user") return json({ login: BOT });
+
+    if (url.pathname === "/graphql" && method === "POST") {
+      const variables = (body.variables ?? {}) as Record<string, unknown>;
+      graphql.push({ query: String(body.query ?? ""), variables });
+
+      if (graphqlFailure !== null) {
+        return json({
+          data: { repository: { pullRequests: { nodes: [] } } },
+          errors: [{ message: graphqlFailure, type: "FORBIDDEN" }],
+        });
+      }
+
+      // A repository the token cannot see answers with a null repository and
+      // no error at all, which is a different failure from "no pull request".
+      if (variables.owner !== REPO.split("/")[0] || variables.name !== REPO.split("/")[1]) {
+        return json({ data: { repository: null } });
+      }
+
+      // Newest first, the way `orderBy: { field: CREATED_AT, direction: DESC }`
+      // orders them: a merged pull request and a later one on the same branch
+      // both exist, and the later one is the current work.
+      const pull = [...pulls.values()]
+        .filter((p) => p.head === variables.head)
+        .sort((a, b) => b.number - a.number)[0];
+      if (!pull) return json({ data: { repository: { pullRequests: { nodes: [] } } } });
+
+      return json({
+        data: {
+          repository: {
+            pullRequests: {
+              nodes: [{
+                number: pull.number,
+                merged: pull.merged,
+                headRefOid: pull.headSha,
+                reviewThreads: threadPage(pull, variables.cursor),
+              }],
+            },
+          },
+        },
+      });
+    }
 
     const issueOf = (n: number): FakeIssue | null => issues.get(n) ?? null;
 
@@ -283,7 +395,24 @@ export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTra
     issues,
     comments,
     requests,
+    graphql,
+    fetchImpl,
+    pulls,
+    openPull: (pull) => {
+      const number = pull.number ?? nextPull++;
+      const created: FakePull = {
+        number,
+        head: pull.head,
+        headSha: pull.headSha ?? `sha-${number}`,
+        merged: pull.merged ?? false,
+        threads: pull.threads ?? [],
+      };
+      pulls.set(number, created);
+      nextPull = Math.max(nextPull, number + 1);
+      return created;
+    },
     breakOn: (match, status = 500) => { broken = { match, status }; },
+    graphqlError: (message) => { graphqlFailure = message; },
     published: (branch = "gh-pages") =>
       new Map([...treeOfRef(branch)].map(([file, blob]) => [file, blobs.get(blob) ?? ""])),
     bot: BOT,
