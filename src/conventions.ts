@@ -154,8 +154,13 @@ const MARKER_ENVELOPE_RESERVE = 1024;
 /** A marker is depth 1, so the value hanging off its `output` key is depth 2. */
 const MARKER_VALUE_DEPTH = 2;
 
-const markerRe = () => /<!--\s*landrace\s+(\{.*?\})\s*-->/gs;
 const TRAILING_RE = /^<!--\s*landrace\s+(\{[\s\S]*\})\s*-->$/;
+
+/** Both halves of the delimiter a marker lives inside, and what they read as once escaped. */
+const COMMENT_OPEN = "<!--";
+const COMMENT_CLOSE = "-->";
+const ESCAPED_OPEN = "&lt;!--";
+const ESCAPED_CLOSE = "--&gt;";
 
 /**
  * `<` and `>` written as the \u escapes JSON.parse reads straight back, so
@@ -262,9 +267,27 @@ export function stripMarker(body: string): string {
  * Text we did not author must not be able to emit our control tokens. Escaped
  * rather than deleted: a document explaining the format should still show it,
  * just visibly and inertly.
+ *
+ * Every `<!--` and every `-->` in the body, not only the pair bracketing each
+ * marker-shaped match. Matching whole markers looked tighter and was not a
+ * control at all: the match was lazy, so a marker *nested* inside another
+ * one's span kept both its own delimiters, and N levels of nesting survived N
+ * escape passes — including the two the relay sinks apply (once in the MCP
+ * tool, once in the tracker hook), which is how text an operator pasted came
+ * back out under our own login as a record the engine counted. A third pass
+ * loses the same race to a third level. Convergence ends it instead: one pass
+ * leaves no readable delimiter anywhere, so a second pass is a no-op and the
+ * nesting depth stops mattering.
+ *
+ * The two replacements run in sequence rather than as one alternation because
+ * they overlap: in `<!-->` the opener and the closer share two dashes, and a
+ * single left-to-right scan that consumed the opener would step past the
+ * `-->` it had just exposed. Escaping every opener first and every closer
+ * second cannot leave one behind — neither replacement introduces a `<` or a
+ * `>`, so neither pass can create work for the other or undo its own.
  */
 export const neutraliseMarkers = (body: string): string =>
-  body.replace(markerRe(), (m) => `&lt;${m.slice(1, -1)}&gt;`);
+  body.replaceAll(COMMENT_OPEN, ESCAPED_OPEN).replaceAll(COMMENT_CLOSE, ESCAPED_CLOSE);
 
 /**
  * What core reads as a record's payload — `run.outputs[stage]` for an output
