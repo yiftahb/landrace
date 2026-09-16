@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { createFakeTracker, type FakeTracker } from "../support/fake-tracker.js";
-import type { ArtifactHook, Effect, HookContext, Snapshot } from "../../src/namespace.js";
+import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
+import type { ArtifactHook, Effect, HookContext, Snapshot } from "#namespace.js";
 
 /**
  * The spec artifact, over the in-memory GitHub. The fake is the HTTP

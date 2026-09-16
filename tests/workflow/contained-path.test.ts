@@ -1,4 +1,4 @@
-import { containedPath } from "../../src/workflow/load.js";
+import { containedPath } from "#workflow/load.js";
 
 /**
  * `containedPath` is reused by the claude executor (src/agent/claude.ts) to

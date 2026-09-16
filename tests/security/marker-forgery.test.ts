@@ -1,7 +1,7 @@
-import { entriesFromComments } from "../../src/conventions.js";
-import { decide } from "../../src/core/decide.js";
-import { deriveRun } from "../../src/core/derive.js";
-import type { Snapshot, TrackerComment, Workflow } from "../../src/namespace.js";
+import { entriesFromComments } from "#conventions.js";
+import { decide } from "#core/decide.js";
+import { deriveRun } from "#core/derive.js";
+import type { Snapshot, TrackerComment, Workflow } from "#namespace.js";
 
 /**
  * A marker is trustworthy because *we* wrote it. These are the attacks a

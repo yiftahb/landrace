@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../../src/config/load.js";
+import { loadConfig } from "#config/load.js";
 
 const CONFIG = `version: 1
 agent: { adapter: claude, model: opus }

@@ -1,8 +1,8 @@
-import { buildRegistry } from "../../src/hooks/load.js";
-import { entriesFromComments } from "../../src/conventions.js";
-import type { Entry, Registry, RuntimeConfig } from "../../src/namespace.js";
-import type { RuntimeContext } from "../../src/namespace.js";
-import { githubHooks } from "../../.landrace/hooks/github.js";
+import { buildRegistry } from "#hooks/load.js";
+import { entriesFromComments } from "#conventions.js";
+import type { Entry, Registry, RuntimeConfig } from "#namespace.js";
+import type { RuntimeContext } from "#namespace.js";
+import { githubHooks } from "#landrace/hooks/github.js";
 
 /**
  * The shipped GitHub integration, over an in-memory GitHub.

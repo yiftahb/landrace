@@ -1,4 +1,4 @@
-import { mayWriteRepo, unknownCapabilities } from "../../src/conventions.js";
+import { mayWriteRepo, unknownCapabilities } from "#conventions.js";
 
 describe("step capabilities", () => {
   it("accepts every capability the shipped steps declare", () => {

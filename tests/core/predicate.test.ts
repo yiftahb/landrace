@@ -1,4 +1,4 @@
-import { compile, assertAllowedOperators, pathsIn, missingPaths } from "../../src/core/predicate.js";
+import { compile, assertAllowedOperators, pathsIn, missingPaths } from "#core/predicate.js";
 
 describe("predicate", () => {
   it("matches a dot path", () => {

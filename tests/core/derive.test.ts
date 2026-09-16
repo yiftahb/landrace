@@ -1,6 +1,6 @@
-import { deriveRun } from "../../src/core/derive.js";
-import { assess } from "../../src/core/assess.js";
-import type { Entry, Snapshot, Stage } from "../../src/namespace.js";
+import { deriveRun } from "#core/derive.js";
+import { assess } from "#core/assess.js";
+import type { Entry, Snapshot, Stage } from "#namespace.js";
 
 let t = 0;
 const at = () => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)).toISOString();

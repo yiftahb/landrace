@@ -1,7 +1,7 @@
-import { buildRegistry } from "../../src/hooks/load.js";
-import type { HookModule } from "../../src/namespace.js";
-import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, defineSource } from "../../src/hooks/contracts.js";
-import type { Candidate, HookContext } from "../../src/namespace.js";
+import { buildRegistry } from "#hooks/load.js";
+import type { HookModule } from "#namespace.js";
+import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
+import type { Candidate, HookContext } from "#namespace.js";
 
 const pre = (id: string, fragment: Record<string, unknown> = {}) =>
   definePreHook({ id, run: () => fragment });

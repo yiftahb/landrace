@@ -1,11 +1,11 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runValidate } from "../../src/cli/validate.js";
-import { loadHooks } from "../../src/hooks/load.js";
-import { snapshotProvides } from "../../src/runner/snapshot.js";
-import { loadWorkflow } from "../../src/workflow/load.js";
-import { validate } from "../../src/workflow/validate.js";
+import { runValidate } from "#cli/validate.js";
+import { loadHooks } from "#hooks/load.js";
+import { snapshotProvides } from "#runner/snapshot.js";
+import { loadWorkflow } from "#workflow/load.js";
+import { validate } from "#workflow/validate.js";
 
 /**
  * `landrace validate` with the hooks it will actually run.

@@ -1,4 +1,4 @@
-import { canonicalize, hashSnapshot } from "../../src/core/normalize.js";
+import { canonicalize, hashSnapshot } from "#core/normalize.js";
 
 const digest = (s: string) => String(s.length);
 

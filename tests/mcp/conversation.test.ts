@@ -2,13 +2,13 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { OUTPUT_KIND, renderMarker } from "../../src/conventions.js";
-import type { Executor, LockOptions, Step } from "../../src/namespace.js";
-import { createConversation } from "../../src/mcp/conversation.js";
-import { createDispatcher } from "../../src/runner/effects.js";
-import { acquire, held, release } from "../../src/runner/lock.js";
-import { runStep } from "../../src/runner/step.js";
-import { createFakeTracker, type FakeTracker } from "../support/fake-tracker.js";
+import { OUTPUT_KIND, renderMarker } from "#conventions.js";
+import type { Executor, LockOptions, Step } from "#namespace.js";
+import { createConversation } from "#mcp/conversation.js";
+import { createDispatcher } from "#runner/effects.js";
+import { acquire, held, release } from "#runner/lock.js";
+import { runStep } from "#runner/step.js";
+import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
 
 let root: string;
 beforeEach(async () => {

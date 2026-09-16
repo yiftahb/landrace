@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { importFailure, loadHooks } from "../../src/hooks/load.js";
+import { importFailure, loadHooks } from "#hooks/load.js";
 
 /**
  * `workflow.yaml` is a repo file a contributor's PR can edit, and `import()`

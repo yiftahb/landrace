@@ -1,8 +1,8 @@
 import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runValidate } from "../../src/cli/validate.js";
-import { loadWorkflow, WorkflowLoadError } from "../../src/workflow/load.js";
+import { runValidate } from "#cli/validate.js";
+import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
 
 const SECRET = "SSH_KEY=very-secret-material";
 

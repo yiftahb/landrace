@@ -1,7 +1,7 @@
-import { createExternalState, createHarness } from "../../src/testing/index.js";
-import { createFakeTracker } from "../support/fake-tracker.js";
-import { loadWorkflow } from "../../src/workflow/load.js";
-import type { Effect, ExternalState, Harness, ScriptedAnswer } from "../../src/namespace.js";
+import { createExternalState, createHarness } from "#testing/index.js";
+import { createFakeTracker } from "#tests/support/fake-tracker.js";
+import { loadWorkflow } from "#workflow/load.js";
+import type { Effect, ExternalState, Harness, ScriptedAnswer } from "#namespace.js";
 
 /**
  * End to end, which for an engine that does no I/O means the whole engine

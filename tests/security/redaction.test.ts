@@ -1,9 +1,9 @@
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, redactionValues } from "../../src/config/load.js";
-import { createLogger } from "../../src/runner/events.js";
-import type { LandraceEvent } from "../../src/namespace.js";
+import { loadConfig, redactionValues } from "#config/load.js";
+import { createLogger } from "#runner/events.js";
+import type { LandraceEvent } from "#namespace.js";
 
 const TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
 

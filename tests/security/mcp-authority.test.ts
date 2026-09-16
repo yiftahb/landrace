@@ -1,5 +1,5 @@
-import { createTools } from "../../src/mcp/tools.js";
-import { createFakeTracker } from "../support/fake-tracker.js";
+import { createTools } from "#mcp/tools.js";
+import { createFakeTracker } from "#tests/support/fake-tracker.js";
 
 /**
  * The MCP tools are the editor's hands. Position is a label, so letting an

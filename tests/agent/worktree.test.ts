@@ -10,7 +10,7 @@ import {
   removeWorktree,
   repositoryRoot,
   worktreeState,
-} from "../../src/agent/worktree.js";
+} from "#agent/worktree.js";
 
 const run = promisify(execFile);
 

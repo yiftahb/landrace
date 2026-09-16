@@ -1,4 +1,4 @@
-import { loadWorkflow } from "../../src/workflow/load.js";
+import { loadWorkflow } from "#workflow/load.js";
 
 describe("loadWorkflow", () => {
   it("parses the graph", async () => {

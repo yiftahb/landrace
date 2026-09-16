@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMcpTools } from "../../src/cli/mcp.js";
-import { release } from "../../src/runner/lock.js";
+import { buildMcpTools } from "#cli/mcp.js";
+import { release } from "#runner/lock.js";
 
 /**
  * The MCP plane assembled the way `landrace mcp` assembles it — out of a

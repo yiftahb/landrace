@@ -1,4 +1,4 @@
-import { messageOf } from "../../src/runner/errors.js";
+import { messageOf } from "#runner/errors.js";
 
 describe("messageOf", () => {
   it("returns an Error's own message", () => {

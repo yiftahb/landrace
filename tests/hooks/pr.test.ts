@@ -1,7 +1,7 @@
-import { createFakeTracker, type FakeTracker, type FakeThread } from "../support/fake-tracker.js";
-import { compile } from "../../src/core/predicate.js";
-import { githubHooks } from "../../.landrace/hooks/github.js";
-import type { ArtifactHook, Condition, HookContext, PreHook, Snapshot } from "../../src/namespace.js";
+import { createFakeTracker, type FakeTracker, type FakeThread } from "#tests/support/fake-tracker.js";
+import { compile } from "#core/predicate.js";
+import { githubHooks } from "#landrace/hooks/github.js";
+import type { ArtifactHook, Condition, HookContext, PreHook, Snapshot } from "#namespace.js";
 
 /** The workflow's own gate, compiled and asked about a state this hook read. */
 const gate = (when: Condition, state: Record<string, unknown>): boolean =>

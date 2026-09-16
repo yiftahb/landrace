@@ -1,9 +1,9 @@
-import { entriesFromComments } from "../../src/conventions.js";
-import { parseMarker } from "../../src/conventions.js";
-import { decide } from "../../src/core/decide.js";
-import { deriveRun } from "../../src/core/derive.js";
-import type { Snapshot, Workflow } from "../../src/namespace.js";
-import { validateStructure } from "../../src/workflow/validate.js";
+import { entriesFromComments } from "#conventions.js";
+import { parseMarker } from "#conventions.js";
+import { decide } from "#core/decide.js";
+import { deriveRun } from "#core/derive.js";
+import type { Snapshot, Workflow } from "#namespace.js";
+import { validateStructure } from "#workflow/validate.js";
 
 /**
  * A stage id is a key in a plain object, so "__proto__" is not a stage name —

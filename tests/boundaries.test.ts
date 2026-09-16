@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import * as contracts from "../src/hooks/contracts.js";
-import { HOOK_KINDS, hookKindOf } from "../src/hooks/contracts.js";
+import * as contracts from "#hooks/contracts.js";
+import { HOOK_KINDS, hookKindOf } from "#hooks/contracts.js";
 
 const filesUnder = (dir: string): string[] =>
   readdirSync(dir).flatMap((name) => {
@@ -35,9 +35,13 @@ describe("no tracker is named inside the engine", () => {
    * directory: the engine reaches it by a path out of a config file, resolved
    * and contained at runtime, never by an import — an import would make the
    * reference implementation part of the package.
+   *
+   * Both spellings of the same import, because there are now two: a path, and
+   * the `#landrace/` subpath that package.json's `imports` map resolves to the
+   * same files for the tests that exercise the reference hook.
    */
   it("imports nothing out of the workflow directory", () => {
-    expect(linesMatching(/from\s+["'][^"']*\.landrace\//)).toEqual([]);
+    expect(linesMatching(/from\s+["'][^"']*(\.landrace|#landrace)\//)).toEqual([]);
   });
 });
 

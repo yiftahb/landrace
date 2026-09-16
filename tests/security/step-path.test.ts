@@ -1,5 +1,5 @@
-import { loadWorkflow, WorkflowLoadError } from "../../src/workflow/load.js";
-import { runValidate } from "../../src/cli/validate.js";
+import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
+import { runValidate } from "#cli/validate.js";
 
 /**
  * `.landrace/workflow.yaml` is a repo file, so a contributor's PR can edit it,

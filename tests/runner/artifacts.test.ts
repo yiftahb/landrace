@@ -1,8 +1,8 @@
-import { artifactPreHook, buildBriefing } from "../../src/runner/artifacts.js";
-import { buildRegistry } from "../../src/hooks/load.js";
-import { defineArtifactHook } from "../../src/hooks/contracts.js";
-import { buildSnapshot } from "../../src/runner/snapshot.js";
-import type { ArtifactHook, HookContext, Snapshot } from "../../src/namespace.js";
+import { artifactPreHook, buildBriefing } from "#runner/artifacts.js";
+import { buildRegistry } from "#hooks/load.js";
+import { defineArtifactHook } from "#hooks/contracts.js";
+import { buildSnapshot } from "#runner/snapshot.js";
+import type { ArtifactHook, HookContext, Snapshot } from "#namespace.js";
 
 const ctx = (snapshot: Snapshot = {}): HookContext => ({
   ticket: 7,

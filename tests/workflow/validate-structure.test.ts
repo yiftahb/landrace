@@ -1,5 +1,5 @@
-import { validateStructure } from "../../src/workflow/validate.js";
-import type { Step, Workflow } from "../../src/namespace.js";
+import { validateStructure } from "#workflow/validate.js";
+import type { Step, Workflow } from "#namespace.js";
 
 const wf = (stages: Workflow["stages"]): Workflow => ({ version: 1, name: "t", stages });
 const rules = (w: Workflow) => validateStructure(w).map((p) => p.rule);

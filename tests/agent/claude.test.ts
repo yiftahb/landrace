@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClaudeExecutor } from "../../src/agent/claude.js";
+import { createClaudeExecutor } from "#agent/claude.js";
 
 // File-relative, not cwd-relative: `jest --rootDir .. agent/claude.test.ts`
 // run from tests/ previously broke a process.cwd()-based path with ENOENT.

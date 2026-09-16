@@ -1,4 +1,4 @@
-import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, defineSource, hookKindOf } from "../../src/hooks/contracts.js";
+import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, defineSource, hookKindOf } from "#hooks/contracts.js";
 
 /**
  * The loader classifies an exported value by the brand its define* helper

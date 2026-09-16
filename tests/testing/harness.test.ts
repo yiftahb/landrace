@@ -1,6 +1,6 @@
-import { createExternalState, createHarness, scriptedExecutor } from "../../src/testing/index.js";
-import { loadWorkflow } from "../../src/workflow/load.js";
-import type { Harness, ScriptedAnswer } from "../../src/namespace.js";
+import { createExternalState, createHarness, scriptedExecutor } from "#testing/index.js";
+import { loadWorkflow } from "#workflow/load.js";
+import type { Harness, ScriptedAnswer } from "#namespace.js";
 
 /**
  * The harness itself, asked the questions a workflow author would trip over

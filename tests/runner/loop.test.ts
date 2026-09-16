@@ -1,9 +1,9 @@
-import { createHarness } from "../../src/testing/index.js";
-import { deriveRun } from "../../src/core/index.js";
-import type { Effect, Marker, ScriptedAnswer } from "../../src/namespace.js";
-import { parseMarker, stageFromLabels } from "../../src/conventions.js";
-import { loadWorkflow } from "../../src/workflow/load.js";
-import { createFakeTracker } from "../support/fake-tracker.js";
+import { createHarness } from "#testing/index.js";
+import { deriveRun } from "#core/index.js";
+import type { Effect, Marker, ScriptedAnswer } from "#namespace.js";
+import { parseMarker, stageFromLabels } from "#conventions.js";
+import { loadWorkflow } from "#workflow/load.js";
+import { createFakeTracker } from "#tests/support/fake-tracker.js";
 
 /**
  * The shipped workflow, driven over the in-memory tracker. Not a fixture

@@ -1,14 +1,14 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LandraceEvent, Step, TickOptions, Workflow } from "../../src/namespace.js";
-import { definePreHook, defineSource } from "../../src/hooks/contracts.js";
-import type { Candidate, Executor, HookContext, RuntimeContext } from "../../src/namespace.js";
-import { createDispatcher } from "../../src/runner/effects.js";
-import { createLogger } from "../../src/runner/events.js";
-import { acquire, held, release } from "../../src/runner/lock.js";
-import { eligibilityOf, tick } from "../../src/runner/tick.js";
-import { statusLines } from "../../src/runner/status.js";
+import type { LandraceEvent, Step, TickOptions, Workflow } from "#namespace.js";
+import { definePreHook, defineSource } from "#hooks/contracts.js";
+import type { Candidate, Executor, HookContext, RuntimeContext } from "#namespace.js";
+import { createDispatcher } from "#runner/effects.js";
+import { createLogger } from "#runner/events.js";
+import { acquire, held, release } from "#runner/lock.js";
+import { eligibilityOf, tick } from "#runner/tick.js";
+import { statusLines } from "#runner/status.js";
 
 /**
  * One stage, entered and finished in a single pass, so what a test observes is

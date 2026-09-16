@@ -1,16 +1,16 @@
 import { chmod, copyFile, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runtimeConfigSchema } from "../../src/config/schema.js";
-import { defineExecutor } from "../../src/hooks/contracts.js";
-import type { Registry, Workflow } from "../../src/namespace.js";
+import { runtimeConfigSchema } from "#config/schema.js";
+import { defineExecutor } from "#hooks/contracts.js";
+import type { Registry, Workflow } from "#namespace.js";
 import {
   buildRuntime,
   createInterrupt,
   executorFor,
   parseInterval,
   stepTimeoutMs,
-} from "../../src/cli/start.js";
+} from "#cli/start.js";
 
 const TOKEN = "ghp_a_token_long_enough_to_redact";
 

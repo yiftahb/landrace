@@ -1,5 +1,5 @@
-import { decide } from "../../src/core/decide.js";
-import type { Snapshot, Stage, Workflow } from "../../src/namespace.js";
+import { decide } from "#core/decide.js";
+import type { Snapshot, Stage, Workflow } from "#namespace.js";
 
 const run = (o: object = {}) => ({ counters: {}, outputs: {}, lastOutputValid: null, failedStages: [], rounds: {}, ...o });
 const snap = (o: object): Snapshot => o as Snapshot;

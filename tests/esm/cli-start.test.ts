@@ -3,11 +3,11 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { buildRuntime, runStart } from "../../src/cli/start.js";
-import { runStatus } from "../../src/cli/status.js";
-import type { LandraceEvent } from "../../src/namespace.js";
-import { acquire, release } from "../../src/runner/lock.js";
-import { tick } from "../../src/runner/tick.js";
+import { buildRuntime, runStart } from "#cli/start.js";
+import { runStatus } from "#cli/status.js";
+import type { LandraceEvent } from "#namespace.js";
+import { acquire, release } from "#runner/lock.js";
+import { tick } from "#runner/tick.js";
 
 /**
  * `buildRuntime` over a hook module that is a real file on disk, imported the

@@ -2,7 +2,7 @@
  * A hook module the way a hook author writes one, for the loader's own tests:
  * branded values it must pick up, and plain ones it must walk past.
  */
-import { definePreHook, defineSource } from "../../../src/hooks/index.js";
+import { definePreHook, defineSource } from "#hooks/index.js";
 
 export const NAME = "alpha";
 

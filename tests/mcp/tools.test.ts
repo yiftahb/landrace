@@ -2,10 +2,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createTools } from "../../src/mcp/tools.js";
-import { renderMarker } from "../../src/conventions.js";
-import type { Registry } from "../../src/namespace.js";
-import { createFakeTracker, type FakeIssue } from "../support/fake-tracker.js";
+import { createTools } from "#mcp/tools.js";
+import { renderMarker } from "#conventions.js";
+import type { Registry } from "#namespace.js";
+import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
 
 // Its own lock root: these tests must not race the default one a developer's
 // own loop might be holding.

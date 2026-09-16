@@ -4,8 +4,8 @@ import {
   parseMarker,
   renderMarker,
   stripMarker,
-} from "../../src/conventions.js";
-import type { Marker } from "../../src/namespace.js";
+} from "#conventions.js";
+import type { Marker } from "#namespace.js";
 
 const doc = { stage: "spec", kind: "output", round: 2 };
 

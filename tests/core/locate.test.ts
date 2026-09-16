@@ -1,7 +1,7 @@
-import { checkEligible } from "../../src/core/eligible.js";
-import { locate } from "../../src/core/locate.js";
-import { assess } from "../../src/core/assess.js";
-import type { Workflow, Snapshot, Stage } from "../../src/namespace.js";
+import { checkEligible } from "#core/eligible.js";
+import { locate } from "#core/locate.js";
+import { assess } from "#core/assess.js";
+import type { Workflow, Snapshot, Stage } from "#namespace.js";
 
 const wf = (stages: Stage[], eligible?: Workflow["eligible"]): Workflow =>
   ({ version: 1, name: "t", stages, ...(eligible ? { eligible } : {}) });

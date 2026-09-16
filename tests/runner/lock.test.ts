@@ -3,7 +3,7 @@ import { mkdirSync, symlinkSync } from "node:fs";
 import { mkdtemp, writeFile, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquire, held, release, withLock } from "../../src/runner/lock.js";
+import { acquire, held, release, withLock } from "#runner/lock.js";
 
 let root: string;
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "lr-lock-")); });

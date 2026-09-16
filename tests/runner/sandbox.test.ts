@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { ensureWorktree, removeWorktree } from "../../src/agent/worktree.js";
-import { defineArtifactHook, definePostHook, definePreHook } from "../../src/hooks/contracts.js";
-import type { Executor, HookContext, Step, StepResult, Workflow } from "../../src/namespace.js";
-import { converge } from "../../src/runner/converge.js";
-import { createDispatcher } from "../../src/runner/effects.js";
-import { createLogger } from "../../src/runner/events.js";
-import { runStep } from "../../src/runner/step.js";
+import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
+import { defineArtifactHook, definePostHook, definePreHook } from "#hooks/contracts.js";
+import type { Executor, HookContext, Step, StepResult, Workflow } from "#namespace.js";
+import { converge } from "#runner/converge.js";
+import { createDispatcher } from "#runner/effects.js";
+import { createLogger } from "#runner/events.js";
+import { runStep } from "#runner/step.js";
 
 const exec = promisify(execFile);
 type Fail = Extract<StepResult, { ok: false }>;

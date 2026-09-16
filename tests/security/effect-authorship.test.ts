@@ -1,7 +1,7 @@
-import type { HookContext } from "../../src/namespace.js";
-import type { Effect, Snapshot } from "../../src/namespace.js";
-import { createFakeTracker } from "../support/fake-tracker.js";
-import { renderMarker } from "../../src/conventions.js";
+import type { HookContext } from "#namespace.js";
+import type { Effect, Snapshot } from "#namespace.js";
+import { createFakeTracker } from "#tests/support/fake-tracker.js";
+import { renderMarker } from "#conventions.js";
 
 /**
  * reconcile drops an effect its hook calls satisfied, so "has this already

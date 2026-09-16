@@ -1,5 +1,5 @@
-import { loadHooks } from "../../src/hooks/load.js";
-import type { HookContext } from "../../src/namespace.js";
+import { loadHooks } from "#hooks/load.js";
+import type { HookContext } from "#namespace.js";
 
 /**
  * `loadHooks` end to end, over hook modules that are real files on disk.

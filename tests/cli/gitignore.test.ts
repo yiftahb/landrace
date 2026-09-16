@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile, copyFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { runValidate } from "../../src/cli/validate.js";
+import { runValidate } from "#cli/validate.js";
 
 const execFileAsync = promisify(execFile);
 

@@ -3,12 +3,12 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OUTPUT_KIND, renderMarker } from "../../src/conventions.js";
-import type { Executor, ToolOptions } from "../../src/namespace.js";
-import { createMcpServer } from "../../src/mcp/server.js";
-import { createTools } from "../../src/mcp/tools.js";
-import { held } from "../../src/runner/lock.js";
-import { createFakeTracker, type FakeIssue } from "../support/fake-tracker.js";
+import { OUTPUT_KIND, renderMarker } from "#conventions.js";
+import type { Executor, ToolOptions } from "#namespace.js";
+import { createMcpServer } from "#mcp/server.js";
+import { createTools } from "#mcp/tools.js";
+import { held } from "#runner/lock.js";
+import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
 
 async function connect(seed: Array<Partial<FakeIssue>> = [], opts: ToolOptions = {}) {
   const gh = createFakeTracker(seed);

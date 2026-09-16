@@ -1,11 +1,11 @@
-import { converge } from "../../src/runner/converge.js";
-import { createDispatcher } from "../../src/runner/effects.js";
-import { createLogger } from "../../src/runner/events.js";
-import { defineArtifactHook, definePostHook, definePreHook } from "../../src/hooks/contracts.js";
-import type { HookContext } from "../../src/namespace.js";
-import type { Executor } from "../../src/namespace.js";
-import type { Step } from "../../src/namespace.js";
-import type { Dispatcher, LandraceEvent, Workflow } from "../../src/namespace.js";
+import { converge } from "#runner/converge.js";
+import { createDispatcher } from "#runner/effects.js";
+import { createLogger } from "#runner/events.js";
+import { defineArtifactHook, definePostHook, definePreHook } from "#hooks/contracts.js";
+import type { HookContext } from "#namespace.js";
+import type { Executor } from "#namespace.js";
+import type { Step } from "#namespace.js";
+import type { Dispatcher, LandraceEvent, Workflow } from "#namespace.js";
 
 // A tiny mutable stand-in for the outside world.
 //

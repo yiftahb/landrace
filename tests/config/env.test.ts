@@ -1,4 +1,4 @@
-import { parseEnvFile, expand } from "../../src/config/env.js";
+import { parseEnvFile, expand } from "#config/env.js";
 
 describe("parseEnvFile", () => {
   it("reads KEY=value", () => {

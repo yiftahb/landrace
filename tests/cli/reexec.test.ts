@@ -1,8 +1,8 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { reexec, REEXEC_MARKER, shouldReexec, STRIP_TYPES } from "../../src/cli/reexec.js";
-import { importFailure } from "../../src/hooks/load.js";
+import { reexec, REEXEC_MARKER, shouldReexec, STRIP_TYPES } from "#cli/reexec.js";
+import { importFailure } from "#hooks/load.js";
 
 /** What node raises for a `.ts` file it is too old to strip types from. */
 const unreadable = (): Error =>

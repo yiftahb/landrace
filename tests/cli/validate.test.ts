@@ -1,6 +1,6 @@
-import { runValidate } from "../../src/cli/validate.js";
-import { runNext } from "../../src/cli/next.js";
-import { loadWorkflow } from "../../src/workflow/load.js";
+import { runValidate } from "#cli/validate.js";
+import { runNext } from "#cli/next.js";
+import { loadWorkflow } from "#workflow/load.js";
 import { writeFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

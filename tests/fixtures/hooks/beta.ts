@@ -1,4 +1,4 @@
-import { definePostHook } from "../../../src/hooks/index.js";
+import { definePostHook } from "#hooks/index.js";
 
 export const act = definePostHook({
   id: "beta",

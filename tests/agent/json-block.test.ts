@@ -1,4 +1,4 @@
-import { extractJsonBlock } from "../../src/agent/json-block.js";
+import { extractJsonBlock } from "#agent/json-block.js";
 
 // Fix round 4: the extractor is now the trailing-marker rule
 // (conventions.ts's parseMarker/trailing) applied to ```json fences instead

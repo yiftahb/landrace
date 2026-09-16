@@ -1,4 +1,4 @@
-import { extractJsonBlock } from "../../src/agent/json-block.js";
+import { extractJsonBlock } from "#agent/json-block.js";
 
 /**
  * Fix round 4: the five FC cases from task-7-8-fix4-brief.md, written and
