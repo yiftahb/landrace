@@ -715,13 +715,15 @@ export interface Tools {
 
 /**
  * What the MCP plane needs beyond the registry to hold a conversation: an
- * executor to resume a step's session with, and where the per-ticket locks
- * live. Both optional — without an executor the conversation tools report that
- * none is configured rather than crashing, exactly as the operator hook's
- * absence is reported.
+ * executor to resume a step's session with, a screener to judge the turn
+ * before it runs, and where the per-ticket locks live. All optional — without
+ * an executor the conversation tools report that none is configured rather
+ * than crashing, exactly as the operator hook's absence is reported, and
+ * screening is the operator's `security.screen` to switch off.
  */
 export interface ToolOptions {
   executor?: Executor;
+  screen?: { executor: Executor };
   lock?: LockOptions;
 }
 
@@ -802,6 +804,12 @@ export interface ConversationDeps {
   ctx: RuntimeContext;
   /** Null when no executor is configured: `ask` reports that rather than crashing. */
   executor: Executor | null;
+  /**
+   * The screener, when the operator configured one — the same shape runStep
+   * takes, because a turn is an agent invocation like any other and §15 knows
+   * of no exemption for one that arrived through the MCP.
+   */
+  screen?: { executor: Executor };
   lock?: LockOptions;
 }
 

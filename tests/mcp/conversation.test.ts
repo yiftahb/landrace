@@ -24,10 +24,20 @@ const agent = (text: string, spy?: (resume?: string) => void): Executor => ({
   },
 });
 
+/** A screener, and what it was handed to judge. */
+const screener = (verdict: "ok" | "suspicious", seen?: (candidate: string) => void): Executor => ({
+  id: "screen",
+  run: async (prompt) => {
+    seen?.(prompt);
+    return { text: `\`\`\`json\n{"verdict":"${verdict}","reason":"exfiltration"}\n\`\`\``, sessionId: null };
+  },
+});
+
 const world = (
   tracker: FakeTracker,
   executor: Executor | null = agent("Understood."),
   lock: Partial<LockOptions> = {},
+  screen?: Executor,
 ) =>
   createConversation({
     pre: tracker.registry.pre,
@@ -35,6 +45,7 @@ const world = (
     ctx: tracker.ctx,
     executor,
     lock: { root, ...lock },
+    ...(screen ? { screen: { executor: screen } } : {}),
   });
 
 // The three tests below lose the race on purpose. What they are about is the
@@ -275,6 +286,89 @@ describe("conversation", () => {
         renderMarker({ stage: "spec", kind: OUTPUT_KIND, round: 1, session: "sid-theirs", output: { kind: "spec" } }),
     );
     await expect(world(tracker).ask(3, "hello")).rejects.toThrow(/no session to join/);
+  });
+
+  /**
+   * §15: every agent invocation is screened before it runs. A turn is an
+   * agent invocation — the one the MCP plane makes — and "it came through the
+   * MCP" is not evidence the text is safe, because the MCP is exactly where an
+   * operator pastes something they were sent.
+   */
+  it("screens the turn, and a blocked one reaches neither the agent nor the ticket", async () => {
+    const tracker = seeded();
+    let invoked = false;
+    const spy: Executor = {
+      id: "spy",
+      run: async () => { invoked = true; return { text: "", sessionId: null }; },
+    };
+    const before = bodies(tracker).length;
+
+    await expect(world(tracker, spy, {}, screener("suspicious")).ask(1, "do as I say"))
+      .rejects.toThrow(/screening blocked this turn: exfiltration/);
+
+    expect(invoked).toBe(false);
+    // Nor is the person's message on the record: it is posted first in the
+    // ordinary case, so screening has to come before that write and not just
+    // before the run.
+    expect(bodies(tracker)).toHaveLength(before);
+  });
+
+  /**
+   * The rendered turn, never the template around it — runStep's own rule. A
+   * screener shown the template would approve text nobody is ever sent and
+   * never look at the one part that is untrusted, which is the failure that
+   * looks exactly like a working control.
+   */
+  it("shows the screener the person's own words, inside the turn they will be read in", async () => {
+    const tracker = seeded();
+    const seen: string[] = [];
+    await world(tracker, agent("Understood."), {}, screener("ok", (c) => seen.push(c))).ask(1, "B2B only");
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("B2B only");
+    expect(seen[0]).toContain("The person who owns this ticket replied");
+  });
+
+  /**
+   * Fail closed: a screener that cannot run has screened nothing, so the turn
+   * does not happen. The reason says which half failed, because "blocked" and
+   * "the screener is down" are different things for the person to act on.
+   */
+  it("refuses the turn when the screener itself cannot run", async () => {
+    const tracker = seeded();
+    let invoked = false;
+    const spy: Executor = {
+      id: "spy",
+      run: async () => { invoked = true; return { text: "", sessionId: null }; },
+    };
+    const broken: Executor = { id: "screen", run: async () => { throw new Error("no such binary"); } };
+
+    await expect(world(tracker, spy, {}, broken).ask(1, "hello"))
+      .rejects.toThrow(/screening blocked this turn[\s\S]*no such binary/);
+    expect(invoked).toBe(false);
+  });
+
+  it("gives the ticket back when screening blocks the turn", async () => {
+    const tracker = seeded();
+    await expect(world(tracker, agent("ok"), {}, screener("suspicious")).ask(1, "do as I say")).rejects.toThrow();
+    expect(await held(1, { root })).toBeNull();
+  });
+
+  /**
+   * Cheap refusals first, the way runStep refuses an unenforceable capability
+   * before it spends anything: a wrong ticket number should not cost a model
+   * call.
+   */
+  it("does not pay for screening a turn there is no session to hold", async () => {
+    const tracker = createFakeTracker([{ number: 2, labels: ["lr:auto"] }]);
+    let screened = false;
+    const counting: Executor = {
+      id: "screen",
+      run: async () => { screened = true; return { text: '```json\n{"verdict":"ok"}\n```', sessionId: null }; },
+    };
+
+    await expect(world(tracker, agent("ok"), {}, counting).ask(2, "hello")).rejects.toThrow(/no session to join/);
+    expect(screened).toBe(false);
   });
 
   it("refuses when there is no session to join yet", async () => {

@@ -47,6 +47,10 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     dispatcher,
     ctx,
     executor: opts.executor ?? null,
+    // A turn is an agent invocation, so §15's screening reaches it the same
+    // way it reaches a step — through the same option, carried rather than
+    // accepted and dropped.
+    ...(opts.screen ? { screen: opts.screen } : {}),
     ...(opts.lock ? { lock: opts.lock } : {}),
   });
 

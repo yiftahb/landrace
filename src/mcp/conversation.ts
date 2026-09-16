@@ -1,4 +1,5 @@
 import { extractJsonBlock } from "../agent/json-block.js";
+import { screenPrompt } from "../agent/screen.js";
 import { CONVERSATION_KIND, neutraliseMarkers } from "../conventions.js";
 import type {
   Conversation,
@@ -129,6 +130,33 @@ export function createConversation(deps: ConversationDeps): Conversation {
             );
           }
 
+          const turn = TURN(message);
+
+          /*
+           * §15: every agent invocation is screened before it runs, and this
+           * is one — the only one the MCP plane makes. "It came through the
+           * MCP" is not evidence the words are safe: the MCP is precisely
+           * where an operator pastes something they were sent, and the client
+           * typing into it is itself a model.
+           *
+           * The rendered turn, not the bare message and not the template:
+           * runStep's own rule, and here it also gives the screener the frame
+           * the words will actually be read in.
+           *
+           * Before the question is posted, not just before the run. A blocked
+           * turn that had already left the person's words on the ticket would
+           * hand the loop a human turn — the thing that resolves a
+           * conversation — off text we refused to act on.
+           */
+          if (deps.screen) {
+            const verdict = await screenPrompt(turn, {
+              executor: deps.screen.executor,
+              signal: opts?.signal ?? deps.ctx.signal,
+              log: deps.ctx.log,
+            });
+            if (!verdict.ok) throw new Error(`screening blocked this turn: ${verdict.reason}`);
+          }
+
           // The person's words, first and unmarked: they are a human turn —
           // the same rule `landrace_reply` follows — so the ticket shows who
           // actually said what, and the record survives an agent that never
@@ -136,7 +164,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
           // would otherwise read back as control state we wrote.
           await say(ticket, snapshot, neutraliseMarkers(message));
 
-          const { text, sessionId } = await deps.executor.run(TURN(message), {
+          const { text, sessionId } = await deps.executor.run(turn, {
             round,
             resume: session,
             // The caller's own signal when there is one: an MCP client that

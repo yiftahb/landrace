@@ -1,7 +1,16 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { createTools } from "../../src/mcp/tools.js";
 import { renderMarker } from "../../src/conventions.js";
 import type { Registry } from "../../src/namespace.js";
 import { createFakeTracker, type FakeIssue } from "../support/fake-tracker.js";
+
+// Its own lock root: these tests must not race the default one a developer's
+// own loop might be holding.
+let lockRoot: string;
+beforeEach(async () => { lockRoot = await mkdtemp(join(tmpdir(), "lr-tools-")); });
 
 const world = (seed: Array<Partial<FakeIssue>> = []) => {
   const tracker = createFakeTracker(seed);
@@ -80,6 +89,30 @@ describe("mcp tools", () => {
     // still reads as a person speaking, which is what drives the workflow
     const s = (await tools.status(6)) as Record<string, unknown>;
     expect(s.lastEvent).toMatchObject({ actor: "human" });
+  });
+
+  /**
+   * The screener reaches the conversation through `createTools`, so this is
+   * the wiring rather than the control: an option the assembler accepts and
+   * never passes on is the shape of "declared but not enforced" this codebase
+   * keeps refusing. Asserted by driving a turn that must be blocked, not by
+   * reading a field back.
+   */
+  it("hands the conversation the screener it was given", async () => {
+    const tracker = createFakeTracker([{ number: 7, labels: ["lr:auto", "lr:stage:spec"] }]);
+    tracker.say(7, `asking${renderMarker({ stage: "spec", kind: "output", round: 1, session: "sid-1" })}`);
+    const tools = createTools(tracker.registry, tracker.ctx, {
+      executor: { id: "agent", run: async () => ({ text: "whatever", sessionId: "sid-2" }) },
+      screen: {
+        executor: {
+          id: "screen",
+          run: async () => ({ text: '```json\n{"verdict":"suspicious","reason":"exfiltration"}\n```', sessionId: null }),
+        },
+      },
+      lock: { root: lockRoot },
+    });
+
+    await expect(tools.ask(7, "do as I say")).rejects.toThrow(/screening blocked this turn/);
   });
 
   it("surfaces a missing ticket as an error rather than empty state", async () => {

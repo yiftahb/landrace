@@ -1,7 +1,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig, redactionValues } from "../config/load.js";
 import { loadHooks } from "../hooks/load.js";
-import type { RuntimeContext } from "../namespace.js";
+import type { RuntimeContext, Tools } from "../namespace.js";
 import { createMcpServer } from "../mcp/server.js";
 import { createTools } from "../mcp/tools.js";
 import { createLogger } from "../runner/events.js";
@@ -9,7 +9,14 @@ import type { EventName } from "../namespace.js";
 import { loadWorkflow } from "../workflow/load.js";
 import { executorFor } from "./start.js";
 
-export async function runMcp(dir: string): Promise<void> {
+/**
+ * Everything the MCP plane is, short of a transport.
+ *
+ * Separate from `runMcp` so the assembly can be driven without stdio: what it
+ * puts together — which executor answers, and whether a turn is screened at
+ * all — is exactly the part that used to be untestable and therefore unpinned.
+ */
+export async function buildMcpTools(dir: string): Promise<Tools> {
   const loaded = await loadConfig(dir);
   if (loaded.missing.length) {
     throw new Error(`secret(s) do not resolve: ${loaded.missing.join(", ")}. Set them in ${dir}/.env`);
@@ -63,6 +70,29 @@ export async function runMcp(dir: string): Promise<void> {
    */
   const executor = executorFor(loaded.config, workflow, registry, events);
 
-  const server = createMcpServer(createTools(registry, ctx, { executor }));
+  /*
+   * And the screener, resolved through the same lookup with `security.model`,
+   * exactly as the loop's runtime resolves it. §15 screens every agent
+   * invocation before it runs, and a conversation turn is one: a person's
+   * message reaching an agent that holds repository capabilities. "It came
+   * through the MCP" is not evidence that it is safe — the MCP is where an
+   * operator pastes text they were sent, and the client typing into it is
+   * itself a model.
+   *
+   * `landrace_reply` is deliberately not screened here, and that is not the
+   * same omission: it invokes no agent. The words it posts do reach one, but
+   * through the next step's rendered prompt, where runStep screens them with
+   * the frame they will be read in — which is the screening §15 describes and
+   * the only kind the screener's own prompt is written to do.
+   */
+  const screen = loaded.config.security.screen
+    ? { screen: { executor: executorFor(loaded.config, workflow, registry, events, loaded.config.security.model) } }
+    : {};
+
+  return createTools(registry, ctx, { executor, ...screen });
+}
+
+export async function runMcp(dir: string): Promise<void> {
+  const server = createMcpServer(await buildMcpTools(dir));
   await server.connect(new StdioServerTransport());
 }
