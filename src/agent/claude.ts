@@ -4,6 +4,7 @@ import { CAPABILITIES, mayWriteRepo, unknownCapabilities } from "#conventions.js
 import { defineExecutor } from "#hooks/contracts.js";
 import type { Executor, Logger } from "#namespace.js";
 import { containedPath } from "#workflow/load.js";
+import { messageOf } from "#runner/errors.js";
 
 /**
  * A value that begins with "-" lands in a flag slot no matter which argv
@@ -218,7 +219,7 @@ export function createClaudeExecutor(opts: {
           // executable bit) make spawn() throw synchronously instead of
           // emitting the usual async 'error' event below — same failure,
           // same message, so the operator sees a named binary either way.
-          return reject(new Error(`could not start "${bin}": ${(e as Error).message}`));
+          return reject(new Error(`could not start "${bin}": ${messageOf(e)}`));
         }
 
         let out = "";

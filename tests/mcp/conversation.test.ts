@@ -456,8 +456,12 @@ describe("conversation", () => {
 
     const turn = world(seeded(), hanging).ask(1, "hi", { signal: stop.signal });
     // Held while the agent is running: the point of the lock is that a tick
-    // cannot resume this same session underneath the conversation.
-    await new Promise((r) => setTimeout(r, 20));
+    // cannot resume this same session underneath the conversation. Polled for
+    // rather than slept at, so how long the turn takes to reach the lock on a
+    // loaded machine is not part of the assertion.
+    for (let i = 0; i < 500 && (await held(1, { root })) === null; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(await held(1, { root })).not.toBeNull();
 
     stop.abort();

@@ -31,7 +31,6 @@ import {
   parseMarker,
   RECORD_EFFECT,
   renderMarker,
-  stageFromLabels,
   STAGE_LABEL_PREFIX,
   STATUS_EFFECT,
   type ArtifactHook,
@@ -436,9 +435,24 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
 
 /* ── the four hooks ─────────────────────────────────────────────────────── */
 
+/*
+ * Exactly what `readTicket` below puts in the snapshot, and nothing else.
+ *
+ * Both directions matter, because `landrace validate`'s path-coverage rule is
+ * answered from this list: a path declared and not provided passes a workflow
+ * whose predicate reads nothing, and a path provided and not declared flags a
+ * workflow that is fine — and a validator that flags healthy workflows gets
+ * switched off. `ticket.state` and `ticket.url` were the second kind.
+ * `ticket.stage` was worse than either: a second, undeclared spelling of
+ * `run.stage`, derived from the same labels, read by nothing anywhere — so it
+ * is gone rather than declared. tests/hooks/provides.test.ts holds this list
+ * level with the fragment, for this tracker and for the in-memory one.
+ */
 const PROVIDES = [
-  "ticket.number", "ticket.title", "ticket.body", "ticket.labels", "ticket.comments",
-  "entries", "tracker.bot",
+  "ticket",
+  "ticket.number", "ticket.title", "ticket.body", "ticket.state", "ticket.url",
+  "ticket.labels", "ticket.comments",
+  "entries", "tracker", "tracker.bot",
 ];
 
 const HANDLES = [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT];
@@ -457,7 +471,11 @@ async function readTicket(gh: Client, ticket: number): Promise<Record<string, un
       state: issue.state,
       url: issue.html_url,
       labels: names,
-      stage: stageFromLabels(names).stage,
+      // No `stage` here. It was a second spelling of `run.stage`, derived
+      // from these same labels, undeclared in PROVIDES and read by nothing —
+      // and two spellings of one fact is how two readers come to disagree
+      // about where a ticket is. The engine derives position once, in
+      // buildSnapshot, out of `labels`.
       comments: raw,
     },
     entries: entriesFromComments(raw, bot),

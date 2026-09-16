@@ -105,9 +105,20 @@ export function createExternalState(
 
     pre: definePreHook({
       id: "memory",
+      /*
+       * Exactly what `run` below puts in the snapshot, and nothing else —
+       * `landrace validate`'s path-coverage rule is answered from this list,
+       * so a path declared and not provided passes a workflow that reads
+       * nothing. `ticket.stage` was declared and provided and read by nobody:
+       * a second spelling of `run.stage`, derived from these same labels, and
+       * a second spelling of one fact is how a fake and the integration it
+       * stands in for drift apart. tests/hooks/provides.test.ts holds this
+       * level with what `run` returns, for this tracker and for the shipped
+       * one, so neither can grow a field without saying so.
+       */
       provides: [
         "ticket", "ticket.number", "ticket.title", "ticket.body", "ticket.labels",
-        "ticket.stage", "ticket.comments", "entries",
+        "ticket.comments", "entries",
       ],
       run: ({ ticket }) => {
         const row = must(ticket);
@@ -117,7 +128,6 @@ export function createExternalState(
             title: row.title,
             body: row.body,
             labels: [...row.labels],
-            stage: stageFromLabels(row.labels).stage,
             comments: row.comments.map((c) => ({ ...c })),
           },
           entries: entriesOf(ticket),

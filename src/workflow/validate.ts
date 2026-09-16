@@ -9,6 +9,7 @@ import {
 import { identityOf } from "#core/locate.js";
 import { assertAllowedOperators, pathsIn } from "#core/predicate.js";
 import type { Condition, Problem, Stage, Step, Workflow } from "#namespace.js";
+import { messageOf } from "#runner/errors.js";
 
 export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
   const problems: Problem[] = [];
@@ -76,7 +77,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
       try {
         assertAllowedOperators(condition);
       } catch (e) {
-        problems.push({ rule: "operator", message: `stage "${stage.id}": ${(e as Error).message}` });
+        problems.push({ rule: "operator", message: `stage "${stage.id}": ${messageOf(e)}` });
       }
     }
   }
@@ -85,7 +86,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     try {
       assertAllowedOperators(rule.when);
     } catch (e) {
-      problems.push({ rule: "operator", message: `eligibility rule: ${(e as Error).message}` });
+      problems.push({ rule: "operator", message: `eligibility rule: ${messageOf(e)}` });
     }
   }
 
@@ -113,7 +114,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
       try {
         assertAllowedOperators(route.when);
       } catch (e) {
-        problems.push({ rule: "operator", message: `step ${stage.step}, route: ${(e as Error).message}` });
+        problems.push({ rule: "operator", message: `step ${stage.step}, route: ${messageOf(e)}` });
       }
     }
   }

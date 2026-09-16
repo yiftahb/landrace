@@ -84,7 +84,7 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
     ({ workflow, steps } = await loadWorkflow(dir));
   } catch (e) {
     const rule = e instanceof WorkflowLoadError ? e.rule : "schema";
-    return { ok: false, problems: [{ rule, message: (e as Error).message }] };
+    return { ok: false, problems: [{ rule, message: messageOf(e) }] };
   }
 
   /*

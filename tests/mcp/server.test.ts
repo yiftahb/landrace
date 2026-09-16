@@ -10,6 +10,15 @@ import { createTools } from "#mcp/tools.js";
 import { held } from "#runner/lock.js";
 import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
 
+/** Wait for a fact rather than for a number of milliseconds. */
+async function until(done: () => Promise<boolean>, what: string): Promise<void> {
+  for (let i = 0; i < 500; i++) {
+    if (await done()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
 async function connect(seed: Array<Partial<FakeIssue>> = [], opts: ToolOptions = {}) {
   const gh = createFakeTracker(seed);
   const server = createMcpServer(createTools(gh.registry, gh.ctx, opts));
@@ -95,16 +104,16 @@ describe("mcp server over a real transport", () => {
     );
 
     const call = client.callTool({ name: "landrace_ask", arguments: { ticket: 1, message: "B2B only" } });
-    // Far enough in to be holding it: the agent has been started and is now
-    // waiting, which is exactly the window a disconnect lands in.
-    await new Promise((r) => setTimeout(r, 30));
-    expect(await held(1, { root })).not.toBeNull();
+    // Polled, not slept for. Both of these used to be a flat 30ms — a bet on
+    // how long the handler takes to reach the lock and how long its finally
+    // takes to give it back, on a machine running the rest of this suite
+    // beside it. Waiting for the fact itself is the same assertion without
+    // the bet.
+    await until(async () => (await held(1, { root })) !== null, "the turn to take the lock");
 
     await client.close();
     await call.catch(() => undefined);
-    // The handler unwinds on the abort; give its finally a turn of the loop.
-    await new Promise((r) => setTimeout(r, 30));
-    expect(await held(1, { root })).toBeNull();
+    await until(async () => (await held(1, { root })) === null, "the turn to give the lock back");
   });
 
   it("starting a ticket is opt-out, and the tool says which it did", async () => {

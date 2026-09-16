@@ -1,4 +1,4 @@
-import { compile } from "#core/index.js";
+import { compile, expandEffectFields } from "#core/index.js";
 import type { Effect, Logger, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   CAPABILITIES,
@@ -37,8 +37,8 @@ function resolve(snapshot: unknown, path: string): unknown {
  * an issue body, a comment — so this function's only job is filling in
  * prompt text for the model to read. It must never be the thing that decides
  * which branch runs or what shape an effect takes; that is why route effect
- * fields go through `expand` below instead of this, with a much narrower set
- * of substitutions.
+ * fields go through core's `expandEffectFields` instead of this, with a much
+ * narrower set of substitutions — the same one an on_enter effect gets.
  */
 export function renderPrompt(
   template: string,
@@ -55,27 +55,6 @@ export function renderPrompt(
     return value === undefined || value === null ? whole : String(value);
   });
 }
-
-/**
- * Effect fields may be templated only with what the engine itself knows about
- * this invocation — the round, the stage id, the already-validated output
- * shape — never with raw snapshot content. A route's `marker` or `body` field
- * is structure, not prose: if ticket content could reach it the same way it
- * reaches the prompt, an issue body could forge a marker exactly the way
- * untrusted comment text is barred from doing downstream (neutraliseMarkers).
- * An unrecognised `{name}` is left visible, matching renderPrompt's own
- * "unknown path stays visible" rule rather than silently vanishing.
- *
- * `vars[k] ?? whole` used to read the prototype chain too — `{toString}`
- * resolved to `Object.prototype.toString` and got stringified into the
- * field, which is a live hole in the "only round/stage/shape" claim even
- * though snapshot content genuinely could not reach it. `Object.hasOwn`
- * closes it the same way `resolve` above does.
- */
-const expand = (value: unknown, vars: Record<string, string>): unknown =>
-  typeof value === "string"
-    ? value.replace(/\{([a-zA-Z0-9_]+)\}/g, (whole, k: string) => (Object.hasOwn(vars, k) ? String(vars[k]) : whole))
-    : value;
 
 /**
  * An agent-chosen value is unbounded — a 200,000-character discriminator
@@ -421,9 +400,9 @@ export async function runStep(opts: {
   // for. Two routes matching one output stays exactly the ambiguity halted
   // above, and a step that genuinely needs two destinations wants a route
   // schema change (`effects:` plural), not a second matching route.
-  const expanded = Object.fromEntries(
-    Object.entries(route.effect).map(([k, v]) => [k, expand(v, vars)]),
-  ) as Effect;
+  // The same rule, and the same code, as an on_enter effect's fields: a route
+  // is a workflow-authored template and an effect is structure, not prose.
+  const expanded = expandEffectFields(route.effect, vars) as Effect;
   const destination: Effect = { body, stage: stageId, round, ...expanded };
 
   /*

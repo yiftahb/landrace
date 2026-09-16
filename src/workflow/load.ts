@@ -4,6 +4,7 @@ import { parse } from "yaml";
 import type { z } from "zod";
 import type { ContainedPath, LoadFailureRule, Step, Workflow } from "#namespace.js";
 import { stepFrontMatterSchema, workflowSchema } from "#workflow/schema.js";
+import { messageOf } from "#runner/errors.js";
 
 export class WorkflowLoadError extends Error {
   readonly rule: LoadFailureRule;
@@ -69,7 +70,7 @@ export async function containedPath(root: string, relative: string): Promise<Con
     real = await realpath(candidate);
   } catch (e) {
     if ((e as { code?: string }).code === "ENOENT") return { ok: false, kind: "missing", reason: "does not exist" };
-    return { ok: false, kind: "unsafe", reason: `cannot be resolved: ${(e as Error).message}` };
+    return { ok: false, kind: "unsafe", reason: `cannot be resolved: ${messageOf(e)}` };
   }
 
   return inside(real, realRoot)
@@ -154,7 +155,7 @@ export async function loadWorkflow(dir: string): Promise<{ workflow: Workflow; s
     } catch (e) {
       // Named, because "front matter is not valid" is unactionable when a
       // workflow has five step files and the loader read them in graph order.
-      throw new WorkflowLoadError("schema", `step ${stage.step}: ${(e as Error).message}`);
+      throw new WorkflowLoadError("schema", `step ${stage.step}: ${messageOf(e)}`);
     }
   }
 

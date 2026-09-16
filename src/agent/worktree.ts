@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { WorktreeState } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
+import { messageOf } from "#runner/errors.js";
 
 const exec = promisify(execFile);
 
@@ -67,7 +68,7 @@ async function git(args: string[], cwd: string, what: string): Promise<string> {
     return stdout;
   } catch (e) {
     const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
-    throw new Error(`${what}: ${stderr || (e as Error).message}`);
+    throw new Error(`${what}: ${stderr || messageOf(e)}`);
   }
 }
 
