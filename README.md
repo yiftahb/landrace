@@ -17,14 +17,15 @@ Four things follow from that, and they are the reason to use this rather than a 
 
 ## Status
 
-**Early.** The pure decision core, the workflow format, the validator and an MCP server are built and tested. The tick loop, the GitHub tracker hook and agent execution are not yet — so today Landrace can define and check a workflow and let you drive tickets from your editor, but it cannot yet run one end to end.
+**Early.** The pure decision core, the workflow format, the validator, the hook loader, the GitHub hook, agent execution and an MCP server are built and tested. The tick loop that polls and picks up tickets is not — so today Landrace can define and check a workflow, converge one ticket, and let you drive tickets from your editor, but nothing yet starts it on a schedule.
 
 | | |
 |---|---|
 | Decision engine, workflow format, validator | ✅ built |
 | CLI: `validate`, `next`, `mcp` | ✅ built |
 | MCP server: read, create, update, comment on tickets | ✅ built |
-| Tick loop, GitHub tracker hook, agent execution | ⏳ next |
+| Hook loader, GitHub hook, agent execution | ✅ built |
+| Tick loop: polling, concurrency, locking | ⏳ next |
 | Artifact publishing, conversation with a step, containers | ⏳ planned |
 
 ## Install
@@ -79,9 +80,7 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `agent.adapter` | — | Which coding agent to invoke (`claude`) |
 | `agent.model` | — | Default model; a step may override it |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` |
-| `tracker.adapter` | `github` | Which tracker adapter to use |
-| `tracker.repo` | — | `owner/name` |
-| `tracker.candidates` | — | Search that decides which tickets are even looked at |
+| `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
 | `security.screen` | `true` | Screen each prompt for injection before invoking an agent |
@@ -113,6 +112,21 @@ stages:
     on_enter:
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 ```
+
+### `.landrace/hooks/*.ts` — the integrations
+
+Landrace ships no integrations. Talking to a tracker, publishing a page, reading a pull request — all of it is a TypeScript module in your own workflow directory, written against the `define*` contracts and listed by path:
+
+```yaml
+hooks:
+  - hooks/github.ts
+```
+
+Each module exports whatever kinds it implements — `definePreHook` to observe, `definePostHook` to act, `defineArtifactHook` for something that is both, `defineSource` to enumerate tickets, `defineOperator` for the create and update an operator asks for by hand, `defineExecutor` for an agent. The loader classifies each export by the brand its helper stamped, so one module can be a whole integration; the order of the list is the order pre hooks run in. A path must resolve inside the workflow directory, symlinks included, because `workflow.yaml` is a repo file a pull request can edit.
+
+`.landrace/hooks/github.ts` in this repository is the reference implementation: one file with the REST client, both hooks, the source and the operator. A second tracker is a sibling of it, and nothing in the engine changes — a test enforces that `src/` never names one.
+
+Hook modules are imported at runtime with no build step, so they need a Node that strips types: 22.18 or newer does it unflagged, and an older 22.x needs `--experimental-strip-types`.
 
 Conditions are MongoDB-style documents over snapshot paths, evaluated with a **closed operator allowlist** — `$eq $ne $in $nin $lt $lte $gt $gte $exists $all $size $and $or $not`. `$where` and `$regex` are rejected at load, because a workflow file is a repo file a pull request can edit.
 
@@ -163,12 +177,13 @@ landrace mcp [-w <dir>]                  # MCP server over stdio
 - Predicate operators are allowlisted structurally, before a condition reaches the evaluator.
 - Everything a step writes is escaped before posting, so an agent cannot emit Landrace's own control tokens.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.
-- Trackers sit behind an adapter reached by id. Nothing outside `src/adapters/` may import one, and a test enforces it — so a second tracker is a new adapter and nothing else.
+- The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workflow directory before it is imported, both ends compared after `realpath`.
+- A comment carries control state only because Landrace's own account wrote it. The account is resolved from the token at startup and verified against any configured override; the process refuses to run rather than guess, because a login it cannot resolve would make its own records read as a stranger's.
 
 ## Development
 
 ```bash
-pnpm test        # 130 tests
+pnpm test        # 531 tests, over two passes
 pnpm typecheck
 pnpm lint
 pnpm build

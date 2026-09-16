@@ -12,8 +12,7 @@
     "./testing": "./dist/testing.js"
   },
   "files": [
-    "dist",
-    "workflows"
+    "dist"
   ],
   "engines": {
     "node": ">=22"

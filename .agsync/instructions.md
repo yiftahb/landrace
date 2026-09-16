@@ -9,12 +9,15 @@ The whole design rests on one idea — **the model does the work, the state mach
 ```
 src/core/         pure decision engine — no I/O, no clock, no randomness
 src/workflow/     load and validate workflow definitions
-src/adapters/     tracker implementations, reached by id
-src/hooks/        the define* contracts
+src/hooks/        the define* contracts and the loader that imports .landrace/hooks/*.ts
+src/agent/        executors and prompt screening
+src/runner/       converge, step, effect dispatch, lock, events
 src/config/       landrace.yaml + .env
 src/mcp/          operator tools over stdio
 src/cli/          validate, next, mcp
 src/conventions.ts  label and marker vocabulary shared by all of the above
+
+.landrace/hooks/  the integrations — GitHub included. Not part of the engine.
 ```
 
 ## Rules
@@ -39,9 +42,13 @@ There is no `on_exit`, and there must not be. Effects are a function of the stat
 
 Every effect needs a `satisfied()` beside its `apply()`, in the same hook. An effect without one gets re-applied on every tick.
 
-### Adapters are reached by id, never imported
+### The engine ships no integrations
 
-Nothing outside `src/adapters/` may import a tracker implementation; a test enforces it. A second tracker is a new entry in the adapter registry and nothing else. Shared vocabulary — label names, the marker format — lives in `src/conventions.ts`, because a Jira adapter would use the same names.
+There is no GitHub code in `src/`, and `tests/boundaries.test.ts` fails on the offending file and line. Talking to a tracker, publishing a page, reading a pull request — all of it lives in `.landrace/hooks/*.ts`, written against the `define*` contracts and loaded by path from `workflow.yaml`. The engine's half of the bargain is that it never needs to know which tracker it is driving; that is what makes a workflow portable and a second tracker a file rather than a fork. Shared vocabulary — label names, the marker format, how a record reads back as an entry — lives in `src/conventions.ts`, because a Jira hook would use the same names.
+
+If you are about to import a vendor SDK into `src/`, you are writing a hook.
+
+A hook is classified by the brand its `define*` helper stamps, never by its shape. Two of anything singular — two sources, two operators, two hooks of a phase under one id — halts at load with both names, like every other ambiguity here.
 
 ### A broken step output is a hard fail, never a retry
 
