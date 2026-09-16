@@ -443,3 +443,78 @@ describe("the graph rules, on a workflow that has an entry stage", () => {
       .toMatch(/loop-a[\s\S]*loop-b|loop-b[\s\S]*loop-a/);
   });
 });
+
+/**
+ * §11.5's second half — "every declared enum value has an outbound edge".
+ *
+ * Only the first half was implemented (`totality`: every shape has a *route*,
+ * somewhere for the content to go). `triage` declared `question` and `unclear`
+ * and routed both to a comment, and nothing in the graph fired on either, so a
+ * ticket that reached one sat at `triage` wearing `lr:awaiting` for good —
+ * decide() excludes the current stage's own triggers, so even the human's next
+ * reply did nothing. Nothing reported it.
+ */
+describe("every declared output shape has somewhere to go next", () => {
+  const twoShapes = new Map<string, Step>([["s.md", {
+    prompt: "",
+    output: {
+      discriminator: "kind",
+      shapes: { a: {}, b: {} },
+      routes: [
+        { when: { kind: "a" }, effect: { type: "tracker.comment" } },
+        { when: { kind: "b" }, effect: { type: "tracker.comment" } },
+      ],
+    },
+  }]]);
+
+  it("names the shape nothing routes away from", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "s", entry: true, step: "s.md" },
+      { id: "next", terminal: true, triggers: [{ when: { "run.stage": "s", "run.outputs.s.kind": "a" } }] },
+    ] };
+    const found = validateSemantics(w, twoShapes).filter((p) => p.rule === "shape-edge");
+    expect(found).toHaveLength(1);
+    expect(found[0]?.message).toMatch(/"b"/);
+  });
+
+  it("accepts a trigger from the stage that does not care which shape arrived", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "s", entry: true, step: "s.md" },
+      { id: "next", terminal: true, triggers: [{ when: { "run.stage": "s" } }] },
+    ] };
+    expect(rules(w, twoShapes)).not.toContain("shape-edge");
+  });
+
+  it("accepts a trigger that names the shape without naming the stage it comes from", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "s", entry: true, step: "s.md" },
+      { id: "x", terminal: true, triggers: [{ when: { "run.stage": "s", "run.outputs.s.kind": "a" } }] },
+      { id: "y", terminal: true, triggers: [{ when: { "run.outputs.s.kind": "b" } }] },
+    ] };
+    expect(rules(w, twoShapes)).not.toContain("shape-edge");
+  });
+
+  it("does not credit the stage's own trigger, which decide() never evaluates", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "s", entry: true, step: "s.md", triggers: [{ when: { "run.stage": "s", "run.outputs.s.kind": "b" } }] },
+      { id: "next", terminal: true, triggers: [{ when: { "run.stage": "s", "run.outputs.s.kind": "a" } }] },
+    ] };
+    expect(rules(w, twoShapes)).toContain("shape-edge");
+  });
+
+  it("catches the two triage shapes that stranded a real ticket", async () => {
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    // The shipped workflow as it was: `question` and `unclear` declared, routed
+    // to a comment, and led away from by nothing.
+    const stranded: Workflow = {
+      ...workflow,
+      stages: workflow.stages.map((stage) =>
+        stage.id === "spec-questions"
+          ? { ...stage, triggers: (stage.triggers ?? []).filter((t) => t.when["run.stage"] !== "triage") }
+          : stage),
+    };
+    const found = validateSemantics(stranded, steps).filter((p) => p.rule === "shape-edge");
+    expect(found.map((p) => p.message).join(" ")).toMatch(/"question"/);
+    expect(found.map((p) => p.message).join(" ")).toMatch(/"unclear"/);
+  });
+});

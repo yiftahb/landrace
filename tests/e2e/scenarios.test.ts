@@ -323,3 +323,39 @@ describe("a human reply to a ticket blocked by a rejected output", () => {
     expect(gh.labelsOf(1)).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
   });
 });
+
+/**
+ * §10: `triage --question--> spec-questions`, and `unclear` "waits and asks
+ * rather than guessing". Both shapes were declared, routed to a comment, and
+ * led nowhere: the ticket sat at `triage` wearing `lr:awaiting` and the
+ * human's next reply did nothing at all, because decide() excludes the current
+ * stage's own triggers and nothing else claimed a human turn from `triage`.
+ */
+describe("a reviewer's reply that triage cannot read as approve or revise", () => {
+  const upTo = async (intent: string) => {
+    const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({
+      workflow, steps, ...gh.registry,
+      answers: {
+        spec: '# Export CSV\n\nOne file.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
+        triage: `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``,
+      },
+    });
+    await run.converge();
+    gh.sayAs("a-person", 1, "what about tabs?", new Date(Date.UTC(2026, 1, 1)).toISOString());
+    const triaged = await run.converge();
+    return { gh, run, triaged };
+  };
+
+  it.each(["question", "unclear"])("moves the ticket somewhere a human turn can reach, on %s", async (intent) => {
+    const { gh, run, triaged } = await upTo(intent);
+    expect(triaged.trail.at(-1)).not.toBe("triage");
+
+    gh.sayAs("a-person", 1, "no tabs, commas only", new Date(Date.UTC(2026, 1, 2)).toISOString());
+    const answered = await run.converge();
+
+    expect(answered.calls.map((c) => c.stage)).toContain("spec");
+    expect(gh.labelsOf(1)).not.toContain("lr:stage:triage");
+  });
+});

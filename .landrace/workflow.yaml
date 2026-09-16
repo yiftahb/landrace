@@ -75,10 +75,23 @@ stages:
       - { type: tracker.status, value: spec }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked"] }
 
+  # Where the conversation rests while it is the human's turn. §10 routes
+  # `triage --question--> spec-questions`, and `unclear` here too: the enum
+  # exists so the model can abstain instead of guessing, and an abstention has
+  # to land somewhere a human turn can reach or it is worse than a guess — the
+  # ticket sat at `triage` wearing `lr:awaiting` and the next reply did
+  # nothing, because decide() never evaluates the current stage's own
+  # triggers. The triage step's own comment — its reason, in its own words —
+  # is already on the ticket by the time this is entered, so "waits and asks"
+  # is the asking; this is the waiting.
   - id: spec-questions
     triggers:
       - name: the agent has blocking questions
         when: { "run.stage": spec, "run.outputs.spec.kind": questions }
+      - name: the reviewer's reply was a question
+        when: { "run.stage": triage, "run.outputs.triage.intent": question }
+      - name: the reviewer's reply could not be read either way
+        when: { "run.stage": triage, "run.outputs.triage.intent": unclear }
     on_enter:
       - { type: tracker.status, value: spec-questions }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }

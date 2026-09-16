@@ -549,6 +549,56 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     }
   }
 
+  /*
+   * §11.5's other half: every declared enum value has an outbound *edge*, not
+   * just an outbound route. A route says where the content goes; an edge says
+   * where the ticket goes, and they are different questions — `triage`
+   * declared `question` and `unclear`, routed both to a comment, and nothing
+   * in the graph fired on either. A ticket that reached one sat at `triage`
+   * wearing `lr:awaiting` for good, and the human's next reply did nothing,
+   * because decide() excludes the current stage's own triggers.
+   *
+   * A trigger leads away from this stage when it mentions the stage at all —
+   * anchored on it as a source, or reading anything under its `run.outputs`.
+   * That second form matters: a trigger can say `run.outputs.s.kind: b` and
+   * nothing about position, or wait on `run.outputs.s` existing at all, and
+   * both are exits. A trigger that mentions neither is not counted even
+   * though it may fire from anywhere: `blocked`'s
+   * `{ "run.lastOutputValid": false }` can fire from every stage in the
+   * shipped workflow and can never fire on a *valid* output, so crediting it
+   * would leave this rule reporting nothing at all.
+   *
+   * Of those triggers, one claims a shape unless it demands a different one.
+   * A demand written as an operator document ($in, $ne) or hidden under $or
+   * is unreadable here and treated as claiming: over-reporting a healthy
+   * workflow is how a rule gets switched off.
+   */
+  for (const stage of w.stages) {
+    const output = stage.step ? steps.get(stage.step)?.output : undefined;
+    if (!output) continue;
+    const owned = `run.outputs.${stage.id}`;
+    const path = `${owned}.${output.discriminator}`;
+    const exits = w.stages
+      .filter((other) => other.id !== stage.id)
+      .flatMap((other) => other.triggers ?? [])
+      .filter((t) =>
+        anchorOf(t.when) === stage.id ||
+        pathsIn(t.when).some((p) => p === owned || p.startsWith(`${owned}.`)));
+    for (const shape of Object.keys(output.shapes)) {
+      const claimed = exits.some((t) => {
+        const demanded = t.when[path];
+        return demanded === undefined || demanded === shape || typeof demanded === "object";
+      });
+      if (claimed) continue;
+      problems.push({
+        rule: "shape-edge",
+        message:
+          `stage "${stage.id}" can produce output shape "${shape}" and no trigger leads away from it, ` +
+          "so a ticket that produces one stops there for good",
+      });
+    }
+  }
+
   for (let i = 0; i < w.stages.length; i++) {
     for (let j = i + 1; j < w.stages.length; j++) {
       const a = w.stages[i] as Stage;
