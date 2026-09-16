@@ -4,6 +4,24 @@ import { locate } from "#core/locate.js";
 import { compile } from "#core/predicate.js";
 import type { Decision, Run, Snapshot, Workflow } from "#namespace.js";
 
+/**
+ * What a ticket has done that the entry stage's own first round cannot
+ * account for.
+ *
+ * Every stage the ticket has been recorded as entering, plus every stage that
+ * has settled a round — an output, or a rejection. The entry stage at round
+ * one is deliberately not history: entering it is the very thing being
+ * considered, and its record landing without the position that belongs beside
+ * it is the ordinary crash this design already recovers from.
+ */
+function history(run: Run, entryId: string): string[] {
+  const settled = Object.entries(run.counters ?? {}).filter(([, n]) => n > 0).map(([id]) => id);
+  const entered = Object.keys(run.rounds ?? {});
+  return [...new Set([...entered, ...settled])]
+    .filter((id) => id !== entryId || (run.counters[entryId] ?? 0) > 0)
+    .sort();
+}
+
 export function decide(w: Workflow, s: Snapshot): Decision {
   const eligibility = checkEligible(w, s);
   if (!eligibility.eligible) return { action: "skip", why: eligibility.reason };
@@ -28,6 +46,29 @@ export function decide(w: Workflow, s: Snapshot): Decision {
   if (where.kind === "none") {
     const entry = w.stages.find((x) => x.entry);
     if (!entry) return { action: "halt", why: "the workflow has no entry stage" };
+    /*
+     * "No position" is the same thing as "a new ticket" only when the ticket
+     * has no run behind it either. Position is one value written by a swap
+     * that is not atomic, so losing it costs a crash, a 502 on the add, or a
+     * person with triage rights — and reading that as fresh restarted a
+     * ticket that had finished a build, four review rounds and three fix
+     * rounds: a fresh paid entry step, the spec republished over the old one,
+     * and the whole run still on the ticket, unread.
+     *
+     * Recovery is re-derivation, and here there is nothing left to re-derive
+     * from — the one record that said where the ticket was is gone. So this
+     * halts for a person the way every other thing the engine cannot tell
+     * halts, rather than guessing the cheapest-looking answer and spending
+     * money on it.
+     */
+    const behind = history(run, entry.id);
+    if (behind.length) {
+      return {
+        action: "halt",
+        why: `the ticket has already run ${behind.join(", ")} but has no position: ` +
+          "it is not a new ticket, and where it belongs cannot be derived",
+      };
+    }
     return { action: "transition", to: entry, trigger: "entry", round: nextRound(entry.id) };
   }
 

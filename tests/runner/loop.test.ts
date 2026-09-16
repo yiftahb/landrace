@@ -222,6 +222,59 @@ describe("a crash between the entry record and the position it belongs to", () =
 });
 
 /**
+ * A ticket's whole position is one label, and the swap that writes it is two
+ * requests with an await in between — so a crash, a 502 on the add, or a
+ * person with triage rights can leave a ticket with none at all. "No position"
+ * then read as "a new ticket", which is the one place the "a crash costs
+ * nothing" guarantee did not hold: the crash is *inside* one effect's apply,
+ * below the level reconcile can replan.
+ */
+describe("a ticket that has lost its one stage label", () => {
+  const stageless = (gh: World): void => {
+    const issue = gh.issues.get(1);
+    if (!issue) throw new Error("no ticket #1");
+    issue.labels = issue.labels.filter((l) => !l.startsWith("lr:stage:"));
+  };
+
+  it("halts for a human rather than restarting a finished run from the entry stage", async () => {
+    const gh = world(["lr:auto", "lr:stage:build"]);
+    const finished = await run(gh);
+    expect(finished.run.counters["code-review"]).toBe(4);
+    expect(finished.run.counters["fix-review"]).toBe(3);
+
+    stageless(gh);
+    const r = await run(gh);
+
+    // Not `spec` again: that was a fresh paid spec step, the spec page
+    // republished over the old one, and a whole build-and-review run left on
+    // the ticket unread.
+    expect(r.invocations).toEqual([]);
+    expect(r.positions).toEqual([]);
+    expect(r.result.settled).toBe("halt");
+    expect(r.result.why).toMatch(/no position/);
+    expect(r.result.why).toMatch(/code-review/);
+  });
+
+  /*
+   * The boundary of that rule, and it has to stay on this side of it: a crash
+   * between the entry stage's own first record and the status that moves the
+   * position leaves history and no position too — but nothing has been paid
+   * for and nothing is discarded, so replanning writes the identical record
+   * and the label it was missing. That is the ordinary crash recovery this
+   * design is built on, not a restart.
+   */
+  it("still resumes a first entry whose position write never landed", async () => {
+    const gh = world(["lr:auto"]);
+    await run(gh, { breakOn: (e: Effect) => e.type === "tracker.status" });
+    expect(gh.labelsOf(1).some((l) => l.startsWith("lr:stage:"))).toBe(false);
+
+    const resumed = await run(gh);
+    expect(resumed.invocations[0]).toEqual({ stage: "spec", round: 1 });
+    expect(entryRecords(resumed.markers, "spec")).toEqual([1]);
+  });
+});
+
+/**
  * The spec phase, driven from the entry stage by nothing but what the step
  * said. Every trigger out of `spec` and `triage` reads an output *shape*, so
  * until the marker carried the step's value this whole half of the shipped

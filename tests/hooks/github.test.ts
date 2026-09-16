@@ -1,5 +1,7 @@
 import { githubHooks, source } from "#landrace/hooks/github.js";
 import type { HookContext, RuntimeContext } from "#namespace.js";
+import { createFakeTracker } from "#tests/support/fake-tracker.js";
+import type { FakeTracker } from "#tests/support/fake-tracker.js";
 
 /**
  * The shipped integration's own rules, driven through the hooks the loader
@@ -180,5 +182,51 @@ describe("a comment body larger than GitHub will take", () => {
     const { hooks, calls } = client();
     await hooks.post.apply({ type: "tracker.comment", body: "x".repeat(60_000) }, { ...ticketCtx } as HookContext);
     expect(calls.filter((p) => p.endsWith("/comments"))).toHaveLength(1);
+  });
+});
+
+/**
+ * A ticket's whole position is one label, and `tracker.status` writes it with
+ * more than one request — so there is a window in the middle, and the only
+ * question is what the ticket looks like inside it.
+ *
+ * Removing first left *zero* stage labels there, which the engine read as a
+ * new ticket and restarted from the entry stage, discarding a run that was
+ * still sitting on the ticket in full. Adding first leaves two, which every
+ * surface in the engine already refuses to place — a halt, not a wrong move,
+ * and the next status apply cleans the loser up on its own.
+ */
+describe("moving the position is a swap, and a swap has a window", () => {
+  const statusOn = async (gh: FakeTracker, value: string): Promise<void> => {
+    const post = gh.registry.post[0];
+    if (!post) throw new Error("the fake tracker registered no post hook");
+    await post.apply({ type: "tracker.status", value }, { ticket: 1 } as HookContext);
+  };
+
+  const labelCalls = (gh: FakeTracker) =>
+    gh.requests.filter((r) => r.path.startsWith("/issues/1/labels")).map((r) => r.method);
+
+  it("adds the new stage label before it removes the old one", async () => {
+    const gh = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }]);
+    await statusOn(gh, "build");
+
+    expect(labelCalls(gh)).toEqual(["POST", "DELETE"]);
+    expect(gh.labelsOf(1)).toEqual(["lr:auto", "lr:stage:build"]);
+  });
+
+  it("leaves two labels rather than none when the removal never lands", async () => {
+    const gh = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }]);
+    gh.breakOn((r) => r.method === "DELETE" && r.path.startsWith("/issues/1/labels/"), 500);
+
+    await expect(statusOn(gh, "build")).rejects.toThrow();
+    expect(gh.labelsOf(1)).toEqual(expect.arrayContaining(["lr:stage:spec", "lr:stage:build"]));
+  });
+
+  it("and the ticket is still placeable when the add is what fails", async () => {
+    const gh = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }]);
+    gh.breakOn((r) => r.method === "POST" && r.path === "/issues/1/labels", 500);
+
+    await expect(statusOn(gh, "build")).rejects.toThrow();
+    expect(gh.labelsOf(1)).toEqual(["lr:auto", "lr:stage:spec"]);
   });
 });

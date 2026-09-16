@@ -476,10 +476,23 @@ async function applyEffect(gh: Client, effect: Effect, ticket: number): Promise<
       return;
     }
     case STATUS_EFFECT: {
+      // Position is one label, and moving it is more than one request — so
+      // there is a window in the middle of this, and the only choice is what
+      // the ticket looks like inside it.
+      //
+      // Removing first left *zero* stage labels there, and a ticket with no
+      // position used to read as a new ticket: a Ctrl-C, a 502 on the add or a
+      // rate limit in that window restarted a ticket that had already finished
+      // a build and seven review rounds, paying for the entry step again and
+      // republishing over what was there. Adding first leaves two, which is a
+      // state the engine refuses to place at all rather than one it places
+      // wrongly — and the next status apply removes the loser, because the
+      // removals are derived from what is on the ticket rather than from what
+      // this call put there.
       const want = LABELS.stage(String(effect.value));
+      await gh.addLabels(ticket, [want]);
       const current = labelNames(await gh.getIssue(ticket)).filter((l) => l.startsWith(STAGE_LABEL_PREFIX));
       for (const stale of current.filter((l) => l !== want)) await gh.removeLabel(ticket, stale);
-      await gh.addLabels(ticket, [want]);
       return;
     }
     case RECORD_EFFECT: {
