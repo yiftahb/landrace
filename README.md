@@ -55,10 +55,25 @@ Requires Node 22 or newer. Landrace uses native type stripping and deliberately 
 
 ```bash
 cp .landrace/.env.example .landrace/.env   # add your GITHUB_TOKEN
-node dist/cli.js validate .landrace
+landrace validate                          # prove the workflow sound
+landrace status                            # what it would pick up — reads only
+landrace start --once --debug              # one tick, every event printed
+landrace start                             # watch, on the interval
 ```
 
-`validate` proves the workflow sound before anything runs it, and fails if a secret does not resolve or if your `.env` is not gitignored.
+`validate` fails if a secret does not resolve, if your `.env` is not gitignored,
+or if a predicate reads a path no hook provides. `status` invokes no agent and
+writes nothing, so it is the safe way to see what Landrace thinks of your
+tickets — including the workflow's own reason for skipping one.
+
+Escalate in that order the first time. `start --once` runs a single tick and
+exits, and `--debug` prints the assembled snapshot, the planned effects and the
+agent subprocess's own output, so you can watch a decision before it becomes a
+write. **A step invocation spends real money**; the round caps are the `$lt`
+counters in your workflow, not something the engine imposes.
+
+Landrace only touches tickets your `eligible` rule admits — in the shipped
+workflow, those labelled `lr:auto`. Everything else is listed and skipped.
 
 To drive tickets from your editor, generate the MCP config:
 
@@ -81,6 +96,35 @@ observe  →  snapshot  →  [ pure decision ]  →  effects  →  act
 Nothing about progress is stored locally. Position comes from a label, rounds from counting records, findings from review threads. That is what makes recovery re-derivation rather than repair.
 
 The decision itself is five pure steps: locate the ticket's stage, assess whether that stage's step has finished, decide, plan the effects of the state being entered, and drop the effects the world already satisfies. **Ambiguity always halts** — two stages that both match, or two triggers that both fire, stop the ticket rather than picking one.
+
+## Structure
+
+```
+src/namespace.ts     every type in the system, and nothing else
+src/core/            the decision engine — pure, and enforced: no I/O, no clock,
+                     no randomness. Time arrives as `snapshot.now`
+src/workflow/        load and validate workflow definitions
+src/hooks/           the define* contracts, and the loader that imports yours
+src/agent/           executors, prompt screening, the worktree sandbox
+src/runner/          tick, converge, step, lock, effect dispatch, events
+src/config/          landrace.yaml + .env
+src/mcp/             operator tools over stdio
+src/cli/             validate, next, mcp, start, status
+src/testing/         the harness, for testing a workflow of your own
+src/conventions.ts   label and marker vocabulary, shared by every hook
+src/sandbox.ts       repository identity; the tmp root locks and worktrees share
+
+.landrace/
+  landrace.yaml      runtime — how agents run, where tickets live
+  workflow.yaml      the process — one graph, stages declaring what activates them
+  steps/*.md         the work — front matter is the contract, the body is the prompt
+  hooks/*.ts         the integrations — GitHub included. Not part of the engine
+  .env               secrets, gitignored, and `validate` fails if it is not
+```
+
+Imports inside `src/` and `tests/` go through the `imports` map in `package.json`
+— `#core/index.js`, `#namespace.js` — so nothing walks up the tree. Hooks import
+`landrace/hooks`, which is what an external hook author writes too.
 
 ## Configuration
 
@@ -120,11 +164,19 @@ stages:
       - name: reviewer asked for changes
         when:
           "run.stage": triage
-          "outputs.triage.intent": revise
+          "run.outputs.triage.intent": revise
           "run.counters.spec": { $lt: 3 }
     on_enter:
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 ```
+
+Workflow-level keys beyond `stages`:
+
+| Key | Meaning |
+|---|---|
+| `eligible` | Which tickets Landrace touches at all, each rule carrying the `else` reason `status` prints for a ticket it skipped |
+| `budget.stepTimeout` | How long one agent invocation may take. The round caps are the `$lt` counters in the triggers themselves, where the validator can see and bound them |
+| `hooks` | The integration modules, by path, in the order pre hooks run |
 
 ### `.landrace/hooks/*.ts` — the integrations
 
@@ -149,17 +201,29 @@ Front matter is the contract, the body is the prompt. The step declares where ea
 
 ```markdown
 ---
-skills: [superpowers:brainstorming]
 capabilities: [repo:read]
+model: opus
 output:
   discriminator: kind
   shapes: { questions: {...}, spec: {...} }
   routes:
     - when: { kind: questions }
       effect: { type: tracker.comment, marker: "questions:{round}" }
+    - when: { kind: spec }
+      effect: { type: artifact.publish, artifact: spec }
 ---
 Write the spec for {ticket.title}…
 ```
+
+| Key | Meaning |
+|---|---|
+| `capabilities` | What the agent may do — `repo:read`, `repo:write`. Enforced by diffing the worktree afterwards, not by the flags handed to the agent, because a hook-registered executor never sees those. An unenforceable capability refuses the step rather than pretending |
+| `model` | Overrides `agent.model` for this step. A cheap step should say so |
+| `output.discriminator` | The field whose value picks the shape |
+| `output.shapes` | What each value of the discriminator must look like. Output that matches none is a hard fail, recorded, never retried |
+| `output.routes` | Where each shape goes. One route, one effect — two routes matching one output is ambiguity, and ambiguity halts |
+
+Both schemas are strict: an unknown key fails to load rather than being ignored. A field the engine silently ignores is a lie, and this codebase had four of them until the last review.
 
 ## What `validate` proves
 
