@@ -17,16 +17,39 @@ const linesMatching = (pattern: RegExp): string[] =>
   );
 
 /**
- * The engine ships no integrations.
+ * No tracker is *named* inside the engine — which is a claim about vocabulary,
+ * and deliberately not the larger claim that the engine is tracker-agnostic.
  *
  * This is the rule the whole `.landrace/hooks/` design exists to hold, and it
  * is the one that rots quietly: nothing stops a comment, a type, a default, or
  * "just this one special case" from naming a tracker, and each one makes the
  * next easier. The failure prints file and line, because a rule you have to go
  * hunting for is a rule that gets switched off.
+ *
+ * What it catches is the word. What it cannot catch is the shape, and four
+ * GitHub-shaped assumptions live in `src/` and pass this test clean today:
+ *
+ *   1. a ticket's position is derived only from an `lr:stage:*` label
+ *      (`src/runner/snapshot.ts:94`), so a tracker with real statuses has to
+ *      synthesise a label array it does not have — and §6's "a human moving a
+ *      card moves the ticket" is delivered on no tracker at all;
+ *   2. `ticket: number` (`src/namespace.ts`, and on through `converge`, the
+ *      lock filename and the MCP schema), which `PROJ-123` has no mapping to;
+ *   3. `TrackerComment` (`src/namespace.ts:197`) is the GitHub REST wire
+ *      shape, `created_at` and `user.login` and all, rather than the neutral
+ *      `{ id, body, at, author }` the name promises;
+ *   4. `TicketPatch.state` (`src/namespace.ts:386`) is `"open" | "closed"`,
+ *      which a Jira workflow status or a Linear per-team state must collapse
+ *      into.
+ *
+ * Each is a real design change rather than a rename, so this comment is the
+ * honest half of the job: a passing test here is not evidence that a second
+ * tracker is one file. `.superpowers/sdd/2026-09-15-landrace-main-loop/
+ * review-cleanliness.md` carries the same list where the next person will
+ * find it.
  */
 describe("no tracker is named inside the engine", () => {
-  it("has no mention of a vendor tracker anywhere under src", () => {
+  it("has no mention of a vendor tracker's name anywhere under src", () => {
     expect(linesMatching(/github/i)).toEqual([]);
   });
 
