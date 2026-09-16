@@ -3,20 +3,23 @@
  *
  * Everything this repository's workflow needs from a tracker is here: the REST
  * client, the pre hook that turns an issue into a snapshot, the post hook that
- * writes every effect GitHub owns, the source the tick enumerates work from,
- * and the operator actions the MCP tools call. `src/` contains no GitHub code
- * at all and a test enforces it, so this file is also the worked example: a
- * second tracker is a sibling of this one, and nothing else changes.
+ * writes every effect GitHub owns, the artifact hook that publishes the spec to
+ * Pages, the source the tick enumerates work from, and the operator actions the
+ * MCP tools call. `src/` contains no GitHub code at all and a test enforces it,
+ * so this file is also the worked example: a second tracker is a sibling of
+ * this one, and nothing else changes.
  *
- * Read it in four parts — the client, the two hooks, and the two ticket-less
- * kinds — and note the two rules the engine cares about:
+ * Read it in five parts — the client, the two hooks, the spec artifact, and the
+ * two ticket-less kinds — and note the two rules the engine cares about:
  *
  *  - Every effect has a `satisfied()` beside its `apply()`, in this same file,
  *    so nobody adds a write and forgets how to tell it has already happened.
  *  - A marker counts as control state only because *we* wrote it, so no
  *    request goes out until this token's own login is known.
  */
+import { createHash } from "node:crypto";
 import {
+  defineArtifactHook,
   defineOperator,
   definePostHook,
   definePreHook,
@@ -28,6 +31,7 @@ import {
   renderMarker,
   stageFromLabels,
   STAGE_LABEL_PREFIX,
+  type ArtifactHook,
   type Candidate,
   type Effect,
   type HookContext,
@@ -89,6 +93,9 @@ export interface GitHubOptions {
   fetchImpl?: typeof fetch | undefined;
 }
 
+/** A 404 from the API, told apart from every other failure by its status rather than by its text. */
+const isMissing = (e: unknown): boolean => (e as { status?: unknown } | null)?.status === 404;
+
 function createClient(opts: GitHubOptions) {
   const { repo, token } = opts;
   const doFetch = opts.fetchImpl ?? fetch;
@@ -115,7 +122,13 @@ function createClient(opts: GitHubOptions) {
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
-    if (!res.ok) throw new Error(`${method} ${url} → ${res.status} ${await res.text()}`);
+    // The status rides on the error rather than only in its text. "Is this a
+    // 404?" answered by searching the message finds the *path* on a ticket
+    // numbered 404 — `/contents/specs/404/index.md` — and a caller that reads
+    // a broken repository as an absent file republishes it on every tick.
+    if (!res.ok) {
+      throw Object.assign(new Error(`${method} ${url} → ${res.status} ${await res.text()}`), { status: res.status });
+    }
     return res.status === 204 ? (null as T) : ((await res.json()) as T);
   }
 
@@ -213,11 +226,75 @@ function createClient(opts: GitHubOptions) {
       try {
         await call("DELETE", `/issues/${n}/labels/${encodeURIComponent(label)}`);
       } catch (e) {
-        if (!String(e).includes("404")) throw e; // already gone is success
+        if (!isMissing(e)) throw e; // already gone is success
       }
     },
+
+    /** A file's content on `branch`, or null if the branch or the file is not there. */
+    getFile: async (branch: string, path: string): Promise<string | null> => {
+      try {
+        const file = await call<{ content?: unknown; encoding?: unknown }>(
+          "GET",
+          `/contents/${encodeURI(path)}?ref=${encodeURIComponent(branch)}`,
+        );
+        // Over a megabyte, the contents API answers with an empty string and a
+        // different encoding. Hashing that would compare the file against ""
+        // and republish it on every tick, so it is a failure, not a value.
+        if (file.encoding !== "base64" || typeof file.content !== "string") {
+          throw new Error(`${path} on ${branch} came back as ${String(file.encoding)}, which cannot be read as text`);
+        }
+        return Buffer.from(file.content, "base64").toString("utf8");
+      } catch (e) {
+        if (isMissing(e)) return null;
+        throw e;
+      }
+    },
+
+    /**
+     * Write one file to `branch` through the Git Data API — blob, tree,
+     * commit, ref — creating the branch as an orphan if it is not there.
+     *
+     * Not the contents API's file-by-file PUT: that needs the blob's current
+     * sha to overwrite, which is a second round trip per file, and it cannot
+     * create the first commit of an orphan branch at all.
+     */
+    putFile: async (branch: string, path: string, content: string, message: string): Promise<void> => {
+      const head = await headOf(branch);
+      const blob = await call<{ sha: string }>("POST", "/git/blobs", {
+        content: Buffer.from(content, "utf8").toString("base64"),
+        encoding: "base64",
+      });
+      const tree = await call<{ sha: string }>("POST", "/git/trees", {
+        // Everything already on the branch is kept: each ticket owns its own
+        // path, and a publish must not delete its neighbours.
+        ...(head ? { base_tree: head.tree } : {}),
+        tree: [{ path, mode: "100644", type: "blob", sha: blob.sha }],
+      });
+      const commit = await call<{ sha: string }>("POST", "/git/commits", {
+        message,
+        tree: tree.sha,
+        // No parent on the first commit: the branch is orphan by construction,
+        // so nothing published here is ever part of main's history.
+        parents: head ? [head.sha] : [],
+      });
+      if (head) await call("PATCH", `/git/refs/heads/${branch}`, { sha: commit.sha });
+      else await call("POST", "/git/refs", { ref: `refs/heads/${branch}`, sha: commit.sha });
+    },
   };
+
+  /** The branch's commit and the tree it points at, or null if the branch does not exist yet. */
+  async function headOf(branch: string): Promise<{ sha: string; tree: string } | null> {
+    try {
+      const ref = await call<{ object: { sha: string } }>("GET", `/git/ref/heads/${branch}`);
+      const commit = await call<{ tree: { sha: string } }>("GET", `/git/commits/${ref.object.sha}`);
+      return { sha: ref.object.sha, tree: commit.tree.sha };
+    } catch (e) {
+      if (isMissing(e)) return null;
+      throw e;
+    }
+  }
 }
+
 
 type Client = ReturnType<typeof createClient>;
 
@@ -379,6 +456,99 @@ async function applyEffect(gh: Client, effect: Effect, ticket: number): Promise<
   }
 }
 
+/* ── the spec artifact, published to Pages ──────────────────────────────── */
+
+/**
+ * The artifact this hook owns, and the effect type it answers. One name, used
+ * for the snapshot path, the effect's `artifact` field and the hook's id: the
+ * engine nests an artifact's state under the hook's own id, so a second
+ * spelling here would be a path no workflow could read.
+ */
+const SPEC = "spec";
+const PUBLISH = "artifact.publish";
+
+/**
+ * An orphan branch: nothing published here is part of main's history, and no
+ * checkout is involved.
+ */
+const PAGES_BRANCH = "gh-pages";
+
+/**
+ * Derived from the ticket, never stored. There is no artifact id to lose, so
+ * the reference survives a crash, a rename and a re-derivation for free — the
+ * whole reason §3.1 asks for a derived reference rather than a recorded one.
+ */
+const pagePath = (ticket: number): string => `specs/${ticket}/index.md`;
+
+const pageUrl = (repo: string, ticket: number): string => {
+  // GitHub's own default domain for a project site. A repository serving Pages
+  // from a custom domain publishes to the same branch and path; only the
+  // origin below differs, and it would be the one thing worth configuring.
+  const [owner, name] = repo.split("/");
+  return `https://${owner}.github.io/${name}/specs/${ticket}/`;
+};
+
+const hashOf = (content: string): string => createHash("sha256").update(content).digest("hex");
+
+/**
+ * What this publish puts on the page.
+ *
+ * An empty body is refused rather than published: an empty document would
+ * hash, satisfy and read back perfectly well, so the stage would complete and
+ * the reviewer would be sent to a blank page with nothing saying why.
+ */
+function contentOf(effect: Effect): string {
+  const body = typeof effect.body === "string" ? effect.body : "";
+  if (!body.trim()) throw new Error(`a "${PUBLISH}" effect for "${SPEC}" carried no content to publish`);
+  return body;
+}
+
+/** Refuses a publish addressed to an artifact this hook does not own, rather than writing it to the spec's path. */
+function mine(effect: Effect): void {
+  if (effect.artifact !== SPEC) {
+    throw new Error(`this hook publishes the "${SPEC}" artifact, not "${String(effect.artifact)}"`);
+  }
+}
+
+async function readPage(gh: Client, repo: string, ticket: number): Promise<Record<string, unknown>> {
+  const content = await gh.getFile(PAGES_BRANCH, pagePath(ticket));
+  // `exists` and a content hash are the whole state: presence is what a
+  // precondition reads, and the hash is what makes a republish a no-op.
+  return { exists: content !== null, hash: content === null ? null : hashOf(content), url: pageUrl(repo, ticket) };
+}
+
+async function publishPage(gh: Client, effect: Effect, ticket: number): Promise<void> {
+  mine(effect);
+  const content = contentOf(effect);
+
+  // Read before writing, and not from the snapshot: the step that produced
+  // this ran minutes ago, and converge deliberately does not reconcile a
+  // step's own output before applying it. Identical content is then a no-op
+  // at the cost of one GET, rather than a commit per tick on a page nobody
+  // changed.
+  if ((await gh.getFile(PAGES_BRANCH, pagePath(ticket))) === content) return;
+
+  await gh.putFile(PAGES_BRANCH, pagePath(ticket), content, `landrace: publish the spec for #${ticket}`);
+}
+
+/**
+ * Idempotence, without a ledger: the page's own content hash, as this tick
+ * read it, against the hash of what we are about to publish.
+ *
+ * Absent state is neither yes nor no. "Satisfied" would silently drop the
+ * publish and complete a stage with nothing published; "not satisfied" would
+ * republish on every tick. Halting is the third option, exactly as for a
+ * missing bot login.
+ */
+function publishSatisfied(snapshot: Snapshot, effect: Effect): boolean {
+  mine(effect);
+  const state = (snapshot.artifacts as Record<string, { hash?: unknown }> | undefined)?.[SPEC];
+  if (state === undefined || state === null) {
+    throw new Error(`the snapshot has no artifacts.${SPEC} state, so no publish of it can be checked`);
+  }
+  return state.hash === hashOf(contentOf(effect));
+}
+
 /**
  * The integration, built over one client.
  *
@@ -393,10 +563,22 @@ export function githubHooks(opts: GitHubOptions): {
   post: PostHook;
   source: Source;
   operator: Operator;
+  specArtifact: ArtifactHook;
 } {
   const gh = createClient(opts);
 
   return {
+    // Sorts after every other export on purpose: the loader files a module's
+    // exports in sorted name order, and an artifact's read wants the tracker's
+    // fragment already in the snapshot beside it.
+    specArtifact: defineArtifactHook({
+      id: SPEC,
+      handles: [PUBLISH],
+      read: ({ ticket }) => readPage(gh, opts.repo, ticket),
+      satisfied: publishSatisfied,
+      apply: (effect, { ticket }) => publishPage(gh, effect, ticket),
+    }),
+
     pre: definePreHook({
       id: "github",
       provides: PROVIDES,
@@ -494,6 +676,22 @@ export const post = definePostHook({
 export const source = defineSource({
   id: "github",
   list: async (ctx: RuntimeContext) => hooksFor(ctx).source.list(ctx),
+});
+
+/**
+ * The spec document, on the orphan Pages branch. One object owns both halves —
+ * the read the engine files into the observe phase, and the publish it files
+ * into the act phase — so nobody can add a write here without the check that
+ * says it has already happened.
+ */
+export const specArtifact = defineArtifactHook({
+  id: SPEC,
+  handles: [PUBLISH],
+  read: async (ctx: HookContext) => hooksFor(ctx).specArtifact.read(ctx),
+  // Not delegated: it reads the snapshot and hashes a string, so it needs no
+  // client and no configuration to build one from.
+  satisfied: publishSatisfied,
+  apply: async (effect: Effect, ctx: HookContext) => hooksFor(ctx).specArtifact.apply(effect, ctx),
 });
 
 export const operator = defineOperator({
