@@ -514,7 +514,7 @@ export type JsonBlockResult =
  * function it belongs to, because every type in the system is declared here —
  * see the note at the top of `src/agent/json-block.ts` about what that costs.
  */
-export type Frame =
+export type JsonFrame =
   | { kind: "object"; seen: Set<string>; state: "key-or-close" | "colon" | "value" | "comma-or-close" }
   | { kind: "array"; state: "value-or-close" | "comma-or-close" };
 

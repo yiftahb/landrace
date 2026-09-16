@@ -32,7 +32,7 @@
  * quoting *carefully* — via indentation instead of backticks — does not
  * avoid this; only placement (not last) does.
  */
-import type { Frame, JsonBlockResult } from "../namespace.js";
+import type { JsonFrame, JsonBlockResult } from "../namespace.js";
 
 /**
  * The last "```" in the text, provided nothing but whitespace follows it —
@@ -219,14 +219,14 @@ function hasDuplicateKey(text: string): boolean {
     return i > start;
   };
 
-  const stack: Frame[] = [];
+  const stack: JsonFrame[] = [];
 
   // `frame.state` is narrowed to "comma-or-close" explicitly per branch of
   // `frame.kind`, rather than assigned through a shared parameter typed
-  // "comma-or-close" — the two members of `Frame` don't share that literal
+  // "comma-or-close" — the two members of `JsonFrame` don't share that literal
   // as a single type, so a generic assignment would need a cast to compile;
   // this way neither branch lies to the type checker about which frame it is.
-  const pushValue = (frame: Frame): boolean => {
+  const pushValue = (frame: JsonFrame): boolean => {
     skipWs();
     const ch = text[i];
     if (ch === "{") { stack.push({ kind: "object", seen: new Set(), state: "key-or-close" }); i++; }
@@ -247,7 +247,7 @@ function hasDuplicateKey(text: string): boolean {
 
   while (stack.length > 0) {
     if (stack.length > MAX_DUPLICATE_CHECK_DEPTH) return true;
-    const frame = stack[stack.length - 1] as Frame;
+    const frame = stack[stack.length - 1] as JsonFrame;
     skipWs();
 
     if (frame.kind === "object") {
