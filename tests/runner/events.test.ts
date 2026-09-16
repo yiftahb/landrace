@@ -28,11 +28,31 @@ describe("createLogger", () => {
     expect(JSON.stringify(seen)).toContain("[redacted]");
   });
 
+  // debug, and an assertion on what actually came out: without it the event
+  // is dropped for being an agent.event, `seen` stays empty, and a test that
+  // cannot fail claims the array case is covered.
   it("redacts inside arrays too", () => {
     const seen: LandraceEvent[] = [];
-    createLogger({ sink: (e) => seen.push(e), redactValues: ["ghp_tokenvalue"] })(
+    createLogger({ sink: (e) => seen.push(e), redactValues: ["ghp_tokenvalue"], debug: true })(
       "agent.event", { argv: ["a", "ghp_tokenvalue"] });
-    expect(JSON.stringify(seen)).not.toContain("ghp_tokenvalue");
+    expect(seen).toEqual([{ name: "agent.event", argv: ["a", "[redacted]"] }]);
+  });
+
+  /**
+   * Both debug-only events, for the same reason in two sizes: agent output is
+   * voluminous and attacker-influenced, and a whole snapshot per pass would
+   * bury every other line. Printed on request, and data either way.
+   */
+  it("drops the debug-only events unless debug is on, and keeps everything else", () => {
+    const quiet: LandraceEvent[] = [];
+    const q2 = createLogger({ sink: (e) => quiet.push(e) });
+    q2("snapshot.built", { snapshot: { ticket: { number: 1 } } });
+    q2("tick.started", {});
+    expect(quiet.map((e) => e.name)).toEqual(["tick.started"]);
+
+    const loud: LandraceEvent[] = [];
+    createLogger({ sink: (e) => loud.push(e), debug: true })("snapshot.built", { snapshot: {} });
+    expect(loud).toHaveLength(1);
   });
 
   it("drops agent.event unless debug is on, and keeps everything else", () => {

@@ -126,6 +126,10 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
       deps.log("snapshot.failed", { ticket, reason });
       return { passes: pass, settled: "halt", why: reason };
     }
+    // §14's per-pass dump. The logger drops it unless --debug is on, so the
+    // decision below is always reported alongside the thing it was decided
+    // from, and never at the price of a whole snapshot per pass in a quiet log.
+    deps.log("snapshot.built", { ticket, pass, snapshot });
     const decision = decide(deps.workflow, snapshot);
 
     deps.log("ticket.evaluated", {
@@ -259,7 +263,14 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
     }
     const surviving = reconciled.surviving;
     for (const dropped of planned.filter((e) => !surviving.includes(e))) {
-      deps.log("effect.discarded", { ticket, type: dropped.type });
+      // With the hook that dropped it (§14): "discarded" on its own reads as a
+      // bug to whoever is looking at an effect that did not happen, and the
+      // answer they need is which hook said it already had.
+      deps.log("effect.discarded", {
+        ticket,
+        type: dropped.type,
+        satisfiedBy: deps.dispatcher.handlerFor(dropped.type)?.id ?? null,
+      });
     }
     const applied = await tryApply(surviving, ticket, snapshot, deps);
     if (!applied.ok) {

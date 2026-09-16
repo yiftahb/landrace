@@ -7,10 +7,21 @@ export type EventName =
   | "ticket.evaluated" | "ticket.skipped"
   | "step.invoked" | "step.completed" | "step.rejected"
   | "agent.event"
-  | "snapshot.failed"
+  | "snapshot.built" | "snapshot.failed"
   | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
   | "lock.acquired" | "lock.denied" | "lock.stolen"
   | "screen.passed" | "screen.blocked";
+
+/**
+ * Printed only under `--debug` (spec §14).
+ *
+ * `agent.event` is every chunk a subprocess wrote; `snapshot.built` is the
+ * whole assembled snapshot, once per pass. Both are the answer to "why did it
+ * do that" and both would bury every other line if they were on by default.
+ * Gated by name here rather than at each call site, so there is one place that
+ * decides and no caller has to be handed the debug flag to make the choice.
+ */
+const DEBUG_ONLY: ReadonlySet<EventName> = new Set<EventName>(["agent.event", "snapshot.built"]);
 
 export interface LandraceEvent {
   name: EventName;
@@ -91,8 +102,9 @@ export function createLogger(opts: {
 
   return (name, data = {}) => {
     // Agent output is voluminous and carries attacker-influenced text. It is
-    // printed only on request, and it is data — never interpreted.
-    if (name === "agent.event" && !opts.debug) return;
+    // printed only on request, and it is data — never interpreted. The same
+    // goes for the per-pass snapshot, which quotes the issue body verbatim.
+    if (DEBUG_ONLY.has(name) && !opts.debug) return;
     sink({ name, ...(redactValue(data, secrets) as Record<string, unknown>) });
   };
 }

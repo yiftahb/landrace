@@ -1,6 +1,6 @@
 import { converge } from "../../src/runner/converge.js";
 import { createDispatcher, type Dispatcher } from "../../src/runner/effects.js";
-import { createLogger } from "../../src/runner/events.js";
+import { createLogger, type LandraceEvent } from "../../src/runner/events.js";
 import { definePostHook, definePreHook, type HookContext } from "../../src/hooks/types.js";
 import type { Executor } from "../../src/hooks/types.js";
 import type { Step } from "../../src/workflow/load.js";
@@ -134,6 +134,57 @@ describe("converge", () => {
     const seen: string[] = [];
     await converge(1, deps(world(), { log: createLogger({ sink: (e) => seen.push(e.name) }) }));
     expect(seen.filter((n) => n === "ticket.evaluated").length).toBeGreaterThan(1);
+  });
+
+  /**
+   * Spec §14: `--debug` dumps the assembled snapshot per pass. It is the one
+   * thing a decision was made from, and without it the log says what was
+   * decided and never what it was decided on — which is exactly the question
+   * asked when a ticket sits in a stage nobody expected.
+   */
+  it("dumps the snapshot it decided on, per pass, and only when debug is on", async () => {
+    const quiet: LandraceEvent[] = [];
+    await converge(1, deps(world(), { log: createLogger({ sink: (e) => quiet.push(e) }) }));
+    expect(quiet.map((e) => e.name)).not.toContain("snapshot.built");
+
+    const loud: LandraceEvent[] = [];
+    await converge(1, deps(world(), { log: createLogger({ sink: (e) => loud.push(e), debug: true }) }));
+    const dumps = loud.filter((e) => e.name === "snapshot.built");
+    expect(dumps).toHaveLength(loud.filter((e) => e.name === "ticket.evaluated").length);
+    expect((dumps[0]?.snapshot as { ticket?: { labels?: string[] } })?.ticket?.labels).toEqual(["lr:auto"]);
+  });
+
+  /**
+   * §14 again: the debug dump is "the planned effects, and which of them
+   * reconcile discarded and why". "discarded" on its own is the half that
+   * reads as a bug — the operator is looking at an effect that did not happen
+   * and needs to know which hook said it already had.
+   */
+  it("names the hook that decided a planned effect had already landed", async () => {
+    const w = world();
+    w.entries.push({
+      stage: "a", kind: "enter", round: 1, marker: "m",
+      data: { marker: "m" }, at: new Date(0).toISOString(), byAgent: true,
+    });
+    const twoEffects: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "a", entry: true, terminal: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [
+          { type: "tracker.comment", kind: "enter", marker: "m", body: "x" },
+          { type: "tracker.status", value: "a" },
+        ],
+      }],
+    };
+
+    const seen: LandraceEvent[] = [];
+    await converge(1, deps(w, { workflow: twoEffects, log: createLogger({ sink: (e) => seen.push(e) }) }));
+
+    expect(seen.find((e) => e.name === "effect.discarded")).toMatchObject({
+      type: "tracker.comment",
+      satisfiedBy: "w",
+    });
   });
 
   // decide() halts on an ambiguous placement or ambiguous triggers rather than
