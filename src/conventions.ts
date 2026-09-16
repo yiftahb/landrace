@@ -62,6 +62,33 @@ export const ENTRY_KIND = "enter";
  */
 export const OUTPUT_KIND = "output";
 
+/**
+ * What a step may declare it is allowed to do, and the whole of it.
+ *
+ * Deliberately two words long. Each one is enforced twice — by the flags an
+ * executor builds from it, and by the engine reading the step's worktree
+ * afterwards (src/agent/worktree.ts) — and a third word may only arrive with
+ * both. A capability that is declared and not enforced is worse than none at
+ * all: the operator reads the step file, sees the word, and believes they are
+ * covered. That is why an unrecognised one is a refusal rather than a value
+ * quietly carried around, and why the list lives here with the labels and the
+ * marker format rather than inside the one executor that happens to know a CLI
+ * flag for it — a second executor has to answer for the same two words.
+ */
+export const CAPABILITIES = ["repo:read", "repo:write"] as const;
+
+/** The declared names nothing in the engine knows how to enforce. */
+export const unknownCapabilities = (declared: readonly string[] | undefined): string[] =>
+  (declared ?? []).filter((c) => !(CAPABILITIES as readonly string[]).includes(c));
+
+/**
+ * Whether a step declared that it may change the repository. Absent and empty
+ * both mean no: a step that declares nothing is the most restricted one there
+ * is, never the least.
+ */
+export const mayWriteRepo = (declared: readonly string[] | undefined): boolean =>
+  (declared ?? []).includes("repo:write");
+
 /*
  * Caps on what a marker may carry, and on how much of a comment is even
  * looked at. Both exist because a comment body is untrusted text that is

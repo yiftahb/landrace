@@ -44,6 +44,27 @@ describe("structural validation", () => {
     expect(rules(w)).toContain("unknown-stage");
   });
 
+  /**
+   * Before the workflow ever runs, and in the report a person reads: a
+   * capability nothing enforces is the operator believing in a restriction
+   * that was never applied. Meeting it at runtime instead means finding out on
+   * a ticket already in flight, one refused step at a time.
+   */
+  it("flags a step declaring a capability the engine cannot enforce", () => {
+    const steps = new Map<string, Step>([["s.md", { prompt: "", capabilities: ["repo:read", "net:egress"] }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    const problems = validateStructure(w, steps);
+
+    expect(problems.map((p) => p.rule)).toContain("capability");
+    expect(problems.find((p) => p.rule === "capability")?.message).toMatch(/net:egress/);
+  });
+
+  it("accepts the capabilities the engine does enforce", () => {
+    const steps = new Map<string, Step>([["s.md", { prompt: "", capabilities: ["repo:read", "repo:write"] }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    expect(validateStructure(w, steps).map((p) => p.rule)).not.toContain("capability");
+  });
+
   it("rejects a disallowed operator in a step's route condition", () => {
     const steps = new Map<string, Step>([["s.md", {
       prompt: "",

@@ -1,4 +1,5 @@
-import { createClaudeExecutor } from "../agent/claude.js";
+import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "../agent/claude.js";
+import { repositoryRoot } from "../agent/worktree.js";
 import { loadConfig, redactionValues } from "../config/load.js";
 import { loadHooks } from "../hooks/load.js";
 import type {
@@ -10,6 +11,7 @@ import type {
   Runtime,
   RuntimeConfig,
   StartOptions,
+  Workflow,
 } from "../namespace.js";
 import { createDispatcher } from "../runner/effects.js";
 import { messageOf } from "../runner/errors.js";
@@ -38,6 +40,30 @@ export function parseInterval(text: string): number {
 }
 
 /**
+ * How long one step may run, taken from the workflow that owns the process
+ * rather than from a default that happens to match it.
+ *
+ * `budget.stepTimeout` is 10m in the shipped workflow and `createClaudeExecutor`'s
+ * own default was 10m, so the two agreed by coincidence: editing the operator's
+ * number changed nothing, and the file was decoration. A value that cannot be
+ * read throws rather than falling back — `stepTimeout: 600` looks like it says
+ * something, and quietly meaning ten minutes instead is how a cap nobody
+ * applied goes on reading as applied.
+ */
+export function stepTimeoutMs(workflow: Workflow): number {
+  const declared = workflow.budget?.["stepTimeout"];
+  if (declared === undefined) return DEFAULT_STEP_TIMEOUT_MS;
+  if (typeof declared !== "string") {
+    throw new Error(`budget.stepTimeout must be a duration like "10m", got ${JSON.stringify(declared)}`);
+  }
+  try {
+    return parseInterval(declared);
+  } catch {
+    throw new Error(`budget.stepTimeout must look like "60s", "2m" or "1h", got "${declared}"`);
+  }
+}
+
+/**
  * The one id the engine still resolves by name.
  *
  * A hook module can register executors of its own, and the engine ships one.
@@ -45,11 +71,24 @@ export function parseInterval(text: string): number {
  * happily and then fails at its first invocation — hours in, one paid tick at
  * a time, on a ticket that has already been moved.
  */
-function executorFor(config: RuntimeConfig, registry: Registry, log: Logger): Executor {
+export function executorFor(
+  config: RuntimeConfig,
+  workflow: Workflow,
+  registry: Registry,
+  log: Logger,
+): Executor {
+  // A hook's executor is constructed by the hook, so the budget cannot reach
+  // it: the engine has a number and no way to hand it over. Enforcing one out
+  // here would mean holding a stopwatch over somebody else's subprocess with
+  // no way to kill it — so a hook owns its own timeout, and says so.
   const fromHook = registry.executors.get(config.agent.adapter);
   if (fromHook) return fromHook;
   if (config.agent.adapter === "claude") {
-    return createClaudeExecutor({ ...(config.agent.model === undefined ? {} : { model: config.agent.model }), log });
+    return createClaudeExecutor({
+      ...(config.agent.model === undefined ? {} : { model: config.agent.model }),
+      timeoutMs: stepTimeoutMs(workflow),
+      log,
+    });
   }
   const registered = [...registry.executors.keys()];
   throw new Error(
@@ -104,6 +143,21 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     );
   }
 
+  // Resolved here, before the first poll, for the same reason everything else
+  // in this function is: a loop started outside a repository would otherwise
+  // assemble, run, and fail at its first paid step. `container` is refused
+  // rather than quietly downgraded to a worktree — an operator who asked for
+  // process isolation and silently got filesystem isolation is the exact shape
+  // of "declared but not enforced" this engine has to refuse.
+  const { isolation } = loaded.config.agent;
+  if (isolation === "container") {
+    throw new Error(
+      'agent.isolation: container is not implemented in v1. Use "worktree" for filesystem ' +
+      'isolation, or "none" to run the agent in this checkout.',
+    );
+  }
+  const sandbox = isolation === "worktree" ? { root: await repositoryRoot(dir) } : null;
+
   const stop = new AbortController();
 
   return {
@@ -113,7 +167,8 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       steps,
       pre: registry.pre,
       dispatcher: createDispatcher(registry.post),
-      executor: executorFor(loaded.config, registry, log),
+      executor: executorFor(loaded.config, workflow, registry, log),
+      ...(sandbox === null ? {} : { sandbox }),
       ...(loaded.config.security.screen
         ? { screen: { executor: createClaudeExecutor({ model: loaded.config.security.model, log }) } }
         : {}),

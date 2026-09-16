@@ -1,7 +1,15 @@
-import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRuntime, createInterrupt, parseInterval } from "../../src/cli/start.js";
+import { runtimeConfigSchema } from "../../src/config/schema.js";
+import type { Registry, Workflow } from "../../src/namespace.js";
+import {
+  buildRuntime,
+  createInterrupt,
+  executorFor,
+  parseInterval,
+  stepTimeoutMs,
+} from "../../src/cli/start.js";
 
 const TOKEN = "ghp_a_token_long_enough_to_redact";
 
@@ -93,6 +101,67 @@ describe("buildRuntime", () => {
   it("refuses to start when no hook module provides a source to enumerate", async () => {
     await expect(buildRuntime(await fixture(), {})).rejects.toThrow(/source/);
   });
+});
+
+describe("the step timeout", () => {
+  const workflow = (budget?: Record<string, unknown>): Workflow => ({
+    version: 1,
+    name: "t",
+    stages: [{ id: "a", entry: true }],
+    ...(budget === undefined ? {} : { budget }),
+  });
+
+  it("reads the workflow's own budget", () => {
+    expect(stepTimeoutMs(workflow({ stepTimeout: "10m" }))).toBe(600_000);
+    expect(stepTimeoutMs(workflow({ stepTimeout: "90s" }))).toBe(90_000);
+  });
+
+  it("falls back to one number when the workflow names none", () => {
+    // Not zero and not infinity: a workflow with no budget still has to bound
+    // a step, or a hung agent holds its ticket's lock until the process dies.
+    expect(stepTimeoutMs(workflow())).toBeGreaterThan(0);
+    expect(stepTimeoutMs(workflow({}))).toBe(stepTimeoutMs(workflow()));
+  });
+
+  /**
+   * A typo must not read as "no budget" and silently fall back. `stepTimeout:
+   * 600` looks like it says something and does not — and the operator only
+   * finds out when a step they thought was capped at ten minutes is not.
+   */
+  it("refuses a budget it cannot read, naming the field", () => {
+    for (const bad of ["600", "ten minutes", "", "2 m", 600, null, ["10m"]]) {
+      expect(() => stepTimeoutMs(workflow({ stepTimeout: bad }))).toThrow(/stepTimeout/);
+    }
+  });
+
+  /**
+   * The wiring itself, asked of a real subprocess rather than of a field.
+   * `budget.stepTimeout` was 10m in the shipped workflow and the executor's
+   * own default was 10m, so the two agreed by coincidence and nothing would
+   * have noticed either one moving.
+   */
+  it("is what the agent is actually given, not a default that happens to match", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
+    const cwd = await mkdtemp(join(tmpdir(), "lr-hang-"));
+    // The same double the executor's own tests use, under the name the engine
+    // spawns, reached the way a real `claude` is reached: through PATH.
+    await copyFile(join(__dirname, "..", "agent", "fake-agent.mjs"), join(bin, "claude"));
+    await chmod(join(bin, "claude"), 0o755);
+    await writeFile(join(cwd, "fake.json"), JSON.stringify({ hang: true }));
+
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" } });
+    const registry: Registry = { pre: [], post: [], source: null, operator: null, executors: new Map() };
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    try {
+      const executor = executorFor(config, workflow({ stepTimeout: "1s" }), registry, () => {});
+      await expect(
+        executor.run("x", { round: 1, cwd, signal: new AbortController().signal }),
+      ).rejects.toThrow(/exceeded 1000ms/);
+    } finally {
+      process.env.PATH = path;
+    }
+  }, 8_000);
 });
 
 describe("createInterrupt", () => {

@@ -281,7 +281,19 @@ export interface Executor {
   id: string;
   run(
     prompt: string,
-    opts: { round: number; resume?: string; cwd?: string; signal: AbortSignal },
+    opts: {
+      round: number;
+      resume?: string;
+      cwd?: string;
+      /**
+       * What the step declared it may do — the vocabulary is in
+       * `src/conventions.ts`. An executor that cannot enforce one of these
+       * must refuse the run rather than drop it: the engine's own check on the
+       * worktree afterwards is a backstop, not a licence to ignore this.
+       */
+      capabilities?: readonly string[];
+      signal: AbortSignal;
+    },
   ): Promise<{ text: string; sessionId: string | null }>;
 }
 
@@ -460,6 +472,13 @@ export type StepResult =
 
 export interface ConvergeDeps {
   workflow: Workflow;
+  /**
+   * Where the repository is, when steps are to run in a per-ticket worktree of
+   * it (`agent.isolation: worktree`). Absent means the agent runs wherever the
+   * loop runs — the operator's own checkout — and the capability check has
+   * nothing it may judge, because what changed there is not the step's doing.
+   */
+  sandbox?: { root: string };
   steps: Map<string, Step>;
   pre: PreHook[];
   dispatcher: Dispatcher;
@@ -588,4 +607,17 @@ export interface BuildOptions {
   debug?: boolean;
   /** Where events go. `landrace status` sends them to stderr, because stdout is its report. */
   sink?: (event: LandraceEvent) => void;
+}
+
+/* ------------------------------------------------------- sandbox (§15) -- */
+
+/**
+ * A worktree as it stands at one moment: the commit it is on, and every path
+ * git reports as changed. Compared before and after a step to decide whether
+ * it did anything it did not declare a capability for — the commit is half of
+ * it, because committing leaves the status clean.
+ */
+export interface WorktreeState {
+  head: string;
+  changes: string[];
 }

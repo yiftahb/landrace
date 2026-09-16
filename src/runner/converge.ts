@@ -1,3 +1,4 @@
+import { ensureWorktree, removeWorktree } from "../agent/worktree.js";
 import { decide, planEffects, reconcile } from "../core/index.js";
 import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot } from "../namespace.js";
 import { messageOf } from "./errors.js";
@@ -54,6 +55,32 @@ function redactValuesFrom(secrets: ReadonlyMap<string, string>): string[] {
  * stage" and "ran its step", with nothing external happening in between.
  */
 export async function converge(ticket: number, deps: ConvergeDeps): Promise<ConvergeResult> {
+  const root = deps.sandbox?.root;
+  let path: string | null = null;
+
+  // Created on the first invoke — a converge that never runs a step never pays
+  // for a checkout — and removed when this call unwinds, whichever way it
+  // unwinds: a return, a halt, a thrown hook, an agent that timed out, a
+  // Ctrl-C. A worktree left behind is a slow disk leak and a `git worktree
+  // list` nobody can read; it is also *stored state*, which the next tick
+  // would silently build on instead of deriving. Re-creating it from HEAD is
+  // this design's ordinary answer — re-derivation, at the price of a checkout.
+  const enter = root === undefined
+    ? null
+    : async (): Promise<string> => (path ??= await ensureWorktree(ticket, root));
+
+  try {
+    return await converging(ticket, deps, enter);
+  } finally {
+    if (path !== null && root !== undefined) await removeWorktree(ticket, root);
+  }
+}
+
+async function converging(
+  ticket: number,
+  deps: ConvergeDeps,
+  enterSandbox: (() => Promise<string>) | null,
+): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
   const redactValues = redactValuesFrom(deps.ctx.secrets);
 
@@ -165,10 +192,25 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
       }
       invoked.add(key);
 
+      // Before the step, and reported rather than thrown: "this is not a git
+      // repository" is an operator's mistake, and a stack trace out of
+      // converge would tell them nothing about which ticket or stage it was.
+      let sandbox: { path: string } | null = null;
+      if (enterSandbox) {
+        try {
+          sandbox = { path: await enterSandbox() };
+        } catch (e) {
+          const reason = messageOf(e);
+          deps.log("step.rejected", { ticket, stage: stage.id, round, reason });
+          return { passes: pass, settled: "halt", why: reason };
+        }
+      }
+
       const result = await runStep({
         step, stageId: stage.id, round, snapshot,
         executor: deps.executor, signal: deps.ctx.signal,
         ...(deps.screen ? { screen: deps.screen } : {}),
+        ...(sandbox ? { sandbox } : {}),
         log: deps.log,
       });
 

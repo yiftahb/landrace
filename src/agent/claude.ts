@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
+import { CAPABILITIES, mayWriteRepo, unknownCapabilities } from "../conventions.js";
 import { defineExecutor } from "../hooks/contracts.js";
 import type { Executor, Logger } from "../namespace.js";
 import { containedPath } from "../workflow/load.js";
@@ -86,6 +87,13 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * The fallback when a workflow's `budget.stepTimeout` names none. Exported so
+ * `stepTimeoutMs` falls back to *this* number rather than declaring a second
+ * one beside it: two defaults that agree today are two defaults that drift.
+ */
+export const DEFAULT_STEP_TIMEOUT_MS = 10 * 60_000;
+
 /** 8MB is ample for a real result; a flooding child gets killed, not indulged. */
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
@@ -124,7 +132,7 @@ export function createClaudeExecutor(opts: {
     model,
     restricted = true,
     permissionMode = "plan",
-    timeoutMs = 10 * 60_000,
+    timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
     bin = "claude",
     log,
   } = opts;
@@ -141,21 +149,45 @@ export function createClaudeExecutor(opts: {
 
   return defineExecutor({
     id: "claude",
-    async run(prompt, { round, resume, cwd, signal }) {
+    async run(prompt, { round, resume, cwd, capabilities, signal }) {
       if (signal.aborted) {
         // Nothing checked this before `spawn` in the first cut, so a run
         // cancelled before it started launched the (paid) agent anyway.
         throw new Error("agent aborted");
       }
 
-      assertPermissionMode(permissionMode);
+      // Fail closed on a word this executor cannot turn into a flag. Dropping
+      // an unrecognised capability is how a step comes to declare a
+      // restriction that the agent it runs does not actually have — the worst
+      // of the three outcomes, because the file says otherwise.
+      const refused = unknownCapabilities(capabilities);
+      if (refused.length) {
+        throw new Error(
+          `refused capabilities ${refused.map((c) => JSON.stringify(c)).join(", ")}: ` +
+          `this executor can enforce only ${CAPABILITIES.join(", ")}`,
+        );
+      }
+
+      // A step's declaration decides, in both directions, whenever it made
+      // one. The constructor's options are the operator's default for every
+      // run this executor makes, so a step declaring only `repo:read` under an
+      // operator default of acceptEdits must still come out unable to edit.
+      const declared = capabilities !== undefined;
+      const mayWrite = mayWriteRepo(capabilities);
+      const mode = declared ? (mayWrite ? "acceptEdits" : "plan") : permissionMode;
+      // A step that may write needs tools to write with; anything else gets
+      // none. `--restricted` is what makes "read-only" mean read-only rather
+      // than "asked nicely".
+      const noTools = declared ? !mayWrite : restricted;
+
+      assertPermissionMode(mode);
       if (model !== undefined) assertArgShape("model", model);
       if (resume !== undefined) assertArgShape("resume", resume);
       const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
 
       // json output carries session_id; without it a conversation cannot continue.
-      const args = ["-p", "--output-format", "json", "--permission-mode", permissionMode];
-      if (restricted) args.push("--restricted");
+      const args = ["-p", "--output-format", "json", "--permission-mode", mode];
+      if (noTools) args.push("--restricted");
       if (model !== undefined) args.push("--model", model);
       if (resume !== undefined) args.push("--resume", resume);
 

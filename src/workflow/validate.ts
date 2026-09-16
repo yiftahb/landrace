@@ -1,4 +1,4 @@
-import { ENTRY_KIND, isReservedId, OUTPUT_KIND } from "../conventions.js";
+import { CAPABILITIES, ENTRY_KIND, isReservedId, OUTPUT_KIND, unknownCapabilities } from "../conventions.js";
 import { identityOf } from "../core/locate.js";
 import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
 import type { Condition, Problem, Stage, Step, Workflow } from "../namespace.js";
@@ -89,6 +89,19 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   // them, and the allowlist should not have a documented gap by then.
   for (const stage of w.stages) {
     const step = stage.step ? steps.get(stage.step) : undefined;
+    // Reported here as well as refused at runtime, and this is the half that
+    // matters: a capability nothing enforces is the operator reading the step
+    // file, seeing the word, and believing they are covered. Meeting it at
+    // runtime means finding out on a ticket already in flight.
+    const unenforceable = unknownCapabilities(step?.capabilities);
+    if (unenforceable.length) {
+      problems.push({
+        rule: "capability",
+        message:
+          `step ${stage.step} declares ${unenforceable.map((c) => `"${c}"`).join(", ")}, ` +
+          `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}`,
+      });
+    }
     for (const route of step?.output?.routes ?? []) {
       try {
         assertAllowedOperators(route.when);
