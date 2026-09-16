@@ -1,4 +1,4 @@
-import { entriesFromComments } from "../../src/adapters/github/markers.js";
+import { entriesFromComments } from "../../src/conventions.js";
 import { parseMarker, renderMarker } from "../../src/conventions.js";
 import { canonicalize } from "../../src/core/normalize.js";
 import type { Snapshot } from "../../src/core/types.js";

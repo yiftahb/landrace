@@ -1,5 +1,5 @@
 import type { Comment, Issue, TrackerAdapter, TrackerPort } from "../../src/adapters/index.js";
-import { entriesFromComments } from "../../src/adapters/github/index.js";
+import { entriesFromComments } from "../../src/conventions.js";
 
 /** An in-memory tracker implementing the same interface the real client does. */
 function createFakeTracker(seed: Array<Partial<Issue>> = []): TrackerPort & {

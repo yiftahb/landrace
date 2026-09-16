@@ -1,8 +1,10 @@
 /**
- * Shared vocabulary: the labels the workflow uses to record position, and the
- * marker we stamp on everything we write. Neither belongs to a tracker — a Jira
- * adapter would use the same names — so neither lives in `src/adapters/`.
+ * Shared vocabulary: the labels the workflow uses to record position, the
+ * marker we stamp on everything we write, and how a tracker's records read
+ * back as the engine's. None of it belongs to a tracker — a Jira hook would
+ * use the same names — so none of it lives in a hook.
  */
+import type { Entry } from "./core/types.js";
 
 export const LABELS = {
   eligible: "lr:auto",
@@ -16,7 +18,7 @@ export const LABELS = {
 /** The engine's own label namespace. Anything under it is workflow state we write. */
 export const LABEL_NAMESPACE = "lr:";
 
-/** GitHub label names are compared case-insensitively, so this is too. */
+/** Trackers compare label names case-insensitively, so this does too. */
 export const isEngineLabel = (label: string): boolean =>
   label.trim().toLowerCase().startsWith(LABEL_NAMESPACE);
 
@@ -226,3 +228,80 @@ export function stripMarker(body: string): string {
  */
 export const neutraliseMarkers = (body: string): string =>
   body.replace(markerRe(), (m) => `&lt;${m.slice(1, -1)}&gt;`);
+
+/**
+ * One record as a tracker hands it over, and no more of it than marker parsing
+ * needs: a body, when it was written, and who wrote it. Structural rather than
+ * a tracker's own type, because a comment on an issue, a note on a ticket and
+ * a message on a thread are the same three facts under different names — the
+ * spellings here are the ones every tracker API that has them already uses.
+ */
+export interface TrackerComment {
+  id?: number | string | undefined;
+  body: string;
+  created_at: string;
+  user?: { login?: string } | null;
+}
+
+/**
+ * What core reads as a record's payload — `run.outputs[stage]` for an output
+ * record, and the marker itself for the kinds core reads no value from.
+ *
+ * An output record's payload is the step's own value and nothing else. The
+ * envelope (stage, kind, round) is already on the Entry, and leaving it in
+ * `data` as well is what made `outputs.spec.kind` read back the literal
+ * "output" for every shape a step could produce, so every trigger in the
+ * shipped workflow that routed on an output field was dead. A record written
+ * before markers carried values has no value at all: undefined, not the
+ * envelope — answering "output" again for exactly the tickets already in
+ * flight is the bug, not the compatible thing to do.
+ */
+const payloadOf = (m: Marker): unknown => (m.kind === OUTPUT_KIND ? m.output : m);
+
+/**
+ * Turn a tracker's records into the engine's own. Vocabulary, not integration:
+ * the marker format lives here, so every hook that records progress as text in
+ * a comment reads it back the same way, and core never learns the format at
+ * all.
+ *
+ * A marker is control state, and it is trustworthy only because *we* wrote it.
+ * An earlier version stamped `byAgent` on any comment whose trailing marker
+ * parsed, so one comment from any account with comment access could complete a
+ * stage, block a ticket, or run a counter up until the triggers went ambiguous.
+ * The trailing-marker rule does not help there: it stops a *quoted* example
+ * being mistaken for a real one, not someone who deliberately puts one last.
+ * Authorship is the check; syntax is not.
+ */
+export function entriesFromComments(comments: TrackerComment[], botLogin: string): Entry[] {
+  // Fail closed, and loudly. An empty login would make every marker read as
+  // human — the engine would believe no step had ever run and re-invoke paid
+  // steps forever, which has cost real money on this project once.
+  if (!botLogin.trim()) {
+    throw new Error("entriesFromComments needs the login landrace posts as; refusing to read markers without it");
+  }
+  const bot = botLogin.trim().toLowerCase();
+
+  return comments.map((c) => {
+    // Logins are compared case-insensitively, the way trackers treat them.
+    const author = c.user?.login;
+    const ours = typeof author === "string" && author.toLowerCase() === bot;
+    const marker = ours ? parseMarker(c.body ?? "") : null;
+    return marker
+      ? {
+          stage: marker.stage,
+          kind: marker.kind,
+          round: marker.round,
+          data: payloadOf(marker),
+          at: c.created_at,
+          byAgent: true,
+        }
+      : {
+          stage: "-",
+          kind: "human",
+          round: 0,
+          data: { body: c.body, author: author ?? "?", id: c.id },
+          at: c.created_at,
+          byAgent: false,
+        };
+  });
+}

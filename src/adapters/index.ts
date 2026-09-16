@@ -1,5 +1,6 @@
 import type { Entry } from "../core/types.js";
-import { createGitHubTracker, entriesFromComments, githubPostHook, githubPreHook } from "./github/index.js";
+import { createGitHubTracker, githubPostHook, githubPreHook } from "./github/index.js";
+import { entriesFromComments } from "../conventions.js";
 import type { PostHook, PreHook } from "../hooks/types.js";
 import type { TrackerPort } from "./types.js";
 

@@ -1,8 +1,7 @@
 import { definePostHook, definePreHook } from "../../hooks/types.js";
 import type { Effect, Snapshot } from "../../core/types.js";
 import { labelNames, type TrackerPort } from "../types.js";
-import { LABELS, neutraliseMarkers, parseMarker, renderMarker, stageFromLabels, STAGE_LABEL_PREFIX, type Marker } from "../../conventions.js";
-import { entriesFromComments } from "./markers.js";
+import { entriesFromComments, LABELS, neutraliseMarkers, parseMarker, renderMarker, stageFromLabels, STAGE_LABEL_PREFIX, type Marker } from "../../conventions.js";
 
 const labels = (s: Snapshot): string[] => ((s.ticket as { labels?: string[] })?.labels ?? []);
 
