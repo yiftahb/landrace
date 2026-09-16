@@ -2,11 +2,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../../src/mcp/server.js";
 import { createTools } from "../../src/mcp/tools.js";
-import { createFakeGitHub } from "./fake-github.js";
+import { createFakeTracker, type FakeIssue } from "../support/fake-tracker.js";
 
-async function connect(seed: Parameters<typeof createFakeGitHub>[0] = []) {
-  const gh = createFakeGitHub(seed);
-  const server = createMcpServer(createTools(gh));
+async function connect(seed: Array<Partial<FakeIssue>> = []) {
+  const gh = createFakeTracker(seed);
+  const server = createMcpServer(createTools(gh.registry, gh.ctx));
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
   await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
@@ -60,7 +60,7 @@ describe("mcp server over a real transport", () => {
       arguments: { title: "File for later", start: false },
     });
     expect(JSON.parse(textOf(r))).toMatchObject({ started: false });
-    expect(gh.issues.get(1)?.labels).not.toContain("lr:auto");
+    expect(gh.labelsOf(1)).not.toContain("lr:auto");
     await client.close();
   });
 });

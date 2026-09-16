@@ -2,7 +2,7 @@ import { entriesFromComments } from "../../src/conventions.js";
 import { decide } from "../../src/core/decide.js";
 import { deriveRun } from "../../src/core/derive.js";
 import type { Snapshot, Workflow } from "../../src/core/types.js";
-import type { Comment } from "../../src/adapters/types.js";
+import type { TrackerComment } from "../../src/conventions.js";
 
 /**
  * A marker is trustworthy because *we* wrote it. These are the attacks a
@@ -22,7 +22,7 @@ const wf: Workflow = {
 };
 
 const at = (n: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, n)).toISOString();
-const comment = (id: number, login: string | undefined, body: string): Comment => ({
+const comment = (id: number, login: string | undefined, body: string): TrackerComment => ({
   id,
   body,
   created_at: at(id),
@@ -30,7 +30,7 @@ const comment = (id: number, login: string | undefined, body: string): Comment =
 });
 const marker = (o: object) => `\n\n<!-- landrace ${JSON.stringify(o)} -->`;
 
-const decideOn = (comments: Comment[], bot: string, stage: string | null) => {
+const decideOn = (comments: TrackerComment[], bot: string, stage: string | null) => {
   const run = deriveRun(entriesFromComments(comments, bot), stage);
   return { run, decision: decide(wf, { run } as Snapshot) };
 };

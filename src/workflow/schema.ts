@@ -23,7 +23,14 @@ export const workflowSchema = z.object({
   stages: z.array(stageSchema).min(1),
   eligible: z.array(z.object({ when: condition, else: z.string().min(1) })).optional(),
   budget: z.record(z.unknown()).optional(),
-  hooks: z.object({ pre: z.array(z.string()).optional(), post: z.array(z.string()).optional() }).optional(),
+  /**
+   * Module paths, relative to the workflow directory, in the order pre hooks
+   * should run. Flat rather than split by phase because one module exports
+   * several kinds — the reference tracker integration exports four — so a
+   * per-phase list would make the same file name itself twice, and the kinds
+   * are already known from the brand the define* helpers stamp.
+   */
+  hooks: z.array(z.string()).optional(),
   artifacts: z.record(z.object({ hook: z.string(), ref: z.string() })).optional(),
 });
 

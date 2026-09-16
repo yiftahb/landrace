@@ -3,8 +3,8 @@ export type Json = string | number | boolean | null | Json[] | { [k: string]: Js
 
 /**
  * The tracker-agnostic record of something the workflow has written or a human
- * has said. A tracker hook decides how these are stored — GitHub uses trailing
- * markers in comments — and core never learns that format.
+ * has said. A tracker hook decides how these are stored — the shipped one uses
+ * a trailing marker in a comment — and core never learns that format.
  */
 export interface Entry {
   stage: string;
@@ -96,7 +96,8 @@ export interface Workflow {
   stages: Stage[];
   eligible?: EligibilityRule[];
   budget?: { [key: string]: unknown };
-  hooks?: { pre?: string[]; post?: string[] };
+  /** Module paths, relative to the workflow directory, in pre-hook declaration order. */
+  hooks?: string[];
   artifacts?: { [name: string]: { hook: string; ref: string } };
 }
 

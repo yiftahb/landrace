@@ -29,7 +29,7 @@ export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 export const MIN_SECRET_LENGTH = 8;
 
 /**
- * Values, never names: splitting a log line on "githubToken" redacts
+ * Values, never names: splitting a log line on a secret's *name* redacts
  * nothing. Exported so the same redaction the logger applies to every event
  * can also be applied to text composed *outside* the logger — a tracker
  * comment body built from an executor's error message, say, which reaches a
@@ -61,9 +61,9 @@ export function createLogger(opts: {
   debug?: boolean;
   /**
    * The secret *values* to keep out of the log. Named for what they are: the
-   * shipped config lists secret *names* (`log.redact: [githubToken]`), and an
-   * earlier signature called this `redact`, so the names were passed straight
-   * through and a logged `Authorization: Bearer ghp_…` came out intact.
+   * config lists secret *names* under `log.redact`, and an earlier signature
+   * called this `redact`, so the names were passed straight through and a
+   * logged `Authorization: Bearer <the token itself>` came out intact.
    * Resolve names against loadConfig's secretValues — see redactionValues —
    * before calling this.
    */

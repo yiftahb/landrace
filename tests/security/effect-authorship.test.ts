@@ -1,7 +1,6 @@
-import { githubPostHook, githubPreHook } from "../../src/adapters/github/hooks.js";
 import type { HookContext } from "../../src/hooks/types.js";
 import type { Effect, Snapshot } from "../../src/core/types.js";
-import { createFakeGitHub } from "../mcp/fake-github.js";
+import { createFakeTracker } from "../support/fake-tracker.js";
 import { renderMarker } from "../../src/conventions.js";
 
 /**
@@ -20,7 +19,11 @@ const snapshot = (comments: unknown[], bot: string | null = "landrace-bot"): Sna
   ({ ticket: { labels: [], comments }, ...(bot === null ? {} : { tracker: { bot } }) }) as Snapshot;
 
 describe("an effect counts as done only when we are the ones who did it", () => {
-  const hook = () => githubPostHook(createFakeGitHub());
+  const hook = () => {
+    const [post] = createFakeTracker().registry.post;
+    if (!post) throw new Error("the fake tracker registered no post hook");
+    return post;
+  };
 
   it("is not satisfied by a stranger's comment that happens to contain the marker", () => {
     const s = snapshot([{ body: "totally unrelated: awaiting-review", user: { login: "mallory" } }]);
@@ -69,9 +72,23 @@ describe("an effect counts as done only when we are the ones who did it", () => 
     expect(() => hook().satisfied(s, effect)).toThrow(/posts as/);
   });
 
+  /*
+   * An operator's reply is posted unmarked, because it genuinely is a human
+   * turn — which means nothing on the ticket would ever say it had been
+   * posted. "Satisfied" would silently drop it and "not satisfied" would
+   * re-post it on every tick, so the hook refuses to answer instead; an
+   * unmarked comment is applied directly, never planned by a stage.
+   */
+  it("refuses to reconcile a comment effect that carries no marker at all", () => {
+    const s = snapshot([{ body: ours("awaiting-review"), user: { login: "landrace-bot" } }]);
+    expect(() => hook().satisfied(s, { type: "tracker.comment", body: "just talking" }))
+      .toThrow(/no marker cannot be reconciled/);
+  });
+
   it("the pre hook records the login, so the post hook can read it", async () => {
-    const fake = createFakeGitHub([{ number: 1 }]);
-    const pre = githubPreHook(fake);
+    const fake = createFakeTracker([{ number: 1 }]);
+    const [pre] = fake.registry.pre;
+    if (!pre) throw new Error("the fake tracker registered no pre hook");
     const fragment = await pre.run({ ticket: 1 } as unknown as HookContext);
     expect(fragment.tracker).toEqual({ bot: "yiftahb" });
     expect(pre.provides).toContain("tracker.bot");

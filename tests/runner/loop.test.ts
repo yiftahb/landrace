@@ -2,12 +2,10 @@ import { converge } from "../../src/runner/converge.js";
 import { createDispatcher } from "../../src/runner/effects.js";
 import { createLogger, type Logger } from "../../src/runner/events.js";
 import { definePreHook, type Executor, type HookContext, type PostHook } from "../../src/hooks/types.js";
-import { githubPostHook, githubPreHook } from "../../src/adapters/github/index.js";
 import { deriveRun, type Effect } from "../../src/core/index.js";
 import { parseMarker, stageFromLabels, type Marker } from "../../src/conventions.js";
-import { labelNames } from "../../src/adapters/index.js";
 import { loadWorkflow } from "../../src/workflow/load.js";
-import { createFakeGitHub } from "../mcp/fake-github.js";
+import { createFakeTracker } from "../support/fake-tracker.js";
 
 /**
  * The shipped workflow, driven over the in-memory tracker. Not a fixture
@@ -25,10 +23,18 @@ const OUTPUT: Record<string, Answer> = {
   "fix-review": '```json\n{"kind":"addressed"}\n```',
 };
 
-type World = ReturnType<typeof createFakeGitHub>;
+type World = ReturnType<typeof createFakeTracker>;
 
 const world = (labels: string[]): World =>
-  createFakeGitHub([{ number: 1, title: "Add export", body: "please", labels }]);
+  createFakeTracker([{ number: 1, title: "Add export", body: "please", labels }]);
+
+/** The real GitHub hooks, as the loader classified them out of the hook module. */
+const hooksOf = (gh: World) => {
+  const [pre] = gh.registry.pre;
+  const [post] = gh.registry.post;
+  if (!pre || !post) throw new Error("the fake tracker registered no hooks");
+  return { pre, post };
+};
 
 /**
  * A person says something on the ticket. Under their own login, so it reads as
@@ -39,10 +45,7 @@ const world = (labels: string[]): World =>
 let said = 0;
 const say = (gh: World, body: string): void => {
   said++;
-  gh.comments.set(1, [
-    ...(gh.comments.get(1) ?? []),
-    { id: 9000 + said, body, created_at: new Date(Date.UTC(2026, 1, said)).toISOString(), user: { login: "a-person" } },
-  ]);
+  gh.sayAs("a-person", 1, body, new Date(Date.UTC(2026, 1, said)).toISOString());
 };
 
 /**
@@ -93,7 +96,7 @@ async function run(
     base(type, data);
   };
 
-  const post = githubPostHook(gh.tracker);
+  const { pre, post } = hooksOf(gh);
   // Keyed by round as well as stage: the spec step's whole point is that one
   // stage answers differently on a second pass, and a fixed answer per stage
   // could never drive that.
@@ -109,7 +112,7 @@ async function run(
 
   const result = await converge(1, {
     workflow, steps,
-    pre: [githubPreHook(gh.tracker), prHook(opts.openThreads ?? 2)],
+    pre: [pre, prHook(opts.openThreads ?? 2)],
     dispatcher: createDispatcher([opts.breakOn ? breakingOn(post, opts.breakOn) : post]),
     executor,
     ctx: {
@@ -119,12 +122,12 @@ async function run(
     log,
   });
 
-  const labels = labelNames(await gh.tracker.getIssue(1));
-  const comments = await gh.tracker.listComments(1);
+  const labels = gh.labelsOf(1);
+  const comments = gh.comments.get(1) ?? [];
   return {
     result, invocations, labels, prompts,
     markers: comments.map((c) => parseMarker(c.body)).filter((m): m is Marker => m !== null),
-    run: deriveRun(await gh.entriesOf(1), stageFromLabels(labels).stage),
+    run: deriveRun(gh.entriesOf(1), stageFromLabels(labels).stage),
   };
 }
 

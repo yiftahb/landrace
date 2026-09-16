@@ -26,7 +26,7 @@ export async function buildSnapshot(opts: {
       snapshot = { ...snapshot, ...fragment };
     } catch (e) {
       // `messageOf`, not `(e as Error).message`: a hook is a plain interface
-      // (the GitHub pre hook does real network I/O), and nothing stops one
+      // (a tracker's pre hook does real network I/O), and nothing stops one
       // from rejecting with something that is not an Error — that access
       // would throw from inside this very catch, replacing an attributed
       // failure with a raw, unattributed one.

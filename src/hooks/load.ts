@@ -17,7 +17,7 @@ import {
  *
  * There is no tracker id here and no registry of implementations to choose
  * from: a workflow names module paths, the loader imports them, and what they
- * export is what the engine has. Replacing GitHub is a different file in
+ * export is what the engine has. Replacing a tracker is a different file in
  * `.landrace/hooks/`, not a different string in a config.
  */
 export interface Registry {

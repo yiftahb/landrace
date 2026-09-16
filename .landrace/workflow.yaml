@@ -1,11 +1,16 @@
 version: 1
 name: landrace
 
-# Adapters are named, not imported. Replacing GitHub means naming a different
-# adapter here — nothing in the engine changes.
+# Integrations are imported by path, not named by id. Every path is relative to
+# this directory and must stay inside it, and the order is the order pre hooks
+# run in. One module can export several kinds — hooks/github.ts exports four —
+# so the list is flat: the define* helpers brand each export with its kind, and
+# the loader files it from there.
+#
+# Replacing GitHub is a different file here. Nothing in the engine changes,
+# because the engine has no GitHub in it to change.
 hooks:
-  pre: [github]
-  post: [github]
+  - hooks/github.ts
 
 eligible:
   - when: { "ticket.labels": { $in: ["lr:auto"] } }

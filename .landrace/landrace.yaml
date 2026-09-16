@@ -5,10 +5,10 @@ agent:
   model: opus
   isolation: worktree
 
+# Opaque to the engine, handed to the hooks as it stands. `repo` is here
+# because hooks/github.ts reads it, not because landrace knows what a repo is.
 tracker:
-  adapter: github
   repo: yiftahb/landrace
-  candidates: "is:issue is:open"
 
 tick:
   interval: 60s

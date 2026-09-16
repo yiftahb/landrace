@@ -1,6 +1,9 @@
-import { deriveRun } from "../core/derive.js";
-import { labelNames, type Issue, type TrackerAdapter } from "../adapters/index.js";
 import { isEngineLabel, LABEL_NAMESPACE, LABELS, neutraliseMarkers, stageFromLabels } from "../conventions.js";
+import type { Snapshot } from "../core/index.js";
+import type { Registry } from "../hooks/load.js";
+import type { Candidate, Operator, RuntimeContext } from "../hooks/types.js";
+import { createDispatcher } from "../runner/effects.js";
+import { buildSnapshot } from "../runner/snapshot.js";
 
 export interface Tools {
   waiting(): Promise<Array<{ ticket: number; title: string; url: string }>>;
@@ -43,76 +46,119 @@ function refuseEngineLabels(labels: string[], what: string): void {
   }
 }
 
-export function createTools(adapter: TrackerAdapter): Tools {
-  const gh = adapter.tracker;
-  const summarise = (issue: Issue) => ({
-    ticket: issue.number,
-    title: issue.title,
-    url: issue.html_url,
-    state: issue.state,
-    labels: labelNames(issue),
-  });
+/**
+ * An operator hook is optional, so the two tools that need one report its
+ * absence — rather than crashing on a null, or quietly succeeding at nothing.
+ */
+function requireOperator(operator: Operator | null, what: string): Operator {
+  if (!operator) {
+    throw new Error(
+      `cannot ${what}: no operator hook is configured. Add a module exporting ` +
+      "defineOperator({ ... }) to the hooks list in workflow.yaml.",
+    );
+  }
+  return operator;
+}
+
+export function createTools(registry: Registry, ctx: RuntimeContext): Tools {
+  const dispatcher = createDispatcher(registry.post);
+
+  const snapshotOf = (ticket: number): Promise<Snapshot> =>
+    buildSnapshot({ ticket, hooks: registry.pre, ctx: { ...ctx, ticket } });
+
+  const source = (): NonNullable<Registry["source"]> => {
+    if (!registry.source) {
+      throw new Error("no source hook is configured, so there is nothing to enumerate");
+    }
+    return registry.source;
+  };
+
+  const summarise = (c: Candidate) => ({ ticket: c.ticket, title: c.title, url: c.url, labels: c.labels });
 
   return {
     async waiting() {
-      const issues = await gh.listIssues({ labels: [LABELS.awaiting] });
-      return issues.map((i: Issue) => ({ ticket: i.number, title: i.title, url: i.html_url }));
+      // Filtered here, not in the hook: whose turn it is is the engine's own
+      // vocabulary, and a source that had to know it would be a source that
+      // had to know the workflow. Labels ride along on a Candidate precisely
+      // so this costs no snapshot per ticket.
+      return (await source().list(ctx))
+        .filter((c) => c.labels.includes(LABELS.awaiting))
+        .map((c) => ({ ticket: c.ticket, title: c.title, url: c.url }));
     },
 
     async status(ticket) {
-      const issue = await gh.getIssue(ticket);
-      const labels = labelNames(issue);
+      // The same snapshot the tick builds, from the same pre hooks in the same
+      // order, so what an operator is shown is what the engine would decide
+      // on — not a second derivation free to drift from it.
+      const snapshot = await snapshotOf(ticket);
+      const issue = (snapshot.ticket ?? {}) as { title?: string; url?: string; state?: string; labels?: string[] };
+      const labels = issue.labels ?? [];
       const { stage, ambiguous } = stageFromLabels(labels);
-      const run = deriveRun(await adapter.entriesOf(ticket), stage);
+      const run = snapshot.run;
 
       return {
-        ...summarise(issue),
+        ticket,
+        title: issue.title ?? null,
+        url: issue.url ?? null,
+        state: issue.state ?? null,
+        labels,
         stage,
         ...(ambiguous ? { problem: "more than one lr:stage:* label — the ticket cannot be placed" } : {}),
         eligible: labels.includes(LABELS.eligible),
         waitingOnYou: labels.includes(LABELS.awaiting),
         blocked: labels.includes(LABELS.blocked),
-        rounds: run.counters,
-        lastEvent: run.lastEvent,
-        lastOutputValid: run.lastOutputValid,
+        rounds: run?.counters ?? {},
+        lastEvent: run?.lastEvent ?? null,
+        lastOutputValid: run?.lastOutputValid ?? null,
       };
     },
 
     async createTicket({ title, body = "", labels = [], start = true }) {
+      const operator = requireOperator(registry.operator, "create a ticket");
       refuseEngineLabels(labels, "set");
       // `start` is the one exception, and it is ours to set, not the caller's.
       const wanted = [...new Set([...labels, ...(start ? [LABELS.eligible] : [])])];
       // A marker pasted into a body would read back as something we wrote.
-      const issue = await gh.createIssue({ title, body: neutraliseMarkers(body), labels: wanted });
-      return { ...summarise(issue), started: wanted.includes(LABELS.eligible) };
+      const created = await operator.createTicket({ title, body: neutraliseMarkers(body), labels: wanted }, ctx);
+      return { ...summarise(created), started: wanted.includes(LABELS.eligible) };
     },
 
     async updateTicket(ticket, { title, body, state, addLabels = [], removeLabels = [] }) {
+      const operator = requireOperator(registry.operator, "update a ticket");
       // Both lists are checked before anything is written, so a rejected call
       // leaves the ticket exactly as it was.
       refuseEngineLabels(addLabels, "add");
       refuseEngineLabels(removeLabels, "remove");
 
-      const fields: { title?: string; body?: string; state?: string } = {};
-      if (title !== undefined) fields.title = title;
-      if (body !== undefined) fields.body = neutraliseMarkers(body);
-      if (state !== undefined) fields.state = state;
-
-      for (const name of removeLabels) await gh.removeLabel(ticket, name);
-      await gh.addLabels(ticket, addLabels);
-
-      const issue = Object.keys(fields).length
-        ? await gh.updateIssue(ticket, fields)
-        : await gh.getIssue(ticket);
-      return summarise(issue);
+      return summarise(
+        await operator.updateTicket(
+          ticket,
+          {
+            ...(title === undefined ? {} : { title }),
+            ...(body === undefined ? {} : { body: neutraliseMarkers(body) }),
+            ...(state === undefined ? {} : { state }),
+            addLabels,
+            removeLabels,
+          },
+          ctx,
+        ),
+      );
     },
 
     async reply(ticket, message) {
-      // Posted without a marker, because it genuinely is a human turn — the
-      // marker distinguishes our writing from theirs, not who typed the
-      // request. Neutralised so a pasted marker cannot forge state.
-      const comment = await gh.createComment(ticket, neutraliseMarkers(message));
-      return { ticket, commentId: comment.id, posted: true };
+      // Through the same dispatcher every other write goes through, so an
+      // operator's reply reaches the tracker by the one path the engine knows
+      // how to reason about — and a second tracker gets this tool for free.
+      //
+      // No marker, because it genuinely is a human turn: a marker separates
+      // our writing from theirs, not who typed the request. Neutralised so a
+      // pasted marker cannot forge state.
+      const snapshot = await snapshotOf(ticket);
+      await dispatcher.apply(
+        { type: "tracker.comment", body: neutraliseMarkers(message) },
+        { ...ctx, ticket, snapshot },
+      );
+      return { ticket, posted: true };
     },
   };
 }

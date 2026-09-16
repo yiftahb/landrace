@@ -30,11 +30,12 @@ export interface ConvergeResult {
 const DEFAULT_MAX_PASSES = 30;
 
 /**
- * GitHub's real comment cap is 65,536 characters. This is far below it on
- * purpose: the reason embedded here can carry a workflow-declared shape name
- * of arbitrary length (step.ts only bounds the *unvalidated* discriminator
- * value, not a validated shape's own name), and whatever survives here still
- * gets a trailing marker appended after it.
+ * Trackers cap a comment body somewhere in the tens of thousands of
+ * characters. This is far below any of them on purpose: the reason embedded
+ * here can carry a workflow-declared shape name of arbitrary length (step.ts
+ * only bounds the *unvalidated* discriminator value, not a validated shape's
+ * own name), and whatever survives here still gets a trailing marker appended
+ * after it.
  */
 const MAX_MALFORMED_BODY = 4000;
 
@@ -112,7 +113,7 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
     }
 
     // Re-read rather than simulate what our own writes did: one model of what
-    // an effect means, not two that can disagree. Wrapped: the GitHub pre
+    // an effect means, not two that can disagree. Wrapped: a tracker's pre
     // hook does real network I/O, so a pre hook failing here (already
     // attributed by buildSnapshot itself) is the *likely* shape of a broken
     // dependency, not an exotic one, and nothing previously caught it —

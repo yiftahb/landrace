@@ -38,4 +38,21 @@ describe("hook modules are imported from disk and classified by their brand", ()
       { ticket: 1, title: "one", url: "u/1", labels: ["lr:auto"] },
     ]);
   });
+
+  /**
+   * The integration this repository actually runs, loaded the way the CLI
+   * loads it: the path out of `.landrace/workflow.yaml`, resolved against
+   * `.landrace/`. If the engine's idea of a hook and the reference
+   * implementation's ever drift apart, this is what says so.
+   */
+  it("loads the shipped tracker integration into every slot it fills", async () => {
+    const registry = await loadHooks({ dir: ".landrace", modules: ["hooks/github.ts"] });
+
+    expect(registry.pre.map((h) => h.id)).toEqual(["github"]);
+    expect(registry.post[0]?.handles).toEqual(
+      expect.arrayContaining(["tracker.label", "tracker.status", "tracker.comment"]),
+    );
+    expect(registry.source?.id).toBe("github");
+    expect(registry.operator?.id).toBe("github");
+  });
 });
