@@ -1,7 +1,14 @@
 import { extractJsonBlock } from "#agent/json-block.js";
 import { screenPrompt } from "#agent/screen.js";
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
-import { CAPABILITIES, CONVERSATION_KIND, neutraliseMarkers, unknownCapabilities } from "#conventions.js";
+import {
+  CAPABILITIES,
+  CONVERSATION_KIND,
+  fitRecordBody,
+  neutraliseMarkers,
+  recordBodyProblem,
+  unknownCapabilities,
+} from "#conventions.js";
 import type {
   Conversation,
   ConversationDeps,
@@ -162,6 +169,17 @@ export function createConversation(deps: ConversationDeps): Conversation {
         ticket,
         "conversation",
         async () => {
+          /*
+           * The step path's own bound, applied to the turn — the same reason
+           * sandboxBefore/sandboxTrespass are shared rather than copied. A
+           * question the tracker will refuse used to be discovered by the
+           * tracker refusing it, after the screener had run and been paid
+           * for; asked here, it costs nothing and the person is told the
+           * number rather than handed a 422.
+           */
+          const tooLong = recordBodyProblem(message);
+          if (tooLong) throw new Error(`cannot ask: the question ${tooLong}`);
+
           const snapshot = await snapshotOf(ticket);
           const { session, stage, round } = join(ticket, snapshot);
           if (!deps.executor) {
@@ -263,7 +281,13 @@ export function createConversation(deps: ConversationDeps): Conversation {
 
             const reply = prose(text);
             const resolved = isResolved(text);
-            await say(ticket, snapshot, neutraliseMarkers(reply), {
+            // Cut to fit rather than refused, and this is the one place in the
+            // engine where that is the right answer: the turn is already paid
+            // for, nothing routes on this prose — `resolved` and the session
+            // ride in the marker beside it — and the caller below receives the
+            // whole reply either way. Throwing here lost the answer *and* the
+            // session the next turn would have resumed from.
+            await say(ticket, snapshot, neutraliseMarkers(fitRecordBody(reply)), {
               kind: CONVERSATION_KIND,
               stage,
               round,

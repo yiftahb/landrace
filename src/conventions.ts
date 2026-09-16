@@ -347,6 +347,32 @@ export function recordBodyProblem(body: string): string | null {
   return null;
 }
 
+const TRUNCATED = "\n\n…[truncated: the full text was longer than a record can carry]";
+
+/**
+ * The same prose, cut to something a record can carry.
+ *
+ * For the one place where refusing costs more than truncating. A step's
+ * output is refused (`recordBodyProblem` above), and rightly: there the prose
+ * is a document, and half a document published as a whole one is worse than
+ * none. A conversation turn's answer is the opposite case — it has *already
+ * been paid for* by the time its length is known, nothing in the engine
+ * routes on it (a conversation record is read back for its `resolved` flag
+ * and its session id, both of which ride in the marker, not in the body), and
+ * the caller receives the whole of it regardless. Throwing there loses a paid
+ * turn's answer and the session the next turn would have resumed from, which
+ * is the failure step.ts closes on its own path and this one did not have.
+ *
+ * Cut at half the cap, because escaping can double a body — `-->` becomes
+ * `--&gt;` — so half of it fits whatever the prose is made of. Being
+ * conservative costs nothing: this only ever runs on a body that could not be
+ * posted at all.
+ */
+export function fitRecordBody(body: string): string {
+  if (recordBodyProblem(body) === null) return body;
+  return body.slice(0, Math.floor(MAX_RECORD_BODY / 2) - TRUNCATED.length) + TRUNCATED;
+}
+
 /**
  * What core reads as a record's payload — `run.outputs[stage]` for an output
  * record, and the marker itself for the kinds core reads no value from.

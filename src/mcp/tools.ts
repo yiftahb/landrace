@@ -1,4 +1,11 @@
-import { isEngineLabel, LABEL_NAMESPACE, LABELS, neutraliseMarkers, stageFromLabels } from "#conventions.js";
+import {
+  isEngineLabel,
+  LABEL_NAMESPACE,
+  LABELS,
+  neutraliseMarkers,
+  recordBodyProblem,
+  stageFromLabels,
+} from "#conventions.js";
 import type { Snapshot } from "#namespace.js";
 import type { Candidate, Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
@@ -156,6 +163,22 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       // No marker, because it genuinely is a human turn: a marker separates
       // our writing from theirs, not who typed the request. Neutralised so a
       // pasted marker cannot forge state.
+      //
+      // And no lock, unlike `resolve` beside it, which is a decision rather
+      // than an oversight. `resolve` reads the ticket, decides from derived
+      // state whether it is already handed back, and writes only if it is
+      // not: that read-decide-write is what a per-ticket lock exists to make
+      // atomic. This posts one comment unconditionally, so there is nothing
+      // to serialise — and taking the lock would make a person's reply wait
+      // on, or fail against, the ten-minute step they are replying to, which
+      // is the one moment a reply is most wanted.
+      //
+      // The size, though, is the step path's rule and applies here too: a
+      // body the tracker refuses throws with the API's own 422 instead of a
+      // sentence naming the limit.
+      const tooLong = recordBodyProblem(message);
+      if (tooLong) throw new Error(`cannot reply: the message ${tooLong}`);
+
       const snapshot = await snapshotOf(ticket);
       await dispatcher.apply(
         { type: "tracker.comment", body: neutraliseMarkers(message) },

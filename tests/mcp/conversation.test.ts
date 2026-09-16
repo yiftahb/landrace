@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { OUTPUT_KIND, renderMarker } from "#conventions.js";
 import type { ConversationDeps, Executor, LockOptions, Step } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
+import { createTools } from "#mcp/tools.js";
 import { createDispatcher } from "#runner/effects.js";
 import { acquire, held, release } from "#runner/lock.js";
 import { runStep } from "#runner/step.js";
@@ -655,5 +656,64 @@ describe("a conversation turn is held to what its step declared", () => {
     ).rejects.toThrow(/declared/);
 
     expect(invoked).toBe(false);
+  });
+});
+
+/**
+ * The bound the step path has and the conversation path did not.
+ *
+ * `sandboxBefore`/`sandboxTrespass` were exported from step.ts so a turn and
+ * a step could not diverge on capability enforcement. `recordBodyProblem` —
+ * the other half of what a step produces — was never applied here, so a turn
+ * posted whatever it was handed, bounded only by the 8 MB agent output cap. A
+ * body the tracker refuses throws out of `ask`, and the two ends of that are
+ * not the same failure: a question refused costs nothing, and an answer
+ * refused throws away a turn that has already been paid for, along with the
+ * session id the next turn would have resumed from.
+ */
+describe("prose a conversation turn puts on the ticket", () => {
+  const long = (chars: number): string => "Here is what I found. ".repeat(Math.ceil(chars / 22));
+
+  it("refuses a question longer than a record can carry, before anything is paid for", async () => {
+    let invoked = false;
+    const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "ok", sessionId: null }; } };
+    const tracker = seeded();
+    const before = bodies(tracker).length;
+
+    await expect(world(tracker, spy).ask(1, long(40_000))).rejects.toThrow(/characters/);
+
+    // Nothing invoked, nothing screened, and the person's words are not on the
+    // ticket either — a question we refused must not read as a human turn.
+    expect(invoked).toBe(false);
+    expect(bodies(tracker)).toHaveLength(before);
+  });
+
+  it("refuses an operator's reply that a record cannot carry", async () => {
+    const tracker = seeded();
+    const tools = createTools(tracker.registry, tracker.ctx, { lock: { root } });
+    await expect(tools.reply(1, long(40_000))).rejects.toThrow(/characters/);
+    expect(bodies(tracker).some((b) => b.includes("Here is what I found."))).toBe(false);
+  });
+
+  /*
+   * And the other end, where refusing is the wrong answer: the turn is already
+   * paid for. Nothing in the engine routes on a conversation record's prose —
+   * `resolved` and the session ride in the marker — so the ticket carries a
+   * bounded record and the caller still receives the whole reply.
+   */
+  it("posts a long answer cut to fit rather than losing the turn it paid for", async () => {
+    const tracker = seeded();
+    const answer = `${long(40_000)}\n\`\`\`json\n{"blocking":false}\n\`\`\``;
+
+    const r = await world(tracker, agent(answer)).ask(1, "carry on");
+
+    expect(r.resolved).toBe(true);
+    // The caller gets all of it.
+    expect(r.reply.length).toBeGreaterThan(32 * 1024);
+    // The ticket gets a record it can actually hold, and says so.
+    const posted = bodies(tracker).at(-1) ?? "";
+    expect(posted).toMatch(/truncated/);
+    expect(posted).toContain("Here is what I found.");
+    expect(posted.length).toBeLessThan(32 * 1024);
   });
 });
