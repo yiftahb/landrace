@@ -30,7 +30,7 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * `tracker.record` — tracker config is opaque to the engine and handed to
  * hooks as it stands, so this also pins that the config reaches them.
  */
-const HOOK = `import { appendFile } from "node:fs/promises";
+const hookSource = (provides?: string[]): string => `import { appendFile } from "node:fs/promises";
 
 const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
@@ -47,7 +47,7 @@ export const source = brand("source", {
 
 export const pre = brand("pre", {
   id: "fake",
-  run: ({ ticket }: Ctx): Record<string, unknown> => ({
+${provides === undefined ? "" : `  provides: ${JSON.stringify(provides)},\n`}  run: ({ ticket }: Ctx): Record<string, unknown> => ({
     ticket: { number: ticket, title: "Add export", labels: ["lr:auto"] },
     entries: [],
   }),
@@ -63,7 +63,9 @@ export const post = brand("post", {
 });
 `;
 
-const WORKFLOW = `version: 1
+const HOOK = hookSource();
+
+const workflowReading = (path?: string): string => `version: 1
 name: e2e
 hooks: [hooks/fake.ts]
 eligible:
@@ -75,20 +77,24 @@ stages:
     terminal: true
     triggers:
       - name: fresh ticket
-        when: { "run.stage": null }
+        when: { "run.stage": null${path === undefined ? "" : `, "${path}": { $exists: true }`} }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
 `;
 
+const WORKFLOW = workflowReading();
+
 interface Fixture { dir: string; record: string }
 
-async function fixture(opts: { agent?: string; screen?: boolean } = {}): Promise<Fixture> {
+async function fixture(
+  opts: { agent?: string; screen?: boolean; provides?: string[]; reads?: string } = {},
+): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
   const dir = join(root, ".landrace");
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
-  await writeFile(join(dir, "hooks", "fake.ts"), HOOK);
-  await writeFile(join(dir, "workflow.yaml"), WORKFLOW);
+  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides));
+  await writeFile(join(dir, "workflow.yaml"), workflowReading(opts.reads));
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
@@ -163,6 +169,40 @@ describe("buildRuntime", () => {
 
     await expect(buildRuntime(dir, {})).rejects.toThrow(/does not validate/);
     await expect(readFile(ran, "utf8")).rejects.toThrow();
+  });
+
+  /**
+   * §11.8 in the daemon, not only in the CLI.
+   *
+   * `landrace validate` unions the hooks' `provides` and rejects a workflow
+   * whose predicate reads a path nothing supplies; `start` used to run that
+   * same workflow, halting tickets one at a time against a live repository
+   * over a fact the engine already knew before the first request. A validator
+   * that checks less in the daemon than in the CLI is the "silently stops
+   * checking" failure, one layer over.
+   *
+   * The hook here declares `provides` — with no declaration the rule abstains
+   * for the whole graph, which is the state every other fixture in this file
+   * is in and the reason none of them could ever have caught this.
+   */
+  it("refuses to start a workflow whose predicate reads a path no hook provides", async () => {
+    const { dir } = await fixture({
+      provides: ["ticket", "ticket.labels", "entries"],
+      reads: "artifacts.pr.number",
+    });
+
+    await expect(buildRuntime(dir, {})).rejects.toThrow(
+      /path-coverage: stage "spec" reads artifacts\.pr\.number, which no hook provides/,
+    );
+  });
+
+  it("starts when the hooks do provide what the workflow reads", async () => {
+    const { dir } = await fixture({
+      provides: ["ticket", "ticket.labels", "entries", "artifacts.pr.*"],
+      reads: "artifacts.pr.number",
+    });
+
+    expect((await buildRuntime(dir, {})).source.id).toBe("fake");
   });
 
   it("screens prompts when the config says to", async () => {

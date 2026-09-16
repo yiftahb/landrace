@@ -6,6 +6,7 @@ import type {
   EventName,
   Executor,
   Logger,
+  Problem,
   Registry,
   Runtime,
   RuntimeConfig,
@@ -14,6 +15,7 @@ import type {
 import { createDispatcher } from "../runner/effects.js";
 import { messageOf } from "../runner/errors.js";
 import { createLogger } from "../runner/events.js";
+import { snapshotProvides } from "../runner/snapshot.js";
 import { oneLine } from "../runner/status.js";
 import { tick } from "../runner/tick.js";
 import { loadWorkflow } from "../workflow/load.js";
@@ -83,20 +85,42 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   });
 
   const { workflow, steps } = await loadWorkflow(dir);
-  const problems = validate(workflow, steps);
-  if (problems.length) {
-    // A workflow that cannot be proved sound must not be run against a live
-    // repository: every problem validate reports is one an operator would
-    // otherwise meet as a halted ticket with an effect already applied to it.
+
+  // A workflow that cannot be proved sound must not be run against a live
+  // repository: every problem validate reports is one an operator would
+  // otherwise meet as a halted ticket with an effect already applied to it.
+  const refuse = (problems: Problem[]): never => {
     throw new Error(
       `the workflow in ${dir} does not validate; run \`landrace validate ${dir}\`:\n` +
       problems.map((p) => `  ${p.rule}: ${p.message}`).join("\n"),
     );
-  }
+  };
+
+  const problems = validate(workflow, steps);
+  if (problems.length) refuse(problems);
 
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
   const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
+
+  /*
+   * §11.8, the one rule that cannot be answered until the hooks are loaded —
+   * and the reason the load stays exactly where it is rather than moving up.
+   *
+   * `landrace validate` has unioned the hooks' `provides` since Task 14; the
+   * daemon did not, so `start` would run a workflow the CLI rejects and meet
+   * the same fact as a halted ticket, one live repository at a time. A
+   * validator that checks less in the daemon than in the CLI is the "silently
+   * stops checking" failure, one layer over.
+   *
+   * `snapshotProvides` abstains — for the whole graph — when any loaded hook
+   * declares no `provides` at all, so this refuses nothing that started before
+   * except a workflow whose hooks all say what they supply and still miss a
+   * path a predicate reads.
+   */
+  const uncovered = validate(workflow, steps, snapshotProvides(registry.pre) ?? undefined);
+  if (uncovered.length) refuse(uncovered);
+
   if (!registry.source) {
     throw new Error(
       "no source hook is configured, so there is nothing to enumerate. Add a module exporting " +
