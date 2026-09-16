@@ -7,6 +7,7 @@ import { createTools } from "../mcp/tools.js";
 import { createLogger } from "../runner/events.js";
 import type { EventName } from "../namespace.js";
 import { loadWorkflow } from "../workflow/load.js";
+import { executorFor } from "./start.js";
 
 export async function runMcp(dir: string): Promise<void> {
   const loaded = await loadConfig(dir);
@@ -52,6 +53,16 @@ export async function runMcp(dir: string): Promise<void> {
    */
   if (registry.source) await registry.source.list(ctx);
 
-  const server = createMcpServer(createTools(registry, ctx));
+  /*
+   * The same executor the loop invokes steps with, resolved the same way and
+   * refused at startup for the same reason: `landrace_ask` resumes a session
+   * the loop started, so the two processes have to agree about what an agent
+   * is. They coordinate through the per-ticket lock, and it is the default one
+   * — the same $TMPDIR path the loop takes — because the entire mechanism is
+   * two processes finding the same file.
+   */
+  const executor = executorFor(loaded.config, workflow, registry, events);
+
+  const server = createMcpServer(createTools(registry, ctx, { executor }));
   await server.connect(new StdioServerTransport());
 }

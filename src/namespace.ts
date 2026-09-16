@@ -299,7 +299,19 @@ export interface Executor {
   id: string;
   run(
     prompt: string,
-    opts: { round: number; resume?: string; cwd?: string; signal: AbortSignal },
+    opts: {
+      round: number;
+      resume?: string;
+      cwd?: string;
+      /**
+       * What the step declared it may do — the vocabulary is in
+       * `src/conventions.ts`. An executor that cannot enforce one of these
+       * must refuse the run rather than drop it: the engine's own check on the
+       * worktree afterwards is a backstop, not a licence to ignore this.
+       */
+      capabilities?: readonly string[];
+      signal: AbortSignal;
+    },
   ): Promise<{ text: string; sessionId: string | null }>;
 }
 
@@ -485,6 +497,13 @@ export type StepResult =
 
 export interface ConvergeDeps {
   workflow: Workflow;
+  /**
+   * Where the repository is, when steps are to run in a per-ticket worktree of
+   * it (`agent.isolation: worktree`). Absent means the agent runs wherever the
+   * loop runs — the operator's own checkout — and the capability check has
+   * nothing it may judge, because what changed there is not the step's doing.
+   */
+  sandbox?: { root: string };
   steps: Map<string, Step>;
   pre: PreHook[];
   /**
@@ -673,6 +692,20 @@ export interface Tools {
     },
   ): Promise<unknown>;
   reply(ticket: number, message: string): Promise<unknown>;
+  ask(ticket: number, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
+  resolve(ticket: number, why?: string | undefined): Promise<unknown>;
+}
+
+/**
+ * What the MCP plane needs beyond the registry to hold a conversation: an
+ * executor to resume a step's session with, and where the per-ticket locks
+ * live. Both optional — without an executor the conversation tools report that
+ * none is configured rather than crashing, exactly as the operator hook's
+ * absence is reported.
+ */
+export interface ToolOptions {
+  executor?: Executor;
+  lock?: LockOptions;
 }
 
 /* ------------------------------------------------------------------- cli -- */
@@ -716,4 +749,56 @@ export interface BuildOptions {
   debug?: boolean;
   /** Where events go. `landrace status` sends them to stderr, because stdout is its report. */
   sink?: (event: LandraceEvent) => void;
+}
+
+/* ------------------------------------------------------- sandbox (§15) -- */
+
+/**
+ * A worktree as it stands at one moment: the commit it is on, and every path
+ * git reports as changed. Compared before and after a step to decide whether
+ * it did anything it did not declare a capability for — the commit is half of
+ * it, because committing leaves the status clean.
+ */
+export interface WorktreeState {
+  head: string;
+  changes: string[];
+}
+
+/* ------------------------------------------------ conversation (§12, §7) -- */
+
+/**
+ * What a turn joins: the session to resume, and the stage and round whose
+ * record carried it, so the turn is recorded against the same round the step
+ * produced. All three are derived from the ticket, never remembered.
+ */
+export interface JoinedSession {
+  session: string;
+  stage: string;
+  round: number;
+}
+
+export interface ConversationDeps {
+  /** The tick's own pre hooks: a turn reads the snapshot the tick would read, not a second view of the ticket. */
+  pre: PreHook[];
+  /** And the tick's own effect dispatcher, so a turn writes records the tick can re-derive. */
+  dispatcher: Dispatcher;
+  ctx: RuntimeContext;
+  /** Null when no executor is configured: `ask` reports that rather than crashing. */
+  executor: Executor | null;
+  lock?: LockOptions;
+}
+
+export interface Conversation {
+  /**
+   * Relay a person's message to the step that is waiting, and record both
+   * halves. `resolved` is the agent's own answer to "are you still missing
+   * something", read fail-closed: unreadable means unresolved.
+   */
+  ask(
+    ticket: number,
+    message: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ reply: string; resolved: boolean }>;
+  /** Hand the ticket back to the loop as a human turn. Already handed back is reported, not repeated. */
+  resolve(ticket: number, why?: string): Promise<{ alreadyResolved: boolean }>;
 }

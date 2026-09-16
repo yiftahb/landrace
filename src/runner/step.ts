@@ -1,8 +1,18 @@
 import { compile } from "../core/index.js";
-import type { Effect, Logger, Snapshot, Step, StepResult } from "../namespace.js";
-import { isReservedId, OUTPUT_KIND, outputValueProblem, RECORD_EFFECT } from "../conventions.js";
+import type { Effect, Logger, Snapshot, Step, StepResult, WorktreeState } from "../namespace.js";
+import {
+  CAPABILITIES,
+  isReservedId,
+  mayWriteRepo,
+  OUTPUT_KIND,
+  outputValueProblem,
+  RECORD_EFFECT,
+  SESSION_KEY,
+  unknownCapabilities,
+} from "../conventions.js";
 import type { Executor } from "../namespace.js";
 import { screenPrompt } from "../agent/screen.js";
+import { changedSince, worktreeState } from "../agent/worktree.js";
 import { extractJsonBlock } from "../agent/json-block.js";
 import { messageOf } from "./errors.js";
 
@@ -80,6 +90,50 @@ const describeValue = (value: unknown): string => {
   return json.length > MAX_REPORTED_VALUE ? `${json.slice(0, MAX_REPORTED_VALUE)}…` : json;
 };
 
+/**
+ * How many changed paths a refusal names before it stops counting. An agent
+ * that reformatted the repository would otherwise put every path it touched
+ * into a tracker comment.
+ */
+const MAX_NAMED_CHANGES = 10;
+
+/**
+ * What the step did to the worktree it was given that it never declared it
+ * could, or null if it behaved.
+ *
+ * `before` is null whenever there is nothing to judge — no sandbox, or a step
+ * that declared `repo:write` and is entitled to change things — which keeps
+ * the "did we read a before state" decision and the "should we compare" one
+ * from being two conditions free to disagree.
+ */
+async function sandboxTrespass(
+  sandbox: { path: string } | undefined,
+  before: WorktreeState | null,
+): Promise<string | null> {
+  if (!sandbox || before === null) return null;
+
+  // A check that could not run has verified nothing — the screener's own rule,
+  // applied to the other half of the same control. Refusing is harsh on a
+  // transient git failure and still right: the alternative is accepting a
+  // step's output while unable to say what it did to get there.
+  let after: WorktreeState;
+  try {
+    after = await worktreeState(sandbox.path);
+  } catch (e) {
+    return `the step's worktree could not be read, so what it did there cannot be checked: ${messageOf(e)}`;
+  }
+
+  const changed = changedSince(before, after);
+  if (changed.length === 0) return null;
+
+  const named = changed.slice(0, MAX_NAMED_CHANGES).join(", ");
+  const rest = changed.length - MAX_NAMED_CHANGES;
+  return (
+    "the step changed its worktree without declaring repo:write: " +
+    `${named}${rest > 0 ? ` and ${rest} more` : ""}`
+  );
+}
+
 export async function runStep(opts: {
   step: Step;
   stageId: string;
@@ -94,10 +148,52 @@ export async function runStep(opts: {
   executor: Executor;
   signal: AbortSignal;
   screen?: { executor: Executor };
+  /**
+   * The worktree this step runs in, when the runtime made one. Its presence is
+   * what turns a step's declared capabilities into something checkable: we
+   * built this directory, so what changed in it is the step's doing and
+   * nobody else's. With isolation off there is no sandbox, the agent runs in
+   * the operator's own checkout, and there is nothing here to judge.
+   */
+  sandbox?: { path: string };
   log?: Logger;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
   const prompt = renderPrompt(step.prompt, snapshot, opts.briefing);
+
+  // Before screening and before spending anything: a capability nothing
+  // enforces is not a smaller problem than a violation. It is the operator
+  // reading the step file, seeing the word, and believing they are covered —
+  // so it stops the step rather than being carried along unremarked.
+  const unenforceable = unknownCapabilities(step.capabilities);
+  if (unenforceable.length) {
+    return {
+      ok: false,
+      kind: "refused",
+      reason:
+        `step declares ${unenforceable.map((c) => `"${c}"`).join(", ")}, which nothing enforces; ` +
+        `this engine enforces ${CAPABILITIES.join(", ")}`,
+    };
+  }
+
+  // Read before the agent runs, not compared against "clean": a worktree a
+  // crashed run left dirty is not this step's doing, and failing an innocent
+  // step forever is how a guard gets switched off. Unreadable here means the
+  // step is refused *before* it is paid for — the check would have to be
+  // skipped otherwise, and a skipped capability check is the capability not
+  // existing.
+  let before: WorktreeState | null = null;
+  if (opts.sandbox && !mayWriteRepo(step.capabilities)) {
+    try {
+      before = await worktreeState(opts.sandbox.path);
+    } catch (e) {
+      return {
+        ok: false,
+        kind: "refused",
+        reason: `the step's worktree could not be read, so its capabilities cannot be enforced: ${messageOf(e)}`,
+      };
+    }
+  }
 
   if (opts.screen) {
     // Screen the rendered prompt, never the template: the template is the
@@ -126,7 +222,15 @@ export async function runStep(opts: {
   let text: string;
   let sessionId: string | null;
   try {
-    ({ text, sessionId } = await executor.run(prompt, { round, signal }));
+    ({ text, sessionId } = await executor.run(prompt, {
+      round,
+      signal,
+      // Always present, never undefined: a step that declares no capabilities
+      // is the most restricted one there is, and an executor reading
+      // `undefined` would fall back to its own operator-wide default instead.
+      capabilities: step.capabilities ?? [],
+      ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
+    }));
   } catch (e) {
     // The executor itself failed — timeout, quota, an abort signal from a
     // Ctrl-C. Nothing was produced, so this is the "never ran" case, not a
@@ -136,6 +240,14 @@ export async function runStep(opts: {
     // escaping runStep entirely instead of describing the failure.
     return { ok: false, kind: "unavailable", reason: messageOf(e) };
   }
+
+  // Asked of the file system, not of the flags we passed. An executor is free
+  // to ignore `capabilities` — one registered by a hook module never saw our
+  // CLI flags in the first place — so this is the half of the capability that
+  // is actually enforced by the engine rather than delegated to the agent.
+  // A verdict, not an outage: durable and terminal, like a screening refusal.
+  const trespass = await sandboxTrespass(opts.sandbox, before);
+  if (trespass) return { ok: false, kind: "refused", reason: trespass };
 
   // A step with no declared output contributes no effects; the workflow routes
   // it by trigger instead.
@@ -226,6 +338,18 @@ export async function runStep(opts: {
     if (isReservedId(field) || !Object.hasOwn(parsed, field)) continue;
     value[field] = parsed[field];
   }
+
+  /*
+   * The session this round ran under, so a person can join it later
+   * (spec §6.1: conversation continuity is derived from the session id inside
+   * the step's output marker). Written last and by the engine, not by the
+   * agent: `parsed` is the agent's object, and a shape declaring a field of
+   * this name is a validate error precisely so this line can overwrite nothing
+   * that was ever the agent's to say. It rides here rather than beside the
+   * value because `output` is the one free-form field a tracker hook copies
+   * into the marker it stamps — see SESSION_KEY in conventions.ts.
+   */
+  if (sessionId !== null) value[SESSION_KEY] = sessionId;
 
   /*
    * An output value is agent-chosen and unbounded, and it has to fit in a

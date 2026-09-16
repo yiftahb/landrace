@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { buildRuntime, runStart } from "../../src/cli/start.js";
 import { runStatus } from "../../src/cli/status.js";
 import type { LandraceEvent } from "../../src/namespace.js";
@@ -65,6 +67,13 @@ export const post = brand("post", {
 
 const HOOK = hookSource();
 
+/** A hook-registered executor, branded the way `landrace/hooks` brands one. */
+const EXECUTOR = `export const executor = brand("executor", {
+  id: "fake",
+  run: async (): Promise<{ text: string; sessionId: string | null }> => ({ text: "", sessionId: null }),
+});
+`;
+
 const workflowReading = (path?: string): string => `version: 1
 name: e2e
 hooks: [hooks/fake.ts]
@@ -86,10 +95,19 @@ const WORKFLOW = workflowReading();
 
 interface Fixture { dir: string; record: string }
 
+const exec = promisify(execFile);
+
+/**
+ * A repository, because `agent.isolation` defaults to `worktree` and a
+ * runtime that isolates steps resolves the repository it will cut them from
+ * before it will start. `git: false` is how the test below asks what happens
+ * when there is none.
+ */
 async function fixture(
-  opts: { agent?: string; screen?: boolean; provides?: string[]; reads?: string } = {},
+  opts: { agent?: string; screen?: boolean; provides?: string[]; reads?: string; git?: boolean } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
+  if (opts.git !== false) await exec("git", ["init", "-q", "-b", "main"], { cwd: root });
   const dir = join(root, ".landrace");
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
@@ -208,6 +226,32 @@ describe("buildRuntime", () => {
   it("screens prompts when the config says to", async () => {
     const { dir } = await fixture({ screen: true });
     expect((await buildRuntime(dir, {})).deps.screen).toBeDefined();
+  });
+
+  /**
+   * Screening is a security control (§15) that silently ignored configuration:
+   * it always ran the engine's own claude executor, so a workflow whose hook
+   * registers an executor screened with something the operator never asked
+   * for — or, with no claude on the machine, not at all.
+   */
+  it("screens with the executor the config names, not always with the engine's own", async () => {
+    const { dir } = await fixture({ agent: "fake", screen: true });
+    await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
+${EXECUTOR}`);
+
+    const rt = await buildRuntime(dir, {});
+    expect(rt.deps.executor.id).toBe("fake");
+    expect(rt.deps.screen?.executor).toBe(rt.deps.executor);
+  });
+
+  /**
+   * The sandbox is resolved at startup, not at the first invoke: a loop
+   * started outside a repository would otherwise assemble, poll, and fail at
+   * its first paid step — hours in, on a ticket it has already moved.
+   */
+  it("refuses to start when steps are to be isolated and there is no repository to isolate from", async () => {
+    const { dir } = await fixture({ git: false });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/not inside a git repository/);
   });
 
   /**

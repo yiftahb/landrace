@@ -261,6 +261,53 @@ describe("claude executor", () => {
     await expect(run("x", {}, { cwd: "/tmp/lr56/../../etc" })).rejects.toThrow(/refused cwd/);
   });
 
+  // --- a step's declared capabilities, translated into what the CLI enforces.
+  //
+  // The executor's construction-time options are the *operator's* setting for
+  // every run it makes; a step's declaration is narrower and specific to one
+  // invocation. These check that the declaration decides, in both directions,
+  // rather than being merged with or quietly overridden by the default.
+
+  it("gives a read-only step plan mode and no tools, even when the executor was built wider", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    const argv = (await run(
+      "x",
+      { permissionMode: "acceptEdits", restricted: false },
+      { cwd: dir, capabilities: ["repo:read"] },
+    )).text;
+    expect(argv).toContain("--permission-mode plan");
+    expect(argv).toContain("--restricted");
+  });
+
+  it("lets a step that declared repo:write actually edit, where the executor default would not", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    const argv = (await run("x", {}, { cwd: dir, capabilities: ["repo:read", "repo:write"] })).text;
+    expect(argv).toContain("--permission-mode acceptEdits");
+    expect(argv).not.toContain("--restricted");
+  });
+
+  it("treats a step that declares no capabilities as the most restricted one, not the least", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    const argv = (await run(
+      "x",
+      { permissionMode: "acceptEdits", restricted: false },
+      { cwd: dir, capabilities: [] },
+    )).text;
+    expect(argv).toContain("--permission-mode plan");
+    expect(argv).toContain("--restricted");
+  });
+
+  /**
+   * Fail closed on a word this executor cannot turn into a flag. Translating
+   * "net:egress" into nothing at all is how a step comes to declare a
+   * capability while the agent simply has it.
+   */
+  it("refuses a capability it cannot enforce instead of silently dropping it", async () => {
+    const dir = withCfg({ out: "should never run" });
+    await expect(run("x", {}, { cwd: dir, capabilities: ["repo:read", "net:egress"] }))
+      .rejects.toThrow(/refused capabilit[\s\S]*net:egress/i);
+  });
+
   it("never lets the parent process's environment reach the agent", async () => {
     process.env.LANDRACE_TEST_SECRET = "super-secret-value-should-not-leak";
     const dir = withCfg({ out: "secret=[{{ENV:LANDRACE_TEST_SECRET}}]" });

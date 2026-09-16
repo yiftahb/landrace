@@ -44,6 +44,51 @@ describe("structural validation", () => {
     expect(rules(w)).toContain("unknown-stage");
   });
 
+  /**
+   * Before the workflow ever runs, and in the report a person reads: a
+   * capability nothing enforces is the operator believing in a restriction
+   * that was never applied. Meeting it at runtime instead means finding out on
+   * a ticket already in flight, one refused step at a time.
+   */
+  it("flags a step declaring a capability the engine cannot enforce", () => {
+    const steps = new Map<string, Step>([["s.md", { prompt: "", capabilities: ["repo:read", "net:egress"] }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    const problems = validateStructure(w, steps);
+
+    expect(problems.map((p) => p.rule)).toContain("capability");
+    expect(problems.find((p) => p.rule === "capability")?.message).toMatch(/net:egress/);
+  });
+
+  /**
+   * The engine writes the agent's session id into the same object a step's
+   * output value travels in (conventions.ts, SESSION_KEY), because that is the
+   * one field a tracker hook carries into the marker it stamps. A shape that
+   * declared the same name would be silently overwritten — and what it would
+   * cost is the thing the id is for: the conversation would resume whatever
+   * the agent happened to put there.
+   */
+  it("flags a step whose output shape declares the field the engine records the session in", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "",
+      output: {
+        discriminator: "kind",
+        shapes: { spec: { title: "string", session: "string" } },
+        routes: [{ when: { kind: "spec" }, effect: { type: "x" } }],
+      },
+    }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    const problems = validateStructure(w, steps);
+
+    expect(problems.map((p) => p.rule)).toContain("reserved-field");
+    expect(problems.find((p) => p.rule === "reserved-field")?.message).toMatch(/session/);
+  });
+
+  it("accepts the capabilities the engine does enforce", () => {
+    const steps = new Map<string, Step>([["s.md", { prompt: "", capabilities: ["repo:read", "repo:write"] }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    expect(validateStructure(w, steps).map((p) => p.rule)).not.toContain("capability");
+  });
+
   it("rejects a disallowed operator in a step's route condition", () => {
     const steps = new Map<string, Step>([["s.md", {
       prompt: "",

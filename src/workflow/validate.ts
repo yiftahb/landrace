@@ -1,4 +1,12 @@
-import { ENTRY_KIND, isReservedId, OUTPUT_KIND, RECORD_EFFECT } from "../conventions.js";
+import {
+  CAPABILITIES,
+  ENTRY_KIND,
+  isReservedId,
+  OUTPUT_KIND,
+  RECORD_EFFECT,
+  SESSION_KEY,
+  unknownCapabilities,
+} from "../conventions.js";
 import { identityOf } from "../core/locate.js";
 import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
 import type { Condition, Problem, Stage, Step, Workflow } from "../namespace.js";
@@ -89,6 +97,35 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   // them, and the allowlist should not have a documented gap by then.
   for (const stage of w.stages) {
     const step = stage.step ? steps.get(stage.step) : undefined;
+    // Reported here as well as refused at runtime, and this is the half that
+    // matters: a capability nothing enforces is the operator reading the step
+    // file, seeing the word, and believing they are covered. Meeting it at
+    // runtime means finding out on a ticket already in flight.
+    const unenforceable = unknownCapabilities(step?.capabilities);
+    if (unenforceable.length) {
+      problems.push({
+        rule: "capability",
+        message:
+          `step ${stage.step} declares ${unenforceable.map((c) => `"${c}"`).join(", ")}, ` +
+          `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}`,
+      });
+    }
+    // The engine writes the agent's session id into the same object a step's
+    // output value travels in (SESSION_KEY in conventions.ts), because that is
+    // the one field a tracker hook carries into the marker it stamps. A shape
+    // declaring the same name is silently overwritten, and what that costs is
+    // exactly what the id is for: a conversation would resume whatever the
+    // agent happened to put there.
+    for (const [shape, fields] of Object.entries(step?.output?.shapes ?? {})) {
+      if (fields === null || typeof fields !== "object" || Array.isArray(fields)) continue;
+      if (!Object.hasOwn(fields, SESSION_KEY)) continue;
+      problems.push({
+        rule: "reserved-field",
+        message:
+          `step ${stage.step}, shape "${shape}" declares a field named "${SESSION_KEY}", which the ` +
+          "engine records the agent's session under; rename it",
+      });
+    }
     for (const route of step?.output?.routes ?? []) {
       try {
         assertAllowedOperators(route.when);

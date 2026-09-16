@@ -1,6 +1,7 @@
 import { isEngineLabel, LABEL_NAMESPACE, LABELS, neutraliseMarkers, stageFromLabels } from "../conventions.js";
 import type { Snapshot } from "../namespace.js";
-import type { Candidate, Operator, Registry, RuntimeContext, Tools } from "../namespace.js";
+import type { Candidate, Operator, Registry, RuntimeContext, ToolOptions, Tools } from "../namespace.js";
+import { createConversation } from "./conversation.js";
 import { createDispatcher } from "../runner/effects.js";
 import { buildSnapshot } from "../runner/snapshot.js";
 
@@ -35,8 +36,19 @@ function requireOperator(operator: Operator | null, what: string): Operator {
   return operator;
 }
 
-export function createTools(registry: Registry, ctx: RuntimeContext): Tools {
+export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolOptions = {}): Tools {
   const dispatcher = createDispatcher(registry.post);
+
+  // The tick's own pre hooks and the tick's own dispatcher, handed over rather
+  // than rebuilt beside them: a conversation that read or wrote through a
+  // second path would be writing state the tick cannot re-derive.
+  const conversation = createConversation({
+    pre: registry.pre,
+    dispatcher,
+    ctx,
+    executor: opts.executor ?? null,
+    ...(opts.lock ? { lock: opts.lock } : {}),
+  });
 
   const snapshotOf = (ticket: number): Promise<Snapshot> =>
     buildSnapshot({ ticket, hooks: registry.pre, ctx: { ...ctx, ticket } });
@@ -135,5 +147,9 @@ export function createTools(registry: Registry, ctx: RuntimeContext): Tools {
       );
       return { ticket, posted: true };
     },
+
+    ask: (ticket, message, askOpts) => conversation.ask(ticket, message, askOpts),
+
+    resolve: (ticket, why) => conversation.resolve(ticket, why),
   };
 }
