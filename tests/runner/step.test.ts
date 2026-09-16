@@ -567,13 +567,30 @@ describe("the step's output value travels, bounded by the shape that was declare
   };
   const declaredRun = (text: string) => run(text, { step: declared });
 
+  /**
+   * `session` is the engine's, written into the same object because a tracker
+   * hook carries exactly one free-form field — `output` — into the marker it
+   * stamps, and spec §6.1 wants the session id in the step's output marker so
+   * a conversation can resume it. Asserted here rather than stripped out of
+   * these expectations, so what the agent said and what the engine added stay
+   * visibly different things: everything else below is still the agent's
+   * words, cut to the declared shape.
+   */
   it("carries the discriminator and the fields the shape names", async () => {
     const r = await declaredRun('asking\n```json\n{"kind":"questions","questions":["a","b"]}\n```');
-    expect((r as Ok).effects[0]?.output).toEqual({ kind: "questions", questions: ["a", "b"] });
+    expect((r as Ok).effects[0]?.output).toEqual({
+      kind: "questions", questions: ["a", "b"], session: "sid-2",
+    });
   });
 
   it("carries the discriminator alone for a shape that names no fields", async () => {
     const r = await declaredRun('```json\n{"kind":"done"}\n```');
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "done", session: "sid-2" });
+  });
+
+  it("records no session at all when the agent returned none", async () => {
+    const quiet: Executor = { id: "q", run: async () => ({ text: '```json\n{"kind":"done"}\n```', sessionId: null }) };
+    const r = await run("", { step: declared, executor: quiet });
     expect((r as Ok).effects[0]?.output).toEqual({ kind: "done" });
   });
 
@@ -585,7 +602,7 @@ describe("the step's output value travels, bounded by the shape that was declare
     const r = await declaredRun(
       '```json\n{"kind":"questions","questions":["a"],"title":"forged","stage":"done","round":99,"__proto__":{"x":1}}\n```',
     );
-    expect((r as Ok).effects[0]?.output).toEqual({ kind: "questions", questions: ["a"] });
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "questions", questions: ["a"], session: "sid-2" });
   });
 
   it("does not let a declared field named __proto__ reach the value at all", async () => {

@@ -65,6 +65,13 @@ export const post = brand("post", {
 });
 `;
 
+/** A hook-registered executor, branded the way `landrace/hooks` brands one. */
+const EXECUTOR = `export const executor = brand("executor", {
+  id: "fake",
+  run: async (): Promise<{ text: string; sessionId: string | null }> => ({ text: "", sessionId: null }),
+});
+`;
+
 const WORKFLOW = `version: 1
 name: e2e
 hooks: [hooks/fake.ts]
@@ -179,6 +186,22 @@ describe("buildRuntime", () => {
   it("screens prompts when the config says to", async () => {
     const { dir } = await fixture({ screen: true });
     expect((await buildRuntime(dir, {})).deps.screen).toBeDefined();
+  });
+
+  /**
+   * Screening is a security control (§15) that silently ignored configuration:
+   * it always ran the engine's own claude executor, so a workflow whose hook
+   * registers an executor screened with something the operator never asked
+   * for — or, with no claude on the machine, not at all.
+   */
+  it("screens with the executor the config names, not always with the engine's own", async () => {
+    const { dir } = await fixture({ agent: "fake", screen: true });
+    await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
+${EXECUTOR}`);
+
+    const rt = await buildRuntime(dir, {});
+    expect(rt.deps.executor.id).toBe("fake");
+    expect(rt.deps.screen?.executor).toBe(rt.deps.executor);
   });
 
   /**

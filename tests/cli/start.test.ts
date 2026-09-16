@@ -2,6 +2,7 @@ import { chmod, copyFile, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runtimeConfigSchema } from "../../src/config/schema.js";
+import { defineExecutor } from "../../src/hooks/contracts.js";
 import type { Registry, Workflow } from "../../src/namespace.js";
 import {
   buildRuntime,
@@ -162,6 +163,43 @@ describe("the step timeout", () => {
       process.env.PATH = path;
     }
   }, 8_000);
+});
+
+/**
+ * Screening is a security control (§15), and it was always run by the engine's
+ * own claude executor: a workflow whose hook registers an executor screened
+ * with something the operator never configured — silently, since nothing said
+ * so — or, with no claude on the machine, not at all.
+ */
+describe("which executor screens", () => {
+  const workflow: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true }] };
+
+  const withExecutor = (id: string): Registry => {
+    const executor = defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) });
+    return { pre: [], post: [], source: null, operator: null, executors: new Map([[id, executor]]) };
+  };
+
+  it("screens with the hook's executor when the config names one, not with the engine's", () => {
+    const registry = withExecutor("fake");
+    const config = runtimeConfigSchema.parse({
+      version: 1,
+      agent: { adapter: "fake" },
+      security: { screen: true, model: "haiku" },
+    });
+
+    // The security model is the engine executor's business and cannot reach a
+    // hook's, which builds its own: what must not happen is the id being
+    // ignored and a claude subprocess screening for an agent that is not one.
+    const screener = executorFor(config, workflow, registry, () => {}, config.security.model);
+    expect(screener).toBe(registry.executors.get("fake"));
+    expect(screener).toBe(executorFor(config, workflow, registry, () => {}));
+  });
+
+  it("still refuses an adapter no executor answers to, whichever model it is asked for", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" } });
+    const empty: Registry = { pre: [], post: [], source: null, operator: null, executors: new Map() };
+    expect(() => executorFor(config, workflow, empty, () => {}, "haiku")).toThrow(/gpt-9/);
+  });
 });
 
 describe("createInterrupt", () => {

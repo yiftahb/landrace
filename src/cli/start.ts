@@ -76,6 +76,18 @@ export function executorFor(
   workflow: Workflow,
   registry: Registry,
   log: Logger,
+  /**
+   * Which model the *engine's own* executor should use — `security.model` when
+   * this is the screener. A hook's executor chose its model when the hook
+   * built it, and no id here can change that; what matters is that screening
+   * resolves through this same lookup at all. It used to construct a claude
+   * executor unconditionally, so a workflow whose hook registers an executor
+   * screened with something the operator never configured — or, with no claude
+   * on the machine, did not screen at all while reporting that it did. §15
+   * calls screening a security control, and a security control that silently
+   * ignores its configuration is the kind this codebase refuses to ship.
+   */
+  model: string | undefined = config.agent.model,
 ): Executor {
   // A hook's executor is constructed by the hook, so the budget cannot reach
   // it: the engine has a number and no way to hand it over. Enforcing one out
@@ -85,7 +97,7 @@ export function executorFor(
   if (fromHook) return fromHook;
   if (config.agent.adapter === "claude") {
     return createClaudeExecutor({
-      ...(config.agent.model === undefined ? {} : { model: config.agent.model }),
+      ...(model === undefined ? {} : { model }),
       timeoutMs: stepTimeoutMs(workflow),
       log,
     });
@@ -170,7 +182,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       executor: executorFor(loaded.config, workflow, registry, log),
       ...(sandbox === null ? {} : { sandbox }),
       ...(loaded.config.security.screen
-        ? { screen: { executor: createClaudeExecutor({ model: loaded.config.security.model, log }) } }
+        ? { screen: { executor: executorFor(loaded.config, workflow, registry, log, loaded.config.security.model) } }
         : {}),
       ctx: {
         config: loaded.config,

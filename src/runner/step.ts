@@ -6,6 +6,7 @@ import {
   mayWriteRepo,
   OUTPUT_KIND,
   outputValueProblem,
+  SESSION_KEY,
   unknownCapabilities,
 } from "../conventions.js";
 import type { Executor } from "../namespace.js";
@@ -296,6 +297,18 @@ export async function runStep(opts: {
     if (isReservedId(field) || !Object.hasOwn(parsed, field)) continue;
     value[field] = parsed[field];
   }
+
+  /*
+   * The session this round ran under, so a person can join it later
+   * (spec §6.1: conversation continuity is derived from the session id inside
+   * the step's output marker). Written last and by the engine, not by the
+   * agent: `parsed` is the agent's object, and a shape declaring a field of
+   * this name is a validate error precisely so this line can overwrite nothing
+   * that was ever the agent's to say. It rides here rather than beside the
+   * value because `output` is the one free-form field a tracker hook copies
+   * into the marker it stamps — see SESSION_KEY in conventions.ts.
+   */
+  if (sessionId !== null) value[SESSION_KEY] = sessionId;
 
   /*
    * An output value is agent-chosen and unbounded, and it has to fit in a

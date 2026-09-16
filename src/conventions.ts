@@ -63,6 +63,46 @@ export const ENTRY_KIND = "enter";
 export const OUTPUT_KIND = "output";
 
 /**
+ * The kind a conversation turn is recorded under: what a person asked a
+ * running step through the MCP, and what it answered.
+ */
+export const CONVERSATION_KIND = "conversation";
+
+/**
+ * Where a record carries the agent session that produced it.
+ *
+ * Spec §6.1 lists "conversation continuity" as derived from the session id
+ * inside the step's output marker, and this is that id. It rides *inside* the
+ * marker's `output` rather than beside it because `output` is the one
+ * free-form field a tracker hook copies from an effect into the marker it
+ * stamps — which is also why a step's output shape may not declare a field of
+ * this name (validate.ts refuses one, so the collision is a build failure
+ * rather than a silent overwrite of whichever was written last).
+ */
+export const SESSION_KEY = "session";
+
+/**
+ * The session a record was produced under, or null.
+ *
+ * Two shapes, because `entriesFromComments` hands back different payloads for
+ * different kinds: an output record's data is the step's own value (the
+ * session sits in it), and every other kind's data is the whole marker (the
+ * session sits in its `output`). One reader for both, so a caller never has to
+ * know which kind it is holding.
+ */
+export function sessionOf(entry: Entry): string | null {
+  const data = entry.data;
+  if (data === null || typeof data !== "object") return null;
+  const direct = (data as Record<string, unknown>)[SESSION_KEY];
+  if (typeof direct === "string" && direct !== "") return direct;
+
+  const nested = (data as { output?: unknown }).output;
+  if (nested === null || typeof nested !== "object") return null;
+  const carried = (nested as Record<string, unknown>)[SESSION_KEY];
+  return typeof carried === "string" && carried !== "" ? carried : null;
+}
+
+/**
  * What a step may declare it is allowed to do, and the whole of it.
  *
  * Deliberately two words long. Each one is enforced twice — by the flags an
