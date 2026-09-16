@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -12,30 +12,10 @@ import { converge } from "#runner/converge.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { runStep } from "#runner/step.js";
+import { gitRepo as repo, plainDir, removeRepos, worktreesOf as sandboxes } from "#tests/support/repo.js";
 
 const exec = promisify(execFile);
 type Fail = Extract<StepResult, { ok: false }>;
-
-const roots: string[] = [];
-
-/** A real repository, because the refusal under test is a real `git status`. */
-async function repo(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "lr-sbx-"));
-  roots.push(dir);
-  await exec("git", ["init", "-q", "-b", "main"], { cwd: dir });
-  await exec("git", ["config", "user.email", "t@example.com"], { cwd: dir });
-  await exec("git", ["config", "user.name", "t"], { cwd: dir });
-  await mkdir(join(dir, "src"), { recursive: true });
-  await writeFile(join(dir, "src", "a.ts"), "export const a = 1;\n");
-  await exec("git", ["add", "-A"], { cwd: dir });
-  await exec("git", ["commit", "-qm", "init"], { cwd: dir });
-  return dir;
-}
-
-const sandboxes = async (root: string): Promise<string[]> => {
-  const { stdout } = await exec("git", ["worktree", "list", "--porcelain"], { cwd: root });
-  return stdout.split("\n").filter((l) => l.startsWith("worktree ")).slice(1);
-};
 
 /**
  * An agent that does the forbidden thing: it writes into whatever working
@@ -67,9 +47,7 @@ const step = (capabilities?: string[]): Step => ({
   },
 });
 
-afterAll(async () => {
-  for (const root of roots) await rm(root, { recursive: true, force: true });
-});
+afterAll(removeRepos);
 
 describe("a step that exceeds what it declared", () => {
   it("is refused when it writes to the worktree without repo:write, and the write is named", async () => {
@@ -413,8 +391,7 @@ describe("converge and the sandbox", () => {
    * fails this (verified).
    */
   it("reads the briefing before it cuts a worktree, so a briefing that fails costs no checkout", async () => {
-    const notARepo = await mkdtemp(join(tmpdir(), "lr-plain-"));
-    roots.push(notARepo);
+    const notARepo = await plainDir();
     const pr = defineArtifactHook({
       id: "pr",
       handles: [],
@@ -437,8 +414,7 @@ describe("converge and the sandbox", () => {
   });
 
   it("halts with a readable reason when the sandbox cannot be created, rather than crashing", async () => {
-    const notARepo = await mkdtemp(join(tmpdir(), "lr-plain-"));
-    roots.push(notARepo);
+    const notARepo = await plainDir();
     const r = await converge(1, deps(world(), { sandbox: { root: notARepo } }));
     expect(r.settled).toBe("halt");
     expect(r.why).toMatch(/worktree|not a git repository/i);

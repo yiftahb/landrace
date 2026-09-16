@@ -7,7 +7,7 @@ import { createTools } from "#mcp/tools.js";
 import { createLogger } from "#runner/events.js";
 import type { EventName } from "#namespace.js";
 import { loadWorkflow } from "#workflow/load.js";
-import { executorFor } from "#cli/start.js";
+import { executorFor, sandboxFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -24,7 +24,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
 
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
-  const { workflow } = await loadWorkflow(dir);
+  const { workflow, steps } = await loadWorkflow(dir);
   const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
 
   // stdout carries the MCP protocol, so anything we have to say goes to
@@ -89,7 +89,29 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     ? { screen: { executor: executorFor(loaded.config, workflow, registry, events, loaded.config.security.model) } }
     : {};
 
-  return createTools(registry, ctx, { executor, ...screen });
+  /*
+   * And where a turn runs, resolved exactly as the loop resolves it.
+   *
+   * A conversation turn is an agent invocation on the session a step started,
+   * under that step's own declared capabilities — and the engine's half of a
+   * capability is reading the worktree afterwards, which needs there to be a
+   * worktree. Without this the turn ran in the operator's own checkout, so the
+   * only thing between a `repo:read` step and a person asking its agent to
+   * edit the repository was the executor's own good manners.
+   *
+   * The workflow and its steps go over for the same reason: they are what says
+   * what the step declared, and a conversation that cannot read them refuses
+   * the turn rather than running one nobody is holding to anything.
+   */
+  const sandbox = await sandboxFor(loaded.config, dir);
+
+  return createTools(registry, ctx, {
+    executor,
+    ...screen,
+    workflow,
+    steps,
+    ...(sandbox === null ? {} : { sandbox }),
+  });
 }
 
 export async function runMcp(dir: string): Promise<void> {

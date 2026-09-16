@@ -52,6 +52,14 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     // accepted and dropped.
     ...(opts.screen ? { screen: opts.screen } : {}),
     ...(opts.lock ? { lock: opts.lock } : {}),
+    // And for the same reason, the step's own declaration: a turn is held to
+    // the capabilities and the model of the step it continues, which the
+    // conversation can only read if the workflow reaches it. Carried rather
+    // than loaded again here — a second read of the same directory is a second
+    // answer, free to differ from the one the loop is actually running.
+    ...(opts.workflow ? { workflow: opts.workflow } : {}),
+    ...(opts.steps ? { steps: opts.steps } : {}),
+    ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
   });
 
   const snapshotOf = (ticket: number): Promise<Snapshot> =>

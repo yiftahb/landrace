@@ -1,14 +1,16 @@
-import { mkdtemp } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { OUTPUT_KIND, renderMarker } from "#conventions.js";
-import type { Executor, LockOptions, Step } from "#namespace.js";
+import type { ConversationDeps, Executor, LockOptions, Step } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
 import { acquire, held, release } from "#runner/lock.js";
 import { runStep } from "#runner/step.js";
 import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { gitRepo, removeRepos, worktreesOf } from "#tests/support/repo.js";
 
 let root: string;
 beforeEach(async () => {
@@ -33,11 +35,24 @@ const screener = (verdict: "ok" | "suspicious", seen?: (candidate: string) => vo
   },
 });
 
+/**
+ * What the conversation is told about the step it is continuing.
+ *
+ * Every turn needs this, which is why it is in the shared helper rather than
+ * in the two tests that are about it: a turn that cannot see what the step
+ * declared is a turn nobody can hold to it, and `ask` refuses to run one.
+ */
+const spec = (over: Partial<Step> = {}): Pick<ConversationDeps, "workflow" | "steps"> => ({
+  workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", triggers: [] }] },
+  steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"], ...over }]]),
+});
+
 const world = (
   tracker: FakeTracker,
   executor: Executor | null = agent("Understood."),
   lock: Partial<LockOptions> = {},
   screen?: Executor,
+  over: Partial<ConversationDeps> = {},
 ) =>
   createConversation({
     pre: tracker.registry.pre,
@@ -45,7 +60,9 @@ const world = (
     ctx: tracker.ctx,
     executor,
     lock: { root, ...lock },
+    ...spec(),
     ...(screen ? { screen: { executor: screen } } : {}),
+    ...over,
   });
 
 // The three tests below lose the race on purpose. What they are about is the
@@ -144,6 +161,7 @@ describe("conversation", () => {
       ctx: tracker.ctx,
       executor: agent("Understood.", (r) => (resumed = r)),
       lock: { root },
+      ...spec(),
     }).ask(1, "B2B only");
 
     expect(resumed).toBe("sid-real");
@@ -237,6 +255,7 @@ describe("conversation", () => {
       ctx: tracker.ctx,
       executor: agent("Understood.", (r) => (resumed = r)),
       lock: { root },
+      ...spec(),
     }).ask(1, "second");
 
     expect(resumed).toBe("sid-later");
@@ -512,5 +531,125 @@ describe("conversation", () => {
     expect(await held(1, { root })).toBeNull();
     await world(tracker).resolve(1);
     expect(await held(1, { root })).toBeNull();
+  });
+});
+
+/**
+ * A turn is an agent invocation on the session a step started, and it was the
+ * least constrained one in the system: no capabilities, no model, and no
+ * working directory — so it ran in the operator's own checkout at whatever
+ * permission mode the executor defaulted to. A person could ask an agent to do
+ * through conversation exactly what the workflow forbade it in the step, and
+ * a `model: haiku` step answered on the operator's default.
+ *
+ * Proven the way the step's own capability check is proven
+ * (tests/runner/sandbox.test.ts): an agent that actually attempts the
+ * forbidden thing, against a real repository. Whether the flags were handed
+ * over is not the question — an executor is free to ignore them, and one
+ * registered by a hook never sees them at all.
+ */
+describe("a conversation turn is held to what its step declared", () => {
+  afterAll(removeRepos);
+
+  /** An agent that writes into whatever working directory it is given — or, given none, wherever the loop runs. */
+  const writer = (checkout: string, file = "planted.ts"): Executor => ({
+    id: "writer",
+    run: async (_prompt, { cwd }) => {
+      await writeFile(join(cwd ?? checkout, file), "export const planted = true;\n");
+      return { text: "Done, I changed it.", sessionId: "sid-2" };
+    },
+  });
+
+  it("refuses the turn when the agent writes to the worktree, and the write never reaches the checkout", async () => {
+    const checkout = await gitRepo();
+    const tracker = seeded();
+
+    await expect(
+      world(tracker, writer(checkout), {}, undefined, { sandbox: { root: checkout } }).ask(1, "carry on"),
+    ).rejects.toThrow(/repo:write/);
+
+    expect(existsSync(join(checkout, "planted.ts"))).toBe(false);
+    // And nothing it said is on the ticket: a refused turn answered nothing.
+    expect(bodies(tracker).join("\n")).not.toMatch(/Done, I changed it/);
+    expect(await worktreesOf(checkout)).toEqual([]);
+  });
+
+  it("lets the same write through when the step declared repo:write", async () => {
+    const checkout = await gitRepo();
+    const tracker = seeded();
+
+    const turn = await world(tracker, writer(checkout), {}, undefined, {
+      ...spec({ capabilities: ["repo:read", "repo:write"] }),
+      sandbox: { root: checkout },
+    }).ask(1, "carry on");
+
+    expect(turn.reply).toBe("Done, I changed it.");
+    expect(await worktreesOf(checkout)).toEqual([]);
+  });
+
+  it("runs the turn in a worktree of its own, never in the checkout the loop runs from", async () => {
+    const checkout = await gitRepo();
+    let ranIn: string | undefined;
+    const watcher: Executor = {
+      id: "watcher",
+      run: async (_p, { cwd }) => { ranIn = cwd; return { text: "Understood.", sessionId: null }; },
+    };
+
+    await world(seeded(), watcher, {}, undefined, { sandbox: { root: checkout } }).ask(1, "carry on");
+
+    expect(ranIn).toBeDefined();
+    expect(ranIn).not.toBe(checkout);
+    expect(await worktreesOf(checkout)).toEqual([]);
+  });
+
+  it("hands the executor the step's capabilities and the model the step asked for", async () => {
+    let seen: { capabilities?: readonly string[]; model?: string } | undefined;
+    const spy: Executor = {
+      id: "spy",
+      run: async (_p, o) => { seen = o; return { text: "Understood.", sessionId: null }; },
+    };
+
+    await world(seeded(), spy, {}, undefined, spec({ capabilities: ["repo:read"], model: "haiku" })).ask(1, "carry on");
+
+    expect(seen).toMatchObject({ capabilities: ["repo:read"], model: "haiku" });
+  });
+
+  /*
+   * Fail closed before spending anything, exactly as runStep does: a word the
+   * engine cannot enforce is the operator believing in a restriction that was
+   * never applied, and the turn must not run at all — nor leave the person's
+   * words on the ticket, which would hand the loop back a conversation nobody
+   * answered.
+   */
+  it("refuses a capability nothing enforces, without invoking the agent or posting the question", async () => {
+    let invoked = false;
+    const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
+    const tracker = seeded();
+    const before = bodies(tracker).length;
+
+    await expect(
+      world(tracker, spy, {}, undefined, spec({ capabilities: ["net:egress"] })).ask(1, "carry on"),
+    ).rejects.toThrow(/net:egress/);
+
+    expect(invoked).toBe(false);
+    expect(bodies(tracker)).toHaveLength(before);
+  });
+
+  it("refuses, without invoking the agent, when it cannot see what the step declared", async () => {
+    let invoked = false;
+    const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
+    const tracker = seeded();
+
+    await expect(
+      createConversation({
+        pre: tracker.registry.pre,
+        dispatcher: createDispatcher(tracker.registry.post),
+        ctx: tracker.ctx,
+        executor: spy,
+        lock: { root },
+      }).ask(1, "carry on"),
+    ).rejects.toThrow(/declared/);
+
+    expect(invoked).toBe(false);
   });
 });

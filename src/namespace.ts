@@ -748,6 +748,16 @@ export interface ToolOptions {
   executor?: Executor;
   screen?: { executor: Executor };
   lock?: LockOptions;
+  /**
+   * Carried straight through to the conversation, which needs all three to
+   * hold a turn to what its step declared. Optional for the same reason they
+   * are optional there: a process that assembles tools without an executor
+   * holds no turn, and one that has an executor and not these refuses the
+   * turn rather than running it unconstrained.
+   */
+  workflow?: Workflow;
+  steps?: Map<string, Step>;
+  sandbox?: { root: string };
 }
 
 /* ------------------------------------------------------------------- cli -- */
@@ -827,6 +837,29 @@ export interface ConversationDeps {
   ctx: RuntimeContext;
   /** Null when no executor is configured: `ask` reports that rather than crashing. */
   executor: Executor | null;
+  /**
+   * What the step behind this conversation declared, resolved the way converge
+   * resolves it: the stage the joined record came from names a step, and the
+   * step names its capabilities and its model.
+   *
+   * A turn is an agent invocation on the same session, so it is held to the
+   * same limits — a turn that were less constrained than the step it continues
+   * is a way to ask an agent through conversation for exactly what the
+   * workflow forbade it in the step. Optional on the type because `createTools`
+   * assembles a conversation for processes that may never hold one; `ask`
+   * refuses rather than running a turn it cannot constrain.
+   */
+  workflow?: Workflow;
+  steps?: Map<string, Step>;
+  /**
+   * Where the repository is, when a turn is to run in a per-ticket worktree of
+   * it — the loop's own `agent.isolation: worktree`, read the same way. Its
+   * presence is what makes the step's capabilities checkable rather than
+   * delegated: we built the directory, so what changed in it is the turn's
+   * doing. Absent, the agent runs where the MCP process runs and there is
+   * nothing to judge, exactly as in a tick with isolation off.
+   */
+  sandbox?: { root: string };
   /**
    * The screener, when the operator configured one — the same shape runStep
    * takes, because a turn is an agent invocation like any other and §15 knows

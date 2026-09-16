@@ -112,6 +112,31 @@ export function executorFor(
 }
 
 /**
+ * Where an agent runs, resolved before the first request goes out.
+ *
+ * `container` is refused rather than quietly downgraded to a worktree: an
+ * operator who asked for process isolation and silently got filesystem
+ * isolation is the exact shape of "declared but not enforced" this engine has
+ * to refuse.
+ *
+ * Shared with the MCP plane rather than re-derived there. A conversation turn
+ * is an agent invocation on the same session as a step, under the same
+ * declared capabilities, and the sandbox is what makes those capabilities
+ * checkable at all — two answers to "is there one" would mean one of the two
+ * invocations running loose in the operator's own checkout.
+ */
+export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<{ root: string } | null> {
+  const { isolation } = config.agent;
+  if (isolation === "container") {
+    throw new Error(
+      'agent.isolation: container is not implemented in v1. Use "worktree" for filesystem ' +
+      'isolation, or "none" to run the agent in this checkout.',
+    );
+  }
+  return isolation === "worktree" ? { root: await repositoryRoot(dir) } : null;
+}
+
+/**
  * Read the workflow directory and assemble a runnable loop out of it, or
  * refuse with the reason.
  *
@@ -181,18 +206,8 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
 
   // Resolved here, before the first poll, for the same reason everything else
   // in this function is: a loop started outside a repository would otherwise
-  // assemble, run, and fail at its first paid step. `container` is refused
-  // rather than quietly downgraded to a worktree — an operator who asked for
-  // process isolation and silently got filesystem isolation is the exact shape
-  // of "declared but not enforced" this engine has to refuse.
-  const { isolation } = loaded.config.agent;
-  if (isolation === "container") {
-    throw new Error(
-      'agent.isolation: container is not implemented in v1. Use "worktree" for filesystem ' +
-      'isolation, or "none" to run the agent in this checkout.',
-    );
-  }
-  const sandbox = isolation === "worktree" ? { root: await repositoryRoot(dir) } : null;
+  // assemble, run, and fail at its first paid step.
+  const sandbox = await sandboxFor(loaded.config, dir);
 
   const stop = new AbortController();
 

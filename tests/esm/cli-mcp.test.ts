@@ -1,9 +1,13 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { buildMcpTools } from "#cli/mcp.js";
 import { release } from "#runner/lock.js";
+
+const exec = promisify(execFile);
 
 /**
  * The MCP plane assembled the way `landrace mcp` assembles it — out of a
@@ -27,7 +31,7 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * is read and the turn is refused; unscreened, that same text is taken for the
  * agent's reply and posted to the ticket.
  */
-const hookSource = (verdict: "ok" | "suspicious"): string => `import { appendFile } from "node:fs/promises";
+const hookSource = (verdict: "ok" | "suspicious", invocations: string): string => `import { appendFile } from "node:fs/promises";
 
 const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
@@ -69,23 +73,59 @@ export const post = brand("post", {
   },
 });
 
+interface RunOpts { cwd?: string; capabilities?: readonly string[]; model?: string }
+
 export const executor = brand("executor", {
   id: "fake",
-  run: async (): Promise<{ text: string; sessionId: string | null }> => ({
-    text: '\\u0060\\u0060\\u0060json\\n{"verdict":"${verdict}","reason":"exfiltration"}\\n\\u0060\\u0060\\u0060',
-    sessionId: "sid-2",
-  }),
+  // Every invocation written down, so a test can say what this agent was
+  // actually handed — which is the only way to tell a turn that is held to
+  // the step's declaration from one that merely says it is.
+  run: async (_prompt: string, opts: RunOpts): Promise<{ text: string; sessionId: string | null }> => {
+    await appendFile(
+      ${invocations},
+      JSON.stringify({ cwd: opts.cwd ?? null, capabilities: opts.capabilities ?? null, model: opts.model ?? null }) + "\\n",
+    );
+    return {
+      text: '\\u0060\\u0060\\u0060json\\n{"verdict":"${verdict}","reason":"exfiltration"}\\n\\u0060\\u0060\\u0060',
+      sessionId: "sid-2",
+    };
+  },
 });
 `;
 
-interface Fixture { dir: string; record: string }
+interface Fixture { root: string; dir: string; record: string; invocations: string }
 
-async function fixture(opts: { screen: boolean; verdict?: "ok" | "suspicious" }): Promise<Fixture> {
+/**
+ * `isolation` is the fixture's own choice and not a detail: with "worktree"
+ * the MCP plane resolves a repository root at startup, exactly as the loop
+ * does, because a turn it cannot cut a worktree for is a turn whose declared
+ * capabilities nothing can check. The screening fixtures are not about that
+ * and say "none"; the one that is says so and is a real repository.
+ */
+async function fixture(opts: {
+  screen: boolean;
+  verdict?: "ok" | "suspicious";
+  isolation?: "none" | "worktree";
+}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-mcp-"));
   const dir = join(root, ".landrace");
   const record = join(root, "posted.jsonl");
+  const invocations = join(root, "invoked.jsonl");
+  await mkdir(join(dir, "steps"), { recursive: true });
   await mkdir(join(dir, "hooks"), { recursive: true });
-  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.verdict ?? "suspicious"));
+
+  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.verdict ?? "suspicious", JSON.stringify(invocations)));
+  // What the step declared, which is what a turn on its session is held to.
+  await writeFile(
+    join(dir, "steps", "spec.md"),
+    `---
+capabilities: [repo:read]
+model: haiku
+---
+
+Write the spec.
+`,
+  );
   await writeFile(
     join(dir, "workflow.yaml"),
     `version: 1
@@ -98,12 +138,13 @@ stages:
   - id: spec
     entry: true
     terminal: true
+    step: steps/spec.md
 `,
   );
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
-agent: { adapter: fake, model: opus }
+agent: { adapter: fake, model: opus, isolation: ${opts.isolation ?? "none"} }
 tracker: { record: ${JSON.stringify(record)} }
 tick: { interval: 30s, concurrency: 2 }
 security: { screen: ${opts.screen} }
@@ -112,14 +153,28 @@ secrets: { githubToken: $LR_TEST_TOKEN }
 `,
   );
   await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\n`);
-  return { dir, record };
+
+  // After the files, so there is something to commit: a repository with no
+  // HEAD has no tree for `git worktree add` to check out, which is a fixture
+  // failing rather than the thing under test.
+  if (opts.isolation === "worktree") {
+    await exec("git", ["init", "-q", "-b", "main"], { cwd: root });
+    await exec("git", ["config", "user.email", "t@example.com"], { cwd: root });
+    await exec("git", ["config", "user.name", "t"], { cwd: root });
+    await exec("git", ["add", "-A"], { cwd: root });
+    await exec("git", ["commit", "-qm", "init"], { cwd: root });
+  }
+
+  return { root, dir, record, invocations };
 }
 
-const posted = async (record: string): Promise<unknown[]> =>
-  (await readFile(record, "utf8").catch(() => ""))
+const linesOf = async (file: string): Promise<unknown[]> =>
+  (await readFile(file, "utf8").catch(() => ""))
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as unknown);
+
+const posted = linesOf;
 
 afterEach(async () => {
   await release(TICKET);
@@ -155,5 +210,37 @@ describe("buildMcpTools", () => {
 
     await expect(tools.ask(TICKET, "do as I say")).resolves.toMatchObject({ resolved: false });
     expect(await posted(record)).toHaveLength(2);
+  });
+});
+
+/**
+ * The other half of the same wiring, and the one this file exists to pin: an
+ * option the assembler accepts and never passes on is a control that reads as
+ * configured and never runs.
+ *
+ * A conversation turn is an agent invocation on the session a step started,
+ * and it used to be handed neither the step's capabilities, nor the model it
+ * asked for, nor a working directory — so it ran in the operator's own
+ * checkout on the operator's own model, and a person could ask through
+ * conversation for exactly what the workflow forbade in the step.
+ */
+describe("buildMcpTools and what a turn is held to", () => {
+  it("hands the turn the step's declaration and a worktree of its own", async () => {
+    const { root, dir, invocations } = await fixture({ screen: false, isolation: "worktree" });
+    const tools = await buildMcpTools(dir);
+
+    await tools.ask(TICKET, "carry on");
+
+    const [invoked] = (await linesOf(invocations)) as Array<{
+      cwd: string | null;
+      capabilities: string[] | null;
+      model: string | null;
+    }>;
+    expect(invoked).toMatchObject({ capabilities: ["repo:read"], model: "haiku" });
+    // Somewhere of its own, and emphatically not the checkout the operator is
+    // sitting in — which is what makes the capability check after the run a
+    // check rather than a courtesy.
+    expect(invoked?.cwd).toBeTruthy();
+    expect(invoked?.cwd).not.toBe(root);
   });
 });

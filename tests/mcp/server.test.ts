@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OUTPUT_KIND, renderMarker } from "#conventions.js";
-import type { Executor, ToolOptions } from "#namespace.js";
+import type { Executor, Step, ToolOptions, Workflow } from "#namespace.js";
 import { createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
 import { held } from "#runner/lock.js";
@@ -79,7 +79,14 @@ describe("mcp server over a real transport", () => {
     };
     const { client, gh } = await connect(
       [{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }],
-      { executor: hanging, lock: { root } },
+      {
+        executor: hanging,
+        lock: { root },
+        // A turn is held to what its step declared, so the conversation has to
+        // be told what that is — as the loop tells it.
+        workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", triggers: [] }] } as Workflow,
+        steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
+      },
     );
     gh.say(
       1,

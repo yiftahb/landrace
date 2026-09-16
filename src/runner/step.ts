@@ -98,15 +98,46 @@ const describeValue = (value: unknown): string => {
 const MAX_NAMED_CHANGES = 10;
 
 /**
- * What the step did to the worktree it was given that it never declared it
+ * The worktree as it stood before an agent was let loose in it, or the reason
+ * it cannot be judged at all.
+ *
+ * Read *before* the agent runs, and not compared against "clean": a worktree a
+ * crashed run left dirty is not this agent's doing, and failing an innocent
+ * run forever is how a guard gets switched off. Unreadable is a refusal rather
+ * than a skip, and it is a refusal *before* anything is paid for — a skipped
+ * capability check is the capability not existing.
+ *
+ * `null` whenever there is nothing to judge — no sandbox, or a declaration
+ * that includes `repo:write` and is entitled to change things — so "did we
+ * read a before state" and "should we compare" cannot become two conditions
+ * free to disagree.
+ *
+ * Exported because a conversation turn is an agent invocation on the same
+ * session under the same declaration, and two copies of this reasoning is how
+ * one of them comes to be weaker than the other.
+ */
+export async function sandboxBefore(
+  sandbox: { path: string } | undefined,
+  capabilities: readonly string[] | undefined,
+): Promise<{ ok: true; before: WorktreeState | null } | { ok: false; reason: string }> {
+  if (!sandbox || mayWriteRepo(capabilities)) return { ok: true, before: null };
+  try {
+    return { ok: true, before: await worktreeState(sandbox.path) };
+  } catch (e) {
+    return { ok: false, reason: `the worktree could not be read, so the declared capabilities cannot be enforced: ${messageOf(e)}` };
+  }
+}
+
+/**
+ * What the agent did to the worktree it was given that it never declared it
  * could, or null if it behaved.
  *
- * `before` is null whenever there is nothing to judge — no sandbox, or a step
- * that declared `repo:write` and is entitled to change things — which keeps
- * the "did we read a before state" decision and the "should we compare" one
- * from being two conditions free to disagree.
+ * Asked of the file system, not of the flags we passed. An executor is free to
+ * ignore `capabilities` — one registered by a hook module never saw our CLI
+ * flags in the first place — so this is the half of the capability that the
+ * engine actually enforces rather than delegating to the agent.
  */
-async function sandboxTrespass(
+export async function sandboxTrespass(
   sandbox: { path: string } | undefined,
   before: WorktreeState | null,
 ): Promise<string | null> {
@@ -120,7 +151,7 @@ async function sandboxTrespass(
   try {
     after = await worktreeState(sandbox.path);
   } catch (e) {
-    return `the step's worktree could not be read, so what it did there cannot be checked: ${messageOf(e)}`;
+    return `the worktree could not be read, so what the agent did there cannot be checked: ${messageOf(e)}`;
   }
 
   const changed = changedSince(before, after);
@@ -129,7 +160,7 @@ async function sandboxTrespass(
   const named = changed.slice(0, MAX_NAMED_CHANGES).join(", ");
   const rest = changed.length - MAX_NAMED_CHANGES;
   return (
-    "the step changed its worktree without declaring repo:write: " +
+    "the agent changed the worktree it was given without declaring repo:write: " +
     `${named}${rest > 0 ? ` and ${rest} more` : ""}`
   );
 }
@@ -176,24 +207,9 @@ export async function runStep(opts: {
     };
   }
 
-  // Read before the agent runs, not compared against "clean": a worktree a
-  // crashed run left dirty is not this step's doing, and failing an innocent
-  // step forever is how a guard gets switched off. Unreadable here means the
-  // step is refused *before* it is paid for — the check would have to be
-  // skipped otherwise, and a skipped capability check is the capability not
-  // existing.
-  let before: WorktreeState | null = null;
-  if (opts.sandbox && !mayWriteRepo(step.capabilities)) {
-    try {
-      before = await worktreeState(opts.sandbox.path);
-    } catch (e) {
-      return {
-        ok: false,
-        kind: "refused",
-        reason: `the step's worktree could not be read, so its capabilities cannot be enforced: ${messageOf(e)}`,
-      };
-    }
-  }
+  const start = await sandboxBefore(opts.sandbox, step.capabilities);
+  if (!start.ok) return { ok: false, kind: "refused", reason: start.reason };
+  const before = start.before;
 
   if (opts.screen) {
     // Screen the rendered prompt, never the template: the template is the
@@ -267,10 +283,6 @@ export async function runStep(opts: {
     return { ok: false, kind: "unavailable", reason: messageOf(e) };
   }
 
-  // Asked of the file system, not of the flags we passed. An executor is free
-  // to ignore `capabilities` — one registered by a hook module never saw our
-  // CLI flags in the first place — so this is the half of the capability that
-  // is actually enforced by the engine rather than delegated to the agent.
   // A verdict, not an outage: durable and terminal, like a screening refusal.
   const trespass = await sandboxTrespass(opts.sandbox, before);
   if (trespass) return { ok: false, kind: "refused", reason: trespass };

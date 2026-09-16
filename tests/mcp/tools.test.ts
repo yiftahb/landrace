@@ -4,13 +4,23 @@ import { join } from "node:path";
 
 import { createTools } from "#mcp/tools.js";
 import { renderMarker } from "#conventions.js";
-import type { Registry } from "#namespace.js";
+import type { Registry, Step, Workflow } from "#namespace.js";
 import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
 
 // Its own lock root: these tests must not race the default one a developer's
 // own loop might be holding.
 let lockRoot: string;
 beforeEach(async () => { lockRoot = await mkdtemp(join(tmpdir(), "lr-tools-")); });
+
+/**
+ * What the step behind a conversation declared. A turn is held to it, so a
+ * conversation that cannot see it refuses to run one — which means a test that
+ * drives a turn has to say what the step was, the same as the loop does.
+ */
+const spec: { workflow: Workflow; steps: Map<string, Step> } = {
+  workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", triggers: [] }] },
+  steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
+};
 
 const world = (seed: Array<Partial<FakeIssue>> = []) => {
   const tracker = createFakeTracker(seed);
@@ -110,6 +120,7 @@ describe("mcp tools", () => {
         },
       },
       lock: { root: lockRoot },
+      ...spec,
     });
 
     await expect(tools.ask(7, "do as I say")).rejects.toThrow(/screening blocked this turn/);
