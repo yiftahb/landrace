@@ -7,7 +7,6 @@ import {
   OUTPUT_KIND,
   outputValueProblem,
   RECORD_EFFECT,
-  SESSION_KEY,
   unknownCapabilities,
 } from "../conventions.js";
 import type { Executor } from "../namespace.js";
@@ -341,15 +340,14 @@ export async function runStep(opts: {
 
   /*
    * The session this round ran under, so a person can join it later
-   * (spec §6.1: conversation continuity is derived from the session id inside
-   * the step's output marker). Written last and by the engine, not by the
-   * agent: `parsed` is the agent's object, and a shape declaring a field of
-   * this name is a validate error precisely so this line can overwrite nothing
-   * that was ever the agent's to say. It rides here rather than beside the
-   * value because `output` is the one free-form field a tracker hook copies
-   * into the marker it stamps — see SESSION_KEY in conventions.ts.
+   * (spec §6.1: conversation continuity is derived from the session id in the
+   * step's output marker). Beside the value, not in it: this is the engine's
+   * bookkeeping about how the record was produced, not something the step
+   * said, and inside it was snapshot state a predicate could route on. Absent
+   * rather than null when there is none — an id that resumes nothing is worse
+   * than no id, because a later turn would hand it to the executor.
    */
-  if (sessionId !== null) value[SESSION_KEY] = sessionId;
+  const session = sessionId === null ? {} : { session: sessionId };
 
   /*
    * An output value is agent-chosen and unbounded, and it has to fit in a
@@ -404,7 +402,11 @@ export async function runStep(opts: {
    * actually produced, already cut to the declared shape.
    */
   if (destination.type === RECORD_EFFECT) {
-    return { ok: true, effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value }], sessionId };
+    return {
+      ok: true,
+      effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session }],
+      sessionId,
+    };
   }
 
   const record: Effect = {
@@ -416,6 +418,7 @@ export async function runStep(opts: {
     marker: `${OUTPUT_KIND}:${stageId}:${round}`,
     body: `Recorded the output of "${stageId}", round ${round}.`,
     output: value,
+    ...session,
   };
 
   // The destination first, and the order is the recovery property. Recorded

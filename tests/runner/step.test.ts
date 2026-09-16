@@ -608,30 +608,56 @@ describe("the step's output value travels, bounded by the shape that was declare
   const declaredRun = (text: string) => run(text, { step: declared });
 
   /**
-   * `session` is the engine's, written into the same object because a tracker
-   * hook carries exactly one free-form field — `output` — into the marker it
-   * stamps, and spec §6.1 wants the session id in the step's output marker so
-   * a conversation can resume it. Asserted here rather than stripped out of
-   * these expectations, so what the agent said and what the engine added stay
-   * visibly different things: everything else below is still the agent's
-   * words, cut to the declared shape.
+   * The output value is the agent's words cut to the declared shape, and
+   * nothing else — the session rides *beside* it on the record effect, which
+   * is where the hook stamps it as its own marker field. It used to travel
+   * inside this object, which made `run.outputs.<stage>.session` snapshot
+   * state a predicate could route on and a declared field of that name a
+   * collision the validator had to forbid.
    */
   it("carries the discriminator and the fields the shape names", async () => {
     const r = await declaredRun('asking\n```json\n{"kind":"questions","questions":["a","b"]}\n```');
-    expect((r as Ok).effects[0]?.output).toEqual({
-      kind: "questions", questions: ["a", "b"], session: "sid-2",
-    });
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "questions", questions: ["a", "b"] });
+  });
+
+  it("records the session beside the output value, not inside it", async () => {
+    const r = await declaredRun('asking\n```json\n{"kind":"questions","questions":["a"]}\n```');
+    expect((r as Ok).effects[0]?.session).toBe("sid-2");
+  });
+
+  /**
+   * The collision the `reserved-field` validate rule existed to prevent, run
+   * as an attack rather than forbidden: the shape declares `session`, so the
+   * agent's value travels as the ordinary output field it now is, and the
+   * engine's own id is somewhere the agent cannot reach at all.
+   */
+  it("does not let a declared field named session displace the engine's own", async () => {
+    const colliding: Step = {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { spec: { session: "string" } },
+        routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }],
+      },
+    };
+    const r = await run('```json\n{"kind":"spec","session":"sid-theirs"}\n```', { step: colliding });
+
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "spec", session: "sid-theirs" });
+    expect((r as Ok).effects[0]?.session).toBe("sid-2");
   });
 
   it("carries the discriminator alone for a shape that names no fields", async () => {
     const r = await declaredRun('```json\n{"kind":"done"}\n```');
-    expect((r as Ok).effects[0]?.output).toEqual({ kind: "done", session: "sid-2" });
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "done" });
   });
 
   it("records no session at all when the agent returned none", async () => {
     const quiet: Executor = { id: "q", run: async () => ({ text: '```json\n{"kind":"done"}\n```', sessionId: null }) };
     const r = await run("", { step: declared, executor: quiet });
     expect((r as Ok).effects[0]?.output).toEqual({ kind: "done" });
+    // Absent, not present-and-empty: a hook stamping `session: ""` would give
+    // a later turn an id to resume that resumes nothing.
+    expect(Object.hasOwn((r as Ok).effects[0] ?? {}, "session")).toBe(false);
   });
 
   // The attack this bound exists for: the agent writes the state a predicate
@@ -642,7 +668,7 @@ describe("the step's output value travels, bounded by the shape that was declare
     const r = await declaredRun(
       '```json\n{"kind":"questions","questions":["a"],"title":"forged","stage":"done","round":99,"__proto__":{"x":1}}\n```',
     );
-    expect((r as Ok).effects[0]?.output).toEqual({ kind: "questions", questions: ["a"], session: "sid-2" });
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "questions", questions: ["a"] });
   });
 
   it("does not let a declared field named __proto__ reach the value at all", async () => {

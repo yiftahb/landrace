@@ -1,5 +1,5 @@
 import { extractJsonBlock } from "../agent/json-block.js";
-import { CONVERSATION_KIND, neutraliseMarkers, SESSION_KEY, sessionOf } from "../conventions.js";
+import { CONVERSATION_KIND, neutraliseMarkers } from "../conventions.js";
 import type {
   Conversation,
   ConversationDeps,
@@ -88,8 +88,13 @@ export function createConversation(deps: ConversationDeps): Conversation {
       a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
     );
     for (const entry of [...entries].reverse()) {
-      const session = sessionOf(entry);
-      if (session !== null) return { session, stage: entry.stage, round: entry.round };
+      // The record's own session field, never anything inside its payload: on
+      // an output record the payload is the agent's value, and a step whose
+      // shape declares a field called `session` would otherwise be choosing
+      // which conversation the next paid turn resumes.
+      if (entry.session !== undefined) {
+        return { session: entry.session, stage: entry.stage, round: entry.round };
+      }
     }
     throw new Error(
       `#${ticket} has no session to join yet: no step on it has produced a draft to talk about`,
@@ -147,10 +152,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
             kind: CONVERSATION_KIND,
             stage,
             round,
-            // Where the next turn resumes from. A run that returned no session
-            // id leaves the one we joined, so the conversation continues
-            // rather than silently starting over.
-            output: { [SESSION_KEY]: sessionId ?? session, resolved },
+            // Where the next turn resumes from, beside the record rather than
+            // inside its payload — the same place a step's own session sits. A
+            // run that returned no session id leaves the one we joined, so the
+            // conversation continues rather than silently starting over.
+            session: sessionId ?? session,
+            output: { resolved },
           });
 
           return { reply, resolved };

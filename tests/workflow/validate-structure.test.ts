@@ -60,14 +60,16 @@ describe("structural validation", () => {
   });
 
   /**
-   * The engine writes the agent's session id into the same object a step's
-   * output value travels in (conventions.ts, SESSION_KEY), because that is the
-   * one field a tracker hook carries into the marker it stamps. A shape that
-   * declared the same name would be silently overwritten — and what it would
-   * cost is the thing the id is for: the conversation would resume whatever
-   * the agent happened to put there.
+   * The rule that used to stand here refused a step whose output shape
+   * declared a field called `session`, because the engine wrote its own id
+   * into that same object. It does not any more — the session rides beside
+   * the value on the record (namespace.ts, `Marker.session`) — so the
+   * collision cannot happen and a guard against nothing was deleted rather
+   * than kept for reassurance. What replaces it is the attack itself:
+   * tests/mcp/conversation.test.ts runs a step whose shape declares the name
+   * and pins that the turn resumes the engine's session, not the agent's.
    */
-  it("flags a step whose output shape declares the field the engine records the session in", () => {
+  it("does not object to a step whose output shape declares a field named session", () => {
     const steps = new Map<string, Step>([["s.md", {
       prompt: "",
       output: {
@@ -77,10 +79,8 @@ describe("structural validation", () => {
       },
     }]]);
     const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
-    const problems = validateStructure(w, steps);
 
-    expect(problems.map((p) => p.rule)).toContain("reserved-field");
-    expect(problems.find((p) => p.rule === "reserved-field")?.message).toMatch(/session/);
+    expect(validateStructure(w, steps)).toEqual([]);
   });
 
   it("accepts the capabilities the engine does enforce", () => {

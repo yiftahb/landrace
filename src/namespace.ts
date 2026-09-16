@@ -40,6 +40,14 @@ export interface Entry {
   kind: string;
   round: number;
   data?: unknown;
+  /**
+   * The agent session this record was produced under, when it was produced by
+   * one. Spec §6.1 derives conversation continuity from it, and it is beside
+   * `data` rather than in it for the same reason it is beside `output` on the
+   * marker: it is the engine's bookkeeping about how the record was made, not
+   * something the step said.
+   */
+  session?: string;
   /** ISO 8601. Ordering is by this field, not array position. */
   at: string;
   /** True when we wrote it. False means a person did. */
@@ -161,6 +169,15 @@ export interface Marker {
    * vanished, so every trigger routing on an output field was dead.
    */
   output?: unknown;
+  /**
+   * The agent session the record was produced under — a step's own, or the
+   * turn that last spoke on it. Beside `output`, never inside it: inside, it
+   * was snapshot state (`outputs.<stage>.session`) that a predicate could
+   * route on, and a step whose declared shape named a field `session` either
+   * collided with it or had to be refused by the validator. Here, the two
+   * cannot meet — the step's value is the agent's, and this is ours.
+   */
+  session?: string;
   [key: string]: unknown;
 }
 

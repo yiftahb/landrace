@@ -5,6 +5,7 @@ import {
   renderMarker,
   stripMarker,
 } from "../../src/conventions.js";
+import type { Marker } from "../../src/namespace.js";
 
 const doc = { stage: "spec", kind: "output", round: 2 };
 
@@ -94,6 +95,71 @@ describe("entriesFromComments", () => {
     );
     expect(entry).toMatchObject({ stage: "spec", kind: "output", round: 2 });
     expect(entry?.data).toBeUndefined();
+  });
+
+  /*
+   * The session is engine bookkeeping about how a record was produced, so it
+   * rides beside the payload rather than in it — one field, read the same way
+   * whatever kind of record carries it, which is what lets a conversation
+   * turn resume a step's session and the turn after that resume the turn's.
+   */
+  it("reads the session beside a marker's output, whatever kind the record is", () => {
+    const entries = entriesFromComments([
+      {
+        id: 1,
+        body: `asking${renderMarker({ ...doc, session: "sid-step", output: { kind: "questions" } })}`,
+        created_at: at(1),
+        user: { login: "bot" },
+      },
+      {
+        id: 2,
+        body: `answering${renderMarker({ stage: "spec", kind: "conversation", round: 2, session: "sid-turn" })}`,
+        created_at: at(2),
+        user: { login: "bot" },
+      },
+    ], "bot");
+
+    expect(entries[0]?.session).toBe("sid-step");
+    expect(entries[1]?.session).toBe("sid-turn");
+    // And it stays out of the payload, which is the step's own value and the
+    // state predicates route on.
+    expect(entries[0]?.data).toEqual({ kind: "questions" });
+  });
+
+  /*
+   * The attack the `reserved-field` validate rule used to forbid instead of
+   * withstand: a step whose output shape declares a field called `session`
+   * puts an agent-chosen string in the payload. It is an ordinary output
+   * field there — it is not where the engine records a session, so it cannot
+   * become the id a paid turn resumes.
+   */
+  it("does not read a session out of an output value that happens to declare one", () => {
+    const body = `draft${renderMarker({ ...doc, output: { kind: "spec", session: "sid-agent" } })}`;
+    const [entry] = entriesFromComments([{ id: 1, body, created_at: at(1), user: { login: "bot" } }], "bot");
+
+    expect(entry?.session).toBeUndefined();
+    expect(entry?.data).toEqual({ kind: "spec", session: "sid-agent" });
+  });
+
+  // Fail closed on a marker whose session is not one: an empty string is an
+  // id to resume that resumes nothing, and a number is a `--resume` argument
+  // built out of "7".
+  it("ignores a session that is not a non-empty string", () => {
+    const entries = entriesFromComments([
+      { id: 1, body: `a${renderMarker({ ...doc, session: "" })}`, created_at: at(1), user: { login: "bot" } },
+      // Cast, because the field is declared a string: a marker is JSON parsed
+      // back out of a comment, so its type is a claim about what we wrote, and
+      // this is the body that claims something else.
+      {
+        id: 2,
+        body: `b${renderMarker({ ...doc, session: 7 } as unknown as Marker)}`,
+        created_at: at(2),
+        user: { login: "bot" },
+      },
+    ], "bot");
+
+    expect(entries[0]?.session).toBeUndefined();
+    expect(entries[1]?.session).toBeUndefined();
   });
 
   it("keeps a human comment's text where a step can read it", () => {

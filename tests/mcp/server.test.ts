@@ -84,7 +84,7 @@ describe("mcp server over a real transport", () => {
     gh.say(
       1,
       "draft" +
-        renderMarker({ stage: "spec", kind: OUTPUT_KIND, round: 1, output: { kind: "questions", session: "sid-1" } }),
+        renderMarker({ stage: "spec", kind: OUTPUT_KIND, round: 1, session: "sid-1", output: { kind: "questions" } }),
     );
 
     const call = client.callTool({ name: "landrace_ask", arguments: { ticket: 1, message: "B2B only" } });

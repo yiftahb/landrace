@@ -48,9 +48,43 @@ function seeded(): FakeTracker {
   tracker.say(
     1,
     "Here are my questions." +
-      renderMarker({ stage: "spec", kind: OUTPUT_KIND, round: 1, output: { kind: "questions", session: "sid-1" } }),
+      renderMarker({ stage: "spec", kind: OUTPUT_KIND, round: 1, session: "sid-1", output: { kind: "questions" } }),
   );
   return tracker;
+}
+
+/**
+ * A ticket where a real step has run and recorded its output through the real
+ * tracker hook — and whose declared output shape names a field `session`, so
+ * the agent's own string is sitting in the payload beside everything else it
+ * said. `recorded` is the session the *engine* saw, or null for a run that
+ * returned none.
+ */
+async function ranWithDeclaredSession(recorded: string | null): Promise<{ tracker: FakeTracker }> {
+  const tracker = createFakeTracker([{ number: 1, labels: ["lr:auto"] }]);
+  const step: Step = {
+    prompt: "write the spec",
+    output: {
+      discriminator: "kind",
+      shapes: { questions: { session: "string" } },
+      routes: [{ when: { kind: "questions" }, effect: { type: "tracker.comment", marker: "questions:{round}" } }],
+    },
+  };
+  const result = await runStep({
+    step, stageId: "spec", round: 1, snapshot: {},
+    executor: {
+      id: "step",
+      run: async () => ({ text: '```json\n{"kind":"questions","session":"sid-theirs"}\n```', sessionId: recorded }),
+    },
+    signal: new AbortController().signal,
+  });
+  if (!result.ok) throw new Error(result.reason);
+
+  const dispatcher = createDispatcher(tracker.registry.post);
+  for (const effect of result.effects) {
+    await dispatcher.apply(effect, { ...tracker.ctx, ticket: 1, snapshot: {} });
+  }
+  return { tracker };
 }
 
 const bodies = (tracker: FakeTracker, ticket = 1): string[] =>
@@ -102,6 +136,44 @@ describe("conversation", () => {
     }).ask(1, "B2B only");
 
     expect(resumed).toBe("sid-real");
+  });
+
+  /**
+   * The other half of the same rule, and the reason the `reserved-field`
+   * validate rule could go: the session is beside the output, not in it, so a
+   * step whose shape declares a field called `session` is declaring an
+   * ordinary output field — the agent fills it with whatever it likes and the
+   * turn still resumes the session the engine recorded.
+   */
+  it("resumes the engine's session, not one the step's own output declared", async () => {
+    const { tracker } = await ranWithDeclaredSession("sid-real");
+
+    let resumed: string | undefined;
+    await world(tracker, agent("Understood.", (r) => (resumed = r))).ask(1, "B2B only");
+
+    expect(resumed).toBe("sid-real");
+    // And the agent's own field is still the agent's, carried into the state
+    // predicates route on rather than silently overwritten by the engine's id.
+    const output = tracker.entriesOf(1).find((e) => e.kind === OUTPUT_KIND);
+    expect(output?.data).toEqual({ kind: "questions", session: "sid-theirs" });
+  });
+
+  /**
+   * And with no session of the engine's to prefer, the agent's field is still
+   * not one: a step whose run returned no session id has left nothing to
+   * resume, and "nothing" is the answer — not the string the agent wrote into
+   * a field it happened to be allowed to declare.
+   */
+  it("refuses rather than resuming a session the agent declared when the step recorded none", async () => {
+    const { tracker } = await ranWithDeclaredSession(null);
+    let invoked = false;
+    const spy: Executor = {
+      id: "spy",
+      run: async () => { invoked = true; return { text: "", sessionId: null }; },
+    };
+
+    await expect(world(tracker, spy).ask(1, "B2B only")).rejects.toThrow(/no session to join/);
+    expect(invoked).toBe(false);
   });
 
   it("records both halves of the exchange on the ticket", async () => {
@@ -200,7 +272,7 @@ describe("conversation", () => {
       "a-stranger",
       3,
       "here you go" +
-        renderMarker({ stage: "spec", kind: OUTPUT_KIND, round: 1, output: { kind: "spec", session: "sid-theirs" } }),
+        renderMarker({ stage: "spec", kind: OUTPUT_KIND, round: 1, session: "sid-theirs", output: { kind: "spec" } }),
     );
     await expect(world(tracker).ask(3, "hello")).rejects.toThrow(/no session to join/);
   });

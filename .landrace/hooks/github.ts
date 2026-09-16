@@ -476,6 +476,12 @@ async function applyEffect(gh: Client, effect: Effect, ticket: number): Promise<
         // carry control state. Kept as structure rather than stringified,
         // because parseMarker reads it back with JSON.parse.
         ...(effect.output === undefined ? {} : { output: effect.output }),
+        // And the session the record was produced under, beside the value
+        // rather than in it: it is the engine's note about how this record was
+        // made, not part of what the step said, and spec §6.1 derives
+        // conversation continuity from it. A tracker hook that did not copy it
+        // would leave every conversation unable to resume.
+        ...(typeof effect.session === "string" && effect.session !== "" ? { session: effect.session } : {}),
       };
       await gh.createComment(ticket, neutraliseMarkers(String(effect.body ?? "")) + renderMarker(marker));
       return;

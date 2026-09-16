@@ -243,9 +243,7 @@ describe("the spec phase routes on what the step actually said", () => {
     const r = await run(gh, { answers });
 
     expect(r.invocations).toEqual([{ stage: "spec", round: 1 }]);
-    expect(r.run.outputs.spec).toEqual({
-      kind: "questions", questions: ["in-house or vendor?"], session: "scripted-spec-1",
-    });
+    expect(r.run.outputs.spec).toEqual({ kind: "questions", questions: ["in-house or vendor?"] });
     expect(r.labels).toEqual(expect.arrayContaining(["lr:stage:spec-questions", "lr:awaiting"]));
     expect(r.labels).not.toContain("lr:working");
   });
@@ -257,7 +255,7 @@ describe("the spec phase routes on what the step actually said", () => {
     const r = await run(gh, { answers });
 
     expect(r.invocations).toEqual([{ stage: "spec", round: 2 }]);
-    expect(r.run.outputs.spec).toEqual({ kind: "spec", title: "Export CSV", session: "scripted-spec-2" });
+    expect(r.run.outputs.spec).toEqual({ kind: "spec", title: "Export CSV" });
     expect(r.run.counters.spec).toBe(2);
     expect(r.labels).toContain("lr:stage:spec-human-review");
 
@@ -299,7 +297,7 @@ describe("the spec phase routes on what the step actually said", () => {
       { stage: "build", round: 1 },
       { stage: "code-review", round: 1 },
     ]);
-    expect(r.run.outputs.triage).toEqual({ intent: "approve", session: "scripted-triage-1" });
+    expect(r.run.outputs.triage).toEqual({ intent: "approve" });
     // The one thing triage exists to read. `{run.lastHuman.body}` resolved to
     // nothing — lastHuman is an Entry, and the comment text is on its `data` —
     // so the judge was shown its own placeholder and asked to classify it.
@@ -328,13 +326,11 @@ describe("the spec phase routes on what the step actually said", () => {
       },
     });
 
-    // `session` is the engine's own, not the agent's: runStep writes it beside
-    // the declared fields so a later turn can resume the conversation
-    // (SESSION_KEY in conventions.ts). Everything the agent tried to add —
-    // `title`, `intent`, `stage` — is still gone, which is what this pins.
-    expect(r.run.outputs.spec).toEqual({
-      kind: "questions", questions: ["a?"], session: "scripted-spec-1",
-    });
+    // Everything the agent tried to add — `title`, `intent`, `stage` — is
+    // gone, which is what this pins. The engine's own session is not here
+    // either: it rides beside the value on the record, so `outputs.<stage>` is
+    // the agent's declared fields and nothing else.
+    expect(r.run.outputs.spec).toEqual({ kind: "questions", questions: ["a?"] });
     expect(r.labels).toContain("lr:stage:spec-questions");
   });
 });

@@ -4,7 +4,6 @@ import {
   isReservedId,
   OUTPUT_KIND,
   RECORD_EFFECT,
-  SESSION_KEY,
   unknownCapabilities,
 } from "../conventions.js";
 import { identityOf } from "../core/locate.js";
@@ -108,22 +107,6 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
         message:
           `step ${stage.step} declares ${unenforceable.map((c) => `"${c}"`).join(", ")}, ` +
           `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}`,
-      });
-    }
-    // The engine writes the agent's session id into the same object a step's
-    // output value travels in (SESSION_KEY in conventions.ts), because that is
-    // the one field a tracker hook carries into the marker it stamps. A shape
-    // declaring the same name is silently overwritten, and what that costs is
-    // exactly what the id is for: a conversation would resume whatever the
-    // agent happened to put there.
-    for (const [shape, fields] of Object.entries(step?.output?.shapes ?? {})) {
-      if (fields === null || typeof fields !== "object" || Array.isArray(fields)) continue;
-      if (!Object.hasOwn(fields, SESSION_KEY)) continue;
-      problems.push({
-        rule: "reserved-field",
-        message:
-          `step ${stage.step}, shape "${shape}" declares a field named "${SESSION_KEY}", which the ` +
-          "engine records the agent's session under; rename it",
       });
     }
     for (const route of step?.output?.routes ?? []) {
