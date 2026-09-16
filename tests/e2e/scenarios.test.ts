@@ -359,3 +359,40 @@ describe("a reviewer's reply that triage cannot read as approve or revise", () =
     expect(gh.labelsOf(1)).not.toContain("lr:stage:triage");
   });
 });
+
+/**
+ * The money-burning shape this codebase keeps closing, on the other half of
+ * what a step produces.
+ *
+ * GitHub refuses an issue comment over 65,536 characters. A step that writes a
+ * longer report than that had its output *routed* fine and then thrown at
+ * apply time: converge halts having written nothing durable, so the next tick
+ * re-derives the stage as pending and pays for the same step again. Measured
+ * before the fix: one paid invocation per converge, for ever, with nothing
+ * ever appearing on the ticket for a person to read.
+ */
+describe("a step whose honest report is longer than the tracker will take", () => {
+  const REPORT = `${"Here is what I found. ".repeat(4_000)}\n\n\`\`\`json\n{"kind":"questions","questions":["in-house or vendor?"]}\n\`\`\``;
+
+  const world = async () => {
+    const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    return { gh, run: createHarness({ workflow, steps, ...gh.registry, answers: { spec: REPORT } }) };
+  };
+
+  it("is rejected once, with the reason on the ticket, instead of paid for again on the next tick", async () => {
+    const { gh, run } = await world();
+
+    const first = await run.converge();
+    expect(first.result.settled).toBe("halt");
+    expect(first.result.why).toMatch(/characters/);
+
+    // Durable: a person looking at the ticket can see what happened.
+    const bodies = (gh.comments.get(1) ?? []).map((c) => c.body).join("\n");
+    expect(bodies).toMatch(/Step output rejected/);
+
+    // And the verdict is read back, so the next tick does not re-run the step.
+    await run.converge();
+    expect(run.counts().spec).toBe(1);
+  });
+});

@@ -774,6 +774,56 @@ describe("the step's output value travels, bounded by the shape that was declare
 });
 
 /**
+ * The same rule as the output value above, applied to the other half of what a
+ * step produces: its prose.
+ *
+ * A tracker refuses a comment body past its own limit, and an apply that is
+ * refused throws — leaving nothing durable on the ticket, so the next tick
+ * re-derives the stage as pending and pays for the step again, for ever. No
+ * attacker is needed: a step that writes a long honest report is enough. So
+ * the size is a broken output contract, judged here where the refusal is
+ * recorded rather than thrown.
+ */
+describe("the prose a step writes into a record", () => {
+  const long = (chars: number): string => "Here is what I found. ".repeat(Math.ceil(chars / 22));
+
+  it("is rejected when it is longer than a record can carry, naming the size and the limit", async () => {
+    const r = await run(`${long(40_000)}\n\`\`\`json\n{"kind":"questions"}\n\`\`\``);
+    expect(r).toMatchObject({ ok: false, kind: "contract" });
+    expect((r as Fail).reason).toMatch(/characters/);
+    expect((r as Fail).reason).toMatch(/spec/);
+  });
+
+  it("is left alone at a length a long report actually reaches", async () => {
+    const r = await run(`${long(8_000)}\n\`\`\`json\n{"kind":"questions"}\n\`\`\``);
+    expect(r).toMatchObject({ ok: true });
+  });
+
+  /*
+   * Measured as it will be written, not as the agent typed it: every hook
+   * escapes the comment delimiters on the way out (neutraliseMarkers), and
+   * escaping only ever grows the body. Judging the raw length would pass a
+   * body that doubles on its way to the tracker and is refused there.
+   */
+  it("is judged by its escaped length, because that is what a tracker is handed", async () => {
+    const r = await run(`${"-->".repeat(11_000)}\n\`\`\`json\n{"kind":"questions"}\n\`\`\``);
+    expect(r).toMatchObject({ ok: false, kind: "contract" });
+    expect((r as Fail).reason).toMatch(/escaped/);
+  });
+
+  /*
+   * A route that sends the content off the tracker is publishing a document,
+   * and a document is not a comment. The record that follows it carries the
+   * engine's own one-line body, which is bounded by being ours.
+   */
+  it("is not bounded when the route publishes it as a document instead", async () => {
+    const r = await run(`${long(200_000)}\n\`\`\`json\n{"kind":"spec"}\n\`\`\``);
+    expect(r).toMatchObject({ ok: true });
+    expect((r as Ok).effects[0]).toMatchObject({ type: "artifact.publish" });
+  });
+});
+
+/**
  * A briefing is the text an artifact hands the *prompt* and nothing else — the
  * open review threads `fix-review` is told to address, which the engine
  * deliberately refuses to carry as state. It arrives beside the snapshot

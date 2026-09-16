@@ -296,6 +296,43 @@ export const neutraliseMarkers = (body: string): string =>
   body.replaceAll(COMMENT_OPEN, ESCAPED_OPEN).replaceAll(COMMENT_CLOSE, ESCAPED_CLOSE);
 
 /**
+ * The most prose a record may carry.
+ *
+ * Every tracker caps a comment somewhere in the tens of thousands of
+ * characters, and no tracker's number belongs in the engine — so this is not
+ * any of them. It is a bound on what an honest step writes: 32 KB is several
+ * thousand words of explanation beside a json block, far more than a step has
+ * ever needed and comfortably under the smallest limit a tracker is known to
+ * impose, with room left over for the marker appended after it. The real
+ * number is the hook's to know and to refuse by, which is the same division
+ * renderMarker and outputValueProblem already have.
+ */
+const MAX_RECORD_BODY = 32 * 1024;
+
+/**
+ * Why a record could not carry this prose, or null if it can.
+ *
+ * Asked at the step boundary, where a rejection is a broken output contract
+ * that leaves a durable record — never at apply time. An apply refused by the
+ * tracker throws, converge halts, and *nothing* is written: the next tick
+ * re-derives the stage as pending and pays for the step again, for ever. A
+ * step that writes a long honest report is all it takes.
+ *
+ * Measured escaped, because escaped is what a hook hands the tracker and
+ * escaping only ever grows a body — `-->` becomes `--&gt;`, so prose made of
+ * delimiters doubles on the way out. Judging the raw length would admit a
+ * body that is refused where it lands, which is the whole failure being
+ * closed here.
+ */
+export function recordBodyProblem(body: string): string | null {
+  const escaped = neutraliseMarkers(body).length;
+  if (escaped > MAX_RECORD_BODY) {
+    return `is ${escaped} characters once escaped, over the ${MAX_RECORD_BODY} a record can carry`;
+  }
+  return null;
+}
+
+/**
  * What core reads as a record's payload — `run.outputs[stage]` for an output
  * record, and the marker itself for the kinds core reads no value from.
  *

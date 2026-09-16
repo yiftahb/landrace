@@ -99,6 +99,20 @@ export interface GitHubOptions {
 /** A 404 from the API, told apart from every other failure by its status rather than by its text. */
 const isMissing = (e: unknown): boolean => (e as { status?: unknown } | null)?.status === 404;
 
+/**
+ * The most GitHub will take in an issue comment body. Its number, so it lives
+ * here: a Jira hook's is 32,767, and an engine that knew either of them would
+ * be an engine that knows which tracker it is driving.
+ *
+ * The engine's own bound is `recordBodyProblem` in src/conventions.ts, which
+ * is lower and tracker-agnostic, and which rejects at the step boundary where
+ * the refusal is *recorded* on the ticket. This is the backstop under it — for
+ * the bodies the engine does not compose, an operator's own `landrace_reply`
+ * among them — and it reports the size rather than letting the API answer 422
+ * to a request that should never have gone out.
+ */
+const MAX_COMMENT_CHARS = 65_536;
+
 function createClient(opts: GitHubOptions) {
   const { repo, token } = opts;
   const doFetch = opts.fetchImpl ?? fetch;
@@ -247,7 +261,18 @@ function createClient(opts: GitHubOptions) {
     updateIssue: (n: number, fields: { title?: string; body?: string; state?: string }) =>
       call<Issue>("PATCH", `/issues/${n}`, fields),
     listComments: (n: number) => call<Comment[]>("GET", `/issues/${n}/comments?per_page=100`),
-    createComment: (n: number, body: string) => call<Comment>("POST", `/issues/${n}/comments`, { body }),
+    createComment: (n: number, body: string) => {
+      // Refused before the request goes out, because a 422 here is an apply
+      // that throws — and an apply that throws leaves nothing durable on the
+      // ticket, so the next tick re-derives the stage as pending and pays for
+      // the step all over again.
+      if (body.length > MAX_COMMENT_CHARS) {
+        throw new Error(
+          `refusing to post a ${body.length}-character comment on #${n}: GitHub takes at most ${MAX_COMMENT_CHARS}`,
+        );
+      }
+      return call<Comment>("POST", `/issues/${n}/comments`, { body });
+    },
     addLabels: async (n: number, labels: string[]): Promise<void> => {
       if (labels.length) await call("POST", `/issues/${n}/labels`, { labels });
     },

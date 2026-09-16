@@ -153,3 +153,32 @@ describe("the hook reads its configuration out of the context", () => {
     await expect(source.list(withConfig({ repo: "acme/widgets" }))).rejects.toThrow(/githubToken/);
   });
 });
+
+/**
+ * GitHub's own comment limit, which is the hook's to know.
+ *
+ * The engine bounds what a *step* may write before it gets here, and does it
+ * tracker-agnostically. This is the backstop under that, for every body the
+ * engine did not compose — an operator's `landrace_reply`, a conversation
+ * turn — and it exists because the alternative is a 422 at apply time, which
+ * throws, writes nothing durable, and leaves the next tick re-deriving the
+ * stage as pending and paying for it again.
+ */
+describe("a comment body larger than GitHub will take", () => {
+  const client = () => build({ user: ok("landrace-bot") });
+
+  it("is refused with GitHub's own number, before the request goes out", async () => {
+    const { hooks, calls } = client();
+    const ctxWithTicket = { ...ticketCtx } as HookContext;
+    await expect(
+      hooks.post.apply({ type: "tracker.comment", body: "x".repeat(65_537) }, ctxWithTicket),
+    ).rejects.toThrow(/65536/);
+    expect(calls.filter((p) => p.endsWith("/comments"))).toEqual([]);
+  });
+
+  it("posts one that fits", async () => {
+    const { hooks, calls } = client();
+    await hooks.post.apply({ type: "tracker.comment", body: "x".repeat(60_000) }, { ...ticketCtx } as HookContext);
+    expect(calls.filter((p) => p.endsWith("/comments"))).toHaveLength(1);
+  });
+});

@@ -7,6 +7,7 @@ import {
   OUTPUT_KIND,
   outputValueProblem,
   RECORD_EFFECT,
+  recordBodyProblem,
   unknownCapabilities,
 } from "#conventions.js";
 import type { Executor } from "#namespace.js";
@@ -390,6 +391,25 @@ export async function runStep(opts: {
     Object.entries(route.effect).map(([k, v]) => [k, expand(v, vars)]),
   ) as Effect;
   const destination: Effect = { body, stage: stageId, round, ...expanded };
+
+  /*
+   * The output value's rule, applied to the other half of what a step
+   * produces, and only where that half lands on the tracker.
+   *
+   * A route that sends the content off the tracker is publishing a document,
+   * and a document is not a comment: it carries no tracker's comment limit,
+   * and the record that follows it has the engine's own one-line body, which
+   * is bounded by being ours. Bounding a published spec here would impose a
+   * limit it does not have.
+   */
+  const oversize = destination.type === RECORD_EFFECT ? recordBodyProblem(body) : null;
+  if (oversize) {
+    return {
+      ok: false,
+      kind: "contract",
+      reason: `stage "${stageId}" shape "${shape}": the prose the step wrote ${oversize}`,
+    };
+  }
 
   /*
    * The record of what the step produced, which is the engine's own

@@ -109,6 +109,16 @@ export interface FakeRequest {
  */
 const THREAD_PAGE = 100;
 
+/**
+ * What GitHub refuses an issue comment over, modelled here because it is the
+ * refusal that costs money rather than one that merely fails: a body the API
+ * will not take is a write that never lands, so the step's record never lands
+ * either, the next tick re-derives the stage as pending, and the step is paid
+ * for again. A fake that accepted any size could not tell that story apart
+ * from a healthy run.
+ */
+export const GITHUB_COMMENT_MAX = 65_536;
+
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
@@ -302,7 +312,16 @@ export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTra
     if (onComments) {
       const n = Number(onComments[1]);
       if (!issueOf(n)) return new Response("Not Found", { status: 404 });
-      if (method === "POST") return json(post(n, BOT, String(body.body ?? "")));
+      if (method === "POST") {
+        const text = String(body.body ?? "");
+        if (text.length > GITHUB_COMMENT_MAX) {
+          return json(
+            { message: "Validation Failed", errors: [{ resource: "IssueComment", field: "body", code: "too_long" }] },
+            422,
+          );
+        }
+        return json(post(n, BOT, text));
+      }
       return json(comments.get(n) ?? []);
     }
 
