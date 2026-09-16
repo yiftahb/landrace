@@ -1,4 +1,5 @@
-import { validateSemantics } from "#workflow/validate.js";
+import { validate, validateSemantics } from "#workflow/validate.js";
+import { loadWorkflow } from "#workflow/load.js";
 import type { Effect, Step, Workflow } from "#namespace.js";
 
 const noSteps = new Map<string, Step>();
@@ -169,20 +170,53 @@ describe("semantic validation", () => {
     expect(rules(w, noSteps, undefined)).not.toContain("path-coverage");
   });
 
-  it("abstains cycle-bound and dead-end across the whole graph when a trigger nests run.stage inside $or", () => {
-    // a <-> b is a genuinely unbounded loop expressed with plain top-level
-    // anchors — on its own it would trip cycle-bound. Stage c's trigger hides
-    // its run.stage mentions inside $or, which edges() cannot see, so the
-    // derived graph is missing edges and both rules must abstain entirely
-    // rather than report on the part they can see.
+  /*
+   * A trigger whose run.stage mention edges() cannot read — nested under $or,
+   * an $in list, a $ne — used to switch all three graph rules off for the
+   * whole workflow. It does not any more: each rule reads the approximation
+   * that cannot invent a problem, so a hidden edge weakens an answer rather
+   * than withdrawing every answer.
+   */
+  it("still reports a cycle of plain anchors when another trigger hides its run.stage inside $or", () => {
+    // a <-> b is a genuinely unbounded loop written with plain anchors. Stage
+    // c's hidden edges can only *add* cycles to the graph, never remove this
+    // one, so reporting it is not a guess about the part that cannot be seen.
     const w: Workflow = { version: 1, name: "t", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
       { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
       { id: "c", triggers: [{ when: { $or: [{ "run.stage": "a" }, { "run.stage": "b" }] } }] },
     ] };
+    expect(rules(w)).toContain("cycle-bound");
+  });
+
+  it("does not credit a hidden trigger with being a way out of the stage that owns it", () => {
+    // decide() never evaluates the current stage's own triggers, so whatever
+    // c's condition hides, it is not an edge *from* c — and c is a dead end.
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "b", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "c", triggers: [{ when: { $or: [{ "run.stage": "a" }] } }] },
+    ] };
+    expect(rules(w).filter((r) => r === "dead-end")).toEqual(["dead-end"]);
+  });
+
+  it("treats a trigger that names no stage as reachable from anywhere but its own stage", () => {
+    // `blocked` in the shipped workflow: `{ "run.lastOutputValid": false }`
+    // says nothing about position, so it can fire wherever the ticket is.
+    // Counting it as no edge at all reported `a` as having no way out.
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [
+        { when: { "run.stage": null } },
+        { when: { "run.stage": "blocked", "run.counters.a": { $lt: 3 } } },
+      ] },
+      { id: "blocked", triggers: [{ when: { "run.lastOutputValid": false } }] },
+    ] };
     const found = rules(w);
-    expect(found).not.toContain("cycle-bound");
     expect(found).not.toContain("dead-end");
+    expect(found).not.toContain("reachability");
+    // And the catch-all is not read as half of a cycle: only `blocked -> a` is
+    // an edge the graph definitely has, and one edge is not a loop.
+    expect(found).not.toContain("cycle-bound");
   });
 
   it("fully analyses a graph whose triggers use only plain top-level run.stage anchors", () => {
@@ -370,5 +404,42 @@ describe("semantic validation", () => {
       { id: "c", triggers: [{ when: { "run.stage": "b" } }] },
     ] };
     expect(rules(w)).toContain("reachability");
+  });
+});
+
+/**
+ * The rules, against the workflows that actually ship.
+ *
+ * `isPlainAnchor` demanded a string, and the only way to say "a fresh ticket"
+ * is `{ "run.stage": null }`, so dead-end, cycle-bound and reachability were
+ * off for every workflow with an entry stage — which is every workflow. The
+ * proof that they are on is that a workflow with a planted defect reports it.
+ */
+describe("the graph rules, on a workflow that has an entry stage", () => {
+  it("reports nothing on the shipped workflow", async () => {
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    expect(validate(workflow, steps)).toEqual([]);
+  });
+
+  it("reports nothing on the minimal fixture, whose only exit trigger names no stage", async () => {
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/minimal");
+    expect(validate(workflow, steps)).toEqual([]);
+  });
+
+  it("names an unbounded cycle and an unreachable pair planted in the shipped workflow", async () => {
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const tampered: Workflow = {
+      ...workflow,
+      stages: [
+        ...workflow.stages,
+        { id: "loop-a", triggers: [{ when: { "run.stage": "loop-b" } }] },
+        { id: "loop-b", triggers: [{ when: { "run.stage": "loop-a" } }] },
+      ],
+    };
+    const found = validate(tampered, steps);
+    expect(found.map((p) => p.rule)).toEqual(expect.arrayContaining(["cycle-bound", "reachability"]));
+    expect(found.filter((p) => p.rule === "cycle-bound")[0]?.message).toMatch(/loop-a, loop-b/);
+    expect(found.filter((p) => p.rule === "reachability").map((p) => p.message).join(" "))
+      .toMatch(/loop-a[\s\S]*loop-b|loop-b[\s\S]*loop-a/);
   });
 });

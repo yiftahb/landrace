@@ -131,27 +131,71 @@ function dedupe(problems: Problem[]): Problem[] {
   });
 }
 
-/** Edges implied by pull triggers: a trigger naming run.stage X is an edge X -> this. */
-function edges(w: Workflow): Array<[string, string]> {
+/**
+ * The one stage a trigger can fire from, when its condition names exactly one.
+ *
+ * A top-level `"run.stage": "x"` is a conjunct of the whole condition, so the
+ * trigger can fire from "x" and from nowhere else however the rest of the
+ * document is written. Anything else — an $in list, a $ne, a mention buried
+ * under $or, or no mention at all — names no single stage.
+ */
+function anchorOf(when: Condition): string | null {
+  const top = when["run.stage"];
+  return typeof top === "string" ? top : null;
+}
+
+/**
+ * True when a trigger can only fire on a ticket that is at no stage at all.
+ *
+ * `{ "run.stage": null }` is how every workflow says "a fresh ticket", and it
+ * is an edge from nothing rather than an unreadable one: run.stage is the
+ * position, so on a ticket that has one this can never hold — and a ticket
+ * that has none never reaches a trigger, because decide() sends it to the
+ * entry stage without evaluating any. Reading it as "unreadable" is what
+ * switched all three rules below off on every workflow that exists.
+ */
+function isFreshTicketOnly(when: Condition): boolean {
+  return when["run.stage"] === null;
+}
+
+/**
+ * Edges the graph may have: a trigger that does not name its source is an edge
+ * from every stage but its own.
+ *
+ * That is not a guess about the workflow, it is what decide() does — it
+ * evaluates every *other* stage's triggers against the snapshot, so a trigger
+ * saying nothing about position can fire wherever the ticket is. The shipped
+ * workflow's `blocked` is exactly this: `{ "run.lastOutputValid": false }`.
+ *
+ * A superset of the real edge set, which is what dead-end and reachability
+ * need — more edges can only mean fewer "no way out" and "unreachable"
+ * reports, never one about a stage that has a way out.
+ */
+function possibleEdges(w: Workflow): Array<[string, string]> {
+  const ids = w.stages.map((s) => s.id);
   const out: Array<[string, string]> = [];
   for (const stage of w.stages) {
     for (const t of stage.triggers ?? []) {
-      const from = t.when["run.stage"];
-      if (typeof from === "string") out.push([from, stage.id]);
+      const from = anchorOf(t.when);
+      if (from !== null) {
+        out.push([from, stage.id]);
+      } else if (!isFreshTicketOnly(t.when)) {
+        for (const candidate of ids) if (candidate !== stage.id) out.push([candidate, stage.id]);
+      }
     }
   }
   return out;
 }
 
-function adjacencyOf(w: Workflow): Map<string, string[]> {
+function adjacencyOf(edges: Array<[string, string]>): Map<string, string[]> {
   const adjacency = new Map<string, string[]>();
-  for (const [from, to] of edges(w)) adjacency.set(from, [...(adjacency.get(from) ?? []), to]);
+  for (const [from, to] of edges) adjacency.set(from, [...(adjacency.get(from) ?? []), to]);
   return adjacency;
 }
 
-/** Every stage id reachable from `start`, following edges(), start included. */
-function reachableFrom(start: string, w: Workflow): Set<string> {
-  const adjacency = adjacencyOf(w);
+/** Every stage id reachable from `start` over the given edges, start included. */
+function reachableFrom(start: string, edges: Array<[string, string]>): Set<string> {
+  const adjacency = adjacencyOf(edges);
   const seen = new Set<string>([start]);
   const queue = [start];
   while (queue.length > 0) {
@@ -164,27 +208,6 @@ function reachableFrom(start: string, w: Workflow): Set<string> {
     }
   }
   return seen;
-}
-
-/** True when a trigger's run.stage mention is a plain top-level string edges() can use. */
-function isPlainAnchor(when: Condition): boolean {
-  return typeof when["run.stage"] === "string";
-}
-
-/**
- * True when the graph edges() derives can be trusted. A trigger mentioning
- * run.stage anywhere in its condition — top-level or nested under an operator
- * like $or — that is not a plain top-level string is invisible to edges(), so
- * the derived graph is silently missing edges around it. dead-end,
- * cycle-bound and the reachability BFS all reason over that derived graph, so
- * all three must abstain for the whole graph in that case rather than report
- * on a graph they cannot see all of: a false positive (or false confidence)
- * on a legitimate workflow is worse than a missed problem the runtime will
- * surface anyway.
- */
-function graphIsAnalysable(w: Workflow): boolean {
-  return !w.stages.some((stage) =>
-    (stage.triggers ?? []).some((t) => pathsIn(t.when).includes("run.stage") && !isPlainAnchor(t.when)));
 }
 
 /**
@@ -242,8 +265,13 @@ function stronglyConnectedComponents(nodes: Set<string>, adjacency: Map<string, 
 }
 
 /**
- * Adjacency built from only the edges whose own trigger does *not* bound a
- * run.counters.* path — the "unbounded" edges. A cycle counts as bounded
+ * Adjacency built from only the anchored edges whose own trigger does *not*
+ * bound a run.counters.* path — the "unbounded" edges. Anchored only, and
+ * deliberately: this is the *subset* of the real edge set, which is the
+ * direction cycle-bound has to approximate in. Fewer edges can only mean
+ * fewer cycles, never a cycle that is not there — where possibleEdges, the
+ * superset dead-end and reachability read, would manufacture one out of every
+ * pair of triggers that name no source. A cycle counts as bounded
  * when at least one of its edges is bounded (the existing rule), so
  * dropping every bounded edge can only break a cycle that relied on one of
  * them, never manufacture a new one: a cycle that survives in this reduced
@@ -375,39 +403,50 @@ function disjoint(a: Condition, b: Condition): boolean {
 export function validateSemantics(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {
   const problems: Problem[] = [];
 
-  // A non-terminal stage nothing leads away from is a trap, and an unbounded
-  // cycle is a stuck workflow. Both are only decidable when the run.stage
-  // graph edges() derives is trustworthy in full — see graphIsAnalysable.
-  const analysable = graphIsAnalysable(w);
+  /*
+   * A non-terminal stage nothing leads away from is a trap, and an unbounded
+   * cycle is a stuck workflow. Neither is decidable on the exact edge set —
+   * a trigger can hide its source inside an operator — and the previous
+   * answer to that was to abstain for the whole graph whenever any trigger
+   * mentioned run.stage in a form the edge derivation could not read.
+   *
+   * `{ "run.stage": null }` was one of those forms, and it is the only way to
+   * say "a fresh ticket", so all three rules were off for every workflow that
+   * has an entry stage — which is every workflow. `landrace validate` on a
+   * copy of the shipped workflow carrying an unbounded cycle, an unreachable
+   * pair and a dead end reported none of them.
+   *
+   * So each rule reads the approximation that cannot invent a problem
+   * instead: cycle-bound the subset, dead-end and reachability the superset.
+   * A hidden edge now weakens one answer rather than withdrawing all three,
+   * and "abstain rather than guess" is kept where it belongs — in which
+   * direction each rule is allowed to be wrong.
+   */
+  const possible = possibleEdges(w);
+  for (const stage of w.stages) {
+    if (stage.terminal) continue;
+    if (!possible.some(([from]) => from === stage.id)) {
+      problems.push({ rule: "dead-end", message: `stage "${stage.id}" has no way out and is not terminal` });
+    }
+  }
 
-  if (analysable) {
-    const anchored = edges(w);
+  for (const members of unboundedCycles(w)) {
+    problems.push({ rule: "cycle-bound", message: cycleMessage(members) });
+  }
+
+  // Reachability from the entry stage, over the same superset dead-end reads.
+  // Only meaningful with exactly one entry stage — a missing/duplicate entry
+  // is reported separately by validateStructure.
+  const entries = w.stages.filter((s) => s.entry);
+  const entry = entries[0];
+  if (entry && entries.length === 1) {
+    const reachable = reachableFrom(entry.id, possible);
     for (const stage of w.stages) {
-      if (stage.terminal) continue;
-      if (!anchored.some(([from]) => from === stage.id)) {
-        problems.push({ rule: "dead-end", message: `stage "${stage.id}" has no way out and is not terminal` });
-      }
-    }
-
-    for (const members of unboundedCycles(w)) {
-      problems.push({ rule: "cycle-bound", message: cycleMessage(members) });
-    }
-
-    // Reachability from the entry stage, over the same edges() graph
-    // dead-end and cycle-bound above already trust. Only meaningful with
-    // exactly one entry stage — a missing/duplicate entry is reported
-    // separately by validateStructure.
-    const entries = w.stages.filter((s) => s.entry);
-    const entry = entries[0];
-    if (entry && entries.length === 1) {
-      const reachable = reachableFrom(entry.id, w);
-      for (const stage of w.stages) {
-        if (!reachable.has(stage.id)) {
-          problems.push({
-            rule: "reachability",
-            message: `stage "${stage.id}" is not reachable from the entry stage "${entry.id}"`,
-          });
-        }
+      if (!reachable.has(stage.id)) {
+        problems.push({
+          rule: "reachability",
+          message: `stage "${stage.id}" is not reachable from the entry stage "${entry.id}"`,
+        });
       }
     }
   }
@@ -437,14 +476,13 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   // to retarget, and flagging one would report a healthy workflow as broken.
   /*
    * Every stage that runs a step records that it started it. Not only the
-   * stages in a cycle: which those are is a question about the derived
-   * run.stage graph, and that graph abstains — every entry trigger is written
-   * `{ "run.stage": null }`, which makes the whole graph unanalysable, so a
-   * cycle-scoped version of this rule checked nothing at all on the only
-   * workflow in this repo. It is also the wrong question. `blocked -> spec`
-   * puts very nearly every stage of that workflow on a cycle anyway, a stage
-   * joins one the moment somebody adds a trigger, and the cost of recording
-   * an entry a stage turns out never to need is one comment.
+   * stages in a cycle: that is the wrong question. `blocked -> spec` puts very
+   * nearly every stage of the shipped workflow on a cycle anyway, a stage
+   * joins one the moment somebody adds a trigger, and the cost of recording an
+   * entry a stage turns out never to need is one comment. A cycle-scoped
+   * version of this rule would also inherit whichever approximation it read
+   * the cycles from, and neither direction is safe for a rule whose report is
+   * about a single stage.
    */
   for (const stage of w.stages) {
     if (!stage.step || recordsItsEntry(stage)) continue;
