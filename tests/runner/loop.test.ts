@@ -257,6 +257,9 @@ describe("the spec phase routes on what the step actually said", () => {
     // nothing — lastHuman is an Entry, and the comment text is on its `data` —
     // so the judge was shown its own placeholder and asked to classify it.
     expect(r.prompts.find((p) => p.stage === "triage")?.prompt).toContain("looks right, go ahead");
+    // Through the spec phase and the whole review cycle in one call, settling
+    // on the workflow's own budget rather than on the engine's pass cap.
+    expect(r.result.settled).not.toBe("cap");
   });
 
   /*
