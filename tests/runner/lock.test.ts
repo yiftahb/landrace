@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, symlinkSync } from "node:fs";
 import { mkdtemp, writeFile, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -138,5 +140,101 @@ describe("concurrent racers", () => {
 
     const winner = holders[winnerIdx];
     expect((await held(53, opts()))?.holder).toBe(winner);
+  });
+});
+
+/**
+ * The lock is the only thing standing between two processes driving one
+ * ticket, and §7 is explicit that it is cross-process: the loop and the MCP
+ * server coordinate by finding the same file. Which file that is used to be
+ * `basename(process.cwd())` — the name of whatever directory each was
+ * launched from — so the mechanism held only by coincidence. These two tests
+ * are the coincidence removed, in both directions.
+ */
+describe("the default lock root", () => {
+  let home: string;
+  let origin: string;
+
+  const run = (args: string[], cwd: string) => execFileSync("git", args, { cwd, stdio: "ignore" });
+
+  /** A repository at `<home>/<parent>/<name>`, with the subdirectories a monorepo has. */
+  const repo = (parent: string, name: string): string => {
+    const path = join(home, parent, name);
+    mkdirSync(join(path, "packages", "app"), { recursive: true });
+    run(["init", "-q"], path);
+    return path;
+  };
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "lr-repos-"));
+    origin = process.cwd();
+  });
+  afterEach(() => process.chdir(origin));
+
+  it("finds one repository's lock from every path into it", async () => {
+    const path = repo("one", "widgets");
+    symlinkSync(path, join(home, "link"));
+
+    process.chdir(path);
+    expect(await acquire(4101, "tick", { holder: "tick:root" })).toBe(true);
+    try {
+      // The same repository, entered from a subdirectory and through a
+      // symlink: the same ticket, so the same lock, so the MCP server finds
+      // the loop holding it rather than taking it as well.
+      process.chdir(join(path, "packages", "app"));
+      expect((await held(4101))?.holder).toBe("tick:root");
+      expect(await acquire(4101, "conversation", { holder: "mcp:sub" })).toBe(false);
+
+      process.chdir(join(home, "link"));
+      expect((await held(4101))?.holder).toBe("tick:root");
+    } finally {
+      await release(4101);
+    }
+  });
+
+  it("does not hand two repositories with the same directory name one lock", async () => {
+    const mine = repo("mine", "widgets");
+    const theirs = repo("theirs", "widgets");
+
+    process.chdir(mine);
+    expect(await acquire(4102, "tick", { holder: "tick:mine" })).toBe(true);
+    try {
+      // A different repository whose directory happens to share a name. Its
+      // #4102 is a different ticket on a different tracker, and it was
+      // refused a lock it had every right to.
+      process.chdir(theirs);
+      expect(await held(4102)).toBeNull();
+      expect(await acquire(4102, "tick", { holder: "tick:theirs" })).toBe(true);
+      await release(4102);
+
+      process.chdir(mine);
+      expect((await held(4102))?.holder).toBe("tick:mine");
+    } finally {
+      process.chdir(mine);
+      await release(4102);
+    }
+  });
+
+  /**
+   * Outside a repository there is nothing to derive an identity from, and the
+   * fallback must not be the old collision by another name: two directories
+   * called `widgets` are still two places.
+   */
+  it("keeps two same-named directories apart when neither is a repository", async () => {
+    const mine = join(home, "loose-mine", "widgets");
+    const theirs = join(home, "loose-theirs", "widgets");
+    mkdirSync(mine, { recursive: true });
+    mkdirSync(theirs, { recursive: true });
+
+    process.chdir(mine);
+    expect(await acquire(4103, "tick", { holder: "tick:mine" })).toBe(true);
+    try {
+      process.chdir(theirs);
+      expect(await acquire(4103, "tick", { holder: "tick:theirs" })).toBe(true);
+      await release(4103);
+    } finally {
+      process.chdir(mine);
+      await release(4103);
+    }
   });
 });

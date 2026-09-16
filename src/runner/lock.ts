@@ -1,8 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import type { Held, LockKind, LockOptions } from "../namespace.js";
 
@@ -15,9 +16,69 @@ const DEFAULT_DEADLINE_MS = 15 * 60_000;
 // property the main lock has, applied to the gate itself.
 const GATE_DEADLINE_MS = 5_000;
 
-// Resolved up front: git and the OS report /var as /private/var on macOS, and a
-// path comparison against an unresolved tmpdir silently never matches.
-const defaultRoot = (): string => join(realpathSync(tmpdir()), "landrace", basename(process.cwd()));
+/**
+ * What identifies the repository these locks belong to.
+ *
+ * The common git directory, resolved: it is the one path every way into a
+ * repository agrees on — the top level, any subdirectory below it, a symlink
+ * to either, and a linked worktree, which is the same repository driving the
+ * same tickets. This used to be `basename(process.cwd())`, which made the
+ * lock the name of whatever directory a process happened to be launched
+ * from: the loop and the MCP server found each other's locks only when they
+ * were started from the same place, and two unrelated checkouts called
+ * `widgets` shared one lock root and blocked each other's tickets. §7 says
+ * the lock is cross-process, and a cross-process mechanism cannot be keyed on
+ * a coincidence of directory names.
+ *
+ * Outside a repository — or with no git on the machine — the resolved working
+ * directory itself, which is still a place rather than a name.
+ */
+function repoIdentity(cwd: string): string {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      cwd,
+      encoding: "utf8",
+      // git prints its own diagnosis to stderr when this is not a repository,
+      // and that is an ordinary answer here, not something to show anybody.
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    // Relative to the cwd it was asked from (".git", "../../.git") for an
+    // ordinary checkout, absolute for a linked worktree. Both resolve here.
+    if (out !== "") return realpathSync(resolve(cwd, out));
+  } catch {
+    // Not a repository, or git is not installed. Either way there is nothing
+    // to derive, and a lock root is still needed.
+  }
+  return realpathSync(cwd);
+}
+
+/** The repository's own name, for a human reading $TMPDIR — never the identity itself. */
+const nameOf = (identity: string): string => {
+  const dir = basename(identity) === ".git" ? dirname(identity) : identity;
+  return basename(dir).replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 40) || "repo";
+};
+
+// One git call per working directory, not one per lock operation: `held`,
+// `acquire` and `release` each ask for the root, and a tick asks for all
+// three per ticket.
+const roots = new Map<string, string>();
+
+// tmpdir resolved up front: git and the OS report /var as /private/var on
+// macOS, and a path comparison against an unresolved tmpdir silently never
+// matches.
+function defaultRoot(): string {
+  const cwd = process.cwd();
+  const cached = roots.get(cwd);
+  if (cached !== undefined) return cached;
+
+  const identity = repoIdentity(cwd);
+  // The name is for reading; the digest is what keeps two repositories apart,
+  // because a path cannot be a path segment.
+  const digest = createHash("sha256").update(identity).digest("hex").slice(0, 12);
+  const root = join(realpathSync(tmpdir()), "landrace", `${nameOf(identity)}-${digest}`);
+  roots.set(cwd, root);
+  return root;
+}
 
 const dirOf = (o?: LockOptions) => join(o?.root ?? defaultRoot(), "locks");
 const fileOf = (ticket: number, o?: LockOptions) => join(dirOf(o), `${ticket}.lock`);
