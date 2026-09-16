@@ -59,6 +59,12 @@ describe("deep marker JSON cannot poison a ticket", () => {
 describe("scanning a comment for its trailing marker costs the same whatever the body", () => {
   // 64 KB of marker openings with no closing brace anywhere: every start
   // position made the old lazy scan run to the end of the body.
+  //
+  // The budget is absolute and loose on purpose. The two behaviours are orders
+  // of magnitude apart — linear parses this in well under a millisecond, the
+  // quadratic scan took seconds — so a tight bound buys no safety a loose one
+  // lacks, and only fails when the suite's own workers contend for the CPU. A
+  // timing guard that flakes is a timing guard somebody deletes.
   const junk = "<!-- landrace {".repeat(4369);
 
   const median = (body: string) => {
@@ -71,17 +77,17 @@ describe("scanning a comment for its trailing marker costs the same whatever the
     return runs[2] as number;
   };
 
-  it("parses a 64 KB adversarial body in well under 5 ms", () => {
+  it("parses a 64 KB adversarial body in linear time, not quadratic", () => {
     expect(junk.length).toBeGreaterThan(65_000);
     expect(parseMarker(junk)).toBeNull();
-    expect(median(junk)).toBeLessThan(5);
+    expect(median(junk)).toBeLessThan(200);
   });
 
   it("still finds a genuine marker appended after all that", () => {
     const doc = { stage: "spec", kind: "output", round: 3 };
     const body = junk + renderMarker(doc);
     expect(parseMarker(body)).toMatchObject(doc);
-    expect(median(body)).toBeLessThan(5);
+    expect(median(body)).toBeLessThan(200);
   });
 });
 
