@@ -10,12 +10,14 @@ export function decide(w: Workflow, s: Snapshot): Decision {
 
   const run = (s.run ?? { counters: {} }) as Run;
   /*
-   * The round a stage is about to work on, derived by counting its own
-   * output records and never by incrementing anything. It numbers both the
-   * invocation and the entry record planEffects stamps on the state being
-   * entered, which is what keeps the two in step: a stage that has been
-   * entered but has produced nothing re-plans the same round, so a crash
-   * between the two leaves one entry record, not two.
+   * The round a stage is about to work on, derived by counting the rounds it
+   * has already settled — an output, or a rejection — and never by
+   * incrementing anything. It numbers both the invocation and the entry
+   * record planEffects stamps on the state being entered, which is what keeps
+   * the two in step: a stage that has been entered but has settled nothing
+   * re-plans the same round, so a crash between the two leaves one entry
+   * record, not two. A rejected round counts, or a stage that can no longer
+   * produce output would re-enter at the same round for ever (derive.ts).
    */
   const nextRound = (stage: string): number => (run.counters[stage] ?? 0) + 1;
 

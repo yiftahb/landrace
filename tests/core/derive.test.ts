@@ -9,6 +9,8 @@ const out = (stage: string, round: number, data: unknown = {}): Entry =>
 const human = (): Entry => ({ stage: "-", kind: "human", round: 0, at: at(), byAgent: false });
 const malformed = (stage: string, round: number): Entry =>
   ({ stage, kind: "malformed", round, at: at(), byAgent: true });
+const entered = (stage: string, round: number): Entry =>
+  ({ stage, kind: "enter", round, at: at(), byAgent: true });
 
 describe("deriveRun", () => {
   it("counts rounds, not entries — two entries for one round are one round", () => {
@@ -138,6 +140,45 @@ describe("deriveRun", () => {
       const r = deriveRun([malformed("spec", 1)], "spec");
       expect(r.lastOutputValid).toBe(false);
       expect(r.failedStages).toContain("spec");
+    });
+
+    /*
+     * The handback. A rejection judges the round it was written for, not the
+     * stage forever: a later entry record — which only a workflow trigger can
+     * produce — asks for a new round, and the stage has to be invocable again
+     * or the ticket bounces between blocked and here until the pass cap.
+     */
+    it("clears once the stage has been entered again for a later round", () => {
+      const r = deriveRun([entered("spec", 1), malformed("spec", 1), entered("spec", 2)], "spec");
+      expect(r.failedStages).toEqual([]);
+      expect(r.lastOutputValid).toBeNull();
+      expect(assess({ run: r } as Snapshot, { id: "spec", step: "steps/spec.md" })).toBe("pending");
+    });
+
+    it("does not clear on a re-entry that names the same round, which is what a crash replans", () => {
+      const r = deriveRun([entered("spec", 1), malformed("spec", 1)], "spec");
+      expect(r.failedStages).toEqual(["spec"]);
+      expect(assess({ run: r } as Snapshot, { id: "spec", step: "steps/spec.md" })).toBe("failed");
+    });
+  });
+
+  describe("counters count rounds that reached a verdict, good or rejected", () => {
+    /*
+     * The round a re-entry stamps on its own record is this counter plus one.
+     * Counting only outputs left a rejected stage re-entering at the same
+     * round forever, its identical entry record reconciled away — and left
+     * `run.counters.spec: { $lt: 3 }` bounding a loop it never advanced.
+     */
+    it("advances on a rejected round", () => {
+      expect(deriveRun([entered("spec", 1), malformed("spec", 1)], "spec").counters.spec).toBe(1);
+    });
+
+    it("counts a round that was both rejected and output once", () => {
+      expect(deriveRun([malformed("spec", 1), out("spec", 1)], "spec").counters.spec).toBe(1);
+    });
+
+    it("does not advance on a round that produced nothing at all", () => {
+      expect(deriveRun([entered("spec", 1)], "spec").counters.spec).toBeUndefined();
     });
   });
 });

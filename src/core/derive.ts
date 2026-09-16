@@ -10,21 +10,29 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
 
   const outputsByStage = new Map<string, Entry>();
   const roundsByStage = new Map<string, Set<number>>();
+  const settledRoundsByStage = new Map<string, Set<number>>();
   const maxMalformedRoundByStage = new Map<string, number>();
   const maxEnteredRoundByStage = new Map<string, number>();
+
+  const note = (map: Map<string, Set<number>>, stage: string, round: number): void => {
+    const rounds = map.get(stage) ?? new Set<number>();
+    rounds.add(round);
+    map.set(stage, rounds);
+  };
 
   for (const e of ordered) {
     if (e.kind === "malformed") {
       const cur = maxMalformedRoundByStage.get(e.stage);
       if (cur === undefined || e.round > cur) maxMalformedRoundByStage.set(e.stage, e.round);
+      note(settledRoundsByStage, e.stage, e.round);
     }
 
     /*
      * A stage's own on_enter writes these, so entering a state twice is a
      * fact on the tracker rather than something the engine remembers. Only
      * the highest round matters, and two records naming the same round are
-     * one entry: the round comes from the *output* counter, so a crash
-     * between posting this and running the step replans the identical round.
+     * one entry: the round comes from the counter below, so a crash between
+     * posting this and running the step replans the identical round.
      */
     if (e.kind === ENTRY_KIND) {
       const cur = maxEnteredRoundByStage.get(e.stage);
@@ -32,9 +40,8 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     }
 
     if (e.kind !== OUTPUT_KIND) continue;
-    const rounds = roundsByStage.get(e.stage) ?? new Set<number>();
-    rounds.add(e.round);
-    roundsByStage.set(e.stage, rounds);
+    note(roundsByStage, e.stage, e.round);
+    note(settledRoundsByStage, e.stage, e.round);
 
     const current = outputsByStage.get(e.stage);
     if (!current || e.round >= current.round) outputsByStage.set(e.stage, e);
@@ -49,8 +56,26 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * downstream may call x.hasOwnProperty(k) on these — use Object.hasOwn or
    * `in`.
    */
+  /*
+   * A round counts once it has produced a verdict — an output, or a rejection.
+   * Counting only outputs is what turned a rejected round into an infinite
+   * loop: the round a re-entry stamps on its own entry record is this counter
+   * plus one, so a stage that could never produce output re-entered at the
+   * same round forever, the identical record was reconciled away, nothing on
+   * the ticket changed, and the trigger that handed it back fired again on the
+   * very next pass — 30 passes and 60 tracker writes per tick, for good.
+   *
+   * It is also what makes §11.4's bound a bound: a workflow writing
+   * `run.counters.spec: { $lt: 3 }` on a handback trigger means "three
+   * attempts", and an attempt that broke its contract is an attempt. A counter
+   * only bounds a loop it advances on.
+   *
+   * A round that produced nothing at all still does not count, which is what
+   * keeps the crash-recovery property: a crash between the entry record and
+   * the step replans the identical round.
+   */
   const counters = Object.create(null) as Run["counters"];
-  for (const [s, rounds] of roundsByStage) counters[s] = rounds.size;
+  for (const [s, rounds] of settledRoundsByStage) counters[s] = rounds.size;
 
   const outputs = Object.create(null) as Run["outputs"];
   for (const [s, e] of outputsByStage) outputs[s] = e.data;
@@ -97,12 +122,26 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * answering the same single-stage question as before, for triggers that
    * read run.lastOutputValid directly and for snapshots built by hand
    * without a failedStages array.
+   *
+   * Failure is also scoped to the round the stage has actually been *entered*
+   * for, not to the stage for the rest of its life. §2: "a terminal blocked is
+   * a trap — halting is a handoff, and replying takes the ticket back". A
+   * rejection that outlived the round it judged made that handback a second
+   * trap: the stage was failed for good, so nothing could re-invoke it, and
+   * the ticket ping-ponged between blocked and the stage it was handed back to
+   * until the pass cap. So a later entry record — which only a workflow's own
+   * trigger can produce, never the engine on its own — puts the stage back to
+   * pending for a *new* round. That is not the retry CLAUDE.md forbids: the
+   * rejected round is still never re-run, and nothing reads a rejection as
+   * "hasn't happened yet".
    */
   const failedStages: string[] = [];
-  for (const s of new Set([...outputsByStage.keys(), ...maxMalformedRoundByStage.keys()])) {
-    const outRound = outputsByStage.get(s)?.round;
-    const malRound = maxMalformedRoundByStage.get(s);
-    if ((malRound ?? -Infinity) >= (outRound ?? -Infinity)) failedStages.push(s);
+  for (const [s, malRound] of maxMalformedRoundByStage) {
+    const outRound = outputsByStage.get(s)?.round ?? -Infinity;
+    // A stage that records no entry at all reads as entered once, exactly as
+    // `rounds` does — for it, this is the old rule unchanged.
+    const enteredRound = maxEnteredRoundByStage.get(s) ?? 1;
+    if (malRound >= outRound && malRound >= enteredRound) failedStages.push(s);
   }
   const lastOutputValid: false | null = stage !== null && failedStages.includes(stage) ? false : null;
 

@@ -183,10 +183,11 @@ async function converging(
       }
 
       // Scoped to (stage, round): decide() computes round from
-      // run.counters, which only advances on a genuine "output" entry. A
-      // step that ran and left nothing readable gets asked again next pass
-      // with the *same* round — this is what catches that the second time,
-      // rather than paying for a third, a fourth, a thirtieth attempt.
+      // run.counters, which only advances on a round that reached a verdict —
+      // an output, or a recorded rejection. A step that ran and left neither
+      // gets asked again next pass with the *same* round — this is what
+      // catches that the second time, rather than paying for a third, a
+      // fourth, a thirtieth attempt.
       const key = `${stage.id}:${round}`;
       if (invoked.has(key)) {
         const reason = `stage "${stage.id}" round ${round} was already invoked this call and left nothing readable; not retrying`;

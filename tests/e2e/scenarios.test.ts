@@ -257,3 +257,69 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     }
   });
 });
+
+/**
+ * §2's "a terminal `blocked` is a trap. Halting is a handoff; replying takes
+ * the ticket back", attacked with the case that made it a different trap.
+ *
+ * A step whose output was rejected is failed for good under the old
+ * derivation, so re-entering its stage recorded nothing new, `lastEvent.actor`
+ * stayed `human`, and the handback trigger fired again on the very next pass.
+ * Measured before the fix: 30 passes, 60 tracker writes, zero invocations —
+ * every tick, forever.
+ */
+describe("a human reply to a ticket blocked by a rejected output", () => {
+  const blocked = async (answers: Record<string, ScriptedAnswer>) => {
+    const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const writes: string[] = [];
+    const run = createHarness({
+      workflow, steps, ...gh.registry, answers,
+      log: (name, data = {}) => { if (name === "effect.applied") writes.push(String(data.type)); },
+    });
+    const rejected = await run.converge();
+    return { gh, run, writes, rejected };
+  };
+
+  it("settles instead of ping-ponging to the pass cap", async () => {
+    const { gh, run, writes, rejected } = await blocked({ spec: "no json at all" });
+    expect(rejected.result).toMatchObject({ settled: "halt" });
+
+    const before = writes.length;
+    gh.sayAs("a-person", 1, "sorry, try again", new Date(Date.UTC(2026, 1, 1)).toISOString());
+    const handback = await run.converge();
+
+    expect(handback.result.settled).not.toBe("cap");
+    // The ping-pong wrote a status and a label on every one of thirty passes.
+    expect(writes.length - before).toBeLessThan(10);
+    // Taken back once and worked on, rather than bounced between the two.
+    expect(handback.trail).toEqual(["blocked", "spec"]);
+  });
+
+  it("re-runs the stage the human handed back, rather than nothing at all", async () => {
+    const { gh, run } = await blocked({ spec: "no json at all" });
+    const invocations = run.counts().spec;
+
+    gh.sayAs("a-person", 1, "sorry, try again", new Date(Date.UTC(2026, 1, 1)).toISOString());
+    await run.converge();
+
+    expect(run.counts().spec).toBe((invocations ?? 0) + 1);
+  });
+
+  /**
+   * And the loop the handback opens is bounded by the workflow's own
+   * `run.counters.spec: { $lt: 3 }` — which is only a bound at all if a
+   * rejected round advances the counter it names.
+   */
+  it("stops handing back once the stage's declared budget is spent", async () => {
+    const { gh, run } = await blocked({ spec: "no json at all" });
+
+    for (let i = 1; i <= 4; i++) {
+      gh.sayAs("a-person", 1, `try again ${i}`, new Date(Date.UTC(2026, 1, i)).toISOString());
+      await run.converge();
+    }
+
+    expect(run.counts().spec).toBe(3);
+    expect(gh.labelsOf(1)).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+  });
+});
