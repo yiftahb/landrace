@@ -329,6 +329,18 @@ export interface Executor {
        * An executor that cannot honour a named model must refuse the run.
        * Dropping it silently is how `triage.md`'s `model: haiku` came to be
        * billed at opus on every human reply.
+       *
+       * And this one is trust, with no backstop under it, which is worth
+       * saying plainly rather than leaving to be discovered. `capabilities`
+       * below is checked a second time by the engine, against the worktree
+       * the step was given — the filesystem remembers what an executor did
+       * whatever it says about it. A model leaves nothing behind: once a run
+       * has returned there is nothing observable to ask, and anything the
+       * executor volunteers (a model on the return, a flag saying it honours
+       * this) is a claim by the party whose compliance is the question. So
+       * the engine records the request instead — `step.invoked` carries the
+       * model and the executor's id — and an operator reads that against
+       * whatever the executor reports of its own accord.
        */
       model?: string;
       /**

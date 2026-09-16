@@ -66,6 +66,43 @@ describe("the model a step declares", () => {
     await run("", { executor: watcher });
     expect(seen[0]).not.toHaveProperty("model");
   });
+
+  /*
+   * And that is the whole of it, because there is no backstop to be had.
+   *
+   * `capabilities` has one — the engine diffs the worktree afterwards, so an
+   * executor that ignored the flags is caught by what it left behind. A model
+   * leaves nothing behind. Which one a subprocess actually used is not
+   * observable from anything the engine holds once the run has returned, and
+   * every way of asking for it (a `model` on the return, a flag saying "I
+   * honour this") is a claim by the same party that would have dropped the
+   * field in the first place — an executor that silently ignores `model:` is
+   * exactly an executor that silently reports whatever makes it look
+   * compliant.
+   *
+   * So what is enforced is nothing, and what is recorded is what was asked
+   * for and who was asked. An operator reads that against the executor's own
+   * report of what it put on its command line (tests/agent/claude.test.ts);
+   * a third-party executor that reports neither is visible by the silence.
+   */
+  const invocation = async (over: Partial<Parameters<typeof runStep>[0]>): Promise<Record<string, unknown>> => {
+    const events: Array<{ name: string; data: Record<string, unknown> }> = [];
+    await run("", { executor: watcher, log: (name, data = {}) => events.push({ name, data }), ...over });
+    return events.find((e) => e.name === "step.invoked")?.data ?? {};
+  };
+
+  it("is on step.invoked with the executor that was asked, even when that executor drops it", async () => {
+    const dropping: Executor = {
+      id: "third-party",
+      run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }),
+    };
+    expect(await invocation({ step: { ...step, model: "haiku" }, executor: dropping }))
+      .toMatchObject({ stage: "spec", round: 2, executor: "third-party", model: "haiku" });
+  });
+
+  it("is on step.invoked as null when the step named none, which is a different claim from naming one", async () => {
+    expect(await invocation({})).toMatchObject({ executor: "watch", model: null });
+  });
 });
 
 describe("runStep", () => {

@@ -312,7 +312,16 @@ export function createClaudeExecutor(opts: {
                 new Error(`agent returned a malformed session_id: expected a string, got ${typeof parsed.session_id}`),
               );
             }
-            log?.("step.completed", { round, ms: Date.now() - started });
+            // With the model that was actually on the command line. The
+            // engine records what the step *asked* for and has no way of
+            // checking it — nothing observable survives a subprocess to say
+            // which model it used. This layer built the argv, so this is the
+            // one place the answer is known at all, and saying it here is
+            // what lets an operator read a step's request against what it
+            // got. `null`, not an omission, for a run neither the step nor
+            // the operator named a model for: the CLI's own default decided,
+            // which is a fact rather than a missing one.
+            log?.("step.completed", { round, ms: Date.now() - started, model: chosenModel ?? null });
             // Untrusted from here on: this text was produced by the agent,
             // not by us, and the caller will parse it for control markers —
             // it inherits no trust from having passed through this executor.

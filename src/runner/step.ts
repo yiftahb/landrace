@@ -217,7 +217,29 @@ export async function runStep(opts: {
     log?.("screen.passed", { stage: stageId, round });
   }
 
-  log?.("step.invoked", { stage: stageId, round });
+  /*
+   * What was asked for, and who was asked.
+   *
+   * `capabilities` has an engine-side backstop — the worktree is diffed
+   * afterwards, so an executor that ignored the flags is caught by what it
+   * left behind. `model` has none, and cannot: which model a subprocess used
+   * is not observable from anything the engine holds once the run returns,
+   * and every way of asking after the fact (a `model` on the return value, a
+   * flag declaring "I honour this") is a claim by the same party that would
+   * have dropped the field — an executor that silently ignores `model:` is
+   * precisely one that would silently report whatever looks compliant.
+   *
+   * So nothing here pretends to enforce it. This records the request instead,
+   * naming the executor because that is the party whose compliance is in
+   * question, and `null` rather than an omission when the step named no model
+   * — "the operator's default decides" is a different fact from "haiku", and
+   * a reader should not have to infer it from a missing key. The shipped
+   * executor reports the model it actually put on its command line
+   * (src/agent/claude.ts), which is the only place that is known; an operator
+   * reads the two against each other, and an executor that reports neither is
+   * visible by the silence.
+   */
+  log?.("step.invoked", { stage: stageId, round, executor: executor.id, model: step.model ?? null });
 
   let text: string;
   let sessionId: string | null;

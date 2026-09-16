@@ -223,6 +223,40 @@ describe("claude executor", () => {
     expect(r.text).not.toContain("opus");
   });
 
+  /*
+   * The other half of the only thing that can be done about `model:`.
+   *
+   * The engine records what a step asked for; nothing it can ask afterwards
+   * tells it what actually ran. This layer is where the command line is
+   * built, so it is the one place the model really used is known at all —
+   * saying so in the event stream is what lets an operator read the two
+   * reports against each other. An executor that reports neither is visible
+   * by the silence, which is as close to enforcement as a model gets.
+   */
+  it("reports the model it actually put on its command line", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    const events: Array<Record<string, unknown>> = [];
+    await createClaudeExecutor({
+      bin,
+      model: "opus",
+      log: (name, data = {}) => { if (name === "step.completed") events.push(data); },
+    }).run("x", { round: 1, signal: new AbortController().signal, cwd: dir, model: "haiku" });
+
+    expect(events[0]).toMatchObject({ model: "haiku" });
+  });
+
+  it("reports the operator's own default when the run named no model", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    const events: Array<Record<string, unknown>> = [];
+    await createClaudeExecutor({
+      bin,
+      model: "opus",
+      log: (name, data = {}) => { if (name === "step.completed") events.push(data); },
+    }).run("x", { round: 1, signal: new AbortController().signal, cwd: dir });
+
+    expect(events[0]).toMatchObject({ model: "opus" });
+  });
+
   it("refuses a per-run model shaped like a flag, exactly as it refuses a configured one", async () => {
     const dir = withCfg({ out: "{{ARGV}}" });
     await expect(run("x", {}, { cwd: dir, model: "--dangerous-flag" })).rejects.toThrow(/refused model/);
