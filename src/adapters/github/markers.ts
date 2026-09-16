@@ -1,6 +1,21 @@
 import type { Entry } from "../../core/types.js";
-import { parseMarker } from "../../conventions.js";
+import { OUTPUT_KIND, parseMarker, type Marker } from "../../conventions.js";
 import type { Comment } from "../types.js";
+
+/**
+ * What core reads as a record's payload — `run.outputs[stage]` for an output
+ * record, and the marker itself for the kinds core reads no value from.
+ *
+ * An output record's payload is the step's own value and nothing else. The
+ * envelope (stage, kind, round) is already on the Entry, and leaving it in
+ * `data` as well is what made `outputs.spec.kind` read back the literal
+ * "output" for every shape a step could produce, so every trigger in the
+ * shipped workflow that routed on an output field was dead. A record written
+ * before markers carried values has no value at all: undefined, not the
+ * envelope — answering "output" again for exactly the tickets already in
+ * flight is the bug, not the compatible thing to do.
+ */
+const payloadOf = (m: Marker): unknown => (m.kind === OUTPUT_KIND ? m.output : m);
 
 /**
  * Turn GitHub comments into the engine's tracker-agnostic records. This is the
@@ -30,7 +45,14 @@ export function entriesFromComments(comments: Comment[], botLogin: string): Entr
     const ours = typeof author === "string" && author.toLowerCase() === bot;
     const marker = ours ? parseMarker(c.body ?? "") : null;
     return marker
-      ? { stage: marker.stage, kind: marker.kind, round: marker.round, data: marker, at: c.created_at, byAgent: true }
+      ? {
+          stage: marker.stage,
+          kind: marker.kind,
+          round: marker.round,
+          data: payloadOf(marker),
+          at: c.created_at,
+          byAgent: true,
+        }
       : {
           stage: "-",
           kind: "human",

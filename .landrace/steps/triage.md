@@ -24,7 +24,7 @@ approve it or say what to change.
 
 Their message:
 ---
-{run.lastHuman.body}
+{run.lastHuman.data.body}
 ---
 
 Reply with a fenced json block and nothing before it, with an `intent` field

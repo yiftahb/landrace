@@ -108,6 +108,38 @@ describe("semantic validation", () => {
     expect(rules(w, steps)).toContain("totality");
   });
 
+  /*
+   * A declared shape decides which of an agent's fields become snapshot state,
+   * so a field it names but the engine can never carry is a rule that silently
+   * does nothing: the value is dropped at the step boundary (a reserved id is
+   * not a name, it is a reachable key on a plain object), the trigger reading
+   * it never matches, and the ticket waits forever with nothing to explain it.
+   */
+  it("flags a declared shape field that can never travel, because it is a reserved object key", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "",
+      // A computed key, because `__proto__:` written plainly in an object
+      // literal is the prototype setter and defines no own property at all —
+      // the shape would have no such field and this would test nothing. YAML
+      // does define it as an own key (confirmed against the parser the loader
+      // uses), so a real step file reaches this rule; a literal does not.
+      output: { discriminator: "kind", shapes: { spec: { ["__proto__"]: "string", title: "string" } },
+                routes: [{ when: { kind: "spec" }, effect: { type: "x" } }] },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    expect(rules(w, steps)).toContain("shape-field");
+  });
+
+  it("does not flag an ordinary declared field", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "",
+      output: { discriminator: "kind", shapes: { spec: { title: "string" } },
+                routes: [{ when: { kind: "spec" }, effect: { type: "x" } }] },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    expect(rules(w, steps)).not.toContain("shape-field");
+  });
+
   it("flags two stages whose identities can both hold", () => {
     const w: Workflow = { version: 1, name: "t", stages: [
       { id: "a", entry: true, identity: { "run.stage": "a" } },

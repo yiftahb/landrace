@@ -123,6 +123,12 @@ export const githubPostHook = (tracker: TrackerPort) =>
             kind: String(effect.kind ?? "note"),
             round: Number(effect.round ?? 0),
             ...(effect.marker ? { marker: String(effect.marker) } : {}),
+            // The step's own value, already cut to its declared shape by the
+            // runner. It rides inside the marker, not in the body: the body
+            // is prose, and prose is escaped on the way out precisely so it
+            // cannot carry control state. Kept as structure rather than
+            // stringified, because parseMarker reads it back with JSON.parse.
+            ...(effect.output === undefined ? {} : { output: effect.output }),
           };
           await tracker.createComment(ticket, neutraliseMarkers(String(effect.body ?? "")) + renderMarker(marker));
           return;

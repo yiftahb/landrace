@@ -11,7 +11,20 @@ function createFakeTracker(seed: Array<Partial<Issue>> = []): TrackerPort & {
   let nextIssue = 1;
   let nextComment = 1000;
   let clock = 0;
-  const at = () => new Date(Date.UTC(2026, 0, 1, 0, 0, clock++)).toISOString();
+  /**
+   * Monotonic per issue, the way a real tracker's timestamps are: a comment
+   * posted now is never dated before one already on the issue. A bare counter
+   * is not enough — a test that seeds a human reply dated later than the
+   * counter (the natural way to write "and then a person spoke") would have
+   * every comment we posted afterwards sort *before* it, so run.lastEvent.actor
+   * stayed "human" for the rest of the run and every human-handback trigger
+   * kept firing. That is the fake disagreeing with GitHub, not the engine.
+   */
+  const at = (issue: number) => {
+    const next = new Date(Date.UTC(2026, 0, 1, 0, 0, clock++)).toISOString();
+    const latest = (comments.get(issue) ?? []).reduce((max, c) => (c.created_at > max ? c.created_at : max), "");
+    return latest >= next ? new Date(Date.parse(latest) + 1000).toISOString() : next;
+  };
 
   for (const s of seed) {
     const n = s.number ?? nextIssue++;
@@ -56,7 +69,7 @@ function createFakeTracker(seed: Array<Partial<Issue>> = []): TrackerPort & {
     async listComments(n) { must(n); return comments.get(n) ?? []; },
     async createComment(n, body) {
       must(n);
-      const c: Comment = { id: nextComment++, body, created_at: at(), user: { login: "yiftahb" } };
+      const c: Comment = { id: nextComment++, body, created_at: at(n), user: { login: "yiftahb" } };
       comments.set(n, [...(comments.get(n) ?? []), c]);
       return c;
     },

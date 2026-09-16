@@ -36,7 +36,10 @@ const decideOn = (comments: Comment[], bot: string, stage: string | null) => {
 };
 
 describe("a marker only counts when the account we post as wrote it", () => {
-  const approve = `looks good to me${marker({ stage: "triage", kind: "output", round: 1, intent: "approve" })}`;
+  // The value rides in the marker's `output`, which is where a real output
+  // record carries it: the whole point of the attack is that a stranger's
+  // comment must not become `outputs.triage` no matter how well-formed it is.
+  const approve = `looks good to me${marker({ stage: "triage", kind: "output", round: 1, output: { intent: "approve" } })}`;
 
   it("does not let a stranger's approve marker complete the stage", () => {
     const { run, decision } = decideOn([comment(1, "mallory", approve)], BOT, "triage");

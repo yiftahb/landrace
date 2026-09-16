@@ -10,8 +10,14 @@ output:
   routes:
     - when: { kind: questions }
       effect: { type: tracker.comment, marker: "questions:{round}" }
+    # The spec belongs on the Pages branch (§8.2 routes it to
+    # `artifact.publish`), and it will go back there the day an artifact hook
+    # exists. Today none does: no hook handles that effect type, so the route
+    # threw inside apply, the ticket halted with nothing recorded, and the
+    # next poll re-derived the stage as pending and paid for the step again.
+    # An unhandled effect is not a smaller failure than a wrong one.
     - when: { kind: spec }
-      effect: { type: artifact.publish, artifact: spec }
+      effect: { type: tracker.comment, marker: "spec:{round}" }
 ---
 
 Write the spec for #{ticket.number}: {ticket.title}.

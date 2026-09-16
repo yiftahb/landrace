@@ -44,6 +44,11 @@ stages:
       # a conventional top-level path, but deriveRun puts it inside run and no
       # hook provides a top-level one, so the bare path matched nothing and
       # every human handback below was dead.
+      #
+      # run.outputs.* is the same correction for the same reason, and it was
+      # dead the same way: outputs live at run.outputs, so `outputs.spec.kind`
+      # read nothing at all. One path to one fact, and it is the derived one —
+      # a second, aliased spelling is how a predicate silently stops matching.
       - name: human answered the questions
         when:
           "run.stage": spec-questions
@@ -52,7 +57,7 @@ stages:
       - name: reviewer's reply read as a change request
         when:
           "run.stage": triage
-          "outputs.triage.intent": revise
+          "run.outputs.triage.intent": revise
           "run.counters.spec": { $lt: 3 }
       - name: a halt was handed back
         when:
@@ -67,16 +72,16 @@ stages:
   - id: spec-questions
     triggers:
       - name: the agent has blocking questions
-        when: { "run.stage": spec, "outputs.spec.kind": questions }
+        when: { "run.stage": spec, "run.outputs.spec.kind": questions }
     on_enter:
       - { type: tracker.status, value: spec-questions }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
   - id: spec-human-review
-    requires: { "outputs.spec.kind": spec }
+    requires: { "run.outputs.spec.kind": spec }
     triggers:
       - name: the spec was published
-        when: { "run.stage": spec, "outputs.spec.kind": spec }
+        when: { "run.stage": spec, "run.outputs.spec.kind": spec }
     on_enter:
       - { type: tracker.status, value: spec-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
@@ -96,7 +101,7 @@ stages:
     step: steps/build.md
     triggers:
       - name: the spec was approved
-        when: { "run.stage": triage, "outputs.triage.intent": approve }
+        when: { "run.stage": triage, "run.outputs.triage.intent": approve }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
       - { type: tracker.status, value: build }

@@ -63,6 +63,34 @@ describe("entriesFromComments", () => {
     expect(entry?.byAgent).toBe(true);
   });
 
+  /*
+   * `data` is the record's payload, and for an output record the payload is
+   * the step's own value. Leaving the envelope there is what made
+   * `outputs.spec.kind` read back the literal "output" for every shape a step
+   * could produce, killing every trigger in the shipped workflow that routes
+   * on an output field. The envelope is on the Entry already.
+   */
+  it("reads an output record's payload as the step's value, not the marker's envelope", () => {
+    const value = { kind: "questions", questions: ["scope?"] };
+    const body = `asking${renderMarker({ ...doc, output: value })}`;
+    const [entry] = entriesFromComments([{ id: 1, body, created_at: at(1), user: { login: "bot" } }], "bot");
+    expect(entry).toMatchObject({ stage: "spec", kind: "output", round: 2, byAgent: true });
+    expect(entry?.data).toEqual(value);
+  });
+
+  // A record written before markers carried values has no value to read. It
+  // still counts as a round — the envelope is what rounds are derived from —
+  // but it must not read back as one, or `outputs.spec.kind` answers "output"
+  // again for exactly the tickets already in flight.
+  it("gives an output record with no value no payload at all", () => {
+    const [entry] = entriesFromComments(
+      [{ id: 1, body: `old${renderMarker(doc)}`, created_at: at(1), user: { login: "bot" } }],
+      "bot",
+    );
+    expect(entry).toMatchObject({ stage: "spec", kind: "output", round: 2 });
+    expect(entry?.data).toBeUndefined();
+  });
+
   it("keeps a human comment's text where a step can read it", () => {
     const [entry] = entriesFromComments([{ id: 7, body: "B2B only", created_at: at(1), user: { login: "y" } }], "bot");
     expect(entry?.data).toMatchObject({ body: "B2B only", author: "y", id: 7 });

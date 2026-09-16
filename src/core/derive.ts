@@ -1,4 +1,4 @@
-import { ENTRY_KIND } from "../conventions.js";
+import { ENTRY_KIND, OUTPUT_KIND } from "../conventions.js";
 import type { Entry, Run, StageRounds } from "./types.js";
 
 /**
@@ -31,7 +31,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
       if (cur === undefined || e.round > cur) maxEnteredRoundByStage.set(e.stage, e.round);
     }
 
-    if (e.kind !== "output") continue;
+    if (e.kind !== OUTPUT_KIND) continue;
     const rounds = roundsByStage.get(e.stage) ?? new Set<number>();
     rounds.add(e.round);
     roundsByStage.set(e.stage, rounds);

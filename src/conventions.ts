@@ -51,10 +51,27 @@ export const isReservedId = (id: string): boolean => RESERVED_IDS.includes(id);
  */
 export const ENTRY_KIND = "enter";
 
+/**
+ * The marker kind a step's own result is recorded under. Shared for the same
+ * reason ENTRY_KIND is, across one more layer: the runner stamps it, core
+ * counts it to derive rounds and outputs, a tracker adapter reads the step's
+ * value back out of it, and `landrace validate` refuses a step whose every
+ * route retargets it. Four files that must mean the same thing by one name.
+ */
+export const OUTPUT_KIND = "output";
+
 export interface Marker {
   stage: string;
   kind: string;
   round: number;
+  /**
+   * On an OUTPUT_KIND marker, the step's own parsed value — the discriminator
+   * and the fields its declared shape names, and nothing else (runner/step.ts
+   * bounds it). This is what `outputs.<stage>.<field>` reads on the next tick;
+   * without it a step's result decided which effect was emitted and then
+   * vanished, so every trigger routing on an output field was dead.
+   */
+  output?: unknown;
   [key: string]: unknown;
 }
 
@@ -80,8 +97,50 @@ const MARKER_MAX_PAYLOAD = 8 * 1024;
 const MARKER_MAX_DEPTH = 8;
 const TAIL_WINDOW = MARKER_MAX_PAYLOAD + 256;
 
+/**
+ * Room inside the payload cap that a step's output value may not use, kept
+ * for the marker's own envelope — stage, kind, round, the route's marker
+ * string. Every one of those comes from the workflow file, so the envelope is
+ * bounded by something a contributor writes rather than by something an agent
+ * chose; a workflow whose ids are long enough to overrun a kilobyte of slack
+ * is a defect, and renderMarker throwing is how it is reported.
+ */
+const MARKER_ENVELOPE_RESERVE = 1024;
+
+/** A marker is depth 1, so the value hanging off its `output` key is depth 2. */
+const MARKER_VALUE_DEPTH = 2;
+
 const markerRe = () => /<!--\s*landrace\s+(\{.*?\})\s*-->/gs;
 const TRAILING_RE = /^<!--\s*landrace\s+(\{[\s\S]*\})\s*-->$/;
+
+/**
+ * `<` and `>` written as the \u escapes JSON.parse reads straight back, so
+ * neither half of an HTML comment delimiter can appear in the payload.
+ *
+ * A marker carries the step's own output value now, which is the first
+ * agent-authored text to live *inside* the marker rather than beside it.
+ * JSON.stringify escapes quotes and backslashes and nothing else, so a value
+ * containing `<!--` gave trailing() a later opening than the real one — and
+ * the escaped json between it and the close does not parse — while `-->`
+ * closes the comment early. Either way our own comment stops reading as ours,
+ * the step looks like it never ran, and it is re-invoked and paid for on
+ * every tick: neutraliseMarkers' problem, one level in.
+ */
+const escapeAngles = (json: string): string => json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+
+/**
+ * Why a marker could not carry this value, or null if it can. Asked at the
+ * step boundary, where a rejection is a broken output contract and leaves a
+ * durable record; renderMarker's own throw is the backstop for everything
+ * that does not come through there.
+ */
+export function outputValueProblem(value: unknown): string | null {
+  const room = MARKER_MAX_PAYLOAD - MARKER_ENVELOPE_RESERVE;
+  const json = escapeAngles(JSON.stringify(value));
+  if (json.length > room) return `is ${json.length} characters, over the ${room} a record can carry`;
+  if (tooDeep(value, MARKER_VALUE_DEPTH)) return `is nested deeper than the ${MARKER_MAX_DEPTH} levels a record can carry`;
+  return null;
+}
 
 /**
  * Throws rather than emit a marker the reader would not see. A marker past the
@@ -90,7 +149,7 @@ const TRAILING_RE = /^<!--\s*landrace\s+(\{[\s\S]*\})\s*-->$/;
  * re-invoked on every tick forever. Failing at write time is loud and local.
  */
 export const renderMarker = (m: Marker): string => {
-  const json = JSON.stringify(m);
+  const json = escapeAngles(JSON.stringify(m));
   if (json.length > MARKER_MAX_PAYLOAD) {
     throw new Error(`marker is too large to be read back: ${json.length} > ${MARKER_MAX_PAYLOAD} characters`);
   }

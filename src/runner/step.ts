@@ -1,5 +1,5 @@
 import { compile, type Effect, type Snapshot } from "../core/index.js";
-import { isReservedId } from "../conventions.js";
+import { isReservedId, OUTPUT_KIND, outputValueProblem } from "../conventions.js";
 import type { Executor } from "../hooks/types.js";
 import type { Step } from "../workflow/load.js";
 import { screenPrompt } from "../agent/screen.js";
@@ -203,6 +203,53 @@ export async function runStep(opts: {
     return { ok: false, kind: "contract", reason: `output shape "${shape}" is declared but no route claims it` };
   }
 
+  /*
+   * What the agent said, cut down to what the step declared it may say.
+   *
+   * The discriminator plus the fields of *this* shape — not the parsed object,
+   * and not the union of every shape's fields. Whatever survives here becomes
+   * snapshot state on the next tick (outputs.<stage>.<field>), which
+   * predicates route on, so the schema's judgement about what is admissible is
+   * the boundary: the raw object would let an agent write any key it liked
+   * into the state the engine decides from. A reserved id is not a field name
+   * but a reachable key on a plain object, refused here the same way a shape
+   * name and a stage id already are.
+   *
+   * A declared field the output omits simply does not travel. This bounds what
+   * an output may carry; it does not yet assert that it carries it — the
+   * spec's `assert` is not implemented, so a missing or wrongly-typed field
+   * shows up as a trigger that does not match, not as a rejection.
+   */
+  const declared = step.output.shapes[shape];
+  const named = declared !== null && typeof declared === "object" && !Array.isArray(declared)
+    ? Object.keys(declared)
+    : [];
+  // Null-prototype: the second half of the reserved-id guard, exactly as in
+  // deriveRun. Neither is a substitute for the other.
+  const value = Object.create(null) as Record<string, unknown>;
+  value[step.output.discriminator] = shape;
+  for (const field of named) {
+    if (isReservedId(field) || !Object.hasOwn(parsed, field)) continue;
+    value[field] = parsed[field];
+  }
+
+  /*
+   * An output value is agent-chosen and unbounded, and it has to fit in a
+   * record we can read back. Rejected here, as a broken contract, rather than
+   * left to throw at apply time: an apply that throws leaves nothing durable
+   * on the ticket, so the next tick re-derives "pending" and pays for the
+   * step all over again — the money-burning shape of failure this codebase
+   * keeps closing. A hard fail records the reason and never retries.
+   */
+  const problem = outputValueProblem(value);
+  if (problem) {
+    return {
+      ok: false,
+      kind: "contract",
+      reason: `stage "${stageId}" shape "${shape}": the output value ${problem}`,
+    };
+  }
+
   const vars = { round: String(round), stage: stageId, shape };
   // The exact span extractJsonBlock parsed — not a second, independently-run
   // regex — is what gets removed to build the body. Two regexes matching
@@ -224,10 +271,16 @@ export async function runStep(opts: {
   const expanded = Object.fromEntries(
     Object.entries(route.effect).map(([k, v]) => [k, expand(v, vars)]),
   ) as Effect;
-  // kind defaults to "output": this effect *is* the step's result, and the
+  // kind defaults to OUTPUT_KIND: this effect *is* the step's result, and the
   // engine derives outputs.<stage> from entries of that kind. A route may
   // override it, but forgetting it would leave the stage unable to advance.
-  const effect: Effect = { body, stage: stageId, round, kind: "output", ...expanded };
+  //
+  // `output` goes on last, after the route's own fields, because it is the
+  // one field on this effect the workflow does not get to write: it is what
+  // the step actually produced, already cut to the declared shape. A route
+  // declaring `output:` would otherwise pin the state every later predicate
+  // reads to a constant chosen in the file.
+  const effect: Effect = { body, stage: stageId, round, kind: OUTPUT_KIND, ...expanded, output: value };
 
   return { ok: true, effects: [effect], sessionId };
 }

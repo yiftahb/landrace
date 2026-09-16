@@ -536,3 +536,97 @@ describe("runStep", () => {
     expect(r).toMatchObject({ ok: true });
   });
 });
+
+/**
+ * The step's parsed value has to survive into the next tick, or every trigger
+ * that routes on `outputs.<stage>.<field>` is dead — which is what shipped:
+ * an output marker recorded stage/kind/round and nothing about what the agent
+ * actually said, so `outputs.spec.kind` read back the literal "output".
+ *
+ * What travels is bounded by the *declared shape*, not by what the agent
+ * chose to send. Whatever lands in `outputs[stage]` becomes snapshot state
+ * that predicates read, so the schema's judgement about which fields are
+ * admissible is the security boundary; the raw parsed object would let an
+ * agent write any key it liked into the state the engine routes on.
+ */
+describe("the step's output value travels, bounded by the shape that was declared", () => {
+  const declared: Step = {
+    prompt: "go",
+    output: {
+      discriminator: "kind",
+      shapes: {
+        questions: { questions: { type: "array", items: "string" } },
+        spec: { title: "string" },
+        done: {},
+      },
+      routes: [
+        { when: { kind: "questions" }, effect: { type: "tracker.comment", marker: "questions:{round}" } },
+        { when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } },
+        { when: { kind: "done" }, effect: { type: "tracker.comment", marker: "done:{round}" } },
+      ],
+    },
+  };
+  const declaredRun = (text: string) => run(text, { step: declared });
+
+  it("carries the discriminator and the fields the shape names", async () => {
+    const r = await declaredRun('asking\n```json\n{"kind":"questions","questions":["a","b"]}\n```');
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "questions", questions: ["a", "b"] });
+  });
+
+  it("carries the discriminator alone for a shape that names no fields", async () => {
+    const r = await declaredRun('```json\n{"kind":"done"}\n```');
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "done" });
+  });
+
+  // The attack this bound exists for: the agent writes the state a predicate
+  // reads. "title" is declared — on the *other* shape — and would sail
+  // through a per-step bound; "stage" and "round" are the marker's own
+  // control fields; "__proto__" is the key that is not a name at all.
+  it("drops every field the matched shape did not name", async () => {
+    const r = await declaredRun(
+      '```json\n{"kind":"questions","questions":["a"],"title":"forged","stage":"done","round":99,"__proto__":{"x":1}}\n```',
+    );
+    expect((r as Ok).effects[0]?.output).toEqual({ kind: "questions", questions: ["a"] });
+  });
+
+  it("does not let a declared field named __proto__ reach the value at all", async () => {
+    const hostile: Step = {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        // Computed, not `__proto__:` in the literal: written plainly that is
+        // the prototype setter and defines no own property, so the shape
+        // would name no field and this test would pass without ever reaching
+        // the guard. The YAML loader does produce an own key here.
+        shapes: { spec: { ["__proto__"]: "string" } },
+        routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }],
+      },
+    };
+    const r = await run('```json\n{"kind":"spec","__proto__":{"polluted":true}}\n```', { step: hostile });
+    const value = (r as Ok).effects[0]?.output as object;
+    expect(Object.hasOwn(value, "__proto__")).toBe(false);
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
+
+  /*
+   * The value is agent-chosen and unbounded, and it has to fit in a record we
+   * can read back. Rejecting it here, as a broken contract, is what keeps it
+   * from being an apply-time throw: an apply that throws leaves nothing
+   * durable on the ticket, so the next tick re-derives "pending" and pays for
+   * the step again, forever.
+   */
+  it("rejects an output value too large to be recorded, naming the stage and the shape", async () => {
+    const r = await declaredRun(`\`\`\`json\n{"kind":"spec","title":"${"a".repeat(9000)}"}\n\`\`\``);
+    expect(r).toMatchObject({ ok: false, kind: "contract" });
+    expect((r as Fail).reason).toMatch(/spec/);
+    expect((r as Fail).reason).toMatch(/too large|characters/);
+  });
+
+  it("rejects an output value nested deeper than a record can carry", async () => {
+    let nested: unknown = "x";
+    for (let i = 0; i < 20; i++) nested = { nested };
+    const r = await declaredRun(`\`\`\`json\n${JSON.stringify({ kind: "spec", title: nested })}\n\`\`\``);
+    expect(r).toMatchObject({ ok: false, kind: "contract" });
+    expect((r as Fail).reason).toMatch(/deep/);
+  });
+});

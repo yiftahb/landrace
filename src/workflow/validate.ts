@@ -1,4 +1,4 @@
-import { ENTRY_KIND, isReservedId } from "../conventions.js";
+import { ENTRY_KIND, isReservedId, OUTPUT_KIND } from "../conventions.js";
 import { identityOf } from "../core/locate.js";
 import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
 import type { Condition, Stage, Workflow } from "../core/types.js";
@@ -412,7 +412,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   // Declaring an output block is necessary but not sufficient: a route's own
   // `effect` can override the `kind` runStep would otherwise default to
   // "output", or the `stage` it would otherwise default to the stage's own
-  // id (src/runner/step.ts: `{ kind: "output", ...expanded }`). A step whose
+  // id (src/runner/step.ts: `{ kind: OUTPUT_KIND, ...expanded }`). A step whose
   // *every* route does one of those can never produce a same-stage "output"
   // entry either, and is exactly as stuck as one with no output block at
   // all — just less visibly so, since `output:` is right there in the file.
@@ -449,7 +449,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     const producesOwnOutput = step.output.routes.some((route) => {
       const kind = route.effect.kind;
       const target = route.effect.stage;
-      return (kind === undefined || kind === "output") && (target === undefined || target === stage.id);
+      return (kind === undefined || kind === OUTPUT_KIND) && (target === undefined || target === stage.id);
     });
     if (!producesOwnOutput) {
       problems.push({
@@ -463,12 +463,29 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     const step = stage.step ? steps.get(stage.step) : undefined;
     const output = step?.output;
     if (!output) continue;
-    for (const shape of Object.keys(output.shapes)) {
+    for (const [shape, declared] of Object.entries(output.shapes)) {
       const routed = output.routes.some((r) => r.when[output.discriminator] === shape);
       if (!routed) {
         problems.push({
           rule: "totality",
           message: `step ${stage.step} declares output shape "${shape}" with no route`,
+        });
+      }
+
+      /*
+       * A declared shape is what decides which of an agent's fields become
+       * snapshot state, so a field it names that can never travel is a rule
+       * that silently does nothing. A reserved id is not a field name but a
+       * reachable key on a plain object, and runner/step.ts drops it at the
+       * boundary: the value never arrives, the trigger reading it never
+       * matches, and the ticket waits with nothing to explain why.
+       */
+      if (declared === null || typeof declared !== "object" || Array.isArray(declared)) continue;
+      for (const field of Object.keys(declared)) {
+        if (!isReservedId(field)) continue;
+        problems.push({
+          rule: "shape-field",
+          message: `step ${stage.step} shape "${shape}" declares a field named "${field}", which is a reserved object key and can never be carried in an output value`,
         });
       }
     }
