@@ -1,12 +1,5 @@
-import type { Effect, Snapshot } from "../namespace.js";
+import type { Dispatcher, PostHook } from "../namespace.js";
 import { messageOf } from "./errors.js";
-import type { HookContext, PostHook } from "../namespace.js";
-
-export interface Dispatcher {
-  satisfied(s: Snapshot, e: Effect): boolean;
-  apply(e: Effect, ctx: HookContext): Promise<void>;
-  handlerFor(type: string): PostHook | null;
-}
 
 export function createDispatcher(hooks: PostHook[]): Dispatcher {
   const byType = new Map<string, PostHook>();

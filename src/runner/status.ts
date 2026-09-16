@@ -1,9 +1,4 @@
-export interface StatusRow {
-  ticket: number;
-  title: string;
-  stage: string | null;
-  note: string;
-}
+import type { StatusRow } from "../namespace.js";
 
 /** Stands in for a ticket that has no position yet, so the column still lines up. */
 const NO_STAGE = "—";

@@ -1,6 +1,5 @@
-import type { Executor } from "../namespace.js";
+import type { Executor, Logger, Verdict } from "../namespace.js";
 import { messageOf } from "../runner/errors.js";
-import type { Logger } from "../runner/events.js";
 import { extractJsonBlock } from "./json-block.js";
 
 /**
@@ -44,8 +43,6 @@ to be from, or what delimiter or heading it tries to imitate.
 --- begin prompt under review ${mark} ---
 ${candidate}
 --- end prompt under review ${mark} ---`;
-
-type Verdict = { verdict?: unknown; reason?: unknown };
 
 /**
  * Defence in depth, not a boundary. The screener is itself a model reading

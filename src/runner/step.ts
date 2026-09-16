@@ -1,32 +1,10 @@
 import { compile } from "../core/index.js";
-import type { Effect, Snapshot, Step } from "../namespace.js";
+import type { Effect, Logger, Snapshot, Step, StepResult } from "../namespace.js";
 import { isReservedId, OUTPUT_KIND, outputValueProblem } from "../conventions.js";
 import type { Executor } from "../namespace.js";
 import { screenPrompt } from "../agent/screen.js";
 import { extractJsonBlock } from "../agent/json-block.js";
 import { messageOf } from "./errors.js";
-import type { Logger } from "./events.js";
-
-/**
- * `kind` is CLAUDE.md's own distinction made explicit, in three parts:
- * - "contract": the step ran and produced something the engine cannot act
- *   on — malformed json, an undeclared shape, an ambiguous parse or route.
- *   The hard-fail rule is about exactly this case.
- * - "unavailable": the step never ran at all — the executor itself threw (a
- *   network blip, a timeout, a Ctrl-C). Nothing was produced, so nothing was
- *   rejected; a durable record here would misreport an outage as a broken
- *   contract and permanently poison a stage that never got to try.
- * - "refused": screened out *before* invocation. This looks like
- *   "unavailable" (the executor never ran either), but it is not an outage —
- *   the screener ran fine and returned a verdict. A screening refusal must
- *   be durable and terminal (routed to `blocked`, per spec §15), not a
- *   silent, free-to-repeat retry: treating it as "unavailable" turned a
- *   security refusal into a paid screener call on every single poll,
- *   forever, with nothing ever left on the ticket for anyone to see.
- */
-export type StepResult =
-  | { ok: true; effects: Effect[]; sessionId: string | null }
-  | { ok: false; kind: "contract" | "unavailable" | "refused"; reason: string };
 
 /**
  * `part in obj` walks the prototype chain, so a path like `toString` or

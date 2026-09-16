@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildRuntime, runStart } from "../../src/cli/start.js";
 import { runStatus } from "../../src/cli/status.js";
-import type { LandraceEvent } from "../../src/runner/events.js";
+import type { LandraceEvent } from "../../src/namespace.js";
 import { acquire, release } from "../../src/runner/lock.js";
 import { tick } from "../../src/runner/tick.js";
 

@@ -4,25 +4,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-export type LockKind = "tick" | "conversation" | "execution";
-
-export interface Held {
-  ticket: number;
-  holder: string;
-  kind: LockKind;
-  pid: number;
-  at: number;
-  deadlineMs: number;
-}
-
-export interface LockOptions {
-  holder?: string;
-  /** How long this work may reasonably take before the lock is stealable. */
-  deadlineMs?: number;
-  /** Wait this long for a holder to finish before giving up. */
-  waitMs?: number;
-  root?: string;
-}
+import type { Held, LockKind, LockOptions } from "../namespace.js";
 
 const DEFAULT_DEADLINE_MS = 15 * 60_000;
 

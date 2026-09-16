@@ -32,10 +32,7 @@
  * quoting *carefully* — via indentation instead of backticks — does not
  * avoid this; only placement (not last) does.
  */
-export type JsonBlockResult =
-  | { kind: "none" }
-  | { kind: "unparseable" }
-  | { kind: "found"; value: Record<string, unknown>; span: [number, number] };
+import type { Frame, JsonBlockResult } from "../namespace.js";
 
 /**
  * The last "```" in the text, provided nothing but whitespace follows it —
@@ -221,10 +218,6 @@ function hasDuplicateKey(text: string): boolean {
     while (i < n && !/[,}\]\s]/.test(text[i] as string)) i++;
     return i > start;
   };
-
-  type Frame =
-    | { kind: "object"; seen: Set<string>; state: "key-or-close" | "colon" | "value" | "comma-or-close" }
-    | { kind: "array"; state: "value-or-close" | "comma-or-close" };
 
   const stack: Frame[] = [];
 

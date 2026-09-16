@@ -1,8 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { defineExecutor } from "../hooks/contracts.js";
-import type { Executor } from "../namespace.js";
-import type { Logger } from "../runner/events.js";
+import type { Executor, Logger } from "../namespace.js";
 import { containedPath } from "../workflow/load.js";
 
 /**

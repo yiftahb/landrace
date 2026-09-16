@@ -1,43 +1,24 @@
 import { createClaudeExecutor } from "../agent/claude.js";
 import { loadConfig, redactionValues } from "../config/load.js";
-import type { RuntimeConfig } from "../namespace.js";
 import { loadHooks } from "../hooks/load.js";
-import type { Executor, Registry, RuntimeContext, Source } from "../namespace.js";
-import type { ConvergeDeps } from "../runner/converge.js";
+import type {
+  BuildOptions,
+  EventName,
+  Executor,
+  Logger,
+  Registry,
+  Runtime,
+  RuntimeConfig,
+  StartOptions,
+} from "../namespace.js";
 import { createDispatcher } from "../runner/effects.js";
 import { messageOf } from "../runner/errors.js";
-import { createLogger, type EventName, type LandraceEvent, type Logger } from "../runner/events.js";
+import { createLogger } from "../runner/events.js";
 import { oneLine } from "../runner/status.js";
 import { tick } from "../runner/tick.js";
 import { loadWorkflow } from "../workflow/load.js";
 import { validate } from "../workflow/validate.js";
 import { STOP_SIGNALS } from "./reexec.js";
-
-/** Everything the loop needs, assembled once, so a tick is only a call. */
-export interface Runtime {
-  /** Where the work comes from. Required: a loop with nothing to enumerate can never do anything. */
-  source: Source;
-  deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
-  intervalMs: number;
-  concurrency: number;
-  /**
-   * Ctrl-C. The same signal every hook and executor is handed, so aborting it
-   * stops the agent subprocess, stops the next pass from starting, and lets
-   * each ticket unwind through the lock it holds.
-   */
-  stop: AbortController;
-}
-
-export interface StartOptions {
-  once?: boolean;
-  debug?: boolean;
-}
-
-export interface BuildOptions {
-  debug?: boolean;
-  /** Where events go. `landrace status` sends them to stderr, because stdout is its report. */
-  sink?: (event: LandraceEvent) => void;
-}
 
 const UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
 

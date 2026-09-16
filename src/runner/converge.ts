@@ -1,30 +1,9 @@
 import { decide, planEffects, reconcile } from "../core/index.js";
-import type { Effect, Snapshot, Step, Workflow } from "../namespace.js";
-import type { Executor, HookContext, PreHook } from "../namespace.js";
-import type { Dispatcher } from "./effects.js";
+import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot } from "../namespace.js";
 import { messageOf } from "./errors.js";
-import { MIN_SECRET_LENGTH, redactValue, type Logger } from "./events.js";
+import { MIN_SECRET_LENGTH, redactValue } from "./events.js";
 import { buildSnapshot } from "./snapshot.js";
 import { runStep } from "./step.js";
-
-export interface ConvergeDeps {
-  workflow: Workflow;
-  steps: Map<string, Step>;
-  pre: PreHook[];
-  dispatcher: Dispatcher;
-  executor: Executor;
-  screen?: { executor: Executor };
-  ctx: Omit<HookContext, "snapshot">;
-  log: Logger;
-  maxPasses?: number;
-}
-
-export interface ConvergeResult {
-  passes: number;
-  settled: "wait" | "halt" | "terminal" | "cap";
-  /** Set on "wait" and "halt": which of several possible causes this was, so a caller does not have to re-derive it from the log stream. */
-  why?: string;
-}
 
 /** Generous. The real bound on a run is the workflow's iteration budget. */
 const DEFAULT_MAX_PASSES = 30;

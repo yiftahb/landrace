@@ -1,4 +1,5 @@
-import { createLogger, type LandraceEvent } from "../../src/runner/events.js";
+import { createLogger } from "../../src/runner/events.js";
+import type { LandraceEvent } from "../../src/namespace.js";
 
 describe("createLogger", () => {
   it("emits an event with its name and data", () => {

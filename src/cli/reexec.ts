@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { Reexec, Where } from "../namespace.js";
 
 /**
  * Running this process again, once, with the flag that lets node read a
@@ -22,12 +23,6 @@ export const STRIP_TYPES = "--experimental-strip-types";
  */
 export const REEXEC_MARKER = "LANDRACE_STRIPPING_TYPES";
 
-/** Where the decision is made from, so it can be tested without being this process. */
-export interface Where {
-  execArgv: readonly string[];
-  env: NodeJS.ProcessEnv;
-}
-
 const isUnknownExtension = (error: unknown): boolean =>
   (error as { code?: unknown } | null)?.code === "ERR_UNKNOWN_FILE_EXTENSION";
 
@@ -44,15 +39,6 @@ export function shouldReexec(error: unknown, where: Where): boolean {
  * process that is actually doing the work after a re-exec.
  */
 export const STOP_SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
-
-export interface Reexec {
-  execPath: string;
-  /** This process's own node options, carried over: dropping `--import` or `--inspect` would silently change how the retry runs. */
-  execArgv: readonly string[];
-  /** The command line after the node options — `process.argv.slice(1)`. */
-  argv: readonly string[];
-  env: NodeJS.ProcessEnv;
-}
 
 /**
  * Run the same command again with the flag, and answer with the child's exit

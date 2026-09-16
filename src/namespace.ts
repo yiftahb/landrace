@@ -386,3 +386,206 @@ export interface Claim {
   id: string;
   from: string;
 }
+
+/* ---------------------------------------------------------------- runner -- */
+
+export interface Dispatcher {
+  satisfied(s: Snapshot, e: Effect): boolean;
+  apply(e: Effect, ctx: HookContext): Promise<void>;
+  handlerFor(type: string): PostHook | null;
+}
+
+/**
+ * The event vocabulary. Deliberately boring and fixed: an OpenTelemetry
+ * exporter should later subscribe to this rather than require a rewrite.
+ */
+export type EventName =
+  | "tick.started" | "tick.finished"
+  | "ticket.evaluated" | "ticket.skipped"
+  | "step.invoked" | "step.completed" | "step.rejected"
+  | "agent.event"
+  | "snapshot.built" | "snapshot.failed"
+  | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
+  | "lock.acquired" | "lock.denied" | "lock.stolen"
+  | "screen.passed" | "screen.blocked";
+
+export interface LandraceEvent {
+  name: EventName;
+  ticket?: number;
+  [key: string]: unknown;
+}
+
+export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
+
+export type LockKind = "tick" | "conversation" | "execution";
+
+export interface Held {
+  ticket: number;
+  holder: string;
+  kind: LockKind;
+  pid: number;
+  at: number;
+  deadlineMs: number;
+}
+
+export interface LockOptions {
+  holder?: string;
+  /** How long this work may reasonably take before the lock is stealable. */
+  deadlineMs?: number;
+  /** Wait this long for a holder to finish before giving up. */
+  waitMs?: number;
+  root?: string;
+}
+
+/**
+ * `kind` is CLAUDE.md's own distinction made explicit, in three parts:
+ * - "contract": the step ran and produced something the engine cannot act
+ *   on — malformed json, an undeclared shape, an ambiguous parse or route.
+ *   The hard-fail rule is about exactly this case.
+ * - "unavailable": the step never ran at all — the executor itself threw (a
+ *   network blip, a timeout, a Ctrl-C). Nothing was produced, so nothing was
+ *   rejected; a durable record here would misreport an outage as a broken
+ *   contract and permanently poison a stage that never got to try.
+ * - "refused": screened out *before* invocation. This looks like
+ *   "unavailable" (the executor never ran either), but it is not an outage —
+ *   the screener ran fine and returned a verdict. A screening refusal must
+ *   be durable and terminal (routed to `blocked`, per spec §15), not a
+ *   silent, free-to-repeat retry: treating it as "unavailable" turned a
+ *   security refusal into a paid screener call on every single poll,
+ *   forever, with nothing ever left on the ticket for anyone to see.
+ */
+export type StepResult =
+  | { ok: true; effects: Effect[]; sessionId: string | null }
+  | { ok: false; kind: "contract" | "unavailable" | "refused"; reason: string };
+
+export interface ConvergeDeps {
+  workflow: Workflow;
+  steps: Map<string, Step>;
+  pre: PreHook[];
+  dispatcher: Dispatcher;
+  executor: Executor;
+  screen?: { executor: Executor };
+  ctx: Omit<HookContext, "snapshot">;
+  log: Logger;
+  maxPasses?: number;
+}
+
+export interface ConvergeResult {
+  passes: number;
+  settled: "wait" | "halt" | "terminal" | "cap";
+  /** Set on "wait" and "halt": which of several possible causes this was, so a caller does not have to re-derive it from the log stream. */
+  why?: string;
+}
+
+export interface StatusRow {
+  ticket: number;
+  title: string;
+  stage: string | null;
+  note: string;
+}
+
+export interface TickOptions {
+  /**
+   * Where the work comes from. Not a pre hook: a pre hook is handed the ticket
+   * it describes, and a tick has to enumerate tickets before it has one.
+   */
+  source: Source;
+  deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
+  concurrency?: number;
+  lock?: LockOptions;
+}
+
+export interface TickRow {
+  ticket: number;
+  outcome: string;
+}
+
+export type Eligibility = { eligible: true } | { eligible: false; reason: string };
+
+/* ----------------------------------------------------------------- agent -- */
+
+export type JsonBlockResult =
+  | { kind: "none" }
+  | { kind: "unparseable" }
+  | { kind: "found"; value: Record<string, unknown>; span: [number, number] };
+
+/**
+ * One level of the scanner's own nesting. Declared here rather than inside the
+ * function it belongs to, because every type in the system is declared here —
+ * see the note at the top of `src/agent/json-block.ts` about what that costs.
+ */
+export type Frame =
+  | { kind: "object"; seen: Set<string>; state: "key-or-close" | "colon" | "value" | "comma-or-close" }
+  | { kind: "array"; state: "value-or-close" | "comma-or-close" };
+
+/** What the screener's own json block is read as before its fields are checked. */
+export type Verdict = { verdict?: unknown; reason?: unknown };
+
+/* ------------------------------------------------------------------- mcp -- */
+
+export interface Tools {
+  waiting(): Promise<Array<{ ticket: number; title: string; url: string }>>;
+  status(ticket: number): Promise<unknown>;
+  // `| undefined` is explicit because exactOptionalPropertyTypes is on and these
+  // are fed straight from Zod, whose optional output includes it.
+  createTicket(input: {
+    title: string;
+    body?: string | undefined;
+    labels?: string[] | undefined;
+    start?: boolean | undefined;
+  }): Promise<unknown>;
+  updateTicket(
+    ticket: number,
+    input: {
+      title?: string | undefined;
+      body?: string | undefined;
+      state?: "open" | "closed" | undefined;
+      addLabels?: string[] | undefined;
+      removeLabels?: string[] | undefined;
+    },
+  ): Promise<unknown>;
+  reply(ticket: number, message: string): Promise<unknown>;
+}
+
+/* ------------------------------------------------------------------- cli -- */
+
+/** Where the decision is made from, so it can be tested without being this process. */
+export interface Where {
+  execArgv: readonly string[];
+  env: NodeJS.ProcessEnv;
+}
+
+export interface Reexec {
+  execPath: string;
+  /** This process's own node options, carried over: dropping `--import` or `--inspect` would silently change how the retry runs. */
+  execArgv: readonly string[];
+  /** The command line after the node options — `process.argv.slice(1)`. */
+  argv: readonly string[];
+  env: NodeJS.ProcessEnv;
+}
+
+/** Everything the loop needs, assembled once, so a tick is only a call. */
+export interface Runtime {
+  /** Where the work comes from. Required: a loop with nothing to enumerate can never do anything. */
+  source: Source;
+  deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
+  intervalMs: number;
+  concurrency: number;
+  /**
+   * Ctrl-C. The same signal every hook and executor is handed, so aborting it
+   * stops the agent subprocess, stops the next pass from starting, and lets
+   * each ticket unwind through the lock it holds.
+   */
+  stop: AbortController;
+}
+
+export interface StartOptions {
+  once?: boolean;
+  debug?: boolean;
+}
+
+export interface BuildOptions {
+  debug?: boolean;
+  /** Where events go. `landrace status` sends them to stderr, because stdout is its report. */
+  sink?: (event: LandraceEvent) => void;
+}

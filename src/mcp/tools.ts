@@ -1,32 +1,8 @@
 import { isEngineLabel, LABEL_NAMESPACE, LABELS, neutraliseMarkers, stageFromLabels } from "../conventions.js";
 import type { Snapshot } from "../namespace.js";
-import type { Candidate, Operator, Registry, RuntimeContext } from "../namespace.js";
+import type { Candidate, Operator, Registry, RuntimeContext, Tools } from "../namespace.js";
 import { createDispatcher } from "../runner/effects.js";
 import { buildSnapshot } from "../runner/snapshot.js";
-
-export interface Tools {
-  waiting(): Promise<Array<{ ticket: number; title: string; url: string }>>;
-  status(ticket: number): Promise<unknown>;
-  // `| undefined` is explicit because exactOptionalPropertyTypes is on and these
-  // are fed straight from Zod, whose optional output includes it.
-  createTicket(input: {
-    title: string;
-    body?: string | undefined;
-    labels?: string[] | undefined;
-    start?: boolean | undefined;
-  }): Promise<unknown>;
-  updateTicket(
-    ticket: number,
-    input: {
-      title?: string | undefined;
-      body?: string | undefined;
-      state?: "open" | "closed" | undefined;
-      addLabels?: string[] | undefined;
-      removeLabels?: string[] | undefined;
-    },
-  ): Promise<unknown>;
-  reply(ticket: number, message: string): Promise<unknown>;
-}
 
 /**
  * Position is a label, so an `lr:` label from the editor is not a label at

@@ -1,7 +1,6 @@
 import { LABELS, stageFromLabels } from "../conventions.js";
-import type { Workflow } from "../namespace.js";
-import type { Candidate } from "../namespace.js";
-import { statusLines, type StatusRow } from "../runner/status.js";
+import type { Candidate, StatusRow, Workflow } from "../namespace.js";
+import { statusLines } from "../runner/status.js";
 import { eligibilityOf } from "../runner/tick.js";
 import { buildRuntime } from "./start.js";
 

@@ -1,16 +1,4 @@
-/**
- * The event vocabulary. Deliberately boring and fixed: an OpenTelemetry
- * exporter should later subscribe to this rather than require a rewrite.
- */
-export type EventName =
-  | "tick.started" | "tick.finished"
-  | "ticket.evaluated" | "ticket.skipped"
-  | "step.invoked" | "step.completed" | "step.rejected"
-  | "agent.event"
-  | "snapshot.built" | "snapshot.failed"
-  | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
-  | "lock.acquired" | "lock.denied" | "lock.stolen"
-  | "screen.passed" | "screen.blocked";
+import type { EventName, LandraceEvent, Logger } from "../namespace.js";
 
 /**
  * Printed only under `--debug` (spec §14).
@@ -22,14 +10,6 @@ export type EventName =
  * decides and no caller has to be handed the debug flag to make the choice.
  */
 const DEBUG_ONLY: ReadonlySet<EventName> = new Set<EventName>(["agent.event", "snapshot.built"]);
-
-export interface LandraceEvent {
-  name: EventName;
-  ticket?: number;
-  [key: string]: unknown;
-}
-
-export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
 /**
  * Shorter than any real credential, and long enough that a value this short is

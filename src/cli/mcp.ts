@@ -4,7 +4,8 @@ import { loadHooks } from "../hooks/load.js";
 import type { RuntimeContext } from "../namespace.js";
 import { createMcpServer } from "../mcp/server.js";
 import { createTools } from "../mcp/tools.js";
-import { createLogger, type EventName } from "../runner/events.js";
+import { createLogger } from "../runner/events.js";
+import type { EventName } from "../namespace.js";
 import { loadWorkflow } from "../workflow/load.js";
 
 export async function runMcp(dir: string): Promise<void> {

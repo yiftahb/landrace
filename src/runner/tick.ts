@@ -1,26 +1,18 @@
 import { checkEligible, missingPaths } from "../core/index.js";
-import type { Snapshot, Workflow } from "../namespace.js";
-import type { Candidate, HookContext, RuntimeContext, Source } from "../namespace.js";
-import { converge, type ConvergeDeps, type ConvergeResult } from "./converge.js";
+import type {
+  Candidate,
+  ConvergeResult,
+  Eligibility,
+  HookContext,
+  Snapshot,
+  TickOptions,
+  TickRow,
+  Workflow,
+} from "../namespace.js";
+import { converge } from "./converge.js";
 import { messageOf } from "./errors.js";
-import { withLock, type LockOptions } from "./lock.js";
+import { withLock } from "./lock.js";
 import { oneLine } from "./status.js";
-
-export interface TickOptions {
-  /**
-   * Where the work comes from. Not a pre hook: a pre hook is handed the ticket
-   * it describes, and a tick has to enumerate tickets before it has one.
-   */
-  source: Source;
-  deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
-  concurrency?: number;
-  lock?: LockOptions;
-}
-
-export interface TickRow {
-  ticket: number;
-  outcome: string;
-}
 
 /** Matches `tick.concurrency`'s own default, so the two cannot drift. */
 const DEFAULT_CONCURRENCY = 3;
@@ -41,8 +33,6 @@ const candidateSnapshot = (candidate: Candidate): Snapshot => ({
     labels: candidate.labels,
   },
 });
-
-export type Eligibility = { eligible: true } | { eligible: false; reason: string };
 
 /**
  * Whether the tick should work a candidate, decided from the workflow's own
