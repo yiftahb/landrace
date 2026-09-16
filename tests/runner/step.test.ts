@@ -1,5 +1,5 @@
 import { renderPrompt, runStep, type StepResult } from "../../src/runner/step.js";
-import type { Executor } from "../../src/hooks/types.js";
+import type { Executor } from "../../src/namespace.js";
 import type { Snapshot, Step } from "../../src/namespace.js";
 
 // `Effect`'s index signature types every property as `unknown`, so casting a

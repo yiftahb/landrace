@@ -1,4 +1,4 @@
-import type { HookContext } from "../../src/hooks/types.js";
+import type { HookContext } from "../../src/namespace.js";
 import type { Effect, Snapshot } from "../../src/namespace.js";
 import { createFakeTracker } from "../support/fake-tracker.js";
 import { renderMarker } from "../../src/conventions.js";

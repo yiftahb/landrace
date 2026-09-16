@@ -1,4 +1,4 @@
-import type { Executor } from "../hooks/types.js";
+import type { Executor } from "../namespace.js";
 import { messageOf } from "../runner/errors.js";
 import type { Logger } from "../runner/events.js";
 import { extractJsonBlock } from "./json-block.js";

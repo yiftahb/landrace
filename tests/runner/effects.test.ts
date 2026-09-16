@@ -1,6 +1,6 @@
 import { createDispatcher } from "../../src/runner/effects.js";
-import { definePostHook } from "../../src/hooks/types.js";
-import type { HookContext } from "../../src/hooks/types.js";
+import { definePostHook } from "../../src/hooks/contracts.js";
+import type { HookContext } from "../../src/namespace.js";
 import type { Effect, Snapshot } from "../../src/namespace.js";
 
 const ctx = (): HookContext => ({

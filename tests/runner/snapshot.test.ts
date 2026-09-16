@@ -1,6 +1,6 @@
 import { buildSnapshot } from "../../src/runner/snapshot.js";
-import { definePreHook } from "../../src/hooks/types.js";
-import type { HookContext } from "../../src/hooks/types.js";
+import { definePreHook } from "../../src/hooks/contracts.js";
+import type { HookContext } from "../../src/namespace.js";
 
 const ctx = (): Omit<HookContext, "snapshot"> => ({
   ticket: 1,

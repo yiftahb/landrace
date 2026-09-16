@@ -1,7 +1,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig, redactionValues } from "../config/load.js";
 import { loadHooks } from "../hooks/load.js";
-import type { RuntimeContext } from "../hooks/types.js";
+import type { RuntimeContext } from "../namespace.js";
 import { createMcpServer } from "../mcp/server.js";
 import { createTools } from "../mcp/tools.js";
 import { createLogger, type EventName } from "../runner/events.js";

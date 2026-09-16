@@ -2,14 +2,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Step, Workflow } from "../../src/namespace.js";
-import {
-  definePreHook,
-  defineSource,
-  type Candidate,
-  type Executor,
-  type HookContext,
-  type RuntimeContext,
-} from "../../src/hooks/types.js";
+import { definePreHook, defineSource } from "../../src/hooks/contracts.js";
+import type { Candidate, Executor, HookContext, RuntimeContext } from "../../src/namespace.js";
 import { createDispatcher } from "../../src/runner/effects.js";
 import { createLogger, type LandraceEvent } from "../../src/runner/events.js";
 import { acquire, held, release } from "../../src/runner/lock.js";

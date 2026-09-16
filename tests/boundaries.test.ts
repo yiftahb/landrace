@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import * as contracts from "../src/hooks/types.js";
-import { HOOK_KINDS, hookKindOf } from "../src/hooks/types.js";
+import * as contracts from "../src/hooks/contracts.js";
+import { HOOK_KINDS, hookKindOf } from "../src/hooks/contracts.js";
 
 const filesUnder = (dir: string): string[] =>
   readdirSync(dir).flatMap((name) => {

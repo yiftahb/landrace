@@ -1,7 +1,8 @@
 import { converge } from "../../src/runner/converge.js";
 import { createDispatcher } from "../../src/runner/effects.js";
 import { createLogger, type Logger } from "../../src/runner/events.js";
-import { definePreHook, type Executor, type HookContext, type PostHook } from "../../src/hooks/types.js";
+import { definePreHook } from "../../src/hooks/contracts.js";
+import type { Executor, HookContext, PostHook } from "../../src/namespace.js";
 import { deriveRun } from "../../src/core/index.js";
 import type { Effect, Marker } from "../../src/namespace.js";
 import { parseMarker, stageFromLabels } from "../../src/conventions.js";

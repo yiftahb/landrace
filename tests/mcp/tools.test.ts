@@ -1,6 +1,6 @@
 import { createTools } from "../../src/mcp/tools.js";
 import { renderMarker } from "../../src/conventions.js";
-import type { Registry } from "../../src/hooks/load.js";
+import type { Registry } from "../../src/namespace.js";
 import { createFakeTracker, type FakeIssue } from "../support/fake-tracker.js";
 
 const world = (seed: Array<Partial<FakeIssue>> = []) => {

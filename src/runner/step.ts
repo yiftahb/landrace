@@ -1,7 +1,7 @@
 import { compile } from "../core/index.js";
 import type { Effect, Snapshot, Step } from "../namespace.js";
 import { isReservedId, OUTPUT_KIND, outputValueProblem } from "../conventions.js";
-import type { Executor } from "../hooks/types.js";
+import type { Executor } from "../namespace.js";
 import { screenPrompt } from "../agent/screen.js";
 import { extractJsonBlock } from "../agent/json-block.js";
 import { messageOf } from "./errors.js";

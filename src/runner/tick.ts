@@ -1,6 +1,6 @@
 import { checkEligible, missingPaths } from "../core/index.js";
 import type { Snapshot, Workflow } from "../namespace.js";
-import type { Candidate, HookContext, RuntimeContext, Source } from "../hooks/types.js";
+import type { Candidate, HookContext, RuntimeContext, Source } from "../namespace.js";
 import { converge, type ConvergeDeps, type ConvergeResult } from "./converge.js";
 import { messageOf } from "./errors.js";
 import { withLock, type LockOptions } from "./lock.js";

@@ -2,46 +2,18 @@ import { pathToFileURL } from "node:url";
 import { containedPath } from "../workflow/load.js";
 import { createDispatcher } from "../runner/effects.js";
 import { messageOf } from "../runner/errors.js";
-import {
-  hookKindOf,
-  type ArtifactHook,
-  type Executor,
-  type Operator,
-  type PostHook,
-  type PreHook,
-  type Source,
-} from "./types.js";
-
-/**
- * Everything an integration contributes, in the shape the engine consumes it.
- *
- * There is no tracker id here and no registry of implementations to choose
- * from: a workflow names module paths, the loader imports them, and what they
- * export is what the engine has. Replacing a tracker is a different file in
- * `.landrace/hooks/`, not a different string in a config.
- */
-export interface Registry {
-  /** Declaration order: a pre hook sees what the ones before it produced. */
-  pre: PreHook[];
-  post: PostHook[];
-  source: Source | null;
-  /** Optional. With none loaded, the MCP create and update tools say so rather than crashing or silently doing nothing. */
-  operator: Operator | null;
-  executors: Map<string, Executor>;
-}
-
-/** One imported module: what the workflow called it, and what it exported. */
-export interface HookModule {
-  /** The path as `workflow.yaml` spells it, so a collision names a line a person can go and edit. */
-  specifier: string;
-  exports: Record<string, unknown>;
-}
-
-/** Where a claim came from, for the message when a second one collides with it. */
-interface Claim {
-  id: string;
-  from: string;
-}
+import { hookKindOf } from "./contracts.js";
+import type {
+  ArtifactHook,
+  Claim,
+  Executor,
+  HookModule,
+  Operator,
+  PostHook,
+  PreHook,
+  Registry,
+  Source,
+} from "../namespace.js";
 
 const both = (a: Claim, b: Claim): string =>
   `"${a.id}" from "${a.from}" and "${b.id}" from "${b.from}"`;

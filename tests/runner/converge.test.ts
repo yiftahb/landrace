@@ -1,8 +1,9 @@
 import { converge } from "../../src/runner/converge.js";
 import { createDispatcher, type Dispatcher } from "../../src/runner/effects.js";
 import { createLogger, type LandraceEvent } from "../../src/runner/events.js";
-import { definePostHook, definePreHook, type HookContext } from "../../src/hooks/types.js";
-import type { Executor } from "../../src/hooks/types.js";
+import { definePostHook, definePreHook } from "../../src/hooks/contracts.js";
+import type { HookContext } from "../../src/namespace.js";
+import type { Executor } from "../../src/namespace.js";
 import type { Step } from "../../src/namespace.js";
 import type { Workflow } from "../../src/namespace.js";
 

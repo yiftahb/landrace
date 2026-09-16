@@ -1,5 +1,5 @@
 import { screenPrompt } from "../../src/agent/screen.js";
-import type { Executor } from "../../src/hooks/types.js";
+import type { Executor } from "../../src/namespace.js";
 
 const fake = (text: string): Executor => ({
   id: "fake",

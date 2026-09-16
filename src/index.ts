@@ -6,4 +6,4 @@
 export type * from "./namespace.js";
 export * from "./core/index.js";
 export * from "./conventions.js";
-export * from "./hooks/types.js";
+export * from "./hooks/contracts.js";

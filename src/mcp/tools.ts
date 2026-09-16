@@ -1,7 +1,6 @@
 import { isEngineLabel, LABEL_NAMESPACE, LABELS, neutraliseMarkers, stageFromLabels } from "../conventions.js";
 import type { Snapshot } from "../namespace.js";
-import type { Registry } from "../hooks/load.js";
-import type { Candidate, Operator, RuntimeContext } from "../hooks/types.js";
+import type { Candidate, Operator, Registry, RuntimeContext } from "../namespace.js";
 import { createDispatcher } from "../runner/effects.js";
 import { buildSnapshot } from "../runner/snapshot.js";
 

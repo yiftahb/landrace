@@ -22,6 +22,7 @@
 import type { z } from "zod";
 import type { runtimeConfigSchema } from "./config/schema.js";
 import type { stepFrontMatterSchema } from "./workflow/schema.js";
+import type { HOOK_KINDS } from "./hooks/contracts.js";
 
 /* ------------------------------------------------------------------ core -- */
 
@@ -225,4 +226,163 @@ export type ContainedPath =
 export interface Problem {
   rule: string;
   message: string;
+}
+
+/* ----------------------------------------------------------------- hooks -- */
+
+/**
+ * What a hook is handed. Secrets arrive resolved, so a hook never reads
+ * `process.env` itself — that is what makes a hook testable, and what lets log
+ * redaction know every value that must never be printed.
+ */
+export interface HookContext {
+  ticket: number;
+  snapshot: Snapshot;
+  config: RuntimeConfig;
+  secrets: ReadonlyMap<string, string>;
+  signal: AbortSignal;
+  log: (event: string, data?: Record<string, unknown>) => void;
+}
+
+/** Observe. Fetch or compute; the engine does not care which. */
+export interface PreHook {
+  id: string;
+  provides?: string[];
+  run(ctx: HookContext): Promise<Record<string, unknown>> | Record<string, unknown>;
+}
+
+/**
+ * Act. `satisfied` is pure and called often during reconcile; `apply` is impure
+ * and raced against a deadline. Both live in one hook so nobody adds an effect
+ * and forgets its dedup rule.
+ */
+export interface PostHook {
+  id: string;
+  handles: string[];
+  satisfied(snapshot: Snapshot, effect: Effect): boolean;
+  apply(effect: Effect, ctx: HookContext): Promise<void>;
+}
+
+/**
+ * Something outside the tracker with its own mutable state, which the workflow
+ * both writes and reads back. `read` is mandatory: an artifact whose state
+ * cannot be read is state that cannot be re-derived, which would break the one
+ * guarantee the whole design rests on.
+ */
+export interface ArtifactHook extends PostHook {
+  read(ctx: HookContext): Promise<Record<string, unknown>>;
+}
+
+/**
+ * The execution plane. Not a hook: invoking an agent produces new information,
+ * and an effect hook that produced information would need tracker credentials.
+ */
+export interface Executor {
+  id: string;
+  run(
+    prompt: string,
+    opts: { round: number; resume?: string; cwd?: string; signal: AbortSignal },
+  ): Promise<{ text: string; sessionId: string | null }>;
+}
+
+/**
+ * The ticket-less half of a HookContext, for the two kinds that run before —
+ * or without — a ticket to build a snapshot for.
+ */
+export type RuntimeContext = Omit<HookContext, "ticket" | "snapshot">;
+
+/** A ticket worth looking at, cheaply enough to enumerate every one of them. */
+export interface Candidate {
+  ticket: number;
+  title: string;
+  url: string;
+  /**
+   * Position, eligibility and whose turn it is are all labels, so carrying
+   * them here is what lets a tick decide which candidates to work and
+   * `landrace status` print a line each, without a snapshot build per ticket.
+   */
+  labels: string[];
+}
+
+/**
+ * Where the work comes from. A tick has to enumerate tickets before it has one
+ * to build a snapshot for, so this cannot be a pre hook: a pre hook is handed
+ * the ticket it is describing.
+ */
+export interface Source {
+  id: string;
+  list(ctx: RuntimeContext): Promise<Candidate[]>;
+}
+
+/* `| undefined` throughout, because exactOptionalPropertyTypes is on and these
+ * are fed straight from Zod, whose optional output includes it. */
+export interface NewTicket {
+  title: string;
+  body?: string | undefined;
+  labels?: string[] | undefined;
+}
+
+export interface TicketPatch {
+  title?: string | undefined;
+  body?: string | undefined;
+  state?: "open" | "closed" | undefined;
+  addLabels?: string[] | undefined;
+  removeLabels?: string[] | undefined;
+}
+
+/**
+ * Writes an operator asks for by hand, from the MCP plane.
+ *
+ * Creating a ticket is deliberately not an effect, and it must not become one.
+ * Every effect needs a `satisfied()` beside its `apply()`, and "this ticket has
+ * already been created" has no derived evidence to read — there is no ticket
+ * yet to look at. An effect without a meaningful `satisfied()` is re-applied on
+ * every tick, which here would mean a duplicate ticket per tick, forever. So
+ * creation is something a person asks for, never something the tick plans.
+ *
+ * Optional: with no operator hook loaded, the create and update tools report
+ * that none is configured. They do not crash, and they do not silently no-op.
+ */
+export interface Operator {
+  id: string;
+  createTicket(input: NewTicket, ctx: RuntimeContext): Promise<Candidate>;
+  updateTicket(ticket: number, input: TicketPatch, ctx: RuntimeContext): Promise<Candidate>;
+}
+
+/**
+ * Inferred from the loader's own vocabulary rather than written out again: a
+ * kind the loader can classify and a kind a define* helper can stamp must be
+ * the same list, and two spellings of it drift in one direction only.
+ */
+export type HookKind = (typeof HOOK_KINDS)[number];
+
+/**
+ * Everything an integration contributes, in the shape the engine consumes it.
+ *
+ * There is no tracker id here and no registry of implementations to choose
+ * from: a workflow names module paths, the loader imports them, and what they
+ * export is what the engine has. Replacing a tracker is a different file in
+ * `.landrace/hooks/`, not a different string in a config.
+ */
+export interface Registry {
+  /** Declaration order: a pre hook sees what the ones before it produced. */
+  pre: PreHook[];
+  post: PostHook[];
+  source: Source | null;
+  /** Optional. With none loaded, the MCP create and update tools say so rather than crashing or silently doing nothing. */
+  operator: Operator | null;
+  executors: Map<string, Executor>;
+}
+
+/** One imported module: what the workflow called it, and what it exported. */
+export interface HookModule {
+  /** The path as `workflow.yaml` spells it, so a collision names a line a person can go and edit. */
+  specifier: string;
+  exports: Record<string, unknown>;
+}
+
+/** Where a claim came from, for the message when a second one collides with it. */
+export interface Claim {
+  id: string;
+  from: string;
 }

@@ -1,5 +1,5 @@
 import type { Workflow } from "../../src/namespace.js";
-import type { Candidate } from "../../src/hooks/types.js";
+import type { Candidate } from "../../src/namespace.js";
 import { statusRows } from "../../src/cli/status.js";
 
 const workflow: Workflow = {

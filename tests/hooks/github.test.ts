@@ -1,5 +1,5 @@
 import { githubHooks, source } from "../../.landrace/hooks/github.js";
-import type { HookContext, RuntimeContext } from "../../src/hooks/types.js";
+import type { HookContext, RuntimeContext } from "../../src/namespace.js";
 
 /**
  * The shipped integration's own rules, driven through the hooks the loader
