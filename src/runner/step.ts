@@ -101,7 +101,19 @@ async function sandboxTrespass(
   before: WorktreeState | null,
 ): Promise<string | null> {
   if (!sandbox || before === null) return null;
-  const changed = changedSince(before, await worktreeState(sandbox.path));
+
+  // A check that could not run has verified nothing — the screener's own rule,
+  // applied to the other half of the same control. Refusing is harsh on a
+  // transient git failure and still right: the alternative is accepting a
+  // step's output while unable to say what it did to get there.
+  let after: WorktreeState;
+  try {
+    after = await worktreeState(sandbox.path);
+  } catch (e) {
+    return `the step's worktree could not be read, so what it did there cannot be checked: ${messageOf(e)}`;
+  }
+
+  const changed = changedSince(before, after);
   if (changed.length === 0) return null;
 
   const named = changed.slice(0, MAX_NAMED_CHANGES).join(", ");
@@ -148,6 +160,25 @@ export async function runStep(opts: {
     };
   }
 
+  // Read before the agent runs, not compared against "clean": a worktree a
+  // crashed run left dirty is not this step's doing, and failing an innocent
+  // step forever is how a guard gets switched off. Unreadable here means the
+  // step is refused *before* it is paid for — the check would have to be
+  // skipped otherwise, and a skipped capability check is the capability not
+  // existing.
+  let before: WorktreeState | null = null;
+  if (opts.sandbox && !mayWriteRepo(step.capabilities)) {
+    try {
+      before = await worktreeState(opts.sandbox.path);
+    } catch (e) {
+      return {
+        ok: false,
+        kind: "refused",
+        reason: `the step's worktree could not be read, so its capabilities cannot be enforced: ${messageOf(e)}`,
+      };
+    }
+  }
+
   if (opts.screen) {
     // Screen the rendered prompt, never the template: the template is the
     // workflow author's own words and carries nothing an attacker wrote, but
@@ -170,13 +201,6 @@ export async function runStep(opts: {
   }
 
   log?.("step.invoked", { stage: stageId, round });
-
-  // Read before the agent runs, not compared against "clean": a worktree a
-  // crashed run left dirty is not this step's doing, and failing an innocent
-  // step forever is how a guard gets switched off.
-  const before = opts.sandbox && !mayWriteRepo(step.capabilities)
-    ? await worktreeState(opts.sandbox.path)
-    : null;
 
   let text: string;
   let sessionId: string | null;

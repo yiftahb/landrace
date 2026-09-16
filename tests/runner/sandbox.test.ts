@@ -171,6 +171,55 @@ describe("a step that exceeds what it declared", () => {
   });
 
   /**
+   * A check that cannot run has verified nothing — the screener's own rule,
+   * applied to the other half of the same control. The expensive half is the
+   * ordering: an unreadable sandbox stops the step before it is paid for,
+   * rather than after.
+   */
+  it("refuses, without invoking the agent, when it cannot read the worktree beforehand", async () => {
+    let invoked = false;
+    const spy: Executor = {
+      id: "spy",
+      run: async () => { invoked = true; return { text: "", sessionId: null }; },
+    };
+
+    const r = await runStep({
+      step: step(["repo:read"]),
+      stageId: "spec", round: 1, snapshot: {},
+      executor: spy,
+      signal: new AbortController().signal,
+      sandbox: { path: join(tmpdir(), "lr-not-a-worktree-at-all") },
+    });
+
+    expect(r).toMatchObject({ ok: false, kind: "refused" });
+    expect((r as Fail).reason).toMatch(/worktree/i);
+    expect(invoked).toBe(false);
+  });
+
+  it("refuses rather than throwing when the worktree is gone by the time the step ends", async () => {
+    const root = await repo();
+    const path = await ensureWorktree(106, root);
+    const vanishing: Executor = {
+      id: "vanishing",
+      run: async () => {
+        await rm(path, { recursive: true, force: true });
+        return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
+      },
+    };
+
+    const r = await runStep({
+      step: step(["repo:read"]),
+      stageId: "spec", round: 1, snapshot: {},
+      executor: vanishing,
+      signal: new AbortController().signal,
+      sandbox: { path },
+    });
+
+    expect(r).toMatchObject({ ok: false, kind: "refused" });
+    await removeWorktree(106, root);
+  });
+
+  /**
    * Fail closed before spending anything. A word the engine cannot enforce is
    * not a smaller problem than a violation — it is the operator believing in a
    * restriction that was never applied — so the agent must not run at all.
