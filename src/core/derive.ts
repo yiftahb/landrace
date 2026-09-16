@@ -1,4 +1,5 @@
-import type { Entry, Run } from "./types.js";
+import { ENTRY_KIND } from "../conventions.js";
+import type { Entry, Run, StageRounds } from "./types.js";
 
 /**
  * Everything the engine knows about a ticket's progress, computed from entries.
@@ -10,11 +11,24 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   const outputsByStage = new Map<string, Entry>();
   const roundsByStage = new Map<string, Set<number>>();
   const maxMalformedRoundByStage = new Map<string, number>();
+  const maxEnteredRoundByStage = new Map<string, number>();
 
   for (const e of ordered) {
     if (e.kind === "malformed") {
       const cur = maxMalformedRoundByStage.get(e.stage);
       if (cur === undefined || e.round > cur) maxMalformedRoundByStage.set(e.stage, e.round);
+    }
+
+    /*
+     * A stage's own on_enter writes these, so entering a state twice is a
+     * fact on the tracker rather than something the engine remembers. Only
+     * the highest round matters, and two records naming the same round are
+     * one entry: the round comes from the *output* counter, so a crash
+     * between posting this and running the step replans the identical round.
+     */
+    if (e.kind === ENTRY_KIND) {
+      const cur = maxEnteredRoundByStage.get(e.stage);
+      if (cur === undefined || e.round > cur) maxEnteredRoundByStage.set(e.stage, e.round);
     }
 
     if (e.kind !== "output") continue;
@@ -40,6 +54,23 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
 
   const outputs = Object.create(null) as Run["outputs"];
   for (const [s, e] of outputsByStage) outputs[s] = e.data;
+
+  /*
+   * How far each stage has got: entered against output. A stage with no
+   * entry record at all reads as entered once, which is what keeps a stage
+   * that never loops — and every ticket already in flight when entry records
+   * were introduced — assessed exactly as before: any output means complete.
+   * Null-prototype for the same reason `outputs` is.
+   */
+  const rounds = Object.create(null) as Run["rounds"];
+  for (const s of new Set([...roundsByStage.keys(), ...maxEnteredRoundByStage.keys()])) {
+    // Folded rather than `Math.max(...set)`: the set is as long as the
+    // ticket's comment history, and a spread that long is an argument-count
+    // limit waiting to be hit by a busy ticket.
+    let output = 0;
+    for (const r of roundsByStage.get(s) ?? []) output = Math.max(output, r);
+    rounds[s] = { entered: maxEnteredRoundByStage.get(s) ?? 1, output } satisfies StageRounds;
+  }
 
   const last = ordered.at(-1) ?? null;
   const lastHuman = [...ordered].reverse().find((e) => !e.byAgent) ?? null;
@@ -88,6 +119,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     lastHuman,
     lastOutputValid,
     failedStages,
+    rounds,
     unblockedAt,
   };
 }

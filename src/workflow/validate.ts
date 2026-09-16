@@ -1,4 +1,4 @@
-import { isReservedId } from "../conventions.js";
+import { ENTRY_KIND, isReservedId } from "../conventions.js";
 import { identityOf } from "../core/locate.js";
 import { assertAllowedOperators, pathsIn } from "../core/predicate.js";
 import type { Condition, Stage, Workflow } from "../core/types.js";
@@ -277,6 +277,26 @@ function unboundedCycles(w: Workflow): string[][] {
     .map((c) => [...c].sort());
 }
 
+/**
+ * Whether a stage's on_enter records that the state was entered, in a form
+ * the engine can tell apart from the previous entry.
+ *
+ * Both halves matter. Without any entry record, assess() reads the stage's
+ * first round as its last one forever: the loop runs its body exactly once
+ * and the ticket ping-pongs between stages that all read "complete" until the
+ * pass cap. With a record that is byte-identical every time round, the post
+ * hook's satisfied() finds the first one already posted and reconcile drops
+ * it — the same stall, with something in the file that looks like it should
+ * work. "{round}" somewhere in the effect is what makes the second record a
+ * new one; which field carries it is the tracker's business, not this rule's.
+ */
+function recordsItsEntry(stage: Stage): boolean {
+  return (stage.on_enter ?? []).some(
+    (e) => e.kind === ENTRY_KIND &&
+      Object.values(e).some((v) => typeof v === "string" && v.includes("{round}")),
+  );
+}
+
 function cycleMessage(members: string[]): string {
   if (members.length === 1) {
     return `stage "${members[0]}" is only bounded by looping onto itself, with no run.counters.* comparison`;
@@ -396,6 +416,25 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   // *every* route does one of those can never produce a same-stage "output"
   // entry either, and is exactly as stuck as one with no output block at
   // all — just less visibly so, since `output:` is right there in the file.
+  /*
+   * Every stage that runs a step records that it started it. Not only the
+   * stages in a cycle: which those are is a question about the derived
+   * run.stage graph, and that graph abstains — every entry trigger is written
+   * `{ "run.stage": null }`, which makes the whole graph unanalysable, so a
+   * cycle-scoped version of this rule checked nothing at all on the only
+   * workflow in this repo. It is also the wrong question. `blocked -> spec`
+   * puts very nearly every stage of that workflow on a cycle anyway, a stage
+   * joins one the moment somebody adds a trigger, and the cost of recording
+   * an entry a stage turns out never to need is one comment.
+   */
+  for (const stage of w.stages) {
+    if (!stage.step || recordsItsEntry(stage)) continue;
+    problems.push({
+      rule: "entry-record",
+      message: `stage "${stage.id}" runs a step but its on_enter records no "${ENTRY_KIND}" naming {round}, so a second round would be read as already complete and silently skipped`,
+    });
+  }
+
   for (const stage of w.stages) {
     if (!stage.step) continue;
     const step = steps.get(stage.step);

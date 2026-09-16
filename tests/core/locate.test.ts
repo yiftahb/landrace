@@ -48,19 +48,19 @@ describe("assess", () => {
   const stage: Stage = { id: "spec", step: "steps/spec.md" };
 
   it("reads invalid output before completeness, so a rejected step is not retried", () => {
-    expect(assess(snap({ run: { lastOutputValid: false, failedStages: ["spec"], counters: {}, outputs: {} } }), stage)).toBe("failed");
+    expect(assess(snap({ run: { lastOutputValid: false, failedStages: ["spec"], counters: {}, outputs: {}, rounds: {} } }), stage)).toBe("failed");
   });
 
   it("is complete when the stage has no step to run", () => {
-    expect(assess(snap({ run: { counters: {}, outputs: {}, failedStages: [] } }), { id: "waiting" })).toBe("complete");
+    expect(assess(snap({ run: { counters: {}, outputs: {}, failedStages: [], rounds: {} } }), { id: "waiting" })).toBe("complete");
   });
 
   it("is pending when the step has produced nothing this round", () => {
-    expect(assess(snap({ run: { counters: {}, outputs: {}, lastOutputValid: null, failedStages: [] } }), stage)).toBe("pending");
+    expect(assess(snap({ run: { counters: {}, outputs: {}, lastOutputValid: null, failedStages: [], rounds: {} } }), stage)).toBe("pending");
   });
 
   it("is complete when the step's output for the current round exists", () => {
-    const s = snap({ run: { counters: { spec: 1 }, outputs: { spec: { kind: "spec" } }, lastOutputValid: null, failedStages: [] } });
+    const s = snap({ run: { counters: { spec: 1 }, outputs: { spec: { kind: "spec" } }, lastOutputValid: null, failedStages: [], rounds: { spec: { entered: 1, output: 1 } } } });
     expect(assess(s, stage)).toBe("complete");
   });
 });

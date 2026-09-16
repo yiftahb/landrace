@@ -81,6 +81,51 @@ describe("deriveRun", () => {
     expect(deriveRun([later, earlier], "spec").lastEvent.actor).toBe("agent");
   });
 
+  describe("rounds, counted from records and never incremented", () => {
+    const enter = (stage: string, round: number): Entry =>
+      ({ stage, kind: "enter", round, at: at(), byAgent: true });
+
+    it("takes the highest round each kind of record names", () => {
+      const r = deriveRun([enter("cr", 1), out("cr", 1), enter("cr", 2)], "cr");
+      expect(r.rounds["cr"]).toEqual({ entered: 2, output: 1 });
+    });
+
+    /*
+     * A stage that records no entry is treated as entered once, so every
+     * stage that existed before entry records did keeps its old assessment:
+     * any output at all means complete.
+     */
+    it("treats a stage with no entry record as entered exactly once", () => {
+      expect(deriveRun([out("spec", 1)], "spec").rounds["spec"]).toEqual({ entered: 1, output: 1 });
+      expect(deriveRun([out("spec", 7)], "spec").rounds["spec"]).toEqual({ entered: 1, output: 7 });
+    });
+
+    it("counts an entry record for a stage that has produced nothing yet", () => {
+      expect(deriveRun([enter("cr", 1)], "cr").rounds["cr"]).toEqual({ entered: 1, output: 0 });
+    });
+
+    /*
+     * Two records for one entry is the failure this design has to survive:
+     * a crash between posting the entry and running the step re-plans the
+     * same on_enter effect, and the round in it is derived from the *output*
+     * counter, so the replan produces the same round. Counting distinct
+     * rounds rather than records is the second half of that.
+     */
+    it("takes a repeated entry record for one round as one entry", () => {
+      expect(deriveRun([enter("cr", 2), enter("cr", 2)], "cr").rounds["cr"]?.entered).toBe(2);
+    });
+
+    it("does not let an entry record advance the output counters the workflow bounds loops with", () => {
+      const r = deriveRun([enter("cr", 1), out("cr", 1), enter("cr", 2)], "cr");
+      expect(r.counters["cr"]).toBe(1);
+    });
+
+    it("keeps each stage's rounds to itself", () => {
+      const r = deriveRun([enter("cr", 2), out("cr", 1), enter("fr", 1), out("fr", 1)], "cr");
+      expect(r.rounds).toEqual({ cr: { entered: 2, output: 1 }, fr: { entered: 1, output: 1 } });
+    });
+  });
+
   describe("failedStages, exposed independently of the `stage` argument", () => {
     it("lists every stage with a rejected round, not only the one lastOutputValid answers for", () => {
       const r = deriveRun([out("spec", 1), malformed("review", 1)], "spec");

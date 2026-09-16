@@ -7,6 +7,8 @@ stages:
     triggers:
       - name: fresh
         when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
   - id: done
     terminal: true
     triggers:

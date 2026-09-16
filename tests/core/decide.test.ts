@@ -1,7 +1,7 @@
 import { decide } from "../../src/core/decide.js";
 import type { Snapshot, Stage, Workflow } from "../../src/core/types.js";
 
-const run = (o: object = {}) => ({ counters: {}, outputs: {}, lastOutputValid: null, failedStages: [], ...o });
+const run = (o: object = {}) => ({ counters: {}, outputs: {}, lastOutputValid: null, failedStages: [], rounds: {}, ...o });
 const snap = (o: object): Snapshot => o as Snapshot;
 
 const stages: Stage[] = [
@@ -34,13 +34,53 @@ describe("decide", () => {
   });
 
   it("numbers the next round from the counter", () => {
-    const s = snap({ run: run({ stage: "spec", counters: { spec: 2 } }) });
+    // Entered a third time, two rounds of output behind it: the counter is
+    // what numbers the round, the entry record only says work is owed.
+    const s = snap({ run: run({ stage: "spec", counters: { spec: 2 }, rounds: { spec: { entered: 3, output: 2 } } }) });
     expect(decide(wf, s).round).toBe(3);
   });
 
   it("transitions when a single trigger matches", () => {
-    const s = snap({ run: run({ stage: "spec", outputs: { spec: {} } }), outputs: { spec: {} } });
+    const s = snap({
+      run: run({ stage: "spec", outputs: { spec: {} }, rounds: { spec: { entered: 1, output: 1 } } }),
+      outputs: { spec: {} },
+    });
     expect(decide(wf, s)).toMatchObject({ action: "transition", to: stages[1], trigger: "spec done" });
+  });
+
+  describe("the round a transition is entering", () => {
+    it("numbers a first entry as round 1", () => {
+      const s = snap({ run: run({ stage: null }) });
+      expect(decide(wf, s).round).toBe(1);
+    });
+
+    it("numbers a re-entry from the destination's own output counter, never from the entry records", () => {
+      const s = snap({
+        run: run({
+          stage: "spec", outputs: { spec: {} }, counters: { spec: 1, review: 2 },
+          rounds: { spec: { entered: 1, output: 1 }, review: { entered: 2, output: 2 } },
+        }),
+        outputs: { spec: {} },
+      });
+      expect(decide(wf, s)).toMatchObject({ action: "transition", to: stages[1], round: 3 });
+    });
+
+    /*
+     * Re-entering a stage that owes an output must plan the *same* round it
+     * already recorded, or a crash between the entry record and the step
+     * would leave two entry records for one entry and the stage could never
+     * catch up with itself.
+     */
+    it("re-plans the round already owed when the destination has not produced it yet", () => {
+      const s = snap({
+        run: run({
+          stage: "spec", outputs: { spec: {} }, counters: { spec: 1, review: 1 },
+          rounds: { spec: { entered: 1, output: 1 }, review: { entered: 2, output: 1 } },
+        }),
+        outputs: { spec: {} },
+      });
+      expect(decide(wf, s)).toMatchObject({ action: "transition", to: stages[1], round: 2 });
+    });
   });
 
   it("waits when nothing matches", () => {

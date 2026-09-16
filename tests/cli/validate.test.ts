@@ -49,9 +49,15 @@ describe("landrace validate", () => {
 
   // `validate` is the thing that is supposed to catch this before it ever
   // reaches a converge loop — proved against the real file, not a fixture.
-  it("validates the shipped .landrace workflow clean, with no step-output-required problems", async () => {
+  it("validates the shipped .landrace workflow clean, on every rule", async () => {
     const r = await runValidate(".landrace");
-    expect(r.problems.filter((p) => p.rule === "step-output-required")).toEqual([]);
+    // Every rule, not just the one that prompted this test. Filtering to a
+    // single rule let a later rule — entry-record, which catches a looping
+    // stage that records no entry and so silently runs its body once — pass
+    // this test while the shipped file actually violated it.
+    // "secret" is the one exception: it asks whether a token resolves in this
+    // environment, which is a fact about the machine, not about the workflow.
+    expect(r.problems.filter((p) => p.rule !== "secret")).toEqual([]);
   });
 
   // Round-3 Important: a step's own prompt printing a literal object (e.g.
@@ -78,6 +84,11 @@ describe("landrace next", () => {
     const r = await runNext("tests/fixtures/minimal", file);
     expect(r.decision.action).toBe("transition");
     expect(r.decision.to?.id).toBe("spec");
-    expect(r.effects).toEqual([]);
+    // The plan for entering a stage, with the round filled in from the
+    // destination's own counter — nothing in `next` reads the network.
+    expect(r.effects).toEqual([{
+      type: "tracker.comment", kind: "enter", stage: "spec", round: 1,
+      marker: "enter:spec:1", body: "Writing the spec, round 1.",
+    }]);
   });
 });

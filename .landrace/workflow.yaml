@@ -17,6 +17,21 @@ budget:
   stepTimeout: 10m
   humanWait: 24h
 
+# Two rules govern every on_enter list below, and both are load-bearing.
+#
+# 1. `tracker.status` names the stage's own id, because on GitHub the status
+#    *is* the position: the hook writes it as `lr:stage:<value>` and the engine
+#    reads run.stage back out of that label. A display name there ("Building")
+#    derives a position no stage's identity matches, and the ticket cannot be
+#    placed at all.
+#
+# 2. The `enter` record comes first, before the status that moves the position.
+#    It is what tells the engine the stage owes another round — a crash between
+#    the two effects must leave the ticket at the *previous* stage, whose
+#    trigger simply fires again and replans the identical entry record (the
+#    round is derived, so it does not move). Written after the status instead,
+#    a crash would land the ticket on a stage that still reads as complete from
+#    its last round, and that round would be silently skipped.
 stages:
   # ── spec phase ───────────────────────────────────────────────────────────
   - id: spec
@@ -25,10 +40,14 @@ stages:
     triggers:
       - name: fresh ticket
         when: { "run.stage": null }
+      # run.lastEvent.actor, not lastEvent.actor: the spec lists lastEvent.* as
+      # a conventional top-level path, but deriveRun puts it inside run and no
+      # hook provides a top-level one, so the bare path matched nothing and
+      # every human handback below was dead.
       - name: human answered the questions
         when:
           "run.stage": spec-questions
-          "lastEvent.actor": human
+          "run.lastEvent.actor": human
           "run.counters.spec": { $lt: 3 }
       - name: reviewer's reply read as a change request
         when:
@@ -38,10 +57,11 @@ stages:
       - name: a halt was handed back
         when:
           "run.stage": blocked
-          "lastEvent.actor": human
+          "run.lastEvent.actor": human
           "run.counters.spec": { $lt: 3 }
     on_enter:
-      - { type: tracker.status, value: Spec }
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
+      - { type: tracker.status, value: spec }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked"] }
 
   - id: spec-questions
@@ -49,7 +69,7 @@ stages:
       - name: the agent has blocking questions
         when: { "run.stage": spec, "outputs.spec.kind": questions }
     on_enter:
-      - { type: tracker.status, value: Awaiting Human Input }
+      - { type: tracker.status, value: spec-questions }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
   - id: spec-human-review
@@ -58,7 +78,7 @@ stages:
       - name: the spec was published
         when: { "run.stage": spec, "outputs.spec.kind": spec }
     on_enter:
-      - { type: tracker.status, value: Spec Review }
+      - { type: tracker.status, value: spec-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
   - id: triage
@@ -66,7 +86,10 @@ stages:
     requires: { "run.lastHuman": { $ne: null } }
     triggers:
       - name: you replied
-        when: { "run.stage": spec-human-review, "lastEvent.actor": human }
+        when: { "run.stage": spec-human-review, "run.lastEvent.actor": human }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reading your reply, round {round}." }
+      - { type: tracker.status, value: triage }
 
   # ── build phase ──────────────────────────────────────────────────────────
   - id: build
@@ -75,7 +98,8 @@ stages:
       - name: the spec was approved
         when: { "run.stage": triage, "outputs.triage.intent": approve }
     on_enter:
-      - { type: tracker.status, value: Building }
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
+      - { type: tracker.status, value: build }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 
   - id: code-review
@@ -88,6 +112,10 @@ stages:
         when:
           "run.stage": fix-review
           "run.counters.code-review": { $lt: 4 }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
+      - { type: tracker.status, value: code-review }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 
   - id: fix-review
     step: steps/fix-review.md
@@ -102,13 +130,17 @@ stages:
           "run.stage": pr-human-review
           "artifacts.pr.openThreads": { $gt: 0 }
           "run.counters.code-review": { $lt: 4 }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
+      - { type: tracker.status, value: fix-review }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 
   - id: pr-human-review
     triggers:
       - name: no threads are open
         when: { "run.stage": code-review, "artifacts.pr.openThreads": 0 }
     on_enter:
-      - { type: tracker.status, value: PR Review }
+      - { type: tracker.status, value: pr-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
   # ── terminal ─────────────────────────────────────────────────────────────
@@ -118,17 +150,22 @@ stages:
       - name: merged
         when: { "run.stage": pr-human-review, "artifacts.pr.merged": true }
     on_enter:
-      - { type: tracker.status, value: Done }
+      - { type: tracker.status, value: done }
       - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
 
   - id: blocked
     triggers:
+      # The open-thread count is part of the condition, not decoration: the
+      # last review round can finish with nothing left open, and then
+      # pr-human-review's trigger fires too. Two triggers matching is a halt,
+      # so "the budget is spent" has to mean "spent with findings still open".
       - name: the review budget is exhausted
         when:
           "run.stage": code-review
+          "artifacts.pr.openThreads": { $gt: 0 }
           "run.counters.code-review": { $gte: 4 }
       - name: a step broke its output contract
         when: { "run.lastOutputValid": false }
     on_enter:
-      - { type: tracker.status, value: Blocked }
+      - { type: tracker.status, value: blocked }
       - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }

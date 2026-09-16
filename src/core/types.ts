@@ -26,10 +26,31 @@ export interface Snapshot {
   run?: Run;
 }
 
+/**
+ * One stage's two derived round numbers. Both are counted from external
+ * records on every run, never incremented and never stored: `entered` from
+ * the records a stage's on_enter writes, `output` from the records its step
+ * writes. A stage owes work exactly when `output < entered`.
+ */
+export interface StageRounds {
+  /** Highest round an entry record names. 1 for a stage that records no entry, so a stage that never loops is unaffected. */
+  entered: number;
+  /** Highest round an output record names. 0 for a stage that has produced none. */
+  output: number;
+}
+
 export interface Run {
   stage: string | null;
   /** Distinct output rounds per stage. Derived, never stored. */
   counters: { [stage: string]: number };
+  /**
+   * Per stage, how far entry and output have got. Required, not optional, for
+   * the same reason failedStages is: assess() answers "does this stage owe
+   * work" from here, and a Run that could omit it would silently fall back to
+   * the one-shot rule this replaced — a looping stage would quietly stop
+   * looping instead of failing loudly.
+   */
+  rounds: { [stage: string]: StageRounds };
   outputs: { [stage: string]: unknown };
   lastEvent: { actor: "agent" | "human" | null; at: string | null };
   lastHuman: Entry | null;

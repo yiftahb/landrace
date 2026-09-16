@@ -42,6 +42,15 @@ export const RESERVED_IDS: readonly string[] = ["__proto__", "constructor", "pro
 
 export const isReservedId = (id: string): boolean => RESERVED_IDS.includes(id);
 
+/**
+ * The marker kind a stage's on_enter writes to record that the state was
+ * entered. Shared vocabulary rather than a literal in two files: core counts
+ * these to decide whether a stage owes another round, and `landrace validate`
+ * requires one from every stage that runs a step, and the two must mean the
+ * same thing.
+ */
+export const ENTRY_KIND = "enter";
+
 export interface Marker {
   stage: string;
   kind: string;

@@ -15,8 +15,22 @@ import type { Run, Snapshot, Stage, SubState } from "./types.js";
  * Run — hand-built in a test or produced by deriveRun — must say so.
  */
 export function assess(s: Snapshot, stage: Stage): SubState {
-  const run = (s.run ?? { counters: {}, outputs: {}, failedStages: [] }) as Run;
+  const run = (s.run ?? { counters: {}, outputs: {}, failedStages: [], rounds: {} }) as Run;
   if (run.failedStages.includes(stage.id)) return "failed";
   if (!stage.step) return "complete";
-  return run.outputs[stage.id] === undefined ? "pending" : "complete";
+
+  /*
+   * Completeness is per round, not per lifetime. `run.outputs[stage.id] !==
+   * undefined` said a stage was done forever the first time it produced
+   * anything, which made every stage one-shot: §10 routes back into
+   * code-review after fix-review, and code-review — "complete" — simply did
+   * not run, so the ticket ping-ponged between two finished stages until the
+   * pass cap and run.counters."code-review" stayed at 1, leaving the
+   * workflow's own { $lt: 4 } bound unreachable.
+   *
+   * A stage that records no entry reads as entered once, so `output >=
+   * entered` is exactly the old rule for it: any output at all completes it.
+   */
+  const { entered, output } = run.rounds[stage.id] ?? { entered: 1, output: 0 };
+  return output >= entered ? "complete" : "pending";
 }

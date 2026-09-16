@@ -1,6 +1,6 @@
 import { validateSemantics } from "../../src/workflow/validate.js";
 import type { Step } from "../../src/workflow/load.js";
-import type { Workflow } from "../../src/core/types.js";
+import type { Effect, Workflow } from "../../src/core/types.js";
 
 const noSteps = new Map<string, Step>();
 const rules = (w: Workflow, steps = noSteps, provided?: string[]) =>
@@ -21,6 +21,81 @@ describe("semantic validation", () => {
       { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
     ] };
     expect(rules(w)).not.toContain("cycle-bound");
+  });
+
+  describe("a stage that runs a step must record that it was entered", () => {
+    const step = new Map<string, Step>([["s.md", {
+      prompt: "",
+      output: { discriminator: "kind", shapes: { ok: {} }, routes: [{ when: { kind: "ok" }, effect: { type: "x" } }] },
+    }]]);
+    const entryRecord = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
+
+    const looping = (aOnEnter: Effect[]): Workflow => ({
+      version: 1, name: "t", stages: [
+        { id: "a", entry: true, step: "s.md", on_enter: aOnEnter,
+          triggers: [{ when: { "run.stage": "b", "run.counters.a": { $lt: 3 } } }] },
+        { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+      ],
+    });
+
+    /*
+     * Without an entry record assess() reads a stage's first round as its
+     * last one forever, so the loop runs its body exactly once and the ticket
+     * ping-pongs between two "complete" stages until the pass cap. Silent, and
+     * paid for in agent invocations, so it is caught here rather than there.
+     */
+    it("flags a stepped stage in a cycle that records no entry", () => {
+      expect(rules(looping([{ type: "tracker.status", value: "a" }]), step)).toContain("entry-record");
+    });
+
+    it("accepts one that does", () => {
+      expect(rules(looping([entryRecord, { type: "tracker.status", value: "a" }]), step)).not.toContain("entry-record");
+    });
+
+    /*
+     * A record that is identical every time round is reconciled away as
+     * already satisfied the second time, which stalls the loop exactly as
+     * having no record at all does — and looks fine in the file.
+     */
+    it("flags an entry record that does not name the round, since the second one is dropped as a duplicate", () => {
+      const fixed = { type: "tracker.comment", kind: "enter", marker: "enter:a" };
+      expect(rules(looping([fixed]), step)).toContain("entry-record");
+    });
+
+    it("does not ask a stage with no step to record anything", () => {
+      const w: Workflow = { version: 1, name: "t", stages: [
+        { id: "a", entry: true, triggers: [{ when: { "run.stage": "b", "run.counters.a": { $lt: 3 } } }] },
+        { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+      ] };
+      expect(rules(w)).not.toContain("entry-record");
+    });
+
+    /*
+     * Deliberately not scoped to the stages on a cycle. Whether a stage is on
+     * one is a question about the derived run.stage graph, and that graph
+     * abstains whenever a trigger mentions run.stage in a way edges() cannot
+     * read — which `{ "run.stage": null }`, how every entry trigger is
+     * written, does. A cycle-scoped rule therefore reported nothing at all on
+     * the shipped workflow, and a rule that silently stops checking is worse
+     * than none.
+     */
+    it("asks a stage on no cycle at all, because whether it is on one is not reliably knowable", () => {
+      const w: Workflow = { version: 1, name: "t", stages: [
+        { id: "a", entry: true, step: "s.md", triggers: [{ when: { "run.stage": null } }] },
+        { id: "b", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+      ] };
+      expect(rules(w, step)).toContain("entry-record");
+    });
+
+    it("still checks a graph no other rule will look at", () => {
+      const w: Workflow = { version: 1, name: "t", stages: [
+        { id: "a", entry: true, step: "s.md",
+          triggers: [{ when: { $or: [{ "run.stage": "b" }], "run.counters.a": { $lt: 3 } } }] },
+        { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+      ] };
+      expect(rules(w, step)).toContain("entry-record");
+      expect(rules(w, step)).not.toContain("cycle-bound");
+    });
   });
 
   it("flags a declared output shape with no route", () => {
