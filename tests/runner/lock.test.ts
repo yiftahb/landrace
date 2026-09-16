@@ -144,6 +144,87 @@ describe("concurrent racers", () => {
 });
 
 /**
+ * What the deadline is for, and what it is not for.
+ *
+ * A converge is not one step: the shipped workflow's build-and-review run
+ * makes eight paid invocations in a single call at `budget.stepTimeout` each
+ * (tests/runner/loop.test.ts), so any fixed "the work may take this long"
+ * number is either shorter than an honest run — two converges on one ticket,
+ * sharing the one per-ticket worktree that whichever finishes first deletes —
+ * or so long that it stops being a recovery mechanism at all. The deadline
+ * measures silence instead, and a holder that is working says so.
+ */
+describe("a lock held through work that outlasts its own deadline", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const until = async (done: () => boolean | Promise<boolean>): Promise<void> => {
+    for (let i = 0; i < 400; i++) {
+      if (await done()) return;
+      await sleep(10);
+    }
+    throw new Error("timed out waiting");
+  };
+
+  it("does not let a second holder in while the first is still working", async () => {
+    const order: string[] = [];
+    let letGo = (): void => {};
+    const body = new Promise<void>((r) => { letGo = r; });
+
+    const first = withLock(70, "tick", async () => {
+      order.push("A in");
+      await body;
+      order.push("A out");
+    }, { ...opts(), holder: "A", deadlineMs: 1_000 });
+
+    await until(() => order.includes("A in"));
+    // Three times the deadline, with A still inside its body. Nothing used to
+    // refresh the record, so B walked straight in and both ran at once.
+    await sleep(3_000);
+
+    await expect(
+      withLock(70, "tick", async () => { order.push("B in"); }, { ...opts(), holder: "B", deadlineMs: 1_000 }),
+    ).rejects.toMatchObject({ code: "ELOCKED" });
+    expect((await held(70, opts()))?.holder).toBe("A");
+
+    letGo();
+    await first;
+    expect(order).toEqual(["A in", "A out"]);
+    expect(await held(70, opts())).toBeNull();
+  }, 30_000);
+
+  it("does hand the ticket on once the holder stops saying it is working", async () => {
+    // The purpose the deadline exists for, unchanged: a holder that goes
+    // quiet — crashed, or wedged past any use — must not keep a ticket.
+    await mkdir(join(root, "locks"), { recursive: true });
+    await writeFile(
+      join(root, "locks", "72.lock"),
+      JSON.stringify({
+        ticket: 72, holder: "gone-quiet", kind: "tick", pid: process.pid,
+        at: Date.now() - 10_000, deadlineMs: 1_000, token: "theirs",
+      }),
+    );
+    expect(await acquire(72, "tick", { ...opts(), holder: "next" })).toBe(true);
+  });
+
+  it("does not delete a lock that has been taken from it", async () => {
+    // release() unlinked whatever was at the path, so a holder that had
+    // already lost its lock deleted the new holder's on the way out and the
+    // ticket ended up held by nobody, with two converges running.
+    await withLock(71, "tick", async () => {
+      await mkdir(join(root, "locks"), { recursive: true });
+      await writeFile(
+        join(root, "locks", "71.lock"),
+        JSON.stringify({
+          ticket: 71, holder: "someone-else", kind: "tick", pid: process.pid,
+          at: Date.now(), deadlineMs: 60_000, token: "not-ours",
+        }),
+      );
+    }, { ...opts(), holder: "A" });
+
+    expect((await held(71, opts()))?.holder).toBe("someone-else");
+  });
+});
+
+/**
  * The lock is the only thing standing between two processes driving one
  * ticket, and §7 is explicit that it is cross-process: the loop and the MCP
  * server coordinate by finding the same file. Which file that is used to be

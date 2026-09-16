@@ -501,13 +501,29 @@ export interface Held {
   holder: string;
   kind: LockKind;
   pid: number;
+  /** When the holder last said it was still working, not when it started. */
   at: number;
   deadlineMs: number;
+  /**
+   * One acquisition, told apart from every other. A pid and a holder string
+   * are both shared by two converges of the same ticket in the same process —
+   * the loop lets ticks overlap on purpose — so neither can answer "is the
+   * lock on disk still the one I took", which is the question release() has
+   * to get right before it unlinks anything.
+   */
+  token: string;
 }
+
+/** Whether a single-writer critical section ran at all, kept apart from what it answered. */
+export type Gated<T> = { ran: true; value: T } | { ran: false };
 
 export interface LockOptions {
   holder?: string;
-  /** How long this work may reasonably take before the lock is stealable. */
+  /**
+   * How long this lock may go unrefreshed before another process may take it.
+   * Not a budget for the work: `withLock` refreshes while its body runs, so
+   * this bounds how long a holder that has gone silent keeps a ticket.
+   */
   deadlineMs?: number;
   /** Wait this long for a holder to finish before giving up. */
   waitMs?: number;
