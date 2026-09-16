@@ -151,3 +151,51 @@ describe("a relayed payload cannot come back as a record we wrote", () => {
     expect(posted?.body).not.toMatch(/-->/);
   });
 });
+
+/**
+ * The same function was quadratic in the number of `<!-- landrace {`
+ * openings, and `src/runner/step.ts` hands it the agent's prose bounded only
+ * by the 8 MB `MAX_OUTPUT_BYTES`: measured here at 0.86 s for 250 KB, 14 s for
+ * 1 MB and 59 s for 2 MB — at the cap, a quarter of an hour of a
+ * single-threaded orchestrator doing nothing while every ticket waits and
+ * every lock is held.
+ *
+ * Pinned as a wall-clock budget rather than as a growth ratio, because the
+ * two behaviours are not close: at 2 MB the old scan took 59.9 s and the
+ * replacement takes 11.5 ms, a factor of five thousand. Anything in that gap
+ * separates them on any machine. A ratio looked more principled and was
+ * measurably worse — 2 MB against 500 KB read as 3.6x alone and 9.5x under a
+ * full parallel `pnpm test`, because the larger body's allocation is what
+ * contention hits, so the "linear stays 4x" reasoning does not survive the
+ * load it was meant to be immune to. A test that fails on a busy machine gets
+ * deleted, and then nothing is watching at all.
+ *
+ * Fastest of three runs, not the mean: every source of error here adds time,
+ * so the minimum is the reading least contaminated by the rest of the suite,
+ * and a quadratic scan has no fast run to hide behind.
+ */
+describe("neutraliseMarkers costs the same per byte however adversarial the body", () => {
+  const openings = (bytes: number) => "<!-- landrace {".repeat(Math.floor(bytes / 15));
+
+  const fastest = (body: string): number => {
+    neutraliseMarkers(body); // warm the JIT
+    return Math.min(...[1, 2, 3].map(() => {
+      const t0 = performance.now();
+      neutraliseMarkers(body);
+      return performance.now() - t0;
+    }));
+  };
+
+  it("neutralises 2 MB of marker openings in milliseconds, not in a minute", () => {
+    // Measured at 11.5 ms here; the lazy scan this replaced took 59,900 ms on
+    // the same input. 2 s is ~170x above the one and ~30x below the other.
+    expect(fastest(openings(2 * 1024 * 1024))).toBeLessThan(2_000);
+  }, 600_000);
+
+  it("neutralises a body the size of the whole agent output cap", () => {
+    // 8 MB is MAX_OUTPUT_BYTES itself — what a step can actually hand this
+    // function, not a convenient size. Measured at 103 ms; quadratic it was
+    // around a quarter of an hour, which is the outage this test exists for.
+    expect(fastest(openings(8 * 1024 * 1024))).toBeLessThan(5_000);
+  }, 600_000);
+});

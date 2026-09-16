@@ -285,6 +285,12 @@ export function stripMarker(body: string): string {
  * `-->` it had just exposed. Escaping every opener first and every closer
  * second cannot leave one behind — neither replacement introduces a `<` or a
  * `>`, so neither pass can create work for the other or undo its own.
+ *
+ * Fixed strings, not a pattern with a quantifier: the lazy scan this replaces
+ * was quadratic in the number of openings, and the agent prose that reaches
+ * here is bounded only by MAX_OUTPUT_BYTES, so 8 MB of them blocked the
+ * single-threaded orchestrator for a quarter of an hour.
+ * tests/security/marker-neutralise.test.ts pins the convergence and the cost.
  */
 export const neutraliseMarkers = (body: string): string =>
   body.replaceAll(COMMENT_OPEN, ESCAPED_OPEN).replaceAll(COMMENT_CLOSE, ESCAPED_CLOSE);
