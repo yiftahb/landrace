@@ -12,7 +12,8 @@ const workflow: Workflow = {
   stages: [{ id: "spec", entry: true, terminal: true, triggers: [{ when: { "run.stage": null } }] }],
 };
 
-const candidate = (labels: string[]): Candidate => ({ ticket: 1, title: "Add export", url: "u/1", labels });
+const candidate = (labels: string[], assignees: string[] = []): Candidate =>
+  ({ ticket: 1, title: "Add export", url: "u/1", labels, assignees });
 
 const noteFor = (labels: string[]): string | undefined => statusRows(workflow, [candidate(labels)])[0]?.note;
 
@@ -38,6 +39,21 @@ describe("statusRows", () => {
     const [row] = statusRows(workflow, [candidate(["go", "lr:stage:spec", "lr:stage:build"])]);
     expect(row?.stage).toBeNull();
     expect(row?.note).toMatch(/more than one/);
+  });
+
+  /**
+   * A table an operator reads to find out what their instance will do. With
+   * the assignee unanswerable from a candidate the eligibility rule abstained,
+   * so a colleague's ticket printed as `queued` — a promise to work it that
+   * converge then broke on the next tick.
+   */
+  it("says a colleague's ticket is skipped, rather than promising to work it", () => {
+    const shared: Workflow = {
+      ...workflow,
+      eligible: [{ when: { "ticket.assignees": { $in: ["ann"] } }, else: "assigned to somebody else" }],
+    };
+    const rows = statusRows(shared, [candidate(["go"], ["bo"])]);
+    expect(rows[0]?.note).toBe("skipped: assigned to somebody else");
   });
 
   it("says whose turn it is", () => {

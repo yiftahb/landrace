@@ -43,7 +43,7 @@ interface Ctx { ticket: number; config: { tracker: { record: string } } }
 export const source = brand("source", {
   id: "fake",
   list: async (): Promise<unknown[]> => [
-    { ticket: ${TICKET}, title: "Add export", url: "u/${TICKET}", labels: ["lr:auto"] },
+    { ticket: ${TICKET}, title: "Add export", url: "u/${TICKET}", labels: ["lr:auto"], assignees: [] },
   ],
 });
 

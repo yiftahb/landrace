@@ -33,11 +33,18 @@ const exploding: Workflow = {
   stages: [{ id: "a", entry: true, terminal: true, identity: { $where: "1" } }],
 };
 
-const candidate = (ticket: number, labels: string[] = ["lr:auto"]): Candidate => ({
+const candidate = (ticket: number, labels: string[] = ["lr:auto"], assignees: string[] = []): Candidate => ({
   ticket,
   title: `issue ${ticket}`,
   url: `u/${ticket}`,
   labels,
+  assignees,
+});
+
+/** The rule a repository shared between two developers is actually filtered by. */
+const mine = (login: string): Workflow => ({
+  ...workflow,
+  eligible: [{ when: { "ticket.assignees": { $in: [login] } }, else: "assigned to somebody else" }],
 });
 
 const source = (candidates: Candidate[]) => defineSource({ id: "fake", list: async () => candidates });
@@ -290,6 +297,37 @@ describe("tick", () => {
     await release(1, { root });
   });
 
+  /**
+   * The point of carrying the assignee on a Candidate, measured rather than
+   * asserted: a rule the tick cannot answer abstains, and abstaining means
+   * eligible — so somebody else's ticket was enumerated, snapshot-built and
+   * locked before converge skipped it. What this counts is the reads, because
+   * "skipped" is the same word either way and the cost is the whole feature.
+   */
+  it("pays nothing for a ticket assigned to somebody else: no snapshot build, no lock", async () => {
+    const read: number[] = [];
+    const recording = definePreHook({
+      id: "fake",
+      run: ({ ticket }) => {
+        read.push(ticket);
+        return { ticket: { labels: ["lr:auto"] }, entries: [] };
+      },
+    });
+
+    const out = await tick({
+      source: source([candidate(1, ["lr:auto"], ["ann"]), candidate(2, ["lr:auto"], ["bo"])]),
+      deps: deps({ workflow: mine("ann"), pre: [recording] }),
+      lock: { root },
+    });
+
+    expect(read).toEqual([1]);
+    expect(out.find((r) => r.ticket === 2)?.outcome).toBe("skipped: assigned to somebody else");
+    // Never locked either, so two instances on one machine never contend over
+    // a ticket neither of them will work.
+    expect(await acquire(2, "tick", { root })).toBe(true);
+    await release(2, { root });
+  });
+
   it("surfaces a failure to enumerate, rather than reporting an empty tick", async () => {
     const broken = defineSource({
       id: "broken",
@@ -339,6 +377,32 @@ describe("eligibilityOf", () => {
       eligible: [{ when: { "run.stage": "spec" }, else: "not in the spec phase" }],
     };
     expect(eligibilityOf(derived, candidate(1, []))).toEqual({ eligible: true });
+  });
+
+  /**
+   * And who a ticket belongs to is answerable, not abstained on. It reads like
+   * every other eligibility rule from here, and that is the claim: an instance
+   * filtered to one developer decides the whole repository off what `list`
+   * already returned.
+   */
+  it("answers a rule about who the ticket belongs to from the candidate itself", () => {
+    expect(eligibilityOf(mine("ann"), candidate(1, ["lr:auto"], ["ann"]))).toEqual({ eligible: true });
+    expect(eligibilityOf(mine("ann"), candidate(2, ["lr:auto"], ["bo", "cy"]))).toEqual({
+      eligible: false,
+      reason: "assigned to somebody else",
+    });
+  });
+
+  /**
+   * Nobody's ticket is nobody's. An empty list is a list — the rule is
+   * answerable and claims nothing — where an absent one would be unanswerable,
+   * and an unanswerable rule abstains, so every instance would work it.
+   */
+  it("leaves an unassigned ticket to nobody rather than to everybody", () => {
+    expect(eligibilityOf(mine("ann"), candidate(1))).toEqual({
+      eligible: false,
+      reason: "assigned to somebody else",
+    });
   });
 
   it("abstains for the whole rule set when only one rule is unanswerable", () => {

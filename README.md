@@ -190,6 +190,8 @@ eligible:
 
 One workflow directory, one graph, one set of step files. A ticket assigned to somebody else is skipped with that `else` as the reason `status` prints beside it, nothing is invoked and nothing is written to it — and a ticket assigned to nobody is skipped by everybody rather than worked by everybody, because `ticket.assignees` is an empty list rather than an absent path.
 
+The skip costs one request for the whole repository, not one per ticket: a `Candidate` carries `assignees` beside its labels, so the rule is answered from what `list` already returned, before any issue is fetched and before the per-ticket lock is taken. A source hook must fill it — empty when nobody is assigned — for the same reason a pre hook must: a rule the tick cannot answer abstains, and abstaining means eligible.
+
 ### `.landrace/workflow.yaml` — the process
 
 The whole graph, in one readable file. Stages declare **what activates them**, so adding a stage never means editing its predecessor.

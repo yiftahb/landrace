@@ -152,6 +152,31 @@ describe("who a ticket is assigned to", () => {
     const ticket = await ticketOf([{ login: "ann" }]);
     expect(Object.hasOwn(ticket, "assignee")).toBe(false);
   });
+
+  /**
+   * And on the candidate as well as in the snapshot, from the same reading of
+   * the same issue. Enumeration is where the question is asked — before there
+   * is a snapshot to ask it of — so a Candidate that could not answer it left
+   * every instance building one for every ticket in the repository first.
+   */
+  it("is on the candidate too, so the tick can answer the rule before it reads anything", async () => {
+    const gh = createFakeTracker([
+      { number: 1, assignees: [{ login: "ann" }, { login: "bo" }] },
+      { number: 2, assignees: [] },
+    ]);
+    const source = gh.registry.source;
+    const pre = gh.registry.pre[0];
+    if (!source || !pre) throw new Error("the fake tracker registered no source or no pre hook");
+
+    const listed = await source.list(gh.ctx);
+
+    expect(listed.map((c) => c.assignees)).toEqual([["ann", "bo"], []]);
+    // The same reading of the same field, not a second one: enumeration and
+    // the snapshot answer one question, and two spellings of it disagree the
+    // first time either changes.
+    const fragment = (await pre.run({ ...gh.ctx, ticket: 1, snapshot: {} } as HookContext)).ticket;
+    expect((fragment as { assignees: string[] }).assignees).toEqual(listed[0]?.assignees);
+  });
 });
 
 describe("the repo is an owner/name pair and nothing else", () => {

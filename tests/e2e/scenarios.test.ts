@@ -1,5 +1,11 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "#config/load.js";
+import { createDispatcher } from "#runner/effects.js";
+import { createLogger } from "#runner/events.js";
 import { snapshotProvides } from "#runner/snapshot.js";
+import { tick } from "#runner/tick.js";
 import { createExternalState, createHarness } from "#testing/index.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { loadWorkflow } from "#workflow/load.js";
@@ -248,6 +254,52 @@ describe("several instances over one repository, each taking its own tickets", (
 
     expect(r.result.why).toBe("assigned to somebody else");
     expect(r.calls).toEqual([]);
+  });
+
+  /**
+   * What the filter is *for*, counted at the HTTP boundary rather than
+   * asserted from a log line.
+   *
+   * A tick enumerates before it has a snapshot, so this is the one question
+   * that has to be answerable from what `list` returned. It was not: the rule
+   * read a path a Candidate did not carry, `eligibilityOf` abstained, and
+   * abstaining means eligible — so every instance fetched the issue and its
+   * comments for every ticket in the repository, took the per-ticket lock, and
+   * only then skipped it. "Skipped" is the same word in the row either way,
+   * which is exactly why this counts requests instead of reading rows.
+   */
+  it("reads nothing at all about a ticket assigned to somebody else", async () => {
+    const gh = createFakeTracker([
+      { number: 1, title: "mine", assignees: [{ login: "ann" }] },
+      { number: 2, title: "theirs", assignees: [{ login: "bo" }] },
+    ]);
+    const { workflow, steps } = await instance("ann");
+    const source = gh.registry.source;
+    if (!source) throw new Error("the fake tracker registered no source");
+
+    const rows = await tick({
+      source,
+      deps: {
+        workflow,
+        steps,
+        pre: gh.registry.pre,
+        dispatcher: createDispatcher(gh.registry.post),
+        executor: { id: "scripted", run: async () => ({ text: SPEC, sessionId: null }) },
+        ctx: gh.ctx,
+        log: createLogger({ sink: () => {} }),
+      },
+      lock: { root: await mkdtemp(join(tmpdir(), "lr-assigned-")) },
+    });
+
+    const about = (n: number) => gh.requests.filter((r) => new RegExp(`^/issues/${n}(/|$)`).test(r.path));
+    expect(about(2)).toEqual([]);
+    // Against its own ticket in the same breath: an instance that read nothing
+    // about *either* of them would pass the line above and be broken.
+    expect(about(1).length).toBeGreaterThan(0);
+    expect(rows).toEqual([
+      { ticket: 1, outcome: expect.stringMatching(/^terminal/) },
+      { ticket: 2, outcome: "skipped: assigned to somebody else" },
+    ]);
   });
 
   /*

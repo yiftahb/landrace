@@ -35,7 +35,7 @@ describe("hook modules are imported from disk and classified by their brand", ()
 
     expect(await registry.pre[0]?.run({} as HookContext)).toEqual({ ticket: { title: "from alpha" } });
     expect(await registry.source?.list({} as HookContext)).toEqual([
-      { ticket: 1, title: "one", url: "u/1", labels: ["lr:auto"] },
+      { ticket: 1, title: "one", url: "u/1", labels: ["lr:auto"], assignees: [] },
     ]);
   });
 

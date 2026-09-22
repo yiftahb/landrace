@@ -95,6 +95,10 @@ const candidateOf = (issue: Issue): Candidate => ({
   title: issue.title,
   url: issue.html_url,
   labels: labelNames(issue),
+  // The same reading of the same field the snapshot gets, from the one issue
+  // the list already returned: an eligibility rule on who a ticket belongs to
+  // is asked at enumeration, before there is a snapshot to ask it of.
+  assignees: assigneeLogins(issue),
 });
 
 /* ── the client ─────────────────────────────────────────────────────────── */

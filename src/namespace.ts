@@ -395,6 +395,23 @@ export interface Candidate {
    * `landrace status` print a line each, without a snapshot build per ticket.
    */
   labels: string[];
+  /**
+   * Who the ticket belongs to, as logins — the other half of that same
+   * decision, and here for the same reason.
+   *
+   * It is not a label, but it is asked at the same moment: a repository shared
+   * between two developers filters on it, and `eligibilityOf` abstains on a
+   * rule it cannot answer from a candidate's own fields. Absent, the rule was
+   * unanswerable, so every instance built a snapshot — issue fetch, comments
+   * fetch, artifact reads — and took the per-ticket lock for every ticket in
+   * the repository before converge skipped it, and `landrace status` printed a
+   * colleague's ticket as `queued`.
+   *
+   * Empty, never absent, for exactly the reason the snapshot's copy is: an
+   * absent path abstains, and abstaining means eligible, so an unassigned
+   * ticket would be worked by everybody rather than by nobody.
+   */
+  assignees: string[];
 }
 
 /**

@@ -24,6 +24,11 @@ const DEFAULT_CONCURRENCY = 3;
  * carries its labels precisely so this question costs nothing: building a
  * snapshot to find out a ticket is not ours would mean reading every issue in
  * the repository on every tick.
+ *
+ * Whose ticket it is rides along for the same reason and under the same name
+ * the snapshot gives it. It is not a label, but it is asked at the same
+ * moment, and a rule the candidate cannot answer abstains — which is what made
+ * an instance filtered to one developer read the whole repository anyway.
  */
 const candidateSnapshot = (candidate: Candidate): Snapshot => ({
   ticket: {
@@ -31,6 +36,7 @@ const candidateSnapshot = (candidate: Candidate): Snapshot => ({
     title: candidate.title,
     url: candidate.url,
     labels: candidate.labels,
+    assignees: candidate.assignees,
   },
 });
 

@@ -16,5 +16,5 @@ export const observe = definePreHook({
 
 export const tickets = defineSource({
   id: "alpha",
-  list: async () => [{ ticket: 1, title: "one", url: "u/1", labels: ["lr:auto"] }],
+  list: async () => [{ ticket: 1, title: "one", url: "u/1", labels: ["lr:auto"], assignees: [] }],
 });

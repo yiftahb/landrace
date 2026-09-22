@@ -17,8 +17,8 @@ describe("a define* helper brands what it returns", () => {
     source: defineSource({ id: "d", list: async () => [] }),
     operator: defineOperator({
       id: "e",
-      createTicket: async ({ title }) => ({ ticket: 1, title, url: "u", labels: [] }),
-      updateTicket: async (ticket) => ({ ticket, title: "t", url: "u", labels: [] }),
+      createTicket: async ({ title }) => ({ ticket: 1, title, url: "u", labels: [], assignees: [] }),
+      updateTicket: async (ticket) => ({ ticket, title: "t", url: "u", labels: [], assignees: [] }),
     }),
     executor: defineExecutor({ id: "f", run: async () => ({ text: "", sessionId: null }) }),
   };
