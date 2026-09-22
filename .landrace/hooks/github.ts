@@ -65,6 +65,15 @@ interface Issue {
   state: string;
   html_url: string;
   labels: Array<string | { name?: string }>;
+  /**
+   * Who the issue is assigned to. GitHub also returns a singular `assignee`,
+   * which is this list's first element under a second name — not read here,
+   * and deliberately: two spellings of one fact disagree the moment an issue
+   * has two assignees, and `ticket.stage` was already that mistake in this
+   * file. Optional because a hand-rolled test double is entitled to omit it,
+   * and an absent list has to read as "nobody", not as a crash.
+   */
+  assignees?: Array<{ login?: string } | null>;
   pull_request?: unknown;
 }
 
@@ -77,6 +86,9 @@ interface Comment {
 
 const labelNames = (issue: Issue): string[] =>
   (issue.labels ?? []).map((l) => (typeof l === "string" ? l : (l.name ?? ""))).filter(Boolean);
+
+const assigneeLogins = (issue: Issue): string[] =>
+  (issue.assignees ?? []).map((a) => a?.login ?? "").filter(Boolean);
 
 const candidateOf = (issue: Issue): Candidate => ({
   ticket: issue.number,
@@ -451,7 +463,7 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
 const PROVIDES = [
   "ticket",
   "ticket.number", "ticket.title", "ticket.body", "ticket.state", "ticket.url",
-  "ticket.labels", "ticket.comments",
+  "ticket.labels", "ticket.assignees", "ticket.comments",
   "entries", "tracker", "tracker.bot",
 ];
 
@@ -471,6 +483,11 @@ async function readTicket(gh: Client, ticket: number): Promise<Record<string, un
       state: issue.state,
       url: issue.html_url,
       labels: names,
+      // Always a list, and empty rather than absent when nobody is assigned:
+      // an eligibility rule reading a path the snapshot does not carry is one
+      // the tick cannot answer, and it abstains on those — so an unassigned
+      // ticket would be worked by every instance instead of none.
+      assignees: assigneeLogins(issue),
       // No `stage` here. It was a second spelling of `run.stage`, derived
       // from these same labels, undeclared in PROVIDES and read by nothing —
       // and two spellings of one fact is how two readers come to disagree

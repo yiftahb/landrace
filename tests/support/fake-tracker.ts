@@ -24,6 +24,8 @@ export interface FakeIssue {
   state: string;
   html_url: string;
   labels: string[];
+  /** As GitHub returns them — objects with a login, not bare strings — so the hook's own reading of them is what runs. */
+  assignees: Array<{ login: string }>;
 }
 
 export interface FakeComment {
@@ -154,6 +156,7 @@ export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTra
       state: s.state ?? "open",
       html_url: `https://github.com/${REPO}/issues/${n}`,
       labels: s.labels ?? [],
+      assignees: s.assignees ?? [],
     });
     nextIssue = Math.max(nextIssue, n + 1);
   }
@@ -295,6 +298,7 @@ export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTra
         state: "open",
         html_url: `https://github.com/${REPO}/issues/${nextIssue}`,
         labels: (body.labels as string[] | undefined) ?? [],
+        assignees: ((body.assignees as string[] | undefined) ?? []).map((login) => ({ login })),
       };
       issues.set(nextIssue++, issue);
       return json(issue);

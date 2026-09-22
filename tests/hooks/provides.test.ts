@@ -83,7 +83,13 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     if (!github) throw new Error("the fake tracker registered no pre hook");
     const state = createExternalState({ tickets: [{ number: 1 }] });
 
-    const shared = ["ticket", "ticket.number", "ticket.title", "ticket.body", "ticket.labels", "ticket.comments", "entries"];
+    // `ticket.assignees` is in the shared half deliberately: a filter on who a
+    // ticket belongs to is what lets several instances share one repository,
+    // and a workflow that reads it must run on either tracker.
+    const shared = [
+      "ticket", "ticket.number", "ticket.title", "ticket.body", "ticket.labels",
+      "ticket.comments", "ticket.assignees", "entries",
+    ];
     expect(declaredBy(github)).toEqual(expect.arrayContaining(shared));
     expect(declaredBy(state.pre)).toEqual(expect.arrayContaining(shared));
   });

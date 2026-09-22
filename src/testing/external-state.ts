@@ -69,6 +69,7 @@ export function createExternalState(
       title: s.title ?? `ticket ${number}`,
       body: s.body ?? "",
       labels: [...(s.labels ?? [])],
+      assignees: [...(s.assignees ?? [])],
       comments: [...(s.comments ?? [])],
     });
   }
@@ -118,7 +119,7 @@ export function createExternalState(
        */
       provides: [
         "ticket", "ticket.number", "ticket.title", "ticket.body", "ticket.labels",
-        "ticket.comments", "entries",
+        "ticket.assignees", "ticket.comments", "entries",
       ],
       run: ({ ticket }) => {
         const row = must(ticket);
@@ -128,6 +129,11 @@ export function createExternalState(
             title: row.title,
             body: row.body,
             labels: [...row.labels],
+            // Always a list, empty when nobody is assigned: an absent path is
+            // one an eligibility rule cannot be answered from, and the tick
+            // abstains on those — which would work a ticket belonging to
+            // nobody rather than skip it.
+            assignees: [...row.assignees],
             comments: row.comments.map((c) => ({ ...c })),
           },
           entries: entriesOf(ticket),

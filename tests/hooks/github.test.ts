@@ -113,6 +113,47 @@ describe("the hook resolves the login it posts as", () => {
   });
 });
 
+/**
+ * Who a ticket belongs to, which is what lets several instances share one
+ * repository: each takes the tickets assigned to it and skips the rest.
+ *
+ * A list, because GitHub's issue has a list — `assignees[]`. The singular
+ * `assignee` it also returns is that list's first element under a second name,
+ * and a second spelling of one fact is the mistake `ticket.stage` already was
+ * here: the two disagree the moment an issue has two assignees, and nothing
+ * says which of them a predicate is reading.
+ */
+describe("who a ticket is assigned to", () => {
+  const fragmentOf = async (assignees: Array<{ login: string }>): Promise<Record<string, unknown>> => {
+    const gh = createFakeTracker([{ number: 1, assignees }]);
+    const hook = gh.registry.pre[0];
+    if (!hook) throw new Error("the fake tracker registered no pre hook");
+    return hook.run({ ...gh.ctx, ticket: 1, snapshot: {} } as HookContext);
+  };
+  const ticketOf = async (assignees: Array<{ login: string }>): Promise<Record<string, unknown>> =>
+    (await fragmentOf(assignees)).ticket as Record<string, unknown>;
+
+  it("carries every login of a multi-assignee issue, in a list", async () => {
+    expect((await ticketOf([{ login: "ann" }, { login: "bo" }])).assignees).toEqual(["ann", "bo"]);
+  });
+
+  /*
+   * Empty, never absent. `$in` over a missing path and `$in` over an empty
+   * list both fail to match, but only one of them is a path `validate` can
+   * cover and `missingPaths` can answer for — and an eligibility rule the
+   * tick cannot answer abstains, which would work an unassigned ticket
+   * belonging to nobody.
+   */
+  it("carries an empty list for an unassigned issue rather than nothing at all", async () => {
+    expect((await ticketOf([])).assignees).toEqual([]);
+  });
+
+  it("spells it once: there is no singular assignee beside the list", async () => {
+    const ticket = await ticketOf([{ login: "ann" }]);
+    expect(Object.hasOwn(ticket, "assignee")).toBe(false);
+  });
+});
+
 describe("the repo is an owner/name pair and nothing else", () => {
   const make = (repo: string) => () => githubHooks({ repo, token: "t", bot: "b" });
 

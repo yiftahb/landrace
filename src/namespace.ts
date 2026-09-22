@@ -679,6 +679,12 @@ export interface ExternalTicket {
   title: string;
   body: string;
   labels: string[];
+  /**
+   * Who the ticket belongs to, as logins. A list, because a tracker's is a
+   * list — and because that is what lets several instances share one
+   * repository, each taking only what is assigned to it.
+   */
+  assignees: string[];
   comments: TrackerComment[];
 }
 
