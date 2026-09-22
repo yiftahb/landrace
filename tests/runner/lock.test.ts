@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, symlinkSync } from "node:fs";
-import { mkdtemp, writeFile, mkdir, readdir } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquire, held, release, withLock } from "#runner/lock.js";
@@ -14,6 +14,20 @@ describe("lock", () => {
     expect(await acquire(1, "tick", { ...opts(), holder: "tick:1" })).toBe(true);
     expect(await acquire(1, "conversation", { ...opts(), holder: "mcp:1" })).toBe(false);
     expect((await held(1, opts()))?.holder).toBe("tick:1");
+  });
+
+  /**
+   * The flake this file was written for, and it is a missing mkdir rather than
+   * a race: only `tryOnce` creates the lock directory, and `release` opens its
+   * steal gate with "wx" — which reports ENOENT, not EEXIST, when the parent
+   * is not there, and `withGate` only ever expected EEXIST. A bare release
+   * against a repository whose `$TMPDIR` scratch had never been made (a fresh
+   * machine, or one the OS had swept) threw
+   * `ENOENT ... locks/<ticket>.lock.steal` out of the `finally` of whatever
+   * was releasing.
+   */
+  it("releases against a root nothing has locked in yet, rather than throwing at the gate", async () => {
+    await expect(release(42, opts())).resolves.toBeUndefined();
   });
 
   it("frees the ticket on release", async () => {
@@ -70,6 +84,22 @@ describe("lock", () => {
       withLock(10, "tick", async () => { throw new Error("boom"); }, opts()),
     ).rejects.toThrow("boom");
     expect(await held(10, opts())).toBeNull();
+  });
+
+  /**
+   * The same hole from the side that costs something. `$TMPDIR` is swept by
+   * the OS and a converge holds its lock for minutes, so the root can go while
+   * the work is still running. The release then failed at the gate and the
+   * throw came out of the `finally` — replacing the answer of a converge that
+   * had already finished with an ENOENT about a lock file.
+   */
+  it("withLock gives the lock back even when the root is swept while it works", async () => {
+    await expect(
+      withLock(11, "tick", async () => {
+        await rm(join(root, "locks"), { recursive: true, force: true });
+        return "the body's answer";
+      }, opts()),
+    ).resolves.toBe("the body's answer");
   });
 });
 

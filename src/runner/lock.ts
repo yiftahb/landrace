@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { Gated, Held, LockKind, LockOptions } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
@@ -51,6 +51,23 @@ const GATE_DEADLINE_MS = 5_000;
 // be a directory name — is src/sandbox.ts, which the agent's worktrees share.
 const dirOf = (o?: LockOptions) => join(o?.root ?? sandboxRoot(process.cwd()), "locks");
 const fileOf = (ticket: number, o?: LockOptions) => join(dirOf(o), `${ticket}.lock`);
+
+/**
+ * The lock root, made on demand by *every* path into this module rather than
+ * by the acquiring one alone.
+ *
+ * The gate below is opened with "wx", and a missing parent directory is an
+ * ENOENT rather than the EEXIST that means "somebody else holds it" — so with
+ * the mkdir in `tryOnce` alone, anything that took the gate without first
+ * taking a lock threw `ENOENT … locks/<ticket>.lock.steal` from inside the
+ * `finally` that was giving the lock back. It reads as a flake because the
+ * root survives between runs: it needs a machine that has never run a tick for
+ * this repository, or a `$TMPDIR` the OS has swept — and, with a converge
+ * holding its lock for minutes, the sweep can land mid-hold.
+ */
+async function ensureRoot(path: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+}
 
 const alive = (pid: number): boolean => {
   try {
@@ -146,6 +163,7 @@ async function createFresh(path: string, ticket: number, kind: LockKind, opts?: 
  */
 async function withGate<T>(ticket: number, kind: LockKind, path: string, fn: () => Promise<T>): Promise<Gated<T>> {
   const gate = `${path}.steal`;
+  await ensureRoot(gate);
 
   let fh;
   try {
@@ -219,7 +237,7 @@ async function beat(ticket: number, lease: Held, opts?: LockOptions): Promise<vo
 
 async function tryOnce(ticket: number, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
   const path = fileOf(ticket, opts);
-  await mkdir(dirOf(opts), { recursive: true });
+  await ensureRoot(path);
 
   const fresh = await createFresh(path, ticket, kind, opts);
   if (fresh) return fresh;
