@@ -1,6 +1,9 @@
+import { loadConfig } from "#config/load.js";
+import { snapshotProvides } from "#runner/snapshot.js";
 import { createExternalState, createHarness } from "#testing/index.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { validate } from "#workflow/validate.js";
 import type { Effect, ExternalState, Harness, ScriptedAnswer } from "#namespace.js";
 
 /**
@@ -132,6 +135,142 @@ describe("a workflow over the in-memory tracker, with no integration at all", ()
 
     expect(state.entriesOf(1).filter((e) => e.byAgent && e.round === 9)).toEqual([]);
     expect(state.ticket(1).labels).toContain("lr:stage:done");
+  });
+});
+
+/**
+ * Several developers, one repository, one workflow directory.
+ *
+ * The whole feature in one place: the tracker says who a ticket belongs to
+ * (`ticket.assignees`), the configuration says who *this* instance is
+ * (`vars.assignee`, from the environment), and the workflow's own eligibility
+ * rule puts the two together. Nothing about it is per-ticket state — the var
+ * is resolved once and substituted into the graph at load, so by the time a
+ * predicate runs it is comparing a snapshot path against a literal, which is
+ * all the operator allowlist permits.
+ *
+ * Driven through `loadConfig` and `loadWorkflow` rather than a hand-built
+ * workflow object, because the substitution is the part under test and a
+ * fixture that skipped it would be testing the harness.
+ */
+describe("several instances over one repository, each taking its own tickets", () => {
+  const DIR = "tests/fixtures/assigned";
+  const ASSIGNED = ["ann", "bo"];
+
+  const instance = async (who: string) => {
+    process.env.LR_E2E_ASSIGNEE = who;
+    const { vars } = await loadConfig(DIR);
+    return { vars, ...(await loadWorkflow(DIR, vars)) };
+  };
+
+  const world = () => createExternalState({
+    tickets: ASSIGNED.map((login, i) => ({
+      number: i + 1,
+      title: `ticket for ${login}`,
+      labels: ["lr:auto"],
+      assignees: [login],
+    })),
+  });
+
+  afterEach(() => { delete process.env.LR_E2E_ASSIGNEE; });
+
+  const runAs = async (who: string, state: ExternalState, ticket: number): Promise<Harness> => {
+    const { workflow, steps } = await instance(who);
+    return createHarness({ workflow, steps, pre: [state.pre], post: [state.post], answers: { spec: SPEC }, ticket });
+  };
+
+  it("works the ticket assigned to it", async () => {
+    const state = world();
+    const run = await runAs("ann", state, 1);
+
+    const r = await run.converge();
+
+    expect(r.result.settled).toBe("terminal");
+    expect(state.stage(1)).toBe("done");
+    // And the var reached the agent, not only the predicate: one substitution
+    // pass fills the graph and the step prompt from the same map.
+    expect(run.calls()[0]?.prompt).toContain("working as ann");
+    expect(state.comments(1).join("\n")).toContain("ann is writing the spec");
+  });
+
+  /*
+   * And leaves somebody else's alone — with the workflow's own `else` as the
+   * reason, never a label name the engine chose, and without paying for a
+   * single invocation or writing anything to the ticket. A filter that skipped
+   * a ticket *after* moving it would be worse than no filter at all: two
+   * instances would fight over the position.
+   */
+  it("skips the ticket assigned to somebody else, saying why", async () => {
+    const state = world();
+    const r = await (await runAs("ann", state, 2)).converge();
+
+    expect(r.result.settled).toBe("wait");
+    expect(r.result.why).toBe("assigned to somebody else");
+    expect(r.calls).toEqual([]);
+    expect(state.ticket(2).labels).toEqual(["lr:auto"]);
+    expect(state.comments(2)).toEqual([]);
+
+    // Against its own ticket in the same breath, because "skipped" on its own
+    // is what a filter matching *nothing* looks like too — and that failure
+    // reads as a working filter in every log line it produces.
+    expect((await (await runAs("ann", state, 1)).converge()).result.settled).toBe("terminal");
+  });
+
+  /*
+   * The mirror image, from the same files. Only the environment differs, which
+   * is the claim the feature actually makes — a hard-coded login in the
+   * workflow would pass every test above and none of this one.
+   */
+  it("and the other instance takes the other ticket, from the same workflow directory", async () => {
+    const state = world();
+
+    await (await runAs("bo", state, 2)).converge();
+    const mine = await (await runAs("bo", state, 1)).converge();
+
+    expect(state.stage(2)).toBe("done");
+    expect(state.comments(2).join("\n")).toContain("bo is writing the spec");
+    expect(mine.result.why).toBe("assigned to somebody else");
+    expect(state.stage(1)).toBe(null);
+  });
+
+  /*
+   * Nobody's ticket is nobody's: an unassigned issue carries an empty list,
+   * `$in` claims nothing, and every instance skips it for the same stated
+   * reason. The alternative — an absent path — makes the rule unanswerable,
+   * and an unanswerable rule abstains, so *every* instance would work it.
+   */
+  it("leaves an unassigned ticket to nobody, rather than to everybody", async () => {
+    const state = createExternalState({ tickets: [{ number: 1, labels: ["lr:auto"], assignees: [] }] });
+    const { workflow, steps } = await instance("ann");
+    const run = createHarness({ workflow, steps, pre: [state.pre], post: [state.post], answers: { spec: SPEC } });
+
+    const r = await run.converge();
+
+    expect(r.result.why).toBe("assigned to somebody else");
+    expect(r.calls).toEqual([]);
+  });
+
+  /*
+   * And the substituted rule is one `validate` can actually answer for: the
+   * path it reads is a path the tracker declares. Written as `ticket.assignee`
+   * — the singular GitHub also returns — this is the check that would report
+   * it, instead of a repository where every ticket is skipped and the reason
+   * printed beside each one reads like the filter working.
+   */
+  it("reads a path the tracker declares, so validate can cover the rule", async () => {
+    const state = createExternalState({ tickets: [{ number: 1 }] });
+    const { workflow, steps } = await instance("ann");
+    const provided = snapshotProvides([state.pre]) ?? undefined;
+
+    expect(validate(workflow, steps, provided)).toEqual([]);
+
+    const singular = {
+      ...workflow,
+      eligible: [{ when: { "ticket.assignee": "ann" }, else: "assigned to somebody else" }],
+    };
+    expect(validate(singular, steps, provided)).toContainEqual(
+      expect.objectContaining({ rule: "path-coverage", message: expect.stringContaining("ticket.assignee") }),
+    );
   });
 });
 

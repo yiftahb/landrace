@@ -4,6 +4,7 @@ import { parse } from "yaml";
 import type { z } from "zod";
 import type { ContainedPath, LoadFailureRule, Step, Workflow } from "#namespace.js";
 import { stepFrontMatterSchema, workflowSchema } from "#workflow/schema.js";
+import { substituteVars } from "#workflow/vars.js";
 import { messageOf } from "#runner/errors.js";
 
 export class WorkflowLoadError extends Error {
@@ -118,11 +119,51 @@ export function parseStep(source: string): Step {
   return { ...front.data, prompt: m[2] as string };
 }
 
-export async function loadWorkflow(dir: string): Promise<{ workflow: Workflow; steps: Map<string, Step> }> {
+/**
+ * The graph and its steps, with every `{vars.x}` already filled in.
+ *
+ * `vars` is configuration, not state: it does not vary per ticket, so it is
+ * resolved once (config/load.ts) and substituted here, before anything
+ * validates anything. Everything downstream — the schema's judgement, the
+ * operator allowlist, path-coverage, the predicate itself — then sees a
+ * literal exactly as if it had been typed, which is what keeps this out of the
+ * snapshot and out of the predicate language: comparing one snapshot path
+ * against another would need `$expr`, and `$expr` is outside the allowlist on
+ * purpose.
+ *
+ * Callers with no vars pass none, and a workflow with no references loads
+ * exactly as it did before.
+ */
+export async function loadWorkflow(
+  dir: string,
+  vars: ReadonlyMap<string, string> = new Map(),
+): Promise<{ workflow: Workflow; steps: Map<string, Step> }> {
   const raw = parse(await readFile(join(dir, "workflow.yaml"), "utf8"));
   const parsed = workflowSchema.safeParse(raw);
   if (!parsed.success) throw new WorkflowLoadError("schema", sayWhy(parsed.error));
-  const workflow = parsed.data as Workflow;
+
+  /*
+   * Every reference in the workflow and in every step file, gathered before
+   * any of it is reported.
+   *
+   * Both halves are load failures. An unresolved `{vars.x}` left in place is a
+   * predicate that matches nothing and an effect body with a stray token in
+   * it; a declared var nothing references is harmless in itself and almost
+   * always the same typo seen from the other end — and this codebase has twice
+   * shipped a declaration nobody read (`log.redact` naming no secret, four
+   * workflow fields parsed and dropped), which is why "harmless" is not a
+   * reason to stay quiet.
+   */
+  const unresolved: string[] = [];
+  const used = new Set<string>();
+  const fill = <T>(tree: T, at: string): T => {
+    const out = substituteVars(tree, vars, at);
+    unresolved.push(...out.unresolved);
+    for (const name of out.used) used.add(name);
+    return out.value as T;
+  };
+
+  const workflow = fill(parsed.data as Workflow, "workflow.yaml");
 
   const seen = new Set<string>();
   for (const stage of workflow.stages) {
@@ -151,12 +192,25 @@ export async function loadWorkflow(dir: string): Promise<{ workflow: Workflow; s
     // used; a second "does it exist" guard here would be unreachable.
     const source = await readFile(where.path, "utf8");
     try {
-      steps.set(stage.step, parseStep(source));
+      steps.set(stage.step, fill(parseStep(source), stage.step));
     } catch (e) {
       // Named, because "front matter is not valid" is unactionable when a
       // workflow has five step files and the loader read them in graph order.
       throw new WorkflowLoadError("schema", `step ${stage.step}: ${messageOf(e)}`);
     }
+  }
+
+  const declared = [...vars.keys()];
+  const idle = declared.filter((name) => !used.has(name));
+  if (unresolved.length || idle.length) {
+    throw new WorkflowLoadError("vars", [
+      ...unresolved.map((where) =>
+        `${where}, which no vars entry defines` +
+        `${declared.length ? ` — declared vars: ${declared.join(", ")}` : " — no vars are declared"}`),
+      ...idle.map((name) =>
+        `vars entry "${name}" is declared and nothing references it; ` +
+        "a variable nothing reads is usually the same typo as one nothing defines"),
+    ].join("; "));
   }
 
   return { workflow, steps };

@@ -4,7 +4,7 @@ import { parse } from "yaml";
 import { expand, parseEnvFile } from "#config/env.js";
 import { MIN_SECRET_LENGTH } from "#runner/events.js";
 import { runtimeConfigSchema } from "#config/schema.js";
-import type { LoadedConfig } from "#namespace.js";
+import type { LoadedConfig, Problem } from "#namespace.js";
 
 /**
  * The secret values `log.redact` names. A logger redacts by value — a name
@@ -35,6 +35,65 @@ export function redactionValues({ config, secretValues }: LoadedConfig): string[
   return values.map(([, v]) => v);
 }
 
+/**
+ * The vars that are really secrets, by name.
+ *
+ * Cheap and unambiguous, which is the whole reason it is here: both maps are
+ * resolved side by side in `loadConfig`, and equality of two strings is not a
+ * judgement call. Compared by *value*, because the mistake worth catching is
+ * `vars: { token: $TRACKER_TOKEN }` beside `secrets: { apiToken: $TRACKER_TOKEN }`
+ * — two names, one value, and only one of them ever redacted.
+ *
+ * The asymmetry is the point. A secret is handed to a hook and its value is
+ * stripped from every log line and event; a var is substituted into the
+ * workflow, so it reaches a tracker comment, an agent's prompt and the events
+ * that record both, with nothing suppressing it. Empty values are ignored
+ * rather than matched, since every one of them would equal every other.
+ */
+export function varsHoldingSecrets({ vars, secretValues }: LoadedConfig): string[] {
+  const values = new Set([...secretValues.values()].map((v) => v.trim()).filter(Boolean));
+  return [...vars].filter(([, value]) => values.has(value.trim())).map(([name]) => name);
+}
+
+/**
+ * Everything wrong with the configuration itself, worded once.
+ *
+ * `validate` prints these as problems and the two daemons refuse to start on
+ * them, and that is exactly why the wording lives here rather than three
+ * times: the CLI and the loop disagreeing about what is fatal is the "a
+ * validator that checks less in the daemon than in the CLI" failure, and two
+ * copies of a message is how one of them stops being edited.
+ */
+export function configProblems(dir: string, loaded: LoadedConfig): Problem[] {
+  const env = join(dir, ".env");
+  return [
+    ...loaded.missing.map((name) => ({
+      rule: "secret",
+      message: `secret "${name}" does not resolve; set it in ${env}`,
+    })),
+    ...loaded.missingVars.map((name) => ({
+      rule: "vars",
+      message:
+        `vars entry "${name}" does not resolve to a usable value; set it in ${env}. ` +
+        "A var is substituted into the workflow before anything validates it, so an unset or empty " +
+        "one fills a predicate in with nothing — and a predicate filled in with nothing matches no ticket",
+    })),
+    ...varsHoldingSecrets(loaded).map((name) => ({
+      rule: "vars",
+      message:
+        `vars entry "${name}" resolves to the same value as a secret. Vars are not secrets: ` +
+        "the log redacts by value and knows only what `secrets` declares, while a var reaches a comment " +
+        "body, an agent's prompt and the events recording both — keep the value in secrets: and read it in a hook",
+    })),
+  ];
+}
+
+/** The same list, as the refusal a process that is about to run has to make. */
+export function assertConfigUsable(dir: string, loaded: LoadedConfig): void {
+  const problems = configProblems(dir, loaded);
+  if (problems.length) throw new Error(problems.map((p) => `${p.rule}: ${p.message}`).join("\n"));
+}
+
 export async function loadConfig(dir: string): Promise<LoadedConfig> {
   const config = runtimeConfigSchema.parse(parse(await readFile(join(dir, "landrace.yaml"), "utf8")));
 
@@ -56,5 +115,24 @@ export async function loadConfig(dir: string): Promise<LoadedConfig> {
     else secretValues.set(name, value);
   }
 
-  return { config, missing, secretValues };
+  /*
+   * The same expansion, one rule stricter.
+   *
+   * A secret that does not resolve is reported and its name simply carries no
+   * value; a var that does not resolve would be *substituted* — into an
+   * eligibility rule, an effect body, a prompt — so "nothing" has to be
+   * impossible rather than merely wrong. An empty value is refused for the
+   * same reason as an absent one and is the likelier of the two: `export
+   * LANDRACE_ASSIGNEE=` resolves perfectly, leaves `$in: [""]` in the graph,
+   * and every ticket in the repository is skipped with nobody able to say why.
+   */
+  const vars = new Map<string, string>();
+  const missingVars: string[] = [];
+  for (const [name, reference] of Object.entries(config.vars)) {
+    const value = expand(reference, env);
+    if (value.trim() === "" || (value === reference && reference.startsWith("$"))) missingVars.push(name);
+    else vars.set(name, value);
+  }
+
+  return { config, missing, secretValues, vars, missingVars };
 }

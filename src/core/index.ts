@@ -7,5 +7,5 @@ export { checkEligible } from "#core/eligible.js";
 export { locate } from "#core/locate.js";
 export { assess } from "#core/assess.js";
 export { decide } from "#core/decide.js";
-export { expandEffectFields, planEffects } from "#core/plan.js";
+export { expandEffectFields, fillTemplate, planEffects } from "#core/plan.js";
 export { reconcile } from "#core/reconcile.js";

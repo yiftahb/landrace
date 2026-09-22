@@ -216,6 +216,20 @@ export interface LoadedConfig {
   missing: string[];
   /** Resolved values, kept apart from the config so they cannot be logged by accident. */
   secretValues: Map<string, string>;
+  /**
+   * Resolved `vars`, which the workflow loader substitutes into the graph and
+   * the step files. Kept apart from the config for the same reason
+   * `secretValues` is — `config` is what a hook is handed and what `--debug`
+   * prints — though a var is emphatically not a secret: nothing redacts it.
+   */
+  vars: Map<string, string>;
+  /**
+   * Variable names that resolved to nothing usable: no such environment
+   * variable, or one set to an empty value. Both are reported rather than
+   * substituted, because a workflow filled in with "$LANDRACE_ASSIGNEE" or
+   * with "" is one that quietly matches no ticket at all.
+   */
+  missingVars: string[];
 }
 
 /* -------------------------------------------------------------- workflow -- */
@@ -234,7 +248,16 @@ export interface Step extends StepFrontMatter {
  * shape as every other problem, instead of pattern-matching an error message
  * after the fact.
  */
-export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path";
+export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path" | "vars";
+
+/** One tree with every `{vars.x}` filled in, what it took to fill it, and what it could not. */
+export interface VarSubstitution {
+  value: unknown;
+  /** The names actually referenced, so the caller can report one that never was. */
+  used: string[];
+  /** One line per reference no var defines, saying where it was written. */
+  unresolved: string[];
+}
 
 export type ContainedPath =
   | { ok: true; path: string }

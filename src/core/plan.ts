@@ -1,8 +1,32 @@
 import type { Decision, Effect } from "#namespace.js";
 
+/**
+ * One `{}` template syntax, and one place that knows what a name looks like.
+ *
+ * Three passes fill these in and each answers for a different vocabulary: the
+ * engine's own `{round}` and `{stage}` on an effect field (below), a snapshot
+ * path in a step's prompt (runner/step.ts), and `{vars.x}` from the
+ * configuration at load (workflow/vars.ts). What they must agree on is the
+ * *shape* of a name and what happens to one nobody answers for — it is left
+ * visible, never blanked, so a typo shows up in the output instead of
+ * vanishing from it. A second regex here is how one pass comes to recognise a
+ * name the next one does not; this function was already deduplicated once for
+ * that reason, between core's plan and the runner's prompt.
+ *
+ * The dot is admitted deliberately even though only two of the three
+ * vocabularies use it: a name this pass does not recognise is left alone
+ * anyway, so widening the pattern changes no output — it only stops
+ * `{ticket.body}` meaning "a template" in one pass and "ordinary text" in
+ * another.
+ */
+const TEMPLATE = /\{([a-zA-Z0-9_.]+)\}/g;
+
+export const fillTemplate = (value: string, lookup: (name: string) => string | undefined): string =>
+  value.replace(TEMPLATE, (whole, name: string) => lookup(name) ?? whole);
+
 const expand = (value: unknown, vars: Record<string, string>): unknown =>
   typeof value === "string"
-    ? value.replace(/\{([a-zA-Z0-9_]+)\}/g, (whole, k: string) => (Object.hasOwn(vars, k) ? String(vars[k]) : whole))
+    ? fillTemplate(value, (k) => (Object.hasOwn(vars, k) ? String(vars[k]) : undefined))
     : value;
 
 /**

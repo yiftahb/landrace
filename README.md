@@ -143,13 +143,52 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `security.screen` | `true` | Screen each prompt for injection before invoking an agent |
 | `security.model` | `haiku` | Model used for screening |
 | `log.redact` | `[]` | Secret names whose values must never be logged |
-| `secrets.*` | — | `$VAR` references resolved from `.landrace/.env` |
+| `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
+| `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |
 
 ### `.landrace/.env` — secrets
 
 Referenced by name from `landrace.yaml`, resolved at load, and handed to hooks as values — a hook never reads `process.env` itself, which is what makes it testable and what lets redaction know every value to suppress. A `.env` here takes precedence over your shell, because a project's own file should be what runs.
 
 `validate` fails if this file exists and git does not ignore it.
+
+### `vars` — one workflow, several instances
+
+```yaml
+vars:
+  assignee: $LANDRACE_ASSIGNEE
+  team: platform
+```
+
+Wherever `{vars.<name>}` appears in `workflow.yaml` or a step file — a predicate operand, an effect field, a prompt — it is replaced at load with the resolved value. Everything downstream then sees a literal exactly as if it had been typed: the schema, the operator allowlist, `path-coverage`, and the predicate itself.
+
+Substitution walks the **parsed document**, never its text, so a value carrying a colon, a newline or a quote lands in one string position and stays one string instead of reshaping the YAML around it. It fills in `{vars.…}` and nothing else: `{round}`, `{stage}` and `{ticket.title}` belong to the engine and to the step prompt, and survive untouched.
+
+Variables are configuration, not state. They do not vary per ticket, so they are deliberately **not** in the snapshot — comparing one snapshot path against another would need `$expr`, which is outside the operator allowlist on purpose.
+
+Every mistake is a load error, never a default:
+
+- a variable whose reference does not resolve, **or resolves to an empty value**, is refused by name. Never `""` and never the literal `$LANDRACE_ASSIGNEE`: a predicate filled in with nothing matches no ticket, and "the repository where nothing ever happens" is the hardest failure there is to read.
+- a `{vars.x}` nothing defines is refused, naming the variable, the file and the field it was written in.
+- a `vars` entry nothing references is refused too — harmless in itself, and usually the same typo seen from the other end.
+
+**Variables are not secrets.** A secret is handed to a hook and stripped from every log line and event by value; a var is substituted into the workflow, so it reaches a tracker comment, an agent's prompt and the events recording both, with nothing suppressing it. `validate` reports, and `start` refuses, a `vars` value that resolves to the same string as a declared secret. A credential belongs in `secrets:`, read by a hook.
+
+**Several developers, one repository.** Each instance exports its own assignee and the workflow filters on it:
+
+```yaml
+# landrace.yaml — differs per developer, through the environment
+vars:
+  assignee: $LANDRACE_ASSIGNEE
+```
+```yaml
+# workflow.yaml — the same file for everyone
+eligible:
+  - when: { "ticket.assignees": { $in: ["{vars.assignee}"] } }
+    else: "assigned to somebody else"
+```
+
+One workflow directory, one graph, one set of step files. A ticket assigned to somebody else is skipped with that `else` as the reason `status` prints beside it, nothing is invoked and nothing is written to it — and a ticket assigned to nobody is skipped by everybody rather than worked by everybody, because `ticket.assignees` is an empty list rather than an absent path.
 
 ### `.landrace/workflow.yaml` — the process
 
@@ -238,7 +277,8 @@ Both schemas are strict: an unknown key fails to load rather than being ignored.
 | `totality` | A declared output shape with nowhere to go |
 | `identity` | Two stages that could both be "where the ticket is" |
 | `operator` | A disallowed predicate operator, anywhere including nested |
-| `path-coverage` | A predicate reading a field no hook provides |
+| `path-coverage` | A predicate — in a trigger, an `identity`, a `requires` or an `eligible` rule — reading a field no hook provides |
+| `vars` | A variable that does not resolve, a `{vars.x}` nothing defines, a declared variable nothing references, a variable holding a secret's value |
 
 Every rule runs on every workflow. An earlier version abstained where a trigger
 could fire from anywhere, which turned out to mean *always* — the entry trigger

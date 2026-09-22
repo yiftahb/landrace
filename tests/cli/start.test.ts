@@ -80,7 +80,7 @@ describe("buildRuntime", () => {
   it("refuses to start when a secret does not resolve", async () => {
     const dir = await fixture();
     await writeFile(join(dir, ".env"), "\n");
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/do not resolve: githubToken/);
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/secret "githubToken" does not resolve/);
   });
 
   /**
@@ -101,6 +101,29 @@ describe("buildRuntime", () => {
 
   it("refuses to start when no hook module provides a source to enumerate", async () => {
     await expect(buildRuntime(await fixture(), {})).rejects.toThrow(/source/);
+  });
+
+  /*
+   * A var is substituted into the workflow before anything validates it, so an
+   * unresolved one is not a value that is merely absent — it is a graph filled
+   * in with nothing, and a predicate filled in with nothing matches no ticket.
+   * The daemon finds that out as a repository where nothing ever happens.
+   */
+  it("refuses to start when a var does not resolve", async () => {
+    const dir = await fixture({ extra: "vars: { assignee: $LR_TEST_NOBODY }\n" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/assignee[\s\S]*does not resolve/);
+  });
+
+  /**
+   * And refuses a var holding a secret. The log redacts by value and knows
+   * only the values `secrets` declares; a var reaches a comment body, an
+   * agent's prompt and the events that record both, with nothing suppressing
+   * it — so the same string under two names is one of them printed in the
+   * clear.
+   */
+  it("refuses to start when a var resolves to a value a secret also holds", async () => {
+    const dir = await fixture({ extra: "vars: { leaked: $LR_TEST_TOKEN }\n" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/leaked[\s\S]*secret/);
   });
 });
 

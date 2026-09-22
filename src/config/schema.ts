@@ -20,4 +20,21 @@ export const runtimeConfigSchema = z.object({
   security: z.object({ screen: z.boolean().default(true), model: z.string().default("haiku") }).default({}),
   log: z.object({ redact: z.array(z.string()).default([]) }).default({}),
   secrets: z.record(z.string()).default({}),
+  /**
+   * The same `$VAR` expansion as `secrets`, pointed somewhere else entirely: a
+   * secret is handed to a hook at runtime, a var is substituted into
+   * `workflow.yaml` and the step files at load, before anything validates
+   * them. That is what makes one instance per developer possible — the graph
+   * is the same file for everyone and `$LANDRACE_ASSIGNEE` differs.
+   *
+   * Strings only, because substitution happens in string positions: a var's
+   * value lands inside a predicate operand or a prompt, where a number would
+   * arrive as its own spelling anyway. Quote it and it works.
+   *
+   * These are *not* secrets, and the schema cannot enforce that — the log
+   * redacts by value and only knows the values `secrets` declares, while a var
+   * reaches a comment body and an agent's prompt unredacted. `varsHoldingSecrets`
+   * in config/load.ts is the check; this comment is the reason it exists.
+   */
+  vars: z.record(z.string()).default({}),
 });

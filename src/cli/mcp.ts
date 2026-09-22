@@ -1,5 +1,5 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadConfig, redactionValues } from "#config/load.js";
+import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { loadHooks } from "#hooks/load.js";
 import type { RuntimeContext, Tools } from "#namespace.js";
 import { createMcpServer } from "#mcp/server.js";
@@ -18,13 +18,13 @@ import { executorFor, sandboxFor } from "#cli/start.js";
  */
 export async function buildMcpTools(dir: string): Promise<Tools> {
   const loaded = await loadConfig(dir);
-  if (loaded.missing.length) {
-    throw new Error(`secret(s) do not resolve: ${loaded.missing.join(", ")}. Set them in ${dir}/.env`);
-  }
+  // The same refusal the loop makes, from the same place: a conversation turn
+  // runs the same workflow under the same configuration.
+  assertConfigUsable(dir, loaded);
 
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
-  const { workflow, steps } = await loadWorkflow(dir);
+  const { workflow, steps } = await loadWorkflow(dir, loaded.vars);
   const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
 
   // stdout carries the MCP protocol, so anything we have to say goes to

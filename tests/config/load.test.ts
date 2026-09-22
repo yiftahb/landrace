@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "#config/load.js";
+import { loadConfig, varsHoldingSecrets } from "#config/load.js";
 
 const CONFIG = `version: 1
 agent: { adapter: claude, model: opus }
@@ -12,10 +12,10 @@ log: { redact: [githubToken] }
 secrets: { githubToken: $GITHUB_TOKEN }
 `;
 
-async function fixture(env: string | null): Promise<string> {
+async function fixture(env: string | null, extra = ""): Promise<string> {
   const dir = join(await mkdtemp(join(tmpdir(), "landrace-cfg-")), ".landrace");
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "landrace.yaml"), CONFIG);
+  await writeFile(join(dir, "landrace.yaml"), CONFIG + extra);
   if (env !== null) await writeFile(join(dir, ".env"), env);
   return dir;
 }
@@ -49,4 +49,90 @@ describe("loadConfig", () => {
   // gitignored" check) is exercised against real git repositories in
   // tests/cli/gitignore.test.ts — gitignore semantics (negation, nesting)
   // cannot be verified against a bare fixture directory.
+});
+
+/**
+ * `vars`, which is the same `$VAR` expansion as `secrets` pointed at a
+ * different destination: a secret is handed to a hook, a var is substituted
+ * into the workflow before it is validated.
+ *
+ * What it must never do is resolve to *something* when there was nothing. A
+ * var that fell back to the literal "$LANDRACE_ASSIGNEE", or to "", would
+ * substitute an eligibility rule that matches no ticket at all — and the
+ * operator's evidence would be a repository where nothing ever happens, which
+ * is the hardest failure this system has.
+ */
+describe("loadConfig resolves the vars block", () => {
+  const withVars = (block: string, env: string | null) =>
+    fixture(env, `vars:\n${block}`);
+
+  it("resolves a reference from .env and passes a literal through unchanged", async () => {
+    const { vars, missingVars } = await loadConfig(
+      await withVars("  assignee: $LANDRACE_ASSIGNEE\n  team: platform\n", "GITHUB_TOKEN=t\nLANDRACE_ASSIGNEE=ann"),
+    );
+    expect(vars.get("assignee")).toBe("ann");
+    expect(vars.get("team")).toBe("platform");
+    expect(missingVars).toEqual([]);
+  });
+
+  it("reports an unresolved reference rather than substituting the literal $LANDRACE_ASSIGNEE", async () => {
+    const { vars, missingVars } = await loadConfig(await withVars("  assignee: $LANDRACE_ASSIGNEE\n", "GITHUB_TOKEN=t"));
+    expect(missingVars).toEqual(["assignee"]);
+    expect(vars.has("assignee")).toBe(false);
+  });
+
+  /*
+   * The case the "never an empty string" rule is actually about: the variable
+   * *is* set, to nothing. Resolution succeeds, the reference is gone, and the
+   * workflow gets `$in: [""]` — a filter that silently claims no ticket.
+   */
+  it("reports a variable that resolves to an empty value, which resolution alone would accept", async () => {
+    const { vars, missingVars } = await loadConfig(
+      await withVars("  assignee: $LANDRACE_ASSIGNEE\n", "GITHUB_TOKEN=t\nLANDRACE_ASSIGNEE="),
+    );
+    expect(missingVars).toEqual(["assignee"]);
+    expect(vars.has("assignee")).toBe(false);
+  });
+
+  it("reports a whitespace-only value too, which trims to the same nothing", async () => {
+    const { missingVars } = await loadConfig(
+      await withVars("  assignee: $LANDRACE_ASSIGNEE\n", 'GITHUB_TOKEN=t\nLANDRACE_ASSIGNEE="   "'),
+    );
+    expect(missingVars).toEqual(["assignee"]);
+  });
+
+  it("keeps the resolved value out of the config object, exactly as a secret's is", async () => {
+    const { config } = await loadConfig(
+      await withVars("  assignee: $LANDRACE_ASSIGNEE\n", "GITHUB_TOKEN=t\nLANDRACE_ASSIGNEE=ann"),
+    );
+    // The reference as written, not what it resolved to: `config` is what a
+    // hook is handed and what a debug dump prints.
+    expect(config.vars).toEqual({ assignee: "$LANDRACE_ASSIGNEE" });
+  });
+});
+
+/**
+ * A var is not a second way to hold a secret, and the difference is not a
+ * matter of taste: secrets are redacted from every log line and event by
+ * value, vars are not, and a var reaches a comment body and an agent's prompt.
+ *
+ * Compared by value rather than by reference text, because the interesting
+ * mistake is `vars: { token: $GITHUB_TOKEN }` beside `secrets: { githubToken:
+ * $GITHUB_TOKEN }` — two names, one value, one of them redacted.
+ */
+describe("a var that is really a secret", () => {
+  it("is named, when it resolves to the same value a secret does", async () => {
+    const loaded = await loadConfig(await fixture("GITHUB_TOKEN=ghp_x", "vars:\n  token: $GITHUB_TOKEN\n"));
+    expect(varsHoldingSecrets(loaded)).toEqual(["token"]);
+  });
+
+  it("is named when the value was typed out rather than referenced", async () => {
+    const loaded = await loadConfig(await fixture("GITHUB_TOKEN=ghp_x", "vars:\n  token: ghp_x\n"));
+    expect(varsHoldingSecrets(loaded)).toEqual(["token"]);
+  });
+
+  it("says nothing about an ordinary var", async () => {
+    const loaded = await loadConfig(await fixture("GITHUB_TOKEN=ghp_x", "vars:\n  team: platform\n"));
+    expect(varsHoldingSecrets(loaded)).toEqual([]);
+  });
 });

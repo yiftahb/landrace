@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { loadConfig } from "#config/load.js";
 import { decide, deriveRun, planEffects } from "#core/index.js";
 import type { Decision, Effect, Snapshot } from "#namespace.js";
 import { loadWorkflow } from "#workflow/load.js";
@@ -7,7 +8,12 @@ export async function runNext(
   dir: string,
   snapshotPath: string,
 ): Promise<{ decision: Decision; effects: Effect[] }> {
-  const { workflow } = await loadWorkflow(dir);
+  // The vars the workflow is substituted with, when there is a configuration
+  // to read them from — `next` explains what the engine would do, and a
+  // workflow whose predicates it read unsubstituted is a different workflow.
+  // Optional, like validate's: this command is otherwise I/O-free by design.
+  const vars = await loadConfig(dir).then((c) => c.vars).catch(() => undefined);
+  const { workflow } = await loadWorkflow(dir, vars);
   const raw = JSON.parse(await readFile(snapshotPath, "utf8")) as Snapshot;
 
   const stage = (raw.run?.stage ?? null) as string | null;

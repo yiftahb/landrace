@@ -164,6 +164,33 @@ describe("semantic validation", () => {
     expect(rules(w, noSteps, ["ticket.labels", "run.stage"])).toContain("path-coverage");
   });
 
+  /*
+   * An eligibility rule reads the same snapshot every trigger does, and an
+   * uncovered path there is the quieter failure of the two: a trigger that
+   * matches nothing leaves one ticket where it is, while an `eligible` rule
+   * that matches nothing skips *every* ticket in the repository — reported by
+   * `status` as the workflow's own `else`, which reads exactly like the rule
+   * working. `ticket.assignee` beside a hook providing `ticket.assignees` is
+   * the shape it arrives in.
+   */
+  it("flags an eligibility rule reading a path nothing provides", () => {
+    const w: Workflow = {
+      version: 1, name: "t",
+      eligible: [{ when: { "ticket.assignee": "ann" }, else: "not yours" }],
+      stages: [{ id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] }],
+    };
+    expect(rules(w, noSteps, ["ticket.assignees", "run.stage"])).toContain("path-coverage");
+  });
+
+  it("says nothing about an eligibility rule reading a path a hook does provide", () => {
+    const w: Workflow = {
+      version: 1, name: "t",
+      eligible: [{ when: { "ticket.assignees": { $in: ["ann"] } }, else: "not yours" }],
+      stages: [{ id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] }],
+    };
+    expect(rules(w, noSteps, ["ticket.assignees", "run.stage"])).not.toContain("path-coverage");
+  });
+
   it("checks no paths when no hook declares what it provides", () => {
     const w: Workflow = { version: 1, name: "t", stages: [
       { id: "a", entry: true, triggers: [{ when: { "ticket.nonsense": 1 } }] },

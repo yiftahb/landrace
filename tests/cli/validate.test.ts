@@ -77,6 +77,94 @@ describe("landrace validate", () => {
   });
 });
 
+/**
+ * `validate` and the variables a workflow is substituted with.
+ *
+ * Every one of these is a report rather than an exception — the whole job of
+ * the command — and every one of them is a mistake that otherwise surfaces as
+ * a repository where nothing happens: a filter substituted with nothing
+ * claims no ticket, and `status` prints the workflow's own `else` beside every
+ * one of them, which reads exactly like the filter working.
+ */
+describe("landrace validate, and the vars a workflow is substituted with", () => {
+  const GRAPH = `version: 1
+name: t
+eligible:
+  - when: { "ticket.assignees": { $in: ["{vars.assignee}"] } }
+    else: "assigned to somebody else"
+stages:
+  - id: a
+    entry: true
+    triggers: [{ when: { "run.stage": null } }]
+  - id: done
+    terminal: true
+    triggers: [{ when: { "run.stage": "a" } }]
+`;
+
+  const dirFor = async (config: string, graph = GRAPH): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), "landrace-validate-vars-"));
+    await writeFile(join(dir, "workflow.yaml"), graph);
+    await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude }\n${config}`);
+    return dir;
+  };
+
+  const rulesOf = (problems: Array<{ rule: string }>): string[] => problems.map((p) => p.rule);
+
+  beforeAll(() => { process.env.LR_VALIDATE_ASSIGNEE = "ann"; });
+  afterAll(() => { delete process.env.LR_VALIDATE_ASSIGNEE; });
+
+  it("passes a workflow whose var resolves, having substituted a literal into it", async () => {
+    const r = await runValidate(await dirFor("vars: { assignee: $LR_VALIDATE_ASSIGNEE }\n"));
+    expect(r.problems).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
+
+  /*
+   * One problem, not two. The workflow is not loaded at all when a var did not
+   * resolve: loading it would report every reference to that var a second
+   * time, as a name nothing declares — which is a misdescription of the one
+   * fact that is actually wrong.
+   */
+  it("reports the variable that did not resolve, and does not go on to misreport its uses", async () => {
+    const r = await runValidate(await dirFor("vars: { assignee: $LR_VALIDATE_NOBODY }\n"));
+    expect(rulesOf(r.problems)).toEqual(["vars"]);
+    // The resolution failure in its own words, not the workflow loader's "no
+    // vars entry defines {vars.assignee}" — which is true of the substitution
+    // and false about the configuration, where the entry is right there.
+    expect(r.problems[0]?.message).toMatch(/"assignee" does not resolve/);
+  });
+
+  it("reports a var nothing in the workflow references", async () => {
+    const r = await runValidate(await dirFor("vars: { assignee: $LR_VALIDATE_ASSIGNEE, team: platform }\n"));
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContainEqual(
+      expect.objectContaining({ rule: "vars", message: expect.stringMatching(/"team"/) }),
+    );
+  });
+
+  it("reports a reference no var defines", async () => {
+    const graph = GRAPH.replace("{vars.assignee}", "{vars.asignee}");
+    const r = await runValidate(await dirFor("vars: { assignee: $LR_VALIDATE_ASSIGNEE }\n", graph));
+    expect(r.problems).toContainEqual(
+      expect.objectContaining({ rule: "vars", message: expect.stringMatching(/\{vars\.asignee\}/) }),
+    );
+  });
+
+  /*
+   * A var is not a second way to hold a secret: secrets are stripped from
+   * every log line and event by value, and a var is substituted into the
+   * workflow, so it reaches a comment body and a prompt unredacted.
+   */
+  it("reports a var that resolves to a value a secret also holds", async () => {
+    const r = await runValidate(await dirFor(
+      "secrets: { token: $LR_VALIDATE_ASSIGNEE }\nvars: { assignee: $LR_VALIDATE_ASSIGNEE }\n",
+    ));
+    expect(r.problems).toContainEqual(
+      expect.objectContaining({ rule: "vars", message: expect.stringMatching(/"assignee"[\s\S]*secret/) }),
+    );
+  });
+});
+
 describe("landrace next", () => {
   it("prints the decision for a snapshot with no I/O", async () => {
     const dir = await mkdtemp(join(tmpdir(), "landrace-cli-"));
@@ -95,5 +183,30 @@ describe("landrace next", () => {
       },
       { type: "tracker.status", value: "spec", stage: "spec", round: 1 },
     ]);
+  });
+
+  /*
+   * And with the workflow's vars filled in. `next` exists to answer "what
+   * would the engine do", and a graph read with `{vars.assignee}` still in it
+   * is a different graph from the one that would run.
+   */
+  it("substitutes the workflow's vars before deciding", async () => {
+    process.env.LR_E2E_ASSIGNEE = "ann";
+    const dir = await mkdtemp(join(tmpdir(), "landrace-next-vars-"));
+    const file = join(dir, "snap.json");
+    // Assigned to this instance, because the fixture's eligibility rule is the
+    // substituted one: a snapshot with no assignee is skipped, and a skipped
+    // ticket plans nothing at all.
+    await writeFile(file, JSON.stringify({
+      ticket: { assignees: ["ann"] },
+      entries: [],
+      run: { stage: null, counters: {}, outputs: {} },
+    }));
+
+    const r = await runNext("tests/fixtures/assigned", file);
+
+    expect(r.decision.action).toBe("transition");
+    expect(r.effects[0]).toMatchObject({ body: "ann is writing the spec, round 1." });
+    delete process.env.LR_E2E_ASSIGNEE;
   });
 });

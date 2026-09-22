@@ -1,0 +1,28 @@
+version: 1
+name: assigned
+
+# The multi-developer filter, and it is an ordinary eligibility rule: the var
+# is substituted at load, so what the validator and the engine both see is a
+# literal login. `$in` over the list the tracker provides, because an issue can
+# have more than one assignee and "is one of them" is the question being asked.
+eligible:
+  - when: { "ticket.assignees": { $in: ["{vars.assignee}"] } }
+    else: "assigned to somebody else"
+
+stages:
+  - id: spec
+    entry: true
+    step: steps/spec.md
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "{vars.assignee} is writing the spec, round {round}." }
+      - { type: tracker.status, value: spec }
+  - id: done
+    terminal: true
+    triggers:
+      - name: spec written
+        when: { "run.outputs.spec": { $exists: true } }
+    on_enter:
+      - { type: tracker.status, value: done }

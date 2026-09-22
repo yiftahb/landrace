@@ -617,20 +617,28 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     const known = new Set(provided);
     const covered = (path: string) =>
       known.has(path) || [...known].some((k) => k.endsWith("*") && path.startsWith(k.slice(0, -1)));
-    for (const stage of w.stages) {
-      const conditions = [stage.identity, stage.requires, ...(stage.triggers ?? []).map((t) => t.when)];
-      for (const c of conditions) {
-        if (!c) continue;
-        for (const path of pathsIn(c)) {
-          if (!covered(path)) {
-            problems.push({
-              rule: "path-coverage",
-              message: `stage "${stage.id}" reads ${path}, which no hook provides`,
-            });
-          }
+    const uncovered = (c: Condition | undefined, where: string): void => {
+      for (const path of pathsIn(c ?? {})) {
+        if (!covered(path)) {
+          problems.push({ rule: "path-coverage", message: `${where} reads ${path}, which no hook provides` });
         }
       }
+    };
+
+    for (const stage of w.stages) {
+      const conditions = [stage.identity, stage.requires, ...(stage.triggers ?? []).map((t) => t.when)];
+      for (const c of conditions) uncovered(c, `stage "${stage.id}"`);
     }
+
+    /*
+     * Eligibility rules too, and they are the quieter half. A trigger reading
+     * a path nothing provides leaves one ticket where it is; an `eligible`
+     * rule reading one skips *every* ticket in the repository, and `status`
+     * prints the workflow's own `else` beside each, which reads exactly like
+     * the rule doing its job. `ticket.assignee` written beside a hook that
+     * provides `ticket.assignees` is how it arrives.
+     */
+    for (const rule of w.eligible ?? []) uncovered(rule.when, "eligibility rule");
   }
 
   return dedupe(problems);

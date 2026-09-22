@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { loadConfig } from "#config/load.js";
+import { configProblems, loadConfig } from "#config/load.js";
 import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
 import { snapshotProvides } from "#runner/snapshot.js";
@@ -75,16 +75,38 @@ async function coverage(
 }
 
 export async function runValidate(dir: string): Promise<{ ok: boolean; problems: Problem[] }> {
+  const problems: Problem[] = [];
+
+  /*
+   * The configuration first, because the workflow cannot be read without it:
+   * `vars` is substituted into the graph and the step files at load, so what
+   * `validate` goes on to check is the workflow as it would actually run.
+   *
+   * Optional, so a workflow can still be checked in isolation — in CI, for
+   * instance, where no tracker credentials exist. A `{vars.x}` in the graph
+   * then has nothing to resolve against and is reported as exactly that.
+   */
+  const loaded = await loadConfig(dir).catch(() => null);
+  if (loaded) problems.push(...configProblems(dir, loaded));
+
+  /*
+   * A var that did not resolve stops here, and the early return is the point.
+   * Loading the workflow without it would report every `{vars.x}` a second
+   * time as a name nothing declares — which is a misdescription of the one
+   * thing that is wrong, in a file where the entry is right there.
+   */
+  if (loaded?.missingVars.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))] };
+
   // A workflow that fails to load is itself the thing `validate` exists to
   // report — §11.1-§11.2 — so a load failure must become a Problem here
   // rather than propagate as an unhandled rejection past this function.
   let workflow: Awaited<ReturnType<typeof loadWorkflow>>["workflow"];
   let steps: Awaited<ReturnType<typeof loadWorkflow>>["steps"];
   try {
-    ({ workflow, steps } = await loadWorkflow(dir));
+    ({ workflow, steps } = await loadWorkflow(dir, loaded?.vars));
   } catch (e) {
     const rule = e instanceof WorkflowLoadError ? e.rule : "schema";
-    return { ok: false, problems: [{ rule, message: messageOf(e) }] };
+    return { ok: false, problems: [...problems, { rule, message: messageOf(e) }, ...(await exposedEnv(dir))] };
   }
 
   /*
@@ -98,26 +120,23 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    * workflow, and running the user's code against it anyway would be a
    * surprise nobody asked for.
    */
-  const problems: Problem[] = validate(workflow, steps);
-  if (problems.length === 0) problems.push(...(await coverage(dir, workflow, steps)));
+  const graph: Problem[] = validate(workflow, steps);
+  problems.push(...(graph.length === 0 ? await coverage(dir, workflow, steps) : graph));
 
-  // The config is optional for `validate`, so a workflow can be checked in
-  // isolation — in CI, for instance, where no tracker credentials exist.
-  try {
-    const { missing } = await loadConfig(dir);
-    for (const name of missing) {
-      problems.push({ rule: "secret", message: `secret "${name}" does not resolve; set it in ${join(dir, ".env")}` });
-    }
-  } catch {
-    /* no landrace.yaml: workflow-only validation */
-  }
+  problems.push(...(await exposedEnv(dir)));
+  return { ok: problems.length === 0, problems };
+}
 
-  // A token in a committed file is the cheapest possible catastrophe.
+/**
+ * A token in a committed file is the cheapest possible catastrophe, so this is
+ * asked on every path out of `runValidate` — including the ones that gave up
+ * on the workflow. A broken graph is not a reason to stop looking at the
+ * credential sitting next to it.
+ */
+async function exposedEnv(dir: string): Promise<Problem[]> {
   const envPath = join(dir, ".env");
   const env = await readFile(envPath, "utf8").catch(() => null);
-  if (env !== null && (await isEnvExposed(dir))) {
-    problems.push({ rule: "secret", message: `${envPath} exists but is not gitignored` });
-  }
-
-  return { ok: problems.length === 0, problems };
+  return env !== null && (await isEnvExposed(dir))
+    ? [{ rule: "secret", message: `${envPath} exists but is not gitignored` }]
+    : [];
 }

@@ -1,4 +1,4 @@
-import { compile, expandEffectFields } from "#core/index.js";
+import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
 import type { Effect, Logger, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   CAPABILITIES,
@@ -50,9 +50,11 @@ export function renderPrompt(
   // would otherwise decide what a step reads under that name, and which of the
   // two won would depend on nothing anybody wrote down.
   const scope: Snapshot = briefing === undefined ? snapshot : { ...snapshot, brief: briefing };
-  return template.replace(/\{([a-zA-Z0-9_.]+)\}/g, (whole, path: string) => {
+  // The same template syntax every other pass fills in, from core, so a name
+  // this one recognises is a name they all do.
+  return fillTemplate(template, (path) => {
     const value = resolve(scope, path);
-    return value === undefined || value === null ? whole : String(value);
+    return value === undefined || value === null ? undefined : String(value);
   });
 }
 

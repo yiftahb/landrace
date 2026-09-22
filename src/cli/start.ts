@@ -1,6 +1,6 @@
 import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
-import { loadConfig, redactionValues } from "#config/load.js";
+import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { loadHooks } from "#hooks/load.js";
 import type {
   BuildOptions,
@@ -147,9 +147,11 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<{ 
  */
 export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Runtime> {
   const loaded = await loadConfig(dir);
-  if (loaded.missing.length) {
-    throw new Error(`secret(s) do not resolve: ${loaded.missing.join(", ")}. Set them in ${dir}/.env`);
-  }
+  // Unresolved secrets, unresolved vars, and a var holding a secret's value —
+  // worded once, in config/load.ts, because `landrace validate` reports the
+  // same three and a daemon that checked fewer of them than the CLI would run
+  // a configuration the CLI rejects.
+  assertConfigUsable(dir, loaded);
 
   // Before anything else can log: redactionValues throws on a name no secret
   // defines and on a value too short to redact by, and both of those are the
@@ -160,7 +162,9 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
   });
 
-  const { workflow, steps } = await loadWorkflow(dir);
+  // With `vars` already substituted in: the graph the daemon runs is the
+  // graph `landrace validate` checked, filled in from the same map.
+  const { workflow, steps } = await loadWorkflow(dir, loaded.vars);
 
   // A workflow that cannot be proved sound must not be run against a live
   // repository: every problem validate reports is one an operator would
