@@ -861,6 +861,26 @@ export interface Runtime {
   stop: AbortController;
 }
 
+/**
+ * A self-rescheduling timer, owned rather than a bare `setInterval`, so a
+ * manual tick can restart the countdown and the page can read when the next
+ * one is due.
+ */
+export interface Schedule {
+  /** Start: run once immediately, then every intervalMs. */
+  start(): void;
+  /** Stop scheduling. In-flight ticks are not cancelled here — the stop signal does that. */
+  stop(): void;
+  /** When the next scheduled tick will fire, epoch ms; null when stopped. */
+  nextAt(): number | null;
+  /**
+   * Run a tick now and restart the countdown from now. Returns false, running nothing, if a tick
+   * started by trigger() is still in flight — at most one manual tick at a time. Scheduled ticks are
+   * unaffected and may still overlap, as today.
+   */
+  trigger(): boolean;
+}
+
 export interface StartOptions {
   once?: boolean;
   debug?: boolean;

@@ -13,6 +13,7 @@ import type {
   Registry,
   Runtime,
   RuntimeConfig,
+  Schedule,
   StartOptions,
   UiServer,
   Workflow,
@@ -344,6 +345,64 @@ function onSignals(handler: () => void): () => void {
   for (const signal of STOP_SIGNALS) process.on(signal, handler);
   return () => {
     for (const signal of STOP_SIGNALS) process.off(signal, handler);
+  };
+}
+
+/**
+ * A self-rescheduling timer in place of `setInterval`, so a manual tick can
+ * restart the countdown without leaving the old interval also armed.
+ *
+ * The next scheduled fire is armed the moment a tick *starts*, not when it
+ * resolves — exactly what `setInterval` did, and what keeps a scheduled tick
+ * landing on time even while an earlier one is still running. `run` is handed
+ * to us already caught (`loop`'s `begin` does that), so nothing here needs a
+ * try/catch of its own.
+ */
+export function createSchedule(opts: {
+  intervalMs: number;
+  run: () => Promise<void>;
+  now?: () => number;
+}): Schedule {
+  const now = opts.now ?? Date.now;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let nextAtValue: number | null = null;
+  // Only a manual tick is exclusive with itself; a scheduled one never waits
+  // on this, which is the "scheduled ticks may still overlap" rule.
+  let manualInFlight: Promise<void> | null = null;
+
+  const arm = (): void => {
+    nextAtValue = now() + opts.intervalMs;
+    timer = setTimeout(fire, opts.intervalMs);
+  };
+
+  const fire = (): void => {
+    arm();
+    void opts.run();
+  };
+
+  return {
+    start(): void {
+      void opts.run();
+      arm();
+    },
+    stop(): void {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      nextAtValue = null;
+    },
+    nextAt(): number | null {
+      return nextAtValue;
+    },
+    trigger(): boolean {
+      if (manualInFlight) return false;
+      if (timer) clearTimeout(timer);
+      const running = opts.run().finally(() => {
+        manualInFlight = null;
+      });
+      manualInFlight = running;
+      arm();
+      return true;
+    },
   };
 }
 
