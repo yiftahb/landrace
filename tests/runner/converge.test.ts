@@ -860,3 +860,98 @@ describe("the evaluation event carries the stage the ticket moved to", () => {
     ]);
   });
 });
+
+describe("step.started and step.finished", () => {
+  const specWorkflow: Workflow = {
+    version: 1, name: "t",
+    stages: [
+      {
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      },
+      { id: "done", terminal: true, triggers: [{ when: { "run.outputs.spec": { $exists: true } } }] },
+    ],
+  };
+  const spec: Step = {
+    prompt: "write the spec",
+    model: "haiku",
+    output: {
+      discriminator: "kind",
+      shapes: { spec: {} },
+      routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }],
+    },
+  };
+  const recorder = () => {
+    const events: LandraceEvent[] = [];
+    return { events, log: createLogger({ sink: (e) => events.push(e) }) };
+  };
+  const pairOf = (events: LandraceEvent[]) =>
+    events.filter((e) => e.name === "step.started" || e.name === "step.finished").map((e) => e.name);
+
+  it("brackets the invocation with the ticket, stage, round and model", async () => {
+    const w = world();
+    const { events, log } = recorder();
+    const executor: Executor = { id: "ok", run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }) };
+    await converge(7, deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log }));
+
+    const started = events.find((e) => e.name === "step.started");
+    const finished = events.find((e) => e.name === "step.finished");
+    expect(started).toMatchObject({ ticket: 7, stage: "spec", round: 1, model: "haiku" });
+    expect(finished).toMatchObject({ ticket: 7, stage: "spec", round: 1, ok: true });
+    expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
+  });
+
+  it("says the step did not succeed when the executor throws", async () => {
+    // runStep catches an executor's throw and returns {ok:false}, so this
+    // pins the `ok` field — not the finally. The next test pins the finally.
+    const w = world();
+    const { events, log } = recorder();
+    const executor: Executor = { id: "boom", run: async () => { throw new Error("gone"); } };
+    await converge(7, deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log }));
+
+    expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
+    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ ticket: 7, ok: false });
+  });
+
+  it("still finishes when runStep itself throws", async () => {
+    // Everything inside runStep catches its own failures except the logger:
+    // it calls log("step.invoked") outside any try. A sink that throws — a
+    // display with a bug in it, which is exactly what the triage board is —
+    // throws straight out of runStep. That is the case the finally exists for.
+    const w = world();
+    const events: LandraceEvent[] = [];
+    const log = createLogger({
+      sink: (e) => {
+        events.push(e);
+        if (e.name === "step.invoked") throw new Error("display broke");
+      },
+    });
+    const executor: Executor = { id: "ok", run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }) };
+    await converge(7, deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log })).catch(() => {});
+
+    expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
+    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ ticket: 7, ok: false });
+  });
+
+  it("still finishes when the step is refused before the agent runs", async () => {
+    // ConvergeDeps.screen is `{ executor: Executor }`, not a bare predicate
+    // function — the brief's stub (`async () => ({ ok: false, reason })`)
+    // does not match that type. Built instead as an executor whose reply
+    // screenPrompt (src/agent/screen.ts) reads as a blocking verdict, the
+    // same shape the existing screening tests above already use.
+    const w = world();
+    const { events, log } = recorder();
+    const executor: Executor = { id: "ok", run: async () => ({ text: "", sessionId: null }) };
+    const screener: Executor = {
+      id: "screen",
+      run: async () => ({ text: '```json\n{"verdict":"suspicious","reason":"suspicious"}\n```', sessionId: null }),
+    };
+    await converge(7, deps(w, {
+      workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log, screen: { executor: screener },
+    }));
+
+    const pair = pairOf(events);
+    expect(pair.filter((n) => n === "step.started").length).toBe(pair.filter((n) => n === "step.finished").length);
+  });
+});

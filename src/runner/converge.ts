@@ -248,13 +248,27 @@ async function converging(
         }
       }
 
-      const result = await runStep({
-        step, stageId: stage.id, round, snapshot, briefing,
-        executor: deps.executor, signal: deps.ctx.signal,
-        ...(deps.screen ? { screen: deps.screen } : {}),
-        ...(sandbox ? { sandbox } : {}),
-        log: deps.log,
-      });
+      // The engine's own record that an agent is in the room, bracketing the
+      // one call that runs it. Not left to the executor: `step.completed`
+      // comes from the claude executor alone, so a hook-registered executor
+      // never emits it, and anything watching for "running" would wait on it
+      // for ever. The finally is the point — a throw or an abort must not
+      // leave a step looking as if it is still going.
+      deps.log("step.started", { ticket, stage: stage.id, round, model: step.model ?? null });
+      let finishedOk = false;
+      let result: Awaited<ReturnType<typeof runStep>>;
+      try {
+        result = await runStep({
+          step, stageId: stage.id, round, snapshot, briefing,
+          executor: deps.executor, signal: deps.ctx.signal,
+          ...(deps.screen ? { screen: deps.screen } : {}),
+          ...(sandbox ? { sandbox } : {}),
+          log: deps.log,
+        });
+        finishedOk = result.ok;
+      } finally {
+        deps.log("step.finished", { ticket, stage: stage.id, round, ok: finishedOk });
+      }
 
       if (!result.ok) {
         deps.log("step.rejected", { ticket, stage: stage.id, round, kind: result.kind, reason: result.reason });

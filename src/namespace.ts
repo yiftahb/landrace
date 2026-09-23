@@ -519,7 +519,7 @@ export interface Dispatcher {
 export type EventName =
   | "tick.started" | "tick.finished"
   | "ticket.evaluated" | "ticket.skipped"
-  | "step.invoked" | "step.completed" | "step.rejected"
+  | "step.invoked" | "step.started" | "step.finished" | "step.completed" | "step.rejected"
   | "agent.event"
   | "snapshot.built" | "snapshot.failed"
   | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
