@@ -3,23 +3,29 @@ import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { loadHooks } from "#hooks/load.js";
 import type {
+  Board,
   BuildOptions,
   EventName,
   Executor,
+  LandraceEvent,
   Logger,
   Problem,
   Registry,
   Runtime,
   RuntimeConfig,
   StartOptions,
+  UiServer,
   Workflow,
 } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
 import { createLogger } from "#runner/events.js";
+import { held } from "#runner/lock.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { oneLine } from "#runner/status.js";
 import { tick } from "#runner/tick.js";
+import { createBoard } from "#ui/board.js";
+import { serveBoard } from "#ui/server.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
@@ -39,6 +45,33 @@ export function parseInterval(text: string): number {
     throw new Error(`tick.interval must look like "60s", "2m" or "1h", got "${text}"`);
   }
   return Number(m[1]) * unit;
+}
+
+export const DEFAULT_UI_PORT = 4545;
+
+export function parsePort(text: string): number {
+  const port = Number(text);
+  if (!/^\d+$/.test(text) || port < 1 || port > 65535) {
+    throw new Error(`--ui-port must be a whole number from 1 to 65535, got "${text}"`);
+  }
+  return port;
+}
+
+/**
+ * The triage page, or null when nobody asked for one. A taken port refuses
+ * the whole start rather than running without the page: an operator who
+ * expected it would otherwise have to notice it is missing.
+ */
+export async function startUi(opts: { board: Board; ui: boolean; once: boolean; port: number }): Promise<UiServer | null> {
+  if (!opts.ui || opts.once) return null;
+  try {
+    return await serveBoard({ port: opts.port, view: () => opts.board.view() });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      throw new Error(`port ${opts.port} is taken; pick another with --ui-port, or turn the page off with --no-ui`);
+    }
+    throw e;
+  }
 }
 
 /**
@@ -293,8 +326,11 @@ function onSignals(handler: () => void): () => void {
 }
 
 /** One pass over every candidate, with a line per ticket for the person watching. */
-async function pass(rt: Runtime): Promise<void> {
-  const rows = await tick({ source: rt.source, deps: rt.deps, concurrency: rt.concurrency });
+async function pass(rt: Runtime, board?: Board): Promise<void> {
+  const rows = await tick({
+    source: rt.source, deps: rt.deps, concurrency: rt.concurrency,
+    ...(board ? { onList: (c) => board.list(c) } : {}),
+  });
   for (const row of rows) console.log(`#${row.ticket} ${row.outcome}`);
 }
 
@@ -305,12 +341,12 @@ async function pass(rt: Runtime): Promise<void> {
  * ticket, and a global "is a tick running" guard would let one ten-minute step
  * starve every other ticket in the repository.
  */
-async function loop(rt: Runtime): Promise<void> {
+async function loop(rt: Runtime, board?: Board): Promise<void> {
   const inFlight = new Set<Promise<void>>();
 
   const begin = (): void => {
     if (rt.stop.signal.aborted) return;
-    const running = pass(rt).catch((e: unknown) => {
+    const running = pass(rt, board).catch((e: unknown) => {
       // A poll that failed is not a loop that should stop. The tracker being
       // unreachable for one tick is the ordinary case, and exiting would need
       // a person to notice and start the daemon again.
@@ -338,13 +374,43 @@ async function loop(rt: Runtime): Promise<void> {
 }
 
 export async function runStart(dir: string, opts: StartOptions): Promise<void> {
-  const rt = await buildRuntime(dir, opts.debug === undefined ? {} : { debug: opts.debug });
+  // The board has to exist before the runtime does, because it listens to
+  // the runtime's events. Its workflow is filled in once the runtime has
+  // loaded one; until then it has nothing listed and renders nothing.
+  //
+  // A boxed reference, not a reassigned `let board`: nothing calls the sink
+  // synchronously while buildRuntime runs, but `prefer-const` cannot see
+  // that, and a mutable cell the closure reads through is the same fact
+  // stated in a shape the linter can verify rather than one it has to trust.
+  const boardRef: { current?: Board } = {};
+  const print = (e: LandraceEvent): void => console.log(JSON.stringify(e));
+  const rt = await buildRuntime(dir, {
+    ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+    sink: (e) => {
+      print(e);
+      // A display must never be able to stop the work it displays. The
+      // logger is called from inside runStep outside any try, so a throw
+      // here would otherwise abort a paid step mid-flight.
+      try {
+        boardRef.current?.observe(e);
+      } catch (boardError) {
+        console.error(`landrace: triage page failed to record an event: ${messageOf(boardError)}`);
+      }
+    },
+  });
+  const board = createBoard({ workflow: rt.deps.workflow, held: (t) => held(t) });
+  boardRef.current = board;
+
+  const ui = await startUi({ board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT });
+  if (ui) console.error(`landrace: triage page at ${ui.url}`);
+
   const off = onSignals(createInterrupt({ stop: rt.stop }));
   try {
     // A single tick reports its own failure by throwing: one shot, one answer,
     // and the exit code is what a script that ran it will read.
-    await (opts.once ? pass(rt) : loop(rt));
+    await (opts.once ? pass(rt, board) : loop(rt, board));
   } finally {
     off();
+    await ui?.close();
   }
 }

@@ -1,14 +1,18 @@
 import { chmod, copyFile, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import type { Registry, Workflow } from "#namespace.js";
+import { createBoard } from "#ui/board.js";
 import {
   buildRuntime,
   createInterrupt,
   executorFor,
   parseInterval,
+  parsePort,
+  startUi,
   stepTimeoutMs,
 } from "#cli/start.js";
 
@@ -260,5 +264,41 @@ describe("createInterrupt", () => {
     expect(codes).toEqual([130]);
     expect(said).toHaveLength(2);
     expect(said[1]).toMatch(/now/i);
+  });
+});
+
+describe("parsePort", () => {
+  it.each(["1", "4545", "65535"])("accepts %s", (p) => expect(parsePort(p)).toBe(Number(p)));
+  it.each(["0", "65536", "-1", "80.5", "abc", ""])("refuses %s, naming the flag", (p) => {
+    expect(() => parsePort(p)).toThrow(/--ui-port/);
+  });
+});
+
+describe("startUi", () => {
+  const board = () => createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null });
+
+  it("serves nothing with --no-ui", async () => {
+    expect(await startUi({ board: board(), ui: false, once: false, port: 0 })).toBeNull();
+  });
+
+  it("serves nothing for --once, which has nobody to watch it", async () => {
+    expect(await startUi({ board: board(), ui: true, once: true, port: 0 })).toBeNull();
+  });
+
+  it("serves the board otherwise", async () => {
+    const ui = await startUi({ board: board(), ui: true, once: false, port: 0 });
+    expect(ui?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+    await ui?.close();
+  });
+
+  it("refuses a taken port, naming both ways out", async () => {
+    const squatter = createServer();
+    await new Promise<void>((r) => squatter.listen(0, "127.0.0.1", r));
+    const port = (squatter.address() as { port: number }).port;
+    try {
+      await expect(startUi({ board: board(), ui: true, once: false, port })).rejects.toThrow(/--ui-port.*--no-ui|--no-ui.*--ui-port/);
+    } finally {
+      await new Promise<void>((r) => squatter.close(() => r()));
+    }
   });
 });

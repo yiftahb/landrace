@@ -864,6 +864,9 @@ export interface Runtime {
 export interface StartOptions {
   once?: boolean;
   debug?: boolean;
+  /** Serve the triage page. Default true; `--no-ui` turns it off. */
+  ui?: boolean;
+  uiPort?: number;
 }
 
 export interface BuildOptions {

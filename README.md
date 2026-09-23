@@ -292,7 +292,8 @@ anchored edges alone for `cycle-bound`.
 ## CLI
 
 ```bash
-landrace start [-w <dir>] [--once]       # watch the tracker and advance every eligible ticket
+landrace start [-w <dir>] [--once] [--ui-port <port>] [--no-ui]
+                                         # watch the tracker; serves the triage page on 127.0.0.1:4545
 landrace status [-w <dir>]               # one line per ticket: where it is, and why one was skipped
 landrace validate [dir]                  # prove a workflow sound
 landrace next -w <dir> -s <snapshot>     # the decision for a snapshot, no I/O
@@ -304,6 +305,15 @@ ticket busy with a ten-minute agent delays only itself. `--debug` prints every
 event, including the agent subprocess's own. Ctrl-C releases the locks and
 exits; press it twice and it says which lock it left behind for the next run to
 reclaim.
+
+`start` also serves a read-only triage page at `http://127.0.0.1:4545/` —
+every candidate ticket in lanes: needs you, agent running now, held by
+another process (your MCP conversation, another instance), waiting, and
+collapsed not-admitted and discharged. It polls every two seconds and costs
+no tracker calls: it shows what the tick already fetched and what the
+process already knows is running. `--ui-port` moves it, `--no-ui` turns it
+off, and `--once` never serves it. It binds loopback only and answers only
+its own host name.
 
 ## Security
 

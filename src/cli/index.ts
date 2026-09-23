@@ -4,7 +4,7 @@ import { reexec, shouldReexec, STRIP_TYPES } from "#cli/reexec.js";
 import { runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
 import { runMcp } from "#cli/mcp.js";
-import { runStart } from "#cli/start.js";
+import { DEFAULT_UI_PORT, parsePort, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 
 const program = new Command();
@@ -86,11 +86,15 @@ program
   .option("-w, --workflow <dir>", "workflow directory", ".landrace")
   .option("--once", "run a single tick and exit")
   .option("--debug", "print every event, the agent's included, and the snapshot behind each decision")
-  .action(async (opts: { workflow: string; once?: boolean; debug?: boolean }) => {
+  .option("--ui-port <port>", "port for the triage page", String(DEFAULT_UI_PORT))
+  .option("--no-ui", "do not serve the triage page")
+  .action(async (opts: { workflow: string; once?: boolean; debug?: boolean; ui: boolean; uiPort: string }) => {
     await loadingHooks("start", () =>
       runStart(opts.workflow, {
         ...(opts.once === undefined ? {} : { once: opts.once }),
         ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+        ui: opts.ui,
+        uiPort: parsePort(opts.uiPort),
       }),
     );
   });
