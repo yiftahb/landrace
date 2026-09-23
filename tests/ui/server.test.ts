@@ -1,3 +1,4 @@
+import * as http from "node:http";
 import { request } from "node:http";
 import type { BoardView, UiServer } from "#namespace.js";
 import { serveBoard } from "#ui/server.js";
@@ -81,5 +82,40 @@ describe("serveBoard", () => {
   it("rejects when the port is taken", async () => {
     server = await serveBoard({ port: 0, view: async () => empty });
     await expect(serveBoard({ port: server.port, view: async () => empty })).rejects.toMatchObject({ code: "EADDRINUSE" });
+  });
+
+  it("closes cleanly even if a request is stuck in view()", async () => {
+    server = await serveBoard({ port: 0, view: () => new Promise(() => {}) });
+    // Fire a request that will hang forever
+    const requestPromise = get(server.port, "/board.json").catch(() => {});
+    // Give it time to start
+    await new Promise((r) => setTimeout(r, 50));
+    // close() should resolve within 2 seconds, not hang forever
+    const closePromise = server.close();
+    const timeout = new Promise<void>((resolve) => setTimeout(() => resolve(), 2000));
+    const result = await Promise.race([closePromise, timeout]);
+    expect(result).toBeUndefined();
+    // Ignore the request error from the destroyed socket
+    await requestPromise;
+  });
+
+  it("handles server errors without crashing", async () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation();
+    const createServerSpy = jest.spyOn(http, "createServer");
+
+    server = await serveBoard({ port: 0, view: async () => empty });
+    const createdServer = createServerSpy.mock.results[createServerSpy.mock.results.length - 1]?.value;
+
+    // Emit an error on the server
+    createdServer.emit("error", new Error("EMFILE"));
+
+    // Verify console.error was called with the error message
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    const calls = consoleErrorSpy.mock.calls;
+    const errorCall = calls.find((c) => String(c[0]).includes("EMFILE"));
+    expect(errorCall).toBeDefined();
+
+    consoleErrorSpy.mockRestore();
+    createServerSpy.mockRestore();
   });
 });

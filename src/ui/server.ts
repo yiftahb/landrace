@@ -1,6 +1,7 @@
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { UiOptions, UiServer } from "#namespace.js";
+import { messageOf } from "#runner/errors.js";
 import { APP_CSS, APP_JS, PAGE_HTML } from "#ui/page.js";
 
 const HOST = "127.0.0.1";
@@ -32,8 +33,9 @@ function send(res: ServerResponse, status: number, type: string, body: string): 
  * is a GET and none of them writes.
  */
 export function serveBoard(opts: UiOptions): Promise<UiServer> {
+  let port: number;
+
   const server = createServer((req, res) => {
-    const port = (server.address() as AddressInfo).port;
     // DNS rebinding: a page on attacker.example can point its own name at
     // 127.0.0.1, and the browser will then send its requests here with that
     // name in Host. Answering only our own names is what stops it reading
@@ -68,11 +70,17 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
     server.once("error", reject);
     server.listen(opts.port, HOST, () => {
       server.off("error", reject);
-      const port = (server.address() as AddressInfo).port;
+      port = (server.address() as AddressInfo).port;
+      // Persistent error handler to prevent uncaught errors from crashing the process
+      server.on("error", (e) => console.error(`landrace: triage page error: ${messageOf(e)}`));
       resolve({
         url: `http://${HOST}:${port}/`,
         port,
-        close: () => new Promise<void>((done) => server.close(() => done())),
+        close: () =>
+          new Promise<void>((done) => {
+            server.close(() => done());
+            server.closeAllConnections();
+          }),
       });
     });
   });
