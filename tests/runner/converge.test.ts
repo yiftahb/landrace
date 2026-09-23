@@ -951,7 +951,8 @@ describe("step.started and step.finished", () => {
       workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log, screen: { executor: screener },
     }));
 
-    const pair = pairOf(events);
-    expect(pair.filter((n) => n === "step.started").length).toBe(pair.filter((n) => n === "step.finished").length);
+    // Tightened from comparing the counts of step.started and step.finished,
+    // which would pass at 0/0: this also pins that both fired, and in order.
+    expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
   });
 });

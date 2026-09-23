@@ -1,7 +1,7 @@
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
 import { decide, planEffects, reconcile } from "#core/index.js";
 import { RECORD_EFFECT } from "#conventions.js";
-import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot } from "#namespace.js";
+import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot, StepResult } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { MIN_SECRET_LENGTH, redactValue } from "#runner/events.js";
 import { buildBriefing } from "#runner/artifacts.js";
@@ -256,7 +256,7 @@ async function converging(
       // leave a step looking as if it is still going.
       deps.log("step.started", { ticket, stage: stage.id, round, model: step.model ?? null });
       let finishedOk = false;
-      let result: Awaited<ReturnType<typeof runStep>>;
+      let result: StepResult;
       try {
         result = await runStep({
           step, stageId: stage.id, round, snapshot, briefing,
