@@ -15,7 +15,7 @@ const c = (ticket: number, labels: string[], title = `t${ticket}`, url = `https:
 
 const view = (candidates: Candidate[], over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
-    workflow, candidates, listedAt: 1, now: 100, pid: 1,
+    workflow, candidates, listedAt: 1, now: 100, pid: 1, nextTickAt: null,
     running: new Map(), elsewhere: new Map(), ...over,
   });
 
@@ -81,6 +81,11 @@ describe("boardView", () => {
   it("flattens a title to one line", () => {
     expect(view([c(1, ["go"], "a\nb\u001b[2Jc")]).rows[0]?.title).toBe("a b [2Jc");
   });
+
+  it("passes nextTickAt straight through, whatever the schedule reports", () => {
+    expect(view([], { nextTickAt: 12345 }).nextTickAt).toBe(12345);
+    expect(view([], { nextTickAt: null }).nextTickAt).toBeNull();
+  });
 });
 
 describe("createBoard", () => {
@@ -106,7 +111,20 @@ describe("createBoard", () => {
   });
 
   it("reports no rows and a null listedAt before the first tick lands", async () => {
-    expect(await shell(() => 5).view()).toEqual({ generatedAt: 5, listedAt: null, rows: [] });
+    expect(await shell(() => 5).view()).toEqual({ generatedAt: 5, listedAt: null, rows: [], nextTickAt: null });
+  });
+
+  it("defaults nextTickAt to null when nothing schedules", async () => {
+    const board = createBoard({ workflow, held: async () => null });
+    expect((await board.view()).nextTickAt).toBeNull();
+  });
+
+  it("reports nextTickAt from the function it was given, read fresh on each view()", async () => {
+    let next: number | null = 111;
+    const board = createBoard({ workflow, held: async () => null, nextTickAt: () => next });
+    expect((await board.view()).nextTickAt).toBe(111);
+    next = 222;
+    expect((await board.view()).nextTickAt).toBe(222);
   });
 
   it("asks the lock only about tickets it has listed", async () => {

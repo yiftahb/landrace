@@ -29,6 +29,7 @@ export function boardView(input: {
   elsewhere: ReadonlyMap<number, Held>;
   now: number;
   pid: number;
+  nextTickAt: number | null;
 }): BoardView {
   const urls = new Map(input.candidates.map((c) => [c.ticket, c.url]));
   const rows: BoardRow[] = statusRows(input.workflow, input.candidates).map((status): BoardRow => {
@@ -58,7 +59,7 @@ export function boardView(input: {
     return { ...base, lane: laneOf(status, input.workflow) };
   });
   rows.sort((a, b) => ORDER.indexOf(a.lane) - ORDER.indexOf(b.lane) || a.ticket - b.ticket);
-  return { generatedAt: input.now, listedAt: input.listedAt, rows };
+  return { generatedAt: input.now, listedAt: input.listedAt, rows, nextTickAt: input.nextTickAt };
 }
 
 /**
@@ -71,9 +72,12 @@ export function createBoard(opts: {
   held: (ticket: number) => Promise<Held | null>;
   now?: () => number;
   pid?: number;
+  /** When the next scheduled tick is due — the schedule's own `nextAt`. */
+  nextTickAt?: () => number | null;
 }): Board {
   const now = opts.now ?? Date.now;
   const pid = opts.pid ?? process.pid;
+  const nextTickAt = opts.nextTickAt ?? (() => null);
   let candidates: Candidate[] = [];
   let listedAt: number | null = null;
   const running = new Map<number, Running>();
@@ -102,7 +106,10 @@ export function createBoard(opts: {
         const h = await opts.held(c.ticket);
         if (h) elsewhere.set(c.ticket, h);
       }));
-      return boardView({ workflow: opts.workflow, candidates, listedAt, running, elsewhere, now: now(), pid });
+      return boardView({
+        workflow: opts.workflow, candidates, listedAt, running, elsewhere, now: now(), pid,
+        nextTickAt: nextTickAt(),
+      });
     },
   };
 }

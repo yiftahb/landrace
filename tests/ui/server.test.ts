@@ -3,7 +3,7 @@ import { request } from "node:http";
 import type { BoardView, UiServer } from "#namespace.js";
 import { serveBoard } from "#ui/server.js";
 
-const empty: BoardView = { generatedAt: 1, listedAt: null, rows: [] };
+const empty: BoardView = { generatedAt: 1, listedAt: null, rows: [], nextTickAt: null };
 
 /** A raw request, so a test can send a Host header fetch would refuse to forge. */
 function get(port: number, path: string, opts: { host?: string; method?: string } = {}) {

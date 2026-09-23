@@ -284,7 +284,7 @@ describe("boardSink", () => {
         current: {
           observe: () => { throw new Error("display broke"); },
           list: () => {},
-          view: async () => ({ generatedAt: 0, listedAt: null, rows: [] }),
+          view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null }),
         },
       };
       const sink = boardSink((e) => printed.push(e), board);
@@ -306,7 +306,7 @@ describe("boardSink", () => {
       current: {
         observe: (e) => { observed.push(e); },
         list: () => {},
-        view: async () => ({ generatedAt: 0, listedAt: null, rows: [] }),
+        view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null }),
       },
     };
     const event: LandraceEvent = { name: "step.finished", ticket: 1 };
