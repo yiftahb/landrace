@@ -1,6 +1,6 @@
 import type { Workflow } from "#namespace.js";
 import type { Candidate } from "#namespace.js";
-import { statusRows } from "#cli/status.js";
+import { statusRows } from "#runner/status.js";
 
 const workflow: Workflow = {
   version: 1,

@@ -1,5 +1,4 @@
-import { statusRows } from "#cli/status.js";
-import { oneLine } from "#runner/status.js";
+import { oneLine, statusRows } from "#runner/status.js";
 import type {
   Board, BoardRow, BoardView, Candidate, Held, LandraceEvent, Lane, Running, StatusRow, Workflow,
 } from "#namespace.js";
