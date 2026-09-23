@@ -78,10 +78,13 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
         send(res, 403, "text/plain; charset=utf-8", "forbidden");
         return;
       }
-      // Absent Origin (a same-origin navigation, or a client that omits it)
-      // is allowed; present-and-foreign is refused. The Host check above
-      // already pinned the server's own name, so `port` here is the one the
-      // request actually landed on.
+      // Absent Origin is allowed; present-and-foreign is refused. A browser
+      // sends Origin on same-origin fetch POSTs too, so an absent one in
+      // practice means a non-browser local client (curl, a script) rather
+      // than the page itself — and the header check above already covers
+      // what a browser could send without our script's cooperation. The Host
+      // check already pinned the server's own name, so `port` here is the
+      // one the request actually landed on.
       const origin = req.headers.origin;
       if (origin !== undefined && origin !== `http://${HOST}:${port}` && origin !== `http://localhost:${port}`) {
         send(res, 403, "text/plain; charset=utf-8", "forbidden");

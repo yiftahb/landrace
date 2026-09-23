@@ -172,6 +172,53 @@ describe("POST /tick", () => {
     expect(tick).not.toHaveBeenCalled();
   });
 
+  /**
+   * The header check is content-type-agnostic — a cross-site <form> can post
+   * as text/plain or multipart/form-data too, and neither lets it set a
+   * custom header, so all three must be refused the same way.
+   */
+  it.each(["text/plain", "multipart/form-data; boundary=x"])(
+    "refuses a POST with no custom header and content-type %s, and never calls tick",
+    async (contentType) => {
+      const tick = jest.fn(() => true);
+      server = await serveBoard({ port: 0, view: async () => empty, tick });
+      const res = await get(server.port, "/tick", {
+        method: "POST",
+        headers: { "content-type": contentType },
+        body: "a=1",
+      });
+      expect(res.status).toBe(403);
+      expect(tick).not.toHaveBeenCalled();
+    },
+  );
+
+  /**
+   * A sandboxed cross-origin iframe posting a form sends a literal
+   * `Origin: null` — still no custom header, so the header check refuses it
+   * before the Origin is ever read.
+   */
+  it("refuses a POST with Origin: null and no custom header, and never calls tick", async () => {
+    const tick = jest.fn(() => true);
+    server = await serveBoard({ port: 0, view: async () => empty, tick });
+    const res = await get(server.port, "/tick", {
+      method: "POST",
+      headers: { origin: "null" },
+    });
+    expect(res.status).toBe(403);
+    expect(tick).not.toHaveBeenCalled();
+  });
+
+  it("refuses a POST with the header but an Origin on a different 127.0.0.1 port, and never calls tick", async () => {
+    const tick = jest.fn(() => true);
+    server = await serveBoard({ port: 0, view: async () => empty, tick });
+    const res = await get(server.port, "/tick", {
+      method: "POST",
+      headers: { "x-landrace-action": "tick", origin: `http://127.0.0.1:${server.port + 1}` },
+    });
+    expect(res.status).toBe(403);
+    expect(tick).not.toHaveBeenCalled();
+  });
+
   it("refuses a POST with the header but a foreign Origin, and never calls tick", async () => {
     const tick = jest.fn(() => true);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
