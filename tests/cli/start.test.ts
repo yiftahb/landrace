@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
-import type { Board, LandraceEvent, Registry, Workflow } from "#namespace.js";
+import type { Board, LandraceEvent, Registry, Runtime, Schedule, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import {
   boardSink,
   buildRuntime,
   createInterrupt,
   executorFor,
+  loop,
   parseInterval,
   parsePort,
   startUi,
@@ -386,5 +387,68 @@ describe("startUi", () => {
     } finally {
       await ui?.close();
     }
+  });
+});
+
+/**
+ * `loop`'s own orchestration, against a stub Schedule and a bare
+ * AbortController rather than a real Runtime — everything else `loop` reads
+ * off `rt` is `rt.stop.signal`, so a full Runtime would only pad these tests
+ * with fields they never touch.
+ *
+ * The types already stop `nextAt`/`trigger` being swapped at the call site in
+ * `runStart`, but nothing short of running `loop` itself catches it forgetting
+ * to start the schedule, a schedule left running past stop, or an in-flight
+ * tick being abandoned rather than waited out — and that last one is the lock
+ * a stray Ctrl-C would otherwise leave held.
+ */
+describe("loop", () => {
+  const fakeRuntime = (stop: AbortController): Runtime => ({ stop }) as unknown as Runtime;
+
+  it("starts the schedule, stops it once asked to stop, and calls nothing further", async () => {
+    const schedule: Schedule = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      nextAt: () => null,
+      trigger: jest.fn(() => true),
+    };
+    const stop = new AbortController();
+    stop.abort(); // already stopping before loop even starts waiting
+
+    await loop(fakeRuntime(stop), schedule, new Set());
+
+    expect(schedule.start).toHaveBeenCalledTimes(1);
+    expect(schedule.stop).toHaveBeenCalledTimes(1);
+    expect(schedule.trigger).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve until a tick already in flight finishes, even after the schedule is stopped", async () => {
+    const order: string[] = [];
+    const schedule: Schedule = {
+      start: () => order.push("start"),
+      stop: () => order.push("stop"),
+      nextAt: () => null,
+      trigger: () => true,
+    };
+    const stop = new AbortController();
+    const inFlight = new Set<Promise<void>>();
+    let resolveManual: () => void = () => {};
+    inFlight.add(new Promise<void>((resolve) => { resolveManual = resolve; }));
+
+    stop.abort();
+    let resolved = false;
+    const p = loop(fakeRuntime(stop), schedule, inFlight).then(() => { resolved = true; });
+
+    // Let the abort-signal microtasks settle: schedule.stop() has already
+    // run, but the ticket still holding its lock has not, so loop must not
+    // have resolved — resolving here is exactly the "released the lock
+    // before the work was done" bug this guards.
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(order).toEqual(["start", "stop"]);
+    expect(resolved).toBe(false);
+
+    resolveManual();
+    await p;
+    expect(resolved).toBe(true);
   });
 });

@@ -111,4 +111,30 @@ describe("createSchedule", () => {
     jest.advanceTimersByTime(1000);
     expect(deferred.calls).toBe(3);
   });
+
+  /**
+   * The bug a review caught: trigger() never checked whether stop() had
+   * already run, so a click on the page during shutdown re-armed a schedule
+   * the daemon believed it had already torn down — a stray setTimeout that
+   * held the process open until a second Ctrl-C.
+   */
+  it("trigger() after stop() runs nothing, returns false, and nextAt stays null", () => {
+    const run = jest.fn(async () => {});
+    const schedule = createSchedule({ intervalMs: 1000, run });
+    schedule.start();
+    schedule.stop();
+    run.mockClear();
+
+    expect(schedule.trigger()).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    expect(schedule.nextAt()).toBeNull();
+  });
+
+  it("no timer is left pending after stop(), even when trigger() is called afterwards", () => {
+    const schedule = createSchedule({ intervalMs: 1000, run: async () => {} });
+    schedule.start();
+    schedule.stop();
+    schedule.trigger();
+    expect(jest.getTimerCount()).toBe(0);
+  });
 });

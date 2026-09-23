@@ -375,13 +375,21 @@ export function createSchedule(opts: {
   // Only a manual tick is exclusive with itself; a scheduled one never waits
   // on this, which is the "scheduled ticks may still overlap" rule.
   let manualInFlight: Promise<void> | null = null;
+  // Once stop() has run, nothing here may arm a new timer again — not the
+  // scheduled path, not a manual trigger(). Without this, a click on the
+  // page during shutdown re-armed a schedule the daemon believed it had
+  // already torn down: trigger() returned true, set a fresh setTimeout, and
+  // the process stayed alive until a second Ctrl-C caught it.
+  let stopped = false;
 
   const arm = (): void => {
+    if (stopped) return;
     nextAtValue = now() + opts.intervalMs;
     timer = setTimeout(fire, opts.intervalMs);
   };
 
   const fire = (): void => {
+    if (stopped) return;
     arm();
     void opts.run();
   };
@@ -392,6 +400,7 @@ export function createSchedule(opts: {
       arm();
     },
     stop(): void {
+      stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
       nextAtValue = null;
@@ -400,6 +409,7 @@ export function createSchedule(opts: {
       return nextAtValue;
     },
     trigger(): boolean {
+      if (stopped) return false;
       if (manualInFlight) return false;
       if (timer) clearTimeout(timer);
       const running = opts.run().finally(() => {
@@ -449,7 +459,7 @@ function trackedRun(rt: Runtime, board: { current?: Board }, inFlight: Set<Promi
  * built by the caller, not here — the page needs `schedule.nextAt`/`trigger`
  * wired to the board and the server before this ever starts.
  */
-async function loop(rt: Runtime, schedule: Schedule, inFlight: Set<Promise<void>>): Promise<void> {
+export async function loop(rt: Runtime, schedule: Schedule, inFlight: Set<Promise<void>>): Promise<void> {
   schedule.start();
   try {
     await new Promise<void>((resolve) => {
