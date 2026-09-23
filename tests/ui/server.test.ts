@@ -90,11 +90,23 @@ describe("serveBoard", () => {
     const requestPromise = get(server.port, "/board.json").catch(() => {});
     // Give it time to start
     await new Promise((r) => setTimeout(r, 50));
-    // close() should resolve within 2 seconds, not hang forever
-    const closePromise = server.close();
-    const timeout = new Promise<void>((resolve) => setTimeout(() => resolve(), 2000));
-    const result = await Promise.race([closePromise, timeout]);
-    expect(result).toBeUndefined();
+    // close() should resolve within 2 seconds, not hang forever. The two
+    // branches must resolve to distinct values — both resolving to
+    // `undefined` let this assertion pass whichever one won the race, timeout
+    // included. The timer is cleared in `finally`: left running, it is the
+    // handle that makes jest report "did not exit one second after the test
+    // run has completed".
+    let timer: ReturnType<typeof setTimeout>;
+    const closePromise = server.close().then((): "closed" => "closed");
+    const timeout = new Promise<"timed out">((resolve) => {
+      timer = setTimeout(() => resolve("timed out"), 2000);
+    });
+    try {
+      const result = await Promise.race([closePromise, timeout]);
+      expect(result).toBe("closed");
+    } finally {
+      clearTimeout(timer!);
+    }
     // Ignore the request error from the destroyed socket
     await requestPromise;
   });
@@ -103,19 +115,21 @@ describe("serveBoard", () => {
     const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation();
     const createServerSpy = jest.spyOn(http, "createServer");
 
-    server = await serveBoard({ port: 0, view: async () => empty });
-    const createdServer = createServerSpy.mock.results[createServerSpy.mock.results.length - 1]?.value;
+    try {
+      server = await serveBoard({ port: 0, view: async () => empty });
+      const createdServer = createServerSpy.mock.results[createServerSpy.mock.results.length - 1]?.value;
 
-    // Emit an error on the server
-    createdServer.emit("error", new Error("EMFILE"));
+      // Emit an error on the server
+      createdServer.emit("error", new Error("EMFILE"));
 
-    // Verify console.error was called with the error message
-    expect(consoleErrorSpy).toHaveBeenCalled();
-    const calls = consoleErrorSpy.mock.calls;
-    const errorCall = calls.find((c) => String(c[0]).includes("EMFILE"));
-    expect(errorCall).toBeDefined();
-
-    consoleErrorSpy.mockRestore();
-    createServerSpy.mockRestore();
+      // Verify console.error was called with the error message
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      const calls = consoleErrorSpy.mock.calls;
+      const errorCall = calls.find((c) => String(c[0]).includes("EMFILE"));
+      expect(errorCall).toBeDefined();
+    } finally {
+      consoleErrorSpy.mockRestore();
+      createServerSpy.mockRestore();
+    }
   });
 });
