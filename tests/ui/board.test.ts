@@ -55,6 +55,12 @@ describe("boardView", () => {
     const row = view([c(1, ["go"])], { elsewhere: new Map([[1, held]]) }).rows[0];
     expect(row?.lane).toBe("elsewhere");
     expect(row?.note).toContain("conversation");
+    // Held.at is refreshed every deadlineMs/4 by withLock — "when the holder
+    // last said it was still working", not when the hold began — so it would
+    // sawtooth between 0 and ~75s rather than answer BoardRow.since ("when
+    // the current state began"). Nothing else tells us when a foreign hold
+    // started, so it reports null rather than a wrong clock.
+    expect(row?.since).toBeNull();
   });
 
   it("does not report this process's own lock as elsewhere", () => {

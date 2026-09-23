@@ -48,7 +48,13 @@ export function boardView(input: {
     }
     const lock = input.elsewhere.get(status.ticket);
     if (lock && lock.pid !== input.pid) {
-      return { ...base, lane: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})`, since: lock.at };
+      // Held.at is when the holder last said it was still working, not when
+      // it started (see the doc comment on Held in src/namespace.ts) —
+      // withLock refreshes it every deadlineMs/4, so it sawtooths between 0
+      // and that refresh interval rather than answering BoardRow.since
+      // ("when the current state began"). Nothing else tells us when a
+      // foreign hold began, so this reports null rather than a wrong clock.
+      return { ...base, lane: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})`, since: null };
     }
     return { ...base, lane: laneOf(status, input.workflow) };
   });
