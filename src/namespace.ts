@@ -952,3 +952,48 @@ export interface Conversation {
   /** Hand the ticket back to the loop as a human turn. Already handed back is reported, not repeated. */
   resolve(ticket: number, why?: string): Promise<{ alreadyResolved: boolean }>;
 }
+
+/* -------------------------------------------------------------------- ui -- */
+
+/** Display order is the order of this union. */
+export type Lane = "needs-you" | "running" | "elsewhere" | "waiting" | "not-admitted" | "discharged";
+
+/** An agent this process has in the room right now. */
+export interface Running {
+  stage: string;
+  round: number;
+  model: string | null;
+  since: number;
+}
+
+/**
+ * One ticket on the triage page. An allowlist, not a pass-through: nothing
+ * reaches the page that was not named here, so a secret cannot ride along in
+ * an event payload.
+ */
+export interface BoardRow {
+  ticket: number;
+  title: string;
+  /** http(s) only, else empty — a tracker URL becomes an href. */
+  url: string;
+  stage: string | null;
+  lane: Lane;
+  note: string;
+  /** When the current state began, if this process knows. Epoch ms. */
+  since: number | null;
+  round: number | null;
+  model: string | null;
+}
+
+export interface BoardView {
+  generatedAt: number;
+  /** When the tick last listed candidates; null before the first tick lands. */
+  listedAt: number | null;
+  rows: BoardRow[];
+}
+
+export interface Board {
+  observe(e: LandraceEvent): void;
+  list(candidates: Candidate[]): void;
+  view(): Promise<BoardView>;
+}
