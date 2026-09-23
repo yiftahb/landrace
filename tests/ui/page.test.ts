@@ -35,4 +35,26 @@ describe("the page", () => {
   it("has some style", () => {
     expect(APP_CSS.length).toBeGreaterThan(0);
   });
+
+  it("puts the countdown and the tick button in the header, top right", () => {
+    const header = /<header>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(header).toContain('<span id="next">');
+    expect(header).toContain('<button id="tick" type="button">Run next tick now</button>');
+  });
+
+  it("attaches the tick button's listener in script, never as an inline handler", () => {
+    expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
+    expect(APP_JS).toContain('getElementById("tick")');
+    expect(APP_JS).toContain("addEventListener");
+  });
+
+  it("posts /tick with the required custom header", () => {
+    expect(APP_JS).toContain('fetch("/tick"');
+    expect(APP_JS).toContain('"x-landrace-action": "tick"');
+    expect(APP_JS).toMatch(/method:\s*"POST"/);
+  });
+
+  it("lays the header group out to the right", () => {
+    expect(APP_CSS).toMatch(/margin-left:\s*auto/);
+  });
 });

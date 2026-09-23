@@ -352,4 +352,39 @@ describe("startUi", () => {
       await new Promise<void>((r) => squatter.close(() => r()));
     }
   });
+
+  /**
+   * The wiring itself: startUi is the one place a caller's `tick` reaches
+   * serveBoard, so this is what stands between the schedule's own trigger and
+   * a working POST /tick — proven with a real request rather than a spy on
+   * serveBoard, since a mocked call site is exactly the kind of "looks right"
+   * this codebase's testing rule warns against.
+   */
+  it("passes tick through to serveBoard, so POST /tick reaches it", async () => {
+    const tick = jest.fn(() => true);
+    const ui = await startUi({ board: board(), ui: true, once: false, port: 0, tick });
+    try {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/tick`, {
+        method: "POST",
+        headers: { "x-landrace-action": "tick", origin: `http://127.0.0.1:${ui?.port}` },
+      });
+      expect(res.status).toBe(202);
+      expect(tick).toHaveBeenCalledTimes(1);
+    } finally {
+      await ui?.close();
+    }
+  });
+
+  it("without tick, POST /tick is 404 even though the page is served", async () => {
+    const ui = await startUi({ board: board(), ui: true, once: false, port: 0 });
+    try {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/tick`, {
+        method: "POST",
+        headers: { "x-landrace-action": "tick" },
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      await ui?.close();
+    }
+  });
 });

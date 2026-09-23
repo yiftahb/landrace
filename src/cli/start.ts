@@ -63,10 +63,16 @@ export function parsePort(text: string): number {
  * the whole start rather than running without the page: an operator who
  * expected it would otherwise have to notice it is missing.
  */
-export async function startUi(opts: { board: Board; ui: boolean; once: boolean; port: number }): Promise<UiServer | null> {
+export async function startUi(
+  opts: { board: Board; ui: boolean; once: boolean; port: number; tick?: () => boolean },
+): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
   try {
-    return await serveBoard({ port: opts.port, view: () => opts.board.view() });
+    return await serveBoard({
+      port: opts.port,
+      view: () => opts.board.view(),
+      ...(opts.tick === undefined ? {} : { tick: opts.tick }),
+    });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
       throw new Error(`port ${opts.port} is taken; pick another with --ui-port, or turn the page off with --no-ui`);
@@ -416,36 +422,42 @@ async function pass(rt: Runtime, board?: Board): Promise<void> {
 }
 
 /**
- * Poll until asked to stop.
- *
- * Ticks fire on schedule and are allowed to overlap: mutual exclusion is per
- * ticket, and a global "is a tick running" guard would let one ten-minute step
- * starve every other ticket in the repository.
+ * A schedule's `run`: one pass, tracked in `inFlight` so `loop` can wait for
+ * it out on shutdown, whether the schedule fired it on time or a manual
+ * trigger() did. A poll that failed is not a loop that should stop — the
+ * tracker being unreachable for one tick is the ordinary case, and exiting
+ * would need a person to notice and start the daemon again.
  */
-async function loop(rt: Runtime, board?: Board): Promise<void> {
-  const inFlight = new Set<Promise<void>>();
-
-  const begin = (): void => {
-    if (rt.stop.signal.aborted) return;
-    const running = pass(rt, board).catch((e: unknown) => {
-      // A poll that failed is not a loop that should stop. The tracker being
-      // unreachable for one tick is the ordinary case, and exiting would need
-      // a person to notice and start the daemon again.
+function trackedRun(rt: Runtime, board: { current?: Board }, inFlight: Set<Promise<void>>): () => Promise<void> {
+  return () => {
+    if (rt.stop.signal.aborted) return Promise.resolve();
+    const running = pass(rt, board.current).catch((e: unknown) => {
       console.error(`landrace: tick failed: ${oneLine(messageOf(e))}`);
     });
     inFlight.add(running);
     void running.finally(() => inFlight.delete(running));
+    return running;
   };
+}
 
-  begin();
-  const timer = setInterval(begin, rt.intervalMs);
+/**
+ * Run the schedule until asked to stop.
+ *
+ * Ticks fire on schedule and are allowed to overlap: mutual exclusion is per
+ * ticket, and a global "is a tick running" guard would let one ten-minute step
+ * starve every other ticket in the repository. `schedule` and `inFlight` are
+ * built by the caller, not here — the page needs `schedule.nextAt`/`trigger`
+ * wired to the board and the server before this ever starts.
+ */
+async function loop(rt: Runtime, schedule: Schedule, inFlight: Set<Promise<void>>): Promise<void> {
+  schedule.start();
   try {
     await new Promise<void>((resolve) => {
       if (rt.stop.signal.aborted) return resolve();
       rt.stop.signal.addEventListener("abort", () => resolve(), { once: true });
     });
   } finally {
-    clearInterval(timer);
+    schedule.stop();
   }
 
   // Each ticket in flight is holding its own lock, released by withLock as its
@@ -469,17 +481,28 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
     sink: boardSink(print, boardRef),
   });
-  const board = createBoard({ workflow: rt.deps.workflow, held: (t) => held(t) });
+
+  // Built before the board and the page, which both need to reach into it —
+  // the board reads schedule.nextAt for the countdown, the page's one write
+  // calls schedule.trigger. `--once` never starts it: one tick and no page
+  // means nothing here is ever armed.
+  const inFlight = new Set<Promise<void>>();
+  const schedule = createSchedule({ intervalMs: rt.intervalMs, run: trackedRun(rt, boardRef, inFlight) });
+
+  const board = createBoard({ workflow: rt.deps.workflow, held: (t) => held(t), nextTickAt: schedule.nextAt });
   boardRef.current = board;
 
-  const ui = await startUi({ board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT });
+  const ui = await startUi({
+    board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
+    tick: schedule.trigger,
+  });
   if (ui) console.error(`landrace: triage page at ${ui.url}`);
 
   const off = onSignals(createInterrupt({ stop: rt.stop }));
   try {
     // A single tick reports its own failure by throwing: one shot, one answer,
     // and the exit code is what a script that ran it will read.
-    await (opts.once ? pass(rt, board) : loop(rt, board));
+    await (opts.once ? pass(rt, board) : loop(rt, schedule, inFlight));
   } finally {
     off();
     await ui?.close();

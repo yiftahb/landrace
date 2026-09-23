@@ -306,14 +306,24 @@ event, including the agent subprocess's own. Ctrl-C releases the locks and
 exits; press it twice and it says which lock it left behind for the next run to
 reclaim.
 
-`start` also serves a read-only triage page at `http://127.0.0.1:4545/` —
-every candidate ticket in lanes: needs you, agent running now, held by
-another process (your MCP conversation, another instance), waiting, and
-collapsed not-admitted and discharged. It polls every two seconds and costs
+`start` also serves a triage page at `http://127.0.0.1:4545/` — every
+candidate ticket in lanes: needs you, agent running now, held by another
+process (your MCP conversation, another instance), waiting, and collapsed
+not-admitted and discharged. Top right, a countdown to the next scheduled
+tick and a "Run next tick now" button. It polls every two seconds and costs
 no tracker calls: it shows what the tick already fetched and what the
 process already knows is running. `--ui-port` moves it, `--no-ui` turns it
 off, and `--once` never serves it. It binds loopback only and answers only
 its own host name.
+
+The button is this page's only write: it starts a tick — and a tick can
+start paid agent runs — so it is guarded beyond the Host check. It requires
+a custom `x-landrace-action: tick` header, which a cross-site `<form>`
+cannot set and a cross-origin `fetch` that does set triggers a CORS
+preflight this server never answers with permission; and it refuses any
+`Origin` other than the page's own. Neither guard is optional: together
+they are what stops another website the user has open from triggering a
+tick just because their browser can still reach 127.0.0.1.
 
 ## Security
 
