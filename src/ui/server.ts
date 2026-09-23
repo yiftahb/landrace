@@ -18,6 +18,17 @@ const STATIC: Record<string, { type: string; body: string }> = {
   "/app.css": { type: "text/css; charset=utf-8", body: APP_CSS },
 };
 
+/**
+ * What proves a request came from this page's own script, not a cross-site
+ * `<form>` or a plain `fetch` with no special treatment: a browser refuses to
+ * let either of those set a custom header, and refuses to let a cross-origin
+ * `fetch` that does set one reach the server at all, because a header outside
+ * the CORS-safelisted set forces a preflight — and this server answers no
+ * preflight with permission, so the browser never sends the real request.
+ */
+const TICK_HEADER = "x-landrace-action";
+const TICK_HEADER_VALUE = "tick";
+
 function send(res: ServerResponse, status: number, type: string, body: string): void {
   res.writeHead(status, {
     "content-type": type,
@@ -29,8 +40,9 @@ function send(res: ServerResponse, status: number, type: string, body: string): 
 }
 
 /**
- * The triage page, on loopback only. Read-only by construction: every route
- * is a GET and none of them writes.
+ * The triage page, on loopback only. Every route is a GET except the one
+ * write this page has: POST /tick, present only when the caller hands us a
+ * schedule to trigger.
  */
 export function serveBoard(opts: UiOptions): Promise<UiServer> {
   let port: number;
@@ -44,11 +56,46 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
       send(res, 421, "text/plain; charset=utf-8", "misdirected request");
       return;
     }
+    const path = (req.url ?? "/").split("?")[0] ?? "/";
+
+    // The page's one write. Checked ahead of the blanket "GET only" rule
+    // below, which would otherwise answer POST /tick with the same 405 it
+    // gives every other route and never reach the checks that matter here.
+    if (path === "/tick") {
+      if (!opts.tick) {
+        send(res, 404, "text/plain; charset=utf-8", "not found");
+        return;
+      }
+      if (req.method !== "POST") {
+        send(res, 405, "text/plain; charset=utf-8", "method not allowed");
+        return;
+      }
+      // HTML forms cannot set a custom header, and a cross-origin fetch that
+      // does triggers a CORS preflight this server never answers with
+      // permission — so a request that has this header proves it came from
+      // this page's own script, not a page an attacker put in the user's browser.
+      if (req.headers[TICK_HEADER] !== TICK_HEADER_VALUE) {
+        send(res, 403, "text/plain; charset=utf-8", "forbidden");
+        return;
+      }
+      // Absent Origin (a same-origin navigation, or a client that omits it)
+      // is allowed; present-and-foreign is refused. The Host check above
+      // already pinned the server's own name, so `port` here is the one the
+      // request actually landed on.
+      const origin = req.headers.origin;
+      if (origin !== undefined && origin !== `http://${HOST}:${port}` && origin !== `http://localhost:${port}`) {
+        send(res, 403, "text/plain; charset=utf-8", "forbidden");
+        return;
+      }
+      const started = opts.tick();
+      send(res, started ? 202 : 409, "text/plain; charset=utf-8", started ? "tick started" : "a tick is already running");
+      return;
+    }
+
     if (req.method !== "GET") {
       send(res, 405, "text/plain; charset=utf-8", "method not allowed");
       return;
     }
-    const path = (req.url ?? "/").split("?")[0] ?? "/";
     const asset = STATIC[path];
     if (asset) {
       send(res, 200, asset.type, asset.body);

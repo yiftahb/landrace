@@ -1026,6 +1026,11 @@ export interface Board {
 export interface UiOptions {
   port: number;
   view: () => Promise<BoardView>;
+  /**
+   * The schedule's own `trigger`. Absent, POST /tick is 404: the page's only
+   * write exists only when something is actually there to run it against.
+   */
+  tick?: () => boolean;
 }
 
 export interface UiServer {
