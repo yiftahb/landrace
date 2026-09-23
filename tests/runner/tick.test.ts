@@ -476,3 +476,23 @@ describe("statusLines", () => {
     expect(statusLines([])).toEqual([]);
   });
 });
+
+describe("onList", () => {
+  it("hands over every candidate the source returned, eligible or not, once per tick", async () => {
+    const root = await mkdtemp(join(tmpdir(), "lr-onlist-"));
+    const seen: Candidate[][] = [];
+    const listed = [candidate(1), candidate(2, ["other"])];
+    await tick({ source: source(listed), deps: deps(), lock: { root }, onList: (c) => seen.push(c) });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.map((c) => c.ticket)).toEqual([1, 2]);
+  });
+
+  it("does not stop the tick when the listener throws", async () => {
+    const root = await mkdtemp(join(tmpdir(), "lr-onlist-"));
+    const rows = await tick({
+      source: source([candidate(1)]), deps: deps(), lock: { root },
+      onList: () => { throw new Error("display broke"); },
+    });
+    expect(rows).toHaveLength(1);
+  });
+});

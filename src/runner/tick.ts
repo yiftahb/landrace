@@ -110,6 +110,13 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
   // stops the loop (it does not — see runStart) or fails a command.
   const candidates = await opts.source.list(deps.ctx);
 
+  // A display must never be able to stop the work it is displaying.
+  try {
+    opts.onList?.(candidates);
+  } catch {
+    // ponytail: swallowed silently; log it if a broken listener ever needs finding.
+  }
+
   const rows: TickRow[] = [];
 
   await pool(candidates, opts.concurrency ?? DEFAULT_CONCURRENCY, async (candidate) => {

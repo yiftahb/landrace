@@ -639,6 +639,12 @@ export interface TickOptions {
   deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
   concurrency?: number;
   lock?: LockOptions;
+  /**
+   * Every candidate the source returned this tick, eligible or not. For a
+   * display: handing over what the tick already fetched costs nothing, and
+   * asking the source again would double the tracker traffic of every tick.
+   */
+  onList?: (candidates: Candidate[]) => void;
 }
 
 export interface TickRow {
