@@ -75,6 +75,28 @@ export async function startUi(opts: { board: Board; ui: boolean; once: boolean; 
 }
 
 /**
+ * A display must never be able to stop the work it displays. The logger is
+ * called from inside runStep outside any try, so a throw here would
+ * otherwise abort a paid step mid-flight. `print` always gets the event;
+ * the board is best-effort, and its failure is reported via console.error —
+ * never through the logger, because this sink IS the logger's output, and
+ * logging from it would recurse.
+ */
+export function boardSink(
+  print: (e: LandraceEvent) => void,
+  board: { current?: Board },
+): (e: LandraceEvent) => void {
+  return (e) => {
+    print(e);
+    try {
+      board.current?.observe(e);
+    } catch (boardError) {
+      console.error(`landrace: triage page failed to record an event: ${messageOf(boardError)}`);
+    }
+  };
+}
+
+/**
  * How long one step may run, taken from the workflow that owns the process
  * rather than from a default that happens to match it.
  *
@@ -386,17 +408,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const print = (e: LandraceEvent): void => console.log(JSON.stringify(e));
   const rt = await buildRuntime(dir, {
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
-    sink: (e) => {
-      print(e);
-      // A display must never be able to stop the work it displays. The
-      // logger is called from inside runStep outside any try, so a throw
-      // here would otherwise abort a paid step mid-flight.
-      try {
-        boardRef.current?.observe(e);
-      } catch (boardError) {
-        console.error(`landrace: triage page failed to record an event: ${messageOf(boardError)}`);
-      }
-    },
+    sink: boardSink(print, boardRef),
   });
   const board = createBoard({ workflow: rt.deps.workflow, held: (t) => held(t) });
   boardRef.current = board;

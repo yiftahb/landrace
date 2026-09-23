@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
-import type { Registry, Workflow } from "#namespace.js";
+import type { Board, LandraceEvent, Registry, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import {
+  boardSink,
   buildRuntime,
   createInterrupt,
   executorFor,
@@ -264,6 +265,56 @@ describe("createInterrupt", () => {
     expect(codes).toEqual([130]);
     expect(said).toHaveLength(2);
     expect(said[1]).toMatch(/now/i);
+  });
+});
+
+describe("boardSink", () => {
+  /**
+   * A display must never be able to stop the work it displays: the sink is
+   * called from inside runStep outside any try (see the comment on it in
+   * runStart), so a throwing observe would otherwise abort an agent step
+   * mid-run. Deleting the sink's own try/catch made all 361 other cli/ui/
+   * runner tests still pass, which is exactly the gap this closes.
+   */
+  it("lets print still receive the event when the board's observe throws, and reports via console.error", () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation();
+    try {
+      const printed: LandraceEvent[] = [];
+      const board: { current?: Board } = {
+        current: {
+          observe: () => { throw new Error("display broke"); },
+          list: () => {},
+          view: async () => ({ generatedAt: 0, listedAt: null, rows: [] }),
+        },
+      };
+      const sink = boardSink((e) => printed.push(e), board);
+      const event: LandraceEvent = { name: "step.started", ticket: 1 };
+
+      expect(() => sink(event)).not.toThrow();
+      expect(printed).toEqual([event]);
+      expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+      expect(String(consoleErrorSpy.mock.calls[0]?.[0])).toMatch(/display broke/);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("still hands the event to both print and a board whose observe behaves", () => {
+    const printed: LandraceEvent[] = [];
+    const observed: LandraceEvent[] = [];
+    const board: { current?: Board } = {
+      current: {
+        observe: (e) => { observed.push(e); },
+        list: () => {},
+        view: async () => ({ generatedAt: 0, listedAt: null, rows: [] }),
+      },
+    };
+    const event: LandraceEvent = { name: "step.finished", ticket: 1 };
+
+    boardSink((e) => printed.push(e), board)(event);
+
+    expect(printed).toEqual([event]);
+    expect(observed).toEqual([event]);
   });
 });
 
