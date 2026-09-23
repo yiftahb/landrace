@@ -997,3 +997,14 @@ export interface Board {
   list(candidates: Candidate[]): void;
   view(): Promise<BoardView>;
 }
+
+export interface UiOptions {
+  port: number;
+  view: () => Promise<BoardView>;
+}
+
+export interface UiServer {
+  url: string;
+  port: number;
+  close(): Promise<void>;
+}
