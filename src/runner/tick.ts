@@ -113,8 +113,8 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
   // A display must never be able to stop the work it is displaying.
   try {
     opts.onList?.(candidates);
-  } catch {
-    // ponytail: swallowed silently; log it if a broken listener ever needs finding.
+  } catch (e) {
+    deps.log("display.failed", { reason: messageOf(e) });
   }
 
   const rows: TickRow[] = [];

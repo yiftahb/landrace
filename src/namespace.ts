@@ -524,7 +524,8 @@ export type EventName =
   | "snapshot.built" | "snapshot.failed"
   | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
   | "lock.acquired" | "lock.denied" | "lock.stolen"
-  | "screen.passed" | "screen.blocked";
+  | "screen.passed" | "screen.blocked"
+  | "display.failed";
 
 export interface LandraceEvent {
   name: EventName;

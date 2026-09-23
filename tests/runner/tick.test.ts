@@ -489,10 +489,15 @@ describe("onList", () => {
 
   it("does not stop the tick when the listener throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "lr-onlist-"));
+    const events: LandraceEvent[] = [];
+    const log = createLogger({ sink: (e) => events.push(e) });
     const rows = await tick({
-      source: source([candidate(1)]), deps: deps(), lock: { root },
+      source: source([candidate(1)]), deps: deps({ log }), lock: { root },
       onList: () => { throw new Error("display broke"); },
     });
     expect(rows).toHaveLength(1);
+    const failed = events.find((e) => e.name === "display.failed");
+    expect(failed).toBeDefined();
+    expect(failed?.reason).toContain("display broke");
   });
 });
