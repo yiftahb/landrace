@@ -172,4 +172,10 @@ describe("createBoard", () => {
     board.list(graph([c("1", ["go"]), { ...c("pr-3", []), kind: "pull-request" }]));
     expect((await board.view()).rows.map((r) => r.ticket)).toEqual(["1"]);
   });
+
+  it("shows no closed ticket — a finished sub-issue is not work in any lane", async () => {
+    const board = shell(() => 0);
+    board.list(graph([c("1", ["go"]), { ...c("2", ["go"]), closed: "done" }]));
+    expect((await board.view()).rows.map((r) => r.ticket)).toEqual(["1"]);
+  });
 });

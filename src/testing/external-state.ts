@@ -78,7 +78,10 @@ const prNodeOf = (p: ExternalPull): Node => ({
   closed: p.closed,
   priority: null,
   origin: null,
-  state: { merged: p.merged, openThreads: p.openThreads },
+  // An open pull request's threads only, as a tracker integration reports
+  // them: a thread left on a merged or abandoned one is nothing a fix round
+  // can act on, and counting it would loop the ticket through review for ever.
+  state: { merged: p.merged, ...(p.closed === null ? { openThreads: p.openThreads } : {}) },
 });
 
 /**
@@ -199,7 +202,9 @@ export function createExternalState(
     openPull: (ticket, pr = {}) => {
       must(ticket);
       const number = pulls.size + 1;
-      const pull: ExternalPull = { id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, closed: null, ...pr };
+      // Merged means closed as done, unless the test says otherwise.
+      const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
+      const pull: ExternalPull = { id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, ...pr, closed };
       pulls.set(pull.id, pull);
       return pull.id;
     },

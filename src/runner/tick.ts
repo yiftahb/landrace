@@ -9,7 +9,7 @@ import type {
   TickRow,
   Workflow,
 } from "#namespace.js";
-import { compareIds, compareWork, TICKET_KIND, ticketIdProblem } from "#conventions.js";
+import { compareIds, compareWork, isOpenTicket, ticketIdProblem } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
 import { withLock } from "#runner/lock.js";
@@ -110,11 +110,11 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
     deps.log("display.failed", { reason: messageOf(e) });
   }
 
-  // Tickets only: a pull request in the list is context for a ticket, not
-  // work of its own. Sorted before the pool takes from it, because with a
+  // Open tickets only: a pull request in the list is context for a ticket,
+  // and a closed ticket is there for its parent to count — neither is work. Sorted before the pool takes from it, because with a
   // concurrency limit the order is who waits — ordering work is not choosing
   // a transition, and the id tie-break keeps it total.
-  const work = graph.nodes.filter((n) => n.kind === TICKET_KIND).sort(compareWork);
+  const work = graph.nodes.filter(isOpenTicket).sort(compareWork);
   const rows: TickRow[] = [];
 
   await pool(work, opts.concurrency ?? DEFAULT_CONCURRENCY, async (node) => {

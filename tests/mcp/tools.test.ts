@@ -69,6 +69,24 @@ describe("mcp tools", () => {
     ]);
   });
 
+  it("does not list a closed ticket as waiting, whatever labels it kept", async () => {
+    const { tools } = world([
+      { number: 1, labels: ["lr:auto"] },
+      // Listed because it is a sub-issue of an open one; closed, so nobody's turn.
+      { number: 2, parent: 1, state: "closed", stateReason: "COMPLETED", labels: ["lr:auto", "lr:awaiting"] },
+    ]);
+    expect(await tools.waiting()).toEqual([]);
+  });
+
+  it("reports whether the ticket is closed, and how", async () => {
+    const { tools } = world([
+      { number: 3, labels: ["lr:auto"] },
+      { number: 4, state: "closed", stateReason: "NOT_PLANNED" },
+    ]);
+    expect(await tools.status("3")).toMatchObject({ ticket: "3", closed: null, title: "issue 3" });
+    expect(await tools.status("4")).toMatchObject({ ticket: "4", closed: "dropped" });
+  });
+
   it("reports position and rounds derived from the comment stream", async () => {
     const { tracker, tools } = world([{ number: 3, labels: ["lr:auto", "lr:stage:spec"] }]);
     tracker.say(3, `draft${renderMarker({ stage: "spec", kind: "output", round: 1 })}`);

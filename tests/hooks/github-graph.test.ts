@@ -69,6 +69,28 @@ describe("the GitHub source", () => {
     expect(gate({ "rel.child-of.in.total": 1, "rel.child-of.in.is.closed": 1 }, g, "1")).toBe(true);
   });
 
+  /* Spec §3: an unmapped close reason is a boundary error, not a guess. */
+  it("halts a read over an issue closed for a reason it does not know, naming both", async () => {
+    const gh = createFakeTracker([
+      { number: 1 },
+      { number: 2, parent: 1, state: "closed", stateReason: "SOMETHING_NEW" as never },
+      { number: 3, state: "closed", stateReason: "REOPENED" },
+    ]);
+    await expect(sourceOf(gh).read("1", ctx(gh))).rejects.toThrow(/#2 .*"SOMETHING_NEW"/);
+    await expect(sourceOf(gh).read("3", ctx(gh))).rejects.toThrow(/#3 .*"REOPENED"/);
+  });
+
+  it("lists around an issue closed for a reason it does not know, rather than failing the tick", async () => {
+    const gh = createFakeTracker([
+      { number: 1 },
+      { number: 2, parent: 1, state: "closed", stateReason: "SOMETHING_NEW" as never },
+      { number: 3, parent: 1, state: "closed", stateReason: "COMPLETED" },
+    ]);
+    const g = await sourceOf(gh).list(ctx(gh));
+    expect(g.nodes.map((n) => n.id)).toEqual(["1", "3"]);
+    expect(g.relationships).toEqual([{ from: "3", to: "1", type: "child-of" }]);
+  });
+
   it("reads a ticket's parent, and the edge to it", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2, parent: 1 }]);
     const g = await sourceOf(gh).read("2", ctx(gh));
@@ -109,6 +131,24 @@ describe("the GitHub source", () => {
     gh.openPull({ number: 21, head: "landrace/7", merged: false, threads: [] });
     const g = await sourceOf(gh).read("7", ctx(gh));
     expect(gate({ "rel.implements.in.total": { $gt: 0 }, "rel.implements.in.not.merged": 0 }, g, "7")).toBe(false);
+  });
+
+  /*
+   * A thread left open on a merged pull request is nothing a fix round can
+   * act on — the briefing shows open pull requests only — so counting it
+   * would send the ticket to fix-review for ever with nothing to fix.
+   */
+  it("counts open threads on open pull requests only, and pays nothing to count a merged one", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "landrace/7", merged: true, threads: [{ isResolved: false, body: "left over" }] });
+    gh.openPull({ number: 21, head: "landrace/7", threads: [] });
+    gh.openPull({ number: 22, head: "feature/z", state: "CLOSED", closes: [7], threads: [{ isResolved: false, body: "abandoned" }] });
+    const g = await sourceOf(gh).read("7", ctx(gh));
+    expect(g.nodes.find((n) => n.id === "pr-20")?.state).not.toHaveProperty("openThreads");
+    expect(g.nodes.find((n) => n.id === "pr-22")?.state).not.toHaveProperty("openThreads");
+    // The abandoned one is dropped, so out of every count; the merged one counts, with no threads.
+    expect(gate({ "rel.implements.in.total": 2, "rel.implements.in.sum.openThreads": 0 }, g, "7")).toBe(true);
+    expect(operations(gh, "LandraceThreads").map((q) => q.variables.number)).toEqual([21]);
   });
 
   it("halts a ticket carrying two P labels on read, and schedules it as unprioritised on list", async () => {
@@ -173,6 +213,20 @@ describe("the list a tick schedules from", () => {
   it("refuses a list it could not finish, rather than one known to be short", async () => {
     const gh = createFakeTracker(Array.from({ length: 1001 }, (_, i) => ({ number: i + 1 })));
     await expect(sourceOf(gh).list(ctx(gh))).rejects.toThrow(/more than 1000 open issues/);
+  });
+
+  it("carries every open pull request, not just the first page of them", async () => {
+    const gh = createFakeTracker(Array.from({ length: 150 }, (_, i) => ({ number: i + 1 })));
+    for (let n = 1; n <= 150; n++) gh.openPull({ number: 1000 + n, head: `landrace/${n}`, threads: [] });
+    const g = await sourceOf(gh).list(ctx(gh));
+    expect(g.nodes.filter((n) => n.kind === "pull-request")).toHaveLength(150);
+    expect(operations(gh, "LandracePulls")).toHaveLength(2);
+  });
+
+  it("refuses a list of pull requests it could not finish", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    for (let n = 1; n <= 1001; n++) gh.openPull({ number: n + 1, head: `feature/${n}`, threads: [] });
+    await expect(sourceOf(gh).list(ctx(gh))).rejects.toThrow(/more than 1000 open pull requests/);
   });
 
   it("carries who each ticket is assigned to, so the tick answers the rule before it reads anything", async () => {

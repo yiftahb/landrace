@@ -6,7 +6,7 @@ import {
   neutraliseMarkers,
   recordBodyProblem,
   stageFromLabels,
-  TICKET_KIND,
+  isOpenTicket,
 } from "#conventions.js";
 import type { Node, Snapshot, Source } from "#namespace.js";
 import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
@@ -94,7 +94,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       // had to know the workflow. Labels ride along on a ticket node precisely
       // so this costs no snapshot per ticket.
       return (await source().list(ctx)).nodes
-        .filter((n) => n.kind === TICKET_KIND && labelsOf(n).includes(LABELS.awaiting))
+        .filter((n) => isOpenTicket(n) && labelsOf(n).includes(LABELS.awaiting))
         .map((n) => ({ ticket: n.id, title: n.title, url: n.link }));
     },
 

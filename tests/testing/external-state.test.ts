@@ -29,9 +29,19 @@ describe("the in-memory tracker's graph", () => {
     s.pull(first).merged = true;
     s.pull(first).closed = "done";
     const g = await s.source.read("1", ctx);
-    expect(g.nodes.find((n) => n.id === first)).toMatchObject({ closed: "done", state: { merged: true, openThreads: 0 } });
+    expect(g.nodes.find((n) => n.id === first)).toMatchObject({ closed: "done", state: { merged: true } });
+    // A merged pull request's threads are not counted: nothing a fix round can act on.
+    expect(g.nodes.find((n) => n.id === first)?.state).not.toHaveProperty("openThreads");
     expect(() => s.pull("pr-9")).toThrow(/no such pull request/);
     expect(() => s.openPull("9")).toThrow(/no such ticket/);
+  });
+
+  it("closes a merged pull request as done unless told otherwise", async () => {
+    const s = createExternalState({ tickets: [{ id: "1" }] });
+    expect(s.pull(s.openPull("1", { merged: true })).closed).toBe("done");
+    expect(s.pull(s.openPull("1", { merged: true, closed: null })).closed).toBeNull();
+    expect(s.pull(s.openPull("1", { closed: "dropped" })).closed).toBe("dropped");
+    expect(s.pull(s.openPull("1")).closed).toBeNull();
   });
 
   it("creates and updates tickets through its operator, and closing one is `done`", async () => {

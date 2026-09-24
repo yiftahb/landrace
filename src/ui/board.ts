@@ -1,4 +1,4 @@
-import { compareIds, TICKET_KIND } from "#conventions.js";
+import { compareIds, isOpenTicket } from "#conventions.js";
 import { oneLine, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import type {
@@ -112,9 +112,9 @@ export function createBoard(opts: {
       }
     },
     list(graph: Graph): void {
-      // Tickets only: the lanes are about work, and a pull request is not
-      // work of its own — it is context for the ticket it implements.
-      nodes = graph.nodes.filter((n) => n.kind === TICKET_KIND);
+      // Open tickets only: the lanes are about work, a pull request is
+      // context for the ticket it implements, and a closed ticket is done.
+      nodes = graph.nodes.filter(isOpenTicket);
       listedAt = now();
     },
     async view(): Promise<BoardView> {

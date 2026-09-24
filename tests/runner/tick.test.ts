@@ -360,6 +360,34 @@ describe("tick", () => {
     expect(order.indexOf("3")).toBeLessThan(order.indexOf("1"));
   });
 
+  it("never works a closed ticket, whatever labels it still carries", async () => {
+    const read: string[] = [];
+    const recording = definePreHook({ id: "rec", provides: [], run: ({ ticket }) => { read.push(ticket); return {}; } });
+    const done: Node = { ...ticketNode("1"), closed: "done" };
+    const dropped: Node = { ...ticketNode("3"), closed: "dropped" };
+    const out = await tick({ source: source([done, ticketNode("2"), dropped]), deps: deps({ pre: [recording] }), lock: { root } });
+    expect(out.map((r) => r.ticket)).toEqual(["2"]);
+    expect(read).toEqual(["2"]);
+  });
+
+  it("halts a ticket whose graph has a dangling edge, naming it, and still works the others", async () => {
+    const one = ticketNode("1");
+    const two = ticketNode("2");
+    const byId: Record<string, Graph> = {
+      "1": { nodes: [one], relationships: [{ from: "ghost", to: "1", type: "child-of" }] },
+      "2": { nodes: [two], relationships: [] },
+    };
+    const split = defineSource({
+      id: "split",
+      relations: [{ type: "child-of", singular: true }],
+      list: async () => ({ nodes: [one, two], relationships: [] }),
+      read: async (id) => byId[id] ?? { nodes: [], relationships: [] },
+    });
+    const out = await tick({ source: split, deps: deps(), lock: { root } });
+    expect(out.find((r) => r.ticket === "1")?.outcome).toMatch(/^halt.*ghost/);
+    expect(out.find((r) => r.ticket === "2")?.outcome).toMatch(/^terminal/);
+  });
+
   it("works only ticket nodes — a pull request in the list is not a ticket to converge", async () => {
     const pr: Node = { ...ticketNode("pr-9"), kind: "pull-request" };
     const out = await tick({ source: source([ticketNode("1", []), pr]), deps: deps(), lock: { root } });

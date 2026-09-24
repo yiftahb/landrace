@@ -129,7 +129,7 @@ export interface FakeRequest {
  */
 const THREAD_PAGE = 100;
 
-/** And per page of issues, for the same reason. */
+/** And per page of issues and of pull requests, for the same reason. */
 const ISSUE_PAGE = 100;
 
 /** And the `first:` the hook asks a ticket's sub-issues and pull requests for. */
@@ -355,9 +355,20 @@ export function createFakeTracker(
                   subIssues: { nodes: childrenOf(i.number).map(issueNode) },
                 })),
               },
-              pullRequests: {
-                nodes: [...pulls.values()].filter((p) => pullState(p) === "OPEN").sort((a, b) => b.number - a.number).map(pullNode),
-              },
+            },
+          },
+        });
+      }
+
+      if (operation === "LandracePulls") {
+        const open = [...pulls.values()].filter((p) => pullState(p) === "OPEN").sort((a, b) => b.number - a.number);
+        const from = typeof variables.cursor === "string" && variables.cursor ? Number(variables.cursor) : 0;
+        const page = open.slice(from, from + ISSUE_PAGE);
+        const end = from + page.length;
+        return json({
+          data: {
+            repository: {
+              pullRequests: { pageInfo: { hasNextPage: end < open.length, endCursor: String(end) }, nodes: page.map(pullNode) },
             },
           },
         });

@@ -35,7 +35,7 @@ function fake(user: () => Response | never): { fetchImpl: typeof fetch; calls: s
         data: {
           repository: {
             issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
-            pullRequests: { nodes: [] },
+            pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
           },
         },
       });

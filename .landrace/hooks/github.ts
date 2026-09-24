@@ -369,7 +369,7 @@ function createClient(opts: GitHubOptions) {
       const data = await graphqlRequest<{ repository: { issue: IssueNode | null } | null }>(
         ISSUE_QUERY, { owner, name, number: n },
       );
-      if (!data.repository) throw new Error(`the repository "${repo}" answered with nothing at all; check the token's access to it`);
+      if (!data.repository) throw unseen(repo);
       if (!data.repository.issue) throw new Error(`#${n} is not an issue in ${repo}`);
       return data.repository.issue;
     },
@@ -784,7 +784,7 @@ const RELATION_DECLS: RelationDecl[] = [
 const THREAD_PAGE = 100;
 const MAX_THREAD_PAGES = 10;
 
-/** The same bound on the issue list, for the same reason: the REST list this replaced stopped at 100 without saying so. */
+/** The same bound on the issue and pull request lists, for the same reason: the REST list this replaced stopped at 100 without saying so. */
 const ISSUE_PAGE = 100;
 const MAX_ISSUE_PAGES = 10;
 
@@ -799,9 +799,7 @@ const PULL_FIELDS = `
 
 /**
  * Every open issue with its sub-issues (closed ones too, so a parent can count
- * a finished child), and every open pull request, in one request per page.
- * Merged pull requests are not listed here: the board shows what is live, and
- * routing reads `read`, which does include them.
+ * a finished child), in one request per page.
  */
 const ISSUES_QUERY = `
 query LandraceIssues($owner: String!, $name: String!, $cursor: String) {
@@ -810,7 +808,19 @@ query LandraceIssues($owner: String!, $name: String!, $cursor: String) {
       pageInfo { hasNextPage endCursor }
       nodes { ${ISSUE_FIELDS} parent { number } subIssues(first: 50) { nodes { ${ISSUE_FIELDS} } } }
     }
-    pullRequests(states: OPEN, first: 100, orderBy: { field: CREATED_AT, direction: DESC }) {
+  }
+}`;
+
+/**
+ * Every open pull request, paged on its own cursor. Merged ones are not
+ * listed: the board shows what is live, and routing reads `read`, which does
+ * include them.
+ */
+const PULLS_QUERY = `
+query LandracePulls($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: CREATED_AT, direction: DESC }) {
+      pageInfo { hasNextPage endCursor }
       nodes { ${PULL_FIELDS} }
     }
   }
@@ -884,7 +894,12 @@ interface ListedIssue extends IssueNode {
 interface IssuesResponse {
   repository: {
     issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: ListedIssue[] };
-    pullRequests: { nodes: PullNode[] };
+  } | null;
+}
+
+interface PullsResponse {
+  repository: {
+    pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: PullNode[] };
   } | null;
 }
 
@@ -911,12 +926,22 @@ interface ThreadsResponse {
 const unseen = (repo: string): Error =>
   new Error(`the repository "${repo}" answered with nothing at all; check the token's access to it`);
 
-/** GitHub's close reason, as the one piece of lifecycle the engine understands. */
-function closedOf(state: string, reason: string | null): Closed {
-  if (state === "OPEN") return null;
+/**
+ * GitHub's close reason, as the one piece of lifecycle the engine understands.
+ *
+ * Anything else is refused rather than guessed (spec §3): `REOPENED` on a
+ * closed issue, or a reason GitHub adds later, would otherwise read as
+ * finished and let a parent count it done.
+ */
+function closedOf(issue: IssueNode): Closed {
+  if (issue.state === "OPEN") return null;
   // Closed with no reason is how every issue closed before GitHub had reasons reads.
-  if (reason === "NOT_PLANNED" || reason === "DUPLICATE") return "dropped";
-  return "done";
+  if (issue.stateReason === "COMPLETED" || issue.stateReason === null) return "done";
+  if (issue.stateReason === "NOT_PLANNED" || issue.stateReason === "DUPLICATE") return "dropped";
+  throw new Error(
+    `#${issue.number} is closed for the reason "${String(issue.stateReason)}", which this hook does not map ` +
+    "to done or dropped; it will not guess",
+  );
 }
 
 const PRIORITY_LABEL = /^P([0-9])$/;
@@ -940,7 +965,7 @@ export function nodeOfIssue(issue: IssueNode): Node {
     kind: TICKET_KIND,
     title: issue.title,
     link: issue.url,
-    closed: closedOf(issue.state, issue.stateReason),
+    closed: closedOf(issue),
     priority: priorityFromLabels(labels).priority,
     origin: null,
     // Always lists, and empty rather than absent: an eligibility rule reading
@@ -1005,11 +1030,22 @@ async function countOpenThreads(gh: Client, repo: string, number: number): Promi
  * labels list as unprioritised, and a pull request naming two tickets lists
  * with no edge at all. `read` of that ticket is where either halts, naming it.
  */
-async function listGraph(gh: Client, repo: string): Promise<Graph> {
+async function listGraph(gh: Client, repo: string, ctx: RuntimeContext): Promise<Graph> {
   const [owner = "", name = ""] = repo.split("/");
   const nodes = new Map<string, Node>();
   const parentOf = new Map<string, string>();
-  let pulls: PullNode[] = [];
+
+  // An issue this hook cannot map is left out, with every edge touching it:
+  // one bad issue must not fail the tick for the rest. `read` of anything
+  // whose neighbourhood holds it halts, naming it.
+  const keep = (issue: IssueNode): void => {
+    try {
+      nodes.set(String(issue.number), nodeOfIssue(issue));
+    } catch (e) {
+      ctx.log("github.issue.skipped", { issue: issue.number, reason: e instanceof Error ? e.message : String(e) });
+    }
+  };
+  const pulls: PullNode[] = [];
   let cursor: string | null = null;
 
   for (let page = 0; ; page++) {
@@ -1018,19 +1054,17 @@ async function listGraph(gh: Client, repo: string): Promise<Graph> {
     }
     const data: IssuesResponse = await gh.graphql<IssuesResponse>(ISSUES_QUERY, { owner, name, cursor });
     if (!data.repository) throw unseen(repo);
-    const { issues, pullRequests } = data.repository;
-    // Every page answers the same pull requests; the first page's is kept.
-    if (page === 0) pulls = pullRequests.nodes;
+    const { issues } = data.repository;
 
     for (const issue of issues.nodes) {
       const id = String(issue.number);
       // An open sub-issue is listed twice — as an issue, and under its
       // parent. It is one node, so the first reading is kept.
-      if (!nodes.has(id)) nodes.set(id, nodeOfIssue(issue));
+      if (!nodes.has(id)) keep(issue);
       if (issue.parent) parentOf.set(id, String(issue.parent.number));
       for (const sub of issue.subIssues.nodes) {
         const child = String(sub.number);
-        if (!nodes.has(child)) nodes.set(child, nodeOfIssue(sub));
+        if (!nodes.has(child)) keep(sub);
         parentOf.set(child, id);
       }
     }
@@ -1038,11 +1072,26 @@ async function listGraph(gh: Client, repo: string): Promise<Graph> {
     cursor = issues.pageInfo.endCursor;
   }
 
+  // Paged and bounded the same way: a pull request missing from a short list
+  // is a ticket the board shows with no work on it.
+  cursor = null;
+  for (let page = 0; ; page++) {
+    if (page === MAX_ISSUE_PAGES) {
+      throw new Error(`${repo} has more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} open pull requests, more than one list may carry`);
+    }
+    const data: PullsResponse = await gh.graphql<PullsResponse>(PULLS_QUERY, { owner, name, cursor });
+    if (!data.repository) throw unseen(repo);
+    const { pullRequests } = data.repository;
+    pulls.push(...pullRequests.nodes);
+    if (!pullRequests.pageInfo.hasNextPage) break;
+    cursor = pullRequests.pageInfo.endCursor;
+  }
+
   const relationships: Relationship[] = [];
-  // A parent that is closed and was not listed is outside this graph: the
-  // edge is dropped rather than left dangling.
+  // A parent that is closed and was not listed is outside this graph, and an
+  // issue left out above is too: the edge is dropped rather than left dangling.
   for (const [child, parent] of parentOf) {
-    if (nodes.has(parent)) relationships.push({ from: child, to: parent, type: RELATIONS.childOf });
+    if (nodes.has(child) && nodes.has(parent)) relationships.push({ from: child, to: parent, type: RELATIONS.childOf });
   }
 
   const listed = [...nodes.values()];
@@ -1128,7 +1177,12 @@ async function readGraph(gh: Client, repo: string, ticket: string): Promise<Grap
         "a pull request implements one ticket",
       );
     }
-    const node = pullNodeOf(pull, await countOpenThreads(gh, repo, pull.number));
+    // Only an open pull request's threads are counted, and only an open one's
+    // are briefed: a thread left unresolved on a merged or abandoned one is
+    // nothing a fix round can act on, and counting it would send the ticket
+    // to fix-review for ever with nothing to fix. So a closed one carries no
+    // count at all, and costs no query.
+    const node = pullNodeOf(pull, pull.state === "OPEN" ? await countOpenThreads(gh, repo, pull.number) : undefined);
     nodes.push(node);
     relationships.push({ from: node.id, to: self.id, type: RELATIONS.implements });
   }
@@ -1465,7 +1519,7 @@ export function githubHooks(opts: GitHubOptions): {
     source: defineSource({
       id: "github",
       relations: RELATION_DECLS,
-      list: () => listGraph(gh, opts.repo),
+      list: (ctx) => listGraph(gh, opts.repo, ctx),
       read: (id) => readGraph(gh, opts.repo, id),
       // The text half, fetched per invocation rather than per pass: what
       // `fix-review` is told to address, which the graph will not carry.

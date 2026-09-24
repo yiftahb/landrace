@@ -112,6 +112,14 @@ export const labelsOf = (node: Node | undefined): string[] => strings(node?.stat
 export const assigneesOf = (node: Node | undefined): string[] => strings(node?.state.assignees);
 
 /**
+ * Whether a listed node is work: a ticket, and an open one. A closed ticket
+ * is in a graph so a parent can count it, and it keeps whatever labels it had
+ * — `lr:auto` included — so reading its labels alone would pay for steps on a
+ * ticket somebody already finished.
+ */
+export const isOpenTicket = (node: Node): boolean => node.kind === TICKET_KIND && node.closed === null;
+
+/**
  * The order the tick hands work out in. Lower priority first; unprioritised
  * after every number, so a hook that forgot to map priority does not jump its
  * whole tracker to the front; then the id, so the order is total. Ordering
