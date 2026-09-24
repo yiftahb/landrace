@@ -99,6 +99,46 @@ Nothing about progress is stored locally. Position comes from a label, rounds fr
 
 The decision itself is five pure steps: locate the ticket's stage, assess whether that stage's step has finished, decide, plan the effects of the state being entered, and drop the effects the world already satisfies. **Ambiguity always halts** — two stages that both match, or two triggers that both fire, stop the ticket rather than picking one.
 
+## The ticket graph
+
+A source doesn't hand the engine one flat ticket — it hands back a **graph**: the ticket's own node, and every other node related to it.
+
+```ts
+interface Node {
+  id: string;
+  kind: string;              // "ticket", "pull-request", or whatever your source names
+  title: string;
+  link: string;
+  closed: null | "done" | "dropped";
+  priority: number | null;
+  origin: Origin | null;
+  state: { [key: string]: Json };   // whatever the source wants a predicate to read
+}
+
+interface Relationship { from: string; to: string; type: string }
+interface Graph { nodes: Node[]; relationships: Relationship[] }
+```
+
+A `Source` has two methods, both returning a `Graph`. `list()` runs once per tick — every candidate node, which is what `eligible`, `status` and the triage page answer from, before any per-ticket work starts. `read(id)` runs once per converge pass, for one ticket's own neighbourhood — itself, its ancestors, its descendants, and everything related to it — and is what a trigger actually decides from.
+
+The snapshot carries three views built from that graph: `node` is the ticket's own node, `graph` is the whole neighbourhood `read` returned, and `rel.<type>.in|out` is a set of counts over every relationship of `<type>` pointing in (`in`) or out (`out`) of the ticket:
+
+| Field | Meaning |
+|---|---|
+| `rel.<type>.in.total` | How many related nodes |
+| `rel.<type>.in.is.<field>` | How many where `state.<field>` is truthy |
+| `rel.<type>.in.not.<field>` | How many where it is not |
+| `rel.<type>.in.sum.<field>` | That field, summed across every related node |
+| `rel.<type>.in.stage.<id>` | How many related tickets currently sit at stage `<id>` |
+
+A source declares which relationship types it reports, and whether a node may have at most one outgoing edge of one (`relations: RelationDecl[]`); the engine refuses any other type, and `rel` counts zero — never nothing — for a declared type nothing relates, so "no threads are open" can still be read when every pull request is merged.
+
+The shipped GitHub hook reports two relationship types: `child-of` (a sub-issue to its parent, singular) and `implements` (a pull request to the ticket it closes or whose branch names it, singular). A pull request is a node like any other — `kind: "pull-request"`, `state.merged`, `state.openThreads` — and "every pull request on the ticket is merged" is `rel.implements.in.total: { $gt: 0 }` **and** `rel.implements.in.not.merged: 0`, never one pull request's own flag, because a ticket can carry more than one. Only an *open* pull request's threads are counted: a merged or closed one reports `openThreads: 0`, never nothing, so the sum stays defined — and readable as "clear" — once every pull request on the ticket is done.
+
+Priority comes from this repository's own `P0`..`P9` label convention; two of them is a priority that cannot be told, and `read` halts the ticket rather than picking one, the same way two stage labels does. A closed ticket is never worked — it keeps whatever labels it had, `lr:auto` included, but only ever appears in a graph so a parent can count a finished child, never so a tick pays for a step on it. And a GitHub close reason this hook does not recognise — anything but `COMPLETED`, `NOT_PLANNED`, `DUPLICATE` or none — halts the ticket rather than guessing whether it is done or dropped.
+
+A step's prompt can also ask a source for prose the graph itself does not carry — `{brief.<source id>.<key>}`, fetched only when that step is about to run, never routed on by any predicate. `fix-review.md` reads `{brief.github.threads}`: the open review threads across the ticket's pull requests, as a working list for the step to act on.
+
 ## Structure
 
 ```
@@ -177,7 +217,7 @@ vars:
 
 Wherever `{vars.<name>}` appears in `workflow.yaml` or a step file — a predicate operand, an effect field, a prompt — it is replaced at load with the resolved value. Everything downstream then sees a literal exactly as if it had been typed: the schema, the operator allowlist, `path-coverage`, and the predicate itself.
 
-Substitution walks the **parsed document**, never its text, so a value carrying a colon, a newline or a quote lands in one string position and stays one string instead of reshaping the YAML around it. It fills in `{vars.…}` and nothing else: `{round}`, `{stage}` and `{ticket.title}` belong to the engine and to the step prompt, and survive untouched.
+Substitution walks the **parsed document**, never its text, so a value carrying a colon, a newline or a quote lands in one string position and stays one string instead of reshaping the YAML around it. It fills in `{vars.…}` and nothing else: `{round}`, `{stage}` and `{node.title}` belong to the engine and to the step prompt, and survive untouched.
 
 Variables are configuration, not state. They do not vary per ticket, so they are deliberately **not** in the snapshot — comparing one snapshot path against another would need `$expr`, which is outside the operator allowlist on purpose.
 
@@ -199,13 +239,13 @@ vars:
 ```yaml
 # workflow.yaml — the same file for everyone
 eligible:
-  - when: { "ticket.assignees": { $in: ["{vars.assignee}"] } }
+  - when: { "node.state.assignees": { $in: ["{vars.assignee}"] } }
     else: "assigned to somebody else"
 ```
 
-One workflow directory, one graph, one set of step files. A ticket assigned to somebody else is skipped with that `else` as the reason `status` prints beside it, nothing is invoked and nothing is written to it — and a ticket assigned to nobody is skipped by everybody rather than worked by everybody, because `ticket.assignees` is an empty list rather than an absent path.
+One workflow directory, one graph, one set of step files. A ticket assigned to somebody else is skipped with that `else` as the reason `status` prints beside it, nothing is invoked and nothing is written to it — and a ticket assigned to nobody is skipped by everybody rather than worked by everybody, because `node.state.assignees` is an empty list rather than an absent path.
 
-The skip costs one request for the whole repository, not one per ticket: a `Candidate` carries `assignees` beside its labels, so the rule is answered from what `list` already returned, before any issue is fetched and before the per-ticket lock is taken. A source hook must fill it — empty when nobody is assigned — for the same reason a pre hook must: a rule the tick cannot answer abstains, and abstaining means eligible.
+The skip costs one request for the whole repository, not one per ticket: a source's `list()` returns a `Graph`, and every ticket `Node` in it carries `assignees` beside `labels` in `state`, so the rule is answered from what `list` already returned, before any issue is fetched and before the per-ticket lock is taken. A source hook must fill it — empty when nobody is assigned — for the same reason a pre hook must: a rule the tick cannot answer abstains, and abstaining means eligible.
 
 ### `.landrace/workflow.yaml` — the process
 
@@ -247,7 +287,7 @@ A module imports the contracts from `landrace/hooks` and exports whatever kinds 
 
 `.landrace/hooks/github.ts` in this repository is the reference implementation: one file with the REST client, both hooks, the source and the operator. A second tracker is a sibling of it, and nothing in the engine changes — a test enforces that `src/` never names one.
 
-A pre hook declares the snapshot paths it fills, and `validate`'s `path-coverage` rule is answered from those declarations alone, so a predicate can only read what some hook says it provides. The shipped GitHub hook provides `ticket` (`.number`, `.title`, `.body`, `.state`, `.url`, `.labels`, `.assignees`, `.comments`), `entries` and `tracker.bot`; the in-memory tracker in `landrace/testing` provides the portable subset of that. `ticket.assignees` is a **list of logins** — GitHub's issue has a list, and the singular `assignee` it also returns is that list's first element under a second name, which disagrees with it the moment an issue has two. It is empty, never absent, when nobody is assigned: a rule reading a path a ticket does not carry is one the tick cannot answer, and it abstains on those rather than guessing.
+A pre hook declares the snapshot paths it fills, and a source declares which relationship types it reports; `validate`'s `path-coverage` rule is answered from both together with what the engine itself always provides — `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every type the source declares — so a predicate can only read what something actually provides. The shipped GitHub hook's pre hook provides `ticket` (`.body`, `.comments`), `entries` and `tracker.bot`; the in-memory tracker in `landrace/testing` provides the portable subset of that (no `tracker.bot`). A ticket's identity, labels and assignees are not among either — they live on the `node` the *source* reads (see [The ticket graph](#the-ticket-graph)), not on something a pre hook fetches a second time. `node.state.assignees` is a **list of logins** — GitHub's issue has a list, and the singular `assignee` it also returns is that list's first element under a second name, which disagrees with it the moment an issue has two. It is empty, never absent, when nobody is assigned: a rule reading a path a ticket does not carry is one the tick cannot answer, and it abstains on those rather than guessing.
 
 Hook modules are imported at runtime with no build step, so they need a Node that strips types: 22.18 or newer does it unflagged, and an older 22.x needs `--experimental-strip-types`.
 
@@ -270,7 +310,7 @@ output:
     - when: { kind: spec }
       effect: { type: artifact.publish, artifact: spec }
 ---
-Write the spec for {ticket.title}…
+Write the spec for #{node.id}: {node.title}…
 ```
 
 | Key | Meaning |
