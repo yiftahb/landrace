@@ -85,6 +85,8 @@ The server is defined in `.agsync/mcp/landrace.yaml` and `agsync` writes it out 
 
 Then ask your client things like *"what's waiting on me?"*, *"open a ticket for CSV export"*, or *"reply on #12 that the scope is too broad"*.
 
+**Ticket identifiers:** A ticket id is 1–64 letters, digits, `.`, `_` or `-`; numbers are still accepted from MCP clients.
+
 ## How it works
 
 Each run builds a **snapshot** of one ticket from external records, decides, and acts:

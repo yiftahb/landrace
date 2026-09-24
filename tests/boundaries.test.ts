@@ -26,19 +26,17 @@ const linesMatching = (pattern: RegExp): string[] =>
  * next easier. The failure prints file and line, because a rule you have to go
  * hunting for is a rule that gets switched off.
  *
- * What it catches is the word. What it cannot catch is the shape, and four
+ * What it catches is the word. What it cannot catch is the shape, and three
  * GitHub-shaped assumptions live in `src/` and pass this test clean today:
  *
  *   1. a ticket's position is derived only from an `lr:stage:*` label
  *      (`src/runner/snapshot.ts:94`), so a tracker with real statuses has to
  *      synthesise a label array it does not have — and §6's "a human moving a
  *      card moves the ticket" is delivered on no tracker at all;
- *   2. `ticket: number` (`src/namespace.ts`, and on through `converge`, the
- *      lock filename and the MCP schema), which `PROJ-123` has no mapping to;
- *   3. `TrackerComment` (`src/namespace.ts:197`) is the GitHub REST wire
+ *   2. `TrackerComment` (`src/namespace.ts:197`) is the GitHub REST wire
  *      shape, `created_at` and `user.login` and all, rather than the neutral
  *      `{ id, body, at, author }` the name promises;
- *   4. `TicketPatch.state` (`src/namespace.ts:386`) is `"open" | "closed"`,
+ *   3. `TicketPatch.state` (`src/namespace.ts:386`) is `"open" | "closed"`,
  *      which a Jira workflow status or a Linear per-team state must collapse
  *      into.
  *
