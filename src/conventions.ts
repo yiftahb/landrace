@@ -4,7 +4,7 @@
  * back as the engine's. None of it belongs to a tracker — a Jira hook would
  * use the same names — so none of it lives in a hook.
  */
-import type { Entry, Marker, TrackerComment, Trailing } from "#namespace.js";
+import type { Entry, Marker, Node, TrackerComment, Trailing } from "#namespace.js";
 
 export const LABELS = {
   eligible: "lr:auto",
@@ -91,6 +91,41 @@ export const isTicketId = (id: unknown): id is string => ticketIdProblem(id) ===
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "variant" });
 export const compareIds = (a: string, b: string): number =>
   collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * The kinds and relationship types every tracker hook uses, named once, for
+ * the reason the label names are: a tracker hook must spell them the way a
+ * workflow written against any tracker reads them, or the workflow silently
+ * counts zero children.
+ */
+export const TICKET_KIND = "ticket";
+export const PULL_REQUEST_KIND = "pull-request";
+export const RELATIONS = { childOf: "child-of", implements: "implements" } as const;
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+
+/** A ticket node's labels — position, eligibility and whose turn it is. Empty, never absent. */
+export const labelsOf = (node: Node | undefined): string[] => strings(node?.state.labels);
+
+/** A ticket node's assignees, as logins. Empty, never absent: an absent path abstains, and abstaining means eligible. */
+export const assigneesOf = (node: Node | undefined): string[] => strings(node?.state.assignees);
+
+/**
+ * The order the tick hands work out in. Lower priority first; unprioritised
+ * after every number, so a hook that forgot to map priority does not jump its
+ * whole tracker to the front; then the id, so the order is total. Ordering
+ * work is not choosing a transition — nothing here decides what happens to a
+ * ticket, only which one gets an agent first.
+ */
+export const compareWork = (a: Node, b: Node): number => {
+  if (a.priority !== b.priority) {
+    if (a.priority === null) return 1;
+    if (b.priority === null) return -1;
+    return a.priority - b.priority;
+  }
+  return compareIds(a.id, b.id);
+};
 
 /**
  * The marker kind a stage's on_enter writes to record that the state was

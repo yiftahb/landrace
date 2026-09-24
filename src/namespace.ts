@@ -29,6 +29,39 @@ import type { HOOK_KINDS } from "#hooks/contracts.js";
 /** Anything a hook can put in the snapshot. */
 export type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 
+export type Closed = null | "done" | "dropped";
+
+export interface Origin { parent: string; stage: string; round: number }
+
+export interface Node {
+  id: string;
+  kind: string;
+  title: string;
+  link: string;
+  closed: Closed;
+  priority: number | null;
+  origin: Origin | null;
+  state: { [k: string]: Json };
+}
+
+export interface Relationship { from: string; to: string; type: string }
+
+export interface Graph { nodes: Node[]; relationships: Relationship[] }
+
+/** A relationship type a source reports, and whether a node may have at most one OUTGOING edge of it. */
+export interface RelationDecl { type: string; singular: boolean }
+
+/** The counts over one direction of one relationship type. */
+export interface RelAgg {
+  total: number;
+  is: { [field: string]: number };
+  not: { [field: string]: number };
+  sum: { [field: string]: number };
+  stage: { [stage: string]: number };
+}
+
+export type Rel = { [type: string]: { in: RelAgg; out: RelAgg } };
+
 /**
  * The tracker-agnostic record of something the workflow has written or a human
  * has said. A tracker hook decides how these are stored — the shipped one uses
