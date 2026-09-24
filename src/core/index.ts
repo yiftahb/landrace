@@ -9,3 +9,4 @@ export { assess } from "#core/assess.js";
 export { decide } from "#core/decide.js";
 export { expandEffectFields, fillTemplate, planEffects } from "#core/plan.js";
 export { reconcile } from "#core/reconcile.js";
+export { deriveRel } from "#core/rel.js";
