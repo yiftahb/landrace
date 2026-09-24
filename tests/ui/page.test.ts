@@ -40,10 +40,11 @@ describe("the page", () => {
     const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
     expect(header).toContain('id="next"');
     expect(header).toMatch(/id="tick" type="button" class="[^"]*">Run next tick now<\/button>/);
-    // "top right": the header lays its two groups out with `justify-between`
-    // — branding on the left, schedule + theme toggle on the right — see the
-    // CSS assertion below.
-    expect(header).toMatch(/<header[^>]*justify-between/);
+    // "top right": the header's content is wrapped in a max-width container
+    // (same one <main> uses) laid out with `justify-between` — branding on
+    // the left, schedule + theme toggle on the right — see the CSS assertion
+    // below. The <header> tag itself stays full-width for its border/background.
+    expect(header).toMatch(/<header[^>]*>\s*<div class="[^"]*max-w-5xl[^"]*justify-between/);
   });
 
   it("attaches the tick button's listener in script, never as an inline handler", () => {
