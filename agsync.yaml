@@ -17,7 +17,13 @@ agents:
     skills: { enabled: true }
     commands: { enabled: true }
     mcp: { enabled: true }
+  cursor:
+    instructions: { enabled: true }
+    skills: { enabled: true }
+    commands: { enabled: true }
+    mcp: { enabled: true }
   codex:
     instructions: { enabled: true }
     skills: { enabled: true }
+    mcp: { enabled: true }
 

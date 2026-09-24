@@ -8,4 +8,6 @@ dist/
 
 # agsync:begin
 .mcp.json
+.cursor/mcp.json
+.codex/config.toml
 # agsync:end
