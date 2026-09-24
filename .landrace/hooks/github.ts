@@ -132,6 +132,21 @@ export const ISSUE_FIELDS = `
   assignees(first: 20) { nodes { login } }
   body author { login } editor { login }`;
 
+/**
+ * The same reading, lighter, for a sub-issue in the issue list. GitHub prices
+ * a query by the nodes it could return — every `first:` multiplied down its
+ * path — and refuses one past 500,000 before running it: a page of 100 issues
+ * each with 50 sub-issues carrying 100 labels was 617,100. A child needs its
+ * stage label and state for a parent to count it, not a hundred labels; an
+ * open child is also listed as an issue in its own right, and that fuller
+ * reading is the one kept.
+ */
+const SUB_ISSUE_FIELDS = `
+  number title url state stateReason
+  labels(first: 20) { nodes { name } }
+  assignees(first: 5) { nodes { login } }
+  body author { login } editor { login }`;
+
 const ISSUE_QUERY = `
 query LandraceIssue($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -866,7 +881,7 @@ query LandraceIssues($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issues(states: OPEN, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: CREATED_AT, direction: ASC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { ${ISSUE_FIELDS} parent { number } subIssues(first: 50) { nodes { ${ISSUE_FIELDS} } } }
+      nodes { ${ISSUE_FIELDS} parent { number } subIssues(first: 50) { nodes { ${SUB_ISSUE_FIELDS} } } }
     }
   }
 }`;
@@ -1129,8 +1144,10 @@ async function listGraph(gh: Client, repo: string, ctx: RuntimeContext): Promise
     for (const issue of issues.nodes) {
       const id = String(issue.number);
       // An open sub-issue is listed twice — as an issue, and under its
-      // parent. It is one node, so the first reading is kept.
-      if (!nodes.has(id)) keep(issue);
+      // parent. It is one node, and the reading as an issue is the full one
+      // (SUB_ISSUE_FIELDS asks for fewer labels), so that one wins.
+      nodes.delete(id);
+      keep(issue);
       if (issue.parent) parentOf.set(id, String(issue.parent.number));
       for (const sub of issue.subIssues.nodes) {
         const child = String(sub.number);
@@ -1783,3 +1800,8 @@ async function check(ctx: RuntimeContext): Promise<void> {
 
 export const githubPreflight = definePreflight({ id: "github", check });
 
+
+/** Every GraphQL document this hook sends, so a test can cost each against GitHub's node limit. */
+export const GRAPHQL_QUERIES = {
+  ISSUE_QUERY, ISSUES_QUERY, PULLS_QUERY, TICKET_QUERY, THREADS_QUERY, BRIEF_QUERY, PREFLIGHT_PR_QUERY,
+};
