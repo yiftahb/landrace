@@ -1098,7 +1098,7 @@ export interface Conversation {
 
 /* -------------------------------------------------------------------- ui -- */
 
-/** Display order is the order of this union. */
+/** Where a ticket stands, drawn as its badge on the tree. */
 export type Lane = "needs-you" | "running" | "elsewhere" | "waiting" | "not-admitted" | "discharged";
 
 /** An agent this process has in the room right now. */
@@ -1140,23 +1140,36 @@ export interface Chat {
 }
 
 /**
- * One ticket on the triage page. An allowlist, not a pass-through: nothing
- * reaches the page that was not named here, so a secret cannot ride along in
- * an event payload.
+ * One node on the triage page's tree. An allowlist, not a pass-through:
+ * nothing reaches the page that was not named here, so a secret cannot ride
+ * along in an event payload and a remote document's body never does.
  */
 export interface BoardRow {
-  ticket: string;
+  id: string;
+  /** "ticket", or whatever kind the source gave an artifact ("pull-request", "document"). */
+  kind: string;
   title: string;
-  /** http(s) only, else empty — a tracker URL becomes an href. */
-  url: string;
+  /** http(s) only, else empty — it becomes an href. */
+  link: string;
+  /** Null only when there is no usable link to name a system from. */
+  system: BoardSystem | null;
+  /** Tickets only: what used to be the lane. Null on an artifact row. */
+  badge: Lane | null;
   stage: string | null;
-  lane: Lane;
+  priority: number | null;
+  closed: Closed;
+  /** A one-line summary of the node's scalar state — `open · openThreads 2`. */
+  summary: string;
   note: string;
   /** When the current state began, if this process knows. Epoch ms. */
   since: number | null;
   round: number | null;
   model: string | null;
-  chat: Chat;
+  /** Tickets only. */
+  chat: Chat | null;
+  /** True when something beneath this row needs you or is running: the page opens it without being asked. */
+  expanded: boolean;
+  children: BoardRow[];
 }
 
 export interface BoardView {

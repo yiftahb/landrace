@@ -552,6 +552,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const { folder, workspace } = await repoWorkspace(dir);
   const board = createBoard({
     workflow: rt.deps.workflow, held: (t) => held(t), nextTickAt: schedule.nextAt, folder, workspace,
+    // The tree nests along exactly what the source says is one-per-node — a
+    // parent, the ticket a pull request implements — and nothing configured.
+    nest: rt.source.relations.filter((r) => r.singular).map((r) => r.type),
   });
   boardRef.current = board;
 

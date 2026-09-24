@@ -1,6 +1,6 @@
-import type { Graph, Held, Node, Running, Workflow } from "#namespace.js";
+import type { Graph, Held, Node, Relationship, Running, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
-import { boardView, createBoard, laneOf } from "#ui/board.js";
+import { boardView, createBoard, laneOf, summaryOf } from "#ui/board.js";
 
 const workflow: Workflow = {
   version: 1, name: "t",
@@ -11,20 +11,27 @@ const workflow: Workflow = {
   ],
 };
 
-const c = (ticket: string, labels: string[], title = `t${ticket}`, url = `https://x/${ticket}`): Node => ({
-  id: ticket, kind: "ticket", title, link: url, closed: null, priority: null, origin: null, state: { labels, assignees: [] },
+const ticket = (id: string, over: Partial<Node> = {}, labels: string[] = ["go"]): Node => ({
+  id, kind: "ticket", title: `t${id}`, link: `https://x/${id}`, closed: null, priority: null, origin: null,
+  state: { labels, assignees: [] }, ...over,
 });
+const pr = (id: string, over: Partial<Node> = {}): Node => ({
+  id, kind: "pull-request", title: `PR ${id}`, link: `https://github.com/a/b/pull/${id}`, closed: null,
+  priority: null, origin: null, state: { merged: false, openThreads: 0 }, ...over,
+});
+const edge = (from: string, to: string, type = "child-of"): Relationship => ({ from, to, type });
+const graph = (nodes: Node[], relationships: Relationship[] = []): Graph => ({ nodes, relationships });
+const NEST = new Set(["child-of", "implements"]);
 
-/** What a tick hands the board: a graph, of which only the tickets are rows. */
-const graph = (nodes: Node[]): Graph => ({ nodes, relationships: [] });
-
-const view = (nodes: Node[], over: Partial<Parameters<typeof boardView>[0]> = {}) =>
+const view = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
-    workflow, nodes, listedAt: 1, now: 100, pid: 1, nextTickAt: null,
+    workflow, graph: g, nest: NEST, listedAt: 1, now: 100, pid: 1, nextTickAt: null,
     running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
   });
 
-const laneFor = (candidate: Node, over = {}) => view([candidate], over).rows[0]?.lane;
+type Rows = ReturnType<typeof view>["rows"];
+const shape = (rows: Rows): unknown => rows.map((r) => (r.children.length ? [r.id, shape(r.children)] : r.id));
+const flatten = (rows: Rows): Rows => rows.flatMap((r) => [r, ...flatten(r.children)]);
 
 describe("laneOf", () => {
   const row = (note: string, stage: string | null = "spec") => ({ ticket: "1", title: "t", stage, note });
@@ -48,82 +55,183 @@ describe("laneOf", () => {
   });
 });
 
-describe("boardView", () => {
+describe("boardView: the tree", () => {
+  it("nests a child under its parent and a pull request under its ticket", () => {
+    const g = graph([ticket("1"), ticket("2"), pr("pr-9")], [edge("2", "1"), edge("pr-9", "2", "implements")]);
+    expect(shape(view(g).rows)).toEqual([["1", [["2", ["pr-9"]]]]]);
+  });
+
+  it("nests only along the relation types it was told are singular", () => {
+    const g = graph([ticket("1"), ticket("2")], [edge("2", "1", "blocks")]);
+    expect(shape(view(g).rows)).toEqual(["1", "2"]);
+    expect(shape(view(graph([ticket("1"), ticket("2")], [edge("2", "1")]), { nest: new Set() }).rows)).toEqual(["1", "2"]);
+  });
+
+  it("makes a node whose parent is not in the graph a root", () => {
+    expect(shape(view(graph([ticket("2")], [edge("2", "404")])).rows)).toEqual(["2"]);
+  });
+
+  it("makes a node that claims two parents a root, rather than picking one", () => {
+    const g = graph([ticket("1"), ticket("2"), ticket("3")], [edge("3", "1"), edge("3", "2")]);
+    expect(shape(view(g).rows)).toEqual(["1", "2", "3"]);
+  });
+
+  it("makes a node whose singular edges of different types name different parents a root too", () => {
+    const g = graph([ticket("1"), ticket("2"), pr("pr-3")], [edge("pr-3", "1"), edge("pr-3", "2", "implements")]);
+    expect(shape(view(g).rows)).toEqual(["1", "2", "pr-3"]);
+  });
+
+  it("nests a node whose singular edges of different types agree on one parent", () => {
+    const g = graph([ticket("1"), pr("pr-3")], [edge("pr-3", "1"), edge("pr-3", "1", "implements")]);
+    expect(shape(view(g).rows)).toEqual([["1", ["pr-3"]]]);
+  });
+
+  it("shows every node of a cycle exactly once, and returns", () => {
+    const g = graph([ticket("1"), ticket("2"), ticket("3")], [edge("1", "2"), edge("2", "3"), edge("3", "1")]);
+    expect(flatten(view(g).rows).map((r) => r.id).sort()).toEqual(["1", "2", "3"]);
+  });
+
+  it("shows a node listed twice once", () => {
+    expect(flatten(view(graph([ticket("1"), ticket("1")])).rows).map((r) => r.id)).toEqual(["1"]);
+  });
+
+  it("orders siblings by priority, unprioritised last, then by id as a number would", () => {
+    const g = graph([ticket("10"), ticket("9"), ticket("3", { priority: 2 }), ticket("4", { priority: 0 })]);
+    expect(view(g).rows.map((r) => r.id)).toEqual(["4", "3", "9", "10"]);
+    const kids = graph([ticket("1"), ticket("12"), ticket("11", { priority: 1 }), ticket("2")], [
+      edge("12", "1"), edge("11", "1"), edge("2", "1"),
+    ]);
+    expect(view(kids).rows[0]?.children.map((r) => r.id)).toEqual(["11", "2", "12"]);
+  });
+
+  it("expands every ancestor of something that needs you, and nothing else", () => {
+    const g = graph(
+      [ticket("1"), ticket("2"), ticket("3", {}, ["go", "lr:blocked"]), ticket("4"), ticket("5")],
+      [edge("2", "1"), edge("3", "2"), edge("5", "4")],
+    );
+    const byId = new Map(flatten(view(g).rows).map((r) => [r.id, r]));
+    expect(byId.get("1")?.expanded).toBe(true);
+    expect(byId.get("2")?.expanded).toBe(true);
+    expect(byId.get("3")?.expanded).toBe(false);
+    expect(byId.get("4")?.expanded).toBe(false);
+  });
+
+  it("expands the ancestors of a running agent too", () => {
+    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
+    const rows = view(graph([ticket("1"), ticket("2")], [edge("2", "1")]), { running }).rows;
+    expect(rows[0]?.expanded).toBe(true);
+    expect(rows[0]?.children[0]?.badge).toBe("running");
+  });
+
+  it("keeps a closed or dropped node, marked so the page can grey it", () => {
+    const g = graph([ticket("1"), ticket("2", { closed: "dropped" }), ticket("3", { closed: "done" })], [edge("2", "1"), edge("3", "1")]);
+    const kids = view(g).rows[0]?.children;
+    expect(kids?.map((r) => [r.id, r.closed])).toEqual([["2", "dropped"], ["3", "done"]]);
+  });
+
+  it("never gives a closed ticket a needs-you or running badge, and does not open its ancestors for it", () => {
+    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
+    const g = graph([ticket("1"), ticket("2", { closed: "done" }), ticket("3", { closed: "dropped" }, ["go", "lr:blocked"])], [
+      edge("2", "1"), edge("3", "1"),
+    ]);
+    const rows = view(g, { running }).rows;
+    expect(rows[0]?.children.map((r) => r.badge)).toEqual(["discharged", "discharged"]);
+    expect(rows[0]?.expanded).toBe(false);
+  });
+});
+
+describe("boardView: rows", () => {
+  it("gives a ticket row a badge, its stage, a chat, and its system", () => {
+    const row = view(graph([ticket("7", { link: "https://github.com/a/b/issues/7" })])).rows[0];
+    expect(row).toMatchObject({ id: "7", kind: "ticket", badge: "waiting", system: { name: "GitHub" } });
+    expect(row?.chat).toEqual(chatFor("7", "/repo/landrace"));
+  });
+
+  it("gives an artifact row no badge and no chat, a summary, and its system", () => {
+    const g = graph([ticket("1"), pr("pr-9", { state: { merged: false, openThreads: 2 } })], [edge("pr-9", "1", "implements")]);
+    const row = view(g).rows[0]?.children[0];
+    expect(row).toMatchObject({ kind: "pull-request", badge: null, chat: null, summary: "open · openThreads 2" });
+    expect(row?.system?.name).toBe("GitHub");
+  });
+
+  it("drops a link that is not http(s), on artifact rows as on tickets", () => {
+    expect(view(graph([pr("pr-9", { link: "javascript:alert(1)" })])).rows[0]).toMatchObject({ link: "", system: null });
+    expect(view(graph([ticket("1", { link: "javascript:alert(1)" })])).rows[0]).toMatchObject({ link: "", system: null });
+    expect(view(graph([ticket("1", { link: "https://ok/1" })])).rows[0]?.link).toBe("https://ok/1");
+  });
+
+  it("flattens titles to one line", () => {
+    const row = view(graph([ticket("1", { title: "a\nb\u001b[2Jc" })])).rows[0];
+    expect(row?.title).toBe("a b [2Jc");
+  });
+
+  it("carries nothing the allowlist does not name", () => {
+    const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
+    expect(Object.keys(row ?? {}).sort()).toEqual([
+      "badge", "chat", "children", "closed", "expanded", "id", "kind", "link", "model", "note", "priority",
+      "round", "since", "stage", "summary", "system", "title",
+    ]);
+    expect(JSON.stringify(row)).not.toContain("hunter2");
+  });
+
   it("puts a ticket with an agent running in `running`, over whatever its labels say", () => {
     const running = new Map<string, Running>([["1", { stage: "spec", round: 2, model: "opus", since: 40 }]]);
-    const row = view([c("1", ["go", "lr:awaiting"])], { running }).rows[0];
-    expect(row).toMatchObject({ lane: "running", round: 2, model: "opus", since: 40 });
+    const row = view(graph([ticket("1", {}, ["go", "lr:awaiting"])]), { running }).rows[0];
+    expect(row).toMatchObject({ badge: "running", round: 2, model: "opus", since: 40, note: "agent running" });
   });
 
-  it("puts a ticket locked by another process in `elsewhere`, naming the holder", () => {
-    const held: Held = { ticket: "1", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
-    const row = view([c("1", ["go"])], { elsewhere: new Map([["1", held]]) }).rows[0];
-    expect(row?.lane).toBe("elsewhere");
-    expect(row?.note).toContain("conversation");
-    // Held.at is refreshed every deadlineMs/4 by withLock — "when the holder
-    // last said it was still working", not when the hold began — so it would
-    // sawtooth between 0 and ~75s rather than answer BoardRow.since ("when
-    // the current state began"). Nothing else tells us when a foreign hold
-    // started, so it reports null rather than a wrong clock.
+  it("puts a ticket locked by another process in `elsewhere`, and not its own lock", () => {
+    const other: Held = { ticket: "1", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
+    const row = view(graph([ticket("1")]), { elsewhere: new Map([["1", other]]) }).rows[0];
+    expect(row).toMatchObject({ badge: "elsewhere", note: "held by conversation (pid 77)" });
+    // Held.at is a heartbeat, not when the hold began: no clock beats a wrong one.
     expect(row?.since).toBeNull();
+    expect(view(graph([ticket("1")]), { elsewhere: new Map([["1", { ...other, pid: 1 }]]) }).rows[0]?.badge).toBe("waiting");
   });
 
-  it("does not report this process's own lock as elsewhere", () => {
-    const own: Held = { ticket: "1", holder: "tick:1", kind: "tick", pid: 1, at: 90, deadlineMs: 1, token: "t" };
-    expect(laneFor(c("1", ["go"]), { elsewhere: new Map([["1", own]]) })).toBe("waiting");
+  it("badges a ticket from its labels otherwise", () => {
+    const rows = view(graph([ticket("1", {}, ["go", "lr:blocked"]), ticket("2", {}, [])])).rows;
+    expect(rows.map((r) => [r.id, r.badge])).toEqual([["1", "needs-you"], ["2", "not-admitted"]]);
   });
 
-  it("orders rows by lane, then by ticket", () => {
-    const rows = view([c("3", ["go"]), c("1", ["go", "lr:blocked"]), c("2", [])]).rows;
-    expect(rows.map((r) => [r.lane, r.ticket])).toEqual([["needs-you", "1"], ["waiting", "3"], ["not-admitted", "2"]]);
+  it("passes nextTickAt, folder and workspace straight through", () => {
+    const v = view(graph([]), { nextTickAt: 12345, folder: "widgets", workspace: "/w" });
+    expect(v).toMatchObject({ nextTickAt: 12345, folder: "widgets", workspace: "/w", rows: [] });
+  });
+});
+
+describe("summaryOf", () => {
+  it("says open/done/dropped, then true flags and non-zero counts, in key order", () => {
+    expect(summaryOf(pr("p", { closed: "done", state: { merged: true, openThreads: 0 } }))).toBe("done · merged");
+    expect(summaryOf(pr("p", { state: { b: true, a: 3, s: "text", z: false } }))).toBe("open · a 3 · b");
+    expect(summaryOf(pr("p", { closed: "dropped", state: {} }))).toBe("dropped");
   });
 
-  it("drops a url that is not http(s), because it becomes an href", () => {
-    expect(view([c("1", ["go"], "t", "javascript:alert(1)")]).rows[0]?.url).toBe("");
-    expect(view([c("1", ["go"], "t", "https://ok/1")]).rows[0]?.url).toBe("https://ok/1");
-  });
-
-  it("flattens a title to one line", () => {
-    expect(view([c("1", ["go"], "a\nb\u001b[2Jc")]).rows[0]?.title).toBe("a b [2Jc");
-  });
-
-  it("passes nextTickAt straight through, whatever the schedule reports", () => {
-    expect(view([], { nextTickAt: 12345 }).nextTickAt).toBe(12345);
-    expect(view([], { nextTickAt: null }).nextTickAt).toBeNull();
-  });
-
-  it("passes folder and workspace straight through, for the header chip", () => {
-    const v = view([], { folder: "widgets", workspace: "/Users/me/widgets" });
-    expect(v.folder).toBe("widgets");
-    expect(v.workspace).toBe("/Users/me/widgets");
-  });
-
-  it("gives every row a chat prompt/links built from its own ticket and the board's workspace", () => {
-    const row = view([c("41", ["go"])], { workspace: "/Users/me/widgets" }).rows[0];
-    expect(row?.chat).toEqual(chatFor("41", "/Users/me/widgets"));
+  it("keeps it to a one-liner however much state there is", () => {
+    expect(summaryOf(pr("p", { state: { a: 1, b: 2, c: 3, d: 4, e: 5, f: true } }))).toBe("open · a 1 · b 2 · c 3 · d 4");
   });
 });
 
 describe("createBoard", () => {
   const shell = (now: () => number, held: (t: string) => Promise<Held | null> = async () => null) =>
-    createBoard({ workflow, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace" });
+    createBoard({ workflow, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace", nest: [...NEST] });
 
   it("opens a running row on step.started and closes it on step.finished", async () => {
     let t = 10;
     const board = shell(() => t);
-    board.list(graph([c("1", ["go"])]));
+    board.list(graph([ticket("1")]));
     board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 1, model: "opus" });
     t = 20;
-    expect((await board.view()).rows[0]).toMatchObject({ lane: "running", since: 10 });
+    expect((await board.view()).rows[0]).toMatchObject({ badge: "running", since: 10 });
     board.observe({ name: "step.finished", ticket: "1", stage: "spec", round: 1, ok: true });
-    expect((await board.view()).rows[0]?.lane).toBe("waiting");
+    expect((await board.view()).rows[0]?.badge).toBe("waiting");
   });
 
   it("ignores a step event that names no ticket", async () => {
     const board = shell(() => 0);
-    board.list(graph([c("1", ["go"])]));
+    board.list(graph([ticket("1")]));
     board.observe({ name: "step.started", stage: "spec", round: 1 });
-    expect((await board.view()).rows[0]?.lane).toBe("waiting");
+    expect((await board.view()).rows[0]?.badge).toBe("waiting");
   });
 
   it("reports no rows and a null listedAt before the first tick lands", async () => {
@@ -132,50 +240,25 @@ describe("createBoard", () => {
     });
   });
 
-  it("defaults nextTickAt to null when nothing schedules", async () => {
-    const board = createBoard({ workflow, held: async () => null, folder: "f", workspace: "/w" });
-    expect((await board.view()).nextTickAt).toBeNull();
-  });
-
   it("reports nextTickAt from the function it was given, read fresh on each view()", async () => {
     let next: number | null = 111;
-    const board = createBoard({ workflow, held: async () => null, nextTickAt: () => next, folder: "f", workspace: "/w" });
+    const board = createBoard({ workflow, held: async () => null, nextTickAt: () => next, folder: "f", workspace: "/w", nest: [] });
     expect((await board.view()).nextTickAt).toBe(111);
     next = 222;
     expect((await board.view()).nextTickAt).toBe(222);
   });
 
-  it("passes folder and workspace through view(), unchanged across ticks", async () => {
-    const board = createBoard({ workflow, held: async () => null, folder: "widgets", workspace: "/Users/me/widgets" });
-    const v = await board.view();
-    expect(v.folder).toBe("widgets");
-    expect(v.workspace).toBe("/Users/me/widgets");
+  it("nests along the relation types it was given", async () => {
+    const board = shell(() => 0);
+    board.list(graph([ticket("1"), ticket("2")], [edge("2", "1")]));
+    expect(shape((await board.view()).rows)).toEqual([["1", ["2"]]]);
   });
 
-  it("asks the lock only about tickets it has listed", async () => {
+  it("asks the lock only about open ticket nodes, never about a pull request or a closed ticket", async () => {
     const asked: string[] = [];
     const board = shell(() => 0, async (t) => { asked.push(t); return null; });
-    board.list(graph([c("4", ["go"]), c("9", ["go"])]));
+    board.list(graph([ticket("4"), ticket("9"), ticket("5", { closed: "done" }), pr("pr-1")], [edge("pr-1", "4", "implements")]));
     await board.view();
     expect(asked.sort()).toEqual(["4", "9"]);
-  });
-
-  it("tracks a running agent from events whose ticket is a string", () => {
-    const board = createBoard({ workflow, held: async () => null, folder: "f", workspace: "/w" });
-    board.list(graph([c("7", [], "t", "")]));
-    board.observe({ name: "step.started", ticket: "7", stage: "build", round: 1 });
-    return board.view().then((v) => expect(v.rows[0]?.lane).toBe("running"));
-  });
-
-  it("lists only the tickets in the graph — a pull request is not a row", async () => {
-    const board = shell(() => 0);
-    board.list(graph([c("1", ["go"]), { ...c("pr-3", []), kind: "pull-request" }]));
-    expect((await board.view()).rows.map((r) => r.ticket)).toEqual(["1"]);
-  });
-
-  it("shows no closed ticket — a finished sub-issue is not work in any lane", async () => {
-    const board = shell(() => 0);
-    board.list(graph([c("1", ["go"]), { ...c("2", ["go"]), closed: "done" }]));
-    expect((await board.view()).rows.map((r) => r.ticket)).toEqual(["1"]);
   });
 });

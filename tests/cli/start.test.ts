@@ -401,7 +401,7 @@ describe("repoWorkspace", () => {
 
 describe("startUi", () => {
   const board = () =>
-    createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w" });
+    createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
 
   it("serves nothing with --no-ui", async () => {
     expect(await startUi({ board: board(), ui: false, once: false, port: 0 })).toBeNull();
