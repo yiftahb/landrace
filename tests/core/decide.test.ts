@@ -120,4 +120,83 @@ describe("decide", () => {
     const s = snap({ run: run({ stage: "spec", lastOutputValid: false, failedStages: ["spec"] }) });
     expect(decide(wf, s)).toMatchObject({ action: "transition", to: stages[2] });
   });
+
+  describe("several entry stages", () => {
+    const fresh = { "run.stage": null };
+    const top: Stage = { id: "spec", entry: true, step: "steps/spec.md",
+      triggers: [{ name: "top-level ticket", when: { ...fresh, "rel.child-of.out.total": 0 } }] };
+    const child: Stage = { id: "build", entry: true, step: "steps/build.md",
+      triggers: [{ name: "child from a breakdown", when: { ...fresh, "rel.child-of.out.total": 1 } }] };
+    const review: Stage = { id: "review", step: "steps/review.md",
+      triggers: [{ name: "built", when: { "run.stage": "build", "run.outputs.build": { $exists: true } } }] };
+    const multi: Workflow = { version: 1, name: "t", stages: [top, child, review] };
+    const withParents = (n: number, o: object = {}) =>
+      snap({ rel: { "child-of": { out: { total: n }, in: { total: 0 } } }, run: run({ stage: null, ...o }) });
+
+    it("enters the one entry stage whose trigger matches", () => {
+      expect(decide(multi, withParents(0))).toMatchObject({
+        action: "transition", to: top, trigger: "top-level ticket", round: 1,
+      });
+      expect(decide(multi, withParents(1))).toMatchObject({
+        action: "transition", to: child, trigger: "child from a breakdown", round: 1,
+      });
+    });
+
+    it("halts when no entry stage accepts, naming every one it tried", () => {
+      const d = decide(multi, withParents(2));
+      expect(d).toMatchObject({ action: "halt" });
+      expect(d.why).toMatch(/no entry stage accepts this ticket/);
+      expect(d.why).toMatch(/spec/);
+      expect(d.why).toMatch(/build/);
+    });
+
+    it("halts when two entry stages accept, rather than taking the first", () => {
+      const greedy: Stage = { ...child, triggers: [{ name: "anything fresh", when: fresh }] };
+      const d = decide({ ...multi, stages: [top, greedy, review] }, withParents(0));
+      expect(d).toMatchObject({ action: "halt" });
+      expect(d.why).toMatch(/ambiguous entry/);
+      expect(d.why).toMatch(/spec \(top-level ticket\)/);
+      expect(d.why).toMatch(/build \(anything fresh\)/);
+    });
+
+    it("halts when two triggers of one entry stage accept, as two matching triggers do everywhere", () => {
+      const twice: Stage = { ...top, triggers: [...(top.triggers ?? []), { name: "also fresh", when: fresh }] };
+      const d = decide({ ...multi, stages: [twice, child, review] }, withParents(0));
+      expect(d).toMatchObject({ action: "halt" });
+      expect(d.why).toMatch(/ambiguous entry/);
+    });
+
+    it("still halts a ticket with history and no position, before choosing any entry", () => {
+      const d = decide(multi, withParents(1, { counters: { review: 1 }, rounds: { review: { entered: 1, output: 1 } } }));
+      expect(d).toMatchObject({ action: "halt" });
+      expect(d.why).toMatch(/has no position/);
+    });
+
+    it("resumes a first entry into a second entry stage whose position never landed", () => {
+      // The entry record for build round 1 is on the ticket; the status label
+      // that would have placed it is not. Nothing has settled.
+      const d = decide(multi, withParents(1, { rounds: { build: { entered: 1, output: 0 } } }));
+      expect(d).toMatchObject({ action: "transition", to: child, round: 1 });
+    });
+
+    it("does not re-enter a positioned ticket when its relationships change", () => {
+      // At spec, still owing its first output — and now somebody's sub-issue.
+      const s = snap({
+        rel: { "child-of": { out: { total: 1 }, in: { total: 0 } } },
+        run: run({ stage: "spec", rounds: { spec: { entered: 1, output: 0 } } }),
+      });
+      expect(decide(multi, s)).toMatchObject({ action: "invoke", stage: top });
+    });
+  });
+
+  it("a sole entry stage is entered whatever its triggers say", () => {
+    // Loop-back triggers only, none of which can hold on a fresh ticket: the
+    // single-entry rule never read them, and must not start now.
+    const loopOnly: Stage = { id: "a", entry: true, step: "steps/a.md",
+      triggers: [{ name: "handed back", when: { "run.stage": "b" } }] };
+    const w: Workflow = { version: 1, name: "t", stages: [loopOnly, { id: "b", terminal: true, triggers: [{ when: { x: 1 } }] }] };
+    expect(decide(w, snap({ run: run({ stage: null }) }))).toMatchObject({
+      action: "transition", to: loopOnly, trigger: "entry", round: 1,
+    });
+  });
 });

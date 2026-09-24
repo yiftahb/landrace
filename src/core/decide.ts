@@ -2,24 +2,59 @@ import { assess } from "#core/assess.js";
 import { checkEligible } from "#core/eligible.js";
 import { locate } from "#core/locate.js";
 import { compile } from "#core/predicate.js";
-import type { Decision, Run, Snapshot, Workflow } from "#namespace.js";
+import type { Decision, Run, Snapshot, Stage, Workflow } from "#namespace.js";
 
 /**
- * What a ticket has done that the entry stage's own first round cannot
+ * What a ticket has done that an entry stage's own first round cannot
  * account for.
  *
  * Every stage the ticket has been recorded as entering, plus every stage that
- * has settled a round — an output, or a rejection. The entry stage at round
+ * has settled a round — an output, or a rejection. An entry stage at round
  * one is deliberately not history: entering it is the very thing being
  * considered, and its record landing without the position that belongs beside
- * it is the ordinary crash this design already recovers from.
+ * it is the ordinary crash this design already recovers from. *Every* entry
+ * stage, not only the first: a child whose first entry into `build` crashed
+ * before its label landed is exactly as recoverable as a top-level ticket
+ * whose entry into `spec` did.
  */
-function history(run: Run, entryId: string): string[] {
+function history(run: Run, entryIds: ReadonlySet<string>): string[] {
   const settled = Object.entries(run.counters ?? {}).filter(([, n]) => n > 0).map(([id]) => id);
   const entered = Object.keys(run.rounds ?? {});
   return [...new Set([...entered, ...settled])]
-    .filter((id) => id !== entryId || (run.counters[entryId] ?? 0) > 0)
+    .filter((id) => !entryIds.has(id) || (run.counters[id] ?? 0) > 0)
     .sort();
+}
+
+/**
+ * Which entry stage a ticket with no position starts at.
+ *
+ * One entry stage is entered unconditionally, its triggers unread — that is
+ * the rule every workflow written before this one relies on, including the
+ * ones whose entry stage carries only loop-back triggers that cannot hold on a
+ * fresh ticket. Reading them now would halt every such workflow's first
+ * ticket.
+ *
+ * Several are chosen between by their triggers, and only by their triggers.
+ * No match is a halt, not a fall back to the first one declared: a child the
+ * workflow has no start for would otherwise be run through the whole planning
+ * phase its breakdown was meant to spare it. Two matches is a halt too, for
+ * the reason it is everywhere else.
+ */
+function pickEntry(entries: Stage[], s: Snapshot): { to: Stage; trigger: string } | { why: string } {
+  const [sole] = entries;
+  if (entries.length === 1 && sole) return { to: sole, trigger: "entry" };
+
+  const matches = entries.flatMap((stage) =>
+    (stage.triggers ?? [])
+      .filter((t) => compile(t.when)(s))
+      .map((t) => ({ to: stage, trigger: t.name ?? stage.id })),
+  );
+  const [only, ...rest] = matches;
+  if (!only) return { why: `no entry stage accepts this ticket (tried: ${entries.map((e) => e.id).join(", ")})` };
+  if (rest.length > 0) {
+    return { why: `ambiguous entry: ${matches.map((m) => `${m.to.id} (${m.trigger})`).join(", ")}` };
+  }
+  return only;
 }
 
 export function decide(w: Workflow, s: Snapshot): Decision {
@@ -44,8 +79,8 @@ export function decide(w: Workflow, s: Snapshot): Decision {
     return { action: "halt", why: `cannot place the ticket: ${where.ids.join(", ")} all match` };
   }
   if (where.kind === "none") {
-    const entry = w.stages.find((x) => x.entry);
-    if (!entry) return { action: "halt", why: "the workflow has no entry stage" };
+    const entries = w.stages.filter((x) => x.entry);
+    if (entries.length === 0) return { action: "halt", why: "the workflow has no entry stage" };
     /*
      * "No position" is the same thing as "a new ticket" only when the ticket
      * has no run behind it either. Position is one value written by a swap
@@ -59,9 +94,10 @@ export function decide(w: Workflow, s: Snapshot): Decision {
      * from — the one record that said where the ticket was is gone. So this
      * halts for a person the way every other thing the engine cannot tell
      * halts, rather than guessing the cheapest-looking answer and spending
-     * money on it.
+     * money on it. Asked before an entry stage is chosen, because the answer
+     * does not depend on which one would be.
      */
-    const behind = history(run, entry.id);
+    const behind = history(run, new Set(entries.map((e) => e.id)));
     if (behind.length) {
       return {
         action: "halt",
@@ -69,7 +105,9 @@ export function decide(w: Workflow, s: Snapshot): Decision {
           "it is not a new ticket, and where it belongs cannot be derived",
       };
     }
-    return { action: "transition", to: entry, trigger: "entry", round: nextRound(entry.id) };
+    const picked = pickEntry(entries, s);
+    if ("why" in picked) return { action: "halt", why: picked.why };
+    return { action: "transition", to: picked.to, trigger: picked.trigger, round: nextRound(picked.to.id) };
   }
 
   const stage = where.stage;
