@@ -1,4 +1,4 @@
-import { APP_CSS, APP_JS, PAGE_HTML } from "#ui/page.js";
+import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 describe("the page", () => {
   it("loads its script and style from the server, never inline, so CSP can forbid inline", () => {
@@ -56,5 +56,36 @@ describe("the page", () => {
 
   it("lays the header group out to the right", () => {
     expect(APP_CSS).toMatch(/margin-left:\s*auto/);
+  });
+
+  it("loads /theme.js before /app.js, and without defer, so there is no flash of the wrong theme", () => {
+    expect(PAGE_HTML).toContain('<script src="/theme.js"></script>');
+    expect(PAGE_HTML.indexOf('<script src="/theme.js"></script>'))
+      .toBeLessThan(PAGE_HTML.indexOf('<script src="/app.js" defer></script>'));
+  });
+
+  it("has a theme toggle in the header", () => {
+    const header = /<header>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(header).toContain('id="theme-toggle"');
+    expect(header).toMatch(/aria-label="Switch to (dark|light) mode"/);
+  });
+
+  it("reads the stored theme, else the OS preference, and sets the class before paint — every localStorage access guarded", () => {
+    expect(THEME_JS).toContain("localStorage.getItem(");
+    expect(THEME_JS).toContain("prefers-color-scheme: dark");
+    expect(THEME_JS).toContain("classList.toggle(\"dark\"");
+    expect(THEME_JS).toMatch(/try\s*{[^}]*localStorage[^}]*}\s*catch/s);
+  });
+
+  it("never parses a string as HTML in the theme script either", () => {
+    for (const sink of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"]) {
+      expect(THEME_JS).not.toContain(sink);
+    }
+  });
+
+  it("wires the toggle in script, persists the choice, and guards every localStorage write", () => {
+    expect(APP_JS).toContain('getElementById("theme-toggle")');
+    expect(APP_JS).toContain("classList.toggle(\"dark\"");
+    expect(APP_JS).toMatch(/try\s*{[^}]*localStorage\.setItem[^}]*}\s*catch/s);
   });
 });

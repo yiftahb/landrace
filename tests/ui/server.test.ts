@@ -51,6 +51,19 @@ describe("serveBoard", () => {
     expect(JSON.parse(board.body)).toEqual(empty);
   });
 
+  it("serves /theme.js as script, through the same send() so it carries the CSP", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty });
+    const res = await get(server.port, "/theme.js");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/javascript/);
+    expect(String(res.headers["content-security-policy"])).toContain("script-src 'self'");
+  });
+
+  it("404s POST /theme.js, like every other route that is not /tick", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty });
+    expect((await get(server.port, "/theme.js", { method: "POST" })).status).toBe(405);
+  });
+
   it("binds 127.0.0.1 and reports a url on it", async () => {
     server = await serveBoard({ port: 0, view: async () => empty });
     expect(server.url).toBe(`http://127.0.0.1:${server.port}/`);

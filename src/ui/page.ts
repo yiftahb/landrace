@@ -11,6 +11,7 @@ export const PAGE_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Landrace</title>
+<script src="/theme.js"></script>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
@@ -18,6 +19,10 @@ export const PAGE_HTML = `<!doctype html>
 <header>
 <h1>Landrace</h1><span id="meta">connecting…</span>
 <div id="schedule" class="ml-auto"><span id="next">no tick scheduled</span><button id="tick" type="button">Run next tick now</button></div>
+<button id="theme-toggle" type="button" aria-label="Switch to dark mode">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+</button>
 </header>
 <main>
 <section data-lane="needs-you"><h2>Needs you</h2><ul></ul></section>
@@ -31,9 +36,29 @@ export const PAGE_HTML = `<!doctype html>
 </html>
 `;
 
+const THEME_KEY = "landrace-theme";
+
+/**
+ * Blocking, in <head>, before /app.css and /app.js: this has to run and set
+ * the class before the browser paints anything, or the page flashes light
+ * before switching to dark. Every localStorage access is wrapped — a private
+ * window or blocked site data throws on read *and* write, and a themed page
+ * beats no page over a storage exception.
+ */
+export const THEME_JS = `
+"use strict";
+(function () {
+  var stored = null;
+  try { stored = localStorage.getItem("${THEME_KEY}"); } catch (e) {}
+  var dark = stored === null ? matchMedia("(prefers-color-scheme: dark)").matches : stored === "dark";
+  document.documentElement.classList.toggle("dark", dark);
+})();
+`;
+
 export const APP_JS = `
 "use strict";
 const POLL_MS = 2000;
+const THEME_KEY = ${JSON.stringify(THEME_KEY)};
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -160,4 +185,26 @@ tickButton.addEventListener("click", () => {
 });
 
 pollOnce().then(() => schedulePoll(POLL_MS));
+
+const themeToggle = document.getElementById("theme-toggle");
+
+function isDark() {
+  return document.documentElement.classList.contains("dark");
+}
+
+// /theme.js already set the class before this script even ran (it loads
+// first, with no defer, for exactly that reason) — this only ever syncs the
+// label to whatever that decided, never the other way round.
+function syncThemeLabel() {
+  themeToggle.setAttribute("aria-label", isDark() ? "Switch to light mode" : "Switch to dark mode");
+}
+
+themeToggle.addEventListener("click", () => {
+  const dark = !isDark();
+  document.documentElement.classList.toggle("dark", dark);
+  try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch (e) {}
+  syncThemeLabel();
+});
+
+syncThemeLabel();
 `;

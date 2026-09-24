@@ -2,7 +2,7 @@ import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { UiOptions, UiServer } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
-import { APP_CSS, APP_JS, PAGE_HTML } from "#ui/page.js";
+import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 const HOST = "127.0.0.1";
 
@@ -16,6 +16,7 @@ const STATIC: Record<string, { type: string; body: string }> = {
   "/": { type: "text/html; charset=utf-8", body: PAGE_HTML },
   "/app.js": { type: "text/javascript; charset=utf-8", body: APP_JS },
   "/app.css": { type: "text/css; charset=utf-8", body: APP_CSS },
+  "/theme.js": { type: "text/javascript; charset=utf-8", body: THEME_JS },
 };
 
 /**
