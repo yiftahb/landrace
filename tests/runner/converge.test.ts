@@ -1044,6 +1044,23 @@ describe("a stage that creates children", () => {
     expect(state.children("1").find((c) => c.title === "child 0")?.closed).toBe("dropped");
   });
 
+  it("refuses a round whose step made children it never declared it could", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
+    const undeclared = new Map<string, Step>([["steps/breakdown.md", { ...steps.get("steps/breakdown.md"), capabilities: [] } as Step]]);
+    const run = createHarness({
+      workflow, steps: undeclared, pre: [state.pre], post: [state.post], source: state.source, ticket: "1",
+      answers: { breakdown: () => '```json\n{"kind":"children"}\n```' },
+      // A way round the executor: the child lands with this round's origin
+      // although the agent was never handed the tool.
+      during: async () => { await createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title: "sneaked" }, ctx); },
+    });
+
+    const r = await run.converge();
+    expect(r.result.settled).toBe("halt");
+    expect(r.result.why).toMatch(/without declaring tickets:create/);
+    expect(state.children("1").map((c) => c.title)).toEqual(["sneaked"]);
+  });
+
   it("halts, naming the stage, when the close cannot be planned on the way into the stage", async () => {
     // A `follow` list of relationship types that is empty: planNodesClose refuses
     // to guess which edges to walk, rather than closing nothing silently. This

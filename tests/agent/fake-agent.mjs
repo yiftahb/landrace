@@ -52,6 +52,9 @@ if (cfg.flood) {
   const filled = template
     .replaceAll("{{LEN}}", String(stdin.length))
     .replaceAll("{{ARGV}}", process.argv.slice(2).join(" "))
+    // Whole, for an argument that itself contains spaces or quotes — an
+    // inline --mcp-config is one argv element holding a JSON document.
+    .replaceAll("{{ARGV_JSON}}", JSON.stringify(process.argv.slice(2)))
     // Lets a test prove a value from the parent's environment did NOT reach
     // this child, by asking the child itself to echo it back.
     .replace(/\{\{ENV:([A-Za-z0-9_]+)\}\}/g, (_, name) => process.env[name] ?? "");

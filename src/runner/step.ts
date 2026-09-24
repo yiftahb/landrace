@@ -1,8 +1,9 @@
 import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
-import type { Effect, Logger, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
+import type { Effect, Graph, Logger, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   CAPABILITIES,
   isReservedId,
+  mayCreateTickets,
   mayWriteRepo,
   OUTPUT_KIND,
   outputValueProblem,
@@ -148,6 +149,8 @@ export async function sandboxTrespass(
 
 export async function runStep(opts: {
   step: Step;
+  /** The ticket this step runs for: the parent any child it creates is bound to. */
+  ticket: string;
   stageId: string;
   round: number;
   snapshot: Snapshot;
@@ -168,6 +171,12 @@ export async function runStep(opts: {
    * the operator's own checkout, and there is nothing here to judge.
    */
   sandbox?: { path: string };
+  /**
+   * The ticket's graph as it stands after the step, for the tickets:create
+   * backstop. Absent, nothing is checked — like `sandbox`, it is what makes
+   * the check possible, and a caller with no tracker to ask has none.
+   */
+  readGraph?: () => Promise<Graph>;
   log?: Logger;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
@@ -253,6 +262,11 @@ export async function runStep(opts: {
       // exactOptionalPropertyTypes than no key at all.
       ...(step.model === undefined ? {} : { model: step.model }),
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
+      // Derived here, from what this call already names, rather than accepted
+      // from the caller: the step's own declaration is the one thing that may
+      // put a binding on the wire, so no caller can hand one to a step that
+      // never asked for it.
+      ...(mayCreateTickets(step.capabilities) ? { child: { parent: opts.ticket, stage: stageId, round } } : {}),
     }));
   } catch (e) {
     // The executor itself failed — timeout, quota, an abort signal from a
@@ -267,6 +281,27 @@ export async function runStep(opts: {
   // A verdict, not an outage: durable and terminal, like a screening refusal.
   const trespass = await sandboxTrespass(opts.sandbox, before);
   if (trespass) return { ok: false, kind: "refused", reason: trespass };
+
+  // The engine's half of tickets:create, like the worktree diff is repo:write's:
+  // a child carrying this very round's origin, made by a step that never
+  // declared the word, is a step that found a way around its executor.
+  if (!mayCreateTickets(step.capabilities) && opts.readGraph) {
+    let graph: Graph;
+    try {
+      graph = await opts.readGraph();
+    } catch (e) {
+      return { ok: false, kind: "unavailable", reason: `the ticket could not be re-read to check what the step created: ${messageOf(e)}` };
+    }
+    const made = graph.nodes.filter((n) =>
+      n.origin?.parent === opts.ticket && n.origin.stage === stageId && n.origin.round === round);
+    if (made.length) {
+      return {
+        ok: false,
+        kind: "refused",
+        reason: `the step created children (${made.map((n) => n.id).join(", ")}) without declaring tickets:create`,
+      };
+    }
+  }
 
   // A step with no declared output contributes no effects; the workflow routes
   // it by trigger instead.

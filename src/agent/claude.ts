@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
-import { CAPABILITIES, mayWriteRepo, unknownCapabilities } from "#conventions.js";
+import { CAPABILITIES, isTicketId, mayCreateTickets, mayWriteRepo, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import type { Executor, Logger } from "#namespace.js";
 import { containedPath } from "#workflow/load.js";
@@ -128,6 +128,12 @@ export function createClaudeExecutor(opts: {
   timeoutMs?: number;
   bin?: string;
   log?: Logger;
+  /**
+   * How to start `landrace mcp` for a step's create_child tool: the node
+   * binary and the arguments up to and including `--workflow <dir>`. Absent,
+   * a step that may create children is refused rather than run without it.
+   */
+  childServer?: { command: string; args: readonly string[] };
 } = {}): Executor {
   const {
     model,
@@ -136,6 +142,7 @@ export function createClaudeExecutor(opts: {
     timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
     bin = "claude",
     log,
+    childServer,
   } = opts;
 
   if (permissionMode === "bypassPermissions") {
@@ -150,7 +157,7 @@ export function createClaudeExecutor(opts: {
 
   return defineExecutor({
     id: "claude",
-    async run(prompt, { round, resume, cwd, capabilities, model: stepModel, signal }) {
+    async run(prompt, { round, resume, cwd, capabilities, model: stepModel, child: binding, signal }) {
       if (signal.aborted) {
         // Nothing checked this before `spawn` in the first cut, so a run
         // cancelled before it started launched the (paid) agent anyway.
@@ -191,11 +198,44 @@ export function createClaudeExecutor(opts: {
       if (resume !== undefined) assertArgShape("resume", resume);
       const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
 
+      // A permission, not an obligation: a turn that declares the word but was
+      // handed no binding simply gets no tool.
+      const bound = binding !== undefined && mayCreateTickets(capabilities) ? binding : undefined;
+      if (bound && !childServer) {
+        throw new Error("cannot give this step create_child: this executor was not told how to start the landrace MCP server");
+      }
+      if (bound) {
+        if (!isTicketId(bound.parent)) throw new Error(`refused parent ${JSON.stringify(bound.parent)}: not a ticket id`);
+        assertArgShape("stage", bound.stage);
+        if (!Number.isInteger(bound.round) || bound.round < 1) throw new Error(`refused round ${bound.round}`);
+      }
+
       // json output carries session_id; without it a conversation cannot continue.
       const args = ["-p", "--output-format", "json", "--permission-mode", mode];
       if (noTools) args.push("--restricted");
       if (chosenModel !== undefined) args.push("--model", chosenModel);
       if (resume !== undefined) args.push("--resume", resume);
+      if (bound && childServer) {
+        // The binding is argv to a process the agent's CLI starts, not text in
+        // its prompt: nothing the agent says can file a child anywhere else.
+        //
+        // Inline JSON rather than a config file: there is no path for the
+        // agent's worktree to shadow and nothing to clean up after a crash.
+        // It holds no secret — the server reads the workflow's own .env — so
+        // being visible in `ps` costs nothing. `--strict-mcp-config` keeps a
+        // `.mcp.json` in the worktree from adding servers, or from defining a
+        // "landrace" of its own whose create_child the allowlist would approve.
+        // `--allowedTools` is variadic, so it goes last with nothing after it.
+        const mcpConfig = JSON.stringify({
+          mcpServers: {
+            landrace: {
+              command: childServer.command,
+              args: [...childServer.args, "--child", bound.parent, "--stage", bound.stage, "--round", String(bound.round)],
+            },
+          },
+        });
+        args.push("--mcp-config", mcpConfig, "--strict-mcp-config", "--allowedTools", "mcp__landrace__landrace_create_child");
+      }
 
       return new Promise((resolve, reject) => {
         let child: ChildProcessWithoutNullStreams;

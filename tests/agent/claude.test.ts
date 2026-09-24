@@ -432,3 +432,66 @@ describe("claude executor", () => {
     }
   });
 });
+
+describe("the create_child tool", () => {
+  const server = { command: "/usr/bin/node", args: ["/opt/landrace/cli.js", "mcp", "--workflow", "/repo/.landrace"] };
+  const binding = { parent: "12", stage: "breakdown", round: 2 };
+
+  const argvOf = async (
+    executor: ReturnType<typeof createClaudeExecutor>,
+    opts: { capabilities?: readonly string[]; child?: { parent: string; stage: string; round: number } },
+  ): Promise<string[]> => {
+    const cwd = withCfg({ out: "{{ARGV_JSON}}" });
+    const r = await executor.run("p", { round: 1, signal: new AbortController().signal, cwd, ...opts });
+    return JSON.parse(r.text) as string[];
+  };
+
+  it("starts the agent with the bound child server when the step may create tickets", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), {
+      capabilities: ["tickets:create", "repo:read"], child: binding,
+    });
+    const config = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string);
+    expect(config.mcpServers.landrace).toEqual({
+      command: "/usr/bin/node",
+      args: [...server.args, "--child", "12", "--stage", "breakdown", "--round", "2"],
+    });
+    expect(Object.keys(config.mcpServers)).toEqual(["landrace"]);
+    expect(argv[argv.indexOf("--allowedTools") + 1]).toBe("mcp__landrace__landrace_create_child");
+    // Exactly the one tool: the flag is variadic, so whatever follows it up
+    // to the next flag would be allowed too.
+    expect(argv[argv.indexOf("--allowedTools") + 2] ?? "--").toMatch(/^-/);
+    // A `.mcp.json` in the worktree the agent works in could otherwise add a
+    // server of its own — or one named "landrace", whose create_child the
+    // allowlist above would then approve.
+    expect(argv).toContain("--strict-mcp-config");
+  });
+
+  it("offers nothing to a step that did not declare it, even with a binding", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["repo:read"], child: binding });
+    expect(argv).not.toContain("--mcp-config");
+    expect(argv).not.toContain("--allowedTools");
+  });
+
+  it("offers nothing to a conversation turn, which is handed no binding", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["tickets:create"] });
+    expect(argv).not.toContain("--mcp-config");
+    expect(argv).not.toContain("--allowedTools");
+  });
+
+  it("refuses rather than drops the capability when it was not told how to start the server", async () => {
+    await expect(argvOf(createClaudeExecutor({ bin }), { capabilities: ["tickets:create"], child: binding }))
+      .rejects.toThrow(/cannot give this step create_child/);
+  });
+
+  it("refuses a binding that could smuggle an argument", async () => {
+    await expect(argvOf(createClaudeExecutor({ bin, childServer: server }), {
+      capabilities: ["tickets:create"], child: { ...binding, stage: "-x" },
+    })).rejects.toThrow(/refused stage/);
+    await expect(argvOf(createClaudeExecutor({ bin, childServer: server }), {
+      capabilities: ["tickets:create"], child: { ...binding, parent: "--workflow" },
+    })).rejects.toThrow(/refused parent/);
+    await expect(argvOf(createClaudeExecutor({ bin, childServer: server }), {
+      capabilities: ["tickets:create"], child: { ...binding, round: 0 },
+    })).rejects.toThrow(/refused round/);
+  });
+});

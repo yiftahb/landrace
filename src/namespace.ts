@@ -406,6 +406,14 @@ export interface Executor {
        * worktree afterwards is a backstop, not a licence to ignore this.
        */
       capabilities?: readonly string[];
+      /**
+       * Present only for a step that declared `tickets:create`, and only on a
+       * step's own invocation — a conversation turn is never handed one, so a
+       * turn cannot create children however it is asked to. An executor that
+       * cannot expose a bound create_child tool must refuse a run that carries
+       * this, never drop it: the step would report children it had no way to make.
+       */
+      child?: ChildBinding;
       signal: AbortSignal;
     },
   ): Promise<{ text: string; sessionId: string | null }>;

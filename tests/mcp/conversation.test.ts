@@ -118,7 +118,7 @@ async function ranWithDeclaredSession(recorded: string | null): Promise<{ tracke
     },
   };
   const result = await runStep({
-    step, stageId: "spec", round: 1, snapshot: {},
+    step, ticket: "1", stageId: "spec", round: 1, snapshot: {},
     executor: {
       id: "step",
       run: async () => ({ text: '```json\n{"kind":"questions","session":"sid-theirs"}\n```', sessionId: recorded }),
@@ -162,7 +162,7 @@ describe("conversation", () => {
       },
     };
     const result = await runStep({
-      step, stageId: "spec", round: 1, snapshot: {},
+      step, ticket: "1", stageId: "spec", round: 1, snapshot: {},
       executor: { id: "step", run: async () => ({ text: '```json\n{"kind":"questions"}\n```', sessionId: "sid-real" }) },
       signal: new AbortController().signal,
     });

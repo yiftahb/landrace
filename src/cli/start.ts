@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
@@ -155,6 +155,13 @@ export function executorFor(
    * ignores its configuration is the kind this codebase refuses to ship.
    */
   model: string | undefined = config.agent.model,
+  /**
+   * The workflow directory, given only for the loop's own step executor: it is
+   * what lets a `tickets:create` step be handed its create_child server.
+   * Conversation turns and the screener never create children, so they are
+   * built without it — and a step that asks is then refused, not run bare.
+   */
+  dir?: string,
 ): Executor {
   // A hook's executor is constructed by the hook, so the budget cannot reach
   // it: the engine has a number and no way to hand it over. Enforcing one out
@@ -167,6 +174,15 @@ export function executorFor(
       ...(model === undefined ? {} : { model }),
       timeoutMs: stepTimeoutMs(workflow),
       log,
+      ...(dir === undefined ? {} : {
+        // This same process, started again as `landrace mcp`: the node binary,
+        // its own flags (type stripping, --import), the CLI entry, and the
+        // workflow directory made absolute so the agent's cwd cannot move it.
+        childServer: {
+          command: process.execPath,
+          args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workflow", resolve(dir)],
+        },
+      }),
     });
   }
   const registered = [...registry.executors.keys()];
@@ -319,7 +335,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       pre: registry.pre,
       artifacts: registry.artifacts,
       dispatcher: createDispatcher(registry.post),
-      executor: executorFor(loaded.config, workflow, registry, log),
+      executor: executorFor(loaded.config, workflow, registry, log, loaded.config.agent.model, dir),
       ...(sandbox === null ? {} : { sandbox }),
       ...(loaded.config.security.screen
         ? { screen: { executor: executorFor(loaded.config, workflow, registry, log, loaded.config.security.model) } }

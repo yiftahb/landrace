@@ -67,7 +67,7 @@ describe("a step that exceeds what it declared", () => {
     const path = await ensureWorktree("101", root);
 
     const r = await runStep({
-      step: step(["repo:read"]),
+      ticket: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
@@ -100,7 +100,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     const r = await runStep({
-      step: step(["repo:read"]),
+      ticket: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: committer,
       signal: new AbortController().signal,
@@ -117,7 +117,7 @@ describe("a step that exceeds what it declared", () => {
     const path = await ensureWorktree("103", root);
 
     const r = await runStep({
-      step: step(["repo:read"]),
+      ticket: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
@@ -133,7 +133,7 @@ describe("a step that exceeds what it declared", () => {
     const path = await ensureWorktree("104", root);
 
     const r = await runStep({
-      step: step(["repo:read", "repo:write"]),
+      ticket: "1", step: step(["repo:read", "repo:write"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
@@ -150,7 +150,7 @@ describe("a step that exceeds what it declared", () => {
     const path = await ensureWorktree("105", root);
 
     const r = await runStep({
-      step: step(["repo:read"]),
+      ticket: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: wellBehaved(),
       signal: new AbortController().signal,
@@ -174,7 +174,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     const r = await runStep({
-      step: step(["repo:read"]),
+      ticket: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
       signal: new AbortController().signal,
@@ -198,7 +198,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     const r = await runStep({
-      step: step(["repo:read"]),
+      ticket: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: vanishing,
       signal: new AbortController().signal,
@@ -222,7 +222,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     const r = await runStep({
-      step: step(["repo:read", "net:egress"]),
+      ticket: "1", step: step(["repo:read", "net:egress"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
       signal: new AbortController().signal,
@@ -241,7 +241,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     await runStep({
-      step: { prompt: "go" },
+      ticket: "1", step: { prompt: "go" },
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
       signal: new AbortController().signal,

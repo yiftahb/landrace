@@ -316,8 +316,9 @@ async function converging(
       let result: StepResult;
       try {
         result = await runStep({
-          step, stageId: stage.id, round, snapshot, briefing,
+          step, ticket, stageId: stage.id, round, snapshot, briefing,
           executor: deps.executor, signal: deps.ctx.signal,
+          readGraph: () => deps.source.read(ticket, deps.ctx),
           ...(deps.screen ? { screen: deps.screen } : {}),
           ...(sandbox ? { sandbox } : {}),
           log: deps.log,

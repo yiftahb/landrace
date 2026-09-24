@@ -521,19 +521,21 @@ describe("a ticket goes all the way round §10", () => {
    * count per pull request on the ticket, and the briefing's own reads only
    * for an invocation of a step whose prompt actually names it — not one per
    * review thread, not one per round, and nothing at all for the four steps
-   * that have no use for the threads.
+   * that have no use for the threads. Every invocation of a step that did not
+   * declare tickets:create re-reads the ticket once afterwards, to be sure it
+   * made no children — none of this workflow's steps declares it.
    */
-  it("costs one ticket read per pass, plus one per step that asks to see the threads", async () => {
+  it("costs one ticket read per pass, one per invocation, plus one per step that asks to see the threads", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const r = await run(gh);
 
     const briefed = r.invocations.filter((i) => i.stage === "fix-review").length;
     expect(briefed).toBeGreaterThan(0);
     // The briefing finds the ticket's pull requests the same way `read` does.
-    expect(queriesOf(gh, "LandraceTicket")).toBe(r.result.passes + briefed);
-    // One pull request, well under a page of threads: one count per pass it
+    expect(queriesOf(gh, "LandraceTicket")).toBe(r.result.passes + r.invocations.length + briefed);
+    // One pull request, well under a page of threads: one count per read it
     // existed on, one briefing page per fix round.
-    expect(queriesOf(gh, "LandraceThreads")).toBeLessThanOrEqual(r.result.passes);
+    expect(queriesOf(gh, "LandraceThreads")).toBeLessThanOrEqual(r.result.passes + r.invocations.length);
     expect(queriesOf(gh, "LandraceBrief")).toBe(briefed);
     expect(gh.graphql.length).toBe(
       queriesOf(gh, "LandraceTicket") + queriesOf(gh, "LandraceThreads") + queriesOf(gh, "LandraceBrief"),
