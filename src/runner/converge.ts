@@ -1,5 +1,5 @@
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
-import { decide, planEffects, reconcile } from "#core/index.js";
+import { decide, planEffects, planNodesClose, reconcile } from "#core/index.js";
 import { RECORD_EFFECT } from "#conventions.js";
 import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot, StepResult } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
@@ -195,6 +195,29 @@ async function converging(
         return { passes: pass, settled: "halt", why: reason };
       }
 
+      // What a crashed attempt at this round created, dropped before the step
+      // runs again. On entry the close drops rounds below this one; here it
+      // also takes this round, because an attempt that left no verdict left
+      // its children, and the transition that planned the first close is not
+      // coming back — a pending stage is invoked, never re-entered. Nothing to
+      // drop reconciles away and the step runs on this same pass.
+      let residue: Effect[];
+      try {
+        residue = reconcile(snapshot, planNodesClose(stage, snapshot, round + 1), deps.dispatcher.satisfied);
+      } catch (e) {
+        const reason = messageOf(e);
+        deps.log("effect.failed", { ticket, reason });
+        return { passes: pass, settled: "halt", why: reason };
+      }
+      if (residue.length) {
+        const cleaned = await tryApply(residue, ticket, snapshot, deps);
+        if (!cleaned.ok) {
+          deps.log("effect.failed", { ticket, reason: cleaned.reason });
+          return { passes: pass, settled: "halt", why: cleaned.reason };
+        }
+        continue;
+      }
+
       // Scoped to (stage, round): decide() computes round from
       // run.counters, which only advances on a round that reached a verdict —
       // an output, or a recorded rejection. A step that ran and left neither
@@ -331,8 +354,18 @@ async function converging(
       continue;
     }
 
-    // transition or halt: the effects of the state being entered.
-    const planned = planEffects(decision, snapshot);
+    // transition or halt: the effects of the state being entered. Planning
+    // reads the graph now, for a stage that closes nodes, and a graph it
+    // cannot read is a halt with the stage named — never a throw out of
+    // converge, and never a guess at an empty cascade.
+    let planned: Effect[];
+    try {
+      planned = planEffects(decision, snapshot);
+    } catch (e) {
+      const reason = messageOf(e);
+      deps.log("effect.failed", { ticket, reason });
+      return { passes: pass, settled: "halt", why: reason };
+    }
     const reconciled = tryReconcile(snapshot, planned, deps.dispatcher.satisfied);
     if (!reconciled.ok) {
       deps.log("effect.failed", { ticket, reason: reconciled.reason });

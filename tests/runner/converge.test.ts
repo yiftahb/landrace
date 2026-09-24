@@ -1,11 +1,13 @@
 import { converge } from "#runner/converge.js";
+import { createChild } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
 import { labelsOf } from "#conventions.js";
+import { createExternalState, createHarness } from "#testing/index.js";
 import type { HookContext, Node, Source } from "#namespace.js";
 import type { Executor } from "#namespace.js";
-import type { Step } from "#namespace.js";
+import type { RuntimeContext, Step } from "#namespace.js";
 import type { Dispatcher, LandraceEvent, Workflow } from "#namespace.js";
 
 /** Whatever ticket is asked for, alone in its graph, carrying the world's labels as they stand. */
@@ -971,5 +973,76 @@ describe("step.started and step.finished", () => {
     // Tightened from comparing the counts of step.started and step.finished,
     // which would pass at 0/0: this also pins that both fired, and in order.
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
+  });
+});
+
+describe("a stage that creates children", () => {
+  const ctx = {
+    config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {},
+  } as unknown as RuntimeContext;
+
+  const workflow: Workflow = {
+    version: 1, name: "t",
+    stages: [
+      {
+        id: "breakdown", entry: true, step: "steps/breakdown.md",
+        on_enter: [
+          { type: "nodes.close", follow: ["child-of", "implements"] },
+          { type: "tracker.status", value: "breakdown" },
+        ],
+      },
+      {
+        id: "done", terminal: true,
+        triggers: [{ when: { "run.stage": "breakdown", "run.outputs.breakdown.kind": "children" } }],
+        on_enter: [{ type: "tracker.status", value: "done" }],
+      },
+    ],
+  };
+  const steps = new Map<string, Step>([["steps/breakdown.md", {
+    prompt: "split it", capabilities: ["tickets:create"],
+    output: {
+      discriminator: "kind",
+      shapes: { children: {} },
+      routes: [{ when: { kind: "children" }, effect: { type: "tracker.comment", kind: "output", marker: "output:{stage}:{round}" } }],
+    },
+  } as Step]]);
+
+  it("drops what a crashed attempt created before trying again, so there is one set, not two", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
+    const make = (title: string) => createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title }, ctx);
+    let attempt = 0;
+    const run = createHarness({
+      workflow, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1",
+      answers: { breakdown: () => { if (attempt++ === 0) throw new Error("agent exited 1"); return '```json\n{"kind":"children"}\n```'; } },
+      during: async () => { await make(`child ${attempt}`); },
+    });
+
+    const first = await run.converge();           // creates "child 0", then the executor throws: no verdict
+    expect(first.result.settled).toBe("halt");
+    await run.converge();                          // re-plans the close, drops "child 0", invokes, creates "child 1"
+
+    const open = state.children("1").filter((c) => c.closed === null).map((c) => c.title);
+    expect(open).toEqual(["child 1"]);
+    expect(state.children("1").find((c) => c.title === "child 0")?.closed).toBe("dropped");
+  });
+
+  it("halts, naming the stage, when the close cannot be planned", async () => {
+    // A `follow` list of relationship types that is empty: planNodesClose refuses
+    // to guess which edges to walk, rather than closing nothing silently. This
+    // fires on the very first pass, while entering "breakdown" (a transition,
+    // not yet an invoke), so it pins planEffects's own halt-not-throw path.
+    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
+    const broken: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "breakdown", entry: true, step: "steps/breakdown.md",
+        on_enter: [{ type: "nodes.close", follow: [] }, { type: "tracker.status", value: "breakdown" }],
+      }],
+    };
+    const run = createHarness({ workflow: broken, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1" });
+    const r = await run.converge();
+    expect(r.result.settled).toBe("halt");
+    expect(r.result.why).toMatch(/breakdown/);
+    expect(r.calls).toEqual([]);
   });
 });
