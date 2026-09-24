@@ -251,7 +251,7 @@ The skip costs one request for the whole repository, not one per ticket: a sourc
 
 The whole graph, in one readable file. Stages declare **what activates them**, so adding a stage never means editing its predecessor.
 
-A workflow may have several `entry: true` stages — say `spec` for top-level tickets and `build` for children a breakdown created. A ticket with no position then enters the one whose `"run.stage": null` trigger matches it; none, or more than one, halts. With a single entry stage, it is entered unconditionally, as before.
+A workflow may have several `entry: true` stages — say `spec` for tickets a person made (`"node.origin": null`) and `build` for children a breakdown created, once their parent waits on them. A ticket with no position then enters the one whose `"run.stage": null` trigger matches it; none, or more than one, halts. With a single entry stage, it is entered unconditionally, as before.
 
 ```yaml
 stages:

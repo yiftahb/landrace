@@ -7,13 +7,18 @@ const run = (o: object = {}) => ({
   stage: null, counters: {}, outputs: {}, lastOutputValid: null, failedStages: [], rounds: {},
   lastEvent: { actor: null, at: null }, lastHuman: null, unblockedAt: 0, ...o,
 });
-/** A fresh, eligible ticket with `parents` outgoing child-of edges. */
-const fresh = (parents: number): Snapshot => ({
-  node: { id: "7", kind: "ticket", title: "t", link: "", closed: null, priority: null, origin: null,
+/**
+ * A fresh, eligible ticket with `parents` outgoing child-of edges, made by a
+ * breakdown (an origin) or by a person (none), whose parent — if any — sits
+ * at `parentStage`.
+ */
+const fresh = (parents: number, o: { origin?: boolean; parentStage?: string } = {}): Snapshot => ({
+  node: { id: "7", kind: "ticket", title: "t", link: "", closed: null, priority: null,
+    origin: o.origin ? { parent: "3", stage: "breakdown", round: 1 } : null,
     state: { labels: ["lr:auto"], assignees: [] } },
   rel: {
-    "child-of": { in: { total: 0 }, out: { total: parents } },
-    implements: { in: { total: 0 }, out: { total: 0 } },
+    "child-of": { in: { total: 0, stage: {} }, out: { total: parents, stage: o.parentStage ? { [o.parentStage]: 1 } : {} } },
+    implements: { in: { total: 0, stage: {} }, out: { total: 0, stage: {} } },
   },
   run: run(),
 } as unknown as Snapshot);
@@ -34,14 +39,29 @@ describe("the shipped workflow's entry stages", () => {
     expect(decide(workflow, fresh(0))).toMatchObject({ action: "transition", to: { id: "spec" }, round: 1 });
   });
 
-  it("starts a child at build, skipping planning", async () => {
+  it("starts a breakdown's child at build once its parent waits on children, skipping planning", async () => {
     const { workflow } = await loadWorkflow(".landrace");
-    expect(decide(workflow, fresh(1))).toMatchObject({ action: "transition", to: { id: "build" }, round: 1 });
+    expect(decide(workflow, fresh(1, { origin: true, parentStage: "children-running" })))
+      .toMatchObject({ action: "transition", to: { id: "build" }, round: 1 });
+  });
+
+  it("holds a breakdown's child while its parent is still breaking down", async () => {
+    // The breakdown may yet fail or be revised, dropping this child: building
+    // it now would spend a paid step on work that may be thrown away.
+    const { workflow } = await loadWorkflow(".landrace");
+    expect(decide(workflow, fresh(1, { origin: true, parentStage: "breakdown" })))
+      .toMatchObject({ action: "halt", why: expect.stringMatching(/no entry stage accepts/) });
+  });
+
+  it("starts a sub-issue a person made at spec: nobody planned it", async () => {
+    const { workflow } = await loadWorkflow(".landrace");
+    expect(decide(workflow, fresh(1, { parentStage: "children-running" })))
+      .toMatchObject({ action: "transition", to: { id: "spec" }, round: 1 });
   });
 
   it("does not drag a child already under review back to build", async () => {
     const { workflow } = await loadWorkflow(".landrace");
-    const s = { ...fresh(1), run: run({ stage: "code-review", rounds: { "code-review": { entered: 1, output: 0 } } }) } as Snapshot;
+    const s = { ...fresh(1, { origin: true, parentStage: "children-running" }), run: run({ stage: "code-review", rounds: { "code-review": { entered: 1, output: 0 } } }) } as Snapshot;
     // Requires a PR to be there (code-review's `requires`); what matters is it
     // is not a transition to build.
     expect(decide(workflow, s)).not.toMatchObject({ action: "transition", to: { id: "build" } });

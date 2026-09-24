@@ -723,6 +723,52 @@ describe("a ticket split into children, each worked to done, and the parent afte
   });
 });
 
+describe("when a child starts, and where", () => {
+  it("holds a breakdown's child while its parent is still breaking down, and builds it once the parent waits", async () => {
+    const { state, ctx, hooks } = splitWorld();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const early: Array<{ settled: string; why: string | undefined; stage: string | null }> = [];
+    const childRun = (kid: string) => createHarness({ workflow, steps, ...hooks, ticket: kid, answers: ANSWERS });
+
+    const parent = createHarness({
+      workflow, steps, ...hooks, ticket: "1", answers: SPLIT_ANSWERS,
+      during: async ({ stage, round }) => {
+        if (stage !== "breakdown") return;
+        const { id } = await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "API" }, ctx);
+        // The parent is at breakdown right now: its step is the one running.
+        const r = await childRun(id).converge();
+        early.push({ settled: r.result.settled, why: r.result.why, stage: state.stage(id) });
+      },
+    });
+
+    await parent.converge();                                   // spec → spec-human-review
+    state.say("1", "ship it");
+    await parent.converge();                                   // triage → breakdown → children-running
+    expect(state.stage("1")).toBe("children-running");
+
+    expect(early).toEqual([{ settled: "halt", why: expect.stringMatching(/no entry stage accepts/), stage: null }]);
+    const [kid] = state.children("1").map((k) => k.id);
+    if (kid === undefined) throw new Error("the breakdown created no child");
+    // Non-durable: nothing was written for the hold, so it is not blocked.
+    expect(state.ticket(kid).labels).not.toContain("lr:blocked");
+
+    const run = childRun(kid);
+    await run.converge();
+    expect(run.trail()[0]).toBe("build");
+  });
+
+  it("starts a sub-issue a person made at spec", async () => {
+    const state = createExternalState({ tickets: [
+      { id: "1", title: "Payments revamp", labels: ["lr:auto"] },
+      { id: "2", title: "By hand", labels: ["lr:auto"], parent: "1" },
+    ] });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], ticket: "2", answers: SPLIT_ANSWERS });
+    await run.converge();
+    expect(run.trail()[0]).toBe("spec");
+  });
+});
+
 describe("revising a split ticket drops the first round's children and their pull requests", () => {
   it("leaves exactly the second round's children", async () => {
     const { state, ctx, hooks } = splitWorld();

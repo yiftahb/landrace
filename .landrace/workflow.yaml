@@ -45,12 +45,14 @@ stages:
     step: steps/spec.md
     entry: true
     triggers:
-      # A ticket with no parent. A child a breakdown created has one, and
-      # enters at build instead — see below. With two entry stages, each
-      # trigger here that places a fresh ticket must be anchored on
-      # "run.stage": null, or it would also fire mid-workflow.
-      - name: top-level ticket
-        when: { "run.stage": null, "rel.child-of.out.total": 0 }
+      # Any ticket a person made — top-level, or a sub-issue they filed by
+      # hand, which nobody planned and so needs a spec like any other. A
+      # child a breakdown created carries an origin, and enters at build
+      # instead — see below. With two entry stages, each trigger here that
+      # places a fresh ticket must be anchored on "run.stage": null, or it
+      # would also fire mid-workflow.
+      - name: a ticket a person made
+        when: { "run.stage": null, "node.origin": null }
       # run.lastEvent.actor, not lastEvent.actor: the spec lists lastEvent.* as
       # a conventional top-level path, but deriveRun puts it inside run and no
       # hook provides a top-level one, so the bare path matched nothing and
@@ -177,8 +179,16 @@ stages:
     # starts here, working from its own body (steps/build.md says how).
     entry: true
     triggers:
+      # Only once the parent waits on its children: until then the
+      # breakdown may still fail or be revised and drop this child, and a
+      # build started now is a paid step on work about to be thrown away.
+      # The cost is one "no entry stage accepts" halt per child per tick
+      # until then — non-durable, since nothing is written for it.
       - name: child from a breakdown
-        when: { "run.stage": null, "rel.child-of.out.total": 1 }
+        when:
+          "run.stage": null
+          "node.origin": { $ne: null }
+          "rel.child-of.out.stage.children-running": 1
       - name: the breakdown chose one piece of work
         when:
           "run.stage": breakdown
