@@ -31,7 +31,11 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * is read and the turn is refused; unscreened, that same text is taken for the
  * agent's reply and posted to the ticket.
  */
-const hookSource = (verdict: "ok" | "suspicious", invocations: string): string => `import { appendFile } from "node:fs/promises";
+const hookSource = (
+  verdict: "ok" | "suspicious",
+  invocations: string,
+  preflight?: "pass" | "throw",
+): string => `import { appendFile } from "node:fs/promises";
 
 const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
@@ -91,7 +95,14 @@ export const executor = brand("executor", {
     };
   },
 });
-`;
+${preflight === undefined ? "" : `
+export const preflight = brand("preflight", {
+  id: "fake",
+  check: async (): Promise<void> => {
+    ${preflight === "throw" ? 'throw new Error("token needs \\"Contents: Read and write\\" on acme/widgets");' : ""}
+  },
+});
+`}`;
 
 interface Fixture { root: string; dir: string; record: string; invocations: string }
 
@@ -106,6 +117,7 @@ async function fixture(opts: {
   screen: boolean;
   verdict?: "ok" | "suspicious";
   isolation?: "none" | "worktree";
+  preflight?: "pass" | "throw";
 }): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-mcp-"));
   const dir = join(root, ".landrace");
@@ -114,7 +126,10 @@ async function fixture(opts: {
   await mkdir(join(dir, "steps"), { recursive: true });
   await mkdir(join(dir, "hooks"), { recursive: true });
 
-  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.verdict ?? "suspicious", JSON.stringify(invocations)));
+  await writeFile(
+    join(dir, "hooks", "fake.ts"),
+    hookSource(opts.verdict ?? "suspicious", JSON.stringify(invocations), opts.preflight),
+  );
   // What the step declared, which is what a turn on its session is held to.
   await writeFile(
     join(dir, "steps", "spec.md"),
@@ -178,6 +193,27 @@ const posted = linesOf;
 
 afterEach(async () => {
   await release(TICKET);
+});
+
+/**
+ * The startup preflight, on the MCP plane too: `landrace mcp` is a second
+ * entry point into the same hooks, and a permission problem must stop it
+ * before it proves the source works or connects at all — not only `landrace
+ * start`.
+ */
+describe("buildMcpTools and the startup preflight", () => {
+  it("refuses to assemble the MCP plane when a loaded preflight fails", async () => {
+    const { dir } = await fixture({ screen: false, preflight: "throw" });
+    await expect(buildMcpTools(dir)).rejects.toThrow(
+      /preflight "fake" failed: token needs "Contents: Read and write" on acme\/widgets/,
+    );
+  });
+
+  it("assembles normally when the loaded preflight passes", async () => {
+    const { dir } = await fixture({ screen: false, preflight: "pass" });
+    const tools = await buildMcpTools(dir);
+    await expect(tools.ask(TICKET, "carry on")).resolves.toMatchObject({ resolved: false });
+  });
 });
 
 describe("buildMcpTools", () => {

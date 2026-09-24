@@ -13,6 +13,7 @@ import type {
   Registry,
   Runtime,
   RuntimeConfig,
+  RuntimeContext,
   Schedule,
   StartOptions,
   UiServer,
@@ -22,6 +23,7 @@ import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
 import { createLogger } from "#runner/events.js";
 import { held } from "#runner/lock.js";
+import { runPreflights } from "#runner/preflight.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { oneLine } from "#runner/status.js";
 import { tick } from "#runner/tick.js";
@@ -245,6 +247,23 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // integrations are needed is part of the workflow that needs them.
   const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
 
+  const stop = new AbortController();
+  const ctx: RuntimeContext = {
+    config: loaded.config,
+    secrets: loaded.secretValues,
+    signal: stop.signal,
+    // A hook names its own events, so its log is wider than the engine's own
+    // vocabulary — otherwise adding an event to a hook would mean editing the
+    // engine's EventName union.
+    log: (event, data) => log(event as EventName, data),
+  };
+
+  // Before anything else the hooks might do: a permission problem has to stop
+  // the process here, before the first tick, the triage page or an MCP
+  // connection — not after the first paid agent has already run and a
+  // publish 403s with nothing durable recorded to show for it.
+  await runPreflights(registry.preflights, ctx);
+
   /*
    * §11.8, the one rule that cannot be answered until the hooks are loaded —
    * and the reason the load stays exactly where it is rather than moving up.
@@ -275,8 +294,6 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // assemble, run, and fail at its first paid step.
   const sandbox = await sandboxFor(loaded.config, dir);
 
-  const stop = new AbortController();
-
   return {
     source: registry.source,
     deps: {
@@ -290,15 +307,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       ...(loaded.config.security.screen
         ? { screen: { executor: executorFor(loaded.config, workflow, registry, log, loaded.config.security.model) } }
         : {}),
-      ctx: {
-        config: loaded.config,
-        secrets: loaded.secretValues,
-        signal: stop.signal,
-        // A hook names its own events, so its log is wider than the engine's
-        // own vocabulary — otherwise adding an event to a hook would mean
-        // editing the engine's EventName union.
-        log: (event, data) => log(event as EventName, data),
-      },
+      ctx,
       log,
     },
     intervalMs: parseInterval(loaded.config.tick.interval),

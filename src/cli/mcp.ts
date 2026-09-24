@@ -5,6 +5,7 @@ import type { RuntimeContext, Tools } from "#namespace.js";
 import { createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
 import { createLogger } from "#runner/events.js";
+import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { executorFor, sandboxFor } from "#cli/start.js";
@@ -43,6 +44,12 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     // engine's EventName union.
     log: (event, data) => events(event as EventName, data),
   };
+
+  // Before anything else the hooks might do, including the very next check
+  // below: a permission problem has to stop this process before it proves the
+  // source works, connects over stdio, or lets an agent run — not after the
+  // first paid step 403s with nothing durable recorded to show for it.
+  await runPreflights(registry.preflights, ctx);
 
   /*
    * Prove the integration works before telling a client we are ready.

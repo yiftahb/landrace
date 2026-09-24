@@ -32,7 +32,7 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * `tracker.record` — tracker config is opaque to the engine and handed to
  * hooks as it stands, so this also pins that the config reaches them.
  */
-const hookSource = (provides?: string[]): string => `import { appendFile } from "node:fs/promises";
+const hookSource = (provides?: string[], preflight?: "pass" | "throw"): string => `import { appendFile } from "node:fs/promises";
 
 const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
@@ -63,7 +63,14 @@ export const post = brand("post", {
     await appendFile(ctx.config.tracker.record, JSON.stringify({ ticket: ctx.ticket, type: effect.type }) + "\\n");
   },
 });
-`;
+${preflight === undefined ? "" : `
+export const preflight = brand("preflight", {
+  id: "fake",
+  check: async (): Promise<void> => {
+    ${preflight === "throw" ? 'throw new Error("token needs \\"Contents: Read and write\\" on acme/widgets");' : ""}
+  },
+});
+`}`;
 
 const HOOK = hookSource();
 
@@ -104,14 +111,21 @@ const exec = promisify(execFile);
  * when there is none.
  */
 async function fixture(
-  opts: { agent?: string; screen?: boolean; provides?: string[]; reads?: string; git?: boolean } = {},
+  opts: {
+    agent?: string;
+    screen?: boolean;
+    provides?: string[];
+    reads?: string;
+    git?: boolean;
+    preflight?: "pass" | "throw";
+  } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
   if (opts.git !== false) await exec("git", ["init", "-q", "-b", "main"], { cwd: root });
   const dir = join(root, ".landrace");
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
-  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides));
+  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight));
   await writeFile(join(dir, "workflow.yaml"), workflowReading(opts.reads));
   await writeFile(
     join(dir, "landrace.yaml"),
@@ -265,6 +279,30 @@ ${EXECUTOR}`);
   });
 });
 
+/**
+ * The startup preflight: a hook's `check` runs before the first tick, so a
+ * permission problem is found before the first paid agent runs rather than
+ * after a mid-run write fails with nothing durable recorded to show for it.
+ *
+ * Driven through a real hook module on disk, exactly as the wiring in
+ * `buildRuntime` reaches it — a unit test of `runPreflights` alone would prove
+ * nothing about whether `landrace start` actually calls it.
+ */
+describe("the startup preflight", () => {
+  it("refuses to start when a loaded preflight fails, naming its id and the reason", async () => {
+    const { dir } = await fixture({ preflight: "throw" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(
+      /preflight "fake" failed: token needs "Contents: Read and write" on acme\/widgets/,
+    );
+  });
+
+  it("starts normally when the loaded preflight passes", async () => {
+    const { dir } = await fixture({ preflight: "pass" });
+    const rt = await buildRuntime(dir, {});
+    expect(rt.source.id).toBe("fake");
+  });
+});
+
 describe("runStart --once", () => {
   it("enumerates, locks, builds a snapshot, decides and applies, then releases the lock", async () => {
     const { dir, record } = await fixture();
@@ -286,6 +324,32 @@ describe("runStart --once", () => {
     expect(await applied(record)).toEqual([{ ticket: TICKET, type: "tracker.comment" }]);
     // Nothing is left holding the ticket: the next run is free to take it.
     expect(await acquire(TICKET, "tick")).toBe(true);
+  });
+
+  /**
+   * `--once` is refused too, not only the daemon loop: a failing preflight
+   * must stop the process before the one tick `--once` would otherwise run,
+   * proved here by the tick's own side effects never happening at all.
+   */
+  it("refuses to start, and never runs the one tick, when a preflight fails", async () => {
+    const { dir, record } = await fixture({ preflight: "throw" });
+    const printed: string[] = [];
+    const wrote = console.log;
+    console.log = (line: unknown): void => {
+      printed.push(String(line));
+    };
+
+    try {
+      await expect(runStart(dir, { once: true })).rejects.toThrow(
+        /preflight "fake" failed: token needs "Contents: Read and write" on acme\/widgets/,
+      );
+    } finally {
+      console.log = wrote;
+    }
+
+    // Nothing a tick would have printed or applied happened at all.
+    expect(printed).toEqual([]);
+    expect(await applied(record)).toEqual([]);
   });
 
   /**
