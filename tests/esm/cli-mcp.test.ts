@@ -45,9 +45,16 @@ interface Ctx { ticket: number; config: { tracker: { record: string } } }
 
 export const source = brand("source", {
   id: "fake",
-  list: async (): Promise<unknown[]> => [
-    { ticket: ${TICKET}, title: "Add export", url: "u/${TICKET}", labels: ["lr:auto", "lr:awaiting"], assignees: [] },
-  ],
+  // Recorded to its own file, never the one \`post.apply\` writes to: a test
+  // pinning ordering must not perturb every test that asserts the posted
+  // comments exactly. This is the one check the MCP plane makes that is not
+  // itself the preflight.
+  list: async (ctx: { config: { tracker: { order: string } } }): Promise<unknown[]> => {
+    await appendFile(ctx.config.tracker.order, JSON.stringify({ list: true }) + "\\n");
+    return [
+      { ticket: ${TICKET}, title: "Add export", url: "u/${TICKET}", labels: ["lr:auto", "lr:awaiting"], assignees: [] },
+    ];
+  },
 });
 
 export const pre = brand("pre", {
@@ -98,13 +105,14 @@ export const executor = brand("executor", {
 ${preflight === undefined ? "" : `
 export const preflight = brand("preflight", {
   id: "fake",
-  check: async (): Promise<void> => {
+  check: async (ctx: { config: { tracker: { order: string } } }): Promise<void> => {
+    await appendFile(ctx.config.tracker.order, JSON.stringify({ preflight: true }) + "\\n");
     ${preflight === "throw" ? 'throw new Error("token needs \\"Contents: Read and write\\" on acme/widgets");' : ""}
   },
 });
 `}`;
 
-interface Fixture { root: string; dir: string; record: string; invocations: string }
+interface Fixture { root: string; dir: string; record: string; invocations: string; order: string }
 
 /**
  * `isolation` is the fixture's own choice and not a detail: with "worktree"
@@ -123,6 +131,7 @@ async function fixture(opts: {
   const dir = join(root, ".landrace");
   const record = join(root, "posted.jsonl");
   const invocations = join(root, "invoked.jsonl");
+  const order = join(root, "order.jsonl");
   await mkdir(join(dir, "steps"), { recursive: true });
   await mkdir(join(dir, "hooks"), { recursive: true });
 
@@ -160,7 +169,7 @@ stages:
     join(dir, "landrace.yaml"),
     `version: 1
 agent: { adapter: fake, model: opus, isolation: ${opts.isolation ?? "none"} }
-tracker: { record: ${JSON.stringify(record)} }
+tracker: { record: ${JSON.stringify(record)}, order: ${JSON.stringify(order)} }
 tick: { interval: 30s, concurrency: 2 }
 security: { screen: ${opts.screen} }
 log: { redact: [githubToken] }
@@ -180,7 +189,7 @@ secrets: { githubToken: $LR_TEST_TOKEN }
     await exec("git", ["commit", "-qm", "init"], { cwd: root });
   }
 
-  return { root, dir, record, invocations };
+  return { root, dir, record, invocations, order };
 }
 
 const linesOf = async (file: string): Promise<unknown[]> =>
@@ -213,6 +222,20 @@ describe("buildMcpTools and the startup preflight", () => {
     const { dir } = await fixture({ screen: false, preflight: "pass" });
     const tools = await buildMcpTools(dir);
     await expect(tools.ask(TICKET, "carry on")).resolves.toMatchObject({ resolved: false });
+  });
+
+  /**
+   * Pinned because it is easy to lose without a test noticing: moving
+   * `runPreflights` after the `registry.source.list(ctx)` probe still leaves
+   * every other assertion in this file green — the reordering only shows up
+   * as a hook that ran a real query before the process had proved its
+   * permissions, which is exactly the mid-run-403 shape this feature exists
+   * to prevent.
+   */
+  it("runs the preflight before it proves the source works", async () => {
+    const { dir, order } = await fixture({ screen: false, preflight: "pass" });
+    await buildMcpTools(dir);
+    expect(await posted(order)).toEqual([{ preflight: true }, { list: true }]);
   });
 });
 
