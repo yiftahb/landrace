@@ -22,6 +22,7 @@ type Answer = ScriptedAnswer;
 const OUTPUT: Record<string, Answer> = {
   spec: '# The spec\n\nDo the thing.\n\n```json\n{"kind":"spec","title":"T"}\n```',
   triage: '```json\n{"intent":"approve"}\n```',
+  breakdown: '```json\n{"kind":"single"}\n```',
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
@@ -365,7 +366,7 @@ describe("the spec phase routes on what the step actually said", () => {
     expect(r.run.rounds.spec).toEqual({ entered: 2, output: 2 });
   });
 
-  it("routes the reply through triage and on to build", async () => {
+  it("routes the reply through triage and breakdown on to build", async () => {
     const gh = world(["lr:auto"]);
     await run(gh, { answers });
     say(gh, "in-house, and CSV only");
@@ -373,8 +374,9 @@ describe("the spec phase routes on what the step actually said", () => {
     say(gh, "looks right, go ahead");
     const r = await run(gh, { answers });
 
-    expect(r.invocations.slice(0, 3)).toEqual([
+    expect(r.invocations.slice(0, 4)).toEqual([
       { stage: "triage", round: 1 },
+      { stage: "breakdown", round: 1 },
       { stage: "build", round: 1 },
       { stage: "code-review", round: 1 },
     ]);
@@ -484,11 +486,12 @@ describe("a ticket goes all the way round §10", () => {
     const done = await run(gh, { answers });
 
     expect(trail(asked, specced, reviewed, done)).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build",
+      "spec", "spec-questions", "spec", "spec-human-review", "triage", "breakdown", "build",
       "code-review", "fix-review", "code-review", "pr-human-review", "done",
     ]);
     expect(reviewed.invocations).toEqual([
       { stage: "triage", round: 1 },
+      { stage: "breakdown", round: 1 },
       { stage: "build", round: 1 },
       { stage: "code-review", round: 1 },
       { stage: "fix-review", round: 1 },
@@ -497,6 +500,8 @@ describe("a ticket goes all the way round §10", () => {
     // Terminal: the engine's own labels are gone, so the next tick does not
     // pick the ticket up again.
     expect(done.labels).toEqual(["lr:stage:done"]);
+    // And closed as finished, which is how a parent waiting on it would see it.
+    expect(gh.issues.get(1)).toMatchObject({ state: "closed", state_reason: "completed" });
     expect(done.result.settled).not.toBe("cap");
   });
 

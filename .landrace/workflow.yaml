@@ -75,6 +75,15 @@ stages:
           "run.stage": blocked
           "run.lastEvent.actor": human
           "run.counters.spec": { $lt: 3 }
+      # The open sub-tickets are what keep this disjoint from done's "every
+      # sub-ticket is finished": with none left open there is nothing to
+      # revise, and the ticket is finished instead.
+      - name: you asked for changes while the sub-tickets were running
+        when:
+          "run.stage": children-running
+          "run.lastEvent.actor": human
+          "rel.child-of.in.not.closed": { $gt: 0 }
+          "run.counters.spec": { $lt: 3 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
       - { type: tracker.status, value: spec }
@@ -120,6 +129,46 @@ stages:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reading your reply, round {round}." }
       - { type: tracker.status, value: triage }
 
+  # ── breakdown ────────────────────────────────────────────────────────────
+  # Whether the approved spec is one piece of work or several. The close comes
+  # first, before the entry record, for the same reason the entry record comes
+  # before the status: a crash between them must leave the ticket where its
+  # trigger fires again and replans them all. It drops every child an earlier
+  # round made, and everything those own; converge re-plans it before every
+  # invocation too, which is what cleans up after a crashed attempt.
+  #
+  # Every trigger out of here that reads the kind also reads
+  # run.lastOutputValid: null. A rejected round leaves the last *accepted*
+  # output in run.outputs, so a second round that broke its contract still
+  # shows round 1's kind — and without this, "a step broke its output
+  # contract" and a stale kind would both match, and the ticket would halt as
+  # ambiguous instead of being blocked for a person to hand back.
+  - id: breakdown
+    step: steps/breakdown.md
+    triggers:
+      - name: the spec was approved
+        when: { "run.stage": triage, "run.outputs.triage.intent": approve }
+    on_enter:
+      - { type: nodes.close, follow: [child-of, implements] }
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Deciding whether to split the work, round {round}." }
+      - { type: tracker.status, value: breakdown }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+
+  # Nobody's turn: the children are being worked, each as its own ticket. Not
+  # lr:awaiting — a person has nothing to answer here — and not lr:working,
+  # which would read as an agent running on this ticket.
+  - id: children-running
+    triggers:
+      - name: the breakdown created sub-tickets
+        when:
+          "run.stage": breakdown
+          "run.outputs.breakdown.kind": children
+          "run.lastOutputValid": null
+          "rel.child-of.in.total": { $gt: 0 }
+    on_enter:
+      - { type: tracker.status, value: children-running }
+      - { type: tracker.label, remove: ["lr:working", "lr:awaiting"] }
+
   # ── build phase ──────────────────────────────────────────────────────────
   - id: build
     step: steps/build.md
@@ -130,8 +179,12 @@ stages:
     triggers:
       - name: child from a breakdown
         when: { "run.stage": null, "rel.child-of.out.total": 1 }
-      - name: the spec was approved
-        when: { "run.stage": triage, "run.outputs.triage.intent": approve }
+      - name: the breakdown chose one piece of work
+        when:
+          "run.stage": breakdown
+          "run.outputs.breakdown.kind": single
+          "run.lastOutputValid": null
+          "rel.child-of.in.total": 0
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
       - { type: tracker.status, value: build }
@@ -190,9 +243,17 @@ stages:
           "run.stage": pr-human-review
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
+      - name: every sub-ticket is finished
+        when:
+          "run.stage": children-running
+          "rel.child-of.in.total": { $gt: 0 }
+          "rel.child-of.in.not.closed": 0
+    # Closed as finished, so a parent waiting in children-running sees this
+    # ticket among its closed children.
     on_enter:
       - { type: tracker.status, value: done }
       - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
+      - { type: tracker.close }
 
   - id: blocked
     triggers:
@@ -207,6 +268,22 @@ stages:
           "run.counters.code-review": { $gte: 4 }
       - name: a step broke its output contract
         when: { "run.lastOutputValid": false }
+      # A breakdown whose words and deeds disagree. Without these both would
+      # wait for ever, no trigger matching. The first is also what a child MCP
+      # server that failed to start looks like: the agent could not create
+      # anything, whatever it then said.
+      - name: the breakdown said it split the work but created nothing
+        when:
+          "run.stage": breakdown
+          "run.outputs.breakdown.kind": children
+          "run.lastOutputValid": null
+          "rel.child-of.in.total": 0
+      - name: the breakdown said one piece of work but created sub-tickets
+        when:
+          "run.stage": breakdown
+          "run.outputs.breakdown.kind": single
+          "run.lastOutputValid": null
+          "rel.child-of.in.total": { $gt: 0 }
     on_enter:
       - { type: tracker.status, value: blocked }
       - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }

@@ -2,15 +2,17 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "#config/load.js";
+import { definePostHook } from "#hooks/contracts.js";
+import { createChild } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
-import { snapshotProvides } from "#runner/snapshot.js";
+import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { tick } from "#runner/tick.js";
 import { createExternalState, createHarness } from "#testing/index.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
-import type { Effect, ExternalState, Harness, ScriptedAnswer } from "#namespace.js";
+import type { Effect, ExternalState, Harness, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
 
 /** The real GitHub hooks as the harness takes them: the registry, with its source proved present. */
 const hooksOf = (gh: ReturnType<typeof createFakeTracker>) => {
@@ -390,6 +392,7 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
     ? '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```'
     : '# Export CSV\n\nOne file, comma separated.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
   triage: '```json\n{"intent":"approve"}\n```',
+  breakdown: '```json\n{"kind":"single"}\n```',
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
@@ -443,12 +446,12 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     expect(asked.trail).toEqual(["spec", "spec-questions"]);
     expect(specced.trail).toEqual(["spec", "spec-human-review"]);
     expect(run.trail()).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build",
+      "spec", "spec-questions", "spec", "spec-human-review", "triage", "breakdown", "build",
       "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
       "code-review", "blocked",
     ]);
     expect(run.counts()).toEqual({
-      spec: 2, triage: 1, build: 1, "code-review": 4, "fix-review": 3,
+      spec: 2, triage: 1, breakdown: 1, build: 1, "code-review": 4, "fix-review": 3,
     });
 
     // The budget, not the cap: the workflow decided this, not the engine.
@@ -637,5 +640,238 @@ describe("a step whose honest report is longer than the tracker will take", () =
     // And the verdict is read back, so the next tick does not re-run the step.
     await run.converge();
     expect(run.counts().spec).toBe(1);
+  });
+});
+
+/**
+ * The shipped workflow's split, over the in-memory tracker.
+ *
+ * The in-memory tracker speaks the conventions and publishes no documents, so
+ * the spec page the shipped `spec` step routes to is stood in here: a post
+ * hook that keeps each ticket's published body and reads it back as
+ * satisfied. Everything else — children, their pull requests, closing — is
+ * the tracker's own.
+ */
+const splitWorld = () => {
+  const state = createExternalState({ tickets: [{ id: "1", title: "Payments revamp", body: "big", labels: ["lr:auto"] }] });
+  const pages = new Map<string, string>();
+  const specPage = definePostHook({
+    id: "spec-page",
+    handles: ["artifact.publish"],
+    satisfied: (snapshot, effect) => pages.get(String((snapshot.node as { id: string }).id)) === effect.body,
+    apply: async (effect, { ticket }) => { pages.set(ticket, String(effect.body)); },
+  });
+  const ctx = { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+  const hooks = { source: state.source, pre: [state.pre], post: [state.post, specPage] };
+  return { state, ctx, hooks };
+};
+
+const SPLIT_ANSWERS: Record<string, ScriptedAnswer> = {
+  ...ANSWERS,
+  spec: '# Spec\n\n```json\n{"kind":"spec","title":"Payments"}\n```',
+  breakdown: '```json\n{"kind":"children"}\n```',
+};
+
+describe("a ticket split into children, each worked to done, and the parent after them", () => {
+  it("creates the children, works each through build and review, closes them, and finishes the parent", async () => {
+    const { state, ctx, hooks } = splitWorld();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const bind = (round: number) => ({ parent: "1", stage: "breakdown", round });
+
+    const parent = createHarness({
+      workflow, steps, ...hooks, ticket: "1", answers: SPLIT_ANSWERS,
+      during: async ({ stage, round }) => {
+        if (stage !== "breakdown") return;
+        await createChild(state.operator, bind(round), { title: "API" }, ctx);
+        await createChild(state.operator, bind(round), { title: "UI" }, ctx);
+      },
+    });
+
+    await parent.converge();                                   // spec → spec-human-review
+    state.say("1", "ship it");
+    const split = await parent.converge();                     // triage → breakdown → children-running
+    expect(split.trail.slice(-3)).toEqual(["triage", "breakdown", "children-running"]);
+    expect(split.result.settled).toBe("wait");
+
+    const kids = state.children("1").map((k) => k.id);
+    expect(kids).toHaveLength(2);
+
+    for (const kid of kids) {
+      let pr: string | undefined;
+      const run = createHarness({
+        workflow, steps, ...hooks, ticket: kid, answers: ANSWERS,
+        during: ({ stage }) => {
+          if (stage === "build") pr = state.openPull(kid);
+        },
+      });
+      await run.converge();                                    // build → code-review → pr-human-review
+      expect(run.trail().at(-1)).toBe("pr-human-review");
+      if (pr === undefined) throw new Error("the build never opened a pull request");
+      Object.assign(state.pull(pr), { merged: true, closed: "done" });
+      const finished = await run.converge();                   // → done, closed as completed
+      expect(finished.result.settled).toBe("terminal");
+      expect(run.trail()[0]).toBe("build");                    // entered at build, not spec
+      expect(state.ticket(kid).closed).toBe("done");
+    }
+
+    const last = await parent.converge();
+    expect(last.trail.at(-1)).toBe("done");
+    expect(last.result.settled).toBe("terminal");
+    expect(state.ticket("1").closed).toBe("done");
+    // The parent was never built itself: the children were the work.
+    expect(parent.counts()).toEqual({ spec: 1, triage: 1, breakdown: 1 });
+  });
+});
+
+describe("revising a split ticket drops the first round's children and their pull requests", () => {
+  it("leaves exactly the second round's children", async () => {
+    const { state, ctx, hooks } = splitWorld();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const titles: Record<number, string[]> = { 1: ["API", "UI"], 2: ["Everything"] };
+
+    const parent = createHarness({
+      workflow, steps, ...hooks, ticket: "1", answers: SPLIT_ANSWERS,
+      during: async ({ stage, round }) => {
+        if (stage !== "breakdown") return;
+        for (const title of titles[round] ?? []) {
+          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx);
+        }
+      },
+    });
+
+    await parent.converge();
+    state.say("1", "ship it");
+    await parent.converge();                                   // round 1: API, UI
+    const byTitle = (t: string) => state.children("1").find((k) => k.title === t);
+    const api = byTitle("API");
+    if (!api) throw new Error("round 1 created no API child");
+    const pr = state.openPull(api.id);
+
+    state.say("1", "one ticket is enough");
+    const revised = await parent.converge();                   // children-running → spec → spec-human-review
+    expect(revised.trail).toEqual(["spec", "spec-human-review"]);
+    state.say("1", "approved");
+    const again = await parent.converge();                     // triage → breakdown round 2: drop, then create
+    expect(again.trail).toEqual(["triage", "breakdown", "children-running"]);
+    expect(parent.counts()).toMatchObject({ spec: 2, triage: 2, breakdown: 2 });
+
+    expect(byTitle("API")?.closed).toBe("dropped");
+    expect(byTitle("UI")?.closed).toBe("dropped");
+    expect(state.pull(pr).closed).toBe("dropped");
+    expect(byTitle("Everything")?.closed).toBeNull();
+
+    const snap = await buildSnapshot({ ticket: "1", hooks: [state.pre], source: state.source, ctx: { ...ctx, ticket: "1" } });
+    expect((snap.rel as Rel)["child-of"]?.in.total).toBe(1);
+  });
+});
+
+/*
+ * The crash the close is re-planned for: an agent that created its children
+ * and died before answering leaves a round with no verdict, so the step runs
+ * again — and must find the dead attempt's children already dropped, or the
+ * parent ends up with two sets of the same work.
+ */
+describe("a breakdown that crashes after creating its children", () => {
+  it("drops the crashed attempt's children before the retry creates its own", async () => {
+    const { state, ctx, hooks } = splitWorld();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    let attempts = 0;
+    const parent = createHarness({
+      workflow, steps, ...hooks, ticket: "1", answers: SPLIT_ANSWERS,
+      during: async ({ stage, round }) => {
+        if (stage !== "breakdown") return;
+        attempts++;
+        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "API" }, ctx);
+        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "UI" }, ctx);
+        if (attempts === 1) throw new Error("the agent died");
+      },
+    });
+
+    await parent.converge();
+    state.say("1", "ship it");
+    const crashed = await parent.converge();
+    expect(crashed.trail.at(-1)).toBe("breakdown");
+    const dead = state.children("1").map((k) => k.id);
+    expect(dead).toHaveLength(2);
+
+    const retried = await parent.converge();
+
+    expect(attempts).toBe(2);
+    expect(retried.trail.at(-1)).toBe("children-running");
+    for (const id of dead) expect(state.ticket(id).closed).toBe("dropped");
+    const live = state.children("1").filter((k) => k.closed === null);
+    expect(live.map((k) => k.title)).toEqual(["API", "UI"]);
+  });
+});
+
+/*
+ * A rejected round keeps the last *valid* output in run.outputs — round 1's
+ * `children` is still there when round 2 breaks its contract. Every trigger
+ * out of breakdown that reads the kind must therefore also require the round
+ * to have been accepted, or "a step broke its output contract" and a stale
+ * kind match together, and an ambiguity halt takes the place of the handback.
+ */
+describe("a second breakdown round that breaks its contract", () => {
+  it.each([[[]], [["Everything"]]])("is blocked, not ambiguous, when it created %j", async (created) => {
+    const { state, ctx, hooks } = splitWorld();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const parent = createHarness({
+      workflow, steps, ...hooks, ticket: "1",
+      answers: { ...SPLIT_ANSWERS, breakdown: (round) => round === 1 ? '```json\n{"kind":"children"}\n```' : "no json" },
+      during: async ({ stage, round }) => {
+        if (stage !== "breakdown") return;
+        for (const title of round === 1 ? ["API"] : created) {
+          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx);
+        }
+      },
+    });
+
+    await parent.converge();
+    state.say("1", "ship it");
+    await parent.converge();
+    state.say("1", "change it");
+    await parent.converge();
+    state.say("1", "approved");
+    const rejected = await parent.converge();
+    expect(rejected.result.why).toMatch(/no json block/);
+    // The next pass routes the rejection, which is where the stale kind bites.
+    const r = await parent.converge();
+
+    expect(r.result.why ?? "").not.toMatch(/ambiguous/);
+    expect(parent.trail().slice(-2)).toEqual(["breakdown", "blocked"]);
+    expect(state.ticket("1").labels).toContain("lr:blocked");
+  });
+});
+
+/*
+ * A breakdown whose answer and actions disagree has no honest next stage:
+ * `children` with none created (which is also what a child tool that never
+ * started looks like) would otherwise wait for ever at breakdown, and
+ * `single` with some created would build the parent beside its own children.
+ */
+describe("a breakdown whose answer contradicts what it created", () => {
+  it.each([
+    ["children", []],
+    ["single", ["API"]],
+  ])("halts at blocked when it says %s and created %j", async (kind, created) => {
+    const { state, ctx, hooks } = splitWorld();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const parent = createHarness({
+      workflow, steps, ...hooks, ticket: "1",
+      answers: { ...SPLIT_ANSWERS, breakdown: `\`\`\`json\n{"kind":"${kind}"}\n\`\`\`` },
+      during: async ({ stage, round }) => {
+        if (stage !== "breakdown") return;
+        for (const title of created) {
+          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx);
+        }
+      },
+    });
+
+    await parent.converge();
+    state.say("1", "ship it");
+    const r = await parent.converge();
+
+    expect(r.trail.slice(-2)).toEqual(["breakdown", "blocked"]);
+    expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
   });
 });
