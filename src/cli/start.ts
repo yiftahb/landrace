@@ -289,7 +289,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
    * except a workflow whose hooks all say what they supply and still miss a
    * path a predicate reads.
    */
-  const uncovered = validate(workflow, steps, snapshotProvides(registry.pre) ?? undefined);
+  const uncovered = validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined);
   if (uncovered.length) refuse(uncovered);
 
   if (!registry.source) {
@@ -307,7 +307,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   return {
     source: registry.source,
     // `landrace status` builds a Runtime through this same function to
-    // enumerate candidates, and it must never write to the repository it is
+    // enumerate tickets, and it must never write to the repository it is
     // diagnosing — so the preflights are handed back rather than run here,
     // and only `runStart` runs them. Left unrun, they are only a fact about
     // what the hooks declared: nothing has been checked yet.
@@ -315,6 +315,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     deps: {
       workflow,
       steps,
+      source: registry.source,
       pre: registry.pre,
       artifacts: registry.artifacts,
       dispatcher: createDispatcher(registry.post),
@@ -447,11 +448,11 @@ export function createSchedule(opts: {
   };
 }
 
-/** One pass over every candidate, with a line per ticket for the person watching. */
+/** One pass over every ticket, with a line per ticket for the person watching. */
 async function pass(rt: Runtime, board?: Board): Promise<void> {
   const rows = await tick({
     source: rt.source, deps: rt.deps, concurrency: rt.concurrency,
-    ...(board ? { onList: (c) => board.list(c) } : {}),
+    ...(board ? { onList: (graph) => board.list(graph) } : {}),
   });
   for (const row of rows) console.log(`#${row.ticket} ${row.outcome}`);
 }

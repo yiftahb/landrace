@@ -1,5 +1,5 @@
-import { LABELS, stageFromLabels } from "#conventions.js";
-import type { Candidate, StatusRow, Workflow } from "#namespace.js";
+import { compareIds, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
+import type { Node, StatusRow, Workflow } from "#namespace.js";
 import { eligibilityOf } from "#runner/tick.js";
 
 /** Stands in for a ticket that has no position yet, so the column still lines up. */
@@ -28,7 +28,7 @@ const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, width - 1)}…` : text;
 
 /**
- * One line per candidate ticket, including the ones that were skipped and why.
+ * One line per listed ticket, including the ones that were skipped and why.
  * Eligibility being a decision rather than a query filter is what makes a
  * skipped ticket visible instead of absent.
  */
@@ -48,7 +48,7 @@ export function statusLines(rows: StatusRow[]): string[] {
 }
 
 /**
- * One row per candidate, answered from the labels the source already carried
+ * One row per ticket node, answered from the labels the source already carried
  * back — no snapshot per ticket, which would mean reading every issue in the
  * repository to print a table.
  *
@@ -69,11 +69,14 @@ export function statusLines(rows: StatusRow[]): string[] {
  * -> cli/status.ts -> cli/start.ts was a real cycle, latent only because
  * nothing used the other end at module top level.
  */
-export function statusRows(workflow: Workflow, candidates: Candidate[]): StatusRow[] {
-  return candidates.map((candidate) => {
-    const eligibility = eligibilityOf(workflow, candidate);
-    const { stage, ambiguous, found } = stageFromLabels(candidate.labels);
-    const row = { ticket: candidate.ticket, title: candidate.title };
+export function statusRows(workflow: Workflow, tickets: Node[]): StatusRow[] {
+  // In id order, as the tick's own rows are: the same repository in the same
+  // state prints the same table, whatever order the source listed it in.
+  return [...tickets].sort((a, b) => compareIds(a.id, b.id)).map((node) => {
+    const eligibility = eligibilityOf(workflow, node);
+    const labels = labelsOf(node);
+    const { stage, ambiguous, found } = stageFromLabels(labels);
+    const row = { ticket: node.id, title: node.title };
 
     // The workflow's own `else`, never a label name of this file's choosing:
     // what "eligible" means belongs to the workflow, and a second copy of that
@@ -83,7 +86,6 @@ export function statusRows(workflow: Workflow, candidates: Candidate[]): StatusR
     // reading a table cannot see the labels from here.
     if (ambiguous) return { ...row, stage: null, note: `halted: more than one lr:stage:* label (${found.join(", ")})` };
 
-    const labels = candidate.labels;
     const note = labels.includes(LABELS.blocked)
       ? "blocked: needs a human"
       : labels.includes(LABELS.awaiting)

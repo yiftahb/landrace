@@ -2,15 +2,16 @@
  * GitHub, in one file, outside the engine.
  *
  * Everything this repository's workflow needs from a tracker is here: the REST
- * client, the pre hook that turns an issue into a snapshot, the post hook that
- * writes every effect GitHub owns, the artifact hook that publishes the spec to
- * Pages, the source the tick enumerates work from, and the operator actions the
- * MCP tools call. `src/` contains no GitHub code at all and a test enforces it,
+ * and GraphQL client, the pre hook that reads an issue's body and records, the
+ * post hook that writes every effect GitHub owns, the artifact hook that
+ * publishes the spec to Pages, the source that reports issues, sub-issues and
+ * pull requests as a graph, and the operator actions the MCP tools call. `src/` contains no GitHub code at all and a test enforces it,
  * so this file is also the worked example: a second tracker is a sibling of
  * this one, and nothing else changes.
  *
- * Read it in five parts — the client, the two hooks, the spec artifact, and the
- * two ticket-less kinds — and note the two rules the engine cares about:
+ * Read it in five parts — the client, the two hooks, the spec artifact, the
+ * graph, and the ticket-less kinds — and note the two rules the engine cares
+ * about:
  *
  *  - Every effect has a `satisfied()` beside its `apply()`, in this same file,
  *    so nobody adds a write and forgets how to tell it has already happened.
@@ -28,22 +29,30 @@ import {
   entriesFromComments,
   LABEL_EFFECT,
   LABELS,
+  labelsOf,
   neutraliseMarkers,
   parseMarker,
+  PULL_REQUEST_KIND,
   RECORD_EFFECT,
+  RELATIONS,
   renderMarker,
   STAGE_LABEL_PREFIX,
   STATUS_EFFECT,
+  TICKET_KIND,
   type ArtifactHook,
-  type Candidate,
+  type Closed,
   type Effect,
+  type Graph,
   type HookContext,
   type Marker,
   type NewTicket,
+  type Node,
   type Operator,
   type PostHook,
   type PreHook,
   type Preflight,
+  type RelationDecl,
+  type Relationship,
   type RuntimeContext,
   type Snapshot,
   type Source,
@@ -60,23 +69,11 @@ import {
 
 /* ── GitHub's own shapes ────────────────────────────────────────────────── */
 
+/** An issue as REST answers it: read for its body, and for the stage labels a position swap removes. */
 interface Issue {
   number: number;
-  title: string;
   body: string | null;
-  state: string;
-  html_url: string;
   labels: Array<string | { name?: string }>;
-  /**
-   * Who the issue is assigned to. GitHub also returns a singular `assignee`,
-   * which is this list's first element under a second name — not read here,
-   * and deliberately: two spellings of one fact disagree the moment an issue
-   * has two assignees, and `ticket.stage` was already that mistake in this
-   * file. Optional because a hand-rolled test double is entitled to omit it,
-   * and an absent list has to read as "nobody", not as a crash.
-   */
-  assignees?: Array<{ login?: string } | null>;
-  pull_request?: unknown;
 }
 
 interface Comment {
@@ -89,19 +86,43 @@ interface Comment {
 const labelNames = (issue: Issue): string[] =>
   (issue.labels ?? []).map((l) => (typeof l === "string" ? l : (l.name ?? ""))).filter(Boolean);
 
-const assigneeLogins = (issue: Issue): string[] =>
-  (issue.assignees ?? []).map((a) => a?.login ?? "").filter(Boolean);
+/**
+ * An issue as GraphQL answers `ISSUE_FIELDS`: the one reading of an issue that
+ * becomes a `Node`, whichever query asked for it — list, read, or the
+ * operator's own write reading back what it wrote.
+ */
+export interface IssueNode {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  stateReason: string | null;
+  labels: { nodes: Array<{ name: string }> };
+  /**
+   * Who the issue is assigned to — a list, and the only spelling of it read
+   * here. REST also returns a singular `assignee`, that list's first element
+   * under a second name, and two spellings of one fact disagree the moment an
+   * issue has two assignees.
+   */
+  assignees: { nodes: Array<{ login: string } | null> };
+}
 
-const candidateOf = (issue: Issue): Candidate => ({
-  ticket: String(issue.number),
-  title: issue.title,
-  url: issue.html_url,
-  labels: labelNames(issue),
-  // The same reading of the same field the snapshot gets, from the one issue
-  // the list already returned: an eligibility rule on who a ticket belongs to
-  // is asked at enumeration, before there is a snapshot to ask it of.
-  assignees: assigneeLogins(issue),
-});
+/**
+ * The fields every issue query asks for, spelled once so `IssueNode` has one
+ * shape whichever query it came back from. Sub-issues are asked for with these
+ * too: a parent counting its children by stage reads their labels.
+ */
+export const ISSUE_FIELDS = `
+  number title url state stateReason
+  labels(first: 100) { nodes { name } }
+  assignees(first: 20) { nodes { login } }`;
+
+const ISSUE_QUERY = `
+query LandraceIssue($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) { ${ISSUE_FIELDS} }
+  }
+}`;
 
 /* ── the client ─────────────────────────────────────────────────────────── */
 
@@ -267,6 +288,38 @@ function createClient(opts: GitHubOptions) {
     return request<T>(method, `https://api.github.com/repos/${repo}${path}`, body);
   };
 
+  /**
+   * Everything a review thread's `isResolved`, a sub-issue and a closing
+   * reference need: none of them is in REST.
+   *
+   * It is a POST to a different host path and its own error shape — a
+   * GraphQL failure is an HTTP 200 carrying an `errors` array — so it lives
+   * beside `call` rather than inside it. The login gate is the same one for
+   * the same reason: it is resolved once per client, and every entry point
+   * goes through it.
+   */
+  async function graphqlRequest<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    await botLogin();
+    const body = await request<{ data?: T; errors?: Array<{ message?: unknown; type?: unknown }> }>(
+      "POST",
+      "https://api.github.com/graphql",
+      { query, variables },
+    );
+    // Errors arrive with a 200 and are the whole answer: read past them and
+    // a query that failed looks exactly like one that found nothing. The
+    // array rides on the thrown error too — a permission refusal (type
+    // FORBIDDEN) and a rate limit (type RATE_LIMITED) are both this same
+    // shape, and only the preflight cares which one it actually was.
+    if (body.errors?.length) {
+      throw Object.assign(
+        new Error(`graphql: ${body.errors.map((e) => String(e.message ?? e)).join("; ")}`),
+        { errors: body.errors },
+      );
+    }
+    if (body.data === undefined || body.data === null) throw new Error("graphql: the response carried no data");
+    return body.data;
+  }
+
   return {
     botLogin,
 
@@ -302,36 +355,24 @@ function createClient(opts: GitHubOptions) {
      * the same reason: it is resolved once per client, and every entry point
      * goes through it.
      */
-    graphql: async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
-      await botLogin();
-      const body = await request<{ data?: T; errors?: Array<{ message?: unknown; type?: unknown }> }>(
-        "POST",
-        "https://api.github.com/graphql",
-        { query, variables },
-      );
-      // Errors arrive with a 200 and are the whole answer: read past them and
-      // a query that failed looks exactly like one that found nothing. The
-      // array rides on the thrown error too — a permission refusal (type
-      // FORBIDDEN) and a rate limit (type RATE_LIMITED) are both this same
-      // shape, and only the preflight cares which one it actually was.
-      if (body.errors?.length) {
-        throw Object.assign(
-          new Error(`graphql: ${body.errors.map((e) => String(e.message ?? e)).join("; ")}`),
-          { errors: body.errors },
-        );
-      }
-      if (body.data === undefined || body.data === null) throw new Error("graphql: the response carried no data");
-      return body.data;
-    },
+    graphql: graphqlRequest,
 
-    async listIssues({ labels = [], state = "open" }: { labels?: string[]; state?: string }): Promise<Issue[]> {
-      const q = new URLSearchParams({ state, per_page: "100" });
-      if (labels.length) q.set("labels", labels.join(","));
-      const items = await call<Issue[]>("GET", `/issues?${q}`);
-      // The issues endpoint returns pull requests too.
-      return items.filter((i) => !i.pull_request);
-    },
     getIssue: (n: number) => call<Issue>("GET", `/issues/${n}`),
+
+    /**
+     * One issue as a graph node would read it, over the same fields `list`
+     * and `read` ask for — so the operator's writes read back through the one
+     * mapping from GitHub to a `Node`, not a REST one beside a GraphQL one.
+     */
+    getIssueNode: async (n: number): Promise<IssueNode> => {
+      const [owner = "", name = ""] = repo.split("/");
+      const data = await graphqlRequest<{ repository: { issue: IssueNode | null } | null }>(
+        ISSUE_QUERY, { owner, name, number: n },
+      );
+      if (!data.repository) throw new Error(`the repository "${repo}" answered with nothing at all; check the token's access to it`);
+      if (!data.repository.issue) throw new Error(`#${n} is not an issue in ${repo}`);
+      return data.repository.issue;
+    },
     createIssue: (fields: { title: string; body?: string; labels?: string[] }) =>
       call<Issue>("POST", `/issues`, fields),
     updateIssue: (n: number, fields: { title?: string; body?: string; state?: string }) =>
@@ -430,8 +471,6 @@ type Client = ReturnType<typeof createClient>;
 
 /* ── the post hook's satisfied(), which needs no client ─────────────────── */
 
-const labelsOf = (s: Snapshot): string[] => ((s.ticket as { labels?: string[] })?.labels ?? []);
-
 interface SnapshotComment {
   body?: string;
   user?: { login?: string } | null;
@@ -462,7 +501,9 @@ const wroteIt = (c: SnapshotComment, bot: string): boolean =>
   typeof c.user?.login === "string" && c.user.login.toLowerCase() === bot;
 
 function satisfied(snapshot: Snapshot, effect: Effect): boolean {
-  const present = labelsOf(snapshot);
+  // The labels the source read, not a second copy of them from the pre hook:
+  // one reading of the ticket, which is the one the engine placed it from.
+  const present = labelsOf(snapshot.node as Node | undefined);
   switch (effect.type) {
     // The two label cases read labels, which only an account with write
     // access can set — unlike a comment, which anyone can post. Forging one
@@ -519,46 +560,25 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
  * answered from this list: a path declared and not provided passes a workflow
  * whose predicate reads nothing, and a path provided and not declared flags a
  * workflow that is fine — and a validator that flags healthy workflows gets
- * switched off. `ticket.state` and `ticket.url` were the second kind.
- * `ticket.stage` was worse than either: a second, undeclared spelling of
- * `run.stage`, derived from the same labels, read by nothing anywhere — so it
- * is gone rather than declared. tests/hooks/provides.test.ts holds this list
- * level with the fragment, for this tracker and for the in-memory one.
+ * switched off. Only what a graph cannot hold is here: the title, the state,
+ * the labels and the assignees are the ticket's node, which the source reads,
+ * and a second copy of them here would be two readings of one issue free to
+ * disagree. tests/hooks/provides.test.ts holds this list level with the
+ * fragment, for this tracker and for the in-memory one.
  */
-const PROVIDES = [
-  "ticket",
-  "ticket.number", "ticket.title", "ticket.body", "ticket.state", "ticket.url",
-  "ticket.labels", "ticket.assignees", "ticket.comments",
-  "entries", "tracker", "tracker.bot",
-];
+const PROVIDES = ["ticket", "ticket.body", "ticket.comments", "entries", "tracker", "tracker.bot"];
 
 const HANDLES = [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT];
 
-/** Observe: turn a GitHub issue into the snapshot the engine reads. */
+/** Observe: the part of an issue a graph cannot hold — its body and its records. */
 async function readTicket(gh: Client, ticket: string): Promise<Record<string, unknown>> {
   const n = issueNumber(ticket);
   const issue = await gh.getIssue(n);
   const raw = await gh.listComments(n);
   const bot = await gh.botLogin();
-  const names = labelNames(issue);
   return {
     ticket: {
-      number: issue.number,
-      title: issue.title,
       body: issue.body ?? "",
-      state: issue.state,
-      url: issue.html_url,
-      labels: names,
-      // Always a list, and empty rather than absent when nobody is assigned:
-      // an eligibility rule reading a path the snapshot does not carry is one
-      // the tick cannot answer, and it abstains on those — so an unassigned
-      // ticket would be worked by every instance instead of none.
-      assignees: assigneeLogins(issue),
-      // No `stage` here. It was a second spelling of `run.stage`, derived
-      // from these same labels, undeclared in PROVIDES and read by nothing —
-      // and two spellings of one fact is how two readers come to disagree
-      // about where a ticket is. The engine derives position once, in
-      // buildSnapshot, out of `labels`.
       comments: raw,
     },
     entries: entriesFromComments(raw, bot),
@@ -724,14 +744,11 @@ function publishSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   return state.hash === hashOf(contentOf(effect));
 }
 
-/* ── the pull request, read over GraphQL ────────────────────────────────── */
-
-/** The artifact the review loop turns on. One name, for the snapshot path and the hook's id. */
-const PR = "pr";
+/* ── the graph: issues, sub-issues and pull requests, over GraphQL ─────── */
 
 /**
- * The engine's id as the REST path GitHub wants. Only this file knows GitHub
- * ids are integers; anything else reaching here is a ticket from some other
+ * The engine's id as the number GitHub wants. Only this file knows GitHub ids
+ * are integers; anything else reaching here is a ticket from some other
  * tracker, and calling `/issues/NaN` with it would report a 404 about the
  * wrong thing.
  */
@@ -743,9 +760,18 @@ const issueNumber = (id: string): number => {
 /**
  * Derived from the ticket, never stored — the same rule the spec's path
  * follows. There is no PR id to remember and nothing to repair: the branch
- * names the ticket, and the pull request is whichever one has that head.
+ * names the ticket, and every pull request with that head is its work.
  */
 const prBranch = (ticket: string): string => `landrace/${ticket}`;
+
+/** The ticket a head branch names, when it is one of ours. */
+const ticketOfBranch = (head: string): string | null => /^landrace\/([1-9][0-9]*)$/.exec(head)?.[1] ?? null;
+
+/** Both relationship types this source reports; a node has at most one parent and a pull request one ticket. */
+const RELATION_DECLS: RelationDecl[] = [
+  { type: RELATIONS.childOf, singular: true },
+  { type: RELATIONS.implements, singular: true },
+];
 
 /**
  * GitHub's own page size for a connection, and how many pages one read will
@@ -758,99 +784,356 @@ const prBranch = (ticket: string): string => `landrace/${ticket}`;
 const THREAD_PAGE = 100;
 const MAX_THREAD_PAGES = 10;
 
+/** The same bound on the issue list, for the same reason: the REST list this replaced stopped at 100 without saying so. */
+const ISSUE_PAGE = 100;
+const MAX_ISSUE_PAGES = 10;
+
+/**
+ * What a pull request is asked for, wherever it is found: enough to know
+ * whether it is open, merged or abandoned, which ticket it names, and the head
+ * a fix round moves. No thread in it — see THREADS_QUERY — and no body.
+ */
+const PULL_FIELDS = `
+  number title url state merged headRefName headRefOid
+  closingIssuesReferences(first: 20) { nodes { number } }`;
+
+/**
+ * Every open issue with its sub-issues (closed ones too, so a parent can count
+ * a finished child), and every open pull request, in one request per page.
+ * Merged pull requests are not listed here: the board shows what is live, and
+ * routing reads `read`, which does include them.
+ */
+const ISSUES_QUERY = `
+query LandraceIssues($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(states: OPEN, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: CREATED_AT, direction: ASC }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ${ISSUE_FIELDS} parent { number } subIssues(first: 50) { nodes { ${ISSUE_FIELDS} } } }
+    }
+    pullRequests(states: OPEN, first: 100, orderBy: { field: CREATED_AT, direction: DESC }) {
+      nodes { ${PULL_FIELDS} }
+    }
+  }
+}`;
+
+/**
+ * How many sub-issues, and pull requests each way, one ticket read carries.
+ * Every one of them is counted by the workflow — "every child closed", "every
+ * pull request merged" — so a ticket with more than this is refused by
+ * `read` rather than read as one with fewer.
+ */
+const TICKET_PAGE = 50;
+
+/** One ticket: itself, its parent, its sub-issues, and every pull request tied to it either way. */
+const TICKET_QUERY = `
+query LandraceTicket($owner: String!, $name: String!, $number: Int!, $head: String!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      ${ISSUE_FIELDS}
+      parent { ${ISSUE_FIELDS} }
+      subIssues(first: ${TICKET_PAGE}) { totalCount nodes { ${ISSUE_FIELDS} } }
+      closedByPullRequestsReferences(first: ${TICKET_PAGE}, includeClosedPrs: true) { totalCount nodes { ${PULL_FIELDS} } }
+    }
+    pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${TICKET_PAGE},
+                 orderBy: { field: CREATED_AT, direction: DESC }) {
+      totalCount
+      nodes { ${PULL_FIELDS} }
+    }
+  }
+}`;
+
 /**
  * Thread resolution is GraphQL-only: REST exposes review comments but not
  * `isResolved`. That is a hard requirement on this hook rather than an
  * optimisation, because the review loop's gate is a *count* of unresolved
  * threads — a structural fact nobody can write — and not a judge's verdict.
  *
- * Only what §10's triggers read is asked for. In particular no thread body:
- * a body is written by anyone with comment access, and the snapshot is hashed,
- * interpolated into prompts and carried into every predicate. What cannot be
- * fetched cannot leak.
+ * Only what the triggers read is asked for. In particular no thread body: a
+ * body is written by anyone with comment access, and the graph is hashed into
+ * the snapshot and carried into every predicate. What cannot be fetched
+ * cannot leak.
  */
-const PR_QUERY = `
-query($owner: String!, $name: String!, $head: String!, $cursor: String) {
+const THREADS_QUERY = `
+query LandraceThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    pullRequests(headRefName: $head, states: [OPEN, MERGED], first: 1,
-                 orderBy: { field: CREATED_AT, direction: DESC }) {
-      nodes {
-        number
-        merged
-        headRefOid
-        reviewThreads(first: ${THREAD_PAGE}, after: $cursor) {
-          pageInfo { hasNextPage endCursor }
-          nodes { isResolved }
-        }
+    pullRequest(number: $number) {
+      reviewThreads(first: ${THREAD_PAGE}, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { isResolved }
       }
     }
   }
 }`;
 
-interface PrNode {
+interface PullNode {
   number: number;
+  title: string;
+  url: string;
+  state: string;
   merged: boolean;
+  headRefName: string;
   headRefOid: string;
-  reviewThreads: {
-    pageInfo: { hasNextPage: boolean; endCursor: string | null };
-    nodes: Array<{ isResolved: boolean }>;
+  closingIssuesReferences: { nodes: Array<{ number: number }> };
+}
+
+interface ListedIssue extends IssueNode {
+  parent: { number: number } | null;
+  subIssues: { nodes: IssueNode[] };
+}
+
+interface IssuesResponse {
+  repository: {
+    issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: ListedIssue[] };
+    pullRequests: { nodes: PullNode[] };
+  } | null;
+}
+
+interface TicketResponse {
+  repository: {
+    issue: (IssueNode & {
+      parent: IssueNode | null;
+      subIssues: { totalCount: number; nodes: IssueNode[] };
+      closedByPullRequestsReferences: { totalCount: number; nodes: PullNode[] };
+    }) | null;
+    pullRequests: { totalCount: number; nodes: PullNode[] };
+  } | null;
+}
+
+interface ThreadsResponse {
+  repository: {
+    pullRequest: {
+      reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: Array<{ isResolved: boolean }> };
+    } | null;
+  } | null;
+}
+
+/** A repository the token cannot see answers with a 200, no errors and a null repository — never read as an empty one. */
+const unseen = (repo: string): Error =>
+  new Error(`the repository "${repo}" answered with nothing at all; check the token's access to it`);
+
+/** GitHub's close reason, as the one piece of lifecycle the engine understands. */
+function closedOf(state: string, reason: string | null): Closed {
+  if (state === "OPEN") return null;
+  // Closed with no reason is how every issue closed before GitHub had reasons reads.
+  if (reason === "NOT_PLANNED" || reason === "DUPLICATE") return "dropped";
+  return "done";
+}
+
+const PRIORITY_LABEL = /^P([0-9])$/;
+
+/**
+ * `P0`..`P9`, the convention this repository's labels use. Two of them is a
+ * ticket whose priority cannot be told — reported, like two stage labels,
+ * rather than resolved by taking the first.
+ */
+function priorityFromLabels(labels: string[]): { priority: number | null; found: string[] } {
+  const found = labels.filter((l) => PRIORITY_LABEL.test(l));
+  const only = found.length === 1 ? found[0] : undefined;
+  return { priority: only === undefined ? null : Number(PRIORITY_LABEL.exec(only)?.[1]), found };
+}
+
+/** The one mapping from a GitHub issue to a ticket node. */
+export function nodeOfIssue(issue: IssueNode): Node {
+  const labels = issue.labels.nodes.map((l) => l.name);
+  return {
+    id: String(issue.number),
+    kind: TICKET_KIND,
+    title: issue.title,
+    link: issue.url,
+    closed: closedOf(issue.state, issue.stateReason),
+    priority: priorityFromLabels(labels).priority,
+    origin: null,
+    // Always lists, and empty rather than absent: an eligibility rule reading
+    // a path the node does not carry is one the tick cannot answer, and it
+    // abstains on those — so an unassigned ticket would be worked by every
+    // instance instead of none.
+    state: { labels, assignees: issue.assignees.nodes.map((a) => a?.login ?? "").filter(Boolean) },
   };
 }
 
-interface PrResponse {
-  repository: { pullRequests: { nodes: PrNode[] } } | null;
+function pullNodeOf(pull: PullNode, openThreads?: number): Node {
+  return {
+    id: `pr-${pull.number}`,
+    kind: PULL_REQUEST_KIND,
+    title: pull.title,
+    link: pull.url,
+    closed: pull.merged ? "done" : pull.state === "CLOSED" ? "dropped" : null,
+    priority: null,
+    origin: null,
+    state: { merged: pull.merged, headSha: pull.headRefOid, ...(openThreads === undefined ? {} : { openThreads }) },
+  };
 }
 
-/**
- * The pull request for a ticket's branch, as the facts §10 routes on: the
- * number `code-review` requires, the head sha a fix round moves, whether it
- * merged, and how many review threads are still open.
- *
- * `{}` when there is no pull request yet — not a null, and not an `exists`
- * flag. `artifacts.pr.number` is what the gate reads, and absent has to read
- * as absent.
- *
- * Note what is *not* here. No `reviewDecision`: nothing in the workflow reads
- * it, and an artifact carrying more than its gates read is a remote document's
- * shape reaching the snapshot. No thread bodies: see PR_QUERY.
- */
-async function readPr(gh: Client, repo: string, ticket: string): Promise<Record<string, unknown>> {
-  const [owner = "", name = ""] = repo.split("/");
-  const head = prBranch(ticket);
+/** Every ticket a pull request names: the one its branch is for, and every issue it closes. */
+const ticketsNamedBy = (pull: PullNode): Set<string> => {
+  const named = new Set(pull.closingIssuesReferences.nodes.map((i) => String(i.number)));
+  const branch = ticketOfBranch(pull.headRefName);
+  if (branch !== null) named.add(branch);
+  return named;
+};
 
+/**
+ * How many review threads on one pull request nobody has resolved, every page
+ * of them, or a refusal — never a number known to be short.
+ */
+async function countOpenThreads(gh: Client, repo: string, number: number): Promise<number> {
+  const [owner = "", name = ""] = repo.split("/");
   let cursor: string | null = null;
-  let pull: PrNode | null = null;
-  let openThreads = 0;
+  let open = 0;
 
   for (let page = 0; page < MAX_THREAD_PAGES; page++) {
-    const data: PrResponse = await gh.graphql<PrResponse>(PR_QUERY, { owner, name, head, cursor });
-
-    // A repository a token cannot see answers with a 200, no errors and a null
-    // repository. Read as an empty answer it is indistinguishable from "no
-    // pull request yet", which parks every ticket at `build` saying nothing.
-    if (!data.repository) {
-      throw new Error(`the repository "${repo}" answered with nothing at all; check the token's access to it`);
-    }
-
-    // Two pull requests can share a head branch — one merged, one opened after
-    // it — so the newest is the current work. That is a total order on
-    // creation time, not a first-match-wins over an arbitrary list.
-    const node = data.repository.pullRequests.nodes[0];
-    if (!node) return {};
-
-    pull = node;
-    openThreads += node.reviewThreads.nodes.filter((t) => !t.isResolved).length;
-    if (!node.reviewThreads.pageInfo.hasNextPage) {
-      return { number: node.number, headSha: node.headRefOid, merged: node.merged, openThreads };
-    }
-    cursor = node.reviewThreads.pageInfo.endCursor;
+    const data: ThreadsResponse = await gh.graphql<ThreadsResponse>(THREADS_QUERY, { owner, name, number, cursor });
+    if (!data.repository) throw unseen(repo);
+    const threads = data.repository.pullRequest?.reviewThreads;
+    if (!threads) throw new Error(`pull request #${number} answered with no review threads at all`);
+    open += threads.nodes.filter((t) => !t.isResolved).length;
+    if (!threads.pageInfo.hasNextPage) return open;
+    cursor = threads.pageInfo.endCursor;
   }
 
   throw new Error(
-    `the pull request #${pull?.number ?? "?"} has more than ${MAX_THREAD_PAGES * THREAD_PAGE} review threads, ` +
+    `the pull request #${number} has more than ${MAX_THREAD_PAGES * THREAD_PAGE} review threads, ` +
     "so the open-thread count the review loop gates on cannot be read in one pass. " +
     "Reporting the count of what was read would be reporting a number known to be short.",
   );
+}
+
+/**
+ * Every open issue and every open pull request, as one graph, once per tick.
+ *
+ * What it must never do is fail the tick for one issue's sake: two priority
+ * labels list as unprioritised, and a pull request naming two tickets lists
+ * with no edge at all. `read` of that ticket is where either halts, naming it.
+ */
+async function listGraph(gh: Client, repo: string): Promise<Graph> {
+  const [owner = "", name = ""] = repo.split("/");
+  const nodes = new Map<string, Node>();
+  const parentOf = new Map<string, string>();
+  let pulls: PullNode[] = [];
+  let cursor: string | null = null;
+
+  for (let page = 0; ; page++) {
+    if (page === MAX_ISSUE_PAGES) {
+      throw new Error(`${repo} has more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} open issues, more than one list may carry`);
+    }
+    const data: IssuesResponse = await gh.graphql<IssuesResponse>(ISSUES_QUERY, { owner, name, cursor });
+    if (!data.repository) throw unseen(repo);
+    const { issues, pullRequests } = data.repository;
+    // Every page answers the same pull requests; the first page's is kept.
+    if (page === 0) pulls = pullRequests.nodes;
+
+    for (const issue of issues.nodes) {
+      const id = String(issue.number);
+      // An open sub-issue is listed twice — as an issue, and under its
+      // parent. It is one node, so the first reading is kept.
+      if (!nodes.has(id)) nodes.set(id, nodeOfIssue(issue));
+      if (issue.parent) parentOf.set(id, String(issue.parent.number));
+      for (const sub of issue.subIssues.nodes) {
+        const child = String(sub.number);
+        if (!nodes.has(child)) nodes.set(child, nodeOfIssue(sub));
+        parentOf.set(child, id);
+      }
+    }
+    if (!issues.pageInfo.hasNextPage) break;
+    cursor = issues.pageInfo.endCursor;
+  }
+
+  const relationships: Relationship[] = [];
+  // A parent that is closed and was not listed is outside this graph: the
+  // edge is dropped rather than left dangling.
+  for (const [child, parent] of parentOf) {
+    if (nodes.has(parent)) relationships.push({ from: child, to: parent, type: RELATIONS.childOf });
+  }
+
+  const listed = [...nodes.values()];
+  for (const pull of pulls) {
+    const named = ticketsNamedBy(pull);
+    const [only] = named;
+    // Two tickets named is an ambiguity; `read` of either one halts on it.
+    if (named.size !== 1 || only === undefined || !nodes.has(only)) continue;
+    const node = pullNodeOf(pull);
+    listed.push(node);
+    relationships.push({ from: node.id, to: only, type: RELATIONS.implements });
+  }
+
+  return { nodes: listed, relationships };
+}
+
+/** One ticket's pull requests, found either way — by its branch, and by closing reference — once each. */
+async function pullsOf(gh: Client, repo: string, ticket: string): Promise<{ issue: NonNullable<NonNullable<TicketResponse["repository"]>["issue"]>; pulls: PullNode[] }> {
+  const [owner = "", name = ""] = repo.split("/");
+  const data = await gh.graphql<TicketResponse>(TICKET_QUERY, {
+    owner, name, number: issueNumber(ticket), head: prBranch(ticket),
+  });
+  if (!data.repository) throw unseen(repo);
+  const issue = data.repository.issue;
+  if (!issue) throw new Error(`#${ticket} is not an issue in ${repo}`);
+
+  // A count over the first page is a number known to be short, and every one
+  // of these is counted: past the page, the ticket halts saying so.
+  for (const [what, connection] of [
+    ["sub-issues", issue.subIssues],
+    ["pull requests on its branch", data.repository.pullRequests],
+    ["pull requests closing it", issue.closedByPullRequestsReferences],
+  ] as const) {
+    if (connection.totalCount > connection.nodes.length) {
+      throw new Error(`#${ticket} has ${connection.totalCount} ${what}, more than the ${TICKET_PAGE} one read carries`);
+    }
+  }
+
+  const byNumber = new Map<number, PullNode>();
+  for (const pull of [...data.repository.pullRequests.nodes, ...issue.closedByPullRequestsReferences.nodes]) {
+    if (!byNumber.has(pull.number)) byNumber.set(pull.number, pull);
+  }
+  return { issue, pulls: [...byNumber.values()] };
+}
+
+/**
+ * One ticket's neighbourhood: itself, its parent, its sub-issues, and every
+ * pull request tied to it — merged and closed ones included, because "every
+ * pull request is merged" is a count over all of them, and a newer open one
+ * beside a merged one is work not yet done.
+ *
+ * ponytail: one level of sub-issues. A cascade over a whole epic needs the
+ * full subtree, and the plan that adds cascades extends this to it.
+ */
+async function readGraph(gh: Client, repo: string, ticket: string): Promise<Graph> {
+  const { issue, pulls } = await pullsOf(gh, repo, ticket);
+
+  const { found } = priorityFromLabels(issue.labels.nodes.map((l) => l.name));
+  if (found.length > 1) throw new Error(`#${ticket} carries ${found.join(" and ")}; priority is one`);
+
+  const self = nodeOfIssue(issue);
+  const nodes: Node[] = [self];
+  const relationships: Relationship[] = [];
+
+  if (issue.parent) {
+    const parent = nodeOfIssue(issue.parent);
+    nodes.push(parent);
+    relationships.push({ from: self.id, to: parent.id, type: RELATIONS.childOf });
+  }
+  for (const sub of issue.subIssues.nodes) {
+    const child = nodeOfIssue(sub);
+    nodes.push(child);
+    relationships.push({ from: child.id, to: self.id, type: RELATIONS.childOf });
+  }
+
+  for (const pull of pulls) {
+    const named = ticketsNamedBy(pull);
+    // The one thing about a pull request that halts: a single PR claiming two
+    // tickets. Which of them it implements is not something to guess.
+    if (named.size > 1) {
+      throw new Error(
+        `pull request #${pull.number} is tied to ${[...named].map((t) => `#${t}`).join(" and ")}; ` +
+        "a pull request implements one ticket",
+      );
+    }
+    const node = pullNodeOf(pull, await countOpenThreads(gh, repo, pull.number));
+    nodes.push(node);
+    relationships.push({ from: node.id, to: self.id, type: RELATIONS.implements });
+  }
+
+  return { nodes, relationships };
 }
 
 /**
@@ -869,9 +1152,9 @@ const BRIEF_BODY_CHARS = 1000;
  * The open threads as prose, asked for only when a step is about to run.
  *
  * This is the one place thread text is fetched at all, and it is deliberately
- * not part of PR_QUERY: that runs on every converge pass, feeds the snapshot,
- * and must carry nothing anybody outside this repository wrote. A briefing
- * runs once per invocation and feeds a prompt.
+ * not part of THREADS_QUERY: that runs on every converge pass, feeds the
+ * graph, and must carry nothing anybody outside this repository wrote. A
+ * briefing runs once per invocation and feeds a prompt.
  *
  * `comments(first: 1)` is the finding itself — the thread's opening comment.
  * The replies under it are the argument about the finding, including the
@@ -879,20 +1162,16 @@ const BRIEF_BODY_CHARS = 1000;
  * round loops without moving.
  */
 const BRIEF_QUERY = `
-query($owner: String!, $name: String!, $head: String!, $cursor: String) {
+query LandraceBrief($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    pullRequests(headRefName: $head, states: [OPEN, MERGED], first: 1,
-                 orderBy: { field: CREATED_AT, direction: DESC }) {
-      nodes {
-        number
-        reviewThreads(first: ${THREAD_PAGE}, after: $cursor) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            isResolved
-            path
-            line
-            comments(first: 1) { nodes { body } }
-          }
+    pullRequest(number: $number) {
+      reviewThreads(first: ${THREAD_PAGE}, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          path
+          line
+          comments(first: 1) { nodes { body } }
         }
       }
     }
@@ -906,16 +1185,12 @@ interface BriefThread {
   comments: { nodes: Array<{ body: string | null }> };
 }
 
-interface BriefNode {
-  number: number;
-  reviewThreads: {
-    pageInfo: { hasNextPage: boolean; endCursor: string | null };
-    nodes: BriefThread[];
-  };
-}
-
 interface BriefResponse {
-  repository: { pullRequests: { nodes: BriefNode[] } } | null;
+  repository: {
+    pullRequest: {
+      reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: BriefThread[] };
+    } | null;
+  } | null;
 }
 
 const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text);
@@ -925,7 +1200,8 @@ const where = (thread: BriefThread): string =>
   thread.path === null ? "" : `${thread.path}${thread.line === null ? "" : `:${thread.line}`} — `;
 
 /**
- * The open review threads, rendered for a prompt.
+ * The open review threads across every open pull request on the ticket,
+ * rendered for a prompt under one `## PR #N` heading each.
  *
  * Paged the same way the count is, and for the same reason pointed the other
  * way: asking for the first twenty *threads* on a pull request whose first
@@ -933,41 +1209,48 @@ const where = (thread: BriefThread): string =>
  * findings were open — and a step told to address nothing answers "addressed",
  * which spends a round and moves the ticket on with the findings still there.
  */
-async function briefPr(gh: Client, repo: string, ticket: string): Promise<Record<string, string>> {
+async function briefThreads(gh: Client, repo: string, ticket: string): Promise<Record<string, string>> {
   const [owner = "", name = ""] = repo.split("/");
-  const head = prBranch(ticket);
-
-  let cursor: string | null = null;
-  const open: BriefThread[] = [];
-  let more = 0;
-
-  for (let page = 0; page < MAX_THREAD_PAGES; page++) {
-    const data: BriefResponse = await gh.graphql<BriefResponse>(BRIEF_QUERY, { owner, name, head, cursor });
-    // Same three failures the count tells apart, and for the same reason: an
-    // empty briefing and an unreadable one look identical to the agent.
-    if (!data.repository) {
-      throw new Error(`the repository "${repo}" answered with nothing at all; check the token's access to it`);
-    }
-    const node = data.repository.pullRequests.nodes[0];
-    if (!node) return { threads: "There is no pull request on this ticket's branch, so there is nothing to address." };
-
-    for (const thread of node.reviewThreads.nodes) {
-      if (thread.isResolved) continue;
-      if (open.length < BRIEF_THREADS) open.push(thread);
-      else more++;
-    }
-    if (!node.reviewThreads.pageInfo.hasNextPage) break;
-    cursor = node.reviewThreads.pageInfo.endCursor;
-  }
-
+  const open = (await pullsOf(gh, repo, ticket)).pulls.filter((p) => p.state === "OPEN");
   if (open.length === 0) {
-    return { threads: "No review thread on the pull request is open. Nothing here needs addressing." };
+    return { threads: "There is no pull request open on this ticket, so there is nothing to address." };
   }
 
-  const listed = open.map((thread, i) => {
-    const body = thread.comments.nodes[0]?.body ?? "";
-    return `${i + 1}. ${where(thread)}${cut(body.trim(), BRIEF_BODY_CHARS)}`;
-  });
+  let listed = 0;
+  let more = 0;
+  const sections: string[] = [];
+
+  for (const pull of open) {
+    let cursor: string | null = null;
+    const shown: BriefThread[] = [];
+    for (let page = 0; page < MAX_THREAD_PAGES; page++) {
+      const data: BriefResponse = await gh.graphql<BriefResponse>(BRIEF_QUERY, { owner, name, number: pull.number, cursor });
+      // Same failures the count tells apart, and for the same reason: an
+      // empty briefing and an unreadable one look identical to the agent.
+      if (!data.repository) throw unseen(repo);
+      const threads = data.repository.pullRequest?.reviewThreads;
+      if (!threads) throw new Error(`pull request #${pull.number} answered with no review threads at all`);
+      for (const thread of threads.nodes) {
+        if (thread.isResolved) continue;
+        if (listed < BRIEF_THREADS) {
+          shown.push(thread);
+          listed++;
+        } else {
+          more++;
+        }
+      }
+      if (!threads.pageInfo.hasNextPage) break;
+      cursor = threads.pageInfo.endCursor;
+    }
+    if (shown.length > 0) {
+      sections.push(`## PR #${pull.number}\n\n${shown.map((thread, i) =>
+        `${i + 1}. ${where(thread)}${cut((thread.comments.nodes[0]?.body ?? "").trim(), BRIEF_BODY_CHARS)}`).join("\n\n")}`);
+    }
+  }
+
+  if (listed === 0) {
+    return { threads: "No review thread on the ticket's pull requests is open. Nothing here needs addressing." };
+  }
 
   // Said out loud rather than left implicit: an agent shown twenty of fifty
   // findings and told nothing would report the pull request addressed.
@@ -975,25 +1258,8 @@ async function briefPr(gh: Client, repo: string, ticket: string): Promise<Record
     ? ""
     : `\n\n(${more} more open threads are not listed here. Address what is above; the rest come back next round.)`;
 
-  return { threads: listed.join("\n\n") + tail };
+  return { threads: sections.join("\n\n") + tail };
 }
-
-/**
- * The act half of an artifact nothing publishes.
- *
- * A pull request is opened by whoever pushes the branch, so this artifact is
- * read-only and `handles` is empty: the dispatcher routes no effect type here
- * and neither of these is reachable from the engine. They throw rather than
- * returning a polite nothing, because the two silent answers are the two ways
- * an unhandled effect goes wrong — "satisfied" drops the work, "not satisfied"
- * re-applies it every tick.
- */
-const nothingPublishes = (effect: Effect): never => {
-  throw new Error(
-    `nothing publishes the "${PR}" artifact — it is opened by whoever pushes the branch and only read here — ` +
-    `so "${String(effect.type)}" has no handler on this hook`,
-  );
-};
 
 /* ── the startup preflight ───────────────────────────────────────────────── */
 
@@ -1141,9 +1407,8 @@ async function probePullRequestsRead(gh: Client, repo: string): Promise<void> {
     throw prReadFailure(e, repo);
   }
   // A 200 with no errors and a null repository is GitHub's other shape for
-  // "this token cannot see it" — indistinguishable from "no pull request yet"
-  // where readPr reads the same shape below, but here it means the read this
-  // probe exists to prove never actually happened.
+  // "this token cannot see it", and here it means the read this probe exists
+  // to prove never actually happened.
   if (data.repository === null) {
     throw new Error(
       `pull request check failed: the repository "${repo}" answered with nothing at all; check the token's access to it`,
@@ -1165,7 +1430,6 @@ export function githubHooks(opts: GitHubOptions): {
   post: PostHook;
   source: Source;
   operator: Operator;
-  pullRequestArtifact: ArtifactHook;
   specArtifact: ArtifactHook;
   preflight: Preflight;
 } {
@@ -1173,20 +1437,6 @@ export function githubHooks(opts: GitHubOptions): {
 
   return {
     preflight: definePreflight({ id: "github", check: () => checkPermissions(gh, opts.repo) }),
-
-    // Named to sort after `pre`, for the reason spelled out on `specArtifact`
-    // below. As `prArtifact` it sorted *before* it ("prA" < "pre"), and the
-    // artifact phase ran ahead of the tracker read it is meant to sit beside.
-    pullRequestArtifact: defineArtifactHook({
-      id: PR,
-      handles: [],
-      read: ({ ticket }) => readPr(gh, opts.repo, ticket),
-      // The text half, fetched per invocation rather than per pass: what
-      // `fix-review` is told to address, which `read` will not carry.
-      brief: ({ ticket }) => briefPr(gh, opts.repo, ticket),
-      satisfied: (_snapshot, effect) => nothingPublishes(effect),
-      apply: (effect) => nothingPublishes(effect),
-    }),
 
     // Sorts after every other export on purpose: the loader files a module's
     // exports in sorted name order, and an artifact's read wants the tracker's
@@ -1214,16 +1464,22 @@ export function githubHooks(opts: GitHubOptions): {
 
     source: defineSource({
       id: "github",
-      // Every open issue, labels included: position, eligibility and whose
-      // turn it is are all labels, so a tick can choose what to work and
-      // `landrace status` can print a line each without a snapshot per ticket.
-      list: async () => (await gh.listIssues({})).map(candidateOf),
+      relations: RELATION_DECLS,
+      list: () => listGraph(gh, opts.repo),
+      read: (id) => readGraph(gh, opts.repo, id),
+      // The text half, fetched per invocation rather than per pass: what
+      // `fix-review` is told to address, which the graph will not carry.
+      brief: ({ ticket }) => briefThreads(gh, opts.repo, ticket),
     }),
 
     operator: defineOperator({
       id: "github",
-      createTicket: async ({ title, body, labels }: NewTicket) =>
-        candidateOf(await gh.createIssue({ title, body: body ?? "", labels: labels ?? [] })),
+      // Both read back through GraphQL, so what an operator is shown is the
+      // node `list` and `read` would report, not a second reading beside it.
+      createTicket: async ({ title, body, labels }: NewTicket) => {
+        const created = await gh.createIssue({ title, body: body ?? "", labels: labels ?? [] });
+        return nodeOfIssue(await gh.getIssueNode(created.number));
+      },
 
       updateTicket: async (ticket: string, patch: TicketPatch) => {
         const n = issueNumber(ticket);
@@ -1234,10 +1490,9 @@ export function githubHooks(opts: GitHubOptions): {
 
         for (const name of patch.removeLabels ?? []) await gh.removeLabel(n, name);
         await gh.addLabels(n, patch.addLabels ?? []);
+        if (Object.keys(fields).length) await gh.updateIssue(n, fields);
 
-        return candidateOf(
-          Object.keys(fields).length ? await gh.updateIssue(n, fields) : await gh.getIssue(n),
-        );
+        return nodeOfIssue(await gh.getIssueNode(n));
       },
     }),
   };
@@ -1296,27 +1551,14 @@ export const post = definePostHook({
 
 export const source = defineSource({
   id: "github",
+  relations: RELATION_DECLS,
   list: async (ctx: RuntimeContext) => hooksFor(ctx).source.list(ctx),
-});
-
-/**
- * The pull request for this ticket's branch, read every tick.
- *
- * The one artifact here that is read-only: §10's review loop routes on its
- * number, its unresolved thread count and whether it merged, and none of those
- * are things this workflow writes.
- */
-export const pullRequestArtifact = defineArtifactHook({
-  id: PR,
-  handles: [],
-  read: async (ctx: HookContext) => hooksFor(ctx).pullRequestArtifact.read(ctx),
+  read: async (id: string, ctx: RuntimeContext) => hooksFor(ctx).source.read(id, ctx),
   brief: async (ctx: HookContext) => {
-    const hook = hooksFor(ctx).pullRequestArtifact;
-    if (!hook.brief) throw new Error("the pull request artifact briefs nothing");
+    const hook = hooksFor(ctx).source;
+    if (!hook.brief) throw new Error("the github source briefs nothing");
     return hook.brief(ctx);
   },
-  satisfied: (_snapshot: Snapshot, effect: Effect) => nothingPublishes(effect),
-  apply: async (effect: Effect) => nothingPublishes(effect),
 });
 
 /**

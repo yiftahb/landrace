@@ -1,11 +1,26 @@
 import { converge } from "#runner/converge.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
-import { defineArtifactHook, definePostHook, definePreHook } from "#hooks/contracts.js";
-import type { HookContext } from "#namespace.js";
+import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
+import { labelsOf } from "#conventions.js";
+import type { HookContext, Node, Source } from "#namespace.js";
 import type { Executor } from "#namespace.js";
 import type { Step } from "#namespace.js";
 import type { Dispatcher, LandraceEvent, Workflow } from "#namespace.js";
+
+/** Whatever ticket is asked for, alone in its graph, carrying the world's labels as they stand. */
+const labelSource = (labels: Set<string>): Source => {
+  const nodeOf = (id: string): Node => ({
+    id, kind: "ticket", title: `ticket ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
+    state: { labels: [...labels], assignees: [] },
+  });
+  return defineSource({
+    id: "w",
+    relations: [],
+    list: async () => ({ nodes: [nodeOf("1")], relationships: [] }),
+    read: async (id) => ({ nodes: [nodeOf(id)], relationships: [] }),
+  });
+};
 
 // A tiny mutable stand-in for the outside world.
 //
@@ -23,15 +38,16 @@ function world() {
   let clock = 0;
   return {
     labels, entries,
+    source: labelSource(labels),
     pre: definePreHook({
       id: "w",
-      run: () => ({ ticket: { labels: [...labels] }, entries: [...entries] }),
+      run: () => ({ entries: [...entries] }),
     }),
     post: definePostHook({
       id: "w",
       handles: ["tracker.status", "tracker.comment"],
       satisfied: (s, e) => {
-        const present = (s.ticket as { labels?: string[] }).labels ?? [];
+        const present = labelsOf(s.node as Node | undefined);
         if (e.type === "tracker.status") return present.includes(`lr:stage:${String(e.value)}`);
         return entries.some((x) => x.marker === e.marker);
       },
@@ -67,6 +83,7 @@ const workflow: Workflow = {
 const deps = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) => ({
   workflow,
   steps: new Map<string, Step>(),
+  source: w.source,
   pre: [w.pre],
   dispatcher: createDispatcher([w.post]),
   executor: { id: "none", run: async () => ({ text: "", sessionId: null }) } as Executor,
@@ -111,7 +128,7 @@ describe("converge", () => {
       version: 1, name: "t",
       stages: [
         { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "a" }] },
-        { id: "b", triggers: [{ when: { "run.stage": "a", "ticket.labels": { $in: ["never"] } } }] },
+        { id: "b", triggers: [{ when: { "run.stage": "a", "node.state.labels": { $in: ["never"] } } }] },
       ],
     };
     const r = await converge("1", deps(world(), { workflow: waiting }));
@@ -152,7 +169,7 @@ describe("converge", () => {
     await converge("1", deps(world(), { log: createLogger({ sink: (e) => loud.push(e), debug: true }) }));
     const dumps = loud.filter((e) => e.name === "snapshot.built");
     expect(dumps).toHaveLength(loud.filter((e) => e.name === "ticket.evaluated").length);
-    expect((dumps[0]?.snapshot as { ticket?: { labels?: string[] } })?.ticket?.labels).toEqual(["lr:auto"]);
+    expect(labelsOf((dumps[0]?.snapshot as { node?: Node })?.node)).toEqual(["lr:auto"]);
   });
 
   /**
@@ -395,7 +412,7 @@ describe("converge", () => {
     const statusHook = definePostHook({
       id: "status",
       handles: ["tracker.status"],
-      satisfied: (s, e) => ((s.ticket as { labels?: string[] })?.labels ?? []).includes(`lr:stage:${String(e.value)}`),
+      satisfied: (s, e) => labelsOf(s.node as Node | undefined).includes(`lr:stage:${String(e.value)}`),
       apply: async (e) => {
         for (const l of [...labels]) if (l.startsWith("lr:stage:")) labels.delete(l);
         labels.add(`lr:stage:${String(e.value)}`);
@@ -406,7 +423,7 @@ describe("converge", () => {
       satisfied: () => false,
       apply: async () => { throw new Error("rate limited"); },
     });
-    const pre = definePreHook({ id: "w", run: () => ({ ticket: { labels: [...labels] }, entries: [] }) });
+    const pre = definePreHook({ id: "w", run: () => ({ entries: [] }) });
     const stepWorkflow: Workflow = {
       version: 1, name: "t",
       stages: [{
@@ -426,7 +443,7 @@ describe("converge", () => {
     const executor: Executor = { id: "e", run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }) };
 
     const r = await converge("1", {
-      workflow: stepWorkflow, steps: new Map([["spec", step]]), pre: [pre],
+      workflow: stepWorkflow, steps: new Map([["spec", step]]), source: labelSource(labels), pre: [pre],
       dispatcher: createDispatcher([statusHook, boom]), executor,
       ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
       log: createLogger({ sink: () => {} }),
@@ -511,7 +528,7 @@ describe("converge", () => {
       version: 1, name: "t",
       stages: [
         { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "a" }] },
-        { id: "b", triggers: [{ when: { "run.stage": "a", "ticket.labels": { $in: ["never"] } } }] },
+        { id: "b", triggers: [{ when: { "run.stage": "a", "node.state.labels": { $in: ["never"] } } }] },
       ],
     };
     const genuineWait = await converge("1", deps(world(), { workflow: waiting }));
@@ -833,7 +850,7 @@ describe("an artifact's briefing is built for the step, not for the pass", () =>
 
     expect(invoked).toBe(0);
     expect(r.settled).toBe("halt");
-    expect(r.why).toMatch(/briefing for artifact "pr".*the api said no/);
+    expect(r.why).toMatch(/briefing for hook "pr".*the api said no/);
   });
 });
 

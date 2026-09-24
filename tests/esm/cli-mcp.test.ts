@@ -43,24 +43,29 @@ const brand = (kind: string, value: object): object =>
 
 interface Ctx { ticket: string; config: { tracker: { record: string } } }
 
+const ticketNode = (labels: string[]) => ({
+  id: "${TICKET}", kind: "ticket", title: "Add export", link: "u/${TICKET}", closed: null, priority: null,
+  origin: null, state: { labels, assignees: [] },
+});
+
 export const source = brand("source", {
   id: "fake",
   // Recorded to its own file, never the one \`post.apply\` writes to: a test
   // pinning ordering must not perturb every test that asserts the posted
   // comments exactly. This is the one check the MCP plane makes that is not
   // itself the preflight.
-  list: async (ctx: { config: { tracker: { order: string } } }): Promise<unknown[]> => {
+  relations: [],
+  list: async (ctx: { config: { tracker: { order: string } } }): Promise<unknown> => {
     await appendFile(ctx.config.tracker.order, JSON.stringify({ list: true }) + "\\n");
-    return [
-      { ticket: "${TICKET}", title: "Add export", url: "u/${TICKET}", labels: ["lr:auto", "lr:awaiting"], assignees: [] },
-    ];
+    return { nodes: [ticketNode(["lr:auto", "lr:awaiting"])], relationships: [] };
   },
+  read: async (): Promise<unknown> => ({ nodes: [ticketNode(["lr:auto", "lr:stage:spec"])], relationships: [] }),
 });
 
 export const pre = brand("pre", {
   id: "fake",
   run: ({ ticket }: Ctx): Record<string, unknown> => ({
-    ticket: { number: ticket, title: "Add export", labels: ["lr:auto", "lr:stage:spec"] },
+    ticket: { body: "about " + ticket },
     entries: [
       {
         stage: "spec",
@@ -156,7 +161,7 @@ Write the spec.
 name: mcp
 hooks: [hooks/fake.ts]
 eligible:
-  - when: { "ticket.labels": { $in: ["lr:auto"] } }
+  - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
 stages:
   - id: spec

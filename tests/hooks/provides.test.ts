@@ -50,11 +50,30 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto", "lr:stage:spec"] }] });
     const fragment = await state.pre.run({ ticket: "1", snapshot: {} } as HookContext);
     expect(pathsIn(fragment)).toEqual(declaredBy(state.pre));
+    expect(declaredBy(state.pre)).toEqual(["entries", "ticket", "ticket.body", "ticket.comments"]);
+  });
+
+  /*
+   * And neither says again what the ticket's node already says. The title,
+   * the labels and the assignees are the source's reading of the ticket; a
+   * copy of them in a pre hook's fragment is a second reading, free to
+   * disagree with the one the engine placed the ticket from.
+   */
+  it("and neither of them copies what the ticket's node carries", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const github = gh.registry.pre[0];
+    if (!github) throw new Error("the fake tracker registered no pre hook");
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    for (const hook of [github, state.pre]) {
+      for (const path of ["ticket.number", "ticket.title", "ticket.url", "ticket.state", "ticket.labels", "ticket.assignees"]) {
+        expect({ hook: hook.id, path, declared: declaredBy(hook).includes(path) }).toEqual({ hook: hook.id, path, declared: false });
+      }
+    }
   });
 
   /*
    * And neither spells the position a second time. Position is derived once,
-   * in buildSnapshot, out of `ticket.labels`; a `ticket.stage` beside it is a
+   * in buildSnapshot, out of the node's labels; a `ticket.stage` beside it is a
    * second answer to one question, free to disagree with the first.
    */
   it("and neither of them spells the position a second time", async () => {
@@ -72,10 +91,9 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
 
   /*
    * What both are expected to answer, so a workflow written against one runs
-   * on the other. Where they genuinely differ — a `state` and a `url` the
-   * in-memory ticket has no notion of, a bot login the fake knows without
-   * asking — they differ honestly, in what they declare as well as in what
-   * they provide.
+   * on the other. Where they genuinely differ — a bot login the fake knows
+   * without asking — they differ honestly, in what they declare as well as in
+   * what they provide.
    */
   it("and both answer the vocabulary every workflow reads", () => {
     const gh = createFakeTracker([{ number: 1 }]);
@@ -83,13 +101,10 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     if (!github) throw new Error("the fake tracker registered no pre hook");
     const state = createExternalState({ tickets: [{ id: "1" }] });
 
-    // `ticket.assignees` is in the shared half deliberately: a filter on who a
-    // ticket belongs to is what lets several instances share one repository,
-    // and a workflow that reads it must run on either tracker.
-    const shared = [
-      "ticket", "ticket.number", "ticket.title", "ticket.body", "ticket.labels",
-      "ticket.comments", "ticket.assignees", "entries",
-    ];
+    // Who a ticket belongs to, its labels and its title are the node's now
+    // (`node.state.assignees`, `node.state.labels`, `node.title`), read by the
+    // engine from either source the same way.
+    const shared = ["ticket.body", "ticket.comments", "entries"];
     expect(declaredBy(github)).toEqual(expect.arrayContaining(shared));
     expect(declaredBy(state.pre)).toEqual(expect.arrayContaining(shared));
   });

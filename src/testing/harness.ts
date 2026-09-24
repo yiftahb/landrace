@@ -96,6 +96,7 @@ export function createHarness(options: HarnessOptions): Harness {
       const result = await converge(ticket, {
         workflow: options.workflow,
         steps: options.steps,
+        source: options.source,
         pre: options.pre,
         ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
         dispatcher: dispatcherFor(),

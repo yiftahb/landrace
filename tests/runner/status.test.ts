@@ -1,5 +1,4 @@
-import type { Workflow } from "#namespace.js";
-import type { Candidate } from "#namespace.js";
+import type { Node, Workflow } from "#namespace.js";
 import { statusRows } from "#runner/status.js";
 
 const workflow: Workflow = {
@@ -8,12 +7,14 @@ const workflow: Workflow = {
   // Deliberately not `lr:auto`: a status line reports the workflow's own rule,
   // and a hard-coded label name here would look right against the shipped
   // workflow and be wrong against every other one.
-  eligible: [{ when: { "ticket.labels": { $in: ["go"] } }, else: "no go label" }],
+  eligible: [{ when: { "node.state.labels": { $in: ["go"] } }, else: "no go label" }],
   stages: [{ id: "spec", entry: true, terminal: true, triggers: [{ when: { "run.stage": null } }] }],
 };
 
-const candidate = (labels: string[], assignees: string[] = []): Candidate =>
-  ({ ticket: "1", title: "Add export", url: "u/1", labels, assignees });
+const candidate = (labels: string[], assignees: string[] = [], id = "1"): Node => ({
+  id, kind: "ticket", title: "Add export", link: "u/1", closed: null, priority: null, origin: null,
+  state: { labels, assignees },
+});
 
 const noteFor = (labels: string[]): string | undefined => statusRows(workflow, [candidate(labels)])[0]?.note;
 
@@ -50,7 +51,7 @@ describe("statusRows", () => {
   it("says a colleague's ticket is skipped, rather than promising to work it", () => {
     const shared: Workflow = {
       ...workflow,
-      eligible: [{ when: { "ticket.assignees": { $in: ["ann"] } }, else: "assigned to somebody else" }],
+      eligible: [{ when: { "node.state.assignees": { $in: ["ann"] } }, else: "assigned to somebody else" }],
     };
     const rows = statusRows(shared, [candidate(["go"], ["bo"])]);
     expect(rows[0]?.note).toBe("skipped: assigned to somebody else");
@@ -61,5 +62,10 @@ describe("statusRows", () => {
     expect(noteFor(["go", "lr:awaiting"])).toMatch(/waiting on you/);
     expect(noteFor(["go", "lr:working"])).toBe("working");
     expect(noteFor(["go"])).toBe("queued");
+  });
+
+  it("prints tickets in id order, whatever order the source listed them in", () => {
+    const rows = statusRows(workflow, [candidate(["go"], [], "10"), candidate(["go"], [], "9"), candidate(["go"], [], "2")]);
+    expect(rows.map((r) => r.ticket)).toEqual(["2", "9", "10"]);
   });
 });

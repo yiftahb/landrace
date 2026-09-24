@@ -6,7 +6,7 @@ name: assigned
 # literal login. `$in` over the list the tracker provides, because an issue can
 # have more than one assignee and "is one of them" is the question being asked.
 eligible:
-  - when: { "ticket.assignees": { $in: ["{vars.assignee}"] } }
+  - when: { "node.state.assignees": { $in: ["{vars.assignee}"] } }
     else: "assigned to somebody else"
 
 stages:

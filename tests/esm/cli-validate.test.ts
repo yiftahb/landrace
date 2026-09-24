@@ -32,24 +32,28 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    *
    * §11's rule 8 was dormant — `runValidate` never passed `provided`, so the
    * rule compared nothing to nothing and reported the shipped workflow valid
-   * while `artifacts.pr.number` had no hook behind it and a real ticket waited
-   * at `build` forever. This asks the same file, with the pull request
-   * artifact taken back out, and requires it to say so.
+   * while a pull request gate had no hook behind it and a real ticket waited
+   * at `build` forever. This asks the same file with the source's relations
+   * taken back out, and requires it to say so: a `rel.implements` path is
+   * covered because the source declares `implements`, not because anything
+   * under `rel` passes.
    */
-  it("reports the gates the pull request artifact provides when it is not loaded", async () => {
+  it("reports the pull request gates when the source does not declare implements", async () => {
     const { workflow, steps } = await loadWorkflow(".landrace");
     const registry = await loadHooks({ dir: ".landrace", modules: workflow.hooks ?? [] });
+    const empty = async () => ({ nodes: [], relationships: [] });
+    const undeclaring = { id: "none", relations: [], list: empty, read: empty };
 
-    const without = validate(workflow, steps, snapshotProvides(registry.pre.filter((h) => h.id !== "pr")) ?? undefined);
+    const without = validate(workflow, steps, snapshotProvides(registry.pre, undeclaring) ?? undefined);
     const messages = without.filter((p) => p.rule === "path-coverage").map((p) => p.message);
 
     expect(messages).toEqual(expect.arrayContaining([
-      expect.stringContaining("artifacts.pr.number"),
-      expect.stringContaining("artifacts.pr.openThreads"),
-      expect.stringContaining("artifacts.pr.merged"),
+      expect.stringContaining("rel.implements.in.total"),
+      expect.stringContaining("rel.implements.in.sum.openThreads"),
+      expect.stringContaining("rel.implements.in.not.merged"),
     ]));
     // And with it loaded, nothing: the same rule, the same workflow.
-    expect(validate(workflow, steps, snapshotProvides(registry.pre) ?? undefined)
+    expect(validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined)
       .filter((p) => p.rule === "path-coverage")).toEqual([]);
   });
 

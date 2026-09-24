@@ -2,12 +2,14 @@ import {
   isEngineLabel,
   LABEL_NAMESPACE,
   LABELS,
+  labelsOf,
   neutraliseMarkers,
   recordBodyProblem,
   stageFromLabels,
+  TICKET_KIND,
 } from "#conventions.js";
-import type { Snapshot } from "#namespace.js";
-import type { Candidate, Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
+import type { Node, Snapshot, Source } from "#namespace.js";
+import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
 import { buildSnapshot } from "#runner/snapshot.js";
@@ -43,13 +45,24 @@ function requireOperator(operator: Operator | null, what: string): Operator {
   return operator;
 }
 
+/**
+ * A source is optional here as an operator is, so what needs one reports its
+ * absence when asked — not at startup, where a process with no source can
+ * still create a ticket.
+ */
+const noSource = (): never => {
+  throw new Error("no source hook is configured, so there is nothing to enumerate");
+};
+
 export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolOptions = {}): Tools {
   const dispatcher = createDispatcher(registry.post);
+  const source = (): Source => registry.source ?? noSource();
 
   // The tick's own pre hooks and the tick's own dispatcher, handed over rather
   // than rebuilt beside them: a conversation that read or wrote through a
   // second path would be writing state the tick cannot re-derive.
   const conversation = createConversation({
+    source: registry.source ?? { id: "none", relations: [], list: async () => noSource(), read: async () => noSource() },
     pre: registry.pre,
     dispatcher,
     ctx,
@@ -70,26 +83,19 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
   });
 
   const snapshotOf = (ticket: string): Promise<Snapshot> =>
-    buildSnapshot({ ticket, hooks: registry.pre, ctx: { ...ctx, ticket } });
+    buildSnapshot({ ticket, source: source(), hooks: registry.pre, ctx: { ...ctx, ticket } });
 
-  const source = (): NonNullable<Registry["source"]> => {
-    if (!registry.source) {
-      throw new Error("no source hook is configured, so there is nothing to enumerate");
-    }
-    return registry.source;
-  };
-
-  const summarise = (c: Candidate) => ({ ticket: c.ticket, title: c.title, url: c.url, labels: c.labels });
+  const summarise = (n: Node) => ({ ticket: n.id, title: n.title, url: n.link, labels: labelsOf(n) });
 
   return {
     async waiting() {
       // Filtered here, not in the hook: whose turn it is is the engine's own
       // vocabulary, and a source that had to know it would be a source that
-      // had to know the workflow. Labels ride along on a Candidate precisely
+      // had to know the workflow. Labels ride along on a ticket node precisely
       // so this costs no snapshot per ticket.
-      return (await source().list(ctx))
-        .filter((c) => c.labels.includes(LABELS.awaiting))
-        .map((c) => ({ ticket: c.ticket, title: c.title, url: c.url }));
+      return (await source().list(ctx)).nodes
+        .filter((n) => n.kind === TICKET_KIND && labelsOf(n).includes(LABELS.awaiting))
+        .map((n) => ({ ticket: n.id, title: n.title, url: n.link }));
     },
 
     async status(ticket) {
@@ -97,16 +103,18 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       // order, so what an operator is shown is what the engine would decide
       // on — not a second derivation free to drift from it.
       const snapshot = await snapshotOf(ticket);
-      const issue = (snapshot.ticket ?? {}) as { title?: string; url?: string; state?: string; labels?: string[] };
-      const labels = issue.labels ?? [];
+      const node = snapshot.node as Node;
+      const labels = labelsOf(node);
       const { stage, ambiguous, found } = stageFromLabels(labels);
       const run = snapshot.run;
 
       return {
         ticket,
-        title: issue.title ?? null,
-        url: issue.url ?? null,
-        state: issue.state ?? null,
+        title: node.title,
+        url: node.link,
+        // The one piece of lifecycle every source reports the same way: open
+        // is null, a closed ticket says whether it was finished or dropped.
+        closed: node.closed,
         labels,
         stage,
         // Which ones: taking one of them off is the fix, and the engine now

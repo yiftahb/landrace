@@ -58,7 +58,7 @@ describe("mcp server over a real transport", () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { ticket: 99 } });
     expect((r as { isError?: boolean }).isError).toBe(true);
-    expect(textOf(r)).toMatch(/error: .*404/);
+    expect(textOf(r)).toMatch(/error: .*#99 is not an issue/);
     await client.close();
   });
 
@@ -73,14 +73,14 @@ describe("mcp server over a real transport", () => {
   it("still accepts a numeric ticket id, for clients written before ids were strings", async () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { ticket: 99 } });
-    expect(textOf(r)).toMatch(/404/); // reached the tool
+    expect(textOf(r)).toMatch(/#99 is not an issue/); // reached the tool
     await client.close();
   });
 
   it("accepts a string ticket id", async () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { ticket: "99" } });
-    expect(textOf(r)).toMatch(/404/); // reached the tool, as the same ticket
+    expect(textOf(r)).toMatch(/#99 is not an issue/); // reached the tool, as the same ticket
     await client.close();
   });
 
@@ -89,7 +89,7 @@ describe("mcp server over a real transport", () => {
     const r = await client.callTool({ name: "landrace_status", arguments: { ticket: "../x" } });
     expect((r as { isError?: boolean }).isError).toBe(true);
     expect(textOf(r)).toMatch(/ticket id/);
-    expect(textOf(r)).not.toMatch(/404/);
+    expect(textOf(r)).not.toMatch(/404|not an issue/);
     await client.close();
   });
 

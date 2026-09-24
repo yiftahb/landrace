@@ -1,8 +1,8 @@
-import { compareIds } from "#conventions.js";
+import { compareIds, TICKET_KIND } from "#conventions.js";
 import { oneLine, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import type {
-  Board, BoardRow, BoardView, Candidate, Held, LandraceEvent, Lane, Running, StatusRow, Workflow,
+  Board, BoardRow, BoardView, Graph, Held, LandraceEvent, Lane, Node, Running, StatusRow, Workflow,
 } from "#namespace.js";
 
 /** Display order. The page renders lanes in exactly this order. */
@@ -25,7 +25,7 @@ const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 
 export function boardView(input: {
   workflow: Workflow;
-  candidates: Candidate[];
+  nodes: Node[];
   listedAt: number | null;
   running: ReadonlyMap<string, Running>;
   elsewhere: ReadonlyMap<string, Held>;
@@ -35,8 +35,8 @@ export function boardView(input: {
   folder: string;
   workspace: string;
 }): BoardView {
-  const urls = new Map(input.candidates.map((c) => [c.ticket, c.url]));
-  const rows: BoardRow[] = statusRows(input.workflow, input.candidates).map((status): BoardRow => {
+  const urls = new Map(input.nodes.map((n) => [n.id, n.link]));
+  const rows: BoardRow[] = statusRows(input.workflow, input.nodes).map((status): BoardRow => {
     const base = {
       ticket: status.ticket,
       title: oneLine(status.title),
@@ -93,7 +93,7 @@ export function createBoard(opts: {
   const now = opts.now ?? Date.now;
   const pid = opts.pid ?? process.pid;
   const nextTickAt = opts.nextTickAt ?? (() => null);
-  let candidates: Candidate[] = [];
+  let nodes: Node[] = [];
   let listedAt: number | null = null;
   const running = new Map<string, Running>();
 
@@ -111,18 +111,20 @@ export function createBoard(opts: {
         running.delete(e.ticket);
       }
     },
-    list(next: Candidate[]): void {
-      candidates = next;
+    list(graph: Graph): void {
+      // Tickets only: the lanes are about work, and a pull request is not
+      // work of its own — it is context for the ticket it implements.
+      nodes = graph.nodes.filter((n) => n.kind === TICKET_KIND);
       listedAt = now();
     },
     async view(): Promise<BoardView> {
       const elsewhere = new Map<string, Held>();
-      await Promise.all(candidates.map(async (c) => {
-        const h = await opts.held(c.ticket);
-        if (h) elsewhere.set(c.ticket, h);
+      await Promise.all(nodes.map(async (n) => {
+        const h = await opts.held(n.id);
+        if (h) elsewhere.set(n.id, h);
       }));
       return boardView({
-        workflow: opts.workflow, candidates, listedAt, running, elsewhere, now: now(), pid,
+        workflow: opts.workflow, nodes, listedAt, running, elsewhere, now: now(), pid,
         nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },

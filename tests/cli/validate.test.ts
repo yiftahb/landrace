@@ -198,7 +198,7 @@ describe("landrace next", () => {
     // substituted one: a snapshot with no assignee is skipped, and a skipped
     // ticket plans nothing at all.
     await writeFile(file, JSON.stringify({
-      ticket: { assignees: ["ann"] },
+      node: { id: "1", kind: "ticket", state: { labels: [], assignees: ["ann"] } },
       entries: [],
       run: { stage: null, counters: {}, outputs: {} },
     }));

@@ -2,16 +2,34 @@ import {
   entriesFromComments,
   LABEL_EFFECT,
   LABELS,
+  labelsOf,
   neutraliseMarkers,
   parseMarker,
+  PULL_REQUEST_KIND,
   RECORD_EFFECT,
+  RELATIONS,
   renderMarker,
   STAGE_LABEL_PREFIX,
   stageFromLabels,
   STATUS_EFFECT,
+  TICKET_KIND,
 } from "#conventions.js";
-import { definePostHook, definePreHook } from "#hooks/contracts.js";
-import type { Effect, Entry, ExternalState, ExternalTicket, Marker, Snapshot, TrackerComment } from "#namespace.js";
+import { defineOperator, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
+import type {
+  Effect,
+  Entry,
+  ExternalPull,
+  ExternalState,
+  ExternalTicket,
+  Graph,
+  Marker,
+  Node,
+  RelationDecl,
+  Relationship,
+  Snapshot,
+  Source,
+  TrackerComment,
+} from "#namespace.js";
 
 /**
  * The login everything the engine writes is posted under, so what it wrote
@@ -21,6 +39,47 @@ import type { Effect, Entry, ExternalState, ExternalTicket, Marker, Snapshot, Tr
  */
 const BOT = "landrace";
 const PERSON = "a-person";
+
+/** Both relationship types this tracker reports: a sub-ticket's parent, and the ticket a pull request implements. */
+const RELATION_DECLS: RelationDecl[] = [
+  { type: RELATIONS.childOf, singular: true },
+  { type: RELATIONS.implements, singular: true },
+];
+
+/**
+ * A source that answers every question with one fixed graph, for a test that
+ * needs a ticket to exist and nothing to change under it. `read` returns the
+ * whole graph whatever it is asked for, which the runner accepts: the ticket
+ * is in it, and every edge in it is whole.
+ */
+export function staticSource(graph: Graph, relations: RelationDecl[] = RELATION_DECLS): Source {
+  return defineSource({ id: "static", relations, list: async () => graph, read: async () => graph });
+}
+
+const nodeOf = (row: ExternalTicket): Node => ({
+  id: row.id,
+  kind: TICKET_KIND,
+  title: row.title,
+  link: `memory://tickets/${row.id}`,
+  closed: row.closed ?? null,
+  priority: row.priority ?? null,
+  origin: null,
+  // Always lists, empty when there is nothing: an absent path is one an
+  // eligibility rule cannot be answered from, and the tick abstains on those —
+  // which would work a ticket belonging to nobody rather than skip it.
+  state: { labels: [...row.labels], assignees: [...row.assignees] },
+});
+
+const prNodeOf = (p: ExternalPull): Node => ({
+  id: p.id,
+  kind: PULL_REQUEST_KIND,
+  title: `PR #${p.number}`,
+  link: `memory://pulls/${p.number}`,
+  closed: p.closed,
+  priority: null,
+  origin: null,
+  state: { merged: p.merged, openThreads: p.openThreads },
+});
 
 /**
  * Monotonic per ticket, the way a real tracker's timestamps are: a comment
@@ -59,25 +118,71 @@ export function createExternalState(
   seed: { tickets?: Array<Partial<ExternalTicket>> } = {},
 ): ExternalState {
   const rows = new Map<string, ExternalTicket>();
+  const pulls = new Map<string, ExternalPull>();
   const at = clock();
   let nextId = 1000;
 
-  for (const [i, s] of (seed.tickets ?? []).entries()) {
-    const id = s.id ?? String(i + 1);
-    rows.set(id, {
+  const add = (s: Partial<ExternalTicket>, id: string): ExternalTicket => {
+    const row: ExternalTicket = {
       id,
       title: s.title ?? `ticket ${id}`,
       body: s.body ?? "",
       labels: [...(s.labels ?? [])],
       assignees: [...(s.assignees ?? [])],
       comments: [...(s.comments ?? [])],
-    });
-  }
+      priority: s.priority ?? null,
+      parent: s.parent ?? null,
+      closed: s.closed ?? null,
+      author: s.author ?? PERSON,
+    };
+    rows.set(id, row);
+    return row;
+  };
+
+  for (const [i, s] of (seed.tickets ?? []).entries()) add(s, s.id ?? String(i + 1));
 
   const must = (id: string): ExternalTicket => {
     const row = rows.get(id);
     if (!row) throw new Error(`no such ticket #${id}`);
     return row;
+  };
+
+  /** Every edge among `ids`: a child to its parent, a pull request to its ticket. */
+  const edgesAmong = (ids: Set<string>): Relationship[] => [
+    ...[...rows.values()]
+      .filter((r) => r.parent !== null && ids.has(r.id) && ids.has(r.parent))
+      .map((r) => ({ from: r.id, to: r.parent as string, type: RELATIONS.childOf })),
+    ...[...pulls.values()]
+      .filter((p) => ids.has(p.id) && ids.has(p.ticket))
+      .map((p) => ({ from: p.id, to: p.ticket, type: RELATIONS.implements })),
+  ];
+
+  const graphOf = (tickets: ExternalTicket[]): Graph => {
+    const inside = new Set(tickets.map((r) => r.id));
+    const prs = [...pulls.values()].filter((p) => inside.has(p.ticket));
+    const ids = new Set([...inside, ...prs.map((p) => p.id)]);
+    return { nodes: [...tickets.map(nodeOf), ...prs.map(prNodeOf)], relationships: edgesAmong(ids) };
+  };
+
+  /** The ticket, its parent, and every descendant, breadth-first. */
+  const neighbourhood = (id: string): ExternalTicket[] => {
+    const row = must(id);
+    const found = [row];
+    const parent = row.parent === null ? undefined : rows.get(row.parent);
+    if (parent) found.push(parent);
+    const seen = new Set(found.map((r) => r.id));
+    for (let i = 0; i < found.length; i++) {
+      const from = found[i];
+      // The parent's other children are its business, not this ticket's.
+      if (from === undefined || from === parent) continue;
+      for (const child of rows.values()) {
+        if (child.parent === from.id && !seen.has(child.id)) {
+          seen.add(child.id);
+          found.push(child);
+        }
+      }
+    }
+    return found;
   };
 
   const post = (id: string, author: string, body: string): void => {
@@ -91,6 +196,44 @@ export function createExternalState(
 
   return {
     ticket: must,
+    openPull: (ticket, pr = {}) => {
+      must(ticket);
+      const number = pulls.size + 1;
+      const pull: ExternalPull = { id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, closed: null, ...pr };
+      pulls.set(pull.id, pull);
+      return pull.id;
+    },
+    pull: (id) => {
+      const pull = pulls.get(id);
+      if (!pull) throw new Error(`no such pull request ${id}`);
+      return pull;
+    },
+
+    source: defineSource({
+      id: "memory",
+      relations: RELATION_DECLS,
+      list: async () => graphOf([...rows.values()]),
+      read: async (id) => graphOf(neighbourhood(id)),
+    }),
+
+    operator: defineOperator({
+      id: "memory",
+      createTicket: async ({ title, body, labels }) => {
+        let n = rows.size + 1;
+        while (rows.has(String(n))) n++;
+        return nodeOf(add({ title, body: body ?? "", labels: labels ?? [], author: BOT }, String(n)));
+      },
+      updateTicket: async (id, patch) => {
+        const row = must(id);
+        if (patch.title !== undefined) row.title = patch.title;
+        if (patch.body !== undefined) row.body = patch.body;
+        if (patch.state !== undefined) row.closed = patch.state === "closed" ? "done" : null;
+        row.labels = row.labels.filter((l) => !(patch.removeLabels ?? []).includes(l));
+        for (const l of patch.addLabels ?? []) if (!row.labels.includes(l)) row.labels.push(l);
+        return nodeOf(row);
+      },
+    }),
+
     comments: (n) => must(n).comments.map((c) => c.body),
     entriesOf,
     stage: (n) => stageFromLabels(must(n).labels).stage,
@@ -110,32 +253,17 @@ export function createExternalState(
        * Exactly what `run` below puts in the snapshot, and nothing else —
        * `landrace validate`'s path-coverage rule is answered from this list,
        * so a path declared and not provided passes a workflow that reads
-       * nothing. `ticket.stage` was declared and provided and read by nobody:
-       * a second spelling of `run.stage`, derived from these same labels, and
-       * a second spelling of one fact is how a fake and the integration it
-       * stands in for drift apart. tests/hooks/provides.test.ts holds this
-       * level with what `run` returns, for this tracker and for the shipped
-       * one, so neither can grow a field without saying so.
+       * nothing. Only what a graph cannot hold: the title, the labels and
+       * the assignees are the node's, and a second copy of them here is how
+       * a fake and the integration it stands in for drift apart.
+       * tests/hooks/provides.test.ts holds this level with what `run`
+       * returns, for this tracker and for the shipped one.
        */
-      provides: [
-        "ticket", "ticket.number", "ticket.title", "ticket.body", "ticket.labels",
-        "ticket.assignees", "ticket.comments", "entries",
-      ],
+      provides: ["ticket", "ticket.body", "ticket.comments", "entries"],
       run: ({ ticket }) => {
         const row = must(ticket);
         return {
-          ticket: {
-            number: row.id,
-            title: row.title,
-            body: row.body,
-            labels: [...row.labels],
-            // Always a list, empty when nobody is assigned: an absent path is
-            // one an eligibility rule cannot be answered from, and the tick
-            // abstains on those — which would work a ticket belonging to
-            // nobody rather than skip it.
-            assignees: [...row.assignees],
-            comments: row.comments.map((c) => ({ ...c })),
-          },
+          ticket: { body: row.body, comments: row.comments.map((c) => ({ ...c })) },
           entries: entriesOf(ticket),
         };
       },
@@ -151,8 +279,8 @@ export function createExternalState(
        * already show this", and the world it can see is the one this pass read.
        */
       satisfied: (snapshot: Snapshot, effect: Effect): boolean => {
-        const ticket = (snapshot.ticket ?? {}) as { labels?: string[]; comments?: TrackerComment[] };
-        const labels = ticket.labels ?? [];
+        const ticket = (snapshot.ticket ?? {}) as { comments?: TrackerComment[] };
+        const labels = labelsOf(snapshot.node as Node | undefined);
         switch (effect.type) {
           case LABEL_EFFECT: {
             const add = (effect.add as string[] | undefined) ?? [];

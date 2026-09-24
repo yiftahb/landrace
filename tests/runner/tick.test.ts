@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LandraceEvent, Step, TickOptions, Workflow } from "#namespace.js";
 import { definePreHook, defineSource } from "#hooks/contracts.js";
-import type { Candidate, Executor, HookContext, RuntimeContext } from "#namespace.js";
+import type { Executor, Graph, HookContext, Node, RuntimeContext } from "#namespace.js";
+import { staticSource } from "#testing/index.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { acquire, held, release } from "#runner/lock.js";
@@ -18,7 +19,7 @@ import { statusLines } from "#runner/status.js";
 const workflow: Workflow = {
   version: 1,
   name: "t",
-  eligible: [{ when: { "ticket.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+  eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
   stages: [{ id: "a", entry: true, terminal: true, triggers: [{ when: { "run.stage": null } }] }],
 };
 
@@ -33,25 +34,21 @@ const exploding: Workflow = {
   stages: [{ id: "a", entry: true, terminal: true, identity: { $where: "1" } }],
 };
 
-const candidate = (ticket: string, labels: string[] = ["lr:auto"], assignees: string[] = []): Candidate => ({
-  ticket,
-  title: `issue ${ticket}`,
-  url: `u/${ticket}`,
-  labels,
-  assignees,
+const ticketNode = (id: string, labels: string[] = ["lr:auto"], assignees: string[] = [], priority: number | null = null): Node => ({
+  id, kind: "ticket", title: `issue ${id}`, link: `u/${id}`, closed: null, priority, origin: null, state: { labels, assignees },
 });
 
 /** The rule a repository shared between two developers is actually filtered by. */
 const mine = (login: string): Workflow => ({
   ...workflow,
-  eligible: [{ when: { "ticket.assignees": { $in: [login] } }, else: "assigned to somebody else" }],
+  eligible: [{ when: { "node.state.assignees": { $in: [login] } }, else: "assigned to somebody else" }],
 });
 
-const source = (candidates: Candidate[]) => defineSource({ id: "fake", list: async () => candidates });
+const source = (nodes: Node[]) => staticSource({ nodes, relationships: [] });
 
 const quietPre = definePreHook({
   id: "fake",
-  run: () => ({ ticket: { labels: ["lr:auto"] }, entries: [] }),
+  run: () => ({ entries: [] }),
 });
 
 function deps(overrides: Partial<TickOptions["deps"]> = {}): TickOptions["deps"] {
@@ -108,7 +105,7 @@ beforeEach(async () => {
 
 describe("tick", () => {
   it("acts on every eligible ticket", async () => {
-    const out = await tick({ source: source([1, 2, 3].map((n) => candidate(String(n)))), deps: deps(), lock: { root } });
+    const out = await tick({ source: source([1, 2, 3].map((n) => ticketNode(String(n)))), deps: deps(), lock: { root } });
     expect(out.map((r) => r.ticket)).toEqual(["1", "2", "3"]);
     expect(out.map((r) => r.outcome)).toEqual([
       "terminal after 1 pass(es)",
@@ -119,12 +116,12 @@ describe("tick", () => {
 
   it("orders rows 9 before 10, as it did when ids were numbers", async () => {
     // Ineligible (no lr:auto label), so nothing converges and no lock is taken.
-    const out = await tick({ source: source([candidate("10", []), candidate("9", [])]), deps: deps(), lock: { root } });
+    const out = await tick({ source: source([ticketNode("10", []), ticketNode("9", [])]), deps: deps(), lock: { root } });
     expect(out.map((r) => r.ticket)).toEqual(["9", "10"]);
   });
 
   it("refuses a hostile id as that row's error and carries on with the rest", async () => {
-    const out = await tick({ source: source([candidate("../../etc"), candidate("7", [])]), deps: deps(), lock: { root } });
+    const out = await tick({ source: source([ticketNode("../../etc"), ticketNode("7", [])]), deps: deps(), lock: { root } });
     expect(out.find((r) => r.ticket === "../../etc")?.outcome).toMatch(/^error: .*ticket id/);
     expect(out.find((r) => r.ticket === "7")?.outcome).toMatch(/^skipped/);
   });
@@ -135,13 +132,13 @@ describe("tick", () => {
       id: "fake",
       run: ({ ticket }) => {
         seen.push(ticket);
-        return { ticket: { labels: ["lr:auto"] }, entries: [] };
+        return { entries: [] };
       },
     });
 
     await acquire("1", "conversation", { root, holder: "mcp:ask" });
     const out = await tick({
-      source: source([candidate("1"), candidate("2")]),
+      source: source([ticketNode("1"), ticketNode("2")]),
       deps: deps({ pre: [recording] }),
       lock: { root },
     });
@@ -154,13 +151,13 @@ describe("tick", () => {
   });
 
   it("releases each lock when the ticket is done", async () => {
-    await tick({ source: source([candidate("1")]), deps: deps(), lock: { root } });
+    await tick({ source: source([ticketNode("1")]), deps: deps(), lock: { root } });
     expect(await acquire("1", "tick", { root })).toBe(true);
     await release("1", { root });
   });
 
   it("releases the lock even when the ticket threw", async () => {
-    const out = await tick({ source: source([candidate("1")]), deps: deps({ workflow: exploding }), lock: { root } });
+    const out = await tick({ source: source([ticketNode("1")]), deps: deps({ workflow: exploding }), lock: { root } });
 
     expect(out[0]?.outcome).toMatch(/^error: .*\$where/);
     expect(await acquire("1", "tick", { root })).toBe(true);
@@ -169,7 +166,7 @@ describe("tick", () => {
 
   it("reports a ticket that threw without abandoning the rest", async () => {
     const out = await tick({
-      source: source([candidate("1"), candidate("2")]),
+      source: source([ticketNode("1"), ticketNode("2")]),
       deps: deps({ workflow: exploding }),
       lock: { root },
     });
@@ -188,7 +185,7 @@ describe("tick", () => {
         throw Object.assign(Object.create(null) as object, { message: "no prototype here" });
       },
     });
-    const out = await tick({ source: source([candidate("1")]), deps: deps({ pre: [weird] }), lock: { root } });
+    const out = await tick({ source: source([ticketNode("1")]), deps: deps({ pre: [weird] }), lock: { root } });
 
     // converge turns a pre-hook failure into a halt rather than a throw, so
     // what this pins is that the reason survives into the row either way —
@@ -203,7 +200,7 @@ describe("tick", () => {
         throw new Error("first line\n#99 terminal after 1 pass(es)");
       },
     });
-    const out = await tick({ source: source([candidate("1")]), deps: deps({ pre: [shouty] }), lock: { root } });
+    const out = await tick({ source: source([ticketNode("1")]), deps: deps({ pre: [shouty] }), lock: { root } });
 
     expect(out[0]?.outcome).not.toContain("\n");
   });
@@ -220,12 +217,12 @@ describe("tick", () => {
       run: async ({ ticket }) => {
         if (ticket === "1") await slow.wait;
         done.push(ticket);
-        return { ticket: { labels: ["lr:auto"] }, entries: [] };
+        return { entries: [] };
       },
     });
 
     const running = tick({
-      source: source([1, 2, 3].map((n) => candidate(String(n)))),
+      source: source([1, 2, 3].map((n) => ticketNode(String(n)))),
       deps: deps({ pre: [blocking] }),
       concurrency: 3,
       lock: { root },
@@ -252,12 +249,12 @@ describe("tick", () => {
         peak = Math.max(peak, inFlight);
         await open.wait;
         inFlight--;
-        return { ticket: { labels: ["lr:auto"] }, entries: [] };
+        return { entries: [] };
       },
     });
 
     const running = tick({
-      source: source([1, 2, 3, 4, 5].map((n) => candidate(String(n)))),
+      source: source([1, 2, 3, 4, 5].map((n) => ticketNode(String(n)))),
       deps: deps({ pre: [counting] }),
       concurrency: 2,
       lock: { root },
@@ -280,11 +277,11 @@ describe("tick", () => {
       id: "blocking",
       run: async () => {
         await slow.wait;
-        return { ticket: { labels: ["lr:auto"] }, entries: [] };
+        return { entries: [] };
       },
     });
 
-    const running = tick({ source: source([candidate("1")]), deps: deps({ pre: [blocking] }), lock: { root } });
+    const running = tick({ source: source([ticketNode("1")]), deps: deps({ pre: [blocking] }), lock: { root } });
 
     await until(async () => (await held("1", { root })) !== null, "the tick to take the lock");
     expect((await held("1", { root }))?.kind).toBe("tick");
@@ -297,7 +294,7 @@ describe("tick", () => {
 
   it("skips an ineligible ticket with the workflow's own reason, and never locks it", async () => {
     const out = await tick({
-      source: source([candidate("1", []), candidate("2")]),
+      source: source([ticketNode("1", []), ticketNode("2")]),
       deps: deps(),
       lock: { root },
     });
@@ -310,7 +307,7 @@ describe("tick", () => {
   });
 
   /**
-   * The point of carrying the assignee on a Candidate, measured rather than
+   * The point of carrying the assignee on the listed node, measured rather than
    * asserted: a rule the tick cannot answer abstains, and abstaining means
    * eligible — so somebody else's ticket was enumerated, snapshot-built and
    * locked before converge skipped it. What this counts is the reads, because
@@ -322,12 +319,12 @@ describe("tick", () => {
       id: "fake",
       run: ({ ticket }) => {
         read.push(ticket);
-        return { ticket: { labels: ["lr:auto"] }, entries: [] };
+        return { entries: [] };
       },
     });
 
     const out = await tick({
-      source: source([candidate("1", ["lr:auto"], ["ann"]), candidate("2", ["lr:auto"], ["bo"])]),
+      source: source([ticketNode("1", ["lr:auto"], ["ann"]), ticketNode("2", ["lr:auto"], ["bo"])]),
       deps: deps({ workflow: mine("ann"), pre: [recording] }),
       lock: { root },
     });
@@ -343,6 +340,8 @@ describe("tick", () => {
   it("surfaces a failure to enumerate, rather than reporting an empty tick", async () => {
     const broken = defineSource({
       id: "broken",
+      relations: [],
+      read: async () => ({ nodes: [], relationships: [] }),
       list: async () => {
         throw new Error("GET /issues → 401");
       },
@@ -350,11 +349,28 @@ describe("tick", () => {
     await expect(tick({ source: broken, deps: deps(), lock: { root } })).rejects.toThrow(/401/);
   });
 
+  it("hands work out by priority, unprioritised last", async () => {
+    const order: string[] = [];
+    const recording = definePreHook({ id: "rec", provides: [], run: ({ ticket }) => { order.push(ticket); return {}; } });
+    await tick({
+      source: source([ticketNode("1"), ticketNode("2", ["lr:auto"], [], 0), ticketNode("3", ["lr:auto"], [], 1)]),
+      deps: deps({ pre: [recording] }), concurrency: 1, lock: { root },
+    });
+    expect(order[0]).toBe("2");
+    expect(order.indexOf("3")).toBeLessThan(order.indexOf("1"));
+  });
+
+  it("works only ticket nodes — a pull request in the list is not a ticket to converge", async () => {
+    const pr: Node = { ...ticketNode("pr-9"), kind: "pull-request" };
+    const out = await tick({ source: source([ticketNode("1", []), pr]), deps: deps(), lock: { root } });
+    expect(out.map((r) => r.ticket)).toEqual(["1"]);
+  });
+
   it("logs the tick's own boundaries, an acquired lock and a denied one", async () => {
     const seen: LandraceEvent[] = [];
     await acquire("1", "conversation", { root, holder: "mcp:ask" });
     await tick({
-      source: source([candidate("1"), candidate("2")]),
+      source: source([ticketNode("1"), ticketNode("2")]),
       deps: deps({ log: createLogger({ sink: (e) => seen.push(e) }) }),
       lock: { root },
     });
@@ -369,17 +385,17 @@ describe("tick", () => {
 });
 
 describe("eligibilityOf", () => {
-  it("reads the workflow's own rule off the labels a candidate already carries", () => {
-    expect(eligibilityOf(workflow, candidate("1"))).toEqual({ eligible: true });
-    expect(eligibilityOf(workflow, candidate("1", []))).toEqual({ eligible: false, reason: "no lr:auto label" });
+  it("reads the workflow's own rule off the labels a listed node already carries", () => {
+    expect(eligibilityOf(workflow, ticketNode("1"))).toEqual({ eligible: true });
+    expect(eligibilityOf(workflow, ticketNode("1", []))).toEqual({ eligible: false, reason: "no lr:auto label" });
   });
 
   /**
-   * Abstain rather than guess: a rule reading anything a candidate cannot
+   * Abstain rather than guess: a rule reading anything a listed node cannot
    * carry is unanswerable from labels alone, and answering it "ineligible"
    * would silently park every ticket in the repository.
    */
-  it("abstains when the rule reads something a candidate cannot answer", () => {
+  it("abstains when the rule reads something a listed node cannot answer", () => {
     // An equality against a derived path, not a range: mongo semantics make
     // `{ $lt: 3 }` match a *missing* field, so a rule written that way would
     // come back eligible with or without this guard — a test that could never
@@ -388,7 +404,7 @@ describe("eligibilityOf", () => {
       ...workflow,
       eligible: [{ when: { "run.stage": "spec" }, else: "not in the spec phase" }],
     };
-    expect(eligibilityOf(derived, candidate("1", []))).toEqual({ eligible: true });
+    expect(eligibilityOf(derived, ticketNode("1", []))).toEqual({ eligible: true });
   });
 
   /**
@@ -397,9 +413,9 @@ describe("eligibilityOf", () => {
    * filtered to one developer decides the whole repository off what `list`
    * already returned.
    */
-  it("answers a rule about who the ticket belongs to from the candidate itself", () => {
-    expect(eligibilityOf(mine("ann"), candidate("1", ["lr:auto"], ["ann"]))).toEqual({ eligible: true });
-    expect(eligibilityOf(mine("ann"), candidate("2", ["lr:auto"], ["bo", "cy"]))).toEqual({
+  it("answers a rule about who the ticket belongs to from the listed node itself", () => {
+    expect(eligibilityOf(mine("ann"), ticketNode("1", ["lr:auto"], ["ann"]))).toEqual({ eligible: true });
+    expect(eligibilityOf(mine("ann"), ticketNode("2", ["lr:auto"], ["bo", "cy"]))).toEqual({
       eligible: false,
       reason: "assigned to somebody else",
     });
@@ -411,7 +427,7 @@ describe("eligibilityOf", () => {
    * and an unanswerable rule abstains, so every instance would work it.
    */
   it("leaves an unassigned ticket to nobody rather than to everybody", () => {
-    expect(eligibilityOf(mine("ann"), candidate("1"))).toEqual({
+    expect(eligibilityOf(mine("ann"), ticketNode("1"))).toEqual({
       eligible: false,
       reason: "assigned to somebody else",
     });
@@ -421,16 +437,16 @@ describe("eligibilityOf", () => {
     const mixed: Workflow = {
       ...workflow,
       eligible: [
-        { when: { "ticket.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" },
+        { when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" },
         { when: { "run.stage": "spec" }, else: "not in the spec phase" },
       ],
     };
-    expect(eligibilityOf(mixed, candidate("1", []))).toEqual({ eligible: true });
+    expect(eligibilityOf(mixed, ticketNode("1", []))).toEqual({ eligible: true });
   });
 
   it("treats a workflow with no eligibility rule as taking every ticket", () => {
     const open: Workflow = { version: 1, name: "t", stages: workflow.stages };
-    expect(eligibilityOf(open, candidate("1", []))).toEqual({ eligible: true });
+    expect(eligibilityOf(open, ticketNode("1", []))).toEqual({ eligible: true });
   });
 });
 
@@ -490,13 +506,20 @@ describe("statusLines", () => {
 });
 
 describe("onList", () => {
-  it("hands over every candidate the source returned, eligible or not, once per tick", async () => {
+  it("hands over every node the source returned, eligible or not, once per tick", async () => {
     const root = await mkdtemp(join(tmpdir(), "lr-onlist-"));
-    const seen: Candidate[][] = [];
-    const listed = [candidate("1"), candidate("2", ["other"])];
-    await tick({ source: source(listed), deps: deps(), lock: { root }, onList: (c) => seen.push(c) });
+    const seen: Graph[] = [];
+    const listed = [ticketNode("1"), ticketNode("2", ["other"])];
+    await tick({ source: source(listed), deps: deps(), lock: { root }, onList: (g) => seen.push(g) });
     expect(seen).toHaveLength(1);
-    expect(seen[0]?.map((c) => c.ticket)).toEqual(["1", "2"]);
+    expect(seen[0]?.nodes.map((n) => n.id)).toEqual(["1", "2"]);
+  });
+
+  it("hands the display the graph it listed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "lr-onlist-"));
+    let listed: Graph | undefined;
+    await tick({ source: source([ticketNode("1", [])]), deps: deps(), lock: { root }, onList: (g) => { listed = g; } });
+    expect(listed?.nodes.map((n) => n.id)).toEqual(["1"]);
   });
 
   it("does not stop the tick when the listener throws", async () => {
@@ -504,7 +527,7 @@ describe("onList", () => {
     const events: LandraceEvent[] = [];
     const log = createLogger({ sink: (e) => events.push(e) });
     const rows = await tick({
-      source: source([candidate("1")]), deps: deps({ log }), lock: { root },
+      source: source([ticketNode("1")]), deps: deps({ log }), lock: { root },
       onList: () => { throw new Error("display broke"); },
     });
     expect(rows).toHaveLength(1);

@@ -1,26 +1,30 @@
-import type { Candidate, Held, Running, Workflow } from "#namespace.js";
+import type { Graph, Held, Node, Running, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
 import { boardView, createBoard, laneOf } from "#ui/board.js";
 
 const workflow: Workflow = {
   version: 1, name: "t",
-  eligible: [{ when: { "ticket.labels": { $in: ["go"] } }, else: "no go label" }],
+  eligible: [{ when: { "node.state.labels": { $in: ["go"] } }, else: "no go label" }],
   stages: [
     { id: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] },
     { id: "done", terminal: true, triggers: [{ when: { "run.stage": "spec" } }] },
   ],
 };
 
-const c = (ticket: string, labels: string[], title = `t${ticket}`, url = `https://x/${ticket}`): Candidate =>
-  ({ ticket, title, url, labels, assignees: [] });
+const c = (ticket: string, labels: string[], title = `t${ticket}`, url = `https://x/${ticket}`): Node => ({
+  id: ticket, kind: "ticket", title, link: url, closed: null, priority: null, origin: null, state: { labels, assignees: [] },
+});
 
-const view = (candidates: Candidate[], over: Partial<Parameters<typeof boardView>[0]> = {}) =>
+/** What a tick hands the board: a graph, of which only the tickets are rows. */
+const graph = (nodes: Node[]): Graph => ({ nodes, relationships: [] });
+
+const view = (nodes: Node[], over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
-    workflow, candidates, listedAt: 1, now: 100, pid: 1, nextTickAt: null,
+    workflow, nodes, listedAt: 1, now: 100, pid: 1, nextTickAt: null,
     running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
   });
 
-const laneFor = (candidate: Candidate, over = {}) => view([candidate], over).rows[0]?.lane;
+const laneFor = (candidate: Node, over = {}) => view([candidate], over).rows[0]?.lane;
 
 describe("laneOf", () => {
   const row = (note: string, stage: string | null = "spec") => ({ ticket: "1", title: "t", stage, note });
@@ -107,7 +111,7 @@ describe("createBoard", () => {
   it("opens a running row on step.started and closes it on step.finished", async () => {
     let t = 10;
     const board = shell(() => t);
-    board.list([c("1", ["go"])]);
+    board.list(graph([c("1", ["go"])]));
     board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 1, model: "opus" });
     t = 20;
     expect((await board.view()).rows[0]).toMatchObject({ lane: "running", since: 10 });
@@ -117,7 +121,7 @@ describe("createBoard", () => {
 
   it("ignores a step event that names no ticket", async () => {
     const board = shell(() => 0);
-    board.list([c("1", ["go"])]);
+    board.list(graph([c("1", ["go"])]));
     board.observe({ name: "step.started", stage: "spec", round: 1 });
     expect((await board.view()).rows[0]?.lane).toBe("waiting");
   });
@@ -151,15 +155,21 @@ describe("createBoard", () => {
   it("asks the lock only about tickets it has listed", async () => {
     const asked: string[] = [];
     const board = shell(() => 0, async (t) => { asked.push(t); return null; });
-    board.list([c("4", ["go"]), c("9", ["go"])]);
+    board.list(graph([c("4", ["go"]), c("9", ["go"])]));
     await board.view();
     expect(asked.sort()).toEqual(["4", "9"]);
   });
 
   it("tracks a running agent from events whose ticket is a string", () => {
     const board = createBoard({ workflow, held: async () => null, folder: "f", workspace: "/w" });
-    board.list([{ ticket: "7", title: "t", url: "", labels: [], assignees: [] }]);
+    board.list(graph([c("7", [], "t", "")]));
     board.observe({ name: "step.started", ticket: "7", stage: "build", round: 1 });
     return board.view().then((v) => expect(v.rows[0]?.lane).toBe("running"));
+  });
+
+  it("lists only the tickets in the graph — a pull request is not a row", async () => {
+    const board = shell(() => 0);
+    board.list(graph([c("1", ["go"]), { ...c("pr-3", []), kind: "pull-request" }]));
+    expect((await board.view()).rows.map((r) => r.ticket)).toEqual(["1"]);
   });
 });

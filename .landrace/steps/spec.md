@@ -13,7 +13,7 @@ output:
       effect: { type: artifact.publish, artifact: spec }
 ---
 
-Write the spec for #{ticket.number}: {ticket.title}.
+Write the spec for #{node.id}: {node.title}.
 
 {ticket.body}
 

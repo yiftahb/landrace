@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { OUTPUT_KIND, renderMarker } from "#conventions.js";
-import type { ConversationDeps, Executor, LockOptions, Step } from "#namespace.js";
+import type { ConversationDeps, Executor, LockOptions, Source, Step } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createTools } from "#mcp/tools.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -28,6 +28,12 @@ let root: string;
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "lr-conv-"));
 });
+
+/** The fake GitHub's source, which the conversation reads the ticket's node from as the tick does. */
+const sourceOf = (tracker: FakeTracker): Source => {
+  if (!tracker.registry.source) throw new Error("the fake tracker registered no source");
+  return tracker.registry.source;
+};
 
 /** An agent that answers, and records what it was asked to resume. */
 const agent = (text: string, spy?: (resume?: string) => void): Executor => ({
@@ -67,6 +73,7 @@ const world = (
   over: Partial<ConversationDeps> = {},
 ) =>
   createConversation({
+    source: sourceOf(tracker),
     pre: tracker.registry.pre,
     dispatcher: createDispatcher(tracker.registry.post),
     ctx: tracker.ctx,
@@ -168,6 +175,7 @@ describe("conversation", () => {
 
     let resumed: string | undefined;
     await createConversation({
+      source: sourceOf(tracker),
       pre: tracker.registry.pre,
       dispatcher,
       ctx: tracker.ctx,
@@ -262,6 +270,7 @@ describe("conversation", () => {
 
     let resumed: string | undefined;
     await createConversation({
+      source: sourceOf(tracker),
       pre: tracker.registry.pre,
       dispatcher: createDispatcher(tracker.registry.post),
       ctx: tracker.ctx,
@@ -658,6 +667,7 @@ describe("a conversation turn is held to what its step declared", () => {
 
     await expect(
       createConversation({
+        source: sourceOf(tracker),
         pre: tracker.registry.pre,
         dispatcher: createDispatcher(tracker.registry.post),
         ctx: tracker.ctx,

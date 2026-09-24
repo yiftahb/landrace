@@ -431,36 +431,6 @@ export interface Preflight {
   check(ctx: RuntimeContext): Promise<void>;
 }
 
-/** A ticket worth looking at, cheaply enough to enumerate every one of them. */
-export interface Candidate {
-  ticket: string;
-  title: string;
-  url: string;
-  /**
-   * Position, eligibility and whose turn it is are all labels, so carrying
-   * them here is what lets a tick decide which candidates to work and
-   * `landrace status` print a line each, without a snapshot build per ticket.
-   */
-  labels: string[];
-  /**
-   * Who the ticket belongs to, as logins — the other half of that same
-   * decision, and here for the same reason.
-   *
-   * It is not a label, but it is asked at the same moment: a repository shared
-   * between two developers filters on it, and `eligibilityOf` abstains on a
-   * rule it cannot answer from a candidate's own fields. Absent, the rule was
-   * unanswerable, so every instance built a snapshot — issue fetch, comments
-   * fetch, artifact reads — and took the per-ticket lock for every ticket in
-   * the repository before converge skipped it, and `landrace status` printed a
-   * colleague's ticket as `queued`.
-   *
-   * Empty, never absent, for exactly the reason the snapshot's copy is: an
-   * absent path abstains, and abstaining means eligible, so an unassigned
-   * ticket would be worked by everybody rather than by nobody.
-   */
-  assignees: string[];
-}
-
 /**
  * Where the work comes from. A tick has to enumerate tickets before it has one
  * to build a snapshot for, so this cannot be a pre hook: a pre hook is handed
@@ -468,7 +438,24 @@ export interface Candidate {
  */
 export interface Source {
   id: string;
-  list(ctx: RuntimeContext): Promise<Candidate[]>;
+  /**
+   * The relationship types this source reports, and which of them a node may
+   * have at most one outgoing edge of. The runner refuses an edge of any other
+   * type, and `rel` carries exactly these — zero-counted when nothing relates,
+   * so a predicate on a type the source never reports is caught by validate
+   * rather than reading zero for ever.
+   */
+  relations: RelationDecl[];
+  /**
+   * Everything, once per tick: eligibility, scheduling and the board are all
+   * answered from this, without a read per ticket. Each ticket node carries
+   * its labels and assignees in `state`, because that is what those three ask.
+   */
+  list(ctx: RuntimeContext): Promise<Graph>;
+  /** One ticket's neighbourhood — itself, its ancestors, its descendants and every related node — on every converge pass. */
+  read(id: string, ctx: RuntimeContext): Promise<Graph>;
+  /** Prompt text about this ticket, asked for only when a step's prompt names `{brief.<source id>.<key>}`. */
+  brief?(ctx: HookContext): Promise<Record<string, string>> | Record<string, string>;
 }
 
 /* `| undefined` throughout, because exactOptionalPropertyTypes is on and these
@@ -502,8 +489,8 @@ export interface TicketPatch {
  */
 export interface Operator {
   id: string;
-  createTicket(input: NewTicket, ctx: RuntimeContext): Promise<Candidate>;
-  updateTicket(ticket: string, input: TicketPatch, ctx: RuntimeContext): Promise<Candidate>;
+  createTicket(input: NewTicket, ctx: RuntimeContext): Promise<Node>;
+  updateTicket(ticket: string, input: TicketPatch, ctx: RuntimeContext): Promise<Node>;
 }
 
 /**
@@ -647,6 +634,8 @@ export type StepResult =
 
 export interface ConvergeDeps {
   workflow: Workflow;
+  /** Read first on every pass: the ticket's node, its graph and its `rel` counts are what everything after it decides from. */
+  source: Source;
   /**
    * Where the repository is, when steps are to run in a per-ticket worktree of
    * it (`agent.isolation: worktree`). Absent means the agent runs wherever the
@@ -690,15 +679,16 @@ export interface TickOptions {
    * it describes, and a tick has to enumerate tickets before it has one.
    */
   source: Source;
-  deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
+  /** Without a source of its own: converge reads the tick's, so one tick cannot enumerate from one source and decide from another. */
+  deps: Omit<ConvergeDeps, "ctx" | "source"> & { ctx: RuntimeContext };
   concurrency?: number;
   lock?: LockOptions;
   /**
-   * Every candidate the source returned this tick, eligible or not. For a
+   * Every node the source returned this tick, eligible or not. For a
    * display: handing over what the tick already fetched costs nothing, and
    * asking the source again would double the tracker traffic of every tick.
    */
-  onList?: (candidates: Candidate[]) => void;
+  onList?: (graph: Graph) => void;
 }
 
 export interface TickRow {
@@ -735,6 +725,8 @@ export interface HarnessRun {
 export interface HarnessOptions {
   workflow: Workflow;
   steps: Map<string, Step>;
+  /** What the ticket's node, graph and `rel` counts are read from on every pass. */
+  source: Source;
   pre: PreHook[];
   post: PostHook[];
   artifacts?: ArtifactHook[];
@@ -786,6 +778,25 @@ export interface ExternalTicket {
    */
   assignees: string[];
   comments: TrackerComment[];
+  /** Lower is more urgent; null is unprioritised, never zero. */
+  priority: number | null;
+  /** The ticket this one is a child of, by id. */
+  parent: string | null;
+  closed: Closed;
+  /** Who opened it, as a login. */
+  author: string;
+}
+
+/** A pull request as the in-memory tracker holds it: live and mutable, so a test moves it the way a person on the tracker would. */
+export interface ExternalPull {
+  /** The node id, `pr-<number>`. */
+  id: string;
+  number: number;
+  /** The ticket it implements. */
+  ticket: string;
+  merged: boolean;
+  openThreads: number;
+  closed: Closed;
 }
 
 /**
@@ -800,6 +811,12 @@ export interface ExternalTicket {
 export interface ExternalState {
   pre: PreHook;
   post: PostHook;
+  source: Source;
+  operator: Operator;
+  /** Open a pull request implementing `ticket`; returns its node id, `pr-<n>`, numbered from 1 in creation order. */
+  openPull(ticket: string, pr?: { merged?: boolean; openThreads?: number; closed?: Closed }): string;
+  /** The live record behind a pull request node, for a test to merge, close or comment on. */
+  pull(id: string): ExternalPull;
   ticket(id: string): ExternalTicket;
   comments(id: string): string[];
   entriesOf(id: string): Entry[];
@@ -905,7 +922,7 @@ export interface Runtime {
   source: Source;
   /**
    * Assembled by `buildRuntime` but deliberately not run by it: `landrace
-   * status` builds a Runtime the same way to enumerate candidates, and must
+   * status` builds a Runtime the same way to enumerate tickets, and must
    * never make the one write a preflight can make while only trying to read.
    * Only `runStart` runs these, before the first tick.
    */
@@ -982,7 +999,8 @@ export interface JoinedSession {
 }
 
 export interface ConversationDeps {
-  /** The tick's own pre hooks: a turn reads the snapshot the tick would read, not a second view of the ticket. */
+  /** The tick's own source and pre hooks: a turn reads the snapshot the tick would read, not a second view of the ticket. */
+  source: Source;
   pre: PreHook[];
   /** And the tick's own effect dispatcher, so a turn writes records the tick can re-derive. */
   dispatcher: Dispatcher;
@@ -1082,7 +1100,7 @@ export interface BoardRow {
 
 export interface BoardView {
   generatedAt: number;
-  /** When the tick last listed candidates; null before the first tick lands. */
+  /** When the tick last listed the graph; null before the first tick lands. */
   listedAt: number | null;
   rows: BoardRow[];
   /** When the next scheduled tick is due, epoch ms; null when nothing is scheduled. */
@@ -1095,7 +1113,7 @@ export interface BoardView {
 
 export interface Board {
   observe(e: LandraceEvent): void;
-  list(candidates: Candidate[]): void;
+  list(graph: Graph): void;
   view(): Promise<BoardView>;
 }
 

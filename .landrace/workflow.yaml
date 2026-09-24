@@ -13,7 +13,7 @@ hooks:
   - hooks/github.ts
 
 eligible:
-  - when: { "ticket.labels": { $in: ["lr:auto"] } }
+  - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
 
 # One key, because one key is read. The spec and review caps are the `$lt`
@@ -38,6 +38,7 @@ budget:
 #    round is derived, so it does not move). Written after the status instead,
 #    a crash would land the ticket on a stage that still reads as complete from
 #    its last round, and that round would be silently skipped.
+# Pull requests are graph nodes: rel.implements.in.* counts every PR tied to the ticket — "all merged" is total > 0 and not.merged: 0, never a single PR's flag.
 stages:
   # ── spec phase ───────────────────────────────────────────────────────────
   - id: spec
@@ -128,10 +129,10 @@ stages:
 
   - id: code-review
     step: steps/code-review.md
-    requires: { "artifacts.pr.number": { $exists: true } }
+    requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
       - name: a pull request exists
-        when: { "run.stage": build, "artifacts.pr.number": { $exists: true } }
+        when: { "run.stage": build, "rel.implements.in.total": { $gt: 0 } }
       - name: the fixer pushed a new head
         when:
           "run.stage": fix-review
@@ -147,12 +148,12 @@ stages:
       - name: the reviewer left open threads
         when:
           "run.stage": code-review
-          "artifacts.pr.openThreads": { $gt: 0 }
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $lt: 4 }
       - name: you reopened a thread
         when:
           "run.stage": pr-human-review
-          "artifacts.pr.openThreads": { $gt: 0 }
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $lt: 4 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
@@ -162,7 +163,10 @@ stages:
   - id: pr-human-review
     triggers:
       - name: no threads are open
-        when: { "run.stage": code-review, "artifacts.pr.openThreads": 0 }
+        when:
+          "run.stage": code-review
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.sum.openThreads": 0
     on_enter:
       - { type: tracker.status, value: pr-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
@@ -172,7 +176,10 @@ stages:
     terminal: true
     triggers:
       - name: merged
-        when: { "run.stage": pr-human-review, "artifacts.pr.merged": true }
+        when:
+          "run.stage": pr-human-review
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": 0
     on_enter:
       - { type: tracker.status, value: done }
       - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
@@ -186,7 +193,7 @@ stages:
       - name: the review budget is exhausted
         when:
           "run.stage": code-review
-          "artifacts.pr.openThreads": { $gt: 0 }
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $gte: 4 }
       - name: a step broke its output contract
         when: { "run.lastOutputValid": false }

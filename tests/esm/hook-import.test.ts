@@ -34,9 +34,10 @@ describe("hook modules are imported from disk and classified by their brand", ()
     const registry = await loadHooks({ dir: "tests/fixtures", modules: ["hooks/alpha.ts"] });
 
     expect(await registry.pre[0]?.run({} as HookContext)).toEqual({ ticket: { title: "from alpha" } });
-    expect(await registry.source?.list({} as HookContext)).toEqual([
-      { ticket: "1", title: "one", url: "u/1", labels: ["lr:auto"], assignees: [] },
-    ]);
+    expect((await registry.source?.list({} as HookContext))?.nodes).toEqual([{
+      id: "1", kind: "ticket", title: "one", link: "u/1", closed: null, priority: null, origin: null,
+      state: { labels: ["lr:auto"], assignees: [] },
+    }]);
   });
 
   /**
@@ -48,16 +49,18 @@ describe("hook modules are imported from disk and classified by their brand", ()
   it("loads the shipped tracker integration into every slot it fills", async () => {
     const registry = await loadHooks({ dir: ".landrace", modules: ["hooks/github.ts"] });
 
-    // Three pre hooks out of one module: the tracker's own, and the observe
-    // half of each artifact, which the loader files for them. The order is the
-    // module's sorted export names, and it is load-bearing — an artifact reads
-    // with the tracker's fragment already beside it, never ahead of it.
-    expect(registry.pre.map((h) => h.id)).toEqual(["github", "pr", "spec"]);
+    // Two pre hooks out of one module: the tracker's own, and the observe
+    // half of the spec artifact, which the loader files for it. The order is
+    // the module's sorted export names, and it is load-bearing — an artifact
+    // reads with the tracker's fragment already beside it, never ahead of it.
+    // No pull request artifact: pull requests are nodes in the source's graph.
+    expect(registry.pre.map((h) => h.id)).toEqual(["github", "spec"]);
     expect(registry.post[0]?.handles).toEqual(
       expect.arrayContaining(["tracker.label", "tracker.status", "tracker.comment"]),
     );
     expect(registry.post.flatMap((h) => h.handles)).toContain("artifact.publish");
     expect(registry.source?.id).toBe("github");
+    expect(registry.source?.relations.map((r) => r.type)).toEqual(["child-of", "implements"]);
     expect(registry.operator?.id).toBe("github");
   });
 });

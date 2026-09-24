@@ -14,11 +14,17 @@ describe("a define* helper brands what it returns", () => {
     artifact: defineArtifactHook({
       id: "c", handles: ["y"], satisfied: () => false, apply: async () => {}, read: async () => ({}),
     }),
-    source: defineSource({ id: "d", list: async () => [] }),
+    source: defineSource({
+      id: "d", relations: [], list: async () => ({ nodes: [], relationships: [] }), read: async () => ({ nodes: [], relationships: [] }),
+    }),
     operator: defineOperator({
       id: "e",
-      createTicket: async ({ title }) => ({ ticket: "1", title, url: "u", labels: [], assignees: [] }),
-      updateTicket: async (ticket) => ({ ticket, title: "t", url: "u", labels: [], assignees: [] }),
+      createTicket: async ({ title }) => ({
+        id: "1", kind: "ticket", title, link: "u", closed: null, priority: null, origin: null, state: {},
+      }),
+      updateTicket: async (ticket) => ({
+        id: ticket, kind: "ticket", title: "t", link: "u", closed: null, priority: null, origin: null, state: {},
+      }),
     }),
     executor: defineExecutor({ id: "f", run: async () => ({ text: "", sessionId: null }) }),
     preflight: definePreflight({ id: "g", check: async () => {} }),
@@ -43,7 +49,7 @@ describe("a define* helper brands what it returns", () => {
    */
   it("keeps the brand out of the hook's own visible shape", () => {
     expect(Object.keys(cases.pre)).toEqual(["id", "run"]);
-    expect(JSON.parse(JSON.stringify(cases.source))).toEqual({ id: "d" });
+    expect(JSON.parse(JSON.stringify(cases.source))).toEqual({ id: "d", relations: [] });
   });
 
   it("reads anything nobody branded as no kind at all", () => {

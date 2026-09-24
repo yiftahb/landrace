@@ -40,17 +40,25 @@ const brand = (kind: string, value: object): object =>
 
 interface Ctx { ticket: string; config: { tracker: { record: string } } }
 
+const graph = {
+  nodes: [{
+    id: "${TICKET}", kind: "ticket", title: "Add export", link: "u/${TICKET}", closed: null, priority: null,
+    origin: null, state: { labels: ["lr:auto"], assignees: [] },
+  }],
+  relationships: [],
+};
+
 export const source = brand("source", {
   id: "fake",
-  list: async (): Promise<unknown[]> => [
-    { ticket: "${TICKET}", title: "Add export", url: "u/${TICKET}", labels: ["lr:auto"], assignees: [] },
-  ],
+  relations: [],
+  list: async (): Promise<unknown> => graph,
+  read: async (): Promise<unknown> => graph,
 });
 
 export const pre = brand("pre", {
   id: "fake",
 ${provides === undefined ? "" : `  provides: ${JSON.stringify(provides)},\n`}  run: ({ ticket }: Ctx): Record<string, unknown> => ({
-    ticket: { number: ticket, title: "Add export", labels: ["lr:auto"] },
+    ticket: { body: "about " + ticket },
     entries: [],
   }),
 });
@@ -90,7 +98,7 @@ const workflowReading = (path?: string): string => `version: 1
 name: e2e
 hooks: [hooks/fake.ts]
 eligible:
-  - when: { "ticket.labels": { $in: ["lr:auto"] } }
+  - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
 stages:
   - id: spec
@@ -224,7 +232,7 @@ describe("buildRuntime", () => {
    */
   it("refuses to start a workflow whose predicate reads a path no hook provides", async () => {
     const { dir } = await fixture({
-      provides: ["ticket", "ticket.labels", "entries"],
+      provides: ["ticket", "ticket.body", "entries"],
       reads: "artifacts.pr.number",
     });
 
@@ -235,7 +243,7 @@ describe("buildRuntime", () => {
 
   it("starts when the hooks do provide what the workflow reads", async () => {
     const { dir } = await fixture({
-      provides: ["ticket", "ticket.labels", "entries", "artifacts.pr.*"],
+      provides: ["ticket", "ticket.body", "entries", "artifacts.pr.*"],
       reads: "artifacts.pr.number",
     });
 
@@ -393,7 +401,7 @@ describe("runStart --once", () => {
 });
 
 describe("runStatus", () => {
-  it("prints one line per candidate, from the same source the loop enumerates", async () => {
+  it("prints one line per ticket, from the same source the loop enumerates", async () => {
     const { dir } = await fixture();
     const lines = await runStatus(dir);
 

@@ -10,7 +10,7 @@ output:
       effect: { type: tracker.comment, marker: "reviewed:{round}" }
 ---
 
-Review the changes on the pull request for #{ticket.number} against its spec at
+Review the changes on the pull request for #{node.id} against its spec at
 {artifacts.spec.url}.
 
 You did not write this code and you will not fix it. Find what is wrong, what is

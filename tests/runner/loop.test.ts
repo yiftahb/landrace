@@ -34,18 +34,23 @@ const world = (labels: string[]): World =>
 
 /**
  * The real GitHub hooks, as the loader classified them out of the hook module:
- * the tracker's two halves, both halves of the spec artifact — a ticket cannot
- * leave `spec` without something publishing what the step wrote — and the pull
- * request artifact, which is every fact the review half of §10 routes on.
+ * the source, whose graph carries every pull request the review half of §10
+ * routes on, the tracker's two halves, and both halves of the spec artifact —
+ * a ticket cannot leave `spec` without something publishing what the step
+ * wrote.
  */
 const hooksOf = (gh: World) => {
-  const pre = gh.registry.pre;
-  const post = gh.registry.post;
+  const { pre, post, source } = gh.registry;
   const ids = pre.map((h) => h.id).join(",");
-  if (ids !== "github,pr,spec") throw new Error(`the fake tracker registered the wrong pre hooks: ${ids}`);
-  if (post.length !== 3) throw new Error("the fake tracker registered the wrong post hooks");
-  return { pre, post };
+  if (ids !== "github,spec") throw new Error(`the fake tracker registered the wrong pre hooks: ${ids}`);
+  if (post.length !== 2) throw new Error("the fake tracker registered the wrong post hooks");
+  if (!source) throw new Error("the fake tracker registered no source");
+  return { pre, post, source };
 };
+
+/** The GraphQL queries of one operation that reached the boundary. */
+const queriesOf = (gh: World, operation: string) =>
+  gh.graphql.filter((q) => q.query.includes(`query ${operation}(`)).length;
 
 /**
  * A person says something on the ticket. Under their own login, so it reads as
@@ -96,10 +101,10 @@ async function run(
   } = {},
 ) {
   const { workflow, steps } = await loadWorkflow(".landrace");
-  const { pre, post } = hooksOf(gh);
+  const { pre, post, source } = hooksOf(gh);
 
   const harness = createHarness({
-    workflow, steps, pre, post,
+    workflow, steps, source, pre, post,
     artifacts: gh.registry.artifacts,
     answers: { ...OUTPUT, ...opts.answers },
     // The two things that happen *outside* the engine while a step runs. The
@@ -157,11 +162,11 @@ describe("the §10 review cycle iterates", () => {
 
   /**
    * The gap that made a fix round theatre: `fix-review` was told to address
-   * the open threads and was never shown one. The artifact carries a count and
+   * the open threads and was never shown one. The graph carries a count and
    * nothing else, deliberately — a thread body is written by anyone with
-   * comment access, and `artifacts.*` is hashed into the snapshot and read by
-   * every predicate — so the bodies reach the *prompt*, through the briefing,
-   * escaped and bounded, and reach nothing else.
+   * comment access, and the graph is hashed into the snapshot and read by
+   * every predicate — so the bodies reach the *prompt*, through the source's
+   * briefing, escaped and bounded, and reach nothing else.
    */
   it("shows the fixer the threads it is told to address, without putting them in the snapshot", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
@@ -170,7 +175,7 @@ describe("the §10 review cycle iterates", () => {
     const fixing = r.prompts.find((p) => p.stage === "fix-review")?.prompt ?? "";
     expect(fixing).toContain("finding 0");
     expect(fixing).toContain("finding 1");
-    expect(fixing).not.toContain("{brief.pr.threads}");
+    expect(fixing).not.toContain("{brief.github.threads}");
 
     // And the reviewer, who raises findings rather than addressing them, is
     // shown none: a briefing is prompt text for the step that asked for it.
@@ -511,20 +516,28 @@ describe("a ticket goes all the way round §10", () => {
   });
 
   /*
-   * What the artifact costs. §3.1 asks for artifact state every tick and
-   * converge runs many passes per call, so this is the number that grows with
-   * the workflow: one GraphQL query per pass for the state, and one more per
-   * invocation of a step whose prompt actually names the pull request's
-   * briefing — not one per review thread, not one per round, and nothing at
-   * all for the four steps that have no use for the threads.
+   * What the graph costs. `read` runs on every converge pass, so this is the
+   * number that grows with the workflow: one ticket query per pass, one thread
+   * count per pull request on the ticket, and the briefing's own reads only
+   * for an invocation of a step whose prompt actually names it — not one per
+   * review thread, not one per round, and nothing at all for the four steps
+   * that have no use for the threads.
    */
-  it("costs one GraphQL query per pass, plus one per step that asks to see the threads", async () => {
+  it("costs one ticket read per pass, plus one per step that asks to see the threads", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const r = await run(gh);
 
     const briefed = r.invocations.filter((i) => i.stage === "fix-review").length;
     expect(briefed).toBeGreaterThan(0);
-    expect(gh.requests.filter((q) => q.path === "/graphql").length).toBe(r.result.passes + briefed);
+    // The briefing finds the ticket's pull requests the same way `read` does.
+    expect(queriesOf(gh, "LandraceTicket")).toBe(r.result.passes + briefed);
+    // One pull request, well under a page of threads: one count per pass it
+    // existed on, one briefing page per fix round.
+    expect(queriesOf(gh, "LandraceThreads")).toBeLessThanOrEqual(r.result.passes);
+    expect(queriesOf(gh, "LandraceBrief")).toBe(briefed);
+    expect(gh.graphql.length).toBe(
+      queriesOf(gh, "LandraceTicket") + queriesOf(gh, "LandraceThreads") + queriesOf(gh, "LandraceBrief"),
+    );
     // The reviewer runs more often than the fixer and pays for no briefing:
     // the four invocations of `code-review` add nothing to the number above.
     expect(r.invocations.filter((i) => i.stage === "code-review").length).toBeGreaterThan(briefed);

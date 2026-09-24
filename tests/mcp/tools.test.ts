@@ -127,7 +127,7 @@ describe("mcp tools", () => {
   });
 
   it("surfaces a missing ticket as an error rather than empty state", async () => {
-    await expect(world().tools.status("99")).rejects.toThrow(/404/);
+    await expect(world().tools.status("99")).rejects.toThrow(/#99 is not an issue/);
   });
 });
 

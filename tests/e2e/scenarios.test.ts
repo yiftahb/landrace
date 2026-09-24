@@ -12,6 +12,13 @@ import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
 import type { Effect, ExternalState, Harness, ScriptedAnswer } from "#namespace.js";
 
+/** The real GitHub hooks as the harness takes them: the registry, with its source proved present. */
+const hooksOf = (gh: ReturnType<typeof createFakeTracker>) => {
+  const { source } = gh.registry;
+  if (!source) throw new Error("the fake tracker registered no source");
+  return { ...gh.registry, source };
+};
+
 /**
  * End to end, which for an engine that does no I/O means the whole engine
  * against fakes (§13.2).
@@ -39,7 +46,7 @@ async function overMemory(
   const { workflow, steps } = await loadWorkflow("tests/fixtures/minimal");
   return {
     state,
-    run: createHarness({ workflow, steps, pre: [state.pre], post: [state.post], answers, ...over }),
+    run: createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, ...over }),
   };
 }
 
@@ -99,7 +106,7 @@ describe("a workflow over the in-memory tracker, with no integration at all", ()
       // The same world, resumed by a run with no interruption in it.
       const resumed = createHarness({
         ...(await loadWorkflow("tests/fixtures/minimal")),
-        pre: [state.pre], post: [state.post], answers: { spec: SPEC },
+        source: state.source, pre: [state.pre], post: [state.post], answers: { spec: SPEC },
       });
       await resumed.converge();
 
@@ -148,7 +155,7 @@ describe("a workflow over the in-memory tracker, with no integration at all", ()
  * Several developers, one repository, one workflow directory.
  *
  * The whole feature in one place: the tracker says who a ticket belongs to
- * (`ticket.assignees`), the configuration says who *this* instance is
+ * (`node.state.assignees`), the configuration says who *this* instance is
  * (`vars.assignee`, from the environment), and the workflow's own eligibility
  * rule puts the two together. Nothing about it is per-ticket state — the var
  * is resolved once and substituted into the graph at load, so by the time a
@@ -182,7 +189,7 @@ describe("several instances over one repository, each taking its own tickets", (
 
   const runAs = async (who: string, state: ExternalState, ticket: string): Promise<Harness> => {
     const { workflow, steps } = await instance(who);
-    return createHarness({ workflow, steps, pre: [state.pre], post: [state.post], answers: { spec: SPEC }, ticket });
+    return createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: { spec: SPEC }, ticket });
   };
 
   it("works the ticket assigned to it", async () => {
@@ -248,7 +255,7 @@ describe("several instances over one repository, each taking its own tickets", (
   it("leaves an unassigned ticket to nobody, rather than to everybody", async () => {
     const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto"], assignees: [] }] });
     const { workflow, steps } = await instance("ann");
-    const run = createHarness({ workflow, steps, pre: [state.pre], post: [state.post], answers: { spec: SPEC } });
+    const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: { spec: SPEC } });
 
     const r = await run.converge();
 
@@ -262,7 +269,7 @@ describe("several instances over one repository, each taking its own tickets", (
    *
    * A tick enumerates before it has a snapshot, so this is the one question
    * that has to be answerable from what `list` returned. It was not: the rule
-   * read a path a Candidate did not carry, `eligibilityOf` abstained, and
+   * read a path the listed ticket did not carry, `eligibilityOf` abstained, and
    * abstaining means eligible — so every instance fetched the issue and its
    * comments for every ticket in the repository, took the per-ticket lock, and
    * only then skipped it. "Skipped" is the same word in the row either way,
@@ -312,7 +319,7 @@ describe("several instances over one repository, each taking its own tickets", (
   it("reads a path the tracker declares, so validate can cover the rule", async () => {
     const state = createExternalState({ tickets: [{ id: "1" }] });
     const { workflow, steps } = await instance("ann");
-    const provided = snapshotProvides([state.pre]) ?? undefined;
+    const provided = snapshotProvides([state.pre], state.source) ?? undefined;
 
     expect(validate(workflow, steps, provided)).toEqual([]);
 
@@ -331,7 +338,7 @@ describe("several instances over one repository, each taking its own tickets", (
  *
  * Nothing is seeded past the ticket itself: the position comes from a label,
  * the rounds from records on the ticket, the spec from the Pages branch, and
- * every gate in the review half from the pull request artifact's own read.
+ * every gate in the review half from the pull requests in the source's graph.
  */
 const ANSWERS: Record<string, ScriptedAnswer> = {
   spec: (round) => round === 1
@@ -380,7 +387,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
   it("runs the review round again after each fix, and stops at the budget", async () => {
     const { gh, during } = world();
     const { workflow, steps } = await loadWorkflow(".landrace");
-    const run = createHarness({ workflow, steps, ...gh.registry, answers: ANSWERS, during });
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
 
     const asked = await run.converge();
     gh.sayAs("a-person", 1, "in-house, and CSV only", new Date(Date.UTC(2026, 1, 1)).toISOString());
@@ -409,14 +416,14 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
   /*
    * The seam, attacked from the other side. With nothing standing in for the
    * push, the ticket reaches `build`, the step runs, and the review half never
-   * starts — `code-review` requires a pull request number and no hook in `src/`
+   * starts — `code-review` requires a pull request and no hook in `src/`
    * or in `.landrace/` opens one. That is the shape of the gap, and it is what
    * the integration in the parallel worktree has to close.
    */
   it("parks at build when nothing pushes the branch, which is where the engine is today", async () => {
     const { gh } = world();
     const { workflow, steps } = await loadWorkflow(".landrace");
-    const run = createHarness({ workflow, steps, ...gh.registry, answers: ANSWERS });
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS });
 
     await run.converge();
     gh.sayAs("a-person", 1, "in-house, and CSV only", new Date(Date.UTC(2026, 1, 1)).toISOString());
@@ -432,7 +439,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
   it("shows each fix round the findings it is meant to address", async () => {
     const { gh, during } = world();
     const { workflow, steps } = await loadWorkflow(".landrace");
-    const run = createHarness({ workflow, steps, ...gh.registry, answers: ANSWERS, during });
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
 
     await run.converge();
     gh.sayAs("a-person", 1, "in-house, and CSV only", new Date(Date.UTC(2026, 1, 1)).toISOString());
@@ -465,7 +472,7 @@ describe("a human reply to a ticket blocked by a rejected output", () => {
     const { workflow, steps } = await loadWorkflow(".landrace");
     const writes: string[] = [];
     const run = createHarness({
-      workflow, steps, ...gh.registry, answers,
+      workflow, steps, ...hooksOf(gh), answers,
       log: (name, data = {}) => { if (name === "effect.applied") writes.push(String(data.type)); },
     });
     const rejected = await run.converge();
@@ -527,7 +534,7 @@ describe("a reviewer's reply that triage cannot read as approve or revise", () =
     const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
     const { workflow, steps } = await loadWorkflow(".landrace");
     const run = createHarness({
-      workflow, steps, ...gh.registry,
+      workflow, steps, ...hooksOf(gh),
       answers: {
         spec: '# Export CSV\n\nOne file.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
         triage: `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``,
@@ -568,7 +575,7 @@ describe("a step whose honest report is longer than the tracker will take", () =
   const world = async () => {
     const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
     const { workflow, steps } = await loadWorkflow(".landrace");
-    return { gh, run: createHarness({ workflow, steps, ...gh.registry, answers: { spec: REPORT } }) };
+    return { gh, run: createHarness({ workflow, steps, ...hooksOf(gh), answers: { spec: REPORT } }) };
   };
 
   it("is rejected once, with the reason on the ticket, instead of paid for again on the next tick", async () => {

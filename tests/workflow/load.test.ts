@@ -15,7 +15,7 @@ describe("loadWorkflow", () => {
     const step = steps.get("steps/spec.md");
     expect(step?.capabilities).toEqual(["repo:read"]);
     expect(step?.output?.discriminator).toBe("kind");
-    expect(step?.prompt.trim()).toBe("Write the spec for {ticket.title}.");
+    expect(step?.prompt.trim()).toBe("Write the spec for {node.title}.");
   });
 
   it("rejects a workflow with a duplicate stage id rather than silently overwriting", async () => {

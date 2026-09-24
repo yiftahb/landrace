@@ -9,4 +9,4 @@ output:
       effect: { type: tracker.comment, marker: "spec:{round}" }
 ---
 
-Write the spec for {ticket.title}.
+Write the spec for {node.title}.

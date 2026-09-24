@@ -6,8 +6,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
-import { defineArtifactHook, definePostHook, definePreHook } from "#hooks/contracts.js";
-import type { Executor, HookContext, Step, StepResult, Workflow } from "#namespace.js";
+import { labelsOf } from "#conventions.js";
+import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
+import type { Executor, HookContext, Node, Step, StepResult, Workflow } from "#namespace.js";
 import { converge } from "#runner/converge.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
@@ -271,15 +272,27 @@ function world() {
   let clock = 0;
   return {
     labels, entries,
+    source: defineSource({
+      id: "w",
+      relations: [],
+      list: async () => ({ nodes: [], relationships: [] }),
+      read: async (id) => ({
+        nodes: [{
+          id, kind: "ticket", title: `ticket ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
+          state: { labels: [...labels], assignees: [] },
+        }],
+        relationships: [],
+      }),
+    }),
     pre: definePreHook({
       id: "w",
-      run: () => ({ ticket: { labels: [...labels] }, entries: [...entries] }),
+      run: () => ({ entries: [...entries] }),
     }),
     post: definePostHook({
       id: "w",
       handles: ["tracker.status", "tracker.comment"],
       satisfied: (s, e) => {
-        const present = (s.ticket as { labels?: string[] }).labels ?? [];
+        const present = labelsOf(s.node as Node | undefined);
         if (e.type === "tracker.status") return present.includes(`lr:stage:${String(e.value)}`);
         return entries.some((x) => x.marker === e.marker);
       },
@@ -302,6 +315,7 @@ function world() {
 const deps = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) => ({
   workflow: stepWorkflow,
   steps: new Map<string, Step>([["spec", step(["repo:read"])]]),
+  source: w.source,
   pre: [w.pre],
   dispatcher: createDispatcher([w.post]),
   executor: wellBehaved(),

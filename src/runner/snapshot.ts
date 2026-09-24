@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { deriveRun, hashSnapshot } from "#core/index.js";
-import type { Entry, Snapshot } from "#namespace.js";
-import { stageFromLabels } from "#conventions.js";
+import { deriveRel, deriveRun, hashSnapshot } from "#core/index.js";
+import type { Entry, Graph, HookContext, Node, PreHook, Snapshot, Source } from "#namespace.js";
+import { labelsOf, stageFromLabels } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
-import type { HookContext, PreHook } from "#namespace.js";
+import { graphProblem } from "#runner/graph.js";
 
 /**
  * Pre hooks run in declaration order, each seeing what previous hooks produced.
@@ -42,7 +42,14 @@ export const ENGINE_PROVIDES: readonly string[] = [
   "run.lastOutputValid",
   "run.failedStages",
   "run.unblockedAt",
+  // The source's reading of the ticket, put in before any pre hook runs.
+  "node", "node.id", "node.kind", "node.title", "node.link", "node.closed", "node.priority", "node.origin",
+  "node.state", "node.state.*",
+  "graph", "graph.*",
 ];
+
+/** What `rel.<type>` carries per direction, spelled out for the same reason `run.*` is above. */
+const REL_AGG: readonly string[] = ["total", "is", "is.*", "not", "not.*", "sum", "sum.*", "stage", "stage.*"];
 
 /**
  * Every snapshot path something claims to provide, or null to check none of
@@ -55,20 +62,41 @@ export const ENGINE_PROVIDES: readonly string[] = [
  * wrong result about a workflow that is fine. It is the same answer the
  * cycle-bound rule gives for a trigger it cannot analyse.
  */
-export function snapshotProvides(pre: PreHook[]): string[] | null {
-  if (pre.length === 0) return null;
+export function snapshotProvides(pre: PreHook[], source: Source | null): string[] | null {
   if (pre.some((hook) => hook.provides === undefined)) return null;
-  return [...ENGINE_PROVIDES, ...pre.flatMap((hook) => hook.provides ?? [])];
+  if (pre.length === 0 && source === null) return null;
+  // Per declared type, so `rel.blocks.in.total` against a source that never
+  // reports `blocks` is flagged: it would count zero for ever.
+  const rel = (source?.relations ?? []).flatMap(({ type }) => [
+    `rel.${type}`,
+    ...(["in", "out"] as const).flatMap((side) => [`rel.${type}.${side}`, ...REL_AGG.map((f) => `rel.${type}.${side}.${f}`)]),
+  ]);
+  return [...ENGINE_PROVIDES, "rel", ...rel, ...pre.flatMap((hook) => hook.provides ?? [])];
 }
 
 export async function buildSnapshot(opts: {
   ticket: string;
+  source: Source;
   hooks: PreHook[];
   ctx: Omit<HookContext, "snapshot">;
   now?: number;
   digest?: (input: string) => string;
 }): Promise<Snapshot> {
-  let snapshot: Snapshot = {};
+  // The graph first, so every pre hook — and every post hook's satisfied(),
+  // which reads the snapshot this built — sees the ticket as the engine does.
+  let graph: Graph;
+  try {
+    graph = await opts.source.read(opts.ticket, opts.ctx);
+  } catch (e) {
+    throw new Error(`source "${opts.source.id}" could not read "${opts.ticket}": ${messageOf(e)}`);
+  }
+  const problem = graphProblem(graph, opts.source.relations, opts.ticket);
+  if (problem) throw new Error(`source "${opts.source.id}" returned a graph nothing can be decided from: ${problem}`);
+  const node = graph.nodes.find((n) => n.id === opts.ticket) as Node; // graphProblem proved it is there
+  const rel = deriveRel(graph, opts.ticket, opts.source.relations.map((r) => r.type));
+  if (!rel.ok) throw new Error(`source "${opts.source.id}": ${rel.why}`);
+
+  let snapshot: Snapshot = { graph, node, rel: rel.rel };
 
   for (const hook of opts.hooks) {
     try {
@@ -84,14 +112,16 @@ export async function buildSnapshot(opts: {
     }
   }
 
-  const labels = ((snapshot.ticket as { labels?: string[] } | undefined)?.labels ?? []);
   const entries = (snapshot.entries as Entry[] | undefined) ?? [];
 
   // Time enters here and nowhere else: core may not read a clock.
   const withRun: Snapshot = {
     ...snapshot,
+    // Re-asserted after the hooks: position is the engine's reading of the
+    // source's node, and a pre hook returning its own `node` must not move it.
+    graph, node, rel: rel.rel,
     now: opts.now ?? Date.now(),
-    run: deriveRun(entries, stageFromLabels(labels).stage),
+    run: deriveRun(entries, stageFromLabels(labelsOf(node)).stage),
   };
 
   // Recorded, not yet used: the decision cache reads it later. Computed after
@@ -114,8 +144,7 @@ export async function buildSnapshot(opts: {
  * to know which labels to take off it.
  */
 export function positionProblem(snapshot: Snapshot): string | null {
-  const labels = ((snapshot.ticket as { labels?: string[] } | undefined)?.labels ?? []);
-  const { ambiguous, found } = stageFromLabels(labels);
+  const { ambiguous, found } = stageFromLabels(labelsOf(snapshot.node as Node | undefined));
   if (!ambiguous) return null;
   return `cannot place the ticket: it carries ${found.length} stage labels (${found.join(", ")}), and position is one`;
 }

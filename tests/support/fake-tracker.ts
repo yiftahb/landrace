@@ -26,6 +26,10 @@ export interface FakeIssue {
   labels: string[];
   /** As GitHub returns them — objects with a login, not bare strings — so the hook's own reading of them is what runs. */
   assignees: Array<{ login: string }>;
+  /** Why a closed issue was closed, in GraphQL's spelling. Absent or null on an open one, and on one closed before GitHub had reasons. */
+  stateReason?: "COMPLETED" | "NOT_PLANNED" | "DUPLICATE" | "REOPENED" | null;
+  /** The issue this one is a sub-issue of, by number. */
+  parent?: number;
 }
 
 export interface FakeComment {
@@ -54,10 +58,15 @@ export interface FakeThread {
 
 export interface FakePull {
   number: number;
+  title?: string;
   /** The head branch. A PR is found by it, because the reference is derived from the ticket and never stored. */
   head: string;
   headSha: string;
   merged: boolean;
+  /** GraphQL's own state. Absent means whatever `merged` implies: MERGED, else OPEN. */
+  state?: "OPEN" | "MERGED" | "CLOSED";
+  /** The issues it closes when merged — its closing references, the other way a PR is tied to a ticket. */
+  closes?: number[];
   threads: FakeThread[];
 }
 
@@ -99,8 +108,8 @@ export interface FakeTracker {
   entriesOf(ticket: number): Entry[];
   /** The pull requests that exist, by number. */
   pulls: Map<number, FakePull>;
-  /** Open one on a head branch, the way a push and a `gh pr create` would. */
-  openPull(pull: { head: string; number?: number; headSha?: string; merged?: boolean; threads?: FakeThread[] }): FakePull;
+  /** Open one on a head branch, the way a push and a `gh pr create` would. One with an existing number replaces it. */
+  openPull(pull: Partial<FakePull> & { head: string }): FakePull;
   /** Every GraphQL query that reached the boundary, with the variables it carried. */
   graphql: Array<{ query: string; variables: Record<string, unknown> }>;
   /** The boundary itself, so a test can point a second, differently configured client at the same in-memory GitHub. */
@@ -119,6 +128,12 @@ export interface FakeRequest {
  * caller's: a hook that asked for a thousand at once would simply be refused.
  */
 const THREAD_PAGE = 100;
+
+/** And per page of issues, for the same reason. */
+const ISSUE_PAGE = 100;
+
+/** And the `first:` the hook asks a ticket's sub-issues and pull requests for. */
+const CONNECTION_PAGE = 50;
 
 /**
  * What GitHub refuses an issue comment over, modelled here because it is the
@@ -176,6 +191,8 @@ export function createFakeTracker(
       html_url: `https://github.com/${REPO}/issues/${n}`,
       labels: s.labels ?? [],
       assignees: s.assignees ?? [],
+      ...(s.stateReason === undefined ? {} : { stateReason: s.stateReason }),
+      ...(s.parent === undefined ? {} : { parent: s.parent }),
     });
     nextIssue = Math.max(nextIssue, n + 1);
   }
@@ -232,8 +249,8 @@ export function createFakeTracker(
       // and "no thread text reaches the snapshot" has to be a property of the
       // hook rather than of what the fake happened to omit.
       // Every field either query asks of a thread node, because the fake
-      // answers by variables rather than by parsing the query: the count's
-      // read takes `isResolved` alone, and the briefing takes the rest.
+      // answers both from this one page: the count's read takes
+      // `isResolved` alone, and the briefing takes the rest.
       nodes: page.map((t) => ({
         isResolved: t.isResolved,
         body: t.body,
@@ -243,6 +260,37 @@ export function createFakeTracker(
       })),
     };
   };
+
+  /** An issue as GraphQL's `Issue` answers the fields the hook asks for. */
+  const issueNode = (i: FakeIssue) => ({
+    number: i.number,
+    title: i.title,
+    url: i.html_url,
+    state: i.state.toUpperCase(),
+    stateReason: i.stateReason ?? null,
+    labels: { nodes: i.labels.map((name) => ({ name })) },
+    assignees: { nodes: i.assignees },
+  });
+
+  /** A connection as GraphQL pages one: the first page of nodes, and how many there are in all. */
+  const connection = <T>(all: T[]) => ({ totalCount: all.length, nodes: all.slice(0, CONNECTION_PAGE) });
+
+  const childrenOf = (n: number): FakeIssue[] =>
+    [...issues.values()].filter((i) => i.parent === n).sort((a, b) => a.number - b.number);
+
+  const pullState = (p: FakePull): "OPEN" | "MERGED" | "CLOSED" => p.state ?? (p.merged ? "MERGED" : "OPEN");
+
+  /** A pull request as GraphQL's `PullRequest` answers the fields the hook asks for. */
+  const pullNode = (p: FakePull) => ({
+    number: p.number,
+    title: p.title ?? `pull request ${p.number}`,
+    url: `https://github.com/${REPO}/pull/${p.number}`,
+    state: pullState(p),
+    merged: p.merged,
+    headRefName: p.head,
+    headRefOid: p.headSha,
+    closingIssuesReferences: { nodes: (p.closes ?? []).map((number) => ({ number })) },
+  });
 
   /** Only the endpoints the hooks actually call, answering the way GitHub does. */
   const fetchImpl = (async (input: string | URL, init?: RequestInit): Promise<Response> => {
@@ -285,28 +333,78 @@ export function createFakeTracker(
         return json({ data: { repository: null } });
       }
 
-      // Newest first, the way `orderBy: { field: CREATED_AT, direction: DESC }`
-      // orders them: a merged pull request and a later one on the same branch
-      // both exist, and the later one is the current work.
-      const pull = [...pulls.values()]
-        .filter((p) => p.head === variables.head)
-        .sort((a, b) => b.number - a.number)[0];
-      if (!pull) return json({ data: { repository: { pullRequests: { nodes: [] } } } });
+      // Answered by the operation's name, the way a server reads the query
+      // rather than guessing from its variables: the hook asks five different
+      // questions, and two of them take the same variables.
+      const operation = /query (\w+)/.exec(String(body.query ?? ""))?.[1];
+      const pullOf = (n: unknown): FakePull | null => pulls.get(Number(n)) ?? null;
 
-      return json({
-        data: {
-          repository: {
-            pullRequests: {
-              nodes: [{
-                number: pull.number,
-                merged: pull.merged,
-                headRefOid: pull.headSha,
-                reviewThreads: threadPage(pull, variables.cursor),
-              }],
+      if (operation === "LandraceIssues") {
+        const open = [...issues.values()].filter((i) => i.state === "open").sort((a, b) => a.number - b.number);
+        const from = typeof variables.cursor === "string" && variables.cursor ? Number(variables.cursor) : 0;
+        const page = open.slice(from, from + ISSUE_PAGE);
+        const end = from + page.length;
+        return json({
+          data: {
+            repository: {
+              issues: {
+                pageInfo: { hasNextPage: end < open.length, endCursor: String(end) },
+                nodes: page.map((i) => ({
+                  ...issueNode(i),
+                  parent: i.parent === undefined ? null : { number: i.parent },
+                  subIssues: { nodes: childrenOf(i.number).map(issueNode) },
+                })),
+              },
+              pullRequests: {
+                nodes: [...pulls.values()].filter((p) => pullState(p) === "OPEN").sort((a, b) => b.number - a.number).map(pullNode),
+              },
             },
           },
-        },
-      });
+        });
+      }
+
+      if (operation === "LandraceTicket") {
+        const issue = issues.get(Number(variables.number));
+        const parent = issue?.parent === undefined ? undefined : issues.get(issue.parent);
+        return json({
+          data: {
+            repository: {
+              issue: issue === undefined ? null : {
+                ...issueNode(issue),
+                parent: parent === undefined ? null : issueNode(parent),
+                subIssues: connection(childrenOf(issue.number).map(issueNode)),
+                closedByPullRequestsReferences: connection(
+                  [...pulls.values()].filter((p) => (p.closes ?? []).includes(issue.number)).map(pullNode),
+                ),
+              },
+              // Newest first, the way `orderBy: { field: CREATED_AT, direction: DESC }` orders them.
+              pullRequests: connection(
+                [...pulls.values()].filter((p) => p.head === variables.head).sort((a, b) => b.number - a.number).map(pullNode),
+              ),
+            },
+          },
+        });
+      }
+
+      if (operation === "LandraceIssue") {
+        const issue = issues.get(Number(variables.number));
+        return json({ data: { repository: { issue: issue === undefined ? null : issueNode(issue) } } });
+      }
+
+      if (operation === "LandraceThreads" || operation === "LandraceBrief") {
+        const pull = pullOf(variables.number);
+        return json({
+          data: {
+            repository: {
+              pullRequest: pull === null ? null : { number: pull.number, reviewThreads: threadPage(pull, variables.cursor) },
+            },
+          },
+        });
+      }
+
+      // Anything else is the preflight's probe, which asks only that the
+      // repository answers at all.
+      return json({ data: { repository: { pullRequests: { totalCount: pulls.size } } } });
     }
 
     const issueOf = (n: number): FakeIssue | null => issues.get(n) ?? null;
@@ -470,6 +568,9 @@ export function createFakeTracker(
         headSha: pull.headSha ?? `sha-${number}`,
         merged: pull.merged ?? false,
         threads: pull.threads ?? [],
+        ...(pull.title === undefined ? {} : { title: pull.title }),
+        ...(pull.state === undefined ? {} : { state: pull.state }),
+        ...(pull.closes === undefined ? {} : { closes: pull.closes }),
       };
       pulls.set(number, created);
       nextPull = Math.max(nextPull, number + 1);

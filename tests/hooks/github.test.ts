@@ -29,6 +29,17 @@ function fake(user: () => Response | never): { fetchImpl: typeof fetch; calls: s
     if (/\/issues\/\d+$/.test(url.pathname)) {
       return json({ number: 1, title: "t", body: "", state: "open", html_url: "u", labels: [] });
     }
+    if (url.pathname === "/graphql") {
+      // An empty repository: no issue open, no pull request.
+      return json({
+        data: {
+          repository: {
+            issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+            pullRequests: { nodes: [] },
+          },
+        },
+      });
+    }
     return json([]);
   }) as unknown as typeof fetch;
   return { fetchImpl, calls };
@@ -124,24 +135,26 @@ describe("the hook resolves the login it posts as", () => {
  * Who a ticket belongs to, which is what lets several instances share one
  * repository: each takes the tickets assigned to it and skips the rest.
  *
- * A list, because GitHub's issue has a list — `assignees[]`. The singular
- * `assignee` it also returns is that list's first element under a second name,
- * and a second spelling of one fact is the mistake `ticket.stage` already was
- * here: the two disagree the moment an issue has two assignees, and nothing
- * says which of them a predicate is reading.
+ * A list, because GitHub's issue has a list — `assignees`. The singular
+ * `assignee` REST also returns is that list's first element under a second
+ * name, and a second spelling of one fact is the mistake `ticket.stage`
+ * already was here: the two disagree the moment an issue has two assignees,
+ * and nothing says which of them a predicate is reading.
+ *
+ * It lives on the ticket's node, which the source reads — once, for the tick's
+ * list and the snapshot alike — and not in the pre hook's fragment beside it.
  */
 describe("who a ticket is assigned to", () => {
-  const fragmentOf = async (assignees: Array<{ login: string }>): Promise<Record<string, unknown>> => {
+  const nodeOf = async (assignees: Array<{ login: string }>) => {
     const gh = createFakeTracker([{ number: 1, assignees }]);
-    const hook = gh.registry.pre[0];
-    if (!hook) throw new Error("the fake tracker registered no pre hook");
-    return hook.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
+    const source = gh.registry.source;
+    if (!source) throw new Error("the fake tracker registered no source");
+    const graph = await source.read("1", gh.ctx);
+    return graph.nodes.find((n) => n.id === "1");
   };
-  const ticketOf = async (assignees: Array<{ login: string }>): Promise<Record<string, unknown>> =>
-    (await fragmentOf(assignees)).ticket as Record<string, unknown>;
 
   it("carries every login of a multi-assignee issue, in a list", async () => {
-    expect((await ticketOf([{ login: "ann" }, { login: "bo" }])).assignees).toEqual(["ann", "bo"]);
+    expect((await nodeOf([{ login: "ann" }, { login: "bo" }]))?.state.assignees).toEqual(["ann", "bo"]);
   });
 
   /*
@@ -152,37 +165,20 @@ describe("who a ticket is assigned to", () => {
    * belonging to nobody.
    */
   it("carries an empty list for an unassigned issue rather than nothing at all", async () => {
-    expect((await ticketOf([])).assignees).toEqual([]);
+    expect((await nodeOf([]))?.state.assignees).toEqual([]);
   });
 
   it("spells it once: there is no singular assignee beside the list", async () => {
-    const ticket = await ticketOf([{ login: "ann" }]);
-    expect(Object.hasOwn(ticket, "assignee")).toBe(false);
+    const node = await nodeOf([{ login: "ann" }]);
+    expect(Object.hasOwn(node?.state ?? {}, "assignee")).toBe(false);
   });
 
-  /**
-   * And on the candidate as well as in the snapshot, from the same reading of
-   * the same issue. Enumeration is where the question is asked — before there
-   * is a snapshot to ask it of — so a Candidate that could not answer it left
-   * every instance building one for every ticket in the repository first.
-   */
-  it("is on the candidate too, so the tick can answer the rule before it reads anything", async () => {
-    const gh = createFakeTracker([
-      { number: 1, assignees: [{ login: "ann" }, { login: "bo" }] },
-      { number: 2, assignees: [] },
-    ]);
-    const source = gh.registry.source;
+  it("is not in the pre hook's fragment as a second copy of what the node says", async () => {
+    const gh = createFakeTracker([{ number: 1, assignees: [{ login: "ann" }] }]);
     const pre = gh.registry.pre[0];
-    if (!source || !pre) throw new Error("the fake tracker registered no source or no pre hook");
-
-    const listed = await source.list(gh.ctx);
-
-    expect(listed.map((c) => c.assignees)).toEqual([["ann", "bo"], []]);
-    // The same reading of the same field, not a second one: enumeration and
-    // the snapshot answer one question, and two spellings of it disagree the
-    // first time either changes.
-    const fragment = (await pre.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext)).ticket;
-    expect((fragment as { assignees: string[] }).assignees).toEqual(listed[0]?.assignees);
+    if (!pre) throw new Error("the fake tracker registered no pre hook");
+    const fragment = await pre.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
+    expect(Object.keys(fragment.ticket as object).sort()).toEqual(["body", "comments"]);
   });
 });
 

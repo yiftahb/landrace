@@ -1,15 +1,15 @@
 import { checkEligible, missingPaths } from "#core/index.js";
 import type {
-  Candidate,
   ConvergeResult,
   Eligibility,
   HookContext,
+  Node,
   Snapshot,
   TickOptions,
   TickRow,
   Workflow,
 } from "#namespace.js";
-import { compareIds, ticketIdProblem } from "#conventions.js";
+import { compareIds, compareWork, TICKET_KIND, ticketIdProblem } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
 import { withLock } from "#runner/lock.js";
@@ -19,35 +19,27 @@ import { oneLine } from "#runner/status.js";
 const DEFAULT_CONCURRENCY = 3;
 
 /**
- * What a candidate can answer about itself, without a network round trip.
+ * What a listed node can answer about itself, without a network round trip.
  *
- * Position, eligibility and whose turn it is are all labels, and a Candidate
- * carries its labels precisely so this question costs nothing: building a
- * snapshot to find out a ticket is not ours would mean reading every issue in
- * the repository on every tick.
+ * Position, eligibility and whose turn it is are all labels, and a ticket node
+ * carries its labels in `state` precisely so this question costs nothing:
+ * building a snapshot to find out a ticket is not ours would mean reading
+ * every issue in the repository on every tick.
  *
  * Whose ticket it is rides along for the same reason and under the same name
  * the snapshot gives it. It is not a label, but it is asked at the same
- * moment, and a rule the candidate cannot answer abstains — which is what made
+ * moment, and a rule the node cannot answer abstains — which is what made
  * an instance filtered to one developer read the whole repository anyway.
  */
-const candidateSnapshot = (candidate: Candidate): Snapshot => ({
-  ticket: {
-    number: candidate.ticket,
-    title: candidate.title,
-    url: candidate.url,
-    labels: candidate.labels,
-    assignees: candidate.assignees,
-  },
-});
+const nodeSnapshot = (node: Node): Snapshot => ({ node });
 
 /**
- * Whether the tick should work a candidate, decided from the workflow's own
+ * Whether the tick should work a ticket, decided from the workflow's own
  * eligibility rule rather than from a label name hard-coded here — the
  * workflow owns what "eligible" means, and `landrace status` prints its `else`
  * verbatim as the reason a ticket was skipped.
  *
- * Abstains rather than guesses. A rule reading anything a candidate cannot
+ * Abstains rather than guesses. A rule reading anything a listed node cannot
  * carry — a derived counter, a step's output — is unanswerable from labels
  * alone, and the two ways of guessing are both bad: "ineligible" silently
  * parks every ticket in the repository, and a wrong "eligible" is only a
@@ -58,8 +50,8 @@ const candidateSnapshot = (candidate: Candidate): Snapshot => ({
  * here: two implementations of one rule is how a validator and an engine come
  * to disagree about where a ticket is.
  */
-export function eligibilityOf(workflow: Workflow, candidate: Candidate): Eligibility {
-  const snapshot = candidateSnapshot(candidate);
+export function eligibilityOf(workflow: Workflow, node: Node): Eligibility {
+  const snapshot = nodeSnapshot(node);
   const unanswerable = (workflow.eligible ?? []).some((rule) => missingPaths(rule.when, snapshot).length > 0);
   return unanswerable ? { eligible: true } : checkEligible(workflow, snapshot);
 }
@@ -91,7 +83,7 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
 }
 
 /**
- * One pass over every candidate the source can see.
+ * One pass over every ticket the source can see, most urgent first.
  *
  * Tickets are independent, so one ticket running a long agent must not hold up
  * the rest: mutual exclusion is per ticket, and ticks themselves are allowed
@@ -106,22 +98,27 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
   const started = Date.now();
   deps.log("tick.started", {});
 
-  // Deliberately not caught here: with no list of candidates there are no rows
-  // to report a failure against, so the caller decides whether one bad poll
-  // stops the loop (it does not — see runStart) or fails a command.
-  const candidates = await opts.source.list(deps.ctx);
+  // Deliberately not caught here: with no graph there are no rows to report
+  // a failure against, so the caller decides whether one bad poll stops the
+  // loop (it does not — see runStart) or fails a command.
+  const graph = await opts.source.list(deps.ctx);
 
   // A display must never be able to stop the work it is displaying.
   try {
-    opts.onList?.(candidates);
+    opts.onList?.(graph);
   } catch (e) {
     deps.log("display.failed", { reason: messageOf(e) });
   }
 
+  // Tickets only: a pull request in the list is context for a ticket, not
+  // work of its own. Sorted before the pool takes from it, because with a
+  // concurrency limit the order is who waits — ordering work is not choosing
+  // a transition, and the id tie-break keeps it total.
+  const work = graph.nodes.filter((n) => n.kind === TICKET_KIND).sort(compareWork);
   const rows: TickRow[] = [];
 
-  await pool(candidates, opts.concurrency ?? DEFAULT_CONCURRENCY, async (candidate) => {
-    const ticket = candidate.ticket;
+  await pool(work, opts.concurrency ?? DEFAULT_CONCURRENCY, async (node) => {
+    const ticket = node.id;
     try {
       const problem = ticketIdProblem(ticket);
       if (problem) {
@@ -132,7 +129,7 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
         return;
       }
 
-      const eligibility = eligibilityOf(deps.workflow, candidate);
+      const eligibility = eligibilityOf(deps.workflow, node);
       if (!eligibility.eligible) {
         // Skipped, not absent: a ticket nobody is working is exactly what an
         // operator running `landrace status` is trying to find out about.
@@ -146,7 +143,11 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
         "tick",
         () => {
           deps.log("lock.acquired", { ticket, kind: "tick" });
-          return converge(ticket, { ...deps, ctx: { ...deps.ctx, ticket } satisfies Omit<HookContext, "snapshot"> });
+          return converge(ticket, {
+            ...deps,
+            source: opts.source,
+            ctx: { ...deps.ctx, ticket } satisfies Omit<HookContext, "snapshot">,
+          });
         },
         opts.lock,
       );

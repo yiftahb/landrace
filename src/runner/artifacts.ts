@@ -148,7 +148,7 @@ const briefingsNamedIn = (prompt: string): Set<string> =>
   new Set([...prompt.matchAll(/\{brief\.([a-zA-Z0-9_]+)\./g)].map((m) => m[1] as string));
 
 /**
- * Ask every artifact the prompt names for its briefing: prompt text, filed under
+ * Ask every hook the prompt names — an artifact or the source — for its briefing: prompt text, filed under
  * the hook's own name, and nowhere near the snapshot.
  *
  * Called from the invoke path only, so this costs a request per *invocation*
@@ -162,7 +162,7 @@ const briefingsNamedIn = (prompt: string): Set<string> =>
  * is later spliced into something.
  */
 export async function buildBriefing(
-  artifacts: ArtifactHook[],
+  briefers: Array<{ id: string; brief?(ctx: HookContext): Promise<Record<string, string>> | Record<string, string> }>,
   ctx: HookContext,
   prompt: string,
 ): Promise<Record<string, Record<string, string>>> {
@@ -170,18 +170,18 @@ export async function buildBriefing(
   let left = BRIEF_MAX_CHARS;
   const asked = briefingsNamedIn(prompt);
 
-  for (const hook of artifacts) {
+  for (const hook of briefers) {
     if (!hook.brief || !asked.has(hook.id)) continue;
 
     let fragment: Record<string, string>;
     try {
       fragment = await hook.brief(ctx);
     } catch (e) {
-      throw new Error(`the briefing for artifact "${hook.id}" failed: ${messageOf(e)}`);
+      throw new Error(`the briefing for hook "${hook.id}" failed: ${messageOf(e)}`);
     }
     if (fragment === null || typeof fragment !== "object" || Array.isArray(fragment)) {
       throw new Error(
-        `the briefing for artifact "${hook.id}" read back ${Array.isArray(fragment) ? "a list" : typeof fragment}, ` +
+        `the briefing for hook "${hook.id}" read back ${Array.isArray(fragment) ? "a list" : typeof fragment}, ` +
         "not an object of prompt text",
       );
     }
@@ -192,11 +192,11 @@ export async function buildBriefing(
       // id is not a field name but a reachable key on a plain object, and the
       // prompt scope is walked by name.
       if (isReservedId(key)) {
-        throw new Error(`artifact "${hook.id}" briefed a key named "${key}", which is a reserved object key`);
+        throw new Error(`hook "${hook.id}" briefed a key named "${key}", which is a reserved object key`);
       }
       if (typeof value !== "string") {
         throw new Error(
-          `artifact "${hook.id}" briefed "${key}" as a ${typeof value}; a briefing is prompt text, nothing else`,
+          `hook "${hook.id}" briefed "${key}" as a ${typeof value}; a briefing is prompt text, nothing else`,
         );
       }
       const safe = neutraliseMarkers(value);

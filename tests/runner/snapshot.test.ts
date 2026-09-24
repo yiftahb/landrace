@@ -1,7 +1,8 @@
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { deriveRun } from "#core/index.js";
 import { definePreHook } from "#hooks/contracts.js";
-import type { HookContext } from "#namespace.js";
+import { createExternalState, staticSource } from "#testing/index.js";
+import type { HookContext, Node, Rel, Run, RuntimeConfig } from "#namespace.js";
 
 const ctx = (): Omit<HookContext, "snapshot"> => ({
   ticket: "1",
@@ -11,10 +12,58 @@ const ctx = (): Omit<HookContext, "snapshot"> => ({
   log: () => {},
 });
 
+const ctxFor = (ticket: string) => ({
+  ticket, config: {} as RuntimeConfig, secrets: new Map(), signal: new AbortController().signal, log: () => {},
+});
+
+const ticketNode = (id: string, labels: string[] = []): Node => ({
+  id, kind: "ticket", title: `issue ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
+  state: { labels, assignees: [] },
+});
+
+/** One ticket, "1", alone in its graph — for the cases that are about the pre hooks rather than the source. */
+const lone = (labels: string[] = []) => staticSource({ nodes: [ticketNode("1", labels)], relationships: [] });
+
+describe("buildSnapshot reads the graph first", () => {
+  it("puts the ticket's node, its graph and its rel counts in the snapshot, before any pre hook runs", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:build"] }] });
+    state.openPull("1", { openThreads: 2 });
+    let seenByHook: unknown;
+    const peek = definePreHook({ id: "peek", provides: [], run: ({ snapshot }) => { seenByHook = snapshot.node; return {}; } });
+    const s = await buildSnapshot({ ticket: "1", source: state.source, hooks: [state.pre, peek], ctx: ctxFor("1") });
+    expect((s.node as Node).id).toBe("1");
+    expect(seenByHook).toEqual(s.node);
+    expect((s.rel as Rel)["implements"]?.in).toMatchObject({ total: 1, not: { merged: 1 }, sum: { openThreads: 2 } });
+    expect((s.run as Run).stage).toBe("build");
+  });
+
+  it("fails the snapshot, naming the source, when its graph is not one to decide from", async () => {
+    const broken = staticSource({ nodes: [], relationships: [] });
+    await expect(buildSnapshot({ ticket: "1", source: broken, hooks: [], ctx: ctxFor("1") }))
+      .rejects.toThrow(/source "static".*"1" is not in the graph/);
+  });
+
+  it("names the source when its read throws", async () => {
+    const failing = { ...lone(), read: async () => { throw new Error("rate limited"); } };
+    await expect(buildSnapshot({ ticket: "1", source: failing, hooks: [], ctx: ctxFor("1") }))
+      .rejects.toThrow(/source "static" could not read "1": rate limited/);
+  });
+
+  it("does not let a pre hook move the ticket by returning a node of its own", async () => {
+    const liar = definePreHook({ id: "liar", provides: [], run: () => ({ node: ticketNode("1", ["lr:stage:done"]) }) });
+    const s = await buildSnapshot({ ticket: "1", source: lone(["lr:stage:spec"]), hooks: [liar], ctx: ctxFor("1") });
+    expect((s.run as Run).stage).toBe("spec");
+    expect(labelsIn(s.node)).toEqual(["lr:stage:spec"]);
+  });
+});
+
+const labelsIn = (node: unknown): unknown => (node as Node).state.labels;
+
 describe("buildSnapshot", () => {
   it("merges fragments in declaration order", async () => {
     const s = await buildSnapshot({
       ticket: "1",
+      source: lone(),
       hooks: [
         definePreHook({ id: "a", run: () => ({ x: 1, shared: "first" }) }),
         definePreHook({ id: "b", run: () => ({ y: 2, shared: "second" }) }),
@@ -27,6 +76,7 @@ describe("buildSnapshot", () => {
   it("gives each hook what previous hooks produced", async () => {
     const s = await buildSnapshot({
       ticket: "1",
+      source: lone(),
       hooks: [
         definePreHook({ id: "a", run: () => ({ base: 2 }) }),
         definePreHook({
@@ -43,11 +93,11 @@ describe("buildSnapshot", () => {
     const at = "2026-01-01T00:00:00Z";
     const s = await buildSnapshot({
       ticket: "1",
+      source: lone(["lr:auto", "lr:stage:spec"]),
       hooks: [
         definePreHook({
           id: "t",
           run: () => ({
-            ticket: { labels: ["lr:auto", "lr:stage:spec"] },
             entries: [{ stage: "spec", kind: "output", round: 1, at, byAgent: true }],
           }),
         }),
@@ -58,7 +108,7 @@ describe("buildSnapshot", () => {
   });
 
   it("carries the clock in, so core never reads it", async () => {
-    const s = await buildSnapshot({ ticket: "1", hooks: [], ctx: ctx(), now: 1234 });
+    const s = await buildSnapshot({ ticket: "1", source: lone(), hooks: [], ctx: ctx(), now: 1234 });
     expect(s.now).toBe(1234);
   });
 
@@ -66,6 +116,7 @@ describe("buildSnapshot", () => {
     await expect(
       buildSnapshot({
         ticket: "1",
+        source: lone(),
         hooks: [definePreHook({ id: "flaky", run: () => { throw new Error("no network"); } })],
         ctx: ctx(),
       }),
@@ -81,6 +132,7 @@ describe("buildSnapshot", () => {
     await expect(
       buildSnapshot({
         ticket: "1",
+        source: lone(),
         hooks: [definePreHook({ id: "flaky", run: () => { throw null; } })],
         ctx: ctx(),
       }),
@@ -89,22 +141,23 @@ describe("buildSnapshot", () => {
 
   it("records the snapshot hash, which the decision cache reads later", async () => {
     const s = await buildSnapshot({
-      ticket: "1", hooks: [], ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
+      ticket: "1", source: lone(), hooks: [], ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
     });
     expect(String(s.hash)).toMatch(/^len:\d+$/);
   });
 
   it("gives the same hash for the same inputs at different times", async () => {
     const digest = (input: string) => `len:${input.length}`;
-    const a = await buildSnapshot({ ticket: "1", hooks: [], ctx: ctx(), now: 1, digest });
-    const b = await buildSnapshot({ ticket: "1", hooks: [], ctx: ctx(), now: 999, digest });
+    const a = await buildSnapshot({ ticket: "1", source: lone(), hooks: [], ctx: ctx(), now: 1, digest });
+    const b = await buildSnapshot({ ticket: "1", source: lone(), hooks: [], ctx: ctx(), now: 999, digest });
     expect(a.hash).toBe(b.hash);
   });
 
   it("places the ticket as null when no stage label is present", async () => {
     const s = await buildSnapshot({
       ticket: "1",
-      hooks: [definePreHook({ id: "t", run: () => ({ ticket: { labels: ["lr:auto"] } }) })],
+      source: lone(["lr:auto"]),
+      hooks: [definePreHook({ id: "t", run: () => ({ ticket: { body: "" } }) })],
       ctx: ctx(),
     });
     expect(s.run).toMatchObject({ stage: null });
@@ -124,7 +177,7 @@ describe("snapshotProvides", () => {
   const declaring = (id: string, provides: string[]) => definePreHook({ id, provides, run: () => ({}) });
 
   it("unions what the hooks declare with what the engine derives", () => {
-    const provided = snapshotProvides([declaring("a", ["ticket.labels"]), declaring("b", ["artifacts.pr.*"])]);
+    const provided = snapshotProvides([declaring("a", ["ticket.labels"]), declaring("b", ["artifacts.pr.*"])], null);
 
     expect(provided).toEqual(expect.arrayContaining(["ticket.labels", "artifacts.pr.*", "run.stage", "run.counters.*"]));
   });
@@ -137,12 +190,28 @@ describe("snapshotProvides", () => {
    * when it cannot analyse a trigger.
    */
   it("abstains entirely when any loaded hook declares nothing", () => {
-    expect(snapshotProvides([declaring("a", ["ticket.labels"]), definePreHook({ id: "b", run: () => ({}) })]))
+    expect(snapshotProvides([declaring("a", ["ticket.labels"]), definePreHook({ id: "b", run: () => ({}) })], lone()))
       .toBeNull();
   });
 
   it("abstains when there are no hooks at all, rather than calling every path uncovered", () => {
-    expect(snapshotProvides([])).toBeNull();
+    expect(snapshotProvides([], null)).toBeNull();
+  });
+
+  it("declares rel paths only for the types the source declares", () => {
+    const provided = snapshotProvides([], staticSource({ nodes: [], relationships: [] }, [{ type: "child-of", singular: true }]));
+    expect(provided).toContain("rel.child-of.in.total");
+    expect(provided).not.toContain("rel.implements.in.total");
+  });
+
+  it("covers the node and the graph a source puts in every snapshot", () => {
+    const provided = snapshotProvides([], lone()) ?? [];
+    const covered = (path: string) =>
+      provided.includes(path) || provided.some((k) => k.endsWith("*") && path.startsWith(k.slice(0, -1)));
+    for (const path of ["node.id", "node.state.labels", "node.priority", "graph.nodes", "rel.implements.in.sum.openThreads"]) {
+      expect({ path, covered: covered(path) }).toEqual({ path, covered: true });
+    }
+    expect(covered("nodes.id")).toBe(false);
   });
 
   /*
@@ -152,7 +221,7 @@ describe("snapshotProvides", () => {
    * gets a validator switched off.
    */
   it("covers every field the engine actually derives", () => {
-    const provided = snapshotProvides([definePreHook({ id: "a", provides: [], run: () => ({}) })]) ?? [];
+    const provided = snapshotProvides([definePreHook({ id: "a", provides: [], run: () => ({}) })], null) ?? [];
     const covered = (path: string) =>
       provided.includes(path) || provided.some((k) => k.endsWith("*") && path.startsWith(k.slice(0, -1)));
 

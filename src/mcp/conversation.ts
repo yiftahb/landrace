@@ -81,7 +81,7 @@ function prose(text: string): string {
  */
 export function createConversation(deps: ConversationDeps): Conversation {
   const snapshotOf = (ticket: string): Promise<Snapshot> =>
-    buildSnapshot({ ticket, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+    buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
 
   const say = (ticket: string, snapshot: Snapshot, body: string, marked?: Record<string, unknown>): Promise<void> =>
     deps.dispatcher.apply(

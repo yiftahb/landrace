@@ -128,7 +128,7 @@ async function converging(
     // CLAUDE.md says errors report, they do not crash.
     let snapshot: Snapshot;
     try {
-      snapshot = await buildSnapshot({ ticket, hooks: deps.pre, ctx: deps.ctx });
+      snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: deps.ctx });
     } catch (e) {
       const reason = messageOf(e);
       deps.log("snapshot.failed", { ticket, reason });
@@ -215,7 +215,7 @@ async function converging(
       invoked.add(key);
 
       /*
-       * The artifacts' prose, fetched here and nowhere else: a briefing is an
+       * The artifacts' and the source's prose, fetched here and nowhere else: a briefing is an
        * unbounded read of a remote document, so it is paid for once per
        * invocation rather than on every one of up to thirty passes, most of
        * which run no step at all.
@@ -227,7 +227,7 @@ async function converging(
        */
       let briefing: Record<string, Record<string, string>>;
       try {
-        briefing = await buildBriefing(deps.artifacts ?? [], { ...deps.ctx, ticket, snapshot }, step.prompt);
+        briefing = await buildBriefing([...(deps.artifacts ?? []), deps.source], { ...deps.ctx, ticket, snapshot }, step.prompt);
       } catch (e) {
         const reason = messageOf(e);
         deps.log("step.rejected", { ticket, stage: stage.id, round, reason });

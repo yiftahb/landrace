@@ -1,7 +1,7 @@
 import { buildRegistry } from "#hooks/load.js";
 import type { HookModule } from "#namespace.js";
 import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, definePreflight, defineSource } from "#hooks/contracts.js";
-import type { Candidate, HookContext } from "#namespace.js";
+import type { HookContext, Node } from "#namespace.js";
 
 const preflight = (id: string, check: () => Promise<void> = async () => {}) => definePreflight({ id, check });
 
@@ -11,9 +11,10 @@ const pre = (id: string, fragment: Record<string, unknown> = {}) =>
 const post = (id: string, handles: string[]) =>
   definePostHook({ id, handles, satisfied: () => false, apply: async () => {} });
 
-const source = (id: string) => defineSource({ id, list: async () => [] });
+const empty = async () => ({ nodes: [], relationships: [] });
+const source = (id: string) => defineSource({ id, relations: [], list: empty, read: empty });
 
-const candidate: Candidate = { ticket: "1", title: "t", url: "u", labels: [], assignees: [] };
+const candidate: Node = { id: "1", kind: "ticket", title: "t", link: "u", closed: null, priority: null, origin: null, state: {} };
 const operator = (id: string) =>
   defineOperator({
     id,

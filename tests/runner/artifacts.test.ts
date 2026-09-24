@@ -2,7 +2,14 @@ import { artifactPreHook, buildBriefing } from "#runner/artifacts.js";
 import { buildRegistry } from "#hooks/load.js";
 import { defineArtifactHook } from "#hooks/contracts.js";
 import { buildSnapshot } from "#runner/snapshot.js";
+import { staticSource } from "#testing/index.js";
 import type { ArtifactHook, HookContext, Snapshot } from "#namespace.js";
+
+/** Ticket "7", alone: these cases are about the artifacts, not the source. */
+const seven = staticSource({
+  nodes: [{ id: "7", kind: "ticket", title: "t", link: "u/7", closed: null, priority: null, origin: null, state: {} }],
+  relationships: [],
+});
 
 const ctx = (snapshot: Snapshot = {}): HookContext => ({
   ticket: "7",
@@ -50,6 +57,7 @@ describe("an artifact's state lands under its own name", () => {
   it("survives the real snapshot build with both artifacts intact", async () => {
     const snapshot = await buildSnapshot({
       ticket: "7",
+      source: seven,
       hooks: [artifactPreHook(reading("pr", { number: 7 })), artifactPreHook(reading("spec", { exists: true }))],
       ctx: ctx() as Omit<HookContext, "snapshot">,
       now: 0,
@@ -196,6 +204,7 @@ describe("an artifact's briefing reaches the prompt and nothing else", () => {
     const hook = briefing("pr", () => ({ threads: "finding 1" }));
     const snapshot = await buildSnapshot({
       ticket: "7",
+      source: seven,
       hooks: [artifactPreHook(hook)],
       ctx: ctx() as Omit<HookContext, "snapshot">,
       now: 0,
@@ -251,13 +260,13 @@ describe("an artifact's briefing reaches the prompt and nothing else", () => {
   it("refuses a briefing value that is not a string, naming the artifact and the key", async () => {
     await expect(
       buildBriefing([briefing("pr", () => ({ threads: 7 } as unknown as Record<string, string>))], ctx(), ASKING),
-    ).rejects.toThrow(/artifact "pr".*"threads".*number/);
+    ).rejects.toThrow(/hook "pr".*"threads".*number/);
   });
 
   it("names the artifact whose briefing failed", async () => {
     await expect(
       buildBriefing([briefing("pr", () => { throw new Error("the api said no"); })], ctx(), ASKING),
-    ).rejects.toThrow(/briefing for artifact "pr".*the api said no/);
+    ).rejects.toThrow(/briefing for hook "pr".*the api said no/);
   });
 });
 

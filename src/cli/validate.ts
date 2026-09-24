@@ -64,7 +64,7 @@ async function coverage(
 ): Promise<Problem[]> {
   try {
     const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
-    return validate(workflow, steps, snapshotProvides(registry.pre) ?? undefined);
+    return validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined);
   } catch (e) {
     // One exception: a node too old to read a TypeScript file is not a broken
     // workflow, and the CLI answers it by re-running itself with the flag —

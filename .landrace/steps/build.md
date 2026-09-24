@@ -10,7 +10,7 @@ output:
       effect: { type: tracker.comment, marker: "done:{round}" }
 ---
 
-Implement the spec for #{ticket.number}: {ticket.title}.
+Implement the spec for #{node.id}: {node.title}.
 
 The approved spec is at {artifacts.spec.url}.
 
