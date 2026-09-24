@@ -110,14 +110,137 @@ function elapsed(since, now) {
   return h ? h + "h " + m + "m" : m + "m " + String(r).padStart(2, "0") + "s";
 }
 
-// The "..." / "Chat ▾" slot on the right of every row: shells only for now,
-// wired up with a real menu in a follow-up — no listener attached here, so
-// they render but do nothing yet.
-function actionFor(row) {
-  if (row.lane === "needs-you") {
-    return el("button", "inline-flex shrink-0 self-start items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300 sm:self-auto", "Chat ▾");
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+// A small coloured mark per vendor — colour and shape only, not a
+// reproduction of any vendor's logotype, just enough to tell the three
+// deep-link targets apart at a glance, the way the design's small icons do.
+function chatIcon(bg, glyphAttrs) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("shrink-0", "rounded-sm");
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("width", "16");
+  rect.setAttribute("height", "16");
+  rect.setAttribute("rx", "4");
+  rect.setAttribute("fill", bg);
+  svg.append(rect);
+  const glyph = document.createElementNS(SVG_NS, "path");
+  for (const k in glyphAttrs) glyph.setAttribute(k, glyphAttrs[k]);
+  svg.append(glyph);
+  return svg;
+}
+
+// Each entry's "key" indexes row.chat.links — the only place a URL for that
+// target exists; this script only ever reads it out, never builds one.
+const CHAT_TARGETS = [
+  { key: "claude", label: "Claude Code",
+    icon: () => chatIcon("#D97757", { d: "M8 3.2l1.1 3.1 3.3.2-2.6 2 .9 3.2-2.7-1.9-2.7 1.9.9-3.2-2.6-2 3.3-.2z", fill: "#fff" }) },
+  { key: "cursor", label: "Cursor",
+    icon: () => chatIcon("#18181b", { d: "M4 3l9 4.5-3.6.9L8.5 12z", fill: "#fff" }) },
+  { key: "codex", label: "Codex",
+    icon: () => chatIcon("#10a37f", {
+      d: "M6.5 4l-3.2 4 3.2 4M9.5 4l3.2 4-3.2 4",
+      fill: "none", stroke: "#fff", "stroke-width": "1.6", "stroke-linecap": "round", "stroke-linejoin": "round",
+    }) },
+];
+
+// At most one Chat/… menu open at a time, tracked here rather than per-row —
+// opening one has to close any other, and a poll re-render destroys whatever
+// row DOM held the old one, so this is reset there too (see render()).
+let openMenu = null;
+
+function closeMenu() {
+  if (!openMenu) return;
+  openMenu.menu.hidden = true;
+  openMenu.button.setAttribute("aria-expanded", "false");
+  openMenu = null;
+}
+
+// Defined once, not per row: a click anywhere the open menu's own wrapper
+// does not contain, or an Escape from anywhere, closes it. Because these are
+// module-level listeners rather than one pair per row, re-rendering never
+// multiplies them.
+document.addEventListener("click", (e) => {
+  if (openMenu && !openMenu.wrap.contains(e.target)) closeMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMenu();
+});
+
+function menuItem(tag) {
+  const node = el(tag, "flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800");
+  node.setAttribute("role", "menuitem");
+  return node;
+}
+
+// The Chat menu's contents never change per lane — only which button opens
+// it does (see actionFor) — so both "Chat ▾" and "…" share this builder.
+function buildChatMenu(row) {
+  const menu = el("div", "absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
+  menu.setAttribute("role", "menu");
+  menu.hidden = true;
+  for (const target of CHAT_TARGETS) {
+    const a = menuItem("a");
+    // The href comes straight from the server-built link — this script never
+    // concatenates a URL of its own (see src/ui/chat.ts).
+    a.href = row.chat.links[target.key];
+    a.rel = "noreferrer";
+    a.append(target.icon(), el("span", null, target.label));
+    menu.append(a);
   }
-  return el("button", "inline-flex h-7 w-7 shrink-0 self-start items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 sm:self-auto", "⋯");
+  menu.append(el("hr", "my-1 border-neutral-100 dark:border-neutral-800"));
+  const copy = menuItem("button");
+  copy.type = "button";
+  copy.textContent = "Copy prompt";
+  const COPY_LABEL = "Copy prompt";
+  let copyRestoreTimer = null;
+  copy.addEventListener("click", () => {
+    if (copyRestoreTimer !== null) clearTimeout(copyRestoreTimer);
+    const restore = () => { copyRestoreTimer = setTimeout(() => { copy.textContent = COPY_LABEL; copyRestoreTimer = null; }, 2000); };
+    const clipboard = navigator.clipboard;
+    (clipboard ? clipboard.writeText(row.chat.prompt) : Promise.reject(new Error("no clipboard"))).then(
+      () => { copy.textContent = "Copied"; restore(); },
+      () => { copy.textContent = "Copy failed"; restore(); },
+    );
+  });
+  menu.append(copy);
+  return menu;
+}
+
+// The "..." / "Chat ▾" slot on the right of every row, both opening the same
+// menu (Claude Code / Cursor / Codex / a divider / Copy prompt).
+function actionFor(row) {
+  const needsYou = row.lane === "needs-you";
+  const button = el(
+    "button",
+    needsYou
+      ? "inline-flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+      : "inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500",
+    needsYou ? "Chat ▾" : "⋯",
+  );
+  button.type = "button";
+  button.setAttribute("aria-haspopup", "menu");
+  button.setAttribute("aria-expanded", "false");
+  if (!needsYou) button.setAttribute("aria-label", "Chat");
+
+  const wrap = el("div", "relative shrink-0 self-start sm:self-auto");
+  const menu = buildChatMenu(row);
+  button.addEventListener("click", () => {
+    if (openMenu && openMenu.menu === menu) {
+      closeMenu();
+      return;
+    }
+    closeMenu();
+    menu.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu, button, wrap };
+  });
+  wrap.append(button, menu);
+  return wrap;
 }
 
 function rowFor(row, now) {
@@ -187,6 +310,10 @@ function renderNext() {
 
 function render(view) {
   const now = Date.now();
+  // Every row's DOM (and any menu it held) is about to be replaced below —
+  // drop the reference now rather than leave it pointing at a detached menu
+  // no further click could ever reach.
+  openMenu = null;
   for (const lane of document.querySelectorAll("[data-lane]")) {
     const rows = view.rows.filter((r) => r.lane === lane.dataset.lane);
     const list = lane.querySelector("ul");

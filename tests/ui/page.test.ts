@@ -104,13 +104,55 @@ describe("the page", () => {
     expect(APP_JS).toContain('"None"');
   });
 
-  it("renders a Chat action on needs-you rows and an inert one everywhere else, both as shells with no listener yet", () => {
+  it("renders a Chat action on needs-you rows and an inert one everywhere else", () => {
     expect(APP_JS).toContain('row.lane === "needs-you"');
     expect(APP_JS).toContain("Chat ▾");
-    // Neither shell is wired: the only addEventListener calls in the whole
-    // script are the tick button and the theme toggle, both unrelated to
-    // per-row actions. Task 2 adds the menu and its own listeners.
+  });
+
+  it("wires exactly the tick button, the theme toggle, the row menu toggle, copy, and the two document-level close listeners — no more, no less", () => {
+    // Pins the count deliberately, per row action now being real: the tick
+    // button and theme toggle (Task 1) plus, for the Chat/… menu, one
+    // toggle-button listener, one Copy-prompt listener, and one document
+    // listener each for outside-click and Escape (both defined once, not
+    // per row, so re-rendering never multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(2);
+    expect(listeners).toHaveLength(6);
+  });
+
+  it("opens the same menu — Claude Code, Cursor, Codex, a divider, Copy prompt — from either action button", () => {
+    expect(APP_JS).toContain("Claude Code");
+    expect(APP_JS).toContain("Cursor");
+    expect(APP_JS).toContain("Codex");
+    expect(APP_JS).toContain("Copy prompt");
+    expect(APP_JS).toMatch(/el\("hr"/);
+  });
+
+  it("gives the menu proper ARIA: haspopup/expanded on the trigger, menu/menuitem on the popup", () => {
+    expect(APP_JS).toContain('"aria-haspopup", "menu"');
+    expect(APP_JS).toContain('"aria-expanded"');
+    expect(APP_JS).toContain('"role", "menu"');
+    expect(APP_JS).toContain('"role", "menuitem"');
+  });
+
+  it("sets each link's href straight from row.chat.links, and never concatenates a URL itself", () => {
+    expect(APP_JS).toMatch(/row\.chat\.links\[[^\]]+\]/);
+    expect(APP_JS).not.toMatch(/claude-cli:|cursor:\/\/anysphere|codex:\/\/threads/);
+  });
+
+  it("copies row.chat.prompt to the clipboard, reporting Copied or Copy failed", () => {
+    expect(APP_JS).toContain("navigator.clipboard");
+    expect(APP_JS).toContain("row.chat.prompt");
+    expect(APP_JS).toContain("Copied");
+    expect(APP_JS).toContain("Copy failed");
+  });
+
+  it("closes the menu on Escape and on an outside click, via two listeners defined once (not per row)", () => {
+    expect(APP_JS).toMatch(/document\.addEventListener\(\s*"keydown"/);
+    expect(APP_JS).toMatch(/document\.addEventListener\(\s*"click"/);
+    expect(APP_JS).toContain('"Escape"');
+  });
+
+  it("has no inline event handlers anywhere in the markup", () => {
+    expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
   });
 });
