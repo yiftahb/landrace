@@ -1,14 +1,19 @@
 import {
+  allClosed,
+  CLOSE_EFFECT,
   entriesFromComments,
   LABEL_EFFECT,
   LABELS,
   labelsOf,
   neutraliseMarkers,
+  NODES_CLOSE_EFFECT,
   parseMarker,
+  parseOrigin,
   PULL_REQUEST_KIND,
   RECORD_EFFECT,
   RELATIONS,
   renderMarker,
+  renderOrigin,
   STAGE_LABEL_PREFIX,
   stageFromLabels,
   STATUS_EFFECT,
@@ -63,7 +68,7 @@ const nodeOf = (row: ExternalTicket): Node => ({
   link: `memory://tickets/${row.id}`,
   closed: row.closed ?? null,
   priority: row.priority ?? null,
-  origin: null,
+  origin: parseOrigin(row.body, row.author, BOT),
   // Always lists, empty when there is nothing: an absent path is one an
   // eligibility rule cannot be answered from, and the tick abstains on those —
   // which would work a ticket belonging to nobody rather than skip it.
@@ -201,6 +206,7 @@ export function createExternalState(
 
   return {
     ticket: must,
+    children: (parent) => [...rows.values()].filter((r) => r.parent === parent),
     openPull: (ticket, pr = {}) => {
       must(ticket);
       const number = pulls.size + 1;
@@ -225,10 +231,17 @@ export function createExternalState(
 
     operator: defineOperator({
       id: "memory",
-      createTicket: async ({ title, body, labels }) => {
+      createTicket: async ({ title, body, labels, parent, origin, priority }) => {
+        if (parent !== undefined) must(parent); // throws "no such ticket #<parent>" when it is not one
         let n = rows.size + 1;
         while (rows.has(String(n))) n++;
-        return nodeOf(add({ title, body: body ?? "", labels: labels ?? [], author: BOT }, String(n)));
+        const stamped = neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : "");
+        return nodeOf(
+          add(
+            { title, body: stamped, labels: labels ?? [], author: BOT, parent: parent ?? null, priority: priority ?? null },
+            String(n),
+          ),
+        );
       },
       updateTicket: async (id, patch) => {
         const row = must(id);
@@ -278,7 +291,7 @@ export function createExternalState(
 
     post: definePostHook({
       id: "memory",
-      handles: [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT],
+      handles: [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT],
 
       /*
        * Asked of the snapshot rather than of the map behind it, exactly as a
@@ -313,6 +326,10 @@ export function createExternalState(
             // the effect for good, because reconcile drops it.
             return (ticket.comments ?? []).some((c) => wroteIt(c) && parseMarker(c.body ?? "")?.marker === marker);
           }
+          case NODES_CLOSE_EFFECT:
+            return allClosed(snapshot.graph as Graph | undefined, (effect.ids as string[] | undefined) ?? []);
+          case CLOSE_EFFECT:
+            return (snapshot.node as Node | undefined)?.closed === "done";
           default:
             return false;
         }
@@ -353,6 +370,19 @@ export function createExternalState(
               ...(effect.output === undefined ? {} : { output: effect.output }),
             };
             post(ticket, BOT, body + renderMarker(marker));
+            return;
+          }
+          case NODES_CLOSE_EFFECT: {
+            for (const id of (effect.ids as string[] | undefined) ?? []) {
+              const pull = pulls.get(id);
+              if (pull) { if (pull.closed === null) pull.closed = "dropped"; continue; }
+              const child = rows.get(id);
+              if (child && child.closed === null) child.closed = "dropped";
+            }
+            return;
+          }
+          case CLOSE_EFFECT: {
+            row.closed = "done";
             return;
           }
           default:

@@ -845,6 +845,8 @@ export interface ExternalState {
   /** The live record behind a pull request node, for a test to merge, close or comment on. */
   pull(id: string): ExternalPull;
   ticket(id: string): ExternalTicket;
+  /** Every row whose `parent` is this id, a test helper for asserting on what a step created. */
+  children(parent: string): ExternalTicket[];
   comments(id: string): string[];
   entriesOf(id: string): Entry[];
   /** Where the ticket sits, as the engine would read it: out of a label. */

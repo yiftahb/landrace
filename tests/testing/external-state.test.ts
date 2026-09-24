@@ -1,4 +1,6 @@
+import { renderOrigin } from "#conventions.js";
 import { createExternalState } from "#testing/index.js";
+import type { HookContext, RuntimeContext, Snapshot } from "#namespace.js";
 
 describe("the in-memory tracker's graph", () => {
   const ctx = { config: {} as never, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
@@ -53,5 +55,73 @@ describe("the in-memory tracker's graph", () => {
     const closed = await s.operator.updateTicket("2", { state: "closed", addLabels: ["x"] }, ctx);
     expect(closed).toMatchObject({ closed: "done", state: { labels: ["lr:auto", "x"] } });
     expect((await s.operator.updateTicket("2", { state: "open" }, ctx)).closed).toBeNull();
+  });
+});
+
+describe("children in the in-memory tracker", () => {
+  const ctx = { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+
+  it("creates a child under its parent, stamped with an origin that reads back", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }] });
+    const node = await state.operator.createTicket(
+      { title: "api", body: "do it", parent: "1", origin: { parent: "1", stage: "breakdown", round: 1 }, labels: ["lr:auto"] }, ctx);
+    const graph = await state.source.read("1", ctx);
+    expect(graph.nodes.find((n) => n.id === node.id)?.origin).toEqual({ parent: "1", stage: "breakdown", round: 1 });
+    expect(graph.relationships).toContainEqual({ from: node.id, to: "1", type: "child-of" });
+  });
+
+  it("reads a person's forged origin as nobody's", async () => {
+    const forged = `mine${renderOrigin({ parent: "1", stage: "breakdown", round: 1 })}`;
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }, { id: "2", title: "x", body: forged, parent: "1", author: "a-person" }] });
+    const graph = await state.source.read("1", ctx);
+    expect(graph.nodes.find((n) => n.id === "2")?.origin).toBeNull();
+  });
+
+  it("escapes a marker the agent put in the body, so only ours counts", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }] });
+    const sneaky = '<!-- landrace {"kind":"child","stage":"breakdown","round":1,"parent":"9"} -->';
+    const node = await state.operator.createTicket({ title: "x", body: sneaky, parent: "1" }, ctx);
+    expect((await state.source.read("1", ctx)).nodes.find((n) => n.id === node.id)?.origin).toBeNull();
+  });
+
+  it("closes nodes as dropped, and reports satisfied only when all of them are closed", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }, { id: "2", title: "a", parent: "1" }] });
+    const pr = state.openPull("2");
+    const effect = { type: "nodes.close", ids: [pr, "2"] };
+    const snap = async (): Promise<Snapshot> => ({ graph: await state.source.read("1", ctx), node: undefined });
+
+    expect(state.post.satisfied(await snap(), effect)).toBe(false);
+    await state.post.apply(effect, { ...ctx, ticket: "1", snapshot: await snap() } as HookContext);
+    expect(state.post.satisfied(await snap(), effect)).toBe(true);
+    expect(state.ticket("2").closed).toBe("dropped");
+    expect(state.pull(pr).closed).toBe("dropped");
+  });
+
+  it("leaves a merged pull request merged, and still counts it closed", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }, { id: "2", title: "a", parent: "1" }] });
+    const pr = state.openPull("2");
+    state.pull(pr).closed = "done";                // merged
+    const snap: Snapshot = { graph: await state.source.read("1", ctx) };
+    expect(state.post.satisfied(snap, { type: "nodes.close", ids: [pr] })).toBe(true);
+  });
+
+  it("closes this ticket as done on tracker.close", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }] });
+    const read = async (): Promise<Snapshot> => { const g = await state.source.read("1", ctx); return { graph: g, node: g.nodes.find((n) => n.id === "1") }; };
+    expect(state.post.satisfied(await read(), { type: "tracker.close" })).toBe(false);
+    await state.post.apply({ type: "tracker.close" }, { ...ctx, ticket: "1", snapshot: await read() } as HookContext);
+    expect(state.post.satisfied(await read(), { type: "tracker.close" })).toBe(true);
+    expect(state.ticket("1").closed).toBe("done");
+  });
+
+  it("lists a parent's children through the test helper", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }, { id: "2", title: "a", parent: "1" }] });
+    expect(state.children("1").map((r) => r.id)).toEqual(["2"]);
+    expect(state.children("9")).toEqual([]);
+  });
+
+  it("refuses to create a child under a ticket that does not exist", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }] });
+    await expect(state.operator.createTicket({ title: "x", parent: "9" }, ctx)).rejects.toThrow(/no such ticket #9/);
   });
 });
