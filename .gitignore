@@ -4,6 +4,7 @@ node_modules/
 dist/
 .env
 .landrace/.env
+.superpowers/
 
 # agsync:begin
 .mcp.json
