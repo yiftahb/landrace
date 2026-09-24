@@ -9,24 +9,14 @@ describe("the page", () => {
     expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
   });
 
-  it("declares a section for every lane, in display order", () => {
-    const order = ["needs-you", "running", "elsewhere", "waiting", "not-admitted", "discharged"];
-    const positions = order.map((lane) => PAGE_HTML.indexOf(`data-lane="${lane}"`));
-    expect(positions.every((p) => p >= 0)).toBe(true);
-    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-  });
-
-  it("collapses not-admitted and discharged", () => {
-    expect(PAGE_HTML).toMatch(/<details[^>]*data-lane="not-admitted"/);
-    expect(PAGE_HTML).toMatch(/<details[^>]*data-lane="discharged"/);
-  });
-
-  // The Chat menu is absolutely positioned inside a lane; a clipping lane cut
+  // The Chat menu is absolutely positioned inside a row; a clipping card cut
   // it off on the last row.
-  it("never clips a lane's contents, so a row's menu can overflow the card", () => {
-    const lanes = PAGE_HTML.match(/<(section|details) data-lane="[^"]+" class="[^"]*"/g) ?? [];
-    expect(lanes).toHaveLength(6);
-    for (const lane of lanes) expect(lane).not.toContain("overflow-hidden");
+  it("draws one tree card, and never clips it, so a row's menu can overflow the card", () => {
+    const card = /<section id="board" class="[^"]*"/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(card).not.toBe("");
+    expect(card).not.toContain("overflow-hidden");
+    expect(PAGE_HTML).toContain('<ul id="tree" role="tree"');
+    expect(PAGE_HTML).not.toContain("data-lane=");
   });
 
   it("never parses a string as HTML", () => {
@@ -108,24 +98,24 @@ describe("the page", () => {
     expect(APP_JS).toContain('getElementById("folder").textContent = view.folder');
   });
 
-  it("shows a quiet empty state, through textContent, when a lane has no rows", () => {
+  it("shows a quiet empty state, through textContent, when there is nothing to show", () => {
     expect(APP_JS).toContain('"None"');
   });
 
   it("renders a Chat action on needs-you rows and an inert one everywhere else", () => {
-    expect(APP_JS).toContain('row.lane === "needs-you"');
+    expect(APP_JS).toContain('row.badge === "needs-you"');
     expect(APP_JS).toContain("Chat ▾");
   });
 
-  it("wires exactly the tick button, the theme toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
-    // Pins the count deliberately: the tick button and theme toggle (Task 1)
-    // plus, for the Chat/… menu, one toggle-button listener, one
-    // close-on-choose listener (defined once inside the per-target loop,
-    // not once per row), one Copy-prompt listener, and one document listener
-    // each for outside-click and Escape (both defined once, not per row, so
-    // re-rendering never multiplies them).
+  it("wires exactly the tick button, the theme toggle, the row expand toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
+    // Pins the count deliberately: the tick button and theme toggle, the
+    // expand/collapse toggle (defined once, in toggleFor, not once per row),
+    // and for the Chat/… menu one toggle-button listener, one close-on-choose
+    // listener (defined once inside the per-target loop), one Copy-prompt
+    // listener, and one document listener each for outside-click and Escape
+    // (both defined once, so re-rendering never multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(7);
+    expect(listeners).toHaveLength(8);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -184,11 +174,11 @@ describe("the page", () => {
     expect(APP_JS).toMatch(/render\(await res\.json\(\)\)/);
   });
 
-  it("keys every trigger and its menu by ticket (data-key), so the live element is always one lookup away", () => {
-    expect(APP_JS).toMatch(/function triggerKeyOf\(ticket\)/);
-    expect(APP_JS).toMatch(/function menuKeyOf\(ticket\)/);
-    expect(APP_JS).toContain('"data-key", triggerKeyOf(row.ticket)');
-    expect(APP_JS).toContain('"data-key", menuKeyOf(row.ticket)');
+  it("keys every trigger and its menu by node id (data-key), so the live element is always one lookup away", () => {
+    expect(APP_JS).toMatch(/function triggerKeyOf\(id\)/);
+    expect(APP_JS).toMatch(/function menuKeyOf\(id\)/);
+    expect(APP_JS).toContain('"data-key", triggerKeyOf(row.id)');
+    expect(APP_JS).toContain('"data-key", menuKeyOf(row.id)');
     expect(APP_JS).toMatch(/document\.querySelector\(/);
   });
 
@@ -206,9 +196,36 @@ describe("the page", () => {
     expect(APP_JS).toMatch(/setTimeout\(\(\)\s*=>\s*closeMenu\(\),\s*IDLE_MS\)/);
   });
 
-  it("keys every menu item too (<ticket>:claude/cursor/codex/copy), so render()'s existing restore-by-key also covers a keyboard user focused inside the menu", () => {
-    expect(APP_JS).toContain('"data-key", row.ticket + ":" + target.key');
-    expect(APP_JS).toContain('"data-key", row.ticket + ":copy"');
+  it("keys every menu item too (<id>:claude/cursor/codex/copy), so render()'s restore-by-key covers a keyboard user inside the menu", () => {
+    expect(APP_JS).toContain('"data-key", row.id + ":" + target.key');
+    expect(APP_JS).toContain('"data-key", row.id + ":copy"');
+  });
+
+  it("walks the tree with a seen-set, so a malformed graph can never hang the page", () => {
+    expect(APP_JS).toMatch(/if \(seen\.has\(row\.id\)\) continue;/);
+    expect(APP_JS).toContain("seen.add(row.id)");
+  });
+
+  it("lets a person's own expand/collapse beat the server's, across every poll", () => {
+    expect(APP_JS).toContain("const userExpanded = new Map();");
+    expect(APP_JS).toMatch(/userExpanded\.has\(row\.id\) \? userExpanded\.get\(row\.id\) : row\.expanded/);
+  });
+
+  it("opens every external link in a new tab without handing it window.opener", () => {
+    const blanks = APP_JS.match(/\.target = "_blank";/g) ?? [];
+    const safe = APP_JS.match(/\.rel = "noopener noreferrer";/g) ?? [];
+    expect(blanks.length).toBeGreaterThan(0);
+    expect(safe.length).toBe(blanks.length);
+  });
+
+  it("draws a system's mark as an SVG letter from row.system.icon, never an image", () => {
+    expect(APP_JS).toContain("function systemIcon(");
+    expect(APP_JS).toContain("row.system.icon");
+    expect(APP_JS).not.toMatch(/createElement\("img"\)|\.src\s*=/);
+  });
+
+  it("greys a dropped node", () => {
+    expect(APP_JS).toContain('row.closed === "dropped"');
   });
 
   it("has no inline event handlers anywhere in the markup", () => {

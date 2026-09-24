@@ -5,30 +5,6 @@
  */
 export { APP_CSS } from "#ui/styles.generated.js";
 
-/** One <section> lane: a coloured left border, a mono heading, a count badge. */
-const lane = (id: string, label: string, accent: string, dot = ""): string => `
-<section data-lane="${id}" class="mb-4 rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900${accent}">
-<div class="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
-${dot}<h2 class="font-mono text-xs font-semibold uppercase tracking-wider">${label}</h2>
-<span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-medium">0</span>
-</div>
-<ul class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
-</section>`;
-
-/** not-admitted / discharged: same card, collapsible, no colour accent, a rotating chevron. */
-const collapsedLane = (id: string, label: string): string => `
-<details data-lane="${id}" class="group mb-4 rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-<summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 [&::-webkit-details-marker]:hidden">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-3 w-3 shrink-0 text-neutral-400 transition-transform group-open:rotate-90" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
-<h2 class="font-mono text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">${label}</h2>
-<span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-neutral-100 px-1.5 py-0.5 text-xs font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">0</span>
-</summary>
-<ul class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
-</details>`;
-
-const RUNNING_DOT =
-  '<span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" aria-hidden="true"></span>';
-
 export const PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -61,12 +37,9 @@ export const PAGE_HTML = `<!doctype html>
 </div>
 </header>
 <main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
-${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
-${lane("running", "Agent running", " border-l-4 border-l-emerald-500 [&_h2]:text-emerald-600 dark:[&_h2]:text-emerald-400 [&_.lane-count]:bg-emerald-100 [&_.lane-count]:text-emerald-700 dark:[&_.lane-count]:bg-emerald-950 dark:[&_.lane-count]:text-emerald-300", RUNNING_DOT)}
-${lane("elsewhere", "Held elsewhere", " border-l-4 border-l-amber-500 [&_h2]:text-amber-600 dark:[&_h2]:text-amber-400 [&_.lane-count]:bg-amber-100 [&_.lane-count]:text-amber-700 dark:[&_.lane-count]:bg-amber-950 dark:[&_.lane-count]:text-amber-300")}
-${lane("waiting", "Waiting", " border-l-4 border-l-neutral-300 dark:border-l-neutral-700 [&_h2]:text-neutral-500 dark:[&_h2]:text-neutral-400 [&_.lane-count]:bg-neutral-100 [&_.lane-count]:text-neutral-600 dark:[&_.lane-count]:bg-neutral-800 dark:[&_.lane-count]:text-neutral-300")}
-${collapsedLane("not-admitted", "Not admitted")}
-${collapsedLane("discharged", "Discharged")}
+<section id="board" class="rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+<ul id="tree" role="tree" aria-label="Tickets" class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
+</section>
 </main>
 </body>
 </html>
@@ -134,6 +107,33 @@ function chatIcon(bg, glyphAttrs) {
   return svg;
 }
 
+// A known system's mark: a coloured square and one or two white letters.
+// Built from row.system.icon, which the server only ever fills from its own
+// table (src/ui/systems.ts) — colour and letters, never a URL or an image.
+function systemIcon(icon) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("shrink-0", "rounded-sm");
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("width", "16");
+  rect.setAttribute("height", "16");
+  rect.setAttribute("rx", "4");
+  rect.setAttribute("fill", icon.bg);
+  const text = document.createElementNS(SVG_NS, "text");
+  text.setAttribute("x", "8");
+  text.setAttribute("y", "11.5");
+  text.setAttribute("text-anchor", "middle");
+  text.setAttribute("font-size", icon.glyph.length > 1 ? "7" : "9");
+  text.setAttribute("font-weight", "700");
+  text.setAttribute("fill", "#fff");
+  text.textContent = icon.glyph;
+  svg.append(rect, text);
+  return svg;
+}
+
 // Each entry's "key" indexes row.chat.links — the only place a URL for that
 // target exists; this script only ever reads it out, never builds one.
 const CHAT_TARGETS = [
@@ -150,26 +150,28 @@ const CHAT_TARGETS = [
     }) },
 ];
 
-// At most one Chat/… menu open at a time, tracked by the ticket it belongs
+// At most one Chat/… menu open at a time, tracked by the node it belongs
 // to — never by an element reference. A render() rebuilds every row from
 // scratch, so any button/menu object captured before one would go stale the
-// instant it ran; a ticket number doesn't, because row.ticket doesn't change
-// just because its DOM did. Every trigger/menu pair carries
-// data-key="<ticket>:trigger" / "<ticket>:menu" (see actionFor), so the live
+// instant it ran; a node id doesn't, because row.id doesn't change just
+// because its DOM did. Every trigger/menu pair carries
+// data-key="<id>:trigger" / "<id>:menu" (see actionFor), so the live
 // element for a key is always one fresh lookup away.
 let openMenuKey = null;
 
-function menuKeyOf(ticket) { return ticket + ":menu"; }
-function triggerKeyOf(ticket) { return ticket + ":trigger"; }
-function byKey(key) { return document.querySelector('[data-key="' + key + '"]'); }
+function menuKeyOf(id) { return id + ":menu"; }
+function triggerKeyOf(id) { return id + ":trigger"; }
+// Escaped: a node id is whatever the source called it, and a quote in one
+// would otherwise throw out of querySelector and take render() down with it.
+function byKey(key) { return document.querySelector('[data-key="' + CSS.escape(key) + '"]'); }
 
-// Shows openMenuKey's menu (if any) and hides previousTicket's (if it was
+// Shows openMenuKey's menu (if any) and hides previousId's (if it was
 // something else) — both looked up fresh, so this is safe to call right
 // after a render() replaced every element it might touch.
-function applyMenuState(previousTicket) {
-  if (previousTicket !== null && previousTicket !== openMenuKey) {
-    const prevMenu = byKey(menuKeyOf(previousTicket));
-    const prevTrigger = byKey(triggerKeyOf(previousTicket));
+function applyMenuState(previousId) {
+  if (previousId !== null && previousId !== openMenuKey) {
+    const prevMenu = byKey(menuKeyOf(previousId));
+    const prevTrigger = byKey(triggerKeyOf(previousId));
     if (prevMenu) prevMenu.hidden = true;
     if (prevTrigger) prevTrigger.setAttribute("aria-expanded", "false");
   }
@@ -196,9 +198,9 @@ function resetIdleTimer() {
   idleTimer = setTimeout(() => closeMenu(), IDLE_MS);
 }
 
-function toggleMenu(ticket) {
+function toggleMenu(id) {
   const previous = openMenuKey;
-  openMenuKey = openMenuKey === ticket ? null : ticket;
+  openMenuKey = openMenuKey === id ? null : id;
   applyMenuState(previous);
   if (openMenuKey === null) clearIdleTimer(); else resetIdleTimer();
 }
@@ -243,7 +245,7 @@ function menuItem(tag) {
   return node;
 }
 
-// The Chat menu's contents never change per lane — only which button opens
+// The Chat menu's contents never change per badge — only which button opens
 // it does (see actionFor) — so both "Chat ▾" and "…" share this builder.
 function buildChatMenu(row) {
   const menu = el("div", "absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
@@ -255,7 +257,7 @@ function buildChatMenu(row) {
     // already covers any data-key it finds, so this is the only change a
     // keyboard user focused on one of these items when a poll landed
     // needed: no new mechanism, just another key for byKey() to find.
-    a.setAttribute("data-key", row.ticket + ":" + target.key);
+    a.setAttribute("data-key", row.id + ":" + target.key);
     // The href comes straight from the server-built link — this script never
     // concatenates a URL of its own (see src/ui/chat.ts).
     a.href = row.chat.links[target.key];
@@ -270,7 +272,7 @@ function buildChatMenu(row) {
   const copy = menuItem("button");
   copy.type = "button";
   copy.textContent = "Copy prompt";
-  copy.setAttribute("data-key", row.ticket + ":copy");
+  copy.setAttribute("data-key", row.id + ":copy");
   // Its own label is what changes ("Copied"/"Copy failed"), so that's what a
   // screen reader needs told to announce it.
   copy.setAttribute("aria-live", "polite");
@@ -292,7 +294,7 @@ function buildChatMenu(row) {
 // The "..." / "Chat ▾" slot on the right of every row, both opening the same
 // menu (Claude Code / Claude Code (CLI) / Cursor / Codex / a divider / Copy prompt).
 function actionFor(row) {
-  const needsYou = row.lane === "needs-you";
+  const needsYou = row.badge === "needs-you";
   const button = el(
     "button",
     needsYou
@@ -303,18 +305,95 @@ function actionFor(row) {
   button.type = "button";
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-expanded", "false");
-  button.setAttribute("data-key", triggerKeyOf(row.ticket));
+  button.setAttribute("data-key", triggerKeyOf(row.id));
   if (!needsYou) button.setAttribute("aria-label", "Chat");
 
   const wrap = el("div", "relative shrink-0 self-start sm:self-auto");
   const menu = buildChatMenu(row);
-  menu.setAttribute("data-key", menuKeyOf(row.ticket));
-  button.addEventListener("click", () => toggleMenu(row.ticket));
+  menu.setAttribute("data-key", menuKeyOf(row.id));
+  button.addEventListener("click", () => toggleMenu(row.id));
   wrap.append(button, menu);
   return wrap;
 }
 
-function rowFor(row, now) {
+const BADGES = {
+  "needs-you": ["Needs you", "border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300"],
+  "running": ["Running", "border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300"],
+  "elsewhere": ["Held elsewhere", "border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300"],
+  "waiting": ["Waiting", "border-neutral-200 text-neutral-500 dark:border-neutral-700 dark:text-neutral-400"],
+  "not-admitted": ["Not admitted", "border-neutral-200 text-neutral-400 dark:border-neutral-700 dark:text-neutral-500"],
+  "discharged": ["Done", "border-neutral-200 text-neutral-400 dark:border-neutral-700 dark:text-neutral-500"],
+};
+
+// Indentation per depth, as whole classes Tailwind can see — capped, so a
+// pathologically deep tree still fits the card.
+const INDENT = ["pl-4", "pl-10", "pl-16", "pl-22", "pl-28"];
+const indentOf = (depth) => INDENT[Math.min(depth, INDENT.length - 1)];
+
+// A person's own expand/collapse choices, by node id. Kept across every
+// render, and consulted before the server's own \`expanded\`: a poll landing
+// every two seconds must never undo what someone just clicked. An entry lives
+// until its node leaves the view (see forgetGone), so a returning id starts
+// from the server's opinion again rather than a choice made about another node.
+const userExpanded = new Map();
+function isOpen(row) { return userExpanded.has(row.id) ? userExpanded.get(row.id) : row.expanded; }
+
+function forgetGone(rows) {
+  const present = new Set();
+  const stack = [...rows];
+  while (stack.length) {
+    const row = stack.pop();
+    if (present.has(row.id)) continue;
+    present.add(row.id);
+    stack.push(...row.children);
+  }
+  for (const id of userExpanded.keys()) if (!present.has(id)) userExpanded.delete(id);
+}
+
+function external(a, href) {
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  return a;
+}
+
+function systemLabel(row) {
+  const wrap = el("span", "inline-flex shrink-0 items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400");
+  if (row.system && row.system.icon) wrap.append(systemIcon(row.system.icon));
+  if (row.system) wrap.append(el("span", null, row.system.name));
+  return wrap;
+}
+
+function treeItem(row, depth, cls) {
+  const li = el("li", cls + " " + indentOf(depth) + (row.closed === "dropped" ? " opacity-50" : ""));
+  li.setAttribute("role", "treeitem");
+  // The tree is drawn flat, one <li> per visible node, so depth is told to
+  // assistive tech here rather than by nesting.
+  li.setAttribute("aria-level", String(depth + 1));
+  if (row.children.length) li.setAttribute("aria-expanded", isOpen(row) ? "true" : "false");
+  return li;
+}
+
+// The ▸/▾ in front of any row with children — ticket or artifact, since a
+// document can sit under a pull request too, and a row nobody can open would
+// hide its children for good. Keyed like the menu, so render()'s
+// restore-by-key keeps a keyboard user's focus on it across the re-render
+// its own click causes.
+function toggleFor(row) {
+  if (!row.children.length) return el("span", "inline-block h-4 w-4 shrink-0");
+  const open = isOpen(row);
+  const toggle = el("button", "inline-flex h-4 w-4 shrink-0 items-center justify-center text-neutral-400", open ? "▾" : "▸");
+  toggle.type = "button";
+  toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  toggle.setAttribute("aria-label", (open ? "Collapse " : "Expand ") + row.title);
+  toggle.setAttribute("data-key", row.id + ":toggle");
+  // Redrawn by the next poll, brought forward to now: render() reads
+  // userExpanded, so there is no second drawing path to keep in step.
+  toggle.addEventListener("click", () => { userExpanded.set(row.id, !isOpen(row)); schedulePoll(0); });
+  return toggle;
+}
+
+function ticketRowFor(row, depth, now) {
   // Stacked below the sm breakpoint, side-by-side above it — a breakpoint, not a
   // content-based flex-wrap. flex-wrap's own line-breaking runs on each
   // item's *hypothetical* (content) size: flex-1's 0% basis told the browser
@@ -323,19 +402,14 @@ function rowFor(row, now) {
   // then sized the title/stage row itself off the unwrapped content width,
   // pushing the stage chip past the edge instead. Neither reliably fits
   // arbitrary ticket titles at 400px, so the breakpoint sidesteps both.
-  const li = el("li", "flex flex-col gap-1 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1");
+  const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1");
   const main = el("div", "min-w-0 w-full sm:w-auto sm:flex-1");
 
   const top = el("div", "flex flex-wrap items-baseline gap-x-2 gap-y-1");
+  top.append(toggleFor(row));
   const num = el("span", "num shrink-0 font-mono text-sm text-blue-600 dark:text-blue-400");
-  if (row.url) {
-    const a = el("a", null, "#" + row.ticket);
-    a.href = row.url;
-    a.rel = "noreferrer";
-    num.append(a);
-  } else {
-    num.textContent = "#" + row.ticket;
-  }
+  if (row.link) num.append(external(el("a", null, "#" + row.id + " ↗"), row.link));
+  else num.textContent = "#" + row.id;
   // No flex-grow: title takes only the room its own text needs (shrinking,
   // via min-w-0, when that's not enough), so the stage chip sits right after
   // it — flex-1 here previously grew title to fill *all* of main's leftover
@@ -350,9 +424,17 @@ function rowFor(row, now) {
     const stage = row.round ? row.stage + " · r" + row.round : row.stage;
     top.append(el("span", "stage shrink-0 rounded border border-neutral-200 px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 dark:border-neutral-700 dark:text-neutral-400", stage));
   }
+  if (row.badge && BADGES[row.badge]) {
+    const [label, cls] = BADGES[row.badge];
+    top.append(el("span", "badge shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium " + cls, label));
+  }
+  if (typeof row.priority === "number") {
+    top.append(el("span", "priority shrink-0 font-mono text-[11px] text-neutral-500 dark:text-neutral-400", "P" + row.priority));
+  }
+  top.append(systemLabel(row));
 
   const bottom = el("div", "mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-neutral-500 dark:text-neutral-400");
-  bottom.append(el("span", "note", row.note));
+  bottom.append(el("span", "note", row.closed === "dropped" ? "dropped" : row.note));
   if (row.model) {
     bottom.append(el("span", "model rounded border border-neutral-200 px-1 font-mono dark:border-neutral-700", row.model));
   }
@@ -361,8 +443,41 @@ function rowFor(row, now) {
   }
 
   main.append(top, bottom);
-  li.append(main, actionFor(row));
+  li.append(main);
+  if (row.chat) li.append(actionFor(row));
   return li;
+}
+
+// A pull request, a document — anything that is not a ticket — as one line:
+// the whole line is the link, and it opens in a new tab. No link, no anchor:
+// a row that goes nowhere must not look like it does.
+function artifactRowFor(row, depth) {
+  const li = treeItem(row, depth, "flex items-center gap-2 py-1.5 pr-4 text-xs");
+  const line = row.link
+    ? external(el("a", "flex min-w-0 flex-1 items-center gap-2 hover:underline"), row.link)
+    : el("span", "flex min-w-0 flex-1 items-center gap-2");
+  line.append(
+    systemLabel(row),
+    el("span", "shrink-0 font-mono text-neutral-400", row.kind),
+    el("span", "min-w-0 truncate text-neutral-800 dark:text-neutral-200", row.title),
+    el("span", "shrink-0 text-neutral-500 dark:text-neutral-400", row.summary),
+  );
+  if (row.link) line.append(el("span", "shrink-0 text-neutral-400", "↗"));
+  li.append(toggleFor(row), line);
+  return li;
+}
+
+// Depth-first, drawing a row's children only while it is open. \`seen\` is the
+// cycle guard's second half: the server already draws each node once, and
+// this makes sure a board.json that somehow did not still cannot hang the tab.
+function treeRows(rows, depth, seen, now, out) {
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push(row.kind === "ticket" ? ticketRowFor(row, depth, now) : artifactRowFor(row, depth));
+    if (row.children.length && isOpen(row)) treeRows(row.children, depth + 1, seen, now, out);
+  }
+  return out;
 }
 
 let nextTickAt = null;
@@ -382,7 +497,7 @@ function renderNext() {
 function render(view) {
   const now = Date.now();
   // Every row's DOM (and any menu/focus it held) is about to be replaced
-  // below — a fresh set of elements for the same tickets. Note what was
+  // below — a fresh set of elements for the same nodes. Note what was
   // open/focused by key *before* that happens, so it can be restored by key
   // *after*: a poll landing mid-read must never cost the user their place.
   const activeKey = document.activeElement && typeof document.activeElement.getAttribute === "function"
@@ -390,13 +505,11 @@ function render(view) {
     : null;
   const wasOpen = openMenuKey;
 
-  for (const lane of document.querySelectorAll("[data-lane]")) {
-    const rows = view.rows.filter((r) => r.lane === lane.dataset.lane);
-    const list = lane.querySelector("ul");
-    list.replaceChildren(...(rows.length ? rows.map((r) => rowFor(r, now)) : [el("li", "px-4 py-6 text-sm italic text-neutral-400 dark:text-neutral-600", "None")]));
-    const count = lane.querySelector(".lane-count");
-    if (count) count.textContent = String(rows.length);
-  }
+  forgetGone(view.rows);
+  const items = treeRows(view.rows, 0, new Set(), now, []);
+  document.getElementById("tree").replaceChildren(
+    ...(items.length ? items : [el("li", "px-4 py-6 text-sm italic text-neutral-400 dark:text-neutral-600", "None")]),
+  );
   document.getElementById("folder").textContent = view.folder;
   const listed = view.listedAt === null ? "waiting for the first tick" : "listed " + elapsed(view.listedAt, now) + " ago";
   document.getElementById("meta").textContent = listed;
@@ -404,7 +517,7 @@ function render(view) {
   renderNext();
 
   // Restore the open menu by key, on the freshly built elements — or drop it
-  // if that ticket is no longer in this view (nothing left to point at).
+  // if that node is no longer in this view (nothing left to point at).
   if (wasOpen !== null) {
     if (byKey(menuKeyOf(wasOpen)) && byKey(triggerKeyOf(wasOpen))) {
       applyMenuState(null);
