@@ -167,3 +167,21 @@ describe("entriesFromComments", () => {
     expect(entry?.data).toMatchObject({ body: "B2B only", author: "y", id: 7 });
   });
 });
+
+describe("our own records under an app's two spellings of its login", () => {
+  const marked = (login: string) => ({
+    id: 1, created_at: "2026-01-01T00:00:01Z", user: { login },
+    body: `x\n\n${renderMarker({ stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1" })}`,
+  });
+
+  // GitHub reports an app as `myapp[bot]` on a comment and as `myapp` in
+  // other places — and in `tracker.bot` — so either side may carry it.
+  it.each([["myapp[bot]", "myapp"], ["myapp", "myapp[bot]"], ["MyApp[bot]", "myapp"]])(
+    "reads a record by %s as ours when we post as %s", (author, bot) => {
+      expect(entriesFromComments([marked(author)], bot)[0]).toMatchObject({ kind: "enter", byAgent: true });
+    });
+
+  it("still reads a different account's record as a person's", () => {
+    expect(entriesFromComments([marked("myapp2[bot]")], "myapp")[0]).toMatchObject({ kind: "human", byAgent: false });
+  });
+});

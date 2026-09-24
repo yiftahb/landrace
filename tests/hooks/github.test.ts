@@ -1,4 +1,4 @@
-import { renderOrigin } from "#conventions.js";
+import { renderMarker, renderOrigin } from "#conventions.js";
 import { githubHooks, source } from "#landrace/hooks/github.js";
 import type { Effect, HookContext, RuntimeContext, Snapshot } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -649,5 +649,24 @@ describe("children on GitHub", () => {
     expect(gh.issues.get(1)).toMatchObject({ state: "closed", state_reason: "completed" });
     const node = (await gh.registry.source!.read("1", gh.ctx)).nodes.find((n) => n.id === "1");
     expect(gh.registry.post[0]!.satisfied({ node }, { type: "tracker.close" })).toBe(true);
+  });
+});
+
+describe("a comment effect lands under either spelling of an app's login", () => {
+  const { post } = githubHooks({ repo: "acme/widgets", token: "t", bot: "b" });
+  const snapshot = (author: string, bot: string): Snapshot => ({
+    node: { state: { labels: [] } },
+    tracker: { bot },
+    ticket: { comments: [{ user: { login: author },
+      body: `x\n\n${renderMarker({ stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1" })}` }] },
+  } as unknown as Snapshot);
+  const effect = { type: "tracker.comment", kind: "enter", marker: "enter:spec:1", body: "x" } as Effect;
+
+  it.each([["myapp[bot]", "myapp"], ["myapp", "myapp[bot]"]])("a comment by %s is ours when we post as %s", (author, bot) => {
+    expect(post.satisfied(snapshot(author, bot), effect)).toBe(true);
+  });
+
+  it("a comment by another account is not", () => {
+    expect(post.satisfied(snapshot("myapp2[bot]", "myapp"), effect)).toBe(false);
   });
 });

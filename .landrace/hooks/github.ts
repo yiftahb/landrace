@@ -550,8 +550,9 @@ function botLoginOf(s: Snapshot): string {
   return bot.trim().toLowerCase();
 }
 
+/** sameLogin, for the reason entriesFromComments uses it: an app has two spellings. */
 const wroteIt = (c: SnapshotComment, bot: string): boolean =>
-  typeof c.user?.login === "string" && c.user.login.toLowerCase() === bot;
+  typeof c.user?.login === "string" && sameLogin(c.user.login, bot);
 
 function satisfied(snapshot: Snapshot, effect: Effect): boolean {
   // The labels the source read, not a second copy of them from the pre hook:

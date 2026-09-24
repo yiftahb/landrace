@@ -179,7 +179,7 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `agent.adapter` | — | Which coding agent to invoke (`claude`) |
 | `agent.model` | — | Default model; a step may override it |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` |
-| `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` |
+| `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` — which a GitHub App token needs (e.g. `myapp`), since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
 | `security.screen` | `true` | Screen each prompt for injection before invoking an agent |

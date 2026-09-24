@@ -588,12 +588,12 @@ export function entriesFromComments(comments: TrackerComment[], botLogin: string
   if (!botLogin.trim()) {
     throw new Error("entriesFromComments needs the login landrace posts as; refusing to read markers without it");
   }
-  const bot = botLogin.trim().toLowerCase();
-
   return comments.map((c) => {
-    // Logins are compared case-insensitively, the way trackers treat them.
+    // sameLogin, as parseOrigin reads a child's author: an app is `myapp[bot]`
+    // on its comments and may be configured as `myapp`, and reading our own
+    // records as a person's re-runs every paid step it has already finished.
     const author = c.user?.login;
-    const ours = typeof author === "string" && author.toLowerCase() === bot;
+    const ours = typeof author === "string" && sameLogin(author, botLogin);
     const marker = ours ? parseMarker(c.body ?? "") : null;
     return marker
       ? {
