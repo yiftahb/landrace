@@ -249,6 +249,11 @@ function buildChatMenu(row) {
   menu.hidden = true;
   for (const target of CHAT_TARGETS) {
     const a = menuItem("a");
+    // Keyed like the trigger/menu (see actionFor) — render()'s restore-by-key
+    // already covers any data-key it finds, so this is the only change a
+    // keyboard user focused on one of these items when a poll landed
+    // needed: no new mechanism, just another key for byKey() to find.
+    a.setAttribute("data-key", row.ticket + ":" + target.key);
     // The href comes straight from the server-built link — this script never
     // concatenates a URL of its own (see src/ui/chat.ts).
     a.href = row.chat.links[target.key];
@@ -263,6 +268,7 @@ function buildChatMenu(row) {
   const copy = menuItem("button");
   copy.type = "button";
   copy.textContent = "Copy prompt";
+  copy.setAttribute("data-key", row.ticket + ":copy");
   // Its own label is what changes ("Copied"/"Copy failed"), so that's what a
   // screen reader needs told to announce it.
   copy.setAttribute("aria-live", "polite");

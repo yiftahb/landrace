@@ -197,6 +197,11 @@ describe("the page", () => {
     expect(APP_JS).toMatch(/setTimeout\(\(\)\s*=>\s*closeMenu\(\),\s*IDLE_MS\)/);
   });
 
+  it("keys every menu item too (<ticket>:claude/cursor/codex/copy), so render()'s existing restore-by-key also covers a keyboard user focused inside the menu", () => {
+    expect(APP_JS).toContain('"data-key", row.ticket + ":" + target.key');
+    expect(APP_JS).toContain('"data-key", row.ticket + ":copy"');
+  });
+
   it("has no inline event handlers anywhere in the markup", () => {
     expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
   });
