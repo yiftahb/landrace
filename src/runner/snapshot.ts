@@ -93,10 +93,11 @@ export async function buildSnapshot(opts: {
   const problem = graphProblem(graph, opts.source.relations, opts.ticket);
   if (problem) throw new Error(`source "${opts.source.id}" returned a graph nothing can be decided from: ${problem}`);
   const node = graph.nodes.find((n) => n.id === opts.ticket) as Node; // graphProblem proved it is there
-  const rel = deriveRel(graph, opts.ticket, opts.source.relations.map((r) => r.type));
-  if (!rel.ok) throw new Error(`source "${opts.source.id}": ${rel.why}`);
 
-  let snapshot: Snapshot = { graph, node, rel: rel.rel };
+  // Graph and node only: rel is counted after the hooks, because which
+  // children still count depends on the run's rounds, and the run is derived
+  // from the entries a pre hook reads.
+  let snapshot: Snapshot = { graph, node };
 
   for (const hook of opts.hooks) {
     try {
@@ -113,15 +114,22 @@ export async function buildSnapshot(opts: {
   }
 
   const entries = (snapshot.entries as Entry[] | undefined) ?? [];
+  const run = deriveRun(entries, stageFromLabels(labelsOf(node)).stage);
+  // A child an earlier round of its stage created no longer counts once the
+  // stage is entered again (core/rel.ts).
+  const entered = Object.fromEntries(Object.entries(run.rounds).map(([stage, r]) => [stage, r.entered]));
+  const rel = deriveRel(graph, opts.ticket, opts.source.relations.map((r) => r.type), entered);
+  if (!rel.ok) throw new Error(`source "${opts.source.id}": ${rel.why}`);
 
   // Time enters here and nowhere else: core may not read a clock.
   const withRun: Snapshot = {
     ...snapshot,
-    // Re-asserted after the hooks: position is the engine's reading of the
-    // source's node, and a pre hook returning its own `node` must not move it.
+    // Set after the hooks: position is the engine's reading of the source's
+    // node, and the counts are the engine's reading of its graph, so a pre
+    // hook returning its own `node` or `rel` must not move either.
     graph, node, rel: rel.rel,
     now: opts.now ?? Date.now(),
-    run: deriveRun(entries, stageFromLabels(labelsOf(node)).stage),
+    run,
   };
 
   // Recorded, not yet used: the decision cache reads it later. Computed after

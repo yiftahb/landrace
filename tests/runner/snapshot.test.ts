@@ -25,14 +25,20 @@ const ticketNode = (id: string, labels: string[] = []): Node => ({
 const lone = (labels: string[] = []) => staticSource({ nodes: [ticketNode("1", labels)], relationships: [] });
 
 describe("buildSnapshot reads the graph first", () => {
-  it("puts the ticket's node, its graph and its rel counts in the snapshot, before any pre hook runs", async () => {
+  it("puts the ticket's node and graph in the snapshot before any pre hook runs, and its rel counts after", async () => {
     const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:build"] }] });
     state.openPull("1", { openThreads: 2 });
-    let seenByHook: unknown;
-    const peek = definePreHook({ id: "peek", provides: [], run: ({ snapshot }) => { seenByHook = snapshot.node; return {}; } });
+    let seenByHook: { node?: unknown; graph?: unknown; rel?: unknown } = {};
+    const peek = definePreHook({ id: "peek", provides: [], run: ({ snapshot }) => {
+      seenByHook = { node: snapshot.node, graph: snapshot.graph, rel: snapshot.rel };
+      return {};
+    } });
     const s = await buildSnapshot({ ticket: "1", source: state.source, hooks: [state.pre, peek], ctx: ctxFor("1") });
     expect((s.node as Node).id).toBe("1");
-    expect(seenByHook).toEqual(s.node);
+    expect(seenByHook.node).toEqual(s.node);
+    expect(seenByHook.graph).toEqual(s.graph);
+    // rel reads the run's rounds, which come from the hooks' entries.
+    expect(seenByHook.rel).toBeUndefined();
     expect((s.rel as Rel)["implements"]?.in).toMatchObject({ total: 1, not: { merged: 1 }, sum: { openThreads: 2 } });
     expect((s.run as Run).stage).toBe("build");
   });
@@ -54,6 +60,36 @@ describe("buildSnapshot reads the graph first", () => {
     const s = await buildSnapshot({ ticket: "1", source: lone(["lr:stage:spec"]), hooks: [liar], ctx: ctxFor("1") });
     expect((s.run as Run).stage).toBe("spec");
     expect(labelsIn(s.node)).toEqual(["lr:stage:spec"]);
+  });
+});
+
+describe("buildSnapshot's rel", () => {
+  it("does not let a pre hook replace the rel counts", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:build"] }] });
+    state.openPull("1");
+    const liar = definePreHook({ id: "liar", provides: [], run: () => ({ rel: { implements: { in: { total: 0 } } } }) });
+    const s = await buildSnapshot({ ticket: "1", source: state.source, hooks: [state.pre, liar], ctx: ctxFor("1") });
+    expect((s.rel as Rel)["implements"]?.in.total).toBe(1);
+  });
+
+  it("leaves out a child an earlier round of the stage created once the stage is entered again", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:breakdown"] }] });
+    const make = (round: number) => state.operator.createTicket(
+      { title: `r${round}`, parent: "1", origin: { parent: "1", stage: "breakdown", round } }, ctxFor("1"),
+    );
+    const old = await make(1);
+    state.ticket(old.id).closed = "done";
+    await make(2);
+    // The engine's own entry records, as the tracker would hold them.
+    const post = state.post;
+    for (const round of [1, 2]) {
+      await post.apply({ type: "tracker.comment", kind: "enter", stage: "breakdown", round, marker: `enter:breakdown:${round}`, body: "in" }, { ...ctxFor("1"), snapshot: {} });
+    }
+
+    const s = await buildSnapshot({ ticket: "1", source: state.source, hooks: [state.pre], ctx: ctxFor("1") });
+
+    expect((s.run as Run).rounds["breakdown"]?.entered).toBe(2);
+    expect((s.rel as Rel)["child-of"]?.in).toMatchObject({ total: 1, not: { closed: 1 } });
   });
 });
 

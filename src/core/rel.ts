@@ -16,6 +16,14 @@ const empty = (): RelAgg => ({
 const fieldsOf = (node: Node): Array<[string, unknown]> =>
   [...Object.entries(node.state), ["closed", node.closed === "done"]];
 
+/** Made by this ticket's step in a round its stage has since been entered past. */
+const superseded = (node: Node, id: string, entered: { readonly [stage: string]: number }): boolean => {
+  const { origin } = node;
+  if (origin === null || origin.parent !== id) return false;
+  const round = Object.hasOwn(entered, origin.stage) ? entered[origin.stage] : undefined;
+  return round !== undefined && origin.round < round;
+};
+
 /**
  * What a ticket's relationships add up to, counted from the graph on every
  * pass and never stored — the same rule `run.counters` follows.
@@ -28,6 +36,15 @@ const fieldsOf = (node: Node): Array<[string, unknown]> =>
  * of view. Counting them is what would let a breakdown that produced nothing
  * read as "every child is closed".
  *
+ * So are superseded ones: a node this ticket's own step created (its origin
+ * names this ticket) in a round of a stage that has since been entered again,
+ * per `entered` — the run's `rounds[stage].entered`. Re-entering the stage
+ * replaced that round's plan. An open one is dropped by the stage's
+ * nodes.close anyway, but one that had already finished stays closed as done
+ * and cannot be dropped, and counting it let a re-run that created nothing
+ * read as "every child is finished" — closing the parent with the rest of the
+ * work never done. A node a person created (origin null) is never superseded.
+ *
  * Every declared type is present with zero counts even when nothing relates,
  * because a predicate reading an absent path matches nothing — `sum.x: 0`
  * would never be true of a ticket that has no related nodes at all.
@@ -36,6 +53,7 @@ export function deriveRel(
   graph: Graph,
   id: string,
   types: readonly string[],
+  entered: { readonly [stage: string]: number } = {},
 ): { ok: true; rel: Rel } | { ok: false; why: string } {
   const rel = Object.create(null) as Rel;
   const slot = (type: string): Rel[string] => (rel[type] ??= { in: empty(), out: empty() });
@@ -58,7 +76,7 @@ export function deriveRel(
 
     const other = byId.get(direction === "in" ? r.from : r.to);
     // Validation (runner/graph.ts) has already refused a dangling edge.
-    if (!other || other.closed === "dropped") continue;
+    if (!other || other.closed === "dropped" || superseded(other, id, entered)) continue;
     // `closed` is the engine's own field (fieldsOf appends it from node.closed
     // below); a state field of the same name would either double-count the
     // node — once from state, once from the engine — or, if it isn't a

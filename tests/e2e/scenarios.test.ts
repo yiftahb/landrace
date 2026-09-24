@@ -844,6 +844,59 @@ describe("a second breakdown round that breaks its contract", () => {
 });
 
 /*
+ * A round-1 child that already finished cannot be dropped — it stays closed
+ * as done — but its round's plan was replaced, so it must not count. If it
+ * did, a round 2 that created nothing would read as "every sub-ticket is
+ * finished" and close the parent with the rest of the work never done, and a
+ * round 2 that chose one piece of work would read as having created some.
+ */
+describe("a second breakdown round, after one of the first round's children finished", () => {
+  const upToRound2 = async (kind: string) => {
+    const { state, ctx, hooks } = splitWorld();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const parent = createHarness({
+      workflow, steps, ...hooks, ticket: "1",
+      answers: {
+        ...SPLIT_ANSWERS,
+        breakdown: (round) => `\`\`\`json\n{"kind":"${round === 1 ? "children" : kind}"}\n\`\`\``,
+      },
+      during: async ({ stage, round }) => {
+        if (stage !== "breakdown" || round !== 1) return;
+        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "A" }, ctx);
+        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "B" }, ctx);
+      },
+    });
+    await parent.converge();
+    state.say("1", "ship it");
+    await parent.converge();
+    const a = state.children("1").find((k) => k.title === "A");
+    if (!a) throw new Error("round 1 created no A");
+    state.ticket(a.id).closed = "done";
+    state.say("1", "redo B differently");
+    await parent.converge();
+    state.say("1", "approved");
+    await parent.converge();
+    return { state, parent, a };
+  };
+
+  it("is blocked, not done, when it says it split the work and created nothing", async () => {
+    const { state, parent, a } = await upToRound2("children");
+
+    expect(parent.trail().slice(-2)).toEqual(["breakdown", "blocked"]);
+    expect(state.ticket("1").closed).toBeNull();
+    // The finished child stays finished; only the open one was dropped.
+    expect(state.ticket(a.id).closed).toBe("done");
+    expect(state.children("1").find((k) => k.title === "B")?.closed).toBe("dropped");
+  });
+
+  it("goes on to build, not blocked, when it chooses one piece of work and created nothing", async () => {
+    const { parent } = await upToRound2("single");
+
+    expect(parent.trail().slice(-3)).toEqual(["triage", "breakdown", "build"]);
+  });
+});
+
+/*
  * A breakdown whose answer and actions disagree has no honest next stage:
  * `children` with none created (which is also what a child tool that never
  * started looks like) would otherwise wait for ever at breakdown, and

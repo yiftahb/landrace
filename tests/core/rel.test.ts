@@ -126,3 +126,52 @@ describe("deriveRel", () => {
     expect(r.ok && r.rel["implements"]?.in.not["merged"]).toBe(0);
   });
 });
+
+/*
+ * A child an earlier round of the stage made is superseded once the stage is
+ * entered again: that round's plan was replaced, whether the child was
+ * dropped (open) or had already finished (done). A finished one cannot be
+ * dropped, so without this it would still count — and a re-run that created
+ * nothing would read as "every child is finished".
+ */
+describe("deriveRel, and children a later round superseded", () => {
+  const origin = (parent: string, round: number, stage = "breakdown") => ({ parent, stage, round });
+  const child = (id: string, over: Partial<Node>) => n(id, over);
+  const under = (...kids: Node[]): Graph => ({
+    nodes: [n("1"), ...kids],
+    relationships: kids.map((k) => ({ from: k.id, to: "1", type: "child-of" })),
+  });
+
+  it("leaves a child an earlier round made out of every count, finished or not", () => {
+    const g = under(
+      child("2", { origin: origin("1", 1), closed: "done" }),
+      child("3", { origin: origin("1", 1) }),
+      child("4", { origin: origin("1", 2) }),
+    );
+    const r = deriveRel(g, "1", TYPES, { breakdown: 2 });
+    expect(r.ok && r.rel["child-of"]?.in).toMatchObject({ total: 1, not: { closed: 1 }, is: { closed: 0 } });
+  });
+
+  it("keeps a child the current round made", () => {
+    const r = deriveRel(under(child("2", { origin: origin("1", 2), closed: "done" })), "1", TYPES, { breakdown: 2 });
+    expect(r.ok && r.rel["child-of"]?.in.total).toBe(1);
+  });
+
+  it("keeps a child whose origin names another parent", () => {
+    const r = deriveRel(under(child("2", { origin: origin("9", 1) })), "1", TYPES, { breakdown: 2 });
+    expect(r.ok && r.rel["child-of"]?.in.total).toBe(1);
+  });
+
+  it("keeps a child a person made, whatever round the stage is on", () => {
+    const r = deriveRel(under(child("2", { origin: null, closed: "done" })), "1", TYPES, { breakdown: 5 });
+    expect(r.ok && r.rel["child-of"]?.in.total).toBe(1);
+  });
+
+  it("keeps a child whose stage has never been entered again, or when no rounds are known", () => {
+    const g = under(child("2", { origin: origin("1", 1) }));
+    const other = deriveRel(g, "1", TYPES, { build: 3 });
+    expect(other.ok && other.rel["child-of"]?.in.total).toBe(1);
+    const none = deriveRel(g, "1", TYPES);
+    expect(none.ok && none.rel["child-of"]?.in.total).toBe(1);
+  });
+});

@@ -1,5 +1,6 @@
 ---
 capabilities: [tickets:create, repo:read]
+model: opus
 output:
   discriminator: kind
   shapes:
@@ -24,8 +25,13 @@ that have to be read together.
 To split, call `landrace_create_child` once for each sub-ticket, with a title
 and a body that says exactly what that piece must do and how to tell it is
 finished. Do not create a sub-ticket for work this ticket's own spec does not
-ask for. Any sub-tickets from an earlier attempt have already been closed; do
-not refer to them.
+ask for.
+
+Sub-tickets from an earlier attempt no longer count toward this ticket. The
+open ones have been closed; the finished ones stay closed as done, but their
+work does not count as done here. Whatever work this spec still needs —
+including work an earlier sub-ticket may already have covered — create again
+now, and do not refer to the earlier ones.
 
 Then end with a fenced json block, and nothing after it, whose only field is
 `kind`: set to `children` if you created at least one sub-ticket, or to
