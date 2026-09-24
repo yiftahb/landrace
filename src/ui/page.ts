@@ -148,45 +148,91 @@ const CHAT_TARGETS = [
     }) },
 ];
 
-// At most one Chat/… menu open at a time, tracked here rather than per-row —
-// opening one has to close any other.
-let openMenu = null;
+// At most one Chat/… menu open at a time, tracked by the ticket it belongs
+// to — never by an element reference. A render() rebuilds every row from
+// scratch, so any button/menu object captured before one would go stale the
+// instant it ran; a ticket number doesn't, because row.ticket doesn't change
+// just because its DOM did. Every trigger/menu pair carries
+// data-key="<ticket>:trigger" / "<ticket>:menu" (see actionFor), so the live
+// element for a key is always one fresh lookup away.
+let openMenuKey = null;
 
-// A poll landing while a menu is open is held here instead of applied: see
-// pollOnce(). Applied the moment the menu closes, whatever closed it.
-let pendingView = null;
+function menuKeyOf(ticket) { return ticket + ":menu"; }
+function triggerKeyOf(ticket) { return ticket + ":trigger"; }
+function byKey(key) { return document.querySelector('[data-key="' + key + '"]'); }
+
+// Shows openMenuKey's menu (if any) and hides previousTicket's (if it was
+// something else) — both looked up fresh, so this is safe to call right
+// after a render() replaced every element it might touch.
+function applyMenuState(previousTicket) {
+  if (previousTicket !== null && previousTicket !== openMenuKey) {
+    const prevMenu = byKey(menuKeyOf(previousTicket));
+    const prevTrigger = byKey(triggerKeyOf(previousTicket));
+    if (prevMenu) prevMenu.hidden = true;
+    if (prevTrigger) prevTrigger.setAttribute("aria-expanded", "false");
+  }
+  if (openMenuKey !== null) {
+    const menu = byKey(menuKeyOf(openMenuKey));
+    const trigger = byKey(triggerKeyOf(openMenuKey));
+    if (menu) menu.hidden = false;
+    if (trigger) trigger.setAttribute("aria-expanded", "true");
+  }
+}
+
+// Walk-away safety net. render() (see below) is what stops a poll from
+// destroying an open menu, so this isn't standing in for that — it just
+// stops one lingering forever after whoever opened it has left: a menu
+// nobody has touched in 20s closes itself. Reset on any click/keydown while
+// one is open, so an attentive user is never interrupted mid-read.
+const IDLE_MS = 20000;
+let idleTimer = null;
+function clearIdleTimer() {
+  if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+}
+function resetIdleTimer() {
+  clearIdleTimer();
+  idleTimer = setTimeout(() => closeMenu(), IDLE_MS);
+}
+
+function toggleMenu(ticket) {
+  const previous = openMenuKey;
+  openMenuKey = openMenuKey === ticket ? null : ticket;
+  applyMenuState(previous);
+  if (openMenuKey === null) clearIdleTimer(); else resetIdleTimer();
+}
 
 // "returnFocus" moves focus back to the trigger — right for Escape (a
 // keyboard user's focus was on the menu and has nowhere else to go), wrong
 // for an outside click (the user's attention, and often their pointer, is
 // already on whatever they clicked) or for choosing a link (a real
-// navigation is about to happen).
+// navigation is about to happen). The trigger is looked up fresh, by key, at
+// the moment this runs — never an object a click handler captured earlier,
+// which a render() in between may already have discarded.
 function closeMenu(opts) {
-  if (!openMenu) return;
-  const { menu, button } = openMenu;
-  menu.hidden = true;
-  button.setAttribute("aria-expanded", "false");
-  openMenu = null;
-  if (opts && opts.returnFocus) button.focus();
-  // Only now — never while the menu was open — because rebuilding every
-  // row's DOM (see render()) is exactly what would have destroyed the menu
-  // the user was still reading.
-  if (pendingView) {
-    const view = pendingView;
-    pendingView = null;
-    render(view);
+  if (openMenuKey === null) return;
+  const previous = openMenuKey;
+  openMenuKey = null;
+  applyMenuState(previous);
+  clearIdleTimer();
+  if (opts && opts.returnFocus) {
+    const trigger = byKey(triggerKeyOf(previous));
+    if (trigger) trigger.focus();
   }
 }
 
-// Defined once, not per row: a click anywhere the open menu's own wrapper
-// does not contain, or an Escape from anywhere, closes it. Because these are
-// module-level listeners rather than one pair per row, re-rendering never
-// multiplies them.
+// Defined once, not per row: because these are module-level listeners
+// rather than one pair per row, re-rendering never multiplies them.
 document.addEventListener("click", (e) => {
-  if (openMenu && !openMenu.wrap.contains(e.target)) closeMenu();
+  if (openMenuKey === null) return;
+  const menu = byKey(menuKeyOf(openMenuKey));
+  const trigger = byKey(triggerKeyOf(openMenuKey));
+  const inside = (menu && menu.contains(e.target)) || (trigger && trigger.contains(e.target));
+  if (!inside) { closeMenu(); return; }
+  resetIdleTimer();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeMenu({ returnFocus: true });
+  if (e.key === "Escape") { closeMenu({ returnFocus: true }); return; }
+  if (openMenuKey !== null) resetIdleTimer();
 });
 
 function menuItem(tag) {
@@ -209,10 +255,7 @@ function buildChatMenu(row) {
     a.rel = "noreferrer";
     a.append(target.icon(), el("span", null, target.label));
     // Choosing a target closes the menu — the navigation itself still
-    // happens, since this is a real href, not prevented here. Matters more
-    // now that an open menu pauses re-rendering (see pollOnce()): a menu
-    // left open after the OS hands off to another app would freeze the
-    // board's polling indefinitely.
+    // happens, since this is a real href, not prevented here.
     a.addEventListener("click", () => closeMenu());
     menu.append(a);
   }
@@ -252,20 +295,13 @@ function actionFor(row) {
   button.type = "button";
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-expanded", "false");
+  button.setAttribute("data-key", triggerKeyOf(row.ticket));
   if (!needsYou) button.setAttribute("aria-label", "Chat");
 
   const wrap = el("div", "relative shrink-0 self-start sm:self-auto");
   const menu = buildChatMenu(row);
-  button.addEventListener("click", () => {
-    if (openMenu && openMenu.menu === menu) {
-      closeMenu();
-      return;
-    }
-    closeMenu();
-    menu.hidden = false;
-    button.setAttribute("aria-expanded", "true");
-    openMenu = { menu, button, wrap };
-  });
+  menu.setAttribute("data-key", menuKeyOf(row.ticket));
+  button.addEventListener("click", () => toggleMenu(row.ticket));
   wrap.append(button, menu);
   return wrap;
 }
@@ -337,13 +373,15 @@ function renderNext() {
 
 function render(view) {
   const now = Date.now();
-  // Every row's DOM (and any menu it held) is about to be replaced below.
-  // Callers are expected to already know no menu is open here — pollOnce()
-  // holds the view instead of calling this while one is, and closeMenu()
-  // only calls this after it has already cleared openMenu — but the
-  // assignment stays as cheap insurance against a menu ever being left
-  // pointing at a detached row again.
-  openMenu = null;
+  // Every row's DOM (and any menu/focus it held) is about to be replaced
+  // below — a fresh set of elements for the same tickets. Note what was
+  // open/focused by key *before* that happens, so it can be restored by key
+  // *after*: a poll landing mid-read must never cost the user their place.
+  const activeKey = document.activeElement && typeof document.activeElement.getAttribute === "function"
+    ? document.activeElement.getAttribute("data-key")
+    : null;
+  const wasOpen = openMenuKey;
+
   for (const lane of document.querySelectorAll("[data-lane]")) {
     const rows = view.rows.filter((r) => r.lane === lane.dataset.lane);
     const list = lane.querySelector("ul");
@@ -356,6 +394,23 @@ function render(view) {
   document.getElementById("meta").textContent = listed;
   nextTickAt = view.nextTickAt;
   renderNext();
+
+  // Restore the open menu by key, on the freshly built elements — or drop it
+  // if that ticket is no longer in this view (nothing left to point at).
+  if (wasOpen !== null) {
+    if (byKey(menuKeyOf(wasOpen)) && byKey(triggerKeyOf(wasOpen))) {
+      applyMenuState(null);
+    } else {
+      openMenuKey = null;
+      clearIdleTimer();
+    }
+  }
+  // Restore focus by key too, independently of any open menu — a keyboard
+  // user tabbed onto a trigger doesn't need a menu open to have earned this.
+  if (activeKey) {
+    const toFocus = byKey(activeKey);
+    if (toFocus) toFocus.focus();
+  }
 }
 
 // Between polls, the countdown still moves: the board only reports
@@ -372,17 +427,10 @@ async function pollOnce() {
   try {
     const res = await fetch("/board.json", { cache: "no-store" });
     if (!res.ok) throw new Error(String(res.status));
-    const view = await res.json();
-    // A menu the user is still reading survives the poll: render() rebuilds
-    // every row's DOM (see its own comment), which would destroy the open
-    // menu out from under them mid-read. Hold the latest view instead —
-    // never accumulated, just overwritten — and closeMenu() applies it the
-    // moment the menu closes, however it closes.
-    if (openMenu) {
-      pendingView = view;
-      return;
-    }
-    render(view);
+    // Renders unconditionally, menu open or not: render() itself restores
+    // the open menu and the focused control by key (see its own comment),
+    // so a poll landing mid-read costs nothing — no held view, no freeze.
+    render(await res.json());
   } catch {
     document.getElementById("meta").textContent = "landrace is not responding";
   }

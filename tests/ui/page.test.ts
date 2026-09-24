@@ -156,8 +156,8 @@ describe("the page", () => {
   it("returns focus to the trigger only when Escape closes the menu, never on an outside click", () => {
     expect(APP_JS).toMatch(/closeMenu\(\{\s*returnFocus:\s*true\s*\}\)/);
     // The outside-click handler calls the no-args form.
-    expect(APP_JS).toMatch(/if \(openMenu && !openMenu\.wrap\.contains\(e\.target\)\) closeMenu\(\);/);
-    expect(APP_JS).toContain("button.focus()");
+    expect(APP_JS).toMatch(/if \(!inside\) \{ closeMenu\(\); return; \}/);
+    expect(APP_JS).toContain("trigger.focus()");
   });
 
   it("closes the menu when a Claude/Cursor/Codex link is chosen, so a menu never outlives a handoff to another app", () => {
@@ -168,14 +168,33 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-live", "polite"');
   });
 
-  it("holds the latest polled view while a menu is open instead of tearing it down, and applies it once the menu closes", () => {
-    expect(APP_JS).toContain("pendingView");
-    // The row-rebuild is skipped, not merely deferred to a later tick, while
-    // openMenu is set — pollOnce stashes the fetched view and returns.
-    expect(APP_JS).toMatch(/if \(openMenu\) \{\s*pendingView = view;\s*return;\s*\}/);
-    // closeMenu is what flushes it back into render() once there's no menu
-    // left to destroy.
-    expect(APP_JS).toMatch(/if \(pendingView\) \{[\s\S]*?render\(view\);/);
+  it("tracks the open menu by ticket, never by an element reference, so a render() in between can't leave it stale", () => {
+    expect(APP_JS).toContain("let openMenuKey = null;");
+    expect(APP_JS).not.toContain("pendingView");
+    // No stashed view: pollOnce() renders unconditionally now.
+    expect(APP_JS).toMatch(/render\(await res\.json\(\)\)/);
+  });
+
+  it("keys every trigger and its menu by ticket (data-key), so the live element is always one lookup away", () => {
+    expect(APP_JS).toMatch(/function triggerKeyOf\(ticket\)/);
+    expect(APP_JS).toMatch(/function menuKeyOf\(ticket\)/);
+    expect(APP_JS).toContain('"data-key", triggerKeyOf(row.ticket)');
+    expect(APP_JS).toContain('"data-key", menuKeyOf(row.ticket)');
+    expect(APP_JS).toMatch(/document\.querySelector\(/);
+  });
+
+  it("render() restores the open menu and the focused control by key, after rebuilding every row", () => {
+    // Captured before the rebuild...
+    expect(APP_JS).toMatch(/document\.activeElement/);
+    expect(APP_JS).toContain("getAttribute(\"data-key\")");
+    // ...and re-applied after it, by a fresh lookup, never a stale reference.
+    expect(APP_JS).toMatch(/if \(wasOpen !== null\)/);
+    expect(APP_JS).toMatch(/if \(activeKey\)/);
+  });
+
+  it("closes an idle menu after 20s so one is never left open forever, without depending on it for the poll fix", () => {
+    expect(APP_JS).toContain("const IDLE_MS = 20000;");
+    expect(APP_JS).toMatch(/setTimeout\(\(\)\s*=>\s*closeMenu\(\),\s*IDLE_MS\)/);
   });
 
   it("has no inline event handlers anywhere in the markup", () => {
