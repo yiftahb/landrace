@@ -13,9 +13,47 @@ describe("structural validation", () => {
     expect(validateStructure(w)).toEqual([]);
   });
 
-  it("requires exactly one entry stage", () => {
+  it("requires at least one entry stage", () => {
     expect(rules(wf([{ id: "a" }, { id: "b", terminal: true, triggers: [{ when: { y: 1 } }] }]))).toContain("entry");
-    expect(rules(wf([{ id: "a", entry: true }, { id: "b", entry: true }]))).toContain("entry");
+  });
+
+  it("accepts several entry stages that each say which fresh tickets they take", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null, "rel.child-of.out.total": 0 } }] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null, "rel.child-of.out.total": 1 } }] },
+      { id: "c", terminal: true, triggers: [{ when: { "run.stage": "a" } }, { when: { "run.stage": "b" } }] },
+    ]);
+    expect(rules(w)).not.toContain("entry");
+  });
+
+  it("refuses a trigger-less entry stage beside another, naming it", () => {
+    const problems = validateStructure(wf([
+      { id: "a", entry: true },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    ]));
+    const entry = problems.filter((p) => p.rule === "entry");
+    expect(entry).toHaveLength(1);
+    expect(entry[0]?.message).toMatch(/"a"/);
+  });
+
+  it("refuses an entry trigger that could fire mid-workflow", () => {
+    // Not anchored on run.stage: null, so decide() would evaluate it from
+    // every other stage too and drag a running ticket back to b.
+    const problems = validateStructure(wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "b", entry: true, triggers: [{ when: { "rel.child-of.out.total": 1 } }] },
+    ]));
+    const entry = problems.filter((p) => p.rule === "entry");
+    expect(entry).toHaveLength(1);
+    expect(entry[0]?.message).toMatch(/"b".*"run\.stage": null/);
+  });
+
+  it("asks nothing new of a sole entry stage", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
+      { id: "b", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+    ]);
+    expect(rules(w)).not.toContain("entry");
   });
 
   it("flags a stage nothing can reach", () => {

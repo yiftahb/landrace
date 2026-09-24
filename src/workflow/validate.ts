@@ -15,11 +15,40 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   const problems: Problem[] = [];
 
   const entries = w.stages.filter((s) => s.entry);
-  if (entries.length !== 1) {
-    problems.push({
-      rule: "entry",
-      message: `expected exactly one stage with entry: true, found ${entries.length}`,
-    });
+  if (entries.length === 0) {
+    problems.push({ rule: "entry", message: "no stage has entry: true, so no ticket can start" });
+  }
+  /*
+   * With several entry stages, a fresh ticket is placed by their triggers
+   * (decide.ts, pickEntry), so each needs one that says which fresh tickets
+   * it takes — and says *fresh*. decide() evaluates every other stage's
+   * triggers whenever a positioned ticket settles, so an entry trigger that
+   * is not anchored on `"run.stage": null` also fires mid-workflow: a child
+   * at code-review whose `rel.child-of.out.total` is 1 would be dragged back
+   * to build on every pass. A sole entry stage is entered unconditionally and
+   * owes nothing here.
+   */
+  if (entries.length > 1) {
+    for (const stage of entries) {
+      const triggers = stage.triggers ?? [];
+      if (!triggers.some((t) => isFreshTicketOnly(t.when))) {
+        problems.push({
+          rule: "entry",
+          message: `entry stage "${stage.id}" has no trigger anchored on "run.stage": null, ` +
+            "so with several entry stages it can never be chosen for a fresh ticket",
+        });
+        continue;
+      }
+      for (const t of triggers) {
+        if (t.when["run.stage"] === undefined) {
+          problems.push({
+            rule: "entry",
+            message: `entry stage "${stage.id}" has a trigger${t.name ? ` ("${t.name}")` : ""} not anchored on ` +
+              '"run.stage": null or on a stage, so it could also fire mid-workflow and drag a running ticket back',
+          });
+        }
+      }
+    }
   }
 
   // A stage id is used as an object key, so a reserved one is not a name but
@@ -435,19 +464,20 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     problems.push({ rule: "cycle-bound", message: cycleMessage(members) });
   }
 
-  // Reachability from the entry stage, over the same superset dead-end reads.
-  // Only meaningful with exactly one entry stage — a missing/duplicate entry
-  // is reported separately by validateStructure.
+  // Reachability from the entry stages, over the same superset dead-end
+  // reads. A stage any one of them reaches is reachable: a top-level ticket
+  // and a child start in different places and each walks its own part of the
+  // graph. No entry stage at all is reported by validateStructure.
   const entries = w.stages.filter((s) => s.entry);
-  const entry = entries[0];
-  if (entry && entries.length === 1) {
-    const reachable = reachableFrom(entry.id, possible);
+  if (entries.length > 0) {
+    const reachable = new Set<string>();
+    for (const entry of entries) for (const id of reachableFrom(entry.id, possible)) reachable.add(id);
+    const from = entries.length === 1
+      ? `the entry stage "${entries[0]?.id ?? ""}"`
+      : `any entry stage (${entries.map((e) => e.id).join(", ")})`;
     for (const stage of w.stages) {
       if (!reachable.has(stage.id)) {
-        problems.push({
-          rule: "reachability",
-          message: `stage "${stage.id}" is not reachable from the entry stage "${entry.id}"`,
-        });
+        problems.push({ rule: "reachability", message: `stage "${stage.id}" is not reachable from ${from}` });
       }
     }
   }

@@ -432,6 +432,28 @@ describe("semantic validation", () => {
     ] };
     expect(rules(w)).toContain("reachability");
   });
+
+  it("counts a stage reachable from any entry stage as reachable", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null, "rel.child-of.out.total": 0 } }] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null, "rel.child-of.out.total": 1 } }] },
+      // Only b leads here.
+      { id: "only-from-b", terminal: true, triggers: [{ when: { "run.stage": "b" } }] },
+      { id: "done", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+    ] };
+    expect(rules(w)).not.toContain("reachability");
+  });
+
+  it("still flags a stage no entry stage reaches, naming them all", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, terminal: true, triggers: [{ when: { "run.stage": null, x: 0 } }] },
+      { id: "b", entry: true, terminal: true, triggers: [{ when: { "run.stage": null, x: 1 } }] },
+      { id: "island", terminal: true, triggers: [{ when: { "run.stage": "island2" } }] },
+      { id: "island2", terminal: true, triggers: [{ when: { "run.stage": "island" } }] },
+    ] };
+    const problems = validateSemantics(w, new Map()).filter((p) => p.rule === "reachability");
+    expect(problems.map((p) => p.message).join("\n")).toMatch(/"island" is not reachable from any entry stage \(a, b\)/);
+  });
 });
 
 /**

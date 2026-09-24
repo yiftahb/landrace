@@ -251,6 +251,8 @@ The skip costs one request for the whole repository, not one per ticket: a sourc
 
 The whole graph, in one readable file. Stages declare **what activates them**, so adding a stage never means editing its predecessor.
 
+A workflow may have several `entry: true` stages — say `spec` for top-level tickets and `build` for children a breakdown created. A ticket with no position then enters the one whose `"run.stage": null` trigger matches it; none, or more than one, halts. With a single entry stage, it is entered unconditionally, as before.
+
 ```yaml
 stages:
   - id: spec
@@ -327,7 +329,7 @@ Both schemas are strict: an unknown key fails to load rather than being ignored.
 
 | Rule | Catches |
 |---|---|
-| schema, ids, entry | Malformed definitions, duplicate stages, no entry point |
+| schema, ids, entry | Malformed definitions, duplicate stages, no entry point, an entry stage (of several) with no `"run.stage": null` trigger |
 | reachability, `unknown-stage` | A stage nothing leads to; a trigger naming a stage that does not exist |
 | `dead-end`, `self-loop` | A non-terminal stage with no way out; a stage triggering on itself |
 | `cycle-bound` | A loop with no counter bound — an agent that could run forever |
