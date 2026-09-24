@@ -146,6 +146,19 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
 | `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |
 
+### Token permissions
+
+What `githubToken` needs, on a fine-grained token — a classic token needs the `repo` scope instead:
+
+| Permission | Level | Used for |
+|---|---|---|
+| Contents | Read and write | reading the spec from gh-pages, and publishing it |
+| Issues | Read and write | tickets, comments, labels |
+| Pull requests | Read-only | review threads |
+| Metadata | Read-only | granted automatically |
+
+`landrace start` checks these at startup, before the first tick — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions the way a classic token's scopes can. A token missing something refuses to start, naming what is missing, rather than running until the first step that needs it fails midway through a paid agent run.
+
 ### `.landrace/.env` — secrets
 
 Referenced by name from `landrace.yaml`, resolved at load, and handed to hooks as values — a hook never reads `process.env` itself, which is what makes it testable and what lets redaction know every value to suppress. A `.env` here takes precedence over your shell, because a project's own file should be what runs.
