@@ -30,4 +30,18 @@ describe("the child MCP server", () => {
     expect(seen).toEqual([{ title: "api", body: "b", priority: 2 }]);
     await client.close();
   });
+
+  it("refuses a priority outside 0-9, and says the range in the schema", async () => {
+    const seen: NewChild[] = [];
+    const client = await connect((i) => seen.push(i));
+    const tools = (await client.listTools()).tools;
+    const priority = (tools[0]?.inputSchema as { properties: Record<string, { maximum?: number; description?: string }> })
+      .properties.priority;
+    expect(priority?.maximum).toBe(9);
+    expect(priority?.description).toMatch(/0.*9/);
+    const r = await client.callTool({ name: "landrace_create_child", arguments: { title: "api", priority: 10 } });
+    expect(r.isError).toBe(true);
+    expect(seen).toEqual([]);
+    await client.close();
+  });
 });

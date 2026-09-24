@@ -111,9 +111,10 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
   }
 
   // Open tickets only: a pull request in the list is context for a ticket,
-  // and a closed ticket is there for its parent to count — neither is work. Sorted before the pool takes from it, because with a
-  // concurrency limit the order is who waits — ordering work is not choosing
-  // a transition, and the id tie-break keeps it total.
+  // and a closed ticket is there for its parent to count — neither is work.
+  // Sorted before the pool takes from it, because with a concurrency limit
+  // the order is who waits — ordering work is not choosing a transition, and
+  // the id tie-break keeps it total.
   const work = graph.nodes.filter(isOpenTicket).sort(compareWork);
   const rows: TickRow[] = [];
 

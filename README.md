@@ -126,8 +126,8 @@ The snapshot carries three views built from that graph: `node` is the ticket's o
 | Field | Meaning |
 |---|---|
 | `rel.<type>.in.total` | How many related nodes |
-| `rel.<type>.in.is.<field>` | How many where `state.<field>` is truthy |
-| `rel.<type>.in.not.<field>` | How many where it is not |
+| `rel.<type>.in.is.<field>` | How many where `state.<field>` is the boolean `true` — not merely truthy |
+| `rel.<type>.in.not.<field>` | How many where it is the boolean `false`; a non-boolean value counts in neither |
 | `rel.<type>.in.sum.<field>` | That field, summed across every related node |
 | `rel.<type>.in.stage.<id>` | How many related tickets currently sit at stage `<id>` |
 

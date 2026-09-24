@@ -329,7 +329,10 @@ export function createExternalState(
           case NODES_CLOSE_EFFECT:
             return allClosed(snapshot.graph as Graph | undefined, (effect.ids as string[] | undefined) ?? []);
           case CLOSE_EFFECT:
-            return (snapshot.node as Node | undefined)?.closed === "done";
+            // Closed either way counts, as in the shipped tracker hook: a
+            // person who dropped it decided that, and closing it again as
+            // done would overrule them.
+            return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
           default:
             return false;
         }
@@ -382,7 +385,7 @@ export function createExternalState(
             return;
           }
           case CLOSE_EFFECT: {
-            row.closed = "done";
+            if (row.closed === null) row.closed = "done";
             return;
           }
           default:

@@ -132,7 +132,8 @@ export function createChildMcpServer(tool: ChildTool, version = "0.0.0"): McpSer
     {
       title: z.string().min(1),
       body: z.string().optional(),
-      priority: z.number().int().min(0).optional(),
+      priority: z.number().int().min(0).max(9).optional()
+        .describe("0 (most urgent) to 9; leave it out when the sub-tickets are equally urgent"),
     },
     guard(({ title, body, priority }) =>
       tool.createChild({ title, ...(body === undefined ? {} : { body }), ...(priority === undefined ? {} : { priority }) })),

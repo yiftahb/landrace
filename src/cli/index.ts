@@ -76,8 +76,12 @@ program
   .requiredOption("-w, --workflow <dir>", "workflow directory")
   .requiredOption("-s, --snapshot <file>", "snapshot json")
   .action(async (opts: { workflow: string; snapshot: string }) => {
-    const { decision, effects } = await runNext(opts.workflow, opts.snapshot);
-    console.log(JSON.stringify({ decision, effects }, null, 2));
+    // Reported, not thrown: a snapshot missing what a stage's plan reads (a
+    // node, a graph) came out as an unhandled rejection's stack trace.
+    await loadingHooks("next", async () => {
+      const { decision, effects } = await runNext(opts.workflow, opts.snapshot);
+      console.log(JSON.stringify({ decision, effects }, null, 2));
+    });
   });
 
 program

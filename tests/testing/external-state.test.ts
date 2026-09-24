@@ -114,6 +114,18 @@ describe("children in the in-memory tracker", () => {
     expect(state.ticket("1").closed).toBe("done");
   });
 
+  it("counts a ticket a person dropped as closed, and never re-closes it as done", async () => {
+    // Parity with the GitHub hook: closed as not planned is a person's
+    // decision, and closing it again as completed would overrule them.
+    const state = createExternalState({ tickets: [{ id: "1", title: "big" }] });
+    state.ticket("1").closed = "dropped";
+    const g = await state.source.read("1", ctx);
+    const snap: Snapshot = { graph: g, node: g.nodes.find((n) => n.id === "1") };
+    expect(state.post.satisfied(snap, { type: "tracker.close" })).toBe(true);
+    await state.post.apply({ type: "tracker.close" }, { ...ctx, ticket: "1", snapshot: snap } as HookContext);
+    expect(state.ticket("1").closed).toBe("dropped");
+  });
+
   it("lists a parent's children through the test helper", async () => {
     const state = createExternalState({ tickets: [{ id: "1", title: "big" }, { id: "2", title: "a", parent: "1" }] });
     expect(state.children("1").map((r) => r.id)).toEqual(["2"]);
