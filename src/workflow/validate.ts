@@ -534,6 +534,19 @@ function checkChildren(w: Workflow, steps: Map<string, Step>, relations: readonl
           "so a re-run would leave the last round's children open beside the new ones",
       });
     }
+    // Supersession drops a child whose origin round is below the round its
+    // stage was last entered, and that round is counted from entry records.
+    // A creating stage that writes none stays at round one for good, so no
+    // re-run's plan ever replaces the last one's.
+    const recordsEntry = (stage.on_enter ?? []).some((e) => e.type === RECORD_EFFECT && e.kind === ENTRY_KIND);
+    if (creates && !recordsEntry) {
+      out.push({
+        rule: "children",
+        message: `stage "${stage.id}"'s step declares tickets:create but its on_enter writes no entry record ` +
+          `(a ${RECORD_EFFECT} with kind: ${ENTRY_KIND}), so its round never advances and a re-run's children ` +
+          "never supersede the last round's",
+      });
+    }
     if (closes.length && !creates) {
       out.push({
         rule: "children",

@@ -579,9 +579,25 @@ describe("children", () => {
     ],
   });
   const children = (ps: Problem[]) => ps.filter((p) => p.rule === "children").map((p) => p.message);
+  const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}", body: "round {round}" } as Effect;
+  const close = { type: "nodes.close", follow: ["child-of"] } as Effect;
 
   it("flags a step that creates children with nothing to clean them on a re-run", () => {
-    expect(children(validate(wf([]), stepsWith(breakdownStep)))).toEqual([expect.stringMatching(/"b".*tickets:create.*nodes\.close/)]);
+    expect(children(validate(wf([enter]), stepsWith(breakdownStep)))).toEqual([expect.stringMatching(/"b".*tickets:create.*nodes\.close/)]);
+  });
+
+  /*
+   * Supersession counts a child out once its origin round is below the
+   * round its stage was last entered — and `entered` is counted from the
+   * entry records. A creating stage that writes none never moves past round
+   * one, so a re-run's children and the last round's all count, forever.
+   */
+  it("flags a step that creates children in a stage that writes no entry record", () => {
+    expect(children(validate(wf([close]), stepsWith(breakdownStep))))
+      .toEqual([expect.stringMatching(/"b".*tickets:create.*entry record/)]);
+    const other = { ...enter, kind: "output" } as Effect;
+    expect(children(validate(wf([other, close]), stepsWith(breakdownStep))))
+      .toEqual([expect.stringMatching(/"b".*entry record/)]);
   });
 
   it("flags a close with nothing that could have made what it closes", () => {
@@ -590,7 +606,7 @@ describe("children", () => {
   });
 
   it("flags a close with nothing to follow", () => {
-    expect(children(validate(wf([{ type: "nodes.close" }]), stepsWith(breakdownStep)))).toEqual([expect.stringMatching(/follow/)]);
+    expect(children(validate(wf([enter, { type: "nodes.close" }]), stepsWith(breakdownStep)))).toEqual([expect.stringMatching(/follow/)]);
   });
 
   /*
@@ -601,13 +617,13 @@ describe("children", () => {
    * report a "owns" that might turn out to be real.
    */
   it("flags a follow type no source declares, and abstains when relations are unknown", () => {
-    const w = wf([{ type: "nodes.close", follow: ["child-of", "owns"] }]);
+    const w = wf([enter, { type: "nodes.close", follow: ["child-of", "owns"] }]);
     expect(children(validate(w, stepsWith(breakdownStep), ["rel.child-of", "rel.implements"])))
       .toEqual([expect.stringMatching(/"owns"/)]);
     expect(children(validate(w, stepsWith(breakdownStep)))).toEqual([]);
   });
 
   it("passes the pair", () => {
-    expect(children(validate(wf([{ type: "nodes.close", follow: ["child-of"] }]), stepsWith(breakdownStep)))).toEqual([]);
+    expect(children(validate(wf([enter, close]), stepsWith(breakdownStep)))).toEqual([]);
   });
 });
