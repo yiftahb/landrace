@@ -262,6 +262,113 @@ describe("a comment body larger than GitHub will take", () => {
  * surface in the engine already refuses to place — a halt, not a wrong move,
  * and the next status apply cleans the loser up on its own.
  */
+/**
+ * The startup preflight this hook exports: `check` reuses the module's own
+ * client — the same fetch, the same `isMissing`, the same 404-is-fine reading
+ * — over the in-memory GitHub every other test in this file drives. See
+ * `.superpowers/preflight/brief.md` for the ordering and the exact wording
+ * each probe has to produce.
+ */
+describe("the startup preflight", () => {
+  const check = (gh: FakeTracker): Promise<void> => {
+    const preflight = gh.registry.preflights[0];
+    if (!preflight) throw new Error("the fake tracker registered no preflight");
+    return preflight.check(gh.ctx);
+  };
+
+  // GraphQL always rides on POST, read or not — the PR-read probe's own
+  // request is a query, not a mutation, so it is excluded here rather than
+  // counted as a write.
+  const writes = (gh: FakeTracker) => gh.requests.filter((r) => r.method !== "GET" && r.path !== "/graphql");
+
+  it('passes a classic token carrying the "repo" scope, without probing anything further', async () => {
+    const gh = createFakeTracker([], { scopes: ["repo", "read:org"] });
+    await expect(check(gh)).resolves.toBeUndefined();
+    // The header alone answered it: nothing past /user was ever asked.
+    expect(gh.requests).toEqual([{ method: "GET", path: "/user" }]);
+  });
+
+  it('fails a classic token missing "repo", from the header alone, without probing further', async () => {
+    const gh = createFakeTracker([], { scopes: ["public_repo", "read:org"] });
+    await expect(check(gh)).rejects.toThrow(/classic token is missing the "repo" scope/);
+    expect(gh.requests).toEqual([{ method: "GET", path: "/user" }]);
+  });
+
+  it("passes a fine-grained token (no scopes header) with everything granted", async () => {
+    const gh = createFakeTracker();
+    await expect(check(gh)).resolves.toBeUndefined();
+  });
+
+  it("treats a 404 on the contents read as fine — the branch or file is simply not there yet", async () => {
+    const gh = createFakeTracker();
+    await check(gh);
+    // The default fake has no gh-pages ref at all, so this can only have
+    // passed by reading the 404 as "fine" and moving on to the next probe.
+    expect(gh.requests.some((r) => r.method === "GET" && r.path.startsWith("/contents/"))).toBe(true);
+    expect(writes(gh)).toEqual([{ method: "POST", path: "/git/blobs" }]);
+  });
+
+  it("fails with the Contents message when the contents read comes back 403", async () => {
+    const gh = createFakeTracker();
+    gh.breakOn((r) => r.method === "GET" && r.path.startsWith("/contents/"), 403);
+    await expect(check(gh)).rejects.toThrow(/token needs "Contents: Read and write" on acme\/widgets/);
+  });
+
+  it("fails with the same Contents message when the blob write comes back 403", async () => {
+    const gh = createFakeTracker();
+    gh.breakOn((r) => r.method === "POST" && r.path === "/git/blobs", 403);
+    await expect(check(gh)).rejects.toThrow(/token needs "Contents: Read and write" on acme\/widgets/);
+  });
+
+  it("fails with the Pull requests message when the PR read comes back denied", async () => {
+    const gh = createFakeTracker();
+    gh.graphqlError("Resource not accessible by integration");
+    await expect(check(gh)).rejects.toThrow(/token needs "Pull requests: Read" on acme\/widgets/);
+  });
+
+  /**
+   * The blob write is a real write to the user's repository, approved on the
+   * understanding that it is exactly one empty, unreferenced blob and nothing
+   * else — never a ref, a commit, a tree, an issue, a comment or a label.
+   */
+  it("makes exactly one write: POST /git/blobs, and nothing else", async () => {
+    const gh = createFakeTracker();
+    await check(gh);
+    expect(writes(gh)).toEqual([{ method: "POST", path: "/git/blobs" }]);
+  });
+
+  it("never touches an endpoint that creates a ref, commit, tree, issue, comment or label", async () => {
+    const gh = createFakeTracker();
+    await check(gh);
+    const forbidden = gh.requests.filter((r) =>
+      r.path === "/git/refs" ||
+      /^\/git\/refs\//.test(r.path) ||
+      r.path === "/git/trees" ||
+      r.path === "/git/commits" ||
+      (r.path === "/issues" && r.method === "POST") ||
+      (/\/comments$/.test(r.path) && r.method === "POST") ||
+      (/\/labels$/.test(r.path) && r.method === "POST"),
+    );
+    expect(forbidden).toEqual([]);
+  });
+
+  it('sends the blob endpoint exactly { content: "", encoding: "utf-8" }', async () => {
+    const gh = createFakeTracker();
+    const bodies: unknown[] = [];
+    const capturing = ((input: string | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/git/blobs") && init?.method === "POST") {
+        bodies.push(JSON.parse(String(init.body)));
+      }
+      return gh.fetchImpl(input, init);
+    }) as unknown as typeof fetch;
+
+    const hooks = githubHooks({ repo: "acme/widgets", token: "t", fetchImpl: capturing });
+    await hooks.preflight.check(gh.ctx);
+
+    expect(bodies).toEqual([{ content: "", encoding: "utf-8" }]);
+  });
+});
+
 describe("moving the position is a swap, and a swap has a window", () => {
   const statusOn = async (gh: FakeTracker, value: string): Promise<void> => {
     const post = gh.registry.post[0];

@@ -124,7 +124,17 @@ export const GITHUB_COMMENT_MAX = 65_536;
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
-export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTracker {
+export function createFakeTracker(
+  seed: Array<Partial<FakeIssue>> = [],
+  opts: {
+    /**
+     * `x-oauth-scopes` on `/user`, the way a classic PAT carries it. Absent by
+     * default, the way a fine-grained token actually behaves — every other
+     * test in this file needs that default unchanged.
+     */
+    scopes?: string[];
+  } = {},
+): FakeTracker {
   const issues = new Map<number, FakeIssue>();
   const comments = new Map<number, FakeComment[]>();
   let nextIssue = 1;
@@ -237,7 +247,14 @@ export function createFakeTracker(seed: Array<Partial<FakeIssue>> = []): FakeTra
       return new Response(`the repository is unhappy about ${path}`, { status: broken.status });
     }
 
-    if (url.pathname === "/user") return json({ login: BOT });
+    if (url.pathname === "/user") {
+      return opts.scopes === undefined
+        ? json({ login: BOT })
+        : new Response(JSON.stringify({ login: BOT }), {
+            status: 200,
+            headers: { "Content-Type": "application/json", "x-oauth-scopes": opts.scopes.join(", ") },
+          });
+    }
 
     if (url.pathname === "/graphql" && method === "POST") {
       const variables = (body.variables ?? {}) as Record<string, unknown>;

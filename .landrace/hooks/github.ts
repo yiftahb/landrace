@@ -23,6 +23,7 @@ import {
   defineOperator,
   definePostHook,
   definePreHook,
+  definePreflight,
   defineSource,
   entriesFromComments,
   LABEL_EFFECT,
@@ -42,6 +43,7 @@ import {
   type Operator,
   type PostHook,
   type PreHook,
+  type Preflight,
   type RuntimeContext,
   type Snapshot,
   type Source,
@@ -142,7 +144,16 @@ function createClient(opts: GitHubOptions) {
     throw new Error(`tracker.repo must be "owner/name", got "${repo}"`);
   }
 
-  async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  async function request<T>(
+    method: string,
+    url: string,
+    body?: unknown,
+    // Read alongside the ordinary response handling below, never as a second
+    // fetch: botLogin's own GET /user is the only place a classic token's
+    // scopes are ever visible, and this is how it hands that header back
+    // without a second request to the same endpoint.
+    onResponse?: (res: Response) => void,
+  ): Promise<T> {
     const res = await doFetch(url, {
       method,
       headers: {
@@ -154,6 +165,7 @@ function createClient(opts: GitHubOptions) {
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
+    onResponse?.(res);
     // The status rides on the error rather than only in its text. "Is this a
     // 404?" answered by searching the message finds the *path* on a ticket
     // numbered 404 — `/contents/specs/404/index.md` — and a caller that reads
@@ -172,6 +184,16 @@ function createClient(opts: GitHubOptions) {
   const configured = opts.bot?.trim() ?? "";
   let login = "";
 
+  /**
+   * `x-oauth-scopes`, captured off the same GET /user that resolves the
+   * login. A classic personal access token carries its scopes on every
+   * response; a fine-grained token carries none at all — so the preflight
+   * below tells the two apart by whether this is null, not by trying to
+   * parse the token itself. `undefined` until botLogin has run once;
+   * `null` after it has, if the header was not there.
+   */
+  let scopes: string[] | null | undefined;
+
   async function botLogin(): Promise<string> {
     if (login) return login;
 
@@ -183,7 +205,10 @@ function createClient(opts: GitHubOptions) {
     let resolved = "";
     let failure = "";
     try {
-      const user = await request<unknown>("GET", "https://api.github.com/user");
+      const user = await request<unknown>("GET", "https://api.github.com/user", undefined, (res) => {
+        const header = res.headers.get("x-oauth-scopes");
+        scopes = header === null ? null : header.split(",").map((s) => s.trim()).filter(Boolean);
+      });
       const candidate = (user as { login?: unknown } | null)?.login;
       // Shape-checked inside the guarded path: a non-string login used to
       // throw a TypeError past this handler, so the operator saw
@@ -237,6 +262,29 @@ function createClient(opts: GitHubOptions) {
 
   return {
     botLogin,
+
+    /**
+     * The scopes a classic token carries, or null for a fine-grained one —
+     * the preflight's own way of telling the two apart, off the same GET
+     * /user call `botLogin` already makes rather than a second one.
+     */
+    oauthScopes: async (): Promise<string[] | null> => {
+      await botLogin();
+      return scopes ?? null;
+    },
+
+    /**
+     * The one write the startup preflight makes: an empty, unreferenced blob.
+     * No tree, commit or ref ever names it, so nothing shows in the GitHub UI
+     * and the object is garbage-collected on GitHub's own schedule — and it is
+     * the only way to learn whether a fine-grained token can write Contents at
+     * all, because such a token cannot report its own permissions the way a
+     * classic one's `x-oauth-scopes` header does. The user approved exactly
+     * this write, once, and nothing else.
+     */
+    createEmptyBlob: async (): Promise<void> => {
+      await call("POST", "/git/blobs", { content: "", encoding: "utf-8" });
+    },
 
     /**
      * The one question REST cannot answer: a review thread's `isResolved`.
@@ -921,6 +969,107 @@ const nothingPublishes = (effect: Effect): never => {
   );
 };
 
+/* ── the startup preflight ───────────────────────────────────────────────── */
+
+/**
+ * A user's fine-grained token had Issues access but Contents read-only.
+ * `landrace start` ran, the spec step invoked a paid agent, and only then did
+ * publishing the spec fail with a 403 on `POST /git/blobs` — after the money
+ * was already spent, with nothing durable recorded to show for it. This is
+ * the engine's `preflight` hook kind, run once at startup, before any of
+ * that: every probe below stops at the first failure, and every failure names
+ * the permission in the words GitHub's own token UI uses.
+ *
+ * Issues write is deliberately not probed here: a label or a comment is
+ * written on entering a stage, before any agent runs, so a missing Issues
+ * permission already fails there for free, before any money is spent —
+ * probing it here would only pay for a fifth round trip to learn the same
+ * thing sooner.
+ */
+async function checkPermissions(gh: Client, repo: string): Promise<void> {
+  // A classic token carries its scopes on every response; a fine-grained one
+  // carries none at all, so the header's mere presence is what tells the two
+  // apart — not the shape of the token string, which nothing here reads.
+  // "repo" already grants Contents, Issues and Pull requests together, so a
+  // classic token that has it needs none of the probes below; one that lacks
+  // it fails right here, off the GET /user botLogin already made, rather than
+  // paying for three more requests to learn the same thing.
+  const scopes = await gh.oauthScopes();
+  if (scopes !== null) {
+    if (!scopes.includes("repo")) {
+      throw new Error('classic token is missing the "repo" scope');
+    }
+    return;
+  }
+
+  await probeContentsRead(gh, repo);
+  await probeContentsWrite(gh, repo);
+  await probePullRequestsRead(gh, repo);
+}
+
+/** A 403 on this read is the one failure worth naming; a 404 means the branch or file is simply not there yet. */
+async function probeContentsRead(gh: Client, repo: string): Promise<void> {
+  try {
+    // Any path answers the question. Ticket 0 never exists, so this reads as
+    // a 404 on a healthy token rather than risking a real spec directory,
+    // which the contents API would answer with a listing `getFile` cannot
+    // parse as a file at all.
+    await gh.getFile(PAGES_BRANCH, pagePath(0));
+  } catch (e) {
+    if ((e as { status?: unknown } | null)?.status === 403) {
+      throw new Error(`token needs "Contents: Read and write" on ${repo}`);
+    }
+    throw e;
+  }
+}
+
+/**
+ * The one write this whole check makes, and the reason it has to be a write
+ * at all: a fine-grained token cannot report its own permissions the way a
+ * classic one's scopes header does, so writing is the only way to find out
+ * whether it can. An empty, unreferenced blob is the most harmless write
+ * available — no branch, tag or commit ever points at it, nothing appears in
+ * the GitHub UI, and GitHub garbage-collects it on its own schedule.
+ */
+async function probeContentsWrite(gh: Client, repo: string): Promise<void> {
+  try {
+    await gh.createEmptyBlob();
+  } catch (e) {
+    if ((e as { status?: unknown } | null)?.status === 403) {
+      throw new Error(`token needs "Contents: Read and write" on ${repo}`);
+    }
+    throw e;
+  }
+}
+
+/** One minimal GraphQL read, cheap enough to cost nothing beyond what §10's own review-thread reads already pay for. */
+const PREFLIGHT_PR_QUERY = `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: 1) { totalCount }
+  }
+}`;
+
+async function probePullRequestsRead(gh: Client, repo: string): Promise<void> {
+  const [owner = "", name = ""] = repo.split("/");
+  try {
+    await gh.graphql(PREFLIGHT_PR_QUERY, { owner, name });
+  } catch (e) {
+    const status = (e as { status?: unknown } | null)?.status;
+    const message = e instanceof Error ? e.message : String(e);
+    // `gh.graphql` itself throws "graphql: …" for an `errors` array — GitHub's
+    // normal shape for a permission failure, a 200 with the refusal inside —
+    // and a bare 403 mentioning permission or access is the REST-shaped
+    // version of the same refusal.
+    const deniedByGraphQL = message.startsWith("graphql:");
+    const deniedByStatus = status === 403 && /permission|access/i.test(message);
+    if (deniedByGraphQL || deniedByStatus) {
+      throw new Error(`token needs "Pull requests: Read" on ${repo}`);
+    }
+    throw e;
+  }
+}
+
 /**
  * The integration, built over one client.
  *
@@ -937,10 +1086,14 @@ export function githubHooks(opts: GitHubOptions): {
   operator: Operator;
   pullRequestArtifact: ArtifactHook;
   specArtifact: ArtifactHook;
+  preflight: Preflight;
 } {
   const gh = createClient(opts);
 
   return {
+    preflight: definePreflight({ id: "github", check: () => checkPermissions(gh, opts.repo) }),
+
+
     // Named to sort after `pre`, for the reason spelled out on `specArtifact`
     // below. As `prArtifact` it sorted *before* it ("prA" < "pre"), and the
     // artifact phase ran ahead of the tracker read it is meant to sit beside.
@@ -1107,4 +1260,15 @@ export const operator = defineOperator({
   updateTicket: async (ticket: number, patch: TicketPatch, ctx: RuntimeContext) =>
     hooksFor(ctx).operator.updateTicket(ticket, patch, ctx),
 });
+
+/**
+ * Run once at startup, before `landrace start` or `landrace mcp` do anything
+ * that costs money: see `checkPermissions` for the four checks, in order, and
+ * the exact wording each failure produces.
+ */
+async function check(ctx: RuntimeContext): Promise<void> {
+  return hooksFor(ctx).preflight.check(ctx);
+}
+
+export const githubPreflight = definePreflight({ id: "github", check });
 
