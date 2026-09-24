@@ -60,6 +60,39 @@ export const RESERVED_IDS: readonly string[] = ["__proto__", "constructor", "pro
 export const isReservedId = (id: string): boolean => RESERVED_IDS.includes(id);
 
 /**
+ * What a ticket id may look like, whatever tracker it came from.
+ *
+ * Opaque to the engine — "42" and "PROJ-7" are both fine — but not arbitrary:
+ * an id becomes a lock file name, a worktree directory, a branch name and part
+ * of a deep link a coding agent acts on. Refusing anything but a short run of
+ * letters, digits, `.`, `_` and `-`, starting with a letter or digit, is what
+ * lets every one of those use it as-is instead of each growing its own escaping
+ * — and a path segment of `..` or `a/b` cannot be written at all.
+ */
+const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export function ticketIdProblem(id: unknown): string | null {
+  if (typeof id !== "string") return `a ticket id must be a string, got ${id === null ? "null" : typeof id}`;
+  if (isReservedId(id)) return `"${id}" is a reserved object key and cannot be a ticket id`;
+  if (!TICKET_ID.test(id)) {
+    return `"${id.slice(0, 80)}" is not a usable ticket id: 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit`;
+  }
+  return null;
+}
+
+export const isTicketId = (id: unknown): id is string => ticketIdProblem(id) === null;
+
+/**
+ * How ids order wherever a person reads a list of them. Numeric-aware, so
+ * numeric ids print in numeric order (9 before 10); then plain code-unit order
+ * as the tie-break, so the order is total and the same on every machine
+ * whatever its locale.
+ */
+const collator = new Intl.Collator("en", { numeric: true, sensitivity: "variant" });
+export const compareIds = (a: string, b: string): number =>
+  collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+
+/**
  * The marker kind a stage's on_enter writes to record that the state was
  * entered. Shared vocabulary rather than a literal in two files: core counts
  * these to decide whether a stage owes another round, and `landrace validate`
