@@ -25,6 +25,9 @@ const ARG_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * enough to be worth a startup warning rather than silent acceptance — see
  * the check in createClaudeExecutor below.
  */
+/** The CLI's tools that edit a file or run a command: what a read-only step outside plan mode is denied by name. */
+const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
+
 const PERMISSION_MODES = new Set(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
 
 function assertArgShape(kind: string, value: string): void {
@@ -182,7 +185,15 @@ export function createClaudeExecutor(opts: {
       // operator default of acceptEdits must still come out unable to edit.
       const declared = capabilities !== undefined;
       const mayWrite = mayWriteRepo(capabilities);
-      const mode = declared ? (mayWrite ? "acceptEdits" : "plan") : permissionMode;
+      // A permission, not an obligation: a turn that declares the word but was
+      // handed no binding simply gets no tool.
+      const bound = binding !== undefined && mayCreateTickets(capabilities) ? binding : undefined;
+      // Plan mode refuses every MCP call, create_child included, so a
+      // read-only step holding the tool runs in the CLI's default mode
+      // (`manual`) instead — still `--restricted`, and with the write and exec
+      // tools denied by name below, so "read-only" keeps meaning it.
+      const denyWrites = bound !== undefined && declared && !mayWrite;
+      const mode = declared ? (mayWrite ? "acceptEdits" : denyWrites ? "manual" : "plan") : permissionMode;
       // A step that may write needs tools to write with; anything else gets
       // none. `--restricted` is what makes "read-only" mean read-only rather
       // than "asked nicely".
@@ -198,9 +209,6 @@ export function createClaudeExecutor(opts: {
       if (resume !== undefined) assertArgShape("resume", resume);
       const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
 
-      // A permission, not an obligation: a turn that declares the word but was
-      // handed no binding simply gets no tool.
-      const bound = binding !== undefined && mayCreateTickets(capabilities) ? binding : undefined;
       if (bound && !childServer) {
         throw new Error("cannot give this step create_child: this executor was not told how to start the landrace MCP server");
       }
@@ -213,6 +221,8 @@ export function createClaudeExecutor(opts: {
       // json output carries session_id; without it a conversation cannot continue.
       const args = ["-p", "--output-format", "json", "--permission-mode", mode];
       if (noTools) args.push("--restricted");
+      // Variadic like `--allowedTools`: the next flag ends it.
+      if (denyWrites) args.push("--disallowedTools", ...WRITE_TOOLS);
       if (chosenModel !== undefined) args.push("--model", chosenModel);
       if (resume !== undefined) args.push("--resume", resume);
       if (bound && childServer) {

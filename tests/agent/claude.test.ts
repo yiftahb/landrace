@@ -466,6 +466,37 @@ describe("the create_child tool", () => {
     expect(argv).toContain("--strict-mcp-config");
   });
 
+  it("runs a read-only step holding the tool in default mode, still restricted, with write and exec tools denied", async () => {
+    // Plan mode is where the real CLI refuses every MCP call, so a breakdown
+    // step in it could never file a child. Default mode — the CLI names it
+    // `manual` — lets the one
+    // allowlisted tool through; `--restricted` and an explicit deny list keep
+    // it from editing or running anything while it does.
+    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), {
+      capabilities: ["tickets:create", "repo:read"], child: binding,
+    });
+    expect(argv.slice(0, 7)).toEqual(["-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
+    const denied = argv.slice(7, argv.indexOf("--mcp-config"));
+    expect([...denied].sort()).toEqual(["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"]);
+    expect(argv).not.toContain("plan");
+  });
+
+  it("leaves a writing step holding the tool in acceptEdits, with nothing denied", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), {
+      capabilities: ["tickets:create", "repo:write"], child: binding,
+    });
+    expect(argv.slice(0, 5)).toEqual(["-p", "--output-format", "json", "--permission-mode", "acceptEdits"]);
+    expect(argv).not.toContain("--restricted");
+    expect(argv).not.toContain("--disallowedTools");
+  });
+
+  it("keeps a step without the binding on exactly today's flags", async () => {
+    const readOnly = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["tickets:create", "repo:read"] });
+    expect(readOnly).toEqual(["-p", "--output-format", "json", "--permission-mode", "plan", "--restricted"]);
+    const unbound = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["repo:read"], child: binding });
+    expect(unbound).toEqual(["-p", "--output-format", "json", "--permission-mode", "plan", "--restricted"]);
+  });
+
   it("offers nothing to a step that did not declare it, even with a binding", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["repo:read"], child: binding });
     expect(argv).not.toContain("--mcp-config");
