@@ -45,8 +45,12 @@ stages:
     step: steps/spec.md
     entry: true
     triggers:
-      - name: fresh ticket
-        when: { "run.stage": null }
+      # A ticket with no parent. A child a breakdown created has one, and
+      # enters at build instead — see below. With two entry stages, each
+      # trigger here that places a fresh ticket must be anchored on
+      # "run.stage": null, or it would also fire mid-workflow.
+      - name: top-level ticket
+        when: { "run.stage": null, "rel.child-of.out.total": 0 }
       # run.lastEvent.actor, not lastEvent.actor: the spec lists lastEvent.* as
       # a conventional top-level path, but deriveRun puts it inside run and no
       # hook provides a top-level one, so the bare path matched nothing and
@@ -119,7 +123,13 @@ stages:
   # ── build phase ──────────────────────────────────────────────────────────
   - id: build
     step: steps/build.md
+    # The second way in. A child a breakdown created was planned as part of
+    # its parent's spec, so it skips spec, spec-questions and triage and
+    # starts here, working from its own body (steps/build.md says how).
+    entry: true
     triggers:
+      - name: child from a breakdown
+        when: { "run.stage": null, "rel.child-of.out.total": 1 }
       - name: the spec was approved
         when: { "run.stage": triage, "run.outputs.triage.intent": approve }
     on_enter:
