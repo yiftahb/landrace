@@ -149,15 +149,33 @@ const CHAT_TARGETS = [
 ];
 
 // At most one Chat/… menu open at a time, tracked here rather than per-row —
-// opening one has to close any other, and a poll re-render destroys whatever
-// row DOM held the old one, so this is reset there too (see render()).
+// opening one has to close any other.
 let openMenu = null;
 
-function closeMenu() {
+// A poll landing while a menu is open is held here instead of applied: see
+// pollOnce(). Applied the moment the menu closes, whatever closed it.
+let pendingView = null;
+
+// "returnFocus" moves focus back to the trigger — right for Escape (a
+// keyboard user's focus was on the menu and has nowhere else to go), wrong
+// for an outside click (the user's attention, and often their pointer, is
+// already on whatever they clicked) or for choosing a link (a real
+// navigation is about to happen).
+function closeMenu(opts) {
   if (!openMenu) return;
-  openMenu.menu.hidden = true;
-  openMenu.button.setAttribute("aria-expanded", "false");
+  const { menu, button } = openMenu;
+  menu.hidden = true;
+  button.setAttribute("aria-expanded", "false");
   openMenu = null;
+  if (opts && opts.returnFocus) button.focus();
+  // Only now — never while the menu was open — because rebuilding every
+  // row's DOM (see render()) is exactly what would have destroyed the menu
+  // the user was still reading.
+  if (pendingView) {
+    const view = pendingView;
+    pendingView = null;
+    render(view);
+  }
 }
 
 // Defined once, not per row: a click anywhere the open menu's own wrapper
@@ -168,7 +186,7 @@ document.addEventListener("click", (e) => {
   if (openMenu && !openMenu.wrap.contains(e.target)) closeMenu();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeMenu();
+  if (e.key === "Escape") closeMenu({ returnFocus: true });
 });
 
 function menuItem(tag) {
@@ -190,12 +208,21 @@ function buildChatMenu(row) {
     a.href = row.chat.links[target.key];
     a.rel = "noreferrer";
     a.append(target.icon(), el("span", null, target.label));
+    // Choosing a target closes the menu — the navigation itself still
+    // happens, since this is a real href, not prevented here. Matters more
+    // now that an open menu pauses re-rendering (see pollOnce()): a menu
+    // left open after the OS hands off to another app would freeze the
+    // board's polling indefinitely.
+    a.addEventListener("click", () => closeMenu());
     menu.append(a);
   }
   menu.append(el("hr", "my-1 border-neutral-100 dark:border-neutral-800"));
   const copy = menuItem("button");
   copy.type = "button";
   copy.textContent = "Copy prompt";
+  // Its own label is what changes ("Copied"/"Copy failed"), so that's what a
+  // screen reader needs told to announce it.
+  copy.setAttribute("aria-live", "polite");
   const COPY_LABEL = "Copy prompt";
   let copyRestoreTimer = null;
   copy.addEventListener("click", () => {
@@ -310,9 +337,12 @@ function renderNext() {
 
 function render(view) {
   const now = Date.now();
-  // Every row's DOM (and any menu it held) is about to be replaced below —
-  // drop the reference now rather than leave it pointing at a detached menu
-  // no further click could ever reach.
+  // Every row's DOM (and any menu it held) is about to be replaced below.
+  // Callers are expected to already know no menu is open here — pollOnce()
+  // holds the view instead of calling this while one is, and closeMenu()
+  // only calls this after it has already cleared openMenu — but the
+  // assignment stays as cheap insurance against a menu ever being left
+  // pointing at a detached row again.
   openMenu = null;
   for (const lane of document.querySelectorAll("[data-lane]")) {
     const rows = view.rows.filter((r) => r.lane === lane.dataset.lane);
@@ -342,7 +372,17 @@ async function pollOnce() {
   try {
     const res = await fetch("/board.json", { cache: "no-store" });
     if (!res.ok) throw new Error(String(res.status));
-    render(await res.json());
+    const view = await res.json();
+    // A menu the user is still reading survives the poll: render() rebuilds
+    // every row's DOM (see its own comment), which would destroy the open
+    // menu out from under them mid-read. Hold the latest view instead —
+    // never accumulated, just overwritten — and closeMenu() applies it the
+    // moment the menu closes, however it closes.
+    if (openMenu) {
+      pendingView = view;
+      return;
+    }
+    render(view);
   } catch {
     document.getElementById("meta").textContent = "landrace is not responding";
   }

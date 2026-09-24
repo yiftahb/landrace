@@ -109,14 +109,15 @@ describe("the page", () => {
     expect(APP_JS).toContain("Chat ▾");
   });
 
-  it("wires exactly the tick button, the theme toggle, the row menu toggle, copy, and the two document-level close listeners — no more, no less", () => {
-    // Pins the count deliberately, per row action now being real: the tick
-    // button and theme toggle (Task 1) plus, for the Chat/… menu, one
-    // toggle-button listener, one Copy-prompt listener, and one document
-    // listener each for outside-click and Escape (both defined once, not
-    // per row, so re-rendering never multiplies them).
+  it("wires exactly the tick button, the theme toggle, the row menu toggle, the three links, copy, and the two document-level close listeners — no more, no less", () => {
+    // Pins the count deliberately: the tick button and theme toggle (Task 1)
+    // plus, for the Chat/… menu, one toggle-button listener, one
+    // close-on-choose listener (defined once inside the per-target loop,
+    // not once per row), one Copy-prompt listener, and one document listener
+    // each for outside-click and Escape (both defined once, not per row, so
+    // re-rendering never multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(6);
+    expect(listeners).toHaveLength(7);
   });
 
   it("opens the same menu — Claude Code, Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -150,6 +151,31 @@ describe("the page", () => {
     expect(APP_JS).toMatch(/document\.addEventListener\(\s*"keydown"/);
     expect(APP_JS).toMatch(/document\.addEventListener\(\s*"click"/);
     expect(APP_JS).toContain('"Escape"');
+  });
+
+  it("returns focus to the trigger only when Escape closes the menu, never on an outside click", () => {
+    expect(APP_JS).toMatch(/closeMenu\(\{\s*returnFocus:\s*true\s*\}\)/);
+    // The outside-click handler calls the no-args form.
+    expect(APP_JS).toMatch(/if \(openMenu && !openMenu\.wrap\.contains\(e\.target\)\) closeMenu\(\);/);
+    expect(APP_JS).toContain("button.focus()");
+  });
+
+  it("closes the menu when a Claude/Cursor/Codex link is chosen, so a menu never outlives a handoff to another app", () => {
+    expect(APP_JS).toMatch(/a\.addEventListener\(\s*"click",\s*\(\)\s*=>\s*closeMenu\(\)\s*\)/);
+  });
+
+  it("makes the Copy prompt feedback an aria-live region, so a screen reader announces Copied/Copy failed", () => {
+    expect(APP_JS).toContain('"aria-live", "polite"');
+  });
+
+  it("holds the latest polled view while a menu is open instead of tearing it down, and applies it once the menu closes", () => {
+    expect(APP_JS).toContain("pendingView");
+    // The row-rebuild is skipped, not merely deferred to a later tick, while
+    // openMenu is set — pollOnce stashes the fetched view and returns.
+    expect(APP_JS).toMatch(/if \(openMenu\) \{\s*pendingView = view;\s*return;\s*\}/);
+    // closeMenu is what flushes it back into render() once there's no menu
+    // left to destroy.
+    expect(APP_JS).toMatch(/if \(pendingView\) \{[\s\S]*?render\(view\);/);
   });
 
   it("has no inline event handlers anywhere in the markup", () => {
