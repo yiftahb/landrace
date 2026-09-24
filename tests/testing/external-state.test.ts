@@ -30,8 +30,10 @@ describe("the in-memory tracker's graph", () => {
     s.pull(first).closed = "done";
     const g = await s.source.read("1", ctx);
     expect(g.nodes.find((n) => n.id === first)).toMatchObject({ closed: "done", state: { merged: true } });
-    // A merged pull request's threads are not counted: nothing a fix round can act on.
-    expect(g.nodes.find((n) => n.id === first)?.state).not.toHaveProperty("openThreads");
+    // A merged pull request has nothing left to fix: zero, whatever threads it kept.
+    s.pull(first).openThreads = 3;
+    const again = await s.source.read("1", ctx);
+    expect(again.nodes.find((n) => n.id === first)?.state).toMatchObject({ openThreads: 0 });
     expect(() => s.pull("pr-9")).toThrow(/no such pull request/);
     expect(() => s.openPull("9")).toThrow(/no such ticket/);
   });

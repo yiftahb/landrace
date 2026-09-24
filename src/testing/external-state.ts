@@ -80,8 +80,10 @@ const prNodeOf = (p: ExternalPull): Node => ({
   origin: null,
   // An open pull request's threads only, as a tracker integration reports
   // them: a thread left on a merged or abandoned one is nothing a fix round
-  // can act on, and counting it would loop the ticket through review for ever.
-  state: { merged: p.merged, ...(p.closed === null ? { openThreads: p.openThreads } : {}) },
+  // can act on, and counting it would loop the ticket through review for
+  // ever. Zero rather than absent, so the sum stays defined when every pull
+  // request is merged and "no threads are open" can still be read.
+  state: { merged: p.merged, openThreads: p.closed === null ? p.openThreads : 0 },
 });
 
 /**

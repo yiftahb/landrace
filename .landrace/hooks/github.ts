@@ -1180,9 +1180,11 @@ async function readGraph(gh: Client, repo: string, ticket: string): Promise<Grap
     // Only an open pull request's threads are counted, and only an open one's
     // are briefed: a thread left unresolved on a merged or abandoned one is
     // nothing a fix round can act on, and counting it would send the ticket
-    // to fix-review for ever with nothing to fix. So a closed one carries no
-    // count at all, and costs no query.
-    const node = pullNodeOf(pull, pull.state === "OPEN" ? await countOpenThreads(gh, repo, pull.number) : undefined);
+    // to fix-review for ever with nothing to fix. So a closed one reports
+    // zero without a query — zero, not nothing: with every pull request
+    // merged, an absent count would leave `sum.openThreads` undefined and
+    // every review trigger reading it false, parking the ticket in review.
+    const node = pullNodeOf(pull, pull.state === "OPEN" ? await countOpenThreads(gh, repo, pull.number) : 0);
     nodes.push(node);
     relationships.push({ from: node.id, to: self.id, type: RELATIONS.implements });
   }

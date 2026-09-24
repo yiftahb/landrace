@@ -166,6 +166,29 @@ describe("a workflow over the in-memory tracker, with no integration at all", ()
  * workflow object, because the substitution is the part under test and a
  * fixture that skipped it would be testing the harness.
  */
+/*
+ * The shipped workflow's review half over the in-memory tracker: a ticket in
+ * review whose only pull request is merged has nothing left to fix, and must
+ * move on — not wait at code-review because a count over merged pull requests
+ * read as no count at all.
+ */
+describe("a ticket in review whose only pull request merges", () => {
+  it("moves on through pr-human-review to done rather than waiting", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto", "lr:stage:code-review"] }] });
+    state.openPull("1", { merged: true, openThreads: 2 });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post],
+      answers: { "code-review": '```json\n{"kind":"reviewed"}\n```' },
+    });
+
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["code-review", "pr-human-review", "done"]);
+    expect(r.result.settled).toBe("terminal");
+  });
+});
+
 describe("several instances over one repository, each taking its own tickets", () => {
   const DIR = "tests/fixtures/assigned";
   const ASSIGNED = ["ann", "bo"];

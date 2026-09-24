@@ -144,11 +144,26 @@ describe("the GitHub source", () => {
     gh.openPull({ number: 21, head: "landrace/7", threads: [] });
     gh.openPull({ number: 22, head: "feature/z", state: "CLOSED", closes: [7], threads: [{ isResolved: false, body: "abandoned" }] });
     const g = await sourceOf(gh).read("7", ctx(gh));
-    expect(g.nodes.find((n) => n.id === "pr-20")?.state).not.toHaveProperty("openThreads");
-    expect(g.nodes.find((n) => n.id === "pr-22")?.state).not.toHaveProperty("openThreads");
+    expect(g.nodes.find((n) => n.id === "pr-20")?.state).toMatchObject({ openThreads: 0 });
+    expect(g.nodes.find((n) => n.id === "pr-22")?.state).toMatchObject({ openThreads: 0 });
     // The abandoned one is dropped, so out of every count; the merged one counts, with no threads.
     expect(gate({ "rel.implements.in.total": 2, "rel.implements.in.sum.openThreads": 0 }, g, "7")).toBe(true);
     expect(operations(gh, "LandraceThreads").map((q) => q.variables.number)).toEqual([21]);
+  });
+
+  /*
+   * A present zero, not an absent count: with every pull request merged, a
+   * sum over nothing would be no path at all, and every trigger reading it —
+   * "no threads are open" included — would read false and park the ticket.
+   */
+  it("sums open threads to zero when the only pull request is merged", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "landrace/7", merged: true, threads: [{ isResolved: false, body: "left over" }] });
+    const g = await sourceOf(gh).read("7", ctx(gh));
+    const rel = deriveRel(g, "7", ["implements"]);
+    if (!rel.ok) throw new Error(rel.why);
+    expect(rel.rel.implements?.in.sum.openThreads).toBe(0);
+    expect(operations(gh, "LandraceThreads")).toEqual([]);
   });
 
   it("halts a ticket carrying two P labels on read, and schedules it as unprioritised on list", async () => {
