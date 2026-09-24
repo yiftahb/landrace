@@ -1,4 +1,5 @@
 import type { Candidate, Held, Running, Workflow } from "#namespace.js";
+import { chatFor } from "#ui/chat.js";
 import { boardView, createBoard, laneOf } from "#ui/board.js";
 
 const workflow: Workflow = {
@@ -91,6 +92,11 @@ describe("boardView", () => {
     const v = view([], { folder: "widgets", workspace: "/Users/me/widgets" });
     expect(v.folder).toBe("widgets");
     expect(v.workspace).toBe("/Users/me/widgets");
+  });
+
+  it("gives every row a chat prompt/links built from its own ticket and the board's workspace", () => {
+    const row = view([c(41, ["go"])], { workspace: "/Users/me/widgets" }).rows[0];
+    expect(row?.chat).toEqual(chatFor(41, "/Users/me/widgets"));
   });
 });
 

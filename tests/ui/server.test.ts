@@ -61,7 +61,7 @@ describe("serveBoard", () => {
     expect(String(res.headers["content-security-policy"])).toContain("script-src 'self'");
   });
 
-  it("404s POST /theme.js, like every other route that is not /tick", async () => {
+  it("405s POST /theme.js, like every other route that is not /tick", async () => {
     server = await serveBoard({ port: 0, view: async () => empty });
     expect((await get(server.port, "/theme.js", { method: "POST" })).status).toBe(405);
   });
@@ -90,7 +90,7 @@ describe("serveBoard", () => {
 
   it("sends a CSP that forbids inline script on every response", async () => {
     server = await serveBoard({ port: 0, view: async () => empty });
-    for (const path of ["/", "/app.js", "/board.json", "/nope"]) {
+    for (const path of ["/", "/app.js", "/theme.js", "/board.json", "/nope"]) {
       const csp = String((await get(server.port, path)).headers["content-security-policy"]);
       expect(csp).toContain("default-src 'none'");
       expect(csp).toContain("script-src 'self'");

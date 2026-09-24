@@ -1017,6 +1017,17 @@ export interface Running {
 }
 
 /**
+ * The Chat menu's contents for one ticket, built server-side in
+ * `src/ui/chat.ts` from nothing but the ticket number and the workspace
+ * path — the page script only ever assigns these to `href`/clipboard text,
+ * never concatenates a URL of its own.
+ */
+export interface Chat {
+  prompt: string;
+  links: { claude: string; cursor: string; codex: string };
+}
+
+/**
  * One ticket on the triage page. An allowlist, not a pass-through: nothing
  * reaches the page that was not named here, so a secret cannot ride along in
  * an event payload.
@@ -1033,6 +1044,7 @@ export interface BoardRow {
   since: number | null;
   round: number | null;
   model: string | null;
+  chat: Chat;
 }
 
 export interface BoardView {

@@ -1,4 +1,5 @@
 import { oneLine, statusRows } from "#runner/status.js";
+import { chatFor } from "#ui/chat.js";
 import type {
   Board, BoardRow, BoardView, Candidate, Held, LandraceEvent, Lane, Running, StatusRow, Workflow,
 } from "#namespace.js";
@@ -42,6 +43,10 @@ export function boardView(input: {
       stage: status.stage,
       note: oneLine(status.note),
       since: null, round: null, model: null,
+      // Built from the ticket number and the workspace path alone — never
+      // title or note — so nothing a tracker comment injected can ride along
+      // into a link the browser is about to open.
+      chat: chatFor(status.ticket, input.workspace),
     };
     const running = input.running.get(status.ticket);
     if (running) {
