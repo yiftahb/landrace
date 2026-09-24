@@ -22,7 +22,7 @@ const world = (): {
   pr: ArtifactHook;
   /** The same hook as the loader files it into the observe phase: nested under its id, and bounded. */
   read: PreHook;
-  ctx: (ticket: number, snapshot?: Snapshot) => HookContext;
+  ctx: (ticket: string, snapshot?: Snapshot) => HookContext;
 } => {
   const gh = createFakeTracker([{ number: 1 }, { number: 2 }]);
   const pr = gh.registry.post.find((h) => h.id === "pr") as ArtifactHook | undefined;
@@ -39,14 +39,14 @@ const queries = (gh: FakeTracker) => gh.requests.filter((r) => r.path === "/grap
 describe("the pull request's reference is derived from the ticket, never stored", () => {
   it("asks about the branch the ticket's work goes on, in the configured repository", async () => {
     const { gh, pr, ctx } = world();
-    await pr.read(ctx(77));
+    await pr.read(ctx("77"));
 
     expect(gh.graphql[0]?.variables).toMatchObject({ owner: "acme", name: "widgets", head: "landrace/77" });
   });
 
   it("reads back nothing at all when no pull request exists for that branch", async () => {
     const { pr, ctx } = world();
-    const state = await pr.read(ctx(1));
+    const state = await pr.read(ctx("1"));
 
     expect(state).toEqual({});
     // The gate that matters: `code-review` requires a number, and an absent
@@ -59,8 +59,8 @@ describe("the pull request's reference is derived from the ticket, never stored"
     const { gh, pr, ctx } = world();
     gh.openPull({ head: "landrace/2", threads: threads([false]) });
 
-    expect(await pr.read(ctx(1))).toEqual({});
-    expect(await pr.read(ctx(2))).toMatchObject({ openThreads: 1 });
+    expect(await pr.read(ctx("1"))).toEqual({});
+    expect(await pr.read(ctx("2"))).toMatchObject({ openThreads: 1 });
   });
 });
 
@@ -69,13 +69,13 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     const { gh, pr, ctx } = world();
     gh.openPull({ head: "landrace/1", number: 42, headSha: "abc123", threads: threads([false, true, false]) });
 
-    expect(await pr.read(ctx(1))).toEqual({ number: 42, headSha: "abc123", merged: false, openThreads: 2 });
+    expect(await pr.read(ctx("1"))).toEqual({ number: 42, headSha: "abc123", merged: false, openThreads: 2 });
   });
 
   it("reports zero when every thread is resolved, which is what lets the ticket out of the loop", async () => {
     const { gh, pr, ctx } = world();
     gh.openPull({ head: "landrace/1", threads: threads([true, true]) });
-    const state = await pr.read(ctx(1));
+    const state = await pr.read(ctx("1"));
 
     expect(state.openThreads).toBe(0);
     expect(gate({ "artifacts.pr.openThreads": 0 }, state)).toBe(true);
@@ -85,7 +85,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     const { gh, pr, ctx } = world();
     gh.openPull({ head: "landrace/1", merged: true, threads: [] });
 
-    expect(await pr.read(ctx(1))).toMatchObject({ merged: true, openThreads: 0 });
+    expect(await pr.read(ctx("1"))).toMatchObject({ merged: true, openThreads: 0 });
   });
 
   /*
@@ -102,7 +102,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
       threads: threads([...Array<boolean>(100).fill(true), ...Array<boolean>(50).fill(false)]),
     });
 
-    expect(await pr.read(ctx(1))).toMatchObject({ openThreads: 50 });
+    expect(await pr.read(ctx("1"))).toMatchObject({ openThreads: 50 });
     expect(queries(gh).length).toBe(2);
   });
 
@@ -110,7 +110,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     const { gh, pr, ctx } = world();
     gh.openPull({ head: "landrace/1", number: 9, threads: threads(Array<boolean>(1001).fill(false)) });
 
-    await expect(pr.read(ctx(1))).rejects.toThrow(/pull request #9 has more than 1000 review threads/);
+    await expect(pr.read(ctx("1"))).rejects.toThrow(/pull request #9 has more than 1000 review threads/);
   });
 });
 
@@ -130,7 +130,7 @@ describe("untrusted thread text does not reach the snapshot", () => {
       threads: [{ isResolved: false, body: forgery }, { isResolved: false, body: "rm -rf /" }],
     });
 
-    const fragment = await read.run(ctx(1));
+    const fragment = await read.run(ctx("1"));
     expect(JSON.stringify(fragment)).not.toContain("landrace:");
     expect(JSON.stringify(fragment)).not.toContain("rm -rf");
     expect(fragment).toEqual({ artifacts: { pr: { number: 100, headSha: "sha-100", merged: false, openThreads: 2 } } });
@@ -145,7 +145,7 @@ describe("untrusted thread text does not reach the snapshot", () => {
 
     // 2MB of thread text at the boundary, and what the snapshot carries is one
     // number. The bound is the loader's (64KB, 8 deep); this is the margin.
-    const fragment = await read.run(ctx(1));
+    const fragment = await read.run(ctx("1"));
     expect(JSON.stringify(fragment).length).toBeLessThan(200);
     expect((fragment.artifacts as { pr: { openThreads: number } }).pr.openThreads).toBe(1000);
   });
@@ -162,7 +162,7 @@ describe("a failed read is a failure, not an absent pull request", () => {
     const { gh, pr, ctx } = world();
     gh.breakOn((r) => r.path === "/graphql", 502);
 
-    await expect(pr.read(ctx(1))).rejects.toThrow(/502/);
+    await expect(pr.read(ctx("1"))).rejects.toThrow(/502/);
   });
 
   /*
@@ -177,7 +177,7 @@ describe("a failed read is a failure, not an absent pull request", () => {
     gh.openPull({ head: "landrace/1", threads: threads([false]) });
     gh.graphqlError("Resource not accessible by integration");
 
-    await expect(pr.read(ctx(1))).rejects.toThrow(/Resource not accessible by integration/);
+    await expect(pr.read(ctx("1"))).rejects.toThrow(/Resource not accessible by integration/);
   });
 
   it("reports a repository it cannot see rather than reading it as no pull request", async () => {
@@ -190,7 +190,7 @@ describe("a failed read is a failure, not an absent pull request", () => {
     // repo would park every ticket at `build` with nothing said about why.
     const elsewhere = githubHooks({ repo: "acme/other", token: "test-token", fetchImpl: gh.fetchImpl });
 
-    await expect(elsewhere.pullRequestArtifact.read(ctx(1))).rejects.toThrow(/acme\/other/);
+    await expect(elsewhere.pullRequestArtifact.read(ctx("1"))).rejects.toThrow(/acme\/other/);
   });
 });
 
@@ -220,7 +220,7 @@ describe("the open threads reach the prompt, and only the prompt", () => {
       ],
     });
 
-    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    const text = (await brief(gh)(ctx("1"))).threads ?? "";
     expect(text).toContain("this leaks a file handle");
     expect(text).toContain("src/x.ts:12");
     expect(text).toContain("off by one");
@@ -241,7 +241,7 @@ describe("the open threads reach the prompt, and only the prompt", () => {
       ],
     });
 
-    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    const text = (await brief(gh)(ctx("1"))).threads ?? "";
     expect(text).toContain("still open");
     expect(text).not.toContain("already settled");
   });
@@ -262,7 +262,7 @@ describe("the open threads reach the prompt, and only the prompt", () => {
       ],
     });
 
-    expect((await brief(gh)(ctx(1))).threads ?? "").toContain("the one that matters");
+    expect((await brief(gh)(ctx("1"))).threads ?? "").toContain("the one that matters");
   });
 
   it("carries at most a bounded number of threads, and says how many it left out", async () => {
@@ -272,7 +272,7 @@ describe("the open threads reach the prompt, and only the prompt", () => {
       threads: Array.from({ length: 50 }, (_, i) => ({ isResolved: false, body: `finding ${i}` })),
     });
 
-    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    const text = (await brief(gh)(ctx("1"))).threads ?? "";
     expect(text).toContain("finding 0");
     expect(text).not.toContain("finding 49");
     expect(text).toMatch(/30 more open threads/);
@@ -282,14 +282,14 @@ describe("the open threads reach the prompt, and only the prompt", () => {
     const { gh, ctx } = world();
     gh.openPull({ head: "landrace/1", threads: [{ isResolved: false, body: "z".repeat(50_000) }] });
 
-    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    const text = (await brief(gh)(ctx("1"))).threads ?? "";
     expect(text.length).toBeLessThan(5_000);
     expect(text).toContain("…");
   });
 
   it("says so plainly when there is no pull request to brief on", async () => {
     const { gh, ctx } = world();
-    const text = (await brief(gh)(ctx(1))).threads ?? "";
+    const text = (await brief(gh)(ctx("1"))).threads ?? "";
     expect(text).toMatch(/no pull request/i);
   });
 
@@ -300,10 +300,10 @@ describe("the open threads reach the prompt, and only the prompt", () => {
   it("costs nothing at all until a step is actually invoked", async () => {
     const { gh, pr, ctx } = world();
     gh.openPull({ head: "landrace/1", threads: threads([false, false]) });
-    await pr.read(ctx(1));
+    await pr.read(ctx("1"));
     const afterRead = queries(gh).length;
 
-    await brief(gh)(ctx(1));
+    await brief(gh)(ctx("1"));
     expect(queries(gh).length).toBeGreaterThan(afterRead);
   });
 
@@ -313,6 +313,6 @@ describe("the open threads reach the prompt, and only the prompt", () => {
     const hook = other.pullRequestArtifact.brief;
     if (!hook) throw new Error("the pull request artifact briefs nothing");
 
-    await expect(hook(ctx(1))).rejects.toThrow(/answered with nothing at all/);
+    await expect(hook(ctx("1"))).rejects.toThrow(/answered with nothing at all/);
   });
 });

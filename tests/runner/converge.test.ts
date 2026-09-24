@@ -71,7 +71,7 @@ const deps = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) =
   dispatcher: createDispatcher([w.post]),
   executor: { id: "none", run: async () => ({ text: "", sessionId: null }) } as Executor,
   ctx: {
-    ticket: 1, config: {} as HookContext["config"], secrets: new Map(),
+    ticket: "1", config: {} as HookContext["config"], secrets: new Map(),
     signal: new AbortController().signal, log: () => {},
   },
   log: createLogger({ sink: () => {} }),
@@ -81,7 +81,7 @@ const deps = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) =
 describe("converge", () => {
   it("keeps acting until the ticket is terminal, in one call", async () => {
     const w = world();
-    const r = await converge(1, deps(w));
+    const r = await converge("1", deps(w));
     expect([...w.labels]).toContain("lr:stage:b");
     expect(r.passes).toBeGreaterThan(1);
   });
@@ -93,15 +93,15 @@ describe("converge", () => {
       id: "w",
       run: () => { reads++; return { ticket: { labels: [...w.labels] }, entries: [...w.entries] }; },
     });
-    await converge(1, deps(w, { pre: [counting] }));
+    await converge("1", deps(w, { pre: [counting] }));
     expect(reads).toBeGreaterThan(1);
   });
 
   it("settles without acting when nothing has changed", async () => {
     const w = world();
-    await converge(1, deps(w));
+    await converge("1", deps(w));
     const before = w.entries.length;
-    const again = await converge(1, deps(w));
+    const again = await converge("1", deps(w));
     expect(w.entries.length).toBe(before);
     expect(again.passes).toBe(1);
   });
@@ -114,7 +114,7 @@ describe("converge", () => {
         { id: "b", triggers: [{ when: { "run.stage": "a", "ticket.labels": { $in: ["never"] } } }] },
       ],
     };
-    const r = await converge(1, deps(world(), { workflow: waiting }));
+    const r = await converge("1", deps(world(), { workflow: waiting }));
     expect(r.settled).toBe("wait");
   });
 
@@ -126,14 +126,14 @@ describe("converge", () => {
         { id: "b", triggers: [{ when: { "run.stage": "a" } }], on_enter: [{ type: "tracker.status", value: "b" }] },
       ],
     };
-    const r = await converge(1, deps(world(), { workflow: flipflop, maxPasses: 6 }));
+    const r = await converge("1", deps(world(), { workflow: flipflop, maxPasses: 6 }));
     expect(r.settled).toBe("cap");
     expect(r.passes).toBe(6);
   });
 
   it("emits an evaluation event per pass", async () => {
     const seen: string[] = [];
-    await converge(1, deps(world(), { log: createLogger({ sink: (e) => seen.push(e.name) }) }));
+    await converge("1", deps(world(), { log: createLogger({ sink: (e) => seen.push(e.name) }) }));
     expect(seen.filter((n) => n === "ticket.evaluated").length).toBeGreaterThan(1);
   });
 
@@ -145,11 +145,11 @@ describe("converge", () => {
    */
   it("dumps the snapshot it decided on, per pass, and only when debug is on", async () => {
     const quiet: LandraceEvent[] = [];
-    await converge(1, deps(world(), { log: createLogger({ sink: (e) => quiet.push(e) }) }));
+    await converge("1", deps(world(), { log: createLogger({ sink: (e) => quiet.push(e) }) }));
     expect(quiet.map((e) => e.name)).not.toContain("snapshot.built");
 
     const loud: LandraceEvent[] = [];
-    await converge(1, deps(world(), { log: createLogger({ sink: (e) => loud.push(e), debug: true }) }));
+    await converge("1", deps(world(), { log: createLogger({ sink: (e) => loud.push(e), debug: true }) }));
     const dumps = loud.filter((e) => e.name === "snapshot.built");
     expect(dumps).toHaveLength(loud.filter((e) => e.name === "ticket.evaluated").length);
     expect((dumps[0]?.snapshot as { ticket?: { labels?: string[] } })?.ticket?.labels).toEqual(["lr:auto"]);
@@ -180,7 +180,7 @@ describe("converge", () => {
     };
 
     const seen: LandraceEvent[] = [];
-    await converge(1, deps(w, { workflow: twoEffects, log: createLogger({ sink: (e) => seen.push(e) }) }));
+    await converge("1", deps(w, { workflow: twoEffects, log: createLogger({ sink: (e) => seen.push(e) }) }));
 
     expect(seen.find((e) => e.name === "effect.discarded")).toMatchObject({
       type: "tracker.comment",
@@ -200,7 +200,7 @@ describe("converge", () => {
         { id: "c", triggers: [{ name: "two", when: { "run.stage": "a" } }] },
       ],
     };
-    const r = await converge(1, deps(world(), { workflow: ambiguousTriggers }));
+    const r = await converge("1", deps(world(), { workflow: ambiguousTriggers }));
     expect(r.settled).toBe("halt");
     expect(r.passes).toBe(2);
   });
@@ -237,7 +237,7 @@ describe("converge", () => {
         return { text: "no json here, sorry", sessionId: null };
       },
     };
-    const r = await converge(1, deps(w, {
+    const r = await converge("1", deps(w, {
       workflow: stepWorkflow,
       steps: new Map([["spec", step]]),
       executor: flakyExecutor,
@@ -279,7 +279,7 @@ describe("converge", () => {
       id: "silent",
       run: async () => { invocations++; return { text: "done, but no json block", sessionId: null }; },
     };
-    const r = await converge(1, deps(w, {
+    const r = await converge("1", deps(w, {
       workflow: stepWorkflow, steps: new Map([["spec", step]]), executor, maxPasses: 30,
     }));
     expect(r.settled).toBe("halt");
@@ -301,7 +301,7 @@ describe("converge", () => {
     };
     const step: Step = { prompt: "write the spec" };
     const executor: Executor = { id: "silent", run: async () => ({ text: "no json block", sessionId: null }) };
-    await converge(1, deps(w, { workflow: stepWorkflow, steps: new Map([["spec", step]]), executor, maxPasses: 30 }));
+    await converge("1", deps(w, { workflow: stepWorkflow, steps: new Map([["spec", step]]), executor, maxPasses: 30 }));
     expect(w.entries.some((e) => String(e.marker ?? "").startsWith("malformed:spec"))).toBe(true);
   });
 
@@ -346,7 +346,7 @@ describe("converge", () => {
         run: async () => { invocations++; throw new Error("The operation was aborted"); },
       };
 
-      const r1 = await converge(1, deps(w, {
+      const r1 = await converge("1", deps(w, {
         workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: aborted,
       }));
       expect(r1.settled).toBe("halt");
@@ -359,7 +359,7 @@ describe("converge", () => {
         id: "healthy",
         run: async () => { invocations++; return { text: '```json\n{"kind":"spec"}\n```', sessionId: null }; },
       };
-      const r2 = await converge(1, deps(w, {
+      const r2 = await converge("1", deps(w, {
         workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: healthy,
       }));
       expect(invocations).toBe(2);
@@ -382,7 +382,7 @@ describe("converge", () => {
       apply: async () => {},
     });
     const w = world();
-    const r = await converge(1, deps(w, { dispatcher: createDispatcher([broken]) }));
+    const r = await converge("1", deps(w, { dispatcher: createDispatcher([broken]) }));
     expect(r.settled).toBe("halt");
   });
 
@@ -425,10 +425,10 @@ describe("converge", () => {
     };
     const executor: Executor = { id: "e", run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }) };
 
-    const r = await converge(1, {
+    const r = await converge("1", {
       workflow: stepWorkflow, steps: new Map([["spec", step]]), pre: [pre],
       dispatcher: createDispatcher([statusHook, boom]), executor,
-      ctx: { ticket: 1, config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+      ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
       log: createLogger({ sink: () => {} }),
     });
     expect(r.settled).toBe("halt");
@@ -449,7 +449,7 @@ describe("converge", () => {
       }],
     };
     // "spec" is named by the stage but never loaded into `steps`.
-    const r = await converge(1, deps(w, { workflow: stepWorkflow, steps: new Map() }));
+    const r = await converge("1", deps(w, { workflow: stepWorkflow, steps: new Map() }));
     expect(r.settled).toBe("halt");
     expect(w.entries.length).toBeGreaterThan(0);
     expect(w.entries.some((e) => String(e.marker ?? "").startsWith("malformed:spec"))).toBe(true);
@@ -487,7 +487,7 @@ describe("converge", () => {
       id: "e",
       run: async () => ({ text: `\`\`\`json\n${JSON.stringify({ kind: hugeShape })}\n\`\`\``, sessionId: null }),
     };
-    await converge(1, deps(w, { workflow: stepWorkflow, steps: new Map([["spec", step]]), executor }));
+    await converge("1", deps(w, { workflow: stepWorkflow, steps: new Map([["spec", step]]), executor }));
     const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"));
     expect(posted).toBeDefined();
     expect(String(posted?.body ?? "").length).toBeLessThan(5000);
@@ -503,7 +503,7 @@ describe("converge", () => {
       version: 1, name: "t",
       stages: [{ id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] }],
     };
-    const fixedPoint = await converge(1, deps(world(), { workflow: noOnEnter }));
+    const fixedPoint = await converge("1", deps(world(), { workflow: noOnEnter }));
     expect(fixedPoint.settled).toBe("wait");
     expect(fixedPoint.why).toMatch(/nothing left to apply|fixed point/i);
 
@@ -514,7 +514,7 @@ describe("converge", () => {
         { id: "b", triggers: [{ when: { "run.stage": "a", "ticket.labels": { $in: ["never"] } } }] },
       ],
     };
-    const genuineWait = await converge(1, deps(world(), { workflow: waiting }));
+    const genuineWait = await converge("1", deps(world(), { workflow: waiting }));
     expect(genuineWait.settled).toBe("wait");
     expect(genuineWait.why).toBeTruthy();
     expect(genuineWait.why).not.toMatch(/nothing left to apply|fixed point/i);
@@ -537,9 +537,9 @@ describe("converge", () => {
           return { ticket: { labels: [...w.labels] }, entries: [...w.entries] };
         },
       });
-      const r = await converge(1, deps(w, {
+      const r = await converge("1", deps(w, {
         pre: [counting],
-        ctx: { ticket: 1, config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
+        ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
       }));
       expect(reads).toBe(1);
       expect(r.settled).toBe("halt");
@@ -554,9 +554,9 @@ describe("converge", () => {
         id: "w",
         run: () => { reads++; return { ticket: { labels: [...w.labels] }, entries: [...w.entries] }; },
       });
-      const r = await converge(1, deps(w, {
+      const r = await converge("1", deps(w, {
         pre: [counting],
-        ctx: { ticket: 1, config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
+        ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
       }));
       expect(reads).toBe(0);
       expect(r).toMatchObject({ passes: 0, settled: "halt" });
@@ -578,7 +578,7 @@ describe("converge", () => {
         apply: async () => {},
         handlerFor: () => null,
       };
-      const r = await converge(1, deps(world(), { dispatcher: raw }));
+      const r = await converge("1", deps(world(), { dispatcher: raw }));
       expect(r.settled).toBe("halt");
       expect(r.why).toBeTruthy();
     });
@@ -589,7 +589,7 @@ describe("converge", () => {
         apply: async () => { throw null; },
         handlerFor: () => null,
       };
-      const r = await converge(1, deps(world(), { dispatcher: raw }));
+      const r = await converge("1", deps(world(), { dispatcher: raw }));
       expect(r.settled).toBe("halt");
       expect(r.why).toBeTruthy();
     });
@@ -602,7 +602,7 @@ describe("converge", () => {
   // shape of a real failure, not an exotic one.
   it("halts (without throwing) when a pre hook fails, with the attributed message", async () => {
     const bad = definePreHook({ id: "bad", run: () => { throw new Error("tracker down"); } });
-    const r = await converge(1, deps(world(), { pre: [bad] }));
+    const r = await converge("1", deps(world(), { pre: [bad] }));
     expect(r.settled).toBe("halt");
     expect(r.why).toMatch(/tracker down/);
   });
@@ -612,7 +612,7 @@ describe("converge", () => {
   // must not itself crash trying to describe that.
   it("halts (without throwing) when a pre hook rejects with a non-Error value", async () => {
     const bad = definePreHook({ id: "bad", run: () => { throw null; } });
-    const r = await converge(1, deps(world(), { pre: [bad] }));
+    const r = await converge("1", deps(world(), { pre: [bad] }));
     expect(r.settled).toBe("halt");
     expect(r.why).toBeTruthy();
   });
@@ -654,7 +654,7 @@ describe("converge", () => {
 
     const results = [];
     for (let i = 0; i < 3; i++) {
-      results.push(await converge(1, deps(w, {
+      results.push(await converge("1", deps(w, {
         workflow: screenedWorkflow, steps: new Map([["spec", step]]),
         executor: agentExecutor, screen: { executor: screener },
       })));
@@ -696,11 +696,11 @@ describe("converge", () => {
     };
     const agentExecutor: Executor = { id: "agent", run: async () => ({ text: "unused", sessionId: null }) };
 
-    await converge(1, deps(w, {
+    await converge("1", deps(w, {
       workflow: stepWorkflow, steps: new Map([["spec", step]]),
       executor: agentExecutor, screen: { executor: brokenScreener },
       ctx: {
-        ticket: 1, config: {} as HookContext["config"], secrets: new Map([["token", secretValue]]),
+        ticket: "1", config: {} as HookContext["config"], secrets: new Map([["token", secretValue]]),
         signal: new AbortController().signal, log: () => {},
       },
     }));
@@ -736,11 +736,11 @@ describe("converge", () => {
     };
     const agentExecutor: Executor = { id: "agent", run: async () => ({ text: "unused", sessionId: null }) };
 
-    await converge(1, deps(w, {
+    await converge("1", deps(w, {
       workflow: stepWorkflow, steps: new Map([["spec", step]]),
       executor: agentExecutor, screen: { executor: brokenScreener },
       ctx: {
-        ticket: 1, config: {} as HookContext["config"], secrets: new Map([["token", `  ${bareSecret}  `]]),
+        ticket: "1", config: {} as HookContext["config"], secrets: new Map([["token", `  ${bareSecret}  `]]),
         signal: new AbortController().signal, log: () => {},
       },
     }));
@@ -798,7 +798,7 @@ describe("an artifact's briefing is built for the step, not for the pass", () =>
     const w = world();
     const prompts: string[] = [];
     let briefed = 0;
-    const r = await converge(1, deps(w, {
+    const r = await converge("1", deps(w, {
       workflow: stepWorkflow,
       steps: new Map([["s.md", step]]),
       artifacts: [artifact(() => { briefed++; return { threads: "1. this leaks a handle" }; })],
@@ -824,7 +824,7 @@ describe("an artifact's briefing is built for the step, not for the pass", () =>
   it("halts before paying for the step when a briefing cannot be read", async () => {
     const w = world();
     let invoked = 0;
-    const r = await converge(1, deps(w, {
+    const r = await converge("1", deps(w, {
       workflow: stepWorkflow,
       steps: new Map([["s.md", step]]),
       artifacts: [artifact(() => { throw new Error("the api said no"); })],
@@ -851,7 +851,7 @@ describe("an artifact's briefing is built for the step, not for the pass", () =>
 describe("the evaluation event carries the stage the ticket moved to", () => {
   it("names the destination of a transition, and null when it is not moving", async () => {
     const seen: LandraceEvent[] = [];
-    await converge(1, deps(world(), { log: createLogger({ sink: (e) => seen.push(e) }) }));
+    await converge("1", deps(world(), { log: createLogger({ sink: (e) => seen.push(e) }) }));
 
     const evaluated = seen.filter((e) => e.name === "ticket.evaluated");
     expect(evaluated.map((e) => [e.stage, e.to])).toEqual([
@@ -893,12 +893,12 @@ describe("step.started and step.finished", () => {
     const w = world();
     const { events, log } = recorder();
     const executor: Executor = { id: "ok", run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }) };
-    await converge(7, deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log }));
+    await converge("7", deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log }));
 
     const started = events.find((e) => e.name === "step.started");
     const finished = events.find((e) => e.name === "step.finished");
-    expect(started).toMatchObject({ ticket: 7, stage: "spec", round: 1, model: "haiku" });
-    expect(finished).toMatchObject({ ticket: 7, stage: "spec", round: 1, ok: true });
+    expect(started).toMatchObject({ ticket: "7", stage: "spec", round: 1, model: "haiku" });
+    expect(finished).toMatchObject({ ticket: "7", stage: "spec", round: 1, ok: true });
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
   });
 
@@ -908,10 +908,10 @@ describe("step.started and step.finished", () => {
     const w = world();
     const { events, log } = recorder();
     const executor: Executor = { id: "boom", run: async () => { throw new Error("gone"); } };
-    await converge(7, deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log }));
+    await converge("7", deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log }));
 
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
-    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ ticket: 7, ok: false });
+    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ ticket: "7", ok: false });
   });
 
   it("still finishes when runStep itself throws", async () => {
@@ -928,10 +928,10 @@ describe("step.started and step.finished", () => {
       },
     });
     const executor: Executor = { id: "ok", run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }) };
-    await converge(7, deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log })).catch(() => {});
+    await converge("7", deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log })).catch(() => {});
 
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
-    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ ticket: 7, ok: false });
+    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ ticket: "7", ok: false });
   });
 
   it("still finishes when the step is refused before the agent runs", async () => {
@@ -947,7 +947,7 @@ describe("step.started and step.finished", () => {
       id: "screen",
       run: async () => ({ text: '```json\n{"verdict":"suspicious","reason":"suspicious"}\n```', sessionId: null }),
     };
-    await converge(7, deps(w, {
+    await converge("7", deps(w, {
       workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log, screen: { executor: screener },
     }));
 

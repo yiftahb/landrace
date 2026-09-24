@@ -93,7 +93,7 @@ const assigneeLogins = (issue: Issue): string[] =>
   (issue.assignees ?? []).map((a) => a?.login ?? "").filter(Boolean);
 
 const candidateOf = (issue: Issue): Candidate => ({
-  ticket: issue.number,
+  ticket: String(issue.number),
   title: issue.title,
   url: issue.html_url,
   labels: labelNames(issue),
@@ -535,9 +535,10 @@ const PROVIDES = [
 const HANDLES = [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT];
 
 /** Observe: turn a GitHub issue into the snapshot the engine reads. */
-async function readTicket(gh: Client, ticket: number): Promise<Record<string, unknown>> {
-  const issue = await gh.getIssue(ticket);
-  const raw = await gh.listComments(ticket);
+async function readTicket(gh: Client, ticket: string): Promise<Record<string, unknown>> {
+  const n = issueNumber(ticket);
+  const issue = await gh.getIssue(n);
+  const raw = await gh.listComments(n);
   const bot = await gh.botLogin();
   const names = labelNames(issue);
   return {
@@ -568,11 +569,12 @@ async function readTicket(gh: Client, ticket: number): Promise<Record<string, un
 }
 
 /** Act: every write GitHub owns, each beside the check that says it has landed. */
-async function applyEffect(gh: Client, effect: Effect, ticket: number): Promise<void> {
+async function applyEffect(gh: Client, effect: Effect, ticket: string): Promise<void> {
+  const n = issueNumber(ticket);
   switch (effect.type) {
     case LABEL_EFFECT: {
-      for (const l of (effect.remove as string[]) ?? []) await gh.removeLabel(ticket, l);
-      await gh.addLabels(ticket, (effect.add as string[]) ?? []);
+      for (const l of (effect.remove as string[]) ?? []) await gh.removeLabel(n, l);
+      await gh.addLabels(n, (effect.add as string[]) ?? []);
       return;
     }
     case STATUS_EFFECT: {
@@ -590,9 +592,9 @@ async function applyEffect(gh: Client, effect: Effect, ticket: number): Promise<
       // removals are derived from what is on the ticket rather than from what
       // this call put there.
       const want = LABELS.stage(String(effect.value));
-      await gh.addLabels(ticket, [want]);
-      const current = labelNames(await gh.getIssue(ticket)).filter((l) => l.startsWith(STAGE_LABEL_PREFIX));
-      for (const stale of current.filter((l) => l !== want)) await gh.removeLabel(ticket, stale);
+      await gh.addLabels(n, [want]);
+      const current = labelNames(await gh.getIssue(n)).filter((l) => l.startsWith(STAGE_LABEL_PREFIX));
+      for (const stale of current.filter((l) => l !== want)) await gh.removeLabel(n, stale);
       return;
     }
     case RECORD_EFFECT: {
@@ -600,7 +602,7 @@ async function applyEffect(gh: Client, effect: Effect, ticket: number): Promise<
       // stamping it would make the engine read a person's words as its own
       // record. Everything a stage plans names a kind.
       if (effect.kind === undefined) {
-        await gh.createComment(ticket, neutraliseMarkers(String(effect.body ?? "")));
+        await gh.createComment(n, neutraliseMarkers(String(effect.body ?? "")));
         return;
       }
       const marker: Marker = {
@@ -621,7 +623,7 @@ async function applyEffect(gh: Client, effect: Effect, ticket: number): Promise<
         // would leave every conversation unable to resume.
         ...(typeof effect.session === "string" && effect.session !== "" ? { session: effect.session } : {}),
       };
-      await gh.createComment(ticket, neutraliseMarkers(String(effect.body ?? "")) + renderMarker(marker));
+      await gh.createComment(n, neutraliseMarkers(String(effect.body ?? "")) + renderMarker(marker));
       return;
     }
     default:
@@ -651,9 +653,9 @@ const PAGES_BRANCH = "gh-pages";
  * the reference survives a crash, a rename and a re-derivation for free — the
  * whole reason §3.1 asks for a derived reference rather than a recorded one.
  */
-const pagePath = (ticket: number): string => `specs/${ticket}/index.md`;
+const pagePath = (ticket: string): string => `specs/${ticket}/index.md`;
 
-const pageUrl = (repo: string, ticket: number): string => {
+const pageUrl = (repo: string, ticket: string): string => {
   // GitHub's own default domain for a project site. A repository serving Pages
   // from a custom domain publishes to the same branch and path; only the
   // origin below differs, and it would be the one thing worth configuring.
@@ -683,14 +685,14 @@ function mine(effect: Effect): void {
   }
 }
 
-async function readPage(gh: Client, repo: string, ticket: number): Promise<Record<string, unknown>> {
+async function readPage(gh: Client, repo: string, ticket: string): Promise<Record<string, unknown>> {
   const content = await gh.getFile(PAGES_BRANCH, pagePath(ticket));
   // `exists` and a content hash are the whole state: presence is what a
   // precondition reads, and the hash is what makes a republish a no-op.
   return { exists: content !== null, hash: content === null ? null : hashOf(content), url: pageUrl(repo, ticket) };
 }
 
-async function publishPage(gh: Client, effect: Effect, ticket: number): Promise<void> {
+async function publishPage(gh: Client, effect: Effect, ticket: string): Promise<void> {
   mine(effect);
   const content = contentOf(effect);
 
@@ -728,11 +730,22 @@ function publishSatisfied(snapshot: Snapshot, effect: Effect): boolean {
 const PR = "pr";
 
 /**
+ * The engine's id as the REST path GitHub wants. Only this file knows GitHub
+ * ids are integers; anything else reaching here is a ticket from some other
+ * tracker, and calling `/issues/NaN` with it would report a 404 about the
+ * wrong thing.
+ */
+const issueNumber = (id: string): number => {
+  if (!/^[1-9][0-9]*$/.test(id)) throw new Error(`"${id}" is not a GitHub issue number`);
+  return Number(id);
+};
+
+/**
  * Derived from the ticket, never stored — the same rule the spec's path
  * follows. There is no PR id to remember and nothing to repair: the branch
  * names the ticket, and the pull request is whichever one has that head.
  */
-const prBranch = (ticket: number): string => `landrace/${ticket}`;
+const prBranch = (ticket: string): string => `landrace/${ticket}`;
 
 /**
  * GitHub's own page size for a connection, and how many pages one read will
@@ -801,7 +814,7 @@ interface PrResponse {
  * it, and an artifact carrying more than its gates read is a remote document's
  * shape reaching the snapshot. No thread bodies: see PR_QUERY.
  */
-async function readPr(gh: Client, repo: string, ticket: number): Promise<Record<string, unknown>> {
+async function readPr(gh: Client, repo: string, ticket: string): Promise<Record<string, unknown>> {
   const [owner = "", name = ""] = repo.split("/");
   const head = prBranch(ticket);
 
@@ -920,7 +933,7 @@ const where = (thread: BriefThread): string =>
  * findings were open — and a step told to address nothing answers "addressed",
  * which spends a round and moves the ticket on with the findings still there.
  */
-async function briefPr(gh: Client, repo: string, ticket: number): Promise<Record<string, string>> {
+async function briefPr(gh: Client, repo: string, ticket: string): Promise<Record<string, string>> {
   const [owner = "", name = ""] = repo.split("/");
   const head = prBranch(ticket);
 
@@ -1045,7 +1058,7 @@ async function probeContentsRead(gh: Client, repo: string): Promise<void> {
     // a 404 on a healthy token rather than risking a real spec directory,
     // which the contents API would answer with a listing `getFile` cannot
     // parse as a file at all.
-    await gh.getFile(PAGES_BRANCH, pagePath(0));
+    await gh.getFile(PAGES_BRANCH, pagePath("0"));
   } catch (e) {
     throw tokenRejected(e) ?? ((e as { status?: unknown } | null)?.status === 403
       ? new Error(`token needs "Contents: Read and write" on ${repo}`)
@@ -1212,17 +1225,18 @@ export function githubHooks(opts: GitHubOptions): {
       createTicket: async ({ title, body, labels }: NewTicket) =>
         candidateOf(await gh.createIssue({ title, body: body ?? "", labels: labels ?? [] })),
 
-      updateTicket: async (ticket: number, patch: TicketPatch) => {
+      updateTicket: async (ticket: string, patch: TicketPatch) => {
+        const n = issueNumber(ticket);
         const fields: { title?: string; body?: string; state?: string } = {};
         if (patch.title !== undefined) fields.title = patch.title;
         if (patch.body !== undefined) fields.body = patch.body;
         if (patch.state !== undefined) fields.state = patch.state;
 
-        for (const name of patch.removeLabels ?? []) await gh.removeLabel(ticket, name);
-        await gh.addLabels(ticket, patch.addLabels ?? []);
+        for (const name of patch.removeLabels ?? []) await gh.removeLabel(n, name);
+        await gh.addLabels(n, patch.addLabels ?? []);
 
         return candidateOf(
-          Object.keys(fields).length ? await gh.updateIssue(ticket, fields) : await gh.getIssue(ticket),
+          Object.keys(fields).length ? await gh.updateIssue(n, fields) : await gh.getIssue(n),
         );
       },
     }),
@@ -1324,7 +1338,7 @@ export const specArtifact = defineArtifactHook({
 export const operator = defineOperator({
   id: "github",
   createTicket: async (input: NewTicket, ctx: RuntimeContext) => hooksFor(ctx).operator.createTicket(input, ctx),
-  updateTicket: async (ticket: number, patch: TicketPatch, ctx: RuntimeContext) =>
+  updateTicket: async (ticket: string, patch: TicketPatch, ctx: RuntimeContext) =>
     hooksFor(ctx).operator.updateTicket(ticket, patch, ctx),
 });
 

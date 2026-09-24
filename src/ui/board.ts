@@ -1,3 +1,4 @@
+import { compareIds } from "#conventions.js";
 import { oneLine, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import type {
@@ -26,8 +27,8 @@ export function boardView(input: {
   workflow: Workflow;
   candidates: Candidate[];
   listedAt: number | null;
-  running: ReadonlyMap<number, Running>;
-  elsewhere: ReadonlyMap<number, Held>;
+  running: ReadonlyMap<string, Running>;
+  elsewhere: ReadonlyMap<string, Held>;
   now: number;
   pid: number;
   nextTickAt: number | null;
@@ -65,7 +66,7 @@ export function boardView(input: {
     }
     return { ...base, lane: laneOf(status, input.workflow) };
   });
-  rows.sort((a, b) => ORDER.indexOf(a.lane) - ORDER.indexOf(b.lane) || a.ticket - b.ticket);
+  rows.sort((a, b) => ORDER.indexOf(a.lane) - ORDER.indexOf(b.lane) || compareIds(a.ticket, b.ticket));
   return {
     generatedAt: input.now, listedAt: input.listedAt, rows, nextTickAt: input.nextTickAt,
     folder: input.folder, workspace: input.workspace,
@@ -79,7 +80,7 @@ export function boardView(input: {
  */
 export function createBoard(opts: {
   workflow: Workflow;
-  held: (ticket: number) => Promise<Held | null>;
+  held: (ticket: string) => Promise<Held | null>;
   now?: () => number;
   pid?: number;
   /** When the next scheduled tick is due — the schedule's own `nextAt`. */
@@ -94,11 +95,11 @@ export function createBoard(opts: {
   const nextTickAt = opts.nextTickAt ?? (() => null);
   let candidates: Candidate[] = [];
   let listedAt: number | null = null;
-  const running = new Map<number, Running>();
+  const running = new Map<string, Running>();
 
   return {
     observe(e: LandraceEvent): void {
-      if (typeof e.ticket !== "number") return;
+      if (typeof e.ticket !== "string") return;
       if (e.name === "step.started") {
         running.set(e.ticket, {
           stage: String(e.stage ?? ""),
@@ -115,7 +116,7 @@ export function createBoard(opts: {
       listedAt = now();
     },
     async view(): Promise<BoardView> {
-      const elsewhere = new Map<number, Held>();
+      const elsewhere = new Map<string, Held>();
       await Promise.all(candidates.map(async (c) => {
         const h = await opts.held(c.ticket);
         if (h) elsewhere.set(c.ticket, h);

@@ -63,7 +63,7 @@ afterAll(removeRepos);
 describe("a step that exceeds what it declared", () => {
   it("is refused when it writes to the worktree without repo:write, and the write is named", async () => {
     const root = await repo();
-    const path = await ensureWorktree(101, root);
+    const path = await ensureWorktree("101", root);
 
     const r = await runStep({
       step: step(["repo:read"]),
@@ -76,7 +76,7 @@ describe("a step that exceeds what it declared", () => {
     expect(r).toMatchObject({ ok: false, kind: "refused" });
     expect((r as Fail).reason).toMatch(/planted\.ts/);
     expect((r as Fail).reason).toMatch(/repo:write/);
-    await removeWorktree(101, root);
+    await removeWorktree("101", root);
   });
 
   /**
@@ -86,7 +86,7 @@ describe("a step that exceeds what it declared", () => {
    */
   it("is refused when it commits, which leaves nothing for `git status` to report", async () => {
     const root = await repo();
-    const path = await ensureWorktree(102, root);
+    const path = await ensureWorktree("102", root);
 
     const committer: Executor = {
       id: "committer",
@@ -108,12 +108,12 @@ describe("a step that exceeds what it declared", () => {
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
     expect((r as Fail).reason).toMatch(/commit/i);
-    await removeWorktree(102, root);
+    await removeWorktree("102", root);
   });
 
   it("produces no effects when it is refused, so nothing it wrote reaches the tracker", async () => {
     const root = await repo();
-    const path = await ensureWorktree(103, root);
+    const path = await ensureWorktree("103", root);
 
     const r = await runStep({
       step: step(["repo:read"]),
@@ -124,12 +124,12 @@ describe("a step that exceeds what it declared", () => {
     });
     expect(r.ok).toBe(false);
     expect(r).not.toHaveProperty("effects");
-    await removeWorktree(103, root);
+    await removeWorktree("103", root);
   });
 
   it("lets the same write through for a step that declared repo:write", async () => {
     const root = await repo();
-    const path = await ensureWorktree(104, root);
+    const path = await ensureWorktree("104", root);
 
     const r = await runStep({
       step: step(["repo:read", "repo:write"]),
@@ -141,12 +141,12 @@ describe("a step that exceeds what it declared", () => {
 
     expect(r).toMatchObject({ ok: true });
     expect(existsSync(join(path, "planted.ts"))).toBe(true);
-    await removeWorktree(104, root);
+    await removeWorktree("104", root);
   });
 
   it("does not refuse a read-only step that touched nothing", async () => {
     const root = await repo();
-    const path = await ensureWorktree(105, root);
+    const path = await ensureWorktree("105", root);
 
     const r = await runStep({
       step: step(["repo:read"]),
@@ -156,7 +156,7 @@ describe("a step that exceeds what it declared", () => {
       sandbox: { path },
     });
     expect(r).toMatchObject({ ok: true });
-    await removeWorktree(105, root);
+    await removeWorktree("105", root);
   });
 
   /**
@@ -187,7 +187,7 @@ describe("a step that exceeds what it declared", () => {
 
   it("refuses rather than throwing when the worktree is gone by the time the step ends", async () => {
     const root = await repo();
-    const path = await ensureWorktree(106, root);
+    const path = await ensureWorktree("106", root);
     const vanishing: Executor = {
       id: "vanishing",
       run: async () => {
@@ -205,7 +205,7 @@ describe("a step that exceeds what it declared", () => {
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
-    await removeWorktree(106, root);
+    await removeWorktree("106", root);
   });
 
   /**
@@ -306,7 +306,7 @@ const deps = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) =
   dispatcher: createDispatcher([w.post]),
   executor: wellBehaved(),
   ctx: {
-    ticket: 1, config: {} as HookContext["config"], secrets: new Map(),
+    ticket: "1", config: {} as HookContext["config"], secrets: new Map(),
     signal: new AbortController().signal, log: () => {},
   },
   log: createLogger({ sink: () => {} }),
@@ -325,7 +325,7 @@ describe("converge and the sandbox", () => {
       },
     };
 
-    await converge(1, deps(world(), { executor: watcher, sandbox: { root } }));
+    await converge("1", deps(world(), { executor: watcher, sandbox: { root } }));
 
     expect(ranIn).toBeDefined();
     expect(ranIn).not.toBe(root);
@@ -343,7 +343,7 @@ describe("converge and the sandbox", () => {
       run: async () => { throw new Error("agent exceeded 600000ms"); },
     };
 
-    const r = await converge(1, deps(world(), { executor: dying, sandbox: { root } }));
+    const r = await converge("1", deps(world(), { executor: dying, sandbox: { root } }));
 
     expect(r.settled).toBe("halt");
     expect(await sandboxes(root)).toEqual([]);
@@ -363,7 +363,7 @@ describe("converge and the sandbox", () => {
     const d = deps(w, { executor: abandoning, sandbox: { root } });
     d.ctx.signal = stop.signal;
 
-    await converge(1, d);
+    await converge("1", d);
     expect(await sandboxes(root)).toEqual([]);
   });
 
@@ -383,7 +383,7 @@ describe("converge and the sandbox", () => {
       },
     });
 
-    const r = await converge(1, deps(w, { dispatcher: createDispatcher([angry]), sandbox: { root } }));
+    const r = await converge("1", deps(w, { dispatcher: createDispatcher([angry]), sandbox: { root } }));
     expect(r.why).toMatch(/unhappy/);
     expect(await sandboxes(root)).toEqual([]);
   });
@@ -413,7 +413,7 @@ describe("converge and the sandbox", () => {
     });
     const briefed: Step = { ...step(["repo:read"]), prompt: "address {brief.pr.threads}" };
 
-    const r = await converge(1, deps(world(), {
+    const r = await converge("1", deps(world(), {
       steps: new Map<string, Step>([["spec", briefed]]),
       artifacts: [pr],
       sandbox: { root: notARepo },
@@ -426,7 +426,7 @@ describe("converge and the sandbox", () => {
 
   it("halts with a readable reason when the sandbox cannot be created, rather than crashing", async () => {
     const notARepo = await plainDir();
-    const r = await converge(1, deps(world(), { sandbox: { root: notARepo } }));
+    const r = await converge("1", deps(world(), { sandbox: { root: notARepo } }));
     expect(r.settled).toBe("halt");
     expect(r.why).toMatch(/worktree|not a git repository/i);
   });
@@ -439,7 +439,7 @@ describe("converge and the sandbox", () => {
   it("records the refusal on the ticket and keeps the write out of the repository", async () => {
     const root = await repo();
     const w = world();
-    await converge(1, deps(w, { executor: writer("planted.ts"), sandbox: { root } }));
+    await converge("1", deps(w, { executor: writer("planted.ts"), sandbox: { root } }));
 
     expect(existsSync(join(root, "planted.ts"))).toBe(false);
     const malformed = w.entries.filter((e) => e.kind === "malformed");
@@ -459,7 +459,7 @@ describe("converge and the sandbox", () => {
 
     // No sandbox in deps: the agent runs where the loop runs, which is the
     // operator's own checkout — so nothing may be checked against it either.
-    await converge(1, deps(world(), { executor: watcher }));
+    await converge("1", deps(world(), { executor: watcher }));
     expect(ranIn).toBeUndefined();
   });
 });

@@ -276,7 +276,7 @@ export interface Problem {
  * redaction know every value that must never be printed.
  */
 export interface HookContext {
-  ticket: number;
+  ticket: string;
   snapshot: Snapshot;
   config: RuntimeConfig;
   secrets: ReadonlyMap<string, string>;
@@ -400,7 +400,7 @@ export interface Preflight {
 
 /** A ticket worth looking at, cheaply enough to enumerate every one of them. */
 export interface Candidate {
-  ticket: number;
+  ticket: string;
   title: string;
   url: string;
   /**
@@ -470,7 +470,7 @@ export interface TicketPatch {
 export interface Operator {
   id: string;
   createTicket(input: NewTicket, ctx: RuntimeContext): Promise<Candidate>;
-  updateTicket(ticket: number, input: TicketPatch, ctx: RuntimeContext): Promise<Candidate>;
+  updateTicket(ticket: string, input: TicketPatch, ctx: RuntimeContext): Promise<Candidate>;
 }
 
 /**
@@ -549,7 +549,7 @@ export type EventName =
 
 export interface LandraceEvent {
   name: EventName;
-  ticket?: number;
+  ticket?: string;
   [key: string]: unknown;
 }
 
@@ -558,7 +558,7 @@ export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 export type LockKind = "tick" | "conversation" | "execution";
 
 export interface Held {
-  ticket: number;
+  ticket: string;
   holder: string;
   kind: LockKind;
   pid: number;
@@ -645,7 +645,7 @@ export interface ConvergeResult {
 }
 
 export interface StatusRow {
-  ticket: number;
+  ticket: string;
   title: string;
   stage: string | null;
   note: string;
@@ -669,7 +669,7 @@ export interface TickOptions {
 }
 
 export interface TickRow {
-  ticket: number;
+  ticket: string;
   outcome: string;
 }
 
@@ -707,7 +707,7 @@ export interface HarnessOptions {
   artifacts?: ArtifactHook[];
   /** What each stage's step answers. A stage that is invoked with nothing scripted is a gap, and says so. */
   answers?: { [stage: string]: ScriptedAnswer };
-  ticket?: number;
+  ticket?: string;
   /**
    * What the world does while a step runs — a push, a pull request appearing,
    * a person resolving a thread. Called after the invocation is decided and
@@ -742,7 +742,7 @@ export interface Harness {
 
 /** A ticket as the in-memory tracker holds it. */
 export interface ExternalTicket {
-  number: number;
+  id: string;
   title: string;
   body: string;
   labels: string[];
@@ -767,15 +767,15 @@ export interface ExternalTicket {
 export interface ExternalState {
   pre: PreHook;
   post: PostHook;
-  ticket(n: number): ExternalTicket;
-  comments(n: number): string[];
-  entriesOf(n: number): Entry[];
+  ticket(id: string): ExternalTicket;
+  comments(id: string): string[];
+  entriesOf(id: string): Entry[];
   /** Where the ticket sits, as the engine would read it: out of a label. */
-  stage(n: number): string | null;
-  label(n: number, label: string): void;
-  unlabel(n: number, label: string): void;
+  stage(id: string): string | null;
+  label(id: string, label: string): void;
+  unlabel(id: string, label: string): void;
   /** A person says something, under their own name, so it reads as a human turn. */
-  say(n: number, text: string): void;
+  say(id: string, text: string): void;
 }
 
 /* ----------------------------------------------------------------- agent -- */
@@ -800,8 +800,8 @@ export type Verdict = { verdict?: unknown; reason?: unknown };
 /* ------------------------------------------------------------------- mcp -- */
 
 export interface Tools {
-  waiting(): Promise<Array<{ ticket: number; title: string; url: string }>>;
-  status(ticket: number): Promise<unknown>;
+  waiting(): Promise<Array<{ ticket: string; title: string; url: string }>>;
+  status(ticket: string): Promise<unknown>;
   // `| undefined` is explicit because exactOptionalPropertyTypes is on and these
   // are fed straight from Zod, whose optional output includes it.
   createTicket(input: {
@@ -811,7 +811,7 @@ export interface Tools {
     start?: boolean | undefined;
   }): Promise<unknown>;
   updateTicket(
-    ticket: number,
+    ticket: string,
     input: {
       title?: string | undefined;
       body?: string | undefined;
@@ -820,9 +820,9 @@ export interface Tools {
       removeLabels?: string[] | undefined;
     },
   ): Promise<unknown>;
-  reply(ticket: number, message: string): Promise<unknown>;
-  ask(ticket: number, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
-  resolve(ticket: number, why?: string | undefined): Promise<unknown>;
+  reply(ticket: string, message: string): Promise<unknown>;
+  ask(ticket: string, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
+  resolve(ticket: string, why?: string | undefined): Promise<unknown>;
 }
 
 /**
@@ -995,12 +995,12 @@ export interface Conversation {
    * something", read fail-closed: unreadable means unresolved.
    */
   ask(
-    ticket: number,
+    ticket: string,
     message: string,
     opts?: { signal?: AbortSignal },
   ): Promise<{ reply: string; resolved: boolean }>;
   /** Hand the ticket back to the loop as a human turn. Already handed back is reported, not repeated. */
-  resolve(ticket: number, why?: string): Promise<{ alreadyResolved: boolean }>;
+  resolve(ticket: string, why?: string): Promise<{ alreadyResolved: boolean }>;
 }
 
 /* -------------------------------------------------------------------- ui -- */
@@ -1033,7 +1033,7 @@ export interface Chat {
  * an event payload.
  */
 export interface BoardRow {
-  ticket: number;
+  ticket: string;
   title: string;
   /** http(s) only, else empty — a tracker URL becomes an href. */
   url: string;

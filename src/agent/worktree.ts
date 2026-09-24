@@ -44,20 +44,20 @@ async function rootFor(repoRoot: string): Promise<string> {
  * before anything is deleted there.
  *
  * `rm -rf` on a path assembled from outside input is the highest-consequence
- * operation in this codebase, and a ticket is a number to the typechecker and
- * a value out of a tracker hook at runtime, which are not the same claim.
- * `containedPath` is the existing answer to exactly this shape: it rejects a
- * segment that climbs out before resolving anything, and compares both ends
- * after fs.realpath, so a path that exists but leads somewhere else is
- * refused rather than followed.
+ * operation in this codebase, and a ticket is a validated string to the
+ * typechecker and a value out of a tracker hook at runtime, which are not the
+ * same claim. `containedPath` is the existing answer to exactly this shape:
+ * it rejects a segment that climbs out before resolving anything, and
+ * compares both ends after fs.realpath, so a path that exists but leads
+ * somewhere else is refused rather than followed.
  */
-async function pathFor(ticket: number, repoRoot: string): Promise<string> {
+async function pathFor(ticket: string, repoRoot: string): Promise<string> {
   const root = await rootFor(repoRoot);
-  const where = await containedPath(root, String(ticket));
+  const where = await containedPath(root, ticket);
   if (where.ok) return where.path;
   // Not there yet, which is the ordinary case — and the shape check and the
   // containment check both ran before the lookup that said so.
-  if (where.kind === "missing") return join(root, String(ticket));
+  if (where.kind === "missing") return join(root, ticket);
   throw new Error(`refusing to touch a sandbox for #${ticket} under ${root}: that path ${where.reason}`);
 }
 
@@ -98,7 +98,7 @@ export async function repositoryRoot(dir: string): Promise<string> {
  * capability check in `runStep` is the half of this that actually refuses
  * something.
  */
-export async function ensureWorktree(ticket: number, repoRoot: string): Promise<string> {
+export async function ensureWorktree(ticket: string, repoRoot: string): Promise<string> {
   const path = await pathFor(ticket, repoRoot);
   const listed = await git(["worktree", "list", "--porcelain"], repoRoot, `could not create a worktree for #${ticket}`);
   // Re-used, not rebuilt: a run that crashed mid-step left one registered, and
@@ -124,7 +124,7 @@ export async function ensureWorktree(ticket: number, repoRoot: string): Promise<
  * reached because something already went wrong. A removal that threw there
  * would replace the real failure with its own.
  */
-export async function removeWorktree(ticket: number, repoRoot: string): Promise<void> {
+export async function removeWorktree(ticket: string, repoRoot: string): Promise<void> {
   // A path this refuses is one that is not ours, and there is nothing of ours
   // at it to remove: doing nothing is the whole answer, and reporting it here
   // would be reporting it from the unwind of something else.

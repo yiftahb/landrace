@@ -13,7 +13,7 @@ const workflow: Workflow = {
 };
 
 const candidate = (labels: string[], assignees: string[] = []): Candidate =>
-  ({ ticket: 1, title: "Add export", url: "u/1", labels, assignees });
+  ({ ticket: "1", title: "Add export", url: "u/1", labels, assignees });
 
 const noteFor = (labels: string[]): string | undefined => statusRows(workflow, [candidate(labels)])[0]?.note;
 
@@ -24,7 +24,7 @@ describe("statusRows", () => {
 
   it("reads the position out of the stage label", () => {
     expect(statusRows(workflow, [candidate(["go", "lr:stage:spec"])])[0]).toMatchObject({
-      ticket: 1,
+      ticket: "1",
       title: "Add export",
       stage: "spec",
     });

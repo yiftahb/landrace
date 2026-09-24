@@ -69,7 +69,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
   });
 
-  const snapshotOf = (ticket: number): Promise<Snapshot> =>
+  const snapshotOf = (ticket: string): Promise<Snapshot> =>
     buildSnapshot({ ticket, hooks: registry.pre, ctx: { ...ctx, ticket } });
 
   const source = (): NonNullable<Registry["source"]> => {

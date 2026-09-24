@@ -4,7 +4,7 @@ import { definePreHook } from "#hooks/contracts.js";
 import type { HookContext } from "#namespace.js";
 
 const ctx = (): Omit<HookContext, "snapshot"> => ({
-  ticket: 1,
+  ticket: "1",
   config: {} as HookContext["config"],
   secrets: new Map(),
   signal: new AbortController().signal,
@@ -14,7 +14,7 @@ const ctx = (): Omit<HookContext, "snapshot"> => ({
 describe("buildSnapshot", () => {
   it("merges fragments in declaration order", async () => {
     const s = await buildSnapshot({
-      ticket: 1,
+      ticket: "1",
       hooks: [
         definePreHook({ id: "a", run: () => ({ x: 1, shared: "first" }) }),
         definePreHook({ id: "b", run: () => ({ y: 2, shared: "second" }) }),
@@ -26,7 +26,7 @@ describe("buildSnapshot", () => {
 
   it("gives each hook what previous hooks produced", async () => {
     const s = await buildSnapshot({
-      ticket: 1,
+      ticket: "1",
       hooks: [
         definePreHook({ id: "a", run: () => ({ base: 2 }) }),
         definePreHook({
@@ -42,7 +42,7 @@ describe("buildSnapshot", () => {
   it("derives run state from entries and the stage label", async () => {
     const at = "2026-01-01T00:00:00Z";
     const s = await buildSnapshot({
-      ticket: 1,
+      ticket: "1",
       hooks: [
         definePreHook({
           id: "t",
@@ -58,14 +58,14 @@ describe("buildSnapshot", () => {
   });
 
   it("carries the clock in, so core never reads it", async () => {
-    const s = await buildSnapshot({ ticket: 1, hooks: [], ctx: ctx(), now: 1234 });
+    const s = await buildSnapshot({ ticket: "1", hooks: [], ctx: ctx(), now: 1234 });
     expect(s.now).toBe(1234);
   });
 
   it("names the hook that threw, rather than failing anonymously", async () => {
     await expect(
       buildSnapshot({
-        ticket: 1,
+        ticket: "1",
         hooks: [definePreHook({ id: "flaky", run: () => { throw new Error("no network"); } })],
         ctx: ctx(),
       }),
@@ -80,7 +80,7 @@ describe("buildSnapshot", () => {
   it("does not itself crash when the hook rejects with a non-Error value", async () => {
     await expect(
       buildSnapshot({
-        ticket: 1,
+        ticket: "1",
         hooks: [definePreHook({ id: "flaky", run: () => { throw null; } })],
         ctx: ctx(),
       }),
@@ -89,21 +89,21 @@ describe("buildSnapshot", () => {
 
   it("records the snapshot hash, which the decision cache reads later", async () => {
     const s = await buildSnapshot({
-      ticket: 1, hooks: [], ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
+      ticket: "1", hooks: [], ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
     });
     expect(String(s.hash)).toMatch(/^len:\d+$/);
   });
 
   it("gives the same hash for the same inputs at different times", async () => {
     const digest = (input: string) => `len:${input.length}`;
-    const a = await buildSnapshot({ ticket: 1, hooks: [], ctx: ctx(), now: 1, digest });
-    const b = await buildSnapshot({ ticket: 1, hooks: [], ctx: ctx(), now: 999, digest });
+    const a = await buildSnapshot({ ticket: "1", hooks: [], ctx: ctx(), now: 1, digest });
+    const b = await buildSnapshot({ ticket: "1", hooks: [], ctx: ctx(), now: 999, digest });
     expect(a.hash).toBe(b.hash);
   });
 
   it("places the ticket as null when no stage label is present", async () => {
     const s = await buildSnapshot({
-      ticket: 1,
+      ticket: "1",
       hooks: [definePreHook({ id: "t", run: () => ({ ticket: { labels: ["lr:auto"] } }) })],
       ctx: ctx(),
     });

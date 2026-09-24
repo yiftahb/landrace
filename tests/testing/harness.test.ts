@@ -11,7 +11,7 @@ import type { Harness, ScriptedAnswer } from "#namespace.js";
 const SPEC = '# The spec\n\nDo it.\n\n```json\n{"kind":"spec","title":"T"}\n```';
 
 async function harness(answers: Record<string, ScriptedAnswer>): Promise<Harness> {
-  const state = createExternalState({ tickets: [{ number: 1, labels: ["lr:auto"] }] });
+  const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto"] }] });
   const { workflow, steps } = await loadWorkflow("tests/fixtures/minimal");
   return createHarness({ workflow, steps, pre: [state.pre], post: [state.post], answers });
 }

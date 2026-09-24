@@ -19,7 +19,7 @@ import { tick } from "#runner/tick.js";
  * therefore everything `buildRuntime` assembles out of it — is unreachable
  * there.
  */
-const TICKET = 4242;
+const TICKET = "4242";
 const TOKEN = "ghp_a_token_long_enough_to_redact";
 
 /**
@@ -38,12 +38,12 @@ const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
   Object.defineProperty(value, KIND, { value: kind, enumerable: false });
 
-interface Ctx { ticket: number; config: { tracker: { record: string } } }
+interface Ctx { ticket: string; config: { tracker: { record: string } } }
 
 export const source = brand("source", {
   id: "fake",
   list: async (): Promise<unknown[]> => [
-    { ticket: ${TICKET}, title: "Add export", url: "u/${TICKET}", labels: ["lr:auto"], assignees: [] },
+    { ticket: "${TICKET}", title: "Add export", url: "u/${TICKET}", labels: ["lr:auto"], assignees: [] },
   ],
 });
 

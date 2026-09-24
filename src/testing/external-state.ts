@@ -58,15 +58,15 @@ function clock(): (existing: TrackerComment[]) => string {
 export function createExternalState(
   seed: { tickets?: Array<Partial<ExternalTicket>> } = {},
 ): ExternalState {
-  const rows = new Map<number, ExternalTicket>();
+  const rows = new Map<string, ExternalTicket>();
   const at = clock();
   let nextId = 1000;
 
   for (const [i, s] of (seed.tickets ?? []).entries()) {
-    const number = s.number ?? i + 1;
-    rows.set(number, {
-      number,
-      title: s.title ?? `ticket ${number}`,
+    const id = s.id ?? String(i + 1);
+    rows.set(id, {
+      id,
+      title: s.title ?? `ticket ${id}`,
       body: s.body ?? "",
       labels: [...(s.labels ?? [])],
       assignees: [...(s.assignees ?? [])],
@@ -74,18 +74,18 @@ export function createExternalState(
     });
   }
 
-  const must = (n: number): ExternalTicket => {
-    const row = rows.get(n);
-    if (!row) throw new Error(`no such ticket #${n}`);
+  const must = (id: string): ExternalTicket => {
+    const row = rows.get(id);
+    if (!row) throw new Error(`no such ticket #${id}`);
     return row;
   };
 
-  const post = (n: number, author: string, body: string): void => {
-    const row = must(n);
+  const post = (id: string, author: string, body: string): void => {
+    const row = must(id);
     row.comments.push({ id: nextId++, body, created_at: at(row.comments), user: { login: author } });
   };
 
-  const entriesOf = (n: number): Entry[] => entriesFromComments(must(n).comments, BOT);
+  const entriesOf = (id: string): Entry[] => entriesFromComments(must(id).comments, BOT);
 
   const wroteIt = (c: TrackerComment): boolean => c.user?.login === BOT;
 
@@ -125,7 +125,7 @@ export function createExternalState(
         const row = must(ticket);
         return {
           ticket: {
-            number: row.number,
+            number: row.id,
             title: row.title,
             body: row.body,
             labels: [...row.labels],

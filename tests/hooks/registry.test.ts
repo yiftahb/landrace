@@ -13,7 +13,7 @@ const post = (id: string, handles: string[]) =>
 
 const source = (id: string) => defineSource({ id, list: async () => [] });
 
-const candidate: Candidate = { ticket: 1, title: "t", url: "u", labels: [], assignees: [] };
+const candidate: Candidate = { ticket: "1", title: "t", url: "u", labels: [], assignees: [] };
 const operator = (id: string) =>
   defineOperator({
     id,

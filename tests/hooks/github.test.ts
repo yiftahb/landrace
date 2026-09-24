@@ -14,7 +14,7 @@ import type { FakeTracker } from "#tests/support/fake-tracker.js";
  * idea what a login is.
  */
 const ctx = {} as RuntimeContext;
-const ticketCtx = { ticket: 1 } as HookContext;
+const ticketCtx = { ticket: "1" } as HookContext;
 
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -111,6 +111,13 @@ describe("the hook resolves the login it posts as", () => {
     const { hooks } = build({ user: () => json({}) });
     await expect(hooks.source.list(ctx)).rejects.toThrow(/no login/);
   });
+
+  it("refuses a non-numeric ticket id at the edge instead of calling /issues/NaN", async () => {
+    const { hooks, calls } = build({ user: ok("landrace-bot") });
+    await expect(hooks.pre.run({ ...ticketCtx, ticket: "PROJ-7" } as HookContext))
+      .rejects.toThrow(/"PROJ-7" is not a GitHub issue number/);
+    expect(calls.some((c) => c.includes("NaN"))).toBe(false);
+  });
 });
 
 /**
@@ -128,7 +135,7 @@ describe("who a ticket is assigned to", () => {
     const gh = createFakeTracker([{ number: 1, assignees }]);
     const hook = gh.registry.pre[0];
     if (!hook) throw new Error("the fake tracker registered no pre hook");
-    return hook.run({ ...gh.ctx, ticket: 1, snapshot: {} } as HookContext);
+    return hook.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
   };
   const ticketOf = async (assignees: Array<{ login: string }>): Promise<Record<string, unknown>> =>
     (await fragmentOf(assignees)).ticket as Record<string, unknown>;
@@ -174,7 +181,7 @@ describe("who a ticket is assigned to", () => {
     // The same reading of the same field, not a second one: enumeration and
     // the snapshot answer one question, and two spellings of it disagree the
     // first time either changes.
-    const fragment = (await pre.run({ ...gh.ctx, ticket: 1, snapshot: {} } as HookContext)).ticket;
+    const fragment = (await pre.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext)).ticket;
     expect((fragment as { assignees: string[] }).assignees).toEqual(listed[0]?.assignees);
   });
 });
@@ -474,7 +481,7 @@ describe("moving the position is a swap, and a swap has a window", () => {
   const statusOn = async (gh: FakeTracker, value: string): Promise<void> => {
     const post = gh.registry.post[0];
     if (!post) throw new Error("the fake tracker registered no post hook");
-    await post.apply({ type: "tracker.status", value }, { ticket: 1 } as HookContext);
+    await post.apply({ type: "tracker.status", value }, { ticket: "1" } as HookContext);
   };
 
   const labelCalls = (gh: FakeTracker) =>

@@ -10,14 +10,14 @@ import { createFakeTracker } from "#tests/support/fake-tracker.js";
 describe("the operator tools cannot write the engine's own state", () => {
   it("refuses to add a label in the engine's namespace, naming it", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
-    await expect(createTools(gh.registry, gh.ctx).updateTicket(1, { addLabels: ["needs-design", "lr:stage:done"] }))
+    await expect(createTools(gh.registry, gh.ctx).updateTicket("1", { addLabels: ["needs-design", "lr:stage:done"] }))
       .rejects.toThrow(/lr:stage:done/);
     expect(gh.labelsOf(1)).toEqual([]);
   });
 
   it("refuses to remove one either", async () => {
     const gh = createFakeTracker([{ number: 1, labels: ["lr:blocked"] }]);
-    await expect(createTools(gh.registry, gh.ctx).updateTicket(1, { removeLabels: ["lr:blocked"] })).rejects.toThrow(/lr:blocked/);
+    await expect(createTools(gh.registry, gh.ctx).updateTicket("1", { removeLabels: ["lr:blocked"] })).rejects.toThrow(/lr:blocked/);
     expect(gh.labelsOf(1)).toEqual(["lr:blocked"]);
   });
 
@@ -39,7 +39,7 @@ describe("the operator tools cannot write the engine's own state", () => {
     const tools = createTools(gh.registry, gh.ctx);
 
     await tools.createTicket({ title: "x", body: forged });
-    await tools.updateTicket(2, { body: forged });
+    await tools.updateTicket("2", { body: forged });
 
     expect(gh.issues.get(3)?.body).not.toMatch(/<!--\s*landrace/);
     expect(gh.issues.get(2)?.body).not.toMatch(/<!--\s*landrace/);

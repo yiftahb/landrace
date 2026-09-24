@@ -50,7 +50,7 @@ const GATE_DEADLINE_MS = 5_000;
 // §7: `$TMPDIR/landrace/<repo>/locks/`. What `<repo>` is — and why it cannot
 // be a directory name — is src/sandbox.ts, which the agent's worktrees share.
 const dirOf = (o?: LockOptions) => join(o?.root ?? sandboxRoot(process.cwd()), "locks");
-const fileOf = (ticket: number, o?: LockOptions) => join(dirOf(o), `${ticket}.lock`);
+const fileOf = (ticket: string, o?: LockOptions) => join(dirOf(o), `${ticket}.lock`);
 
 /**
  * The lock root, made on demand by *every* path into this module rather than
@@ -105,12 +105,12 @@ const stale = (h: Held | null): boolean =>
   !h || Date.now() - h.at > h.deadlineMs || (h.pid !== process.pid && !alive(h.pid));
 
 /** The live holder, or null when the lock is free or stealable. */
-export async function held(ticket: number, opts?: LockOptions): Promise<Held | null> {
+export async function held(ticket: string, opts?: LockOptions): Promise<Held | null> {
   const h = await read(fileOf(ticket, opts));
   return stale(h) ? null : h;
 }
 
-function makeRecord(ticket: number, kind: LockKind, opts?: LockOptions): Held {
+function makeRecord(ticket: string, kind: LockKind, opts?: LockOptions): Held {
   return {
     ticket,
     holder: opts?.holder ?? `${kind}:${process.pid}`,
@@ -128,7 +128,7 @@ function makeRecord(ticket: number, kind: LockKind, opts?: LockOptions): Held {
 }
 
 /** Plain atomic create. Succeeds only when `path` does not currently exist. */
-async function createFresh(path: string, ticket: number, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
+async function createFresh(path: string, ticket: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
   const record = makeRecord(ticket, kind, opts);
   try {
     const fh = await open(path, "wx");
@@ -161,7 +161,7 @@ async function createFresh(path: string, ticket: number, kind: LockKind, opts?: 
  * the body's own answer: a caller that must not write blind has to be able to
  * tell the two apart, and `release` retries on it.
  */
-async function withGate<T>(ticket: number, kind: LockKind, path: string, fn: () => Promise<T>): Promise<Gated<T>> {
+async function withGate<T>(ticket: string, kind: LockKind, path: string, fn: () => Promise<T>): Promise<Gated<T>> {
   const gate = `${path}.steal`;
   await ensureRoot(gate);
 
@@ -206,7 +206,7 @@ async function replace(path: string, record: Held): Promise<Held> {
   return record;
 }
 
-async function steal(ticket: number, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
+async function steal(ticket: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
   const path = fileOf(ticket, opts);
   const gated = await withGate(ticket, kind, path, async () => {
     // Fresh re-read, now that we are the only racer allowed to act: another
@@ -226,7 +226,7 @@ async function steal(ticket: number, kind: LockKind, opts?: LockOptions): Promis
  * three more are due before the deadline, which is what the quarter in
  * `beatEvery` buys.
  */
-async function beat(ticket: number, lease: Held, opts?: LockOptions): Promise<void> {
+async function beat(ticket: string, lease: Held, opts?: LockOptions): Promise<void> {
   const path = fileOf(ticket, opts);
   await withGate(ticket, lease.kind, path, async () => {
     const current = await read(path);
@@ -235,7 +235,7 @@ async function beat(ticket: number, lease: Held, opts?: LockOptions): Promise<vo
   });
 }
 
-async function tryOnce(ticket: number, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
+async function tryOnce(ticket: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
   const path = fileOf(ticket, opts);
   await ensureRoot(path);
 
@@ -250,7 +250,7 @@ async function tryOnce(ticket: number, kind: LockKind, opts?: LockOptions): Prom
  * caller's proof that the lock on disk is still the one it took, which is
  * what `release` refuses to unlink without.
  */
-async function take(ticket: number, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
+async function take(ticket: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
   const deadline = Date.now() + (opts?.waitMs ?? 0);
   for (;;) {
     const lease = await tryOnce(ticket, kind, opts);
@@ -269,7 +269,7 @@ async function take(ticket: number, kind: LockKind, opts?: LockOptions): Promise
  * holds its own bookkeeping, and this is the primitive `withLock` is built
  * from rather than a second way to run work under a lock.
  */
-export const acquire = async (ticket: number, kind: LockKind, opts?: LockOptions): Promise<boolean> =>
+export const acquire = async (ticket: string, kind: LockKind, opts?: LockOptions): Promise<boolean> =>
   (await take(ticket, kind, opts)) !== null;
 
 /**
@@ -283,7 +283,7 @@ export const acquire = async (ticket: number, kind: LockKind, opts?: LockOptions
  * tests use — the pid is the best available answer, and it is still strictly
  * better than none: another process's lock is never removed.
  */
-export async function release(ticket: number, opts?: LockOptions, lease?: Held): Promise<void> {
+export async function release(ticket: string, opts?: LockOptions, lease?: Held): Promise<void> {
   const path = fileOf(ticket, opts);
   const kind = lease?.kind ?? "tick";
   // Retried, because the gate being busy means some other writer is mid-steal
@@ -301,7 +301,7 @@ export async function release(ticket: number, opts?: LockOptions, lease?: Held):
 }
 
 export async function withLock<T>(
-  ticket: number,
+  ticket: string,
   kind: LockKind,
   fn: () => Promise<T>,
   opts?: LockOptions,

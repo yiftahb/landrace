@@ -57,17 +57,17 @@ afterAll(async () => {
 describe("worktree", () => {
   it("holds the committed tree", async () => {
     const root = await repo();
-    const path = await ensureWorktree(1, root);
+    const path = await ensureWorktree("1", root);
     expect(await readFile(join(path, "src", "a.ts"), "utf8")).toBe("export const a = 1;\n");
-    await removeWorktree(1, root);
+    await removeWorktree("1", root);
   });
 
   it("is idempotent — asking twice returns the same path and adds one worktree", async () => {
     const root = await repo();
-    expect(await ensureWorktree(2, root)).toBe(await ensureWorktree(2, root));
+    expect(await ensureWorktree("2", root)).toBe(await ensureWorktree("2", root));
     // The repository's own checkout is the first entry, so one sandbox means two.
     expect(await worktrees(root)).toHaveLength(2);
-    await removeWorktree(2, root);
+    await removeWorktree("2", root);
   });
 
   /**
@@ -78,51 +78,51 @@ describe("worktree", () => {
   it("does not show the working tree's uncommitted changes", async () => {
     const root = await repo();
     await writeFile(join(root, "src", "dirty.ts"), "export const dirty = true;\n");
-    const path = await ensureWorktree(3, root);
+    const path = await ensureWorktree("3", root);
     expect(existsSync(join(path, "src", "dirty.ts"))).toBe(false);
-    await removeWorktree(3, root);
+    await removeWorktree("3", root);
   });
 
   it("keeps an agent's writes out of the operator's checkout, and drops them on removal", async () => {
     const root = await repo();
-    const path = await ensureWorktree(4, root);
+    const path = await ensureWorktree("4", root);
     await writeFile(join(path, "src", "a.ts"), "export const a = 666;\n");
     await writeFile(join(path, "planted.ts"), "export const planted = true;\n");
 
     expect(await readFile(join(root, "src", "a.ts"), "utf8")).toBe("export const a = 1;\n");
     expect(existsSync(join(root, "planted.ts"))).toBe(false);
 
-    await removeWorktree(4, root);
+    await removeWorktree("4", root);
     expect(existsSync(path)).toBe(false);
     expect(await worktrees(root)).toHaveLength(1);
   });
 
   it("removes cleanly, and removing twice is not an error", async () => {
     const root = await repo();
-    await ensureWorktree(5, root);
-    await removeWorktree(5, root);
-    await expect(removeWorktree(5, root)).resolves.toBeUndefined();
+    await ensureWorktree("5", root);
+    await removeWorktree("5", root);
+    await expect(removeWorktree("5", root)).resolves.toBeUndefined();
   });
 
   it("gives each ticket its own worktree", async () => {
     const root = await repo();
-    expect(await ensureWorktree(6, root)).not.toBe(await ensureWorktree(7, root));
-    await removeWorktree(6, root);
-    await removeWorktree(7, root);
+    expect(await ensureWorktree("6", root)).not.toBe(await ensureWorktree("7", root));
+    await removeWorktree("6", root);
+    await removeWorktree("7", root);
   });
 
   it("reuses — rather than fails on — a worktree a crashed run left behind", async () => {
     const root = await repo();
-    const first = await ensureWorktree(8, root);
+    const first = await ensureWorktree("8", root);
     await writeFile(join(first, "leftover.ts"), "export const leftover = 1;\n");
-    expect(await ensureWorktree(8, root)).toBe(first);
-    await removeWorktree(8, root);
+    expect(await ensureWorktree("8", root)).toBe(first);
+    await removeWorktree("8", root);
   });
 
   it("reports the failure rather than throwing something unreadable outside a repository", async () => {
     const notARepo = await mkdtemp(join(tmpdir(), "lr-plain-"));
     roots.push(notARepo);
-    await expect(ensureWorktree(9, notARepo)).rejects.toThrow(/not a git repository|could not create a worktree/i);
+    await expect(ensureWorktree("9", notARepo)).rejects.toThrow(/not a git repository|could not create a worktree/i);
   });
 
   /**
@@ -147,27 +147,27 @@ describe("worktree", () => {
   describe("worktreeState", () => {
     it("sees nothing changed in a fresh worktree", async () => {
       const root = await repo();
-      const path = await ensureWorktree(10, root);
+      const path = await ensureWorktree("10", root);
       expect(changedSince(await worktreeState(path), await worktreeState(path))).toEqual([]);
-      await removeWorktree(10, root);
+      await removeWorktree("10", root);
     });
 
     it("names a file the agent edited", async () => {
       const root = await repo();
-      const path = await ensureWorktree(11, root);
+      const path = await ensureWorktree("11", root);
       const before = await worktreeState(path);
       await writeFile(join(path, "src", "a.ts"), "export const a = 2;\n");
       expect(changedSince(before, await worktreeState(path)).join(" ")).toMatch(/src\/a\.ts/);
-      await removeWorktree(11, root);
+      await removeWorktree("11", root);
     });
 
     it("names a file the agent created, not just one it edited", async () => {
       const root = await repo();
-      const path = await ensureWorktree(12, root);
+      const path = await ensureWorktree("12", root);
       const before = await worktreeState(path);
       await writeFile(join(path, "planted.ts"), "export const planted = true;\n");
       expect(changedSince(before, await worktreeState(path)).join(" ")).toMatch(/planted\.ts/);
-      await removeWorktree(12, root);
+      await removeWorktree("12", root);
     });
 
     /**
@@ -177,7 +177,7 @@ describe("worktree", () => {
      */
     it("sees a commit, which leaves the status clean", async () => {
       const root = await repo();
-      const path = await ensureWorktree(13, root);
+      const path = await ensureWorktree("13", root);
       const before = await worktreeState(path);
       await writeFile(join(path, "src", "a.ts"), "export const a = 3;\n");
       await run("git", ["add", "-A"], { cwd: path });
@@ -186,7 +186,7 @@ describe("worktree", () => {
       const after = await worktreeState(path);
       expect(after.changes).toEqual([]);
       expect(changedSince(before, after).join(" ")).toMatch(/commit/i);
-      await removeWorktree(13, root);
+      await removeWorktree("13", root);
     });
 
     /**
@@ -196,11 +196,11 @@ describe("worktree", () => {
      */
     it("ignores dirt that was already there before the step ran", async () => {
       const root = await repo();
-      const path = await ensureWorktree(14, root);
+      const path = await ensureWorktree("14", root);
       await writeFile(join(path, "leftover.ts"), "export const leftover = 1;\n");
       const before = await worktreeState(path);
       expect(changedSince(before, await worktreeState(path))).toEqual([]);
-      await removeWorktree(14, root);
+      await removeWorktree("14", root);
     });
   });
 });
@@ -236,31 +236,31 @@ describe("the sandbox path", () => {
     const mine = await repo(join(home, "mine", "widgets"));
     const theirs = await repo(join(home, "theirs", "widgets"));
 
-    const ours = await ensureWorktree(30, mine);
+    const ours = await ensureWorktree("30", mine);
     await writeFile(join(ours, "mid-run.ts"), "export const midRun = true;\n");
 
     // A different repository that happens to share a directory name, starting
     // its own #30: it found a directory registered to nobody it could see and
     // cleared it — the first repository's live worktree, mid-step.
-    const alsoTheirs = await ensureWorktree(30, theirs);
+    const alsoTheirs = await ensureWorktree("30", theirs);
     expect(alsoTheirs).not.toBe(ours);
     expect(existsSync(join(ours, "mid-run.ts"))).toBe(true);
     expect(await worktrees(mine)).toHaveLength(2);
 
-    await removeWorktree(30, theirs);
+    await removeWorktree("30", theirs);
     expect(existsSync(join(ours, "mid-run.ts"))).toBe(true);
-    await removeWorktree(30, mine);
+    await removeWorktree("30", mine);
   });
 
   /**
-   * The ticket is a number to TypeScript and a value out of a tracker hook at
-   * runtime, which is not the same claim. Cast, because the guard being asked
-   * about here is the one that has to hold when the type does not.
+   * `ensureWorktree` is handed a ticket id straight out of a tracker hook, and
+   * this proves its own containment check holds even when nothing upstream —
+   * `ticketIdProblem` at the tick's own boundary — has screened the id first.
    */
   it("refuses a ticket whose path climbs out of the sandbox root", async () => {
     const root = await repo(join(home, "one", "widgets"));
     const outside = await victim();
-    const climb = `../../../${basename(outside)}` as unknown as number;
+    const climb = `../../../${basename(outside)}`;
 
     await expect(ensureWorktree(climb, root)).rejects.toThrow(/sandbox|outside|contain/i);
     expect(existsSync(join(outside, "keep.txt"))).toBe(true);
@@ -285,17 +285,17 @@ describe("the sandbox path", () => {
 
     // The real root, learned from a real sandbox, then replaced by a link to
     // somewhere else — the residue a stray `ln -s` in $TMPDIR would leave.
-    const first = await ensureWorktree(32, root);
-    await removeWorktree(32, root);
+    const first = await ensureWorktree("32", root);
+    await removeWorktree("32", root);
     const sandboxRoot = dirname(first);
     await rm(sandboxRoot, { recursive: true, force: true });
     await symlink(outside, sandboxRoot);
 
     try {
-      await expect(ensureWorktree(31, root)).rejects.toThrow(/sandbox|outside|resolve/i);
+      await expect(ensureWorktree("31", root)).rejects.toThrow(/sandbox|outside|resolve/i);
       expect(existsSync(join(outside, "31", "keep.txt"))).toBe(true);
 
-      await removeWorktree(31, root);
+      await removeWorktree("31", root);
       expect(existsSync(join(outside, "31", "keep.txt"))).toBe(true);
     } finally {
       await rm(sandboxRoot, { force: true });

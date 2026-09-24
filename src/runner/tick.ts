@@ -9,6 +9,7 @@ import type {
   TickRow,
   Workflow,
 } from "#namespace.js";
+import { compareIds, ticketIdProblem } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
 import { withLock } from "#runner/lock.js";
@@ -122,6 +123,15 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
   await pool(candidates, opts.concurrency ?? DEFAULT_CONCURRENCY, async (candidate) => {
     const ticket = candidate.ticket;
     try {
+      const problem = ticketIdProblem(ticket);
+      if (problem) {
+        // A source is a hook, and a hook's output is outside input: this id is
+        // about to become a lock file name and a worktree directory.
+        deps.log("ticket.skipped", { ticket, reason: problem });
+        rows.push({ ticket, outcome: `error: ${oneLine(problem)}` });
+        return;
+      }
+
       const eligibility = eligibilityOf(deps.workflow, candidate);
       if (!eligibility.eligible) {
         // Skipped, not absent: a ticket nobody is working is exactly what an
@@ -159,7 +169,7 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
   // Sorted rather than left in completion order: the same repository in the
   // same state should print the same thing twice running, and completion order
   // is whichever agent happened to answer first.
-  rows.sort((a, b) => a.ticket - b.ticket);
+  rows.sort((a, b) => compareIds(a.ticket, b.ticket));
 
   deps.log("tick.finished", { tickets: rows.length, duration: Date.now() - started });
   return rows;

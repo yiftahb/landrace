@@ -28,7 +28,7 @@ import { scriptedExecutor } from "#testing/scripted.js";
  * only ever prove that a workflow works against that harness.
  */
 export function createHarness(options: HarnessOptions): Harness {
-  const ticket = options.ticket ?? 1;
+  const ticket = options.ticket ?? "1";
   const calls: StepCall[] = [];
   const trail: string[] = [];
   let at = { stage: "", round: 1 };

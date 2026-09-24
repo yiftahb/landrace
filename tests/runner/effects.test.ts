@@ -4,7 +4,7 @@ import type { HookContext } from "#namespace.js";
 import type { Effect, Snapshot } from "#namespace.js";
 
 const ctx = (): HookContext => ({
-  ticket: 1, snapshot: {}, config: {} as HookContext["config"],
+  ticket: "1", snapshot: {}, config: {} as HookContext["config"],
   secrets: new Map(), signal: new AbortController().signal, log: () => {},
 });
 

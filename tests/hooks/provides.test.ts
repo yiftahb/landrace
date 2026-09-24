@@ -42,13 +42,13 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     if (!hook) throw new Error("the fake tracker registered no pre hook");
     expect(hook.id).toBe("github");
 
-    const fragment = await hook.run({ ...gh.ctx, ticket: 1, snapshot: {} } as HookContext);
+    const fragment = await hook.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
     expect(pathsIn(fragment)).toEqual(declaredBy(hook));
   });
 
   it("the in-memory tracker", async () => {
-    const state = createExternalState({ tickets: [{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }] });
-    const fragment = await state.pre.run({ ticket: 1, snapshot: {} } as HookContext);
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto", "lr:stage:spec"] }] });
+    const fragment = await state.pre.run({ ticket: "1", snapshot: {} } as HookContext);
     expect(pathsIn(fragment)).toEqual(declaredBy(state.pre));
   });
 
@@ -61,10 +61,10 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     const gh = createFakeTracker([{ number: 1, labels: ["lr:stage:spec"] }]);
     const github = gh.registry.pre[0];
     if (!github) throw new Error("the fake tracker registered no pre hook");
-    const state = createExternalState({ tickets: [{ number: 1, labels: ["lr:stage:spec"] }] });
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:spec"] }] });
 
     for (const hook of [github, state.pre]) {
-      const fragment = await hook.run({ ...gh.ctx, ticket: 1, snapshot: {} } as HookContext);
+      const fragment = await hook.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
       expect(pathsIn(fragment)).not.toContain("ticket.stage");
       expect(declaredBy(hook)).not.toContain("ticket.stage");
     }
@@ -81,7 +81,7 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     const gh = createFakeTracker([{ number: 1 }]);
     const github = gh.registry.pre[0];
     if (!github) throw new Error("the fake tracker registered no pre hook");
-    const state = createExternalState({ tickets: [{ number: 1 }] });
+    const state = createExternalState({ tickets: [{ id: "1" }] });
 
     // `ticket.assignees` is in the shared half deliberately: a filter on who a
     // ticket belongs to is what lets several instances share one repository,

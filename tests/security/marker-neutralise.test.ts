@@ -138,7 +138,7 @@ describe("a relayed payload cannot come back as a record we wrote", () => {
     const tracker = createFakeTracker([{ number: 6 }]);
     const tools = createTools(tracker.registry, tracker.ctx);
 
-    await tools.reply(6, `please look at this: ${nested(layers)}`);
+    await tools.reply("6", `please look at this: ${nested(layers)}`);
 
     // The control state first, because that is the claim: whatever the body
     // ends up looking like, the relayed text must not read back as ours.

@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Tools } from "#namespace.js";
+import { ticketIdProblem } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 
 const text = (value: unknown) => ({
@@ -24,7 +25,20 @@ const guard =
     }
   };
 
-const ticket = z.number().int().positive();
+/**
+ * A ticket id as a client sends it. Numbers are still taken, because every
+ * client written before ids were strings sends `{ ticket: 42 }`; both are
+ * checked against the one id rule before any tool runs, so a hostile id never
+ * reaches a lock file or a worktree path by way of the MCP plane.
+ */
+const ticket = z
+  .union([z.string(), z.number().int().positive()])
+  .transform((v) => String(v))
+  .superRefine((id, ctx) => {
+    const problem = ticketIdProblem(id);
+    // zod 3 (package.json pins ^3.24): ZodIssueCode.custom.
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  });
 
 export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   const server = new McpServer({ name: "landrace", version });

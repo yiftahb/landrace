@@ -62,7 +62,7 @@ export function snapshotProvides(pre: PreHook[]): string[] | null {
 }
 
 export async function buildSnapshot(opts: {
-  ticket: number;
+  ticket: string;
   hooks: PreHook[];
   ctx: Omit<HookContext, "snapshot">;
   now?: number;

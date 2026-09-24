@@ -290,7 +290,7 @@ describe("boardSink", () => {
         },
       };
       const sink = boardSink((e) => printed.push(e), board);
-      const event: LandraceEvent = { name: "step.started", ticket: 1 };
+      const event: LandraceEvent = { name: "step.started", ticket: "1" };
 
       expect(() => sink(event)).not.toThrow();
       expect(printed).toEqual([event]);
@@ -311,7 +311,7 @@ describe("boardSink", () => {
         view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
       },
     };
-    const event: LandraceEvent = { name: "step.finished", ticket: 1 };
+    const event: LandraceEvent = { name: "step.finished", ticket: "1" };
 
     boardSink((e) => printed.push(e), board)(event);
 

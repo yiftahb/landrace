@@ -49,7 +49,7 @@ describe("mcp server over a real transport", () => {
   it("creates a ticket end to end through the protocol", async () => {
     const { client, gh } = await connect();
     const r = await client.callTool({ name: "landrace_create_ticket", arguments: { title: "Add CSV export" } });
-    expect(JSON.parse(textOf(r))).toMatchObject({ ticket: 1, started: true });
+    expect(JSON.parse(textOf(r))).toMatchObject({ ticket: "1", started: true });
     expect(gh.issues.get(1)?.title).toBe("Add CSV export");
     await client.close();
   });
@@ -67,6 +67,29 @@ describe("mcp server over a real transport", () => {
     const r = await client.callTool({ name: "landrace_status", arguments: { ticket: -1 } });
     expect((r as { isError?: boolean }).isError).toBe(true);
     expect(textOf(r)).toMatch(/validation error.*ticket/i);
+    await client.close();
+  });
+
+  it("still accepts a numeric ticket id, for clients written before ids were strings", async () => {
+    const { client } = await connect();
+    const r = await client.callTool({ name: "landrace_status", arguments: { ticket: 99 } });
+    expect(textOf(r)).toMatch(/404/); // reached the tool
+    await client.close();
+  });
+
+  it("accepts a string ticket id", async () => {
+    const { client } = await connect();
+    const r = await client.callTool({ name: "landrace_status", arguments: { ticket: "99" } });
+    expect(textOf(r)).toMatch(/404/); // reached the tool, as the same ticket
+    await client.close();
+  });
+
+  it("refuses a hostile ticket id before any tool runs", async () => {
+    const { client } = await connect();
+    const r = await client.callTool({ name: "landrace_status", arguments: { ticket: "../x" } });
+    expect((r as { isError?: boolean }).isError).toBe(true);
+    expect(textOf(r)).toMatch(/ticket id/);
+    expect(textOf(r)).not.toMatch(/404/);
     await client.close();
   });
 
@@ -109,11 +132,11 @@ describe("mcp server over a real transport", () => {
     // takes to give it back, on a machine running the rest of this suite
     // beside it. Waiting for the fact itself is the same assertion without
     // the bet.
-    await until(async () => (await held(1, { root })) !== null, "the turn to take the lock");
+    await until(async () => (await held("1", { root })) !== null, "the turn to take the lock");
 
     await client.close();
     await call.catch(() => undefined);
-    await until(async () => (await held(1, { root })) === null, "the turn to give the lock back");
+    await until(async () => (await held("1", { root })) === null, "the turn to give the lock back");
   });
 
   it("starting a ticket is opt-out, and the tool says which it did", async () => {

@@ -80,10 +80,10 @@ function prose(text: string): string {
  * and the person would have talked to nobody.
  */
 export function createConversation(deps: ConversationDeps): Conversation {
-  const snapshotOf = (ticket: number): Promise<Snapshot> =>
+  const snapshotOf = (ticket: string): Promise<Snapshot> =>
     buildSnapshot({ ticket, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
 
-  const say = (ticket: number, snapshot: Snapshot, body: string, marked?: Record<string, unknown>): Promise<void> =>
+  const say = (ticket: string, snapshot: Snapshot, body: string, marked?: Record<string, unknown>): Promise<void> =>
     deps.dispatcher.apply(
       { type: "tracker.comment", body, ...(marked ?? {}) },
       { ...deps.ctx, ticket, snapshot },
@@ -94,7 +94,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
    * been one, otherwise the step's own. Derived from the records rather than
    * remembered, so two MCP processes and a tick all read the same answer.
    */
-  const join = (ticket: number, snapshot: Snapshot): JoinedSession => {
+  const join = (ticket: string, snapshot: Snapshot): JoinedSession => {
     const entries = [...((snapshot.entries as Entry[] | undefined) ?? [])].sort((a, b) =>
       a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
     );
@@ -138,7 +138,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
    * can say the limits of is a turn nobody is holding to them, and this
    * process has already proved it can run one.
    */
-  const stepBehind = (ticket: number, stage: string): Step => {
+  const stepBehind = (ticket: string, stage: string): Step => {
     const declared = deps.workflow?.stages.find((s) => s.id === stage);
     const step = declared?.step === undefined ? undefined : deps.steps?.get(declared.step);
     if (!step) {

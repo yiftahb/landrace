@@ -17,7 +17,7 @@ const exec = promisify(execFile);
  * loader's one dynamic `import(url)` is unreachable through jest's CommonJS
  * runtime, and an assembly test that cannot load a hook is testing nothing.
  */
-const TICKET = 4343;
+const TICKET = "4343";
 const TOKEN = "ghp_a_token_long_enough_to_redact";
 
 /**
@@ -41,7 +41,7 @@ const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
   Object.defineProperty(value, KIND, { value: kind, enumerable: false });
 
-interface Ctx { ticket: number; config: { tracker: { record: string } } }
+interface Ctx { ticket: string; config: { tracker: { record: string } } }
 
 export const source = brand("source", {
   id: "fake",
@@ -52,7 +52,7 @@ export const source = brand("source", {
   list: async (ctx: { config: { tracker: { order: string } } }): Promise<unknown[]> => {
     await appendFile(ctx.config.tracker.order, JSON.stringify({ list: true }) + "\\n");
     return [
-      { ticket: ${TICKET}, title: "Add export", url: "u/${TICKET}", labels: ["lr:auto", "lr:awaiting"], assignees: [] },
+      { ticket: "${TICKET}", title: "Add export", url: "u/${TICKET}", labels: ["lr:auto", "lr:awaiting"], assignees: [] },
     ];
   },
 });

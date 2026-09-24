@@ -56,7 +56,7 @@ function redactValuesFrom(secrets: ReadonlyMap<string, string>): string[] {
  * Doing one thing per poll would put a whole interval between "moved to a
  * stage" and "ran its step", with nothing external happening in between.
  */
-export async function converge(ticket: number, deps: ConvergeDeps): Promise<ConvergeResult> {
+export async function converge(ticket: string, deps: ConvergeDeps): Promise<ConvergeResult> {
   const root = deps.sandbox?.root;
   let path: string | null = null;
 
@@ -79,7 +79,7 @@ export async function converge(ticket: number, deps: ConvergeDeps): Promise<Conv
 }
 
 async function converging(
-  ticket: number,
+  ticket: string,
   deps: ConvergeDeps,
   enterSandbox: (() => Promise<string>) | null,
 ): Promise<ConvergeResult> {
@@ -404,7 +404,7 @@ function tryReconcile(
 /** Same reasoning as tryReconcile, for the apply side: apply() can reject too (a rate limit, a broken hook), from both the invoke path and the transition path. */
 async function tryApply(
   effects: Effect[],
-  ticket: number,
+  ticket: string,
   snapshot: Snapshot,
   deps: ConvergeDeps,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
@@ -418,7 +418,7 @@ async function tryApply(
 
 async function applyAll(
   effects: Effect[],
-  ticket: number,
+  ticket: string,
   snapshot: Snapshot,
   deps: ConvergeDeps,
 ): Promise<void> {

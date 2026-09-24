@@ -2,34 +2,34 @@ import { chatFor } from "#ui/chat.js";
 
 describe("chatFor", () => {
   it("builds the exact prompt from the ticket number, nothing else", () => {
-    expect(chatFor(41, "/repo/landrace").prompt).toBe(
+    expect(chatFor("41", "/repo/landrace").prompt).toBe(
       "I want to chat about issue #41 using the landrace MCP, pull it now and show me the latest status and what requires my attention",
     );
   });
 
   it("builds the Claude desktop app's Code deep link with an encoded prompt and folder", () => {
-    const { links, prompt } = chatFor(41, "/repo/landrace");
+    const { links, prompt } = chatFor("41", "/repo/landrace");
     expect(links.claude).toBe(
       `claude://code/new?q=${encodeURIComponent(prompt)}&folder=${encodeURIComponent("/repo/landrace")}`,
     );
   });
 
   it("builds the Claude Code CLI deep link with an encoded cwd and prompt", () => {
-    const { links, prompt } = chatFor(41, "/repo/landrace");
+    const { links, prompt } = chatFor("41", "/repo/landrace");
     expect(links.claudeCli).toBe(
       `claude-cli://open?cwd=${encodeURIComponent("/repo/landrace")}&q=${encodeURIComponent(prompt)}`,
     );
   });
 
   it("builds the Cursor deep link with only the prompt — Cursor has no workspace parameter", () => {
-    const { links, prompt } = chatFor(41, "/repo/some-other-workspace");
+    const { links, prompt } = chatFor("41", "/repo/some-other-workspace");
     expect(links.cursor).toBe(`cursor://anysphere.cursor-deeplink/prompt?text=${encodeURIComponent(prompt)}`);
     expect(links.cursor).not.toContain("some-other-workspace");
     expect(links.cursor).not.toContain("path=");
   });
 
   it("builds the Codex deep link with an encoded prompt and path", () => {
-    const { links, prompt } = chatFor(41, "/repo/landrace");
+    const { links, prompt } = chatFor("41", "/repo/landrace");
     expect(links.codex).toBe(
       `codex://threads/new?prompt=${encodeURIComponent(prompt)}&path=${encodeURIComponent("/repo/landrace")}`,
     );
@@ -37,7 +37,7 @@ describe("chatFor", () => {
 
   it("encodes a workspace path with a space and a non-ASCII character", () => {
     const workspace = "/Users/me/café project";
-    const { links } = chatFor(41, workspace);
+    const { links } = chatFor("41", workspace);
     expect(links.claude).toContain(encodeURIComponent(workspace));
     expect(links.claudeCli).toContain(encodeURIComponent(workspace));
     expect(links.codex).toContain(encodeURIComponent(workspace));
@@ -46,11 +46,15 @@ describe("chatFor", () => {
   });
 
   it("puts only the integer ticket number in the prompt, never a title or note", () => {
-    expect(chatFor(7, "/repo/x").prompt).toContain("#7");
-    expect(chatFor(7, "/repo/x").prompt).not.toContain("title");
+    expect(chatFor("7", "/repo/x").prompt).toContain("#7");
+    expect(chatFor("7", "/repo/x").prompt).not.toContain("title");
   });
 
-  it("refuses a non-integer ticket rather than embed a fractional one in a URL", () => {
-    expect(() => chatFor(7.5, "/repo/x")).toThrow(/integer/);
+  it("refuses an id that is not a ticket id rather than building a link from it", () => {
+    expect(() => chatFor("a&b=c", "/w")).toThrow(/ticket id/);
+  });
+
+  it("builds links for a non-numeric id", () => {
+    expect(chatFor("PROJ-7", "/w").prompt).toContain("#PROJ-7");
   });
 });
