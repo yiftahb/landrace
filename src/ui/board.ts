@@ -1,4 +1,4 @@
-import { compareWork, isOpenTicket, TICKET_KIND } from "#conventions.js";
+import { compareWork, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
 import { oneLine, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
@@ -106,10 +106,14 @@ export function boardView(input: {
     // Built from the ticket id and the workspace path alone — never title or
     // note — so nothing a tracker comment injected can ride along into a
     // link the browser is about to open.
-    const ticket: BoardRow = { ...base, stage: s.stage, note: oneLine(s.note), chat: chatFor(node.id, input.workspace) };
+    // An id chatFor refuses costs that row its Chat menu, not the page: one
+    // throw here blanked every row of the board.
+    const ticket: BoardRow = { ...base, stage: s.stage, note: oneLine(s.note), chat: isTicketId(node.id) ? chatFor(node.id, input.workspace) : null };
     // A closed ticket is out of the loop whatever its labels still say or a
-    // stale event claims: it never asks for you, and never opens a parent.
-    if (node.closed !== null) return { ...ticket, badge: "discharged" };
+    // stale event claims: it never asks for you, and never opens a parent —
+    // and its note says it is closed, not "blocked: needs a human" from a
+    // label nobody took off.
+    if (node.closed !== null) return { ...ticket, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped" };
     const running = input.running.get(node.id);
     if (running) {
       return { ...ticket, badge: "running", stage: running.stage, note: "agent running",

@@ -141,6 +141,17 @@ describe("boardView: the tree", () => {
 });
 
 describe("boardView: rows", () => {
+  it("notes a closed ticket as closed or dropped, not as whatever its stale labels last said", () => {
+    const g = graph([ticket("2", { closed: "done" }, ["go", "lr:blocked"]), ticket("3", { closed: "dropped" }, ["go", "lr:blocked"])]);
+    expect(view(g).rows.map((r) => [r.id, r.note])).toEqual([["2", "closed"], ["3", "dropped"]]);
+  });
+
+  it("draws a ticket whose id no chat link may carry, without its chat, instead of blanking the page", () => {
+    const g = graph([ticket("1"), ticket("bad id")]);
+    const rows = view(g).rows;
+    expect(rows.map((r) => [r.id, r.chat === null])).toEqual([["1", false], ["bad id", true]]);
+  });
+
   it("gives a ticket row a badge, its stage, a chat, and its system", () => {
     const row = view(graph([ticket("7", { link: "https://github.com/a/b/issues/7" })])).rows[0];
     expect(row).toMatchObject({ id: "7", kind: "ticket", badge: "waiting", system: { name: "GitHub" } });
