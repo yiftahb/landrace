@@ -1,6 +1,6 @@
 import { validate, validateSemantics } from "#workflow/validate.js";
 import { loadWorkflow } from "#workflow/load.js";
-import type { Effect, Step, Workflow } from "#namespace.js";
+import type { Effect, Problem, Step, Workflow } from "#namespace.js";
 import { fastest } from "#tests/support/timing.js";
 
 const noSteps = new Map<string, Step>();
@@ -565,5 +565,49 @@ describe("every declared output shape has somewhere to go next", () => {
     const found = validateSemantics(stranded, steps).filter((p) => p.rule === "shape-edge");
     expect(found.map((p) => p.message).join(" ")).toMatch(/"question"/);
     expect(found.map((p) => p.message).join(" ")).toMatch(/"unclear"/);
+  });
+});
+
+describe("children", () => {
+  const breakdownStep = { prompt: "p", capabilities: ["tickets:create"] } as Step;
+  const stepsWith = (s: Step) => new Map([["steps/b.md", s]]);
+  const wf = (on_enter: Effect[]): Workflow => ({
+    version: 1, name: "t",
+    stages: [
+      { id: "b", entry: true, step: "steps/b.md", on_enter },
+      { id: "done", terminal: true, triggers: [{ when: { "run.stage": "b" } }] },
+    ],
+  });
+  const children = (ps: Problem[]) => ps.filter((p) => p.rule === "children").map((p) => p.message);
+
+  it("flags a step that creates children with nothing to clean them on a re-run", () => {
+    expect(children(validate(wf([]), stepsWith(breakdownStep)))).toEqual([expect.stringMatching(/"b".*tickets:create.*nodes\.close/)]);
+  });
+
+  it("flags a close with nothing that could have made what it closes", () => {
+    const ps = validate(wf([{ type: "nodes.close", follow: ["child-of"] }]), stepsWith({ prompt: "p", capabilities: [] } as Step));
+    expect(children(ps)).toEqual([expect.stringMatching(/"b".*nodes\.close.*tickets:create/)]);
+  });
+
+  it("flags a close with nothing to follow", () => {
+    expect(children(validate(wf([{ type: "nodes.close" }]), stepsWith(breakdownStep)))).toEqual([expect.stringMatching(/follow/)]);
+  });
+
+  /*
+   * The declared relation types are read off the same `provided` list §11.8
+   * already takes, filtered to the bare `rel.<type>` entries snapshotProvides
+   * emits — never a separate argument. Leaving `provided` out entirely (as
+   * path coverage itself abstains) must abstain this check too, rather than
+   * report a "owns" that might turn out to be real.
+   */
+  it("flags a follow type no source declares, and abstains when relations are unknown", () => {
+    const w = wf([{ type: "nodes.close", follow: ["child-of", "owns"] }]);
+    expect(children(validate(w, stepsWith(breakdownStep), ["rel.child-of", "rel.implements"])))
+      .toEqual([expect.stringMatching(/"owns"/)]);
+    expect(children(validate(w, stepsWith(breakdownStep)))).toEqual([]);
+  });
+
+  it("passes the pair", () => {
+    expect(children(validate(wf([{ type: "nodes.close", follow: ["child-of"] }]), stepsWith(breakdownStep)))).toEqual([]);
   });
 });

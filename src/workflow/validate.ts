@@ -2,6 +2,8 @@ import {
   CAPABILITIES,
   ENTRY_KIND,
   isReservedId,
+  mayCreateTickets,
+  NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
   RECORD_EFFECT,
   unknownCapabilities,
@@ -508,8 +510,67 @@ function disjoint(a: Condition, b: Condition): boolean {
   });
 }
 
+/**
+ * A step that creates children and a close that drops them are one feature in
+ * two places, and either half alone is a defect with no symptom until the
+ * second round: children pile up beside their replacements, or a close runs
+ * that can never find anything.
+ *
+ * `relations` is the declared relationship types, read off the same
+ * `provided` list §11.8 already takes — every bare `rel.<type>` entry
+ * `snapshotProvides` emits, with the prefix stripped. `null` means "unknown"
+ * (provided is undefined, so path coverage is abstaining too), and the
+ * follow-type check abstains along with it rather than guessing.
+ */
+function checkChildren(w: Workflow, steps: Map<string, Step>, relations: readonly string[] | null): Problem[] {
+  const out: Problem[] = [];
+  for (const stage of w.stages) {
+    const creates = mayCreateTickets(stage.step ? steps.get(stage.step)?.capabilities : undefined);
+    const closes = (stage.on_enter ?? []).filter((e) => e.type === NODES_CLOSE_EFFECT);
+    if (creates && !closes.length) {
+      out.push({
+        rule: "children",
+        message: `stage "${stage.id}"'s step declares tickets:create but its on_enter has no nodes.close, ` +
+          "so a re-run would leave the last round's children open beside the new ones",
+      });
+    }
+    if (closes.length && !creates) {
+      out.push({
+        rule: "children",
+        message: `stage "${stage.id}" declares nodes.close but its step does not declare tickets:create, ` +
+          "so nothing it closes could ever exist",
+      });
+    }
+    for (const c of closes) {
+      const follow = c.follow;
+      if (!Array.isArray(follow) || !follow.length || !follow.every((f) => typeof f === "string")) {
+        out.push({
+          rule: "children",
+          message: `stage "${stage.id}": nodes.close needs a non-empty "follow" list of relationship types`,
+        });
+        continue;
+      }
+      if (relations === null) continue;
+      for (const f of follow as string[]) {
+        if (!relations.includes(f)) {
+          out.push({
+            rule: "children",
+            message: `stage "${stage.id}": nodes.close follows "${f}", which no source declares`,
+          });
+        }
+      }
+    }
+  }
+  return out;
+}
+
 export function validateSemantics(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {
   const problems: Problem[] = [];
+
+  const relations = provided === undefined
+    ? null
+    : provided.filter((p) => /^rel\.[^.*]+$/.test(p)).map((p) => p.slice(4));
+  problems.push(...checkChildren(w, steps, relations));
 
   /*
    * A non-terminal stage nothing leads away from is a trap, and an unbounded
