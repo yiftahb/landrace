@@ -13,6 +13,17 @@ import { runStep } from "#runner/step.js";
 import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { gitRepo, removeRepos, worktreesOf } from "#tests/support/repo.js";
 
+/*
+ * Every test here starts real processes — git worktree operations, child
+ * node — and on a machine whose endpoint-security agent inspects each exec,
+ * starting one can take seconds when that agent is backed up. Measured: these
+ * files ran 50-370 s in failing runs while most of their tests still passed,
+ * which is slow, not hung. Jest's 5 s default turned that into failures that
+ * looked like regressions. Sixty seconds still fails a real hang within a
+ * minute; these tests normally take well under one.
+ */
+jest.setTimeout(60_000);
+
 let root: string;
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "lr-conv-"));
