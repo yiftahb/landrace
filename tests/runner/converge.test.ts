@@ -3,12 +3,12 @@ import { createChild } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
-import { labelsOf } from "#conventions.js";
+import { labelsOf, NODES_CLOSE_EFFECT } from "#conventions.js";
 import { createExternalState, createHarness } from "#testing/index.js";
 import type { HookContext, Node, Source } from "#namespace.js";
 import type { Executor } from "#namespace.js";
 import type { RuntimeContext, Step } from "#namespace.js";
-import type { Dispatcher, LandraceEvent, Workflow } from "#namespace.js";
+import type { Dispatcher, Effect, LandraceEvent, Workflow } from "#namespace.js";
 
 /** Whatever ticket is asked for, alone in its graph, carrying the world's labels as they stand. */
 const labelSource = (labels: Set<string>): Source => {
@@ -1007,18 +1007,36 @@ describe("a stage that creates children", () => {
     },
   } as Step]]);
 
+  /** Same shape as `workflow`, but its `nodes.close` names no relationship types to follow. */
+  const brokenWorkflow: Workflow = {
+    version: 1, name: "t",
+    stages: [{
+      id: "breakdown", entry: true, step: "steps/breakdown.md",
+      on_enter: [{ type: "nodes.close", follow: [] }, { type: "tracker.status", value: "breakdown" }],
+    }],
+  };
+
   it("drops what a crashed attempt created before trying again, so there is one set, not two", async () => {
     const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
     const make = (title: string) => createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title }, ctx);
     let attempt = 0;
+    const seen: LandraceEvent[] = [];
     const run = createHarness({
       workflow, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1",
       answers: { breakdown: () => { if (attempt++ === 0) throw new Error("agent exited 1"); return '```json\n{"kind":"children"}\n```'; } },
       during: async () => { await make(`child ${attempt}`); },
+      log: createLogger({ sink: (e) => seen.push(e) }),
     });
 
     const first = await run.converge();           // creates "child 0", then the executor throws: no verdict
     expect(first.result.settled).toBe("halt");
+    // Two passes: the transition into "breakdown" (nothing exists to close
+    // yet), then the invoke attempt itself, whose own re-plan also finds
+    // nothing to close — "child 0" is not created until *during* that same
+    // attempt. Nothing to drop costs neither an extra pass nor a write.
+    expect(first.result.passes).toBe(2);
+    expect(seen.some((e) => e.name === "effect.applied" && e.type === NODES_CLOSE_EFFECT)).toBe(false);
+
     await run.converge();                          // re-plans the close, drops "child 0", invokes, creates "child 1"
 
     const open = state.children("1").filter((c) => c.closed === null).map((c) => c.title);
@@ -1026,23 +1044,60 @@ describe("a stage that creates children", () => {
     expect(state.children("1").find((c) => c.title === "child 0")?.closed).toBe("dropped");
   });
 
-  it("halts, naming the stage, when the close cannot be planned", async () => {
+  it("halts, naming the stage, when the close cannot be planned on the way into the stage", async () => {
     // A `follow` list of relationship types that is empty: planNodesClose refuses
     // to guess which edges to walk, rather than closing nothing silently. This
     // fires on the very first pass, while entering "breakdown" (a transition,
     // not yet an invoke), so it pins planEffects's own halt-not-throw path.
     const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
-    const broken: Workflow = {
-      version: 1, name: "t",
-      stages: [{
-        id: "breakdown", entry: true, step: "steps/breakdown.md",
-        on_enter: [{ type: "nodes.close", follow: [] }, { type: "tracker.status", value: "breakdown" }],
-      }],
-    };
-    const run = createHarness({ workflow: broken, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1" });
+    const run = createHarness({ workflow: brokenWorkflow, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1" });
     const r = await run.converge();
     expect(r.result.settled).toBe("halt");
     expect(r.result.why).toMatch(/breakdown/);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("halts, naming the stage, when the close cannot be planned while re-entering a pending round", async () => {
+    // Positioned at "breakdown" already, with no output yet: decide() returns
+    // "invoke" directly, on the very first pass. Without this test, deleting
+    // the invoke-path catch (converge.ts's residue block) would go unnoticed —
+    // the previous test only ever reaches the *transition*-path catch.
+    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:stage:breakdown"] }] });
+    const run = createHarness({ workflow: brokenWorkflow, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1" });
+    const r = await run.converge();
+    expect(r.result.settled).toBe("halt");
+    expect(r.result.why).toMatch(/breakdown/);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("halts, naming what is still open, rather than looping to the pass cap, when a close's apply does not take effect", async () => {
+    // Already positioned at "breakdown", carrying a stale child from an
+    // earlier round the same way a crashed attempt would (the same shape
+    // the first test in this file drops). Here the post hook's nodes.close
+    // "succeeds" — apply() resolves, throwing nothing — without actually
+    // closing anything, the shape of a real bug in a hook rather than a
+    // crash. Without the fix this spins to the pass cap re-applying the same
+    // no-op; with it, the second sighting of the same still-open close halts.
+    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:stage:breakdown"] }] });
+    const stale = await createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title: "stale" }, ctx);
+
+    const noOpClose = {
+      ...state.post,
+      apply: async (effect: Effect, hookCtx: HookContext): Promise<void> => {
+        if (effect.type === NODES_CLOSE_EFFECT) return;
+        return state.post.apply(effect, hookCtx);
+      },
+    };
+
+    const run = createHarness({ workflow, steps, pre: [state.pre], post: [noOpClose], source: state.source, ticket: "1" });
+    const r = await run.converge();
+
+    expect(r.result.settled).toBe("halt");
+    expect(r.result.settled).not.toBe("cap");
+    expect(r.result.why).toContain(stale.id);
+    expect(r.result.passes).toBe(2);
+    // The halt fires before the step is ever invoked: the round never got
+    // past its own re-plan.
     expect(r.calls).toEqual([]);
   });
 });

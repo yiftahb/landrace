@@ -97,8 +97,14 @@ async function converging(
   // true", only "have I already spent this call's budget on this". Its job
   // is narrower than validate.ts's step-output-required rule (which only
   // catches a step declaring no output at all, and only before the workflow
-  // ever runs) — this also catches the general case, a hook whose apply()
-  // "succeeds" but leaves nothing readable back, at runtime, for any reason.
+  // ever runs) — this also catches the general case, for a step's own round:
+  // a hook whose apply() "succeeds" but leaves that round's output unreadable
+  // back, at runtime, for any reason. It does not cover a stage's
+  // `nodes.close` the same way — that has its own key and its own set,
+  // `residueApplied` below, because a close and a step output fail this way
+  // for different reasons and at a different cadence (once per round versus
+  // once per pass) and conflating their keys would let one silently mask
+  // the other's retry budget.
   //
   // Measured effect against the shipped workflow: 30 paid opus invocations
   // per converge() call, down to 1. That is 30x better, not solved — a
@@ -110,6 +116,14 @@ async function converging(
   // produces this shape at all, and giving the step a real output contract,
   // not a bigger or longer-lived set here.
   const invoked = new Set<string>();
+
+  // Twin of `invoked`, scoped to a stage's `nodes.close` rather than a
+  // step's output: the residue re-plan below applies at most once per
+  // (stage, round) per call, and a close that still has not taken effect
+  // the *next* time it is re-planned — apply() resolved, but satisfied()
+  // still says no — halts naming what is still open rather than spending
+  // the rest of this call's passes re-applying the same no-op.
+  const residueApplied = new Set<string>();
 
   for (let pass = 1; pass <= maxPasses; pass++) {
     // Checked before doing any work this pass: a Ctrl-C between two passes
@@ -201,21 +215,41 @@ async function converging(
       // its children, and the transition that planned the first close is not
       // coming back — a pending stage is invoked, never re-entered. Nothing to
       // drop reconciles away and the step runs on this same pass.
-      let residue: Effect[];
+      let closePlanned: Effect[];
       try {
-        residue = reconcile(snapshot, planNodesClose(stage, snapshot, round + 1), deps.dispatcher.satisfied);
+        closePlanned = planNodesClose(stage, snapshot, round + 1);
       } catch (e) {
         const reason = messageOf(e);
         deps.log("effect.failed", { ticket, reason });
         return { passes: pass, settled: "halt", why: reason };
       }
-      if (residue.length) {
-        const cleaned = await tryApply(residue, ticket, snapshot, deps);
-        if (!cleaned.ok) {
-          deps.log("effect.failed", { ticket, reason: cleaned.reason });
-          return { passes: pass, settled: "halt", why: cleaned.reason };
+      if (closePlanned.length) {
+        // Same reconcile path and the same "dropped as already satisfied"
+        // logging as the transition below: an operator reading the log
+        // should not be able to tell which of the two planned this effect.
+        const reconciled = reconcileLogged(closePlanned, ticket, snapshot, deps);
+        if (!reconciled.ok) {
+          deps.log("effect.failed", { ticket, reason: reconciled.reason });
+          return { passes: pass, settled: "halt", why: reconciled.reason };
         }
-        continue;
+        const surviving = reconciled.surviving;
+        if (surviving.length) {
+          const key = `${stage.id}:${round}`;
+          if (residueApplied.has(key)) {
+            const ids = surviving.flatMap((e) => (Array.isArray(e.ids) ? (e.ids as string[]) : []));
+            const reason = `stage "${stage.id}" round ${round}: nodes.close was applied but is still not satisfied; still open: ` +
+              (ids.length ? ids.join(", ") : "(no ids named)");
+            deps.log("effect.failed", { ticket, reason });
+            return { passes: pass, settled: "halt", why: reason };
+          }
+          residueApplied.add(key);
+          const cleaned = await tryApply(surviving, ticket, snapshot, deps);
+          if (!cleaned.ok) {
+            deps.log("effect.failed", { ticket, reason: cleaned.reason });
+            return { passes: pass, settled: "halt", why: cleaned.reason };
+          }
+          continue;
+        }
       }
 
       // Scoped to (stage, round): decide() computes round from
@@ -366,22 +400,12 @@ async function converging(
       deps.log("effect.failed", { ticket, reason });
       return { passes: pass, settled: "halt", why: reason };
     }
-    const reconciled = tryReconcile(snapshot, planned, deps.dispatcher.satisfied);
+    const reconciled = reconcileLogged(planned, ticket, snapshot, deps);
     if (!reconciled.ok) {
       deps.log("effect.failed", { ticket, reason: reconciled.reason });
       return { passes: pass, settled: "halt", why: reconciled.reason };
     }
     const surviving = reconciled.surviving;
-    for (const dropped of planned.filter((e) => !surviving.includes(e))) {
-      // With the hook that dropped it (§14): "discarded" on its own reads as a
-      // bug to whoever is looking at an effect that did not happen, and the
-      // answer they need is which hook said it already had.
-      deps.log("effect.discarded", {
-        ticket,
-        type: dropped.type,
-        satisfiedBy: deps.dispatcher.handlerFor(dropped.type)?.id ?? null,
-      });
-    }
     const applied = await tryApply(surviving, ticket, snapshot, deps);
     if (!applied.ok) {
       deps.log("effect.failed", { ticket, reason: applied.reason });
@@ -432,6 +456,35 @@ function tryReconcile(
   } catch (e) {
     return { ok: false, reason: messageOf(e) };
   }
+}
+
+/**
+ * `tryReconcile`, plus the "dropped as already satisfied" log line for
+ * whatever it drops — shared by the transition path and the residue
+ * re-plan before an invocation, so the two report an effect reconcile
+ * discarded the same way rather than one of them quietly going without
+ * §14's "which hook said it already had" trail.
+ */
+function reconcileLogged(
+  planned: Effect[],
+  ticket: string,
+  snapshot: Snapshot,
+  deps: ConvergeDeps,
+): { ok: true; surviving: Effect[] } | { ok: false; reason: string } {
+  const reconciled = tryReconcile(snapshot, planned, deps.dispatcher.satisfied);
+  if (!reconciled.ok) return reconciled;
+  const surviving = reconciled.surviving;
+  for (const dropped of planned.filter((e) => !surviving.includes(e))) {
+    // With the hook that dropped it (§14): "discarded" on its own reads as a
+    // bug to whoever is looking at an effect that did not happen, and the
+    // answer they need is which hook said it already had.
+    deps.log("effect.discarded", {
+      ticket,
+      type: dropped.type,
+      satisfiedBy: deps.dispatcher.handlerFor(dropped.type)?.id ?? null,
+    });
+  }
+  return { ok: true, surviving };
 }
 
 /** Same reasoning as tryReconcile, for the apply side: apply() can reject too (a rate limit, a broken hook), from both the invoke path and the transition path. */
