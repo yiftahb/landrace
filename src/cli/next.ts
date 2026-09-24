@@ -22,5 +22,5 @@ export async function runNext(
   const decision = decide(workflow, snapshot);
   // Reconcile needs post hooks to answer "already satisfied", and there are
   // none in this plan, so `next` prints the unreconciled plan.
-  return { decision, effects: planEffects(decision) };
+  return { decision, effects: planEffects(decision, snapshot) };
 }

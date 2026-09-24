@@ -13,7 +13,7 @@ const target: Stage = {
 describe("planEffects", () => {
   it("plans the effects of the state being entered", () => {
     const d: Decision = { action: "transition", to: target, round: 1 };
-    expect(planEffects(d)).toEqual([
+    expect(planEffects(d, {})).toEqual([
       { type: "tracker.label", add: ["lr:working"], stage: "review", round: 1 },
       { type: "tracker.comment", marker: "ready:1", body: "hi", stage: "review", round: 1 },
     ]);
@@ -32,7 +32,7 @@ describe("planEffects", () => {
      * record that it had been entered a second time.
      */
     it("fills {round} and {stage} in from the decision, not from the workflow file", () => {
-      const planned = planEffects({ action: "transition", to: looping, round: 3 });
+      const planned = planEffects({ action: "transition", to: looping, round: 3 }, {});
       expect(planned).toEqual([{
         type: "tracker.comment", kind: "enter", stage: "code-review", round: 3,
         marker: "enter:code-review:3", body: "Round 3.",
@@ -40,7 +40,7 @@ describe("planEffects", () => {
     });
 
     it("numbers an entry with no round on the decision as the first", () => {
-      expect(planEffects({ action: "transition", to: looping })[0]).toMatchObject({ round: 1, marker: "enter:code-review:1" });
+      expect(planEffects({ action: "transition", to: looping }, {})[0]).toMatchObject({ round: 1, marker: "enter:code-review:1" });
     });
 
     /*
@@ -54,33 +54,33 @@ describe("planEffects", () => {
         id: "s",
         on_enter: [{ type: "tracker.comment", body: "{ticket.body} {run.stage} {outputs.spec.title} {toString}" }],
       };
-      expect(planEffects({ action: "transition", to: nosy, round: 1 })[0]?.body)
+      expect(planEffects({ action: "transition", to: nosy, round: 1 }, {})[0]?.body)
         .toBe("{ticket.body} {run.stage} {outputs.spec.title} {toString}");
     });
 
     it("leaves an authored stage or round alone rather than overwriting it", () => {
       const authored: Stage = { id: "s", on_enter: [{ type: "tracker.comment", stage: "other", round: 9 }] };
-      expect(planEffects({ action: "transition", to: authored, round: 2 })[0])
+      expect(planEffects({ action: "transition", to: authored, round: 2 }, {})[0])
         .toEqual({ type: "tracker.comment", stage: "other", round: 9 });
     });
 
     it("leaves a non-string field untouched", () => {
       const mixed: Stage = { id: "s", on_enter: [{ type: "tracker.label", add: ["lr:working"], n: 2, ok: true }] };
-      expect(planEffects({ action: "transition", to: mixed, round: 1 })[0])
+      expect(planEffects({ action: "transition", to: mixed, round: 1 }, {})[0])
         .toMatchObject({ add: ["lr:working"], n: 2, ok: true });
     });
   });
 
   it("plans nothing while waiting", () => {
-    expect(planEffects({ action: "wait" })).toEqual([]);
+    expect(planEffects({ action: "wait" }, {})).toEqual([]);
   });
 
   it("plans nothing when skipped — a skipped ticket must not be written to", () => {
-    expect(planEffects({ action: "skip", why: "no lr:auto label" })).toEqual([]);
+    expect(planEffects({ action: "skip", why: "no lr:auto label" }, {})).toEqual([]);
   });
 
   it("plans nothing for an invoke, which the runner performs directly", () => {
-    expect(planEffects({ action: "invoke", step: "s.md", round: 1 })).toEqual([]);
+    expect(planEffects({ action: "invoke", step: "s.md", round: 1 }, {})).toEqual([]);
   });
 });
 

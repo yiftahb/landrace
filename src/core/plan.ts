@@ -1,4 +1,6 @@
-import type { Decision, Effect } from "#namespace.js";
+import { NODES_CLOSE_EFFECT } from "#conventions.js";
+import { planNodesClose } from "#core/children.js";
+import type { Decision, Effect, Snapshot } from "#namespace.js";
 
 /**
  * One `{}` template syntax, and one place that knows what a name looks like.
@@ -70,21 +72,28 @@ export const expandEffectFields = (
  * same entry — after a crash, or on the next poll — produces the identical
  * marker rather than a second record of one entry.
  */
-export function planEffects(d: Decision): Effect[] {
+export function planEffects(d: Decision, s: Snapshot): Effect[] {
   if (d.action !== "transition" || !d.to) return [];
 
-  const stage = d.to.id;
+  const to = d.to;
+  const stage = to.id;
   const round = d.round ?? 1;
   const vars = { round: String(round), stage };
+  // Expanded once, in declaration order: a close declared first is applied
+  // first, which is what the shipped workflow relies on — see its on_enter.
+  const closes = planNodesClose(to, s, round);
 
-  return (d.to.on_enter ?? []).map((effect) => ({
-    ...expandEffectFields(effect, vars),
-    // An effect type is a dispatch key, never templated text.
-    type: effect.type,
-    // Filled in rather than overwritten: an effect that names its own stage
-    // or round means it, and silently retargeting it would be the engine
-    // overruling the workflow about where a record belongs.
-    ...(effect.stage === undefined ? { stage } : {}),
-    ...(effect.round === undefined ? { round } : {}),
-  }));
+  return (to.on_enter ?? []).map((effect) => {
+    if (effect.type === NODES_CLOSE_EFFECT) return closes.shift() as Effect;
+    return {
+      ...expandEffectFields(effect, vars),
+      // An effect type is a dispatch key, never templated text.
+      type: effect.type,
+      // Filled in rather than overwritten: an effect that names its own stage
+      // or round means it, and silently retargeting it would be the engine
+      // overruling the workflow about where a record belongs.
+      ...(effect.stage === undefined ? { stage } : {}),
+      ...(effect.round === undefined ? { round } : {}),
+    };
+  });
 }

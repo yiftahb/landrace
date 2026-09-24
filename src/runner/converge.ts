@@ -332,7 +332,7 @@ async function converging(
     }
 
     // transition or halt: the effects of the state being entered.
-    const planned = planEffects(decision);
+    const planned = planEffects(decision, snapshot);
     const reconciled = tryReconcile(snapshot, planned, deps.dispatcher.satisfied);
     if (!reconciled.ok) {
       deps.log("effect.failed", { ticket, reason: reconciled.reason });
