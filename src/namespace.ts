@@ -1024,7 +1024,7 @@ export interface Running {
  */
 export interface Chat {
   prompt: string;
-  links: { claude: string; cursor: string; codex: string };
+  links: { claude: string; claudeCli: string; cursor: string; codex: string };
 }
 
 /**

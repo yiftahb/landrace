@@ -139,6 +139,8 @@ function chatIcon(bg, glyphAttrs) {
 const CHAT_TARGETS = [
   { key: "claude", label: "Claude Code",
     icon: () => chatIcon("#D97757", { d: "M8 3.2l1.1 3.1 3.3.2-2.6 2 .9 3.2-2.7-1.9-2.7 1.9.9-3.2-2.6-2 3.3-.2z", fill: "#fff" }) },
+  { key: "claudeCli", label: "Claude Code (CLI)",
+    icon: () => chatIcon("#D97757", { d: "M4.5 5l3 3-3 3M8.5 11h3", fill: "none", stroke: "#fff", "stroke-width": "1.6", "stroke-linecap": "round", "stroke-linejoin": "round" }) },
   { key: "cursor", label: "Cursor",
     icon: () => chatIcon("#18181b", { d: "M4 3l9 4.5-3.6.9L8.5 12z", fill: "#fff" }) },
   { key: "codex", label: "Codex",
@@ -288,7 +290,7 @@ function buildChatMenu(row) {
 }
 
 // The "..." / "Chat ▾" slot on the right of every row, both opening the same
-// menu (Claude Code / Cursor / Codex / a divider / Copy prompt).
+// menu (Claude Code / Claude Code (CLI) / Cursor / Codex / a divider / Copy prompt).
 function actionFor(row) {
   const needsYou = row.lane === "needs-you";
   const button = el(

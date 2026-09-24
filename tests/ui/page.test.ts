@@ -117,7 +117,7 @@ describe("the page", () => {
     expect(APP_JS).toContain("Chat ▾");
   });
 
-  it("wires exactly the tick button, the theme toggle, the row menu toggle, the three links, copy, and the two document-level close listeners — no more, no less", () => {
+  it("wires exactly the tick button, the theme toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
     // Pins the count deliberately: the tick button and theme toggle (Task 1)
     // plus, for the Chat/… menu, one toggle-button listener, one
     // close-on-choose listener (defined once inside the per-target loop,
@@ -128,8 +128,9 @@ describe("the page", () => {
     expect(listeners).toHaveLength(7);
   });
 
-  it("opens the same menu — Claude Code, Cursor, Codex, a divider, Copy prompt — from either action button", () => {
-    expect(APP_JS).toContain("Claude Code");
+  it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
+    expect(APP_JS).toContain('"Claude Code"');
+    expect(APP_JS).toContain('"Claude Code (CLI)"');
     expect(APP_JS).toContain("Cursor");
     expect(APP_JS).toContain("Codex");
     expect(APP_JS).toContain("Copy prompt");
@@ -145,7 +146,7 @@ describe("the page", () => {
 
   it("sets each link's href straight from row.chat.links, and never concatenates a URL itself", () => {
     expect(APP_JS).toMatch(/row\.chat\.links\[[^\]]+\]/);
-    expect(APP_JS).not.toMatch(/claude-cli:|cursor:\/\/anysphere|codex:\/\/threads/);
+    expect(APP_JS).not.toMatch(/claude-cli:|claude:\/\/code|cursor:\/\/anysphere|codex:\/\/threads/);
   });
 
   it("copies row.chat.prompt to the clipboard, reporting Copied or Copy failed", () => {

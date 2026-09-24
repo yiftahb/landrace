@@ -7,9 +7,16 @@ describe("chatFor", () => {
     );
   });
 
-  it("builds the Claude Code deep link with an encoded cwd and prompt", () => {
+  it("builds the Claude desktop app's Code deep link with an encoded prompt and folder", () => {
     const { links, prompt } = chatFor(41, "/repo/landrace");
     expect(links.claude).toBe(
+      `claude://code/new?q=${encodeURIComponent(prompt)}&folder=${encodeURIComponent("/repo/landrace")}`,
+    );
+  });
+
+  it("builds the Claude Code CLI deep link with an encoded cwd and prompt", () => {
+    const { links, prompt } = chatFor(41, "/repo/landrace");
+    expect(links.claudeCli).toBe(
       `claude-cli://open?cwd=${encodeURIComponent("/repo/landrace")}&q=${encodeURIComponent(prompt)}`,
     );
   });
@@ -32,6 +39,7 @@ describe("chatFor", () => {
     const workspace = "/Users/me/café project";
     const { links } = chatFor(41, workspace);
     expect(links.claude).toContain(encodeURIComponent(workspace));
+    expect(links.claudeCli).toContain(encodeURIComponent(workspace));
     expect(links.codex).toContain(encodeURIComponent(workspace));
     expect(links.claude).not.toContain(" ");
     expect(links.claude).not.toContain("é");

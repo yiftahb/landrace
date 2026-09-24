@@ -21,7 +21,10 @@ export function chatFor(ticket: number, workspace: string): Chat {
   return {
     prompt,
     links: {
-      claude: `claude-cli://open?cwd=${cwd}&q=${q}`,
+      // The desktop app's Code tab. claude-cli:// below opens a terminal
+      // running the CLI instead — a user who expected the app got Terminal.
+      claude: `claude://code/new?q=${q}&folder=${cwd}`,
+      claudeCli: `claude-cli://open?cwd=${cwd}&q=${q}`,
       // Cursor's deep link takes no workspace parameter — it opens the
       // prompt in whatever window is already active.
       cursor: `cursor://anysphere.cursor-deeplink/prompt?text=${q}`,
