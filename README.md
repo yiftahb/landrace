@@ -338,6 +338,18 @@ preflight this server never answers with permission; and it refuses any
 they are what stops another website the user has open from triggering a
 tick just because their browser can still reach 127.0.0.1.
 
+The page follows the OS light/dark preference (or whatever you last toggled,
+top right) with no flash on load. Each row has a menu — "Chat ▾" on rows
+that need you, "…" everywhere else — with Claude Code, Cursor and Codex, and
+a "Copy prompt" item below a divider. All three links pre-fill a chat about
+that ticket, over the landrace MCP, and never send anything on their own —
+picking one just opens the editor with the prompt sitting in the box. Cursor
+has no per-window deep-link target, so its link opens in whatever window is
+already active rather than the ticket's own checkout. Claude Code's own link
+handler (`claude-cli://`) only registers itself once you have run an
+interactive `claude` session at least once, so the first click needs that
+session to have happened already, not the deep link itself.
+
 ## Security
 
 - The agent never holds tracker credentials. It writes files; Landrace performs every external write.
