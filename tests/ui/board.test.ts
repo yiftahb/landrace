@@ -16,7 +16,7 @@ const c = (ticket: number, labels: string[], title = `t${ticket}`, url = `https:
 const view = (candidates: Candidate[], over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
     workflow, candidates, listedAt: 1, now: 100, pid: 1, nextTickAt: null,
-    running: new Map(), elsewhere: new Map(), ...over,
+    running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
   });
 
 const laneFor = (candidate: Candidate, over = {}) => view([candidate], over).rows[0]?.lane;
@@ -86,11 +86,17 @@ describe("boardView", () => {
     expect(view([], { nextTickAt: 12345 }).nextTickAt).toBe(12345);
     expect(view([], { nextTickAt: null }).nextTickAt).toBeNull();
   });
+
+  it("passes folder and workspace straight through, for the header chip", () => {
+    const v = view([], { folder: "widgets", workspace: "/Users/me/widgets" });
+    expect(v.folder).toBe("widgets");
+    expect(v.workspace).toBe("/Users/me/widgets");
+  });
 });
 
 describe("createBoard", () => {
   const shell = (now: () => number, held: (t: number) => Promise<Held | null> = async () => null) =>
-    createBoard({ workflow, held, now, pid: 1 });
+    createBoard({ workflow, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace" });
 
   it("opens a running row on step.started and closes it on step.finished", async () => {
     let t = 10;
@@ -111,20 +117,29 @@ describe("createBoard", () => {
   });
 
   it("reports no rows and a null listedAt before the first tick lands", async () => {
-    expect(await shell(() => 5).view()).toEqual({ generatedAt: 5, listedAt: null, rows: [], nextTickAt: null });
+    expect(await shell(() => 5).view()).toEqual({
+      generatedAt: 5, listedAt: null, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
+    });
   });
 
   it("defaults nextTickAt to null when nothing schedules", async () => {
-    const board = createBoard({ workflow, held: async () => null });
+    const board = createBoard({ workflow, held: async () => null, folder: "f", workspace: "/w" });
     expect((await board.view()).nextTickAt).toBeNull();
   });
 
   it("reports nextTickAt from the function it was given, read fresh on each view()", async () => {
     let next: number | null = 111;
-    const board = createBoard({ workflow, held: async () => null, nextTickAt: () => next });
+    const board = createBoard({ workflow, held: async () => null, nextTickAt: () => next, folder: "f", workspace: "/w" });
     expect((await board.view()).nextTickAt).toBe(111);
     next = 222;
     expect((await board.view()).nextTickAt).toBe(222);
+  });
+
+  it("passes folder and workspace through view(), unchanged across ticks", async () => {
+    const board = createBoard({ workflow, held: async () => null, folder: "widgets", workspace: "/Users/me/widgets" });
+    const v = await board.view();
+    expect(v.folder).toBe("widgets");
+    expect(v.workspace).toBe("/Users/me/widgets");
   });
 
   it("asks the lock only about tickets it has listed", async () => {

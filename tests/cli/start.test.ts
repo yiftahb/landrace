@@ -14,6 +14,7 @@ import {
   loop,
   parseInterval,
   parsePort,
+  repoWorkspace,
   startUi,
   stepTimeoutMs,
 } from "#cli/start.js";
@@ -285,7 +286,7 @@ describe("boardSink", () => {
         current: {
           observe: () => { throw new Error("display broke"); },
           list: () => {},
-          view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null }),
+          view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
         },
       };
       const sink = boardSink((e) => printed.push(e), board);
@@ -307,7 +308,7 @@ describe("boardSink", () => {
       current: {
         observe: (e) => { observed.push(e); },
         list: () => {},
-        view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null }),
+        view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
       },
     };
     const event: LandraceEvent = { name: "step.finished", ticket: 1 };
@@ -326,8 +327,28 @@ describe("parsePort", () => {
   });
 });
 
+describe("repoWorkspace", () => {
+  it("reports the repository's own top-level directory and its name, from a subdirectory", async () => {
+    // Reuses this checkout rather than a fixture repo: repositoryRoot's own
+    // behaviour is already pinned by tests/agent/worktree.test.ts, so this
+    // only needs to prove repoWorkspace calls it and derives `folder`
+    // from what it returns.
+    const { folder, workspace } = await repoWorkspace(process.cwd());
+    expect(workspace.endsWith(folder)).toBe(true);
+    expect(workspace).not.toContain("\n");
+  });
+
+  it("falls back to process.cwd() outside a repository, rather than refusing", async () => {
+    const plain = await mkdtemp(join(tmpdir(), "lr-plain-workspace-"));
+    const { folder, workspace } = await repoWorkspace(plain);
+    expect(workspace).toBe(process.cwd());
+    expect(folder).toBe(process.cwd().split("/").pop());
+  });
+});
+
 describe("startUi", () => {
-  const board = () => createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null });
+  const board = () =>
+    createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w" });
 
   it("serves nothing with --no-ui", async () => {
     expect(await startUi({ board: board(), ui: false, once: false, port: 0 })).toBeNull();

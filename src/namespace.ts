@@ -1042,6 +1042,10 @@ export interface BoardView {
   rows: BoardRow[];
   /** When the next scheduled tick is due, epoch ms; null when nothing is scheduled. */
   nextTickAt: number | null;
+  /** The repository checkout's own name — the header chip. `basename(workspace)`. */
+  folder: string;
+  /** The absolute path of the repository checkout landrace is running in. */
+  workspace: string;
 }
 
 export interface Board {

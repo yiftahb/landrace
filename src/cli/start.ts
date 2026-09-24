@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
@@ -198,6 +199,21 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<{ 
     );
   }
   return isolation === "worktree" ? { root: await repositoryRoot(dir) } : null;
+}
+
+/**
+ * The triage page's header chip: the repository checkout landrace is
+ * actually running in, and its own name.
+ *
+ * Falls back to `process.cwd()` outside a repository — a different answer
+ * from `sandboxFor`/`repositoryRoot` above, which refuse instead, because a
+ * worktree isolates a step against a *repository* and there is nothing to
+ * isolate against without one. The page has nothing to isolate; it would
+ * rather show the directory it is actually reading than refuse to render.
+ */
+export async function repoWorkspace(dir: string): Promise<{ folder: string; workspace: string }> {
+  const workspace = await repositoryRoot(dir).catch(() => process.cwd());
+  return { folder: basename(workspace), workspace };
 }
 
 /**
@@ -516,7 +532,10 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const inFlight = new Set<Promise<void>>();
   const schedule = createSchedule({ intervalMs: rt.intervalMs, run: trackedRun(rt, boardRef, inFlight) });
 
-  const board = createBoard({ workflow: rt.deps.workflow, held: (t) => held(t), nextTickAt: schedule.nextAt });
+  const { folder, workspace } = await repoWorkspace(dir);
+  const board = createBoard({
+    workflow: rt.deps.workflow, held: (t) => held(t), nextTickAt: schedule.nextAt, folder, workspace,
+  });
   boardRef.current = board;
 
   const ui = await startUi({

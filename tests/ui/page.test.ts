@@ -37,9 +37,13 @@ describe("the page", () => {
   });
 
   it("puts the countdown and the tick button in the header, top right", () => {
-    const header = /<header>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
-    expect(header).toContain('<span id="next">');
-    expect(header).toContain('<button id="tick" type="button">Run next tick now</button>');
+    const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(header).toContain('id="next"');
+    expect(header).toMatch(/id="tick" type="button" class="[^"]*">Run next tick now<\/button>/);
+    // "top right": the header lays its two groups out with `justify-between`
+    // — branding on the left, schedule + theme toggle on the right — see the
+    // CSS assertion below.
+    expect(header).toMatch(/<header[^>]*justify-between/);
   });
 
   it("attaches the tick button's listener in script, never as an inline handler", () => {
@@ -55,7 +59,7 @@ describe("the page", () => {
   });
 
   it("lays the header group out to the right", () => {
-    expect(APP_CSS).toMatch(/margin-left:\s*auto/);
+    expect(APP_CSS).toMatch(/justify-content:\s*space-between/);
   });
 
   it("loads /theme.js before /app.js, and without defer, so there is no flash of the wrong theme", () => {
@@ -65,7 +69,7 @@ describe("the page", () => {
   });
 
   it("has a theme toggle in the header", () => {
-    const header = /<header>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+    const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
     expect(header).toContain('id="theme-toggle"');
     expect(header).toMatch(/aria-label="Switch to (dark|light) mode"/);
   });
@@ -87,5 +91,25 @@ describe("the page", () => {
     expect(APP_JS).toContain('getElementById("theme-toggle")');
     expect(APP_JS).toContain("classList.toggle(\"dark\"");
     expect(APP_JS).toMatch(/try\s*{[^}]*localStorage\.setItem[^}]*}\s*catch/s);
+  });
+
+  it("has a folder chip in the header, set from the board view", () => {
+    const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(header).toContain('id="folder"');
+    expect(APP_JS).toContain('getElementById("folder").textContent = view.folder');
+  });
+
+  it("shows a quiet empty state, through textContent, when a lane has no rows", () => {
+    expect(APP_JS).toContain('"None"');
+  });
+
+  it("renders a Chat action on needs-you rows and an inert one everywhere else, both as shells with no listener yet", () => {
+    expect(APP_JS).toContain('row.lane === "needs-you"');
+    expect(APP_JS).toContain("Chat ▾");
+    // Neither shell is wired: the only addEventListener calls in the whole
+    // script are the tick button and the theme toggle, both unrelated to
+    // per-row actions. Task 2 adds the menu and its own listeners.
+    const listeners = APP_JS.match(/addEventListener/g) ?? [];
+    expect(listeners).toHaveLength(2);
   });
 });

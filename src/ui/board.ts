@@ -30,6 +30,8 @@ export function boardView(input: {
   now: number;
   pid: number;
   nextTickAt: number | null;
+  folder: string;
+  workspace: string;
 }): BoardView {
   const urls = new Map(input.candidates.map((c) => [c.ticket, c.url]));
   const rows: BoardRow[] = statusRows(input.workflow, input.candidates).map((status): BoardRow => {
@@ -59,7 +61,10 @@ export function boardView(input: {
     return { ...base, lane: laneOf(status, input.workflow) };
   });
   rows.sort((a, b) => ORDER.indexOf(a.lane) - ORDER.indexOf(b.lane) || a.ticket - b.ticket);
-  return { generatedAt: input.now, listedAt: input.listedAt, rows, nextTickAt: input.nextTickAt };
+  return {
+    generatedAt: input.now, listedAt: input.listedAt, rows, nextTickAt: input.nextTickAt,
+    folder: input.folder, workspace: input.workspace,
+  };
 }
 
 /**
@@ -74,6 +79,10 @@ export function createBoard(opts: {
   pid?: number;
   /** When the next scheduled tick is due — the schedule's own `nextAt`. */
   nextTickAt?: () => number | null;
+  /** The repository checkout's own name — the header chip. */
+  folder: string;
+  /** The absolute path of the repository checkout landrace is running in. */
+  workspace: string;
 }): Board {
   const now = opts.now ?? Date.now;
   const pid = opts.pid ?? process.pid;
@@ -108,7 +117,7 @@ export function createBoard(opts: {
       }));
       return boardView({
         workflow: opts.workflow, candidates, listedAt, running, elsewhere, now: now(), pid,
-        nextTickAt: nextTickAt(),
+        nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },
   };

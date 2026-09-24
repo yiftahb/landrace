@@ -5,6 +5,30 @@
  */
 export { APP_CSS } from "#ui/styles.generated.js";
 
+/** One <section> lane: a coloured left border, a mono heading, a count badge. */
+const lane = (id: string, label: string, accent: string, dot = ""): string => `
+<section data-lane="${id}" class="mb-4 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900${accent}">
+<div class="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+${dot}<h2 class="font-mono text-xs font-semibold uppercase tracking-wider">${label}</h2>
+<span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-medium">0</span>
+</div>
+<ul class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
+</section>`;
+
+/** not-admitted / discharged: same card, collapsible, no colour accent, a rotating chevron. */
+const collapsedLane = (id: string, label: string): string => `
+<details data-lane="${id}" class="group mb-4 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+<summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 [&::-webkit-details-marker]:hidden">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-3 w-3 shrink-0 text-neutral-400 transition-transform group-open:rotate-90" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+<h2 class="font-mono text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">${label}</h2>
+<span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-neutral-100 px-1.5 py-0.5 text-xs font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">0</span>
+</summary>
+<ul class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
+</details>`;
+
+const RUNNING_DOT =
+  '<span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" aria-hidden="true"></span>';
+
 export const PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -15,22 +39,32 @@ export const PAGE_HTML = `<!doctype html>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
-<body>
-<header>
-<h1>Landrace</h1><span id="meta">connecting…</span>
-<div id="schedule" class="ml-auto"><span id="next">no tick scheduled</span><button id="tick" type="button">Run next tick now</button></div>
-<button id="theme-toggle" type="button" aria-label="Switch to dark mode">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+<body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+<header class="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900 sm:px-6">
+<div class="flex min-w-0 flex-wrap items-center gap-2">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="h-5 w-5 shrink-0" aria-hidden="true"><line x1="4" y1="4" x2="4" y2="20"></line><line x1="9" y1="7" x2="20" y2="7"></line><line x1="9" y1="12" x2="20" y2="12"></line><line x1="9" y1="17" x2="16" y2="17"></line></svg>
+<h1 class="text-sm font-semibold">Landrace</h1>
+<span id="folder" class="min-w-0 truncate rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400"></span>
+<span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 sm:inline"></span>
+</div>
+<div class="flex flex-wrap items-center gap-2">
+<div id="schedule" class="flex flex-wrap items-center gap-2">
+<span id="next" class="rounded-full border border-neutral-200 px-3 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">No tick scheduled</span>
+<button id="tick" type="button" class="rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800">Run next tick now</button>
+</div>
+<button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
 </button>
+</div>
 </header>
-<main>
-<section data-lane="needs-you"><h2>Needs you</h2><ul></ul></section>
-<section data-lane="running"><h2>Agent running</h2><ul></ul></section>
-<section data-lane="elsewhere"><h2>Held elsewhere</h2><ul></ul></section>
-<section data-lane="waiting"><h2>Waiting</h2><ul></ul></section>
-<details data-lane="not-admitted"><summary>Not admitted</summary><ul></ul></details>
-<details data-lane="discharged"><summary>Discharged</summary><ul></ul></details>
+<main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
+${lane("running", "Agent running", " border-l-4 border-l-emerald-500 [&_h2]:text-emerald-600 dark:[&_h2]:text-emerald-400 [&_.lane-count]:bg-emerald-100 [&_.lane-count]:text-emerald-700 dark:[&_.lane-count]:bg-emerald-950 dark:[&_.lane-count]:text-emerald-300", RUNNING_DOT)}
+${lane("elsewhere", "Held elsewhere", " border-l-4 border-l-amber-500 [&_h2]:text-amber-600 dark:[&_h2]:text-amber-400 [&_.lane-count]:bg-amber-100 [&_.lane-count]:text-amber-700 dark:[&_.lane-count]:bg-amber-950 dark:[&_.lane-count]:text-amber-300")}
+${lane("waiting", "Waiting", " border-l-4 border-l-neutral-300 dark:border-l-neutral-700 [&_h2]:text-neutral-500 dark:[&_h2]:text-neutral-400 [&_.lane-count]:bg-neutral-100 [&_.lane-count]:text-neutral-600 dark:[&_.lane-count]:bg-neutral-800 dark:[&_.lane-count]:text-neutral-300")}
+${collapsedLane("not-admitted", "Not admitted")}
+${collapsedLane("discharged", "Discharged")}
 </main>
 </body>
 </html>
@@ -74,9 +108,30 @@ function elapsed(since, now) {
   return h ? h + "h " + m + "m" : m + "m " + String(r).padStart(2, "0") + "s";
 }
 
+// The "..." / "Chat ▾" slot on the right of every row: shells only for now,
+// wired up with a real menu in a follow-up — no listener attached here, so
+// they render but do nothing yet.
+function actionFor(row) {
+  if (row.lane === "needs-you") {
+    return el("button", "inline-flex shrink-0 self-start items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300 sm:self-auto", "Chat ▾");
+  }
+  return el("button", "inline-flex h-7 w-7 shrink-0 self-start items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 sm:self-auto", "⋯");
+}
+
 function rowFor(row, now) {
-  const li = el("li");
-  const num = el("span", "num");
+  // Stacked below the sm breakpoint, side-by-side above it — a breakpoint, not a
+  // content-based flex-wrap. flex-wrap's own line-breaking runs on each
+  // item's *hypothetical* (content) size: flex-1's 0% basis told the browser
+  // this row needed no room at all and it never wrapped the action button
+  // down, while flex-auto's content-sized basis wrapped the button down but
+  // then sized the title/stage row itself off the unwrapped content width,
+  // pushing the stage chip past the edge instead. Neither reliably fits
+  // arbitrary ticket titles at 400px, so the breakpoint sidesteps both.
+  const li = el("li", "flex flex-col gap-1 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1");
+  const main = el("div", "min-w-0 w-full sm:w-auto sm:flex-1");
+
+  const top = el("div", "flex flex-wrap items-baseline gap-x-2 gap-y-1");
+  const num = el("span", "num shrink-0 font-mono text-sm text-blue-600 dark:text-blue-400");
   if (row.url) {
     const a = el("a", null, "#" + row.ticket);
     a.href = row.url;
@@ -85,10 +140,27 @@ function rowFor(row, now) {
   } else {
     num.textContent = "#" + row.ticket;
   }
-  const stage = row.round ? row.stage + " r" + row.round : (row.stage || "—");
-  li.append(num, el("span", "stage", stage), el("span", "title", row.title));
-  const note = row.model ? row.note + " · " + row.model : row.note;
-  li.append(el("span", "note", note), el("span", "clock", elapsed(row.since, now)));
+  top.append(num, el("span", "title min-w-0 flex-1 font-medium text-neutral-900 dark:text-neutral-100", row.title));
+  // No stage at all (a halted ticket, say) shows no chip — not an empty or
+  // placeholder one. A row with a round but no stage cannot happen (round is
+  // only ever set alongside a running row's own stage), so this only ever
+  // omits the chip, never leaves a lone "· r2" behind.
+  if (row.stage) {
+    const stage = row.round ? row.stage + " · r" + row.round : row.stage;
+    top.append(el("span", "stage shrink-0 rounded border border-neutral-200 px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 dark:border-neutral-700 dark:text-neutral-400", stage));
+  }
+
+  const bottom = el("div", "mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-neutral-500 dark:text-neutral-400");
+  bottom.append(el("span", "note", row.note));
+  if (row.model) {
+    bottom.append(el("span", "model rounded border border-neutral-200 px-1 font-mono dark:border-neutral-700", row.model));
+  }
+  if (typeof row.since === "number") {
+    bottom.append(el("span", "clock font-mono tabular-nums", elapsed(row.since, now)));
+  }
+
+  main.append(top, bottom);
+  li.append(main, actionFor(row));
   return li;
 }
 
@@ -103,7 +175,7 @@ function countdown(ms) {
 
 function renderNext() {
   document.getElementById("next").textContent =
-    nextTickAt === null ? "no tick scheduled" : "next tick in " + countdown(nextTickAt - Date.now());
+    nextTickAt === null ? "No tick scheduled" : "Next tick in " + countdown(nextTickAt - Date.now());
 }
 
 function render(view) {
@@ -111,11 +183,11 @@ function render(view) {
   for (const lane of document.querySelectorAll("[data-lane]")) {
     const rows = view.rows.filter((r) => r.lane === lane.dataset.lane);
     const list = lane.querySelector("ul");
-    list.replaceChildren(...(rows.length ? rows.map((r) => rowFor(r, now)) : [el("li", "empty", "none")]));
-    const title = lane.querySelector("h2, summary");
-    if (!title.dataset.label) title.dataset.label = title.textContent;
-    title.textContent = title.dataset.label + " (" + rows.length + ")";
+    list.replaceChildren(...(rows.length ? rows.map((r) => rowFor(r, now)) : [el("li", "px-4 py-6 text-sm italic text-neutral-400 dark:text-neutral-600", "None")]));
+    const count = lane.querySelector(".lane-count");
+    if (count) count.textContent = String(rows.length);
   }
+  document.getElementById("folder").textContent = view.folder;
   const listed = view.listedAt === null ? "waiting for the first tick" : "listed " + elapsed(view.listedAt, now) + " ago";
   document.getElementById("meta").textContent = listed;
   nextTickAt = view.nextTickAt;
