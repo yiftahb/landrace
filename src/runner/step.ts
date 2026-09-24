@@ -285,13 +285,23 @@ export async function runStep(opts: {
   // The engine's half of tickets:create, like the worktree diff is repo:write's:
   // a child carrying this very round's origin, made by a step that never
   // declared the word, is a step that found a way around its executor.
+  //
+  // A re-read that fails keeps the step. The backstop is defence in depth —
+  // the executor is never handed the tool without the word — and discarding
+  // a finished, paid step over a rate limit on the check is the costlier
+  // mistake; the skipped check is logged instead, naming the ticket.
+  let graph: Graph | null = null;
   if (!mayCreateTickets(step.capabilities) && opts.readGraph) {
-    let graph: Graph;
     try {
       graph = await opts.readGraph();
     } catch (e) {
-      return { ok: false, kind: "unavailable", reason: `the ticket could not be re-read to check what the step created: ${messageOf(e)}` };
+      log?.("step.unchecked", {
+        ticket: opts.ticket, stage: stageId, round,
+        reason: `the ticket could not be re-read to check what the step created: ${messageOf(e)}`,
+      });
     }
+  }
+  if (graph) {
     const made = graph.nodes.filter((n) =>
       n.origin?.parent === opts.ticket && n.origin.stage === stageId && n.origin.round === round);
     if (made.length) {

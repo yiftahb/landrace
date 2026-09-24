@@ -988,10 +988,25 @@ describe("the tickets:create backstop", () => {
     expect(elsewhere.ok).toBe(true);
   });
 
-  it("reports a graph it could not re-read as unavailable, not as a clean step", async () => {
+  it("keeps a finished step whose graph could not be re-read, and says the check was skipped", async () => {
+    // The backstop is defence in depth — the tool is never offered without
+    // the capability — so an outage on the re-read must not throw away a
+    // step that has already been paid for and run to completion.
+    const events: Array<{ name: string; data: Record<string, unknown> | undefined }> = [];
     const r = await runStep({ ...base, ticket: "1", stageId: "s", round: 1,
-      step: { ...base.step, capabilities: [] }, readGraph: async () => { throw new Error("rate limited"); } });
-    expect(r).toMatchObject({ ok: false, kind: "unavailable", reason: expect.stringMatching(/rate limited/) });
+      step: { ...base.step, capabilities: [] }, readGraph: async () => { throw new Error("rate limited"); },
+      log: (name, data) => { events.push({ name, data }); } });
+    expect(r.ok).toBe(true);
+    expect(events).toContainEqual({ name: "step.unchecked", data: expect.objectContaining({
+      ticket: "1", stage: "s", round: 1, reason: expect.stringMatching(/rate limited/) }) });
+  });
+
+  it("still refuses a step whose re-read succeeded and found children it made", async () => {
+    const events: string[] = [];
+    const r = await runStep({ ...base, ticket: "1", stageId: "s", round: 1,
+      step: { ...base.step, capabilities: [] }, readGraph: async () => made(), log: (name) => { events.push(name); } });
+    expect(r).toMatchObject({ ok: false, kind: "refused" });
+    expect(events).not.toContain("step.unchecked");
   });
 
   it("hands the executor the binding only when the step declared it", async () => {
