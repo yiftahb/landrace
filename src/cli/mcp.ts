@@ -1,9 +1,11 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
+import { mayCreateTickets, ticketIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
-import type { RuntimeContext, Tools } from "#namespace.js";
-import { createMcpServer } from "#mcp/server.js";
+import type { ChildBinding, ChildTool, RuntimeContext, Tools } from "#namespace.js";
+import { createChildMcpServer, createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
+import { createChild } from "#runner/children.js";
 import { createLogger } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
@@ -123,5 +125,53 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
 
 export async function runMcp(dir: string): Promise<void> {
   const server = createMcpServer(await buildMcpTools(dir));
+  await server.connect(new StdioServerTransport());
+}
+
+/**
+ * The child server's assembly. Checked here, before a transport exists, so a
+ * binding that could never be honoured is a startup failure the executor
+ * surfaces — not a tool that fails on every call while the agent retries.
+ *
+ * No preflight and no source probe: the loop that started this agent ran both
+ * already, moments ago, against the same configuration.
+ */
+export async function buildChildTool(dir: string, binding: ChildBinding): Promise<ChildTool> {
+  const parentProblem = ticketIdProblem(binding.parent);
+  if (parentProblem) throw new Error(parentProblem);
+  if (!Number.isInteger(binding.round) || binding.round < 1) {
+    throw new Error(`round must be a positive integer, got ${binding.round}`);
+  }
+
+  const loaded = await loadConfig(dir);
+  assertConfigUsable(dir, loaded);
+  const { workflow, steps } = await loadWorkflow(dir, loaded.vars);
+  const stage = workflow.stages.find((s) => s.id === binding.stage);
+  if (!stage) throw new Error(`the workflow has no stage "${binding.stage}"`);
+  const step = stage.step ? steps.get(stage.step) : undefined;
+  if (!mayCreateTickets(step?.capabilities)) {
+    throw new Error(`stage "${binding.stage}"'s step does not declare tickets:create, so it may not create children`);
+  }
+
+  const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
+  const events = createLogger({
+    redactValues: redactionValues(loaded),
+    sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
+  });
+  const ctx: RuntimeContext = {
+    config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal,
+    log: (event, data) => events(event as EventName, data),
+  };
+
+  return {
+    async createChild(input) {
+      const node = await createChild(registry.operator, binding, input, ctx);
+      return { ticket: node.id, title: node.title, link: node.link };
+    },
+  };
+}
+
+export async function runChildMcp(dir: string, binding: ChildBinding): Promise<void> {
+  const server = createChildMcpServer(await buildChildTool(dir, binding));
   await server.connect(new StdioServerTransport());
 }

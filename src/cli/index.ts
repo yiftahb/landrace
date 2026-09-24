@@ -3,7 +3,7 @@ import { messageOf } from "#runner/errors.js";
 import { reexec, shouldReexec, STRIP_TYPES } from "#cli/reexec.js";
 import { runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
-import { runMcp } from "#cli/mcp.js";
+import { runChildMcp, runMcp } from "#cli/mcp.js";
 import { DEFAULT_UI_PORT, parsePort, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 
@@ -113,10 +113,21 @@ program
   .command("mcp")
   .description("run the MCP server over stdio")
   .option("-w, --workflow <dir>", "workflow directory", ".landrace")
-  .action(async (opts: { workflow: string }) => {
+  .option("--child <parent>", "serve only landrace_create_child, bound to this parent ticket")
+  .option("--stage <stage>", "with --child: the stage creating the children")
+  .option("--round <round>", "with --child: the round creating the children")
+  .action(async (opts: { workflow: string; child?: string; stage?: string; round?: string }) => {
     // The MCP client that spawned us shows stderr, so what loadingHooks prints
     // there is the only diagnostic a user gets.
-    await loadingHooks("mcp", () => runMcp(opts.workflow));
+    await loadingHooks("mcp", () => {
+      if (opts.child !== undefined) {
+        if (opts.stage === undefined || opts.round === undefined) {
+          throw new Error("--child needs --stage and --round");
+        }
+        return runChildMcp(opts.workflow, { parent: opts.child, stage: opts.stage, round: Number(opts.round) });
+      }
+      return runMcp(opts.workflow);
+    });
   });
 
 await program.parseAsync();

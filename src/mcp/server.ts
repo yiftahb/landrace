@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { Tools } from "#namespace.js";
+import type { ChildTool, Tools } from "#namespace.js";
 import { ticketIdProblem } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 
@@ -112,5 +112,30 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     guard(({ ticket: n, why }) => tools.resolve(n, why)),
   );
 
+  return server;
+}
+
+/**
+ * The server an agent is started with when its step may create children.
+ *
+ * One tool, and deliberately none of the operator ones: an agent that could
+ * reach landrace_update_ticket could move its own ticket. The schema has no
+ * parent, stage or round — those were fixed on this process's command line
+ * before the agent existed, and zod drops any key the schema does not name.
+ */
+export function createChildMcpServer(tool: ChildTool, version = "0.0.0"): McpServer {
+  const server = new McpServer({ name: "landrace", version });
+  server.tool(
+    "landrace_create_child",
+    "Create one sub-ticket of the ticket you are working on. Call once per sub-ticket. " +
+      "Each is worked through the workflow on its own, starting at implementation.",
+    {
+      title: z.string().min(1),
+      body: z.string().optional(),
+      priority: z.number().int().min(0).optional(),
+    },
+    guard(({ title, body, priority }) =>
+      tool.createChild({ title, ...(body === undefined ? {} : { body }), ...(priority === undefined ? {} : { priority }) })),
+  );
   return server;
 }

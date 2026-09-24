@@ -904,6 +904,11 @@ export interface Tools {
   resolve(ticket: string, why?: string | undefined): Promise<unknown>;
 }
 
+/** The one tool a step that may create children is handed, already bound. */
+export interface ChildTool {
+  createChild(input: NewChild): Promise<{ ticket: string; title: string; link: string }>;
+}
+
 /**
  * What the MCP plane needs beyond the registry to hold a conversation: an
  * executor to resume a step's session with, a screener to judge the turn
