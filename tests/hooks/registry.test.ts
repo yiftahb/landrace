@@ -1,7 +1,9 @@
 import { buildRegistry } from "#hooks/load.js";
 import type { HookModule } from "#namespace.js";
-import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
+import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, definePreflight, defineSource } from "#hooks/contracts.js";
 import type { Candidate, HookContext } from "#namespace.js";
+
+const preflight = (id: string, check: () => Promise<void> = async () => {}) => definePreflight({ id, check });
 
 const pre = (id: string, fragment: Record<string, unknown> = {}) =>
   definePreHook({ id, run: () => fragment });
@@ -38,6 +40,20 @@ describe("a registry is assembled from what the modules exported", () => {
     expect(r.source?.id).toBe("tracker");
     expect(r.operator?.id).toBe("tracker");
     expect([...r.executors.keys()]).toEqual(["claude"]);
+  });
+
+  /** Plural: several modules may each ship one, and the loader keeps load order. */
+  it("files preflights in load order, plural", () => {
+    const r = buildRegistry([
+      module_("hooks/a.ts", { p: preflight("alpha") }),
+      module_("hooks/b.ts", { p: preflight("beta") }),
+    ]);
+    expect(r.preflights.map((p) => p.id)).toEqual(["alpha", "beta"]);
+  });
+
+  it("reports no preflights as an empty list, not as absent", () => {
+    const r = buildRegistry([module_("hooks/tracker.ts", { pre: pre("tracker") })]);
+    expect(r.preflights).toEqual([]);
   });
 
   it("ignores what nobody branded, because a module may export helpers", () => {
@@ -157,6 +173,12 @@ describe("ambiguity halts, naming both sides", () => {
     expect(() =>
       buildRegistry([module_("hooks/a.ts", { e: executor("claude") }), module_("hooks/b.ts", { e: executor("claude") })]),
     ).toThrow(/two executors[\s\S]*"claude"/);
+  });
+
+  it("refuses two preflights under one id", () => {
+    expect(() =>
+      buildRegistry([module_("hooks/a.ts", { p: preflight("same") }), module_("hooks/b.ts", { p: preflight("same") })]),
+    ).toThrow(/two preflights[\s\S]*"same"[\s\S]*hooks\/a\.ts[\s\S]*hooks\/b\.ts/);
   });
 
   /*

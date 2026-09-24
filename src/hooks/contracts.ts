@@ -15,6 +15,7 @@ import type {
   Operator,
   PostHook,
   PreHook,
+  Preflight,
   Source,
 } from "#namespace.js";
 
@@ -24,7 +25,7 @@ import type {
  * kind with no helper is a kind nobody can register, which would fail silently
  * at load rather than loudly at build.
  */
-export const HOOK_KINDS = ["pre", "post", "artifact", "source", "operator", "executor"] as const;
+export const HOOK_KINDS = ["pre", "post", "artifact", "source", "operator", "executor", "preflight"] as const;
 
 /**
  * How the loader tells the kinds apart.
@@ -60,3 +61,4 @@ export const defineArtifactHook = (hook: ArtifactHook): ArtifactHook => brand("a
 export const defineExecutor = (executor: Executor): Executor => brand("executor", executor);
 export const defineSource = (source: Source): Source => brand("source", source);
 export const defineOperator = (operator: Operator): Operator => brand("operator", operator);
+export const definePreflight = (preflight: Preflight): Preflight => brand("preflight", preflight);

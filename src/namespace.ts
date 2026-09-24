@@ -384,6 +384,20 @@ export interface Executor {
  */
 export type RuntimeContext = Omit<HookContext, "ticket" | "snapshot">;
 
+/**
+ * The engine's *when* for a permission problem, tracker-agnostic by
+ * construction: run once at startup, before any tick, page or MCP connection,
+ * so a token missing something a workflow needs stops the process before the
+ * first paid agent runs rather than after a mid-run write fails with nothing
+ * durable recorded to show for it. What actually needs checking is entirely
+ * the hook's business — the engine only runs each one in order and reports
+ * which one failed, by id.
+ */
+export interface Preflight {
+  id: string;
+  check(ctx: RuntimeContext): Promise<void>;
+}
+
 /** A ticket worth looking at, cheaply enough to enumerate every one of them. */
 export interface Candidate {
   ticket: number;
@@ -475,6 +489,12 @@ export type HookKind = (typeof HOOK_KINDS)[number];
  * `.landrace/hooks/`, not a different string in a config.
  */
 export interface Registry {
+  /**
+   * Run once at startup, in load order, before pre, post, source, operator or
+   * executors are ever asked to do anything — see `Preflight`. Plural, because
+   * several modules may each ship one.
+   */
+  preflights: Preflight[];
   /** Declaration order: a pre hook sees what the ones before it produced. */
   pre: PreHook[];
   post: PostHook[];

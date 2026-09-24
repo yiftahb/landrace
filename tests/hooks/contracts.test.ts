@@ -1,4 +1,4 @@
-import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, defineSource, hookKindOf } from "#hooks/contracts.js";
+import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, definePreflight, defineSource, hookKindOf } from "#hooks/contracts.js";
 
 /**
  * The loader classifies an exported value by the brand its define* helper
@@ -21,6 +21,7 @@ describe("a define* helper brands what it returns", () => {
       updateTicket: async (ticket) => ({ ticket, title: "t", url: "u", labels: [], assignees: [] }),
     }),
     executor: defineExecutor({ id: "f", run: async () => ({ text: "", sessionId: null }) }),
+    preflight: definePreflight({ id: "g", check: async () => {} }),
   };
 
   for (const [kind, hook] of Object.entries(cases)) {

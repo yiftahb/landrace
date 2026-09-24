@@ -30,6 +30,7 @@ export type {
   Operator,
   PostHook,
   PreHook,
+  Preflight,
   RuntimeContext,
   Snapshot,
   Source,

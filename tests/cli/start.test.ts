@@ -180,7 +180,7 @@ describe("the step timeout", () => {
     await writeFile(join(cwd, "fake.json"), JSON.stringify({ hang: true }));
 
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" } });
-    const registry: Registry = { pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
+    const registry: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
     const path = process.env.PATH;
     process.env.PATH = `${bin}:${path ?? ""}`;
     try {
@@ -205,7 +205,7 @@ describe("which executor screens", () => {
 
   const withExecutor = (id: string): Registry => {
     const executor = defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) });
-    return { pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map([[id, executor]]) };
+    return { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map([[id, executor]]) };
   };
 
   it("screens with the hook's executor when the config names one, not with the engine's", () => {
@@ -226,7 +226,7 @@ describe("which executor screens", () => {
 
   it("still refuses an adapter no executor answers to, whichever model it is asked for", () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" } });
-    const empty: Registry = { pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
+    const empty: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
     expect(() => executorFor(config, workflow, empty, () => {}, "haiku")).toThrow(/gpt-9/);
   });
 });
