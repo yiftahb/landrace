@@ -105,4 +105,24 @@ describe("deriveRel", () => {
     const r = deriveRel(g, "1", TYPES);
     expect(r.ok && r.rel["blocks"]?.in.total).toBe(1);
   });
+
+  it("halts when a related node's own state has a `closed` field, which is the engine's own", () => {
+    const g: Graph = {
+      nodes: [n("1"), pr("pr-1", { closed: true })],
+      relationships: [{ from: "pr-1", to: "1", type: "implements" }],
+    };
+    expect(deriveRel(g, "1", TYPES)).toEqual({ ok: false, why: expect.stringMatching(/"pr-1".*closed/) });
+  });
+
+  it("zero-fills not.merged when every related node reports merged: true", () => {
+    const g: Graph = {
+      nodes: [n("1"), pr("pr-1", { merged: true }), pr("pr-2", { merged: true })],
+      relationships: [
+        { from: "pr-1", to: "1", type: "implements" },
+        { from: "pr-2", to: "1", type: "implements" },
+      ],
+    };
+    const r = deriveRel(g, "1", TYPES);
+    expect(r.ok && r.rel["implements"]?.in.not["merged"]).toBe(0);
+  });
 });

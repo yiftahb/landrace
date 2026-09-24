@@ -59,6 +59,14 @@ export function deriveRel(
     const other = byId.get(direction === "in" ? r.from : r.to);
     // Validation (runner/graph.ts) has already refused a dangling edge.
     if (!other || other.closed === "dropped") continue;
+    // `closed` is the engine's own field (fieldsOf appends it from node.closed
+    // below); a state field of the same name would either double-count the
+    // node — once from state, once from the engine — or, if it isn't a
+    // boolean, halt with a type-mismatch message that never names the real
+    // cause.
+    if (Object.hasOwn(other.state, "closed")) {
+      return { ok: false, why: `node "${other.id}" has a state field named "closed", which is the engine's own field and cannot also be a state field` };
+    }
 
     const agg = slot(r.type)[direction];
     agg.total += 1;
