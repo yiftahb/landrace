@@ -258,12 +258,6 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     log: (event, data) => log(event as EventName, data),
   };
 
-  // Before anything else the hooks might do: a permission problem has to stop
-  // the process here, before the first tick, the triage page or an MCP
-  // connection — not after the first paid agent has already run and a
-  // publish 403s with nothing durable recorded to show for it.
-  await runPreflights(registry.preflights, ctx);
-
   /*
    * §11.8, the one rule that cannot be answered until the hooks are loaded —
    * and the reason the load stays exactly where it is rather than moving up.
@@ -296,6 +290,12 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
 
   return {
     source: registry.source,
+    // `landrace status` builds a Runtime through this same function to
+    // enumerate candidates, and it must never write to the repository it is
+    // diagnosing — so the preflights are handed back rather than run here,
+    // and only `runStart` runs them. Left unrun, they are only a fact about
+    // what the hooks declared: nothing has been checked yet.
+    preflights: registry.preflights,
     deps: {
       workflow,
       steps,
@@ -500,6 +500,14 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
     sink: boardSink(print, boardRef),
   });
+
+  // Before anything else the hooks might do — including `--once`'s one tick
+  // — a permission problem has to stop the process here, not after the first
+  // paid agent has already run and a publish 403s with nothing durable
+  // recorded to show for it. Run from here rather than from `buildRuntime`
+  // itself so `landrace status`, which builds a Runtime the same way, never
+  // makes this write while only trying to read.
+  await runPreflights(rt.preflights, rt.deps.ctx);
 
   // Built before the board and the page, which both need to reach into it —
   // the board reads schedule.nextAt for the countdown, the page's one write

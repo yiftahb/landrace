@@ -870,6 +870,13 @@ export interface Reexec {
 export interface Runtime {
   /** Where the work comes from. Required: a loop with nothing to enumerate can never do anything. */
   source: Source;
+  /**
+   * Assembled by `buildRuntime` but deliberately not run by it: `landrace
+   * status` builds a Runtime the same way to enumerate candidates, and must
+   * never make the one write a preflight can make while only trying to read.
+   * Only `runStart` runs these, before the first tick.
+   */
+  preflights: Preflight[];
   deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
   intervalMs: number;
   concurrency: number;

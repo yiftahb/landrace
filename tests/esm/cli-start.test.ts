@@ -66,7 +66,12 @@ export const post = brand("post", {
 ${preflight === undefined ? "" : `
 export const preflight = brand("preflight", {
   id: "fake",
-  check: async (): Promise<void> => {
+  // Recorded in the same file post.apply writes to, tagged so a test can
+  // tell "this ran at all" apart from "this ran and threw" — the write a
+  // real preflight would make is exactly what invoking check() stands in for
+  // here, so a preflight never invoked is a write that never happened.
+  check: async (ctx: { config: { tracker: { record: string } } }): Promise<void> => {
+    await appendFile(ctx.config.tracker.record, JSON.stringify({ preflight: true }) + "\\n");
     ${preflight === "throw" ? 'throw new Error("token needs \\"Contents: Read and write\\" on acme/widgets");' : ""}
   },
 });
@@ -285,21 +290,36 @@ ${EXECUTOR}`);
  * after a mid-run write fails with nothing durable recorded to show for it.
  *
  * Driven through a real hook module on disk, exactly as the wiring in
- * `buildRuntime` reaches it — a unit test of `runPreflights` alone would prove
+ * `runStart` reaches it — a unit test of `runPreflights` alone would prove
  * nothing about whether `landrace start` actually calls it.
+ *
+ * `buildRuntime` deliberately does *not* run it: `landrace status` builds a
+ * Runtime the same way, only to read, and a preflight can make a real write
+ * (the GitHub hook's blob probe) that a read-only diagnostic must never make
+ * and must never be refused for either — the token being *diagnosed* is
+ * exactly the one most likely to fail a preflight. Only `runStart` runs
+ * `rt.preflights`, once `buildRuntime` has handed them back unrun.
  */
 describe("the startup preflight", () => {
-  it("refuses to start when a loaded preflight fails, naming its id and the reason", async () => {
-    const { dir } = await fixture({ preflight: "throw" });
-    await expect(buildRuntime(dir, {})).rejects.toThrow(
-      /preflight "fake" failed: token needs "Contents: Read and write" on acme\/widgets/,
-    );
+  it("does not run when only buildRuntime is used — the write belongs to runStart alone", async () => {
+    const { dir, record } = await fixture({ preflight: "pass" });
+    await buildRuntime(dir, {});
+    expect(await applied(record)).toEqual([]);
   });
 
-  it("starts normally when the loaded preflight passes", async () => {
-    const { dir } = await fixture({ preflight: "pass" });
-    const rt = await buildRuntime(dir, {});
-    expect(rt.source.id).toBe("fake");
+  it("does not run for `landrace status`, which only reads", async () => {
+    const { dir, record } = await fixture({ preflight: "pass" });
+    await runStatus(dir);
+    expect(await applied(record)).toEqual([]);
+  });
+
+  it("runs through runStart, before the tick it gates", async () => {
+    const { dir, record } = await fixture({ preflight: "pass" });
+    await runStart(dir, { once: true });
+    expect(await applied(record)).toEqual([
+      { preflight: true },
+      { ticket: TICKET, type: "tracker.comment" },
+    ]);
   });
 });
 
@@ -347,9 +367,10 @@ describe("runStart --once", () => {
       console.log = wrote;
     }
 
-    // Nothing a tick would have printed or applied happened at all.
+    // The preflight itself ran (and threw) — nothing past it did: no line was
+    // printed, and the tick's own effect never landed.
     expect(printed).toEqual([]);
-    expect(await applied(record)).toEqual([]);
+    expect(await applied(record)).toEqual([{ preflight: true }]);
   });
 
   /**
