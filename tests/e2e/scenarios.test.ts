@@ -187,6 +187,28 @@ describe("a ticket in review whose only pull request merges", () => {
     expect(run.trail()).toEqual(["code-review", "pr-human-review", "done"]);
     expect(r.result.settled).toBe("terminal");
   });
+
+  /*
+   * The other half of the same rule: "all merged" is `rel.implements.in.not.merged: 0`
+   * across every pull request tied to the ticket, not one PR's flag read in
+   * isolation. A ticket with one merged and one still-open pull request has
+   * `not.merged: 1` — nothing left to review, but nothing to ship either.
+   */
+  it("does not reach done while a second pull request on the ticket is still open", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto", "lr:stage:code-review"] }] });
+    const first = state.openPull("1");
+    Object.assign(state.pull(first), { merged: true, closed: "done" });
+    state.openPull("1");
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post],
+      answers: { "code-review": '```json\n{"kind":"reviewed"}\n```' },
+    });
+
+    await run.converge();
+
+    expect(run.trail()).not.toContain("done");
+  });
 });
 
 describe("several instances over one repository, each taking its own tickets", () => {
