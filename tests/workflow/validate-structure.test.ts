@@ -105,6 +105,53 @@ describe("structural validation", () => {
     expect(entry[0]?.message).toMatch(/"a".*could also fire mid-workflow/);
   });
 
+  it("refuses an entry stage whose only trigger names a specific stage, not null — a literal is readable", () => {
+    const problems = validateStructure(wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": "x" } }] },
+    ]));
+    const entry = problems.filter((p) => p.rule === "entry");
+    expect(entry).toHaveLength(1);
+    expect(entry[0]?.message).toMatch(/"b".*"run\.stage": null/);
+  });
+
+  /**
+   * Shaped after .landrace/workflow.yaml's build stage with its null anchor
+   * deleted: one trigger with no run.stage mention at all, one with a
+   * readable, non-null "run.stage": "triage". Neither is null and both are
+   * readable, so this must be refused, not abstained on — the earlier round
+   * of this rule treated "mentions run.stage at all" as ambiguous and missed
+   * exactly this case.
+   */
+  it("refuses an entry stage whose triggers are all readable but none is null — the shipped build repro", () => {
+    const problems = validateStructure(wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      {
+        id: "build",
+        entry: true,
+        triggers: [
+          { when: { "rel.child-of.out.total": 1 } },
+          { when: { "run.stage": "triage", "run.outputs.triage.intent": "approve" } },
+        ],
+      },
+      { id: "triage", terminal: true },
+    ]));
+    const entry = problems.filter((p) => p.rule === "entry");
+    expect(entry).toHaveLength(1);
+    expect(entry[0]?.message).toMatch(/"build".*"run\.stage": null/);
+  });
+
+  it("does not flag a readable non-null loop-back trigger as could fire mid-workflow", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [
+        { when: { "run.stage": null } },
+        { when: { "run.stage": "b" } },
+      ] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    ]);
+    expect(rules(w)).not.toContain("entry");
+  });
+
   it("flags a stage nothing can reach", () => {
     const w = wf([{ id: "a", entry: true }, { id: "orphan", terminal: true }]);
     expect(rules(w)).toContain("reachability");

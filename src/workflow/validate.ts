@@ -31,16 +31,21 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   if (entries.length > 1) {
     for (const stage of entries) {
       const triggers = stage.triggers ?? [];
-      const anchored = triggers.some((t) => isFreshTicketOnly(t.when));
+      const anchored = triggers.some((t) => readableRunStage(t.when) === null);
       if (!anchored) {
         /*
-         * A trigger that mentions run.stage at all — under an operator this
-         * file cannot read, e.g. $or or $ne — might still be the fresh
-         * anchor; refusing it would be a guess in the direction this
-         * codebase does not guess in. Only a stage where nothing mentions
-         * run.stage anywhere is unambiguous enough to refuse.
+         * A trigger whose run.stage this file can read and is a specific
+         * stage id, not null, is not ambiguous — it plainly is not the fresh
+         * anchor, and counts against the stage rather than saving it. Only a
+         * trigger whose run.stage is wrapped in a form this file cannot read
+         * at all ($or, $in, $not, $ne, ...) leaves real doubt about what it
+         * claims, and that is the one case this refusal must not guess
+         * through — round 1 of this rule treated "mentions run.stage at
+         * all" as that doubt and missed the readable-but-not-null case
+         * entirely (build's loop-back trigger, "run.stage": triage).
          */
-        if (!triggers.some((t) => mentionsRunStage(t.when))) {
+        const ambiguous = triggers.some((t) => readableRunStage(t.when) === undefined && mentionsRunStage(t.when));
+        if (!ambiguous) {
           problems.push({
             rule: "entry",
             message: `entry stage "${stage.id}" has no trigger anchored on "run.stage": null, ` +
@@ -50,7 +55,10 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
         continue;
       }
       for (const t of triggers) {
-        if (!mentionsRunStage(t.when)) {
+        // A readable non-null anchor (a specific stage id) fires only from
+        // that stage — exactly the loop-back purpose this check is meant to
+        // leave alone. Only a trigger naming no stage at all is refused.
+        if (readableRunStage(t.when) === undefined && !mentionsRunStage(t.when)) {
           problems.push({
             rule: "entry",
             message: `entry stage "${stage.id}" has a trigger${t.name ? ` ("${t.name}")` : ""} not anchored on ` +
@@ -185,6 +193,42 @@ function anchorOf(when: Condition): string | null {
 }
 
 /**
+ * The run.stage value a condition can be read as, when it names one
+ * reliably: a literal — a stage id, or null for "a ticket at no stage at
+ * all" — at the top level, the same claim spelled as an operator
+ * (`{ $eq: <literal> }`), or either form nested under $and at any depth. An
+ * author writes `{ "run.stage": null, x: 0 }` and
+ * `{ $and: [{ "run.stage": null }, { x: 0 }] }` to mean the same thing, so
+ * both must read the same; recursing only into $and mirrors
+ * boundsACounter's read of run.counters.*, since an $and member can only
+ * narrow what a condition matches, never widen it.
+ *
+ * `undefined` means unreadable: no run.stage claim was found in a form this
+ * function resolves — either there is none at all, or it is wrapped in an
+ * operator this file does not read ($or, $in, $not, $ne, ...).
+ * mentionsRunStage is what tells those two cases apart, because they are not
+ * the same finding: "no mention" is refused, "mentioned but unreadable" is
+ * abstained on.
+ */
+function readableRunStage(when: Condition): string | null | undefined {
+  const top = when["run.stage"];
+  if (top === null || typeof top === "string") return top;
+  if (typeof top === "object" && top !== null && !Array.isArray(top)) {
+    const eq = (top as Record<string, unknown>).$eq;
+    if (eq === null || typeof eq === "string") return eq;
+  }
+  const and = when.$and;
+  if (Array.isArray(and)) {
+    for (const c of and) {
+      if (typeof c !== "object" || c === null) continue;
+      const found = readableRunStage(c as Condition);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
+/**
  * True when a trigger can only fire on a ticket that is at no stage at all.
  *
  * `{ "run.stage": null }` is how every workflow says "a fresh ticket", and it
@@ -193,24 +237,9 @@ function anchorOf(when: Condition): string | null {
  * that has none never reaches a trigger, because decide() sends it to the
  * entry stage without evaluating any. Reading it as "unreadable" is what
  * switched all three rules below off on every workflow that exists.
- *
- * `{ $eq: null }` is the same claim spelled as an operator, and either form
- * nested under $and at any depth is still exactly that claim conjoined with
- * something else — an author writes `{ "run.stage": null, x: 0 }` and
- * `{ $and: [{ "run.stage": null }, { x: 0 }] }` to mean the same thing, so
- * both must read the same. Recursing only into $and mirrors
- * boundsACounter's read of run.counters.*: an $and member can only narrow
- * what a condition matches, never widen it, so finding the claim under one
- * member is as good as finding it at the top.
  */
 function isFreshTicketOnly(when: Condition): boolean {
-  const top = when["run.stage"];
-  if (top === null) return true;
-  if (typeof top === "object" && top !== null && !Array.isArray(top) && (top as Record<string, unknown>).$eq === null) {
-    return true;
-  }
-  const and = when.$and;
-  return Array.isArray(and) && and.some((c) => typeof c === "object" && c !== null && isFreshTicketOnly(c as Condition));
+  return readableRunStage(when) === null;
 }
 
 /**
