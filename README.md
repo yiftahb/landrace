@@ -157,7 +157,7 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 | Pull requests | Read-only | review threads |
 | Metadata | Read-only | granted automatically |
 
-`landrace start` checks these at startup, before the first tick — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions the way a classic token's scopes can. A token missing something refuses to start, naming what is missing, rather than running until the first step that needs it fails midway through a paid agent run.
+`landrace start` and `landrace mcp` both check these before doing anything else — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions the way a classic token's scopes can. A token missing something refuses to start, naming what is missing, rather than running until the first step that needs it fails midway through a paid agent run. `landrace status` never checks or writes anything — it only reads.
 
 ### `.landrace/.env` — secrets
 
