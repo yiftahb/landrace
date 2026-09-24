@@ -224,6 +224,19 @@ describe("the page", () => {
     expect(APP_JS).not.toMatch(/createElement\("img"\)|\.src\s*=/);
   });
 
+  it("keys every external link (<id>:link), so a keyboard user on one keeps their place across a poll", () => {
+    expect(APP_JS).toContain('"data-key", row.id + ":link"');
+  });
+
+  it("redraws a toggle from the last view at once, not after a network round trip that may fail", () => {
+    expect(APP_JS).toContain("lastView = view;");
+    expect(APP_JS).toMatch(/userExpanded\.set\(row\.id, !isOpen\(row\)\);\s*render\(lastView\);/);
+  });
+
+  it("shows an unprioritised ticket's priority as –, never as a missing chip", () => {
+    expect(APP_JS).toMatch(/typeof row\.priority === "number" \? "P" \+ row\.priority : "–"/);
+  });
+
   it("greys a dropped node", () => {
     expect(APP_JS).toContain('row.closed === "dropped"');
   });

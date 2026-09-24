@@ -350,8 +350,11 @@ function forgetGone(rows) {
   for (const id of userExpanded.keys()) if (!present.has(id)) userExpanded.delete(id);
 }
 
-function external(a, href) {
-  a.href = href;
+// Keyed like every other control, so render()'s restore-by-key keeps a
+// keyboard user on this link across a poll instead of dropping them to <body>.
+function external(a, row) {
+  a.href = row.link;
+  a.setAttribute("data-key", row.id + ":link");
   a.target = "_blank";
   a.rel = "noopener noreferrer";
   return a;
@@ -387,9 +390,11 @@ function toggleFor(row) {
   toggle.setAttribute("aria-expanded", open ? "true" : "false");
   toggle.setAttribute("aria-label", (open ? "Collapse " : "Expand ") + row.title);
   toggle.setAttribute("data-key", row.id + ":toggle");
-  // Redrawn by the next poll, brought forward to now: render() reads
-  // userExpanded, so there is no second drawing path to keep in step.
-  toggle.addEventListener("click", () => { userExpanded.set(row.id, !isOpen(row)); schedulePoll(0); });
+  // Redrawn at once from the view already on screen — render() reads
+  // userExpanded, so there is no second drawing path — and never held on a
+  // /board.json round trip that may be slow or fail. The poll it brings
+  // forward then catches up whatever the server has changed since.
+  toggle.addEventListener("click", () => { userExpanded.set(row.id, !isOpen(row)); render(lastView); schedulePoll(0); });
   return toggle;
 }
 
@@ -408,7 +413,7 @@ function ticketRowFor(row, depth, now) {
   const top = el("div", "flex flex-wrap items-baseline gap-x-2 gap-y-1");
   top.append(toggleFor(row));
   const num = el("span", "num shrink-0 font-mono text-sm text-blue-600 dark:text-blue-400");
-  if (row.link) num.append(external(el("a", null, "#" + row.id + " ↗"), row.link));
+  if (row.link) num.append(external(el("a", null, "#" + row.id + " ↗"), row));
   else num.textContent = "#" + row.id;
   // No flex-grow: title takes only the room its own text needs (shrinking,
   // via min-w-0, when that's not enough), so the stage chip sits right after
@@ -428,9 +433,9 @@ function ticketRowFor(row, depth, now) {
     const [label, cls] = BADGES[row.badge];
     top.append(el("span", "badge shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium " + cls, label));
   }
-  if (typeof row.priority === "number") {
-    top.append(el("span", "priority shrink-0 font-mono text-[11px] text-neutral-500 dark:text-neutral-400", "P" + row.priority));
-  }
+  // Always a chip, "–" when unset: an unprioritised ticket is a fact worth
+  // seeing, and a missing chip reads as a rendering fault.
+  top.append(el("span", "priority shrink-0 font-mono text-[11px] text-neutral-500 dark:text-neutral-400", typeof row.priority === "number" ? "P" + row.priority : "–"));
   top.append(systemLabel(row));
 
   const bottom = el("div", "mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-neutral-500 dark:text-neutral-400");
@@ -454,7 +459,7 @@ function ticketRowFor(row, depth, now) {
 function artifactRowFor(row, depth) {
   const li = treeItem(row, depth, "flex items-center gap-2 py-1.5 pr-4 text-xs");
   const line = row.link
-    ? external(el("a", "flex min-w-0 flex-1 items-center gap-2 hover:underline"), row.link)
+    ? external(el("a", "flex min-w-0 flex-1 items-center gap-2 hover:underline"), row)
     : el("span", "flex min-w-0 flex-1 items-center gap-2");
   line.append(
     systemLabel(row),
@@ -494,7 +499,11 @@ function renderNext() {
     nextTickAt === null ? "No tick scheduled" : "Next tick in " + countdown(nextTickAt - Date.now());
 }
 
+// What the last poll drew, so a toggle can redraw without waiting on the next.
+let lastView = null;
+
 function render(view) {
+  lastView = view;
   const now = Date.now();
   // Every row's DOM (and any menu/focus it held) is about to be replaced
   // below — a fresh set of elements for the same nodes. Note what was
