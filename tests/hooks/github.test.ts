@@ -281,11 +281,27 @@ describe("the startup preflight", () => {
   // counted as a write.
   const writes = (gh: FakeTracker) => gh.requests.filter((r) => r.method !== "GET" && r.path !== "/graphql");
 
-  it('passes a classic token carrying the "repo" scope, without probing anything further', async () => {
+  /**
+   * Scopes are necessary, not sufficient. A classic token carrying "repo" can
+   * still 403 on the actual write — a read-only collaborator, a token not
+   * SSO-authorised for the org, or an org that blocks classic tokens outright
+   * all pass the scope check and still cannot write. That is the exact
+   * incident this feature exists to prevent, so "repo" only ever skips the
+   * immediate failure a missing scope would be — never the probes that judge
+   * real access.
+   */
+  it('still probes a classic token carrying "repo", and is refused when the blob write 403s', async () => {
+    const gh = createFakeTracker([], { scopes: ["repo", "read:org"] });
+    gh.breakOn((r) => r.method === "POST" && r.path === "/git/blobs", 403);
+    await expect(check(gh)).rejects.toThrow(/token needs "Contents: Read and write" on acme\/widgets/);
+    // Got past the header — the probes ran for real, not just /user.
+    expect(gh.requests.some((r) => r.method === "POST" && r.path === "/git/blobs")).toBe(true);
+  });
+
+  it('passes a classic token carrying "repo" only once every probe also grants real access', async () => {
     const gh = createFakeTracker([], { scopes: ["repo", "read:org"] });
     await expect(check(gh)).resolves.toBeUndefined();
-    // The header alone answered it: nothing past /user was ever asked.
-    expect(gh.requests).toEqual([{ method: "GET", path: "/user" }]);
+    expect(gh.requests.some((r) => r.method === "POST" && r.path === "/git/blobs")).toBe(true);
   });
 
   it('fails a classic token missing "repo", from the header alone, without probing further', async () => {
@@ -320,10 +336,95 @@ describe("the startup preflight", () => {
     await expect(check(gh)).rejects.toThrow(/token needs "Contents: Read and write" on acme\/widgets/);
   });
 
-  it("fails with the Pull requests message when the PR read comes back denied", async () => {
+  /**
+   * Only the shapes that actually mean "this token cannot read pull
+   * requests" get the permission's own name. A rate limit or a repository
+   * GraphQL cannot resolve are real failures too — the check still refuses to
+   * start — but naming the wrong permission sends someone to fix a setting
+   * that was never the problem.
+   */
+  describe("the pull-requests probe tells a real permission refusal apart from everything else that can go wrong", () => {
+    it('names the permission for a FORBIDDEN GraphQL error', async () => {
+      const gh = createFakeTracker();
+      gh.graphqlError("Resource not accessible by integration", "FORBIDDEN");
+      await expect(check(gh)).rejects.toThrow(/token needs "Pull requests: Read" on acme\/widgets/);
+    });
+
+    it("names the permission when the message itself says the resource is not accessible, whatever its type", async () => {
+      const gh = createFakeTracker();
+      gh.graphqlError("Resource not accessible by integration", "SOME_OTHER_TYPE");
+      await expect(check(gh)).rejects.toThrow(/token needs "Pull requests: Read" on acme\/widgets/);
+    });
+
+    it("does not name the permission for a RATE_LIMITED error — it fails with its own cause instead", async () => {
+      const gh = createFakeTracker();
+      gh.graphqlError("API rate limit exceeded", "RATE_LIMITED");
+      await expect(check(gh)).rejects.toThrow(/pull request check failed:.*rate limit/i);
+      await expect(check(gh)).rejects.not.toThrow(/Pull requests: Read/);
+    });
+
+    it("does not name the permission for a NOT_FOUND error — it fails with its own cause instead", async () => {
+      const gh = createFakeTracker();
+      gh.graphqlError("Could not resolve to a Repository with the name 'acme/widgets'.", "NOT_FOUND");
+      await expect(check(gh)).rejects.toThrow(/pull request check failed:.*Could not resolve/);
+      await expect(check(gh)).rejects.not.toThrow(/Pull requests: Read/);
+    });
+
+    it("does not name the permission when the repository itself resolves to null — it fails with its own cause instead", async () => {
+      const gh = createFakeTracker();
+      gh.graphqlRepositoryMissing();
+      await expect(check(gh)).rejects.toThrow(
+        /pull request check failed: the repository "acme\/widgets" answered with nothing at all/,
+      );
+      await expect(check(gh)).rejects.not.toThrow(/Pull requests: Read/);
+    });
+  });
+
+  /** A 401 means GitHub rejected the token itself — never one specific permission, from whichever probe hits it. */
+  describe("a 401 from any probe is reported as the token being rejected, not a missing permission", () => {
+    const cases: Array<[string, (gh: FakeTracker) => void]> = [
+      ["the contents-read probe", (gh) => gh.breakOn((r) => r.method === "GET" && r.path.startsWith("/contents/"), 401)],
+      ["the blob-write probe", (gh) => gh.breakOn((r) => r.method === "POST" && r.path === "/git/blobs", 401)],
+      ["the pull-requests probe", (gh) => gh.breakOn((r) => r.path === "/graphql", 401)],
+    ];
+
+    for (const [where, breakIt] of cases) {
+      it(`from ${where}`, async () => {
+        const gh = createFakeTracker();
+        breakIt(gh);
+        await expect(check(gh)).rejects.toThrow(
+          /token was rejected by GitHub \(401\) — check that it is valid and not expired/,
+        );
+      });
+    }
+  });
+
+  /**
+   * A fine-grained token with no access to the repository at all gets a 404
+   * on the write, not a 403 — GitHub will not confirm a private repository
+   * exists to a token nobody has shared it with. The contents-read probe
+   * cannot tell that apart from "not there yet" (both are 404 there), so this
+   * is the one place the distinction has to surface.
+   */
+  it("maps a 404 on the blob probe to a clear message about repository access, not a raw URL and body", async () => {
     const gh = createFakeTracker();
-    gh.graphqlError("Resource not accessible by integration");
-    await expect(check(gh)).rejects.toThrow(/token needs "Pull requests: Read" on acme\/widgets/);
+    gh.breakOn((r) => r.method === "POST" && r.path === "/git/blobs", 404);
+    await expect(check(gh)).rejects.toThrow(/token cannot see acme\/widgets — grant it access to this repository/);
+  });
+
+  /**
+   * An empty or whitespace-only header is not "classic, and holds zero
+   * scopes" — nothing here can tell that apart from a fine-grained token
+   * whose header GitHub happened to leave blank, and reading it as the
+   * former would refuse every fine-grained token the day that happens.
+   */
+  describe("an empty or whitespace x-oauth-scopes header is treated as unknown, not as zero scopes", () => {
+    it.each([[[]], [[" "]], [["", "  "]]])("scopes: %j runs the probes instead of refusing", async (scopes) => {
+      const gh = createFakeTracker([], { scopes });
+      await expect(check(gh)).resolves.toBeUndefined();
+      // Reached the write — the probes ran, this was not "classic and refused".
+      expect(gh.requests.some((r) => r.method === "POST" && r.path === "/git/blobs")).toBe(true);
+    });
   });
 
   /**

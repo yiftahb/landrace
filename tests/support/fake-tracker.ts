@@ -75,9 +75,18 @@ export interface FakeTracker {
    * Answer every GraphQL query the way a failed one actually arrives: HTTP
    * 200, an `errors` array, and a `data` that still parses — partial success
    * is GraphQL's normal shape for a permission or field error, and it is why
-   * reading past the errors turns a failure into "no pull request".
+   * reading past the errors turns a failure into "no pull request". `type`
+   * defaults to "FORBIDDEN", GitHub's own type for a permission refusal;
+   * pass "RATE_LIMITED" or "NOT_FOUND" to model the failures that are not one.
    */
-  graphqlError(message: string): void;
+  graphqlError(message: string, type?: string): void;
+  /**
+   * A 200 with no errors and a null repository — GitHub's *other* shape for
+   * "this token cannot see it", the one it uses when it will not even confirm
+   * a private repository exists. Distinct from `graphqlError`: there is no
+   * `errors` array here at all.
+   */
+  graphqlRepositoryMissing(): void;
   /** What is published on the orphan branch right now, resolved through the git objects the hook wrote. */
   published(branch?: string): Map<string, string>;
   /** The login the fake posts under, so what it writes reads back as ours — the relationship the real client has with its token. */
@@ -202,7 +211,8 @@ export function createFakeTracker(
   const requests: FakeRequest[] = [];
   const graphql: Array<{ query: string; variables: Record<string, unknown> }> = [];
   let broken: { match: (r: FakeRequest) => boolean; status: number } | null = null;
-  let graphqlFailure: string | null = null;
+  let graphqlFailure: { message: string; type: string } | null = null;
+  let repositoryMissing = false;
 
   /**
    * One page of review threads, as a connection.
@@ -260,10 +270,12 @@ export function createFakeTracker(
       const variables = (body.variables ?? {}) as Record<string, unknown>;
       graphql.push({ query: String(body.query ?? ""), variables });
 
+      if (repositoryMissing) return json({ data: { repository: null } });
+
       if (graphqlFailure !== null) {
         return json({
           data: { repository: { pullRequests: { nodes: [] } } },
-          errors: [{ message: graphqlFailure, type: "FORBIDDEN" }],
+          errors: [{ message: graphqlFailure.message, type: graphqlFailure.type }],
         });
       }
 
@@ -464,7 +476,8 @@ export function createFakeTracker(
       return created;
     },
     breakOn: (match, status = 500) => { broken = { match, status }; },
-    graphqlError: (message) => { graphqlFailure = message; },
+    graphqlError: (message, type = "FORBIDDEN") => { graphqlFailure = { message, type }; },
+    graphqlRepositoryMissing: () => { repositoryMissing = true; },
     published: (branch = "gh-pages") =>
       new Map([...treeOfRef(branch)].map(([file, blob]) => [file, blobs.get(blob) ?? ""])),
     bot: BOT,

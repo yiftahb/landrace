@@ -207,7 +207,14 @@ function createClient(opts: GitHubOptions) {
     try {
       const user = await request<unknown>("GET", "https://api.github.com/user", undefined, (res) => {
         const header = res.headers.get("x-oauth-scopes");
-        scopes = header === null ? null : header.split(",").map((s) => s.trim()).filter(Boolean);
+        const parsed = header === null ? null : header.split(",").map((s) => s.trim()).filter(Boolean);
+        // An empty or whitespace-only header parses to `[]`, which is not the
+        // same claim as "classic, and holds zero scopes" — nothing here can
+        // tell that apart from a fine-grained token whose header GitHub left
+        // blank, and reading it as the former would refuse every one of
+        // those. Folded into `null` (unknown) so the probes below judge real
+        // access instead of a scope list that might not mean anything.
+        scopes = parsed !== null && parsed.length === 0 ? null : parsed;
       });
       const candidate = (user as { login?: unknown } | null)?.login;
       // Shape-checked inside the guarded path: a non-string login used to
@@ -297,15 +304,21 @@ function createClient(opts: GitHubOptions) {
      */
     graphql: async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
       await botLogin();
-      const body = await request<{ data?: T; errors?: Array<{ message?: unknown }> }>(
+      const body = await request<{ data?: T; errors?: Array<{ message?: unknown; type?: unknown }> }>(
         "POST",
         "https://api.github.com/graphql",
         { query, variables },
       );
       // Errors arrive with a 200 and are the whole answer: read past them and
-      // a query that failed looks exactly like one that found nothing.
+      // a query that failed looks exactly like one that found nothing. The
+      // array rides on the thrown error too — a permission refusal (type
+      // FORBIDDEN) and a rate limit (type RATE_LIMITED) are both this same
+      // shape, and only the preflight cares which one it actually was.
       if (body.errors?.length) {
-        throw new Error(`graphql: ${body.errors.map((e) => String(e.message ?? e)).join("; ")}`);
+        throw Object.assign(
+          new Error(`graphql: ${body.errors.map((e) => String(e.message ?? e)).join("; ")}`),
+          { errors: body.errors },
+        );
       }
       if (body.data === undefined || body.data === null) throw new Error("graphql: the response carried no data");
       return body.data;
@@ -989,22 +1002,40 @@ const nothingPublishes = (effect: Effect): never => {
 async function checkPermissions(gh: Client, repo: string): Promise<void> {
   // A classic token carries its scopes on every response; a fine-grained one
   // carries none at all, so the header's mere presence is what tells the two
-  // apart — not the shape of the token string, which nothing here reads.
-  // "repo" already grants Contents, Issues and Pull requests together, so a
-  // classic token that has it needs none of the probes below; one that lacks
-  // it fails right here, off the GET /user botLogin already made, rather than
-  // paying for three more requests to learn the same thing.
+  // apart — not the shape of the token string, which nothing here reads. An
+  // empty (or whitespace-only) header counts as absent: `oauthScopes` already
+  // folds that case into `null` rather than an empty list, because nothing
+  // here can tell "classic, and sent no scopes" apart from "fine-grained, and
+  // GitHub happened to send a blank header" — and reading the former would
+  // refuse every fine-grained token the day GitHub does that.
+  //
+  // "repo" only ever skips the *immediate* failure a missing scope already
+  // is. Scopes are necessary, not sufficient: a read-only collaborator, a
+  // token not SSO-authorised for its org, or an org that blocks classic
+  // tokens outright all carry "repo" and still 403 on the write — which is
+  // the exact incident this feature exists to catch, so a classic token
+  // still runs every probe below.
   const scopes = await gh.oauthScopes();
-  if (scopes !== null) {
-    if (!scopes.includes("repo")) {
-      throw new Error('classic token is missing the "repo" scope');
-    }
-    return;
+  if (scopes !== null && !scopes.includes("repo")) {
+    throw new Error('classic token is missing the "repo" scope');
   }
 
   await probeContentsRead(gh, repo);
   await probeContentsWrite(gh, repo);
   await probePullRequestsRead(gh, repo);
+}
+
+/**
+ * A 401 means GitHub rejected the token itself, before any one permission
+ * ever entered into it — checked first in every probe, ahead of anything
+ * status-specific, so a bad token is never misreported as missing one
+ * particular permission.
+ */
+function tokenRejected(e: unknown): Error | null {
+  const status = (e as { status?: unknown } | null)?.status;
+  return status === 401
+    ? new Error("token was rejected by GitHub (401) — check that it is valid and not expired")
+    : null;
 }
 
 /** A 403 on this read is the one failure worth naming; a 404 means the branch or file is simply not there yet. */
@@ -1016,10 +1047,9 @@ async function probeContentsRead(gh: Client, repo: string): Promise<void> {
     // parse as a file at all.
     await gh.getFile(PAGES_BRANCH, pagePath(0));
   } catch (e) {
-    if ((e as { status?: unknown } | null)?.status === 403) {
-      throw new Error(`token needs "Contents: Read and write" on ${repo}`);
-    }
-    throw e;
+    throw tokenRejected(e) ?? ((e as { status?: unknown } | null)?.status === 403
+      ? new Error(`token needs "Contents: Read and write" on ${repo}`)
+      : e);
   }
 }
 
@@ -1035,9 +1065,16 @@ async function probeContentsWrite(gh: Client, repo: string): Promise<void> {
   try {
     await gh.createEmptyBlob();
   } catch (e) {
-    if ((e as { status?: unknown } | null)?.status === 403) {
-      throw new Error(`token needs "Contents: Read and write" on ${repo}`);
-    }
+    const rejected = tokenRejected(e);
+    if (rejected) throw rejected;
+    const status = (e as { status?: unknown } | null)?.status;
+    if (status === 403) throw new Error(`token needs "Contents: Read and write" on ${repo}`);
+    // A fine-grained token with no access to this repository at all gets a
+    // 404 here, not a 403 — GitHub will not confirm a private repository
+    // exists to a token nobody has shared it with. The contents-read probe
+    // above cannot tell that apart from "not there yet" (both read as 404),
+    // so this is the one place the distinction actually surfaces.
+    if (status === 404) throw new Error(`token cannot see ${repo} — grant it access to this repository`);
     throw e;
   }
 }
@@ -1050,23 +1087,54 @@ query($owner: String!, $name: String!) {
   }
 }`;
 
+interface PreflightPrResponse {
+  repository: unknown;
+}
+
+/**
+ * Only the shapes that actually mean "this token cannot read pull requests"
+ * get the permission's own name: a GraphQL error typed `FORBIDDEN`, one whose
+ * message says the resource is not accessible, or a bare HTTP 403 mentioning
+ * permission or access. A rate limit, a repository GraphQL cannot resolve, or
+ * anything else still fails closed — but with its own cause, rather than a
+ * misdiagnosis that sends someone to fix a permission that was never the
+ * problem.
+ */
+function prReadFailure(e: unknown, repo: string): Error {
+  const rejected = tokenRejected(e);
+  if (rejected) return rejected;
+
+  const status = (e as { status?: unknown } | null)?.status;
+  const errors = (e as { errors?: unknown } | null)?.errors;
+  const message = e instanceof Error ? e.message : String(e);
+
+  const forbiddenType = Array.isArray(errors) && errors.some(
+    (err) => typeof err === "object" && err !== null && (err as { type?: unknown }).type === "FORBIDDEN",
+  );
+  const notAccessible = /not accessible/i.test(message);
+  const deniedByStatus = status === 403 && /permission|access/i.test(message);
+
+  return forbiddenType || notAccessible || deniedByStatus
+    ? new Error(`token needs "Pull requests: Read" on ${repo}`)
+    : new Error(`pull request check failed: ${message}`);
+}
+
 async function probePullRequestsRead(gh: Client, repo: string): Promise<void> {
   const [owner = "", name = ""] = repo.split("/");
+  let data: PreflightPrResponse;
   try {
-    await gh.graphql(PREFLIGHT_PR_QUERY, { owner, name });
+    data = await gh.graphql<PreflightPrResponse>(PREFLIGHT_PR_QUERY, { owner, name });
   } catch (e) {
-    const status = (e as { status?: unknown } | null)?.status;
-    const message = e instanceof Error ? e.message : String(e);
-    // `gh.graphql` itself throws "graphql: …" for an `errors` array — GitHub's
-    // normal shape for a permission failure, a 200 with the refusal inside —
-    // and a bare 403 mentioning permission or access is the REST-shaped
-    // version of the same refusal.
-    const deniedByGraphQL = message.startsWith("graphql:");
-    const deniedByStatus = status === 403 && /permission|access/i.test(message);
-    if (deniedByGraphQL || deniedByStatus) {
-      throw new Error(`token needs "Pull requests: Read" on ${repo}`);
-    }
-    throw e;
+    throw prReadFailure(e, repo);
+  }
+  // A 200 with no errors and a null repository is GitHub's other shape for
+  // "this token cannot see it" — indistinguishable from "no pull request yet"
+  // where readPr reads the same shape below, but here it means the read this
+  // probe exists to prove never actually happened.
+  if (data.repository === null) {
+    throw new Error(
+      `pull request check failed: the repository "${repo}" answered with nothing at all; check the token's access to it`,
+    );
   }
 }
 
@@ -1092,7 +1160,6 @@ export function githubHooks(opts: GitHubOptions): {
 
   return {
     preflight: definePreflight({ id: "github", check: () => checkPermissions(gh, opts.repo) }),
-
 
     // Named to sort after `pre`, for the reason spelled out on `specArtifact`
     // below. As `prArtifact` it sorted *before* it ("prA" < "pre"), and the
