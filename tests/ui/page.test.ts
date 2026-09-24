@@ -21,6 +21,14 @@ describe("the page", () => {
     expect(PAGE_HTML).toMatch(/<details[^>]*data-lane="discharged"/);
   });
 
+  // The Chat menu is absolutely positioned inside a lane; a clipping lane cut
+  // it off on the last row.
+  it("never clips a lane's contents, so a row's menu can overflow the card", () => {
+    const lanes = PAGE_HTML.match(/<(section|details) data-lane="[^"]+" class="[^"]*"/g) ?? [];
+    expect(lanes).toHaveLength(6);
+    for (const lane of lanes) expect(lane).not.toContain("overflow-hidden");
+  });
+
   it("never parses a string as HTML", () => {
     for (const sink of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"]) {
       expect(APP_JS).not.toContain(sink);

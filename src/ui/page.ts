@@ -7,7 +7,7 @@ export { APP_CSS } from "#ui/styles.generated.js";
 
 /** One <section> lane: a coloured left border, a mono heading, a count badge. */
 const lane = (id: string, label: string, accent: string, dot = ""): string => `
-<section data-lane="${id}" class="mb-4 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900${accent}">
+<section data-lane="${id}" class="mb-4 rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900${accent}">
 <div class="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
 ${dot}<h2 class="font-mono text-xs font-semibold uppercase tracking-wider">${label}</h2>
 <span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-medium">0</span>
@@ -17,7 +17,7 @@ ${dot}<h2 class="font-mono text-xs font-semibold uppercase tracking-wider">${lab
 
 /** not-admitted / discharged: same card, collapsible, no colour accent, a rotating chevron. */
 const collapsedLane = (id: string, label: string): string => `
-<details data-lane="${id}" class="group mb-4 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+<details data-lane="${id}" class="group mb-4 rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
 <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 [&::-webkit-details-marker]:hidden">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-3 w-3 shrink-0 text-neutral-400 transition-transform group-open:rotate-90" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
 <h2 class="font-mono text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">${label}</h2>
