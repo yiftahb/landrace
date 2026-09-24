@@ -196,7 +196,7 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 |---|---|---|
 | Contents | Read and write | reading the spec from gh-pages, and publishing it |
 | Issues | Read and write | tickets, comments, labels |
-| Pull requests | Read-only | review threads |
+| Pull requests | Read and write | review threads; closing a dropped child's pull request when a breakdown re-runs |
 | Metadata | Read-only | granted automatically |
 
 `landrace start` and `landrace mcp` both check these before doing anything else — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions the way a classic token's scopes can. A token missing something refuses to start, naming what is missing, rather than running until the first step that needs it fails midway through a paid agent run. `landrace status` never checks or writes anything — it only reads.
@@ -276,6 +276,14 @@ Workflow-level keys beyond `stages`:
 | `budget.stepTimeout` | How long one agent invocation may take. The round caps are the `$lt` counters in the triggers themselves, where the validator can see and bound them |
 | `hooks` | The integration modules, by path, in the order pre hooks run |
 
+### Splitting work into sub-tickets
+
+A step that declares `capabilities: [tickets:create]` — the shipped `breakdown` stage — is handed exactly one MCP tool, `landrace_create_child` (`title`, `body`, `priority` 0–9), served by a second server the executor starts beside the agent process: `landrace mcp --workflow <dir> --child <parent> --stage <stage> --round <round>`. That binding is fixed on the command line by the runner, not by anything the agent says, and `--strict-mcp-config` keeps a `.mcp.json` inside the worktree from adding a server of its own. `breakdown` ends by saying `children` — it called the tool at least once — or `single` — it built the spec as one piece of work directly; the two outcomes route to `children-running` and `build`, and a round that says one but did the other halts at `blocked` rather than being guessed at.
+
+Re-running `breakdown` — after a revision, or after a crash mid-round — first drops, as not planned, every sub-ticket an earlier round of this stage created and every pull request open on them; anything already finished is left closed as it was. A sub-ticket a person opened under the parent by hand is never touched, this round or any other. The parent itself only reaches `done` once every sub-ticket still counted is closed as completed — one still open, or one an earlier round made that a person is still working, keeps the parent at `children-running`.
+
+The child MCP server reads `.landrace/.env` from the workflow directory itself, exactly as `landrace start` does — a token exported only in the shell that ran `landrace start` never reaches this subprocess, by design, so it has to be set in `.env` or no child can ever be created. On GitHub, closing a dropped child's pull request needs the token's `Pull requests` permission to be `Read and write`, not the read-only level threads alone would need — see [Token permissions](#token-permissions).
+
 ### `.landrace/hooks/*.ts` — the integrations
 
 Landrace ships no integrations. Talking to a tracker, publishing a page, reading a pull request — all of it is a TypeScript module in your own workflow directory, written against the `define*` contracts and listed by path:
@@ -317,7 +325,7 @@ Write the spec for #{node.id}: {node.title}…
 
 | Key | Meaning |
 |---|---|
-| `capabilities` | What the agent may do — `repo:read`, `repo:write`. Enforced by diffing the worktree afterwards, not by the flags handed to the agent, because a hook-registered executor never sees those. An unenforceable capability refuses the step rather than pretending |
+| `capabilities` | What the agent may do — `repo:read`, `repo:write`, `tickets:create`. The first two are enforced by diffing the worktree afterwards, the third by which MCP tool the executor hands the agent — not by the flags handed to the agent, because a hook-registered executor never sees those. An unenforceable capability refuses the step rather than pretending |
 | `model` | Overrides `agent.model` for this step. A cheap step should say so |
 | `output.discriminator` | The field whose value picks the shape |
 | `output.shapes` | What each value of the discriminator must look like. Output that matches none is a hard fail, recorded, never retried |
