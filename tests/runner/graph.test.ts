@@ -1,4 +1,5 @@
-import { graphProblem, MAX_SUBGRAPH_NODES } from "#runner/graph.js";
+import { MAX_SUBGRAPH_NODES } from "#conventions.js";
+import { graphProblem } from "#runner/graph.js";
 import type { Graph, Node, RelationDecl } from "#namespace.js";
 
 const n = (id: string, over: Partial<Node> = {}): Node => ({

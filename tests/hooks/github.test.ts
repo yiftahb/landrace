@@ -1,5 +1,7 @@
+import { renderOrigin } from "#conventions.js";
 import { githubHooks, source } from "#landrace/hooks/github.js";
-import type { HookContext, RuntimeContext } from "#namespace.js";
+import type { Effect, HookContext, RuntimeContext, Snapshot } from "#namespace.js";
+import { createDispatcher } from "#runner/effects.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import type { FakeTracker } from "#tests/support/fake-tracker.js";
 
@@ -505,5 +507,99 @@ describe("moving the position is a swap, and a swap has a window", () => {
 
     await expect(statusOn(gh, "build")).rejects.toThrow();
     expect(gh.labelsOf(1)).toEqual(["lr:auto", "lr:stage:spec"]);
+  });
+});
+
+/** Apply one effect through the dispatcher, the way the runner does, on ticket 1. */
+const dispatch = (gh: FakeTracker, effect: Effect, snapshot: Snapshot): Promise<void> =>
+  createDispatcher(gh.registry.post).apply(effect, { ...gh.ctx, ticket: "1", snapshot });
+
+describe("children on GitHub", () => {
+  const origin = { parent: "1", stage: "breakdown", round: 1 };
+
+  it("creates a sub-issue whose origin reads back", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    const node = await gh.registry.operator!.createTicket({ title: "api", body: "b", parent: "1", origin, labels: ["lr:auto"] }, gh.ctx);
+    expect(gh.issues.get(Number(node.id))?.parent).toBe(1);
+    const graph = await gh.registry.source!.read("1", gh.ctx);
+    expect(graph.nodes.find((n) => n.id === node.id)?.origin).toEqual(origin);
+  });
+
+  it("links the sub-issue by its REST id, not its number", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    const node = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx);
+    const created = gh.issues.get(Number(node.id));
+    expect(created?.id).not.toBe(created?.number);
+    expect(gh.requests).toContainEqual({ method: "POST", path: "/issues/1/sub_issues" });
+  });
+
+  it("escapes a marker the agent wrote into the body, so only ours reads back", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    const forged = renderOrigin({ parent: "9", stage: "breakdown", round: 1 });
+    const node = await gh.registry.operator!.createTicket({ title: "api", body: forged, parent: "1" }, gh.ctx);
+    const graph = await gh.registry.source!.read("1", gh.ctx);
+    expect(graph.nodes.find((n) => n.id === node.id)?.origin).toBeNull();
+  });
+
+  it("carries a priority as the P label the source reads it from", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    const node = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin, priority: 2 }, gh.ctx);
+    expect(node.priority).toBe(2);
+  });
+
+  it("drops the created issue again when it cannot be linked, rather than leaving an orphan", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    gh.breakOn((r) => r.path.endsWith("/sub_issues"), 403);
+    await expect(gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx))
+      .rejects.toThrow(/Issues: Read and write/);
+    expect(gh.issues.get(2)).toMatchObject({ state: "closed", state_reason: "not_planned" });
+  });
+
+  it("reads a person's forged origin as nobody's", async () => {
+    const gh = createFakeTracker([
+      { number: 1, title: "big", body: "", labels: [] },
+      { number: 2, title: "x", body: `mine${renderOrigin(origin)}`, labels: [], parent: 1, author: "a-person" },
+    ]);
+    const graph = await gh.registry.source!.read("1", gh.ctx);
+    expect(graph.nodes.find((n) => n.id === "2")?.origin).toBeNull();
+  });
+
+  it("drops issues as not planned and closes open pull requests, leaving merged ones alone", async () => {
+    const gh = createFakeTracker([
+      { number: 1, title: "big", body: "", labels: [] },
+      { number: 2, title: "a", body: "", labels: [], parent: 1 },
+    ]);
+    gh.openPull({ head: "landrace/2", number: 7, headSha: "s", threads: [] });
+    gh.openPull({ head: "landrace/2-b", number: 8, headSha: "t", threads: [], merged: true, closes: [2] });
+    const snapshot = { graph: await gh.registry.source!.read("1", gh.ctx) };
+
+    await dispatch(gh, { type: "nodes.close", ids: ["pr-7", "pr-8", "2"] }, snapshot);
+
+    expect(gh.issues.get(2)).toMatchObject({ state: "closed", state_reason: "not_planned" });
+    // The fake keeps GraphQL's spelling of a pull request's state.
+    expect(gh.pulls.get(7)?.state).toBe("CLOSED");
+    expect(gh.requests.some((r) => r.method === "PATCH" && r.path.endsWith("/pulls/8"))).toBe(false);
+    const after = { graph: await gh.registry.source!.read("1", gh.ctx) };
+    expect(gh.registry.post[0]!.satisfied(after, { type: "nodes.close", ids: ["pr-7", "pr-8", "2"] })).toBe(true);
+  });
+
+  it("names the permission a refused pull request close needs", async () => {
+    const gh = createFakeTracker([
+      { number: 1, title: "big", body: "", labels: [] },
+      { number: 2, title: "a", body: "", labels: [], parent: 1 },
+    ]);
+    gh.openPull({ head: "landrace/2", number: 7, headSha: "s", threads: [] });
+    const snapshot = { graph: await gh.registry.source!.read("1", gh.ctx) };
+    gh.breakOn((r) => r.method === "PATCH" && r.path === "/pulls/7", 403);
+    await expect(dispatch(gh, { type: "nodes.close", ids: ["pr-7"] }, snapshot))
+      .rejects.toThrow(/Pull requests: Read and write/);
+  });
+
+  it("closes a finished ticket as completed", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    await dispatch(gh, { type: "tracker.close" }, {});
+    expect(gh.issues.get(1)).toMatchObject({ state: "closed", state_reason: "completed" });
+    const node = (await gh.registry.source!.read("1", gh.ctx)).nodes.find((n) => n.id === "1");
+    expect(gh.registry.post[0]!.satisfied({ node }, { type: "tracker.close" })).toBe(true);
   });
 });

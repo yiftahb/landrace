@@ -19,6 +19,8 @@ const BOT = "yiftahb";
 
 export interface FakeIssue {
   number: number;
+  /** The REST id, distinct from the number: GitHub links a sub-issue by this. */
+  id: number;
   title: string;
   body: string;
   state: string;
@@ -28,6 +30,10 @@ export interface FakeIssue {
   assignees: Array<{ login: string }>;
   /** Why a closed issue was closed, in GraphQL's spelling. Absent or null on an open one, and on one closed before GitHub had reasons. */
   stateReason?: "COMPLETED" | "NOT_PLANNED" | "DUPLICATE" | "REOPENED" | null;
+  /** The same reason in REST's spelling, as a `PATCH /issues/{n}` last sent it. */
+  state_reason?: "completed" | "not_planned" | null;
+  /** Who opened it. A person, unless the hook created it under the bot's login. */
+  author: string;
   /** The issue this one is a sub-issue of, by number. */
   parent?: number;
 }
@@ -185,6 +191,8 @@ export function createFakeTracker(
     const n = s.number ?? nextIssue++;
     issues.set(n, {
       number: n,
+      id: s.id ?? n + 100_000,
+      author: s.author ?? "a-person",
       title: s.title ?? `issue ${n}`,
       body: s.body ?? "",
       state: s.state ?? "open",
@@ -265,6 +273,8 @@ export function createFakeTracker(
   const issueNode = (i: FakeIssue) => ({
     number: i.number,
     title: i.title,
+    body: i.body,
+    author: { login: i.author },
     url: i.html_url,
     state: i.state.toUpperCase(),
     stateReason: i.stateReason ?? null,
@@ -431,6 +441,9 @@ export function createFakeTracker(
     if (path === "/issues" && method === "POST") {
       const issue: FakeIssue = {
         number: nextIssue,
+        id: nextIssue + 100_000,
+        // Whoever the token is: the hook creates issues as the bot.
+        author: BOT,
         title: String(body.title ?? ""),
         body: String(body.body ?? ""),
         state: "open",
@@ -446,8 +459,35 @@ export function createFakeTracker(
     if (single) {
       const issue = issueOf(Number(single[1]));
       if (!issue) return new Response("Not Found", { status: 404 });
-      if (method === "PATCH") Object.assign(issue, body);
+      if (method === "PATCH") {
+        Object.assign(issue, body);
+        // One issue, two spellings of why it closed: REST's lower-case one
+        // is what a PATCH carries, GraphQL's upper-case one is what reads it.
+        if ("state_reason" in body) {
+          const reason = body.state_reason;
+          issue.stateReason = typeof reason === "string" ? (reason.toUpperCase() as NonNullable<FakeIssue["stateReason"]>) : null;
+        }
+      }
       return json(issue);
+    }
+
+    const onSubIssues = /^\/issues\/(\d+)\/sub_issues$/.exec(path);
+    if (onSubIssues && method === "POST") {
+      const parent = issueOf(Number(onSubIssues[1]));
+      const child = [...issues.values()].find((i) => i.id === body.sub_issue_id);
+      if (!parent || !child) return new Response("Not Found", { status: 404 });
+      child.parent = parent.number;
+      return json(parent, 201);
+    }
+
+    const onPull = /^\/pulls\/(\d+)$/.exec(path);
+    if (onPull && method === "PATCH") {
+      const pull = pulls.get(Number(onPull[1]));
+      if (!pull) return new Response("Not Found", { status: 404 });
+      // A merged pull request is closed already and stays merged.
+      if (pull.merged) return json({ message: "Validation Failed" }, 422);
+      if (body.state === "closed") pull.state = "CLOSED";
+      return json({ number: pull.number, state: body.state });
     }
 
     const onComments = /^\/issues\/(\d+)\/comments$/.exec(path);

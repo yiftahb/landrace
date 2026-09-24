@@ -1,14 +1,6 @@
-import { isReservedId, ticketIdProblem } from "#conventions.js";
+import { isReservedId, MAX_SUBGRAPH_NODES, ticketIdProblem } from "#conventions.js";
 import type { Graph, RelationDecl } from "#namespace.js";
 import { problemWith } from "#runner/artifacts.js";
-
-/**
- * How big one ticket's neighbourhood may be. `read` returns the whole
- * descendant subtree, because a cascade close must see every node it closes,
- * and it runs on every converge pass. Past this, the honest answer is a halt
- * naming the size — ponytail: page the subtree when a real epic gets here.
- */
-export const MAX_SUBGRAPH_NODES = 200;
 
 const CLOSED = new Set<unknown>([null, "done", "dropped"]);
 

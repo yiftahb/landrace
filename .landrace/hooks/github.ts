@@ -20,6 +20,8 @@
  */
 import { createHash } from "node:crypto";
 import {
+  allClosed,
+  CLOSE_EFFECT,
   defineArtifactHook,
   defineOperator,
   definePostHook,
@@ -30,12 +32,16 @@ import {
   LABEL_EFFECT,
   LABELS,
   labelsOf,
+  MAX_SUBGRAPH_NODES,
   neutraliseMarkers,
+  NODES_CLOSE_EFFECT,
   parseMarker,
+  parseOrigin,
   PULL_REQUEST_KIND,
   RECORD_EFFECT,
   RELATIONS,
   renderMarker,
+  renderOrigin,
   STAGE_LABEL_PREFIX,
   STATUS_EFFECT,
   TICKET_KIND,
@@ -72,6 +78,8 @@ import {
 /** An issue as REST answers it: read for its body, and for the stage labels a position swap removes. */
 interface Issue {
   number: number;
+  /** The REST id, which is not the number: a sub-issue is linked by this. */
+  id: number;
   body: string | null;
   labels: Array<string | { name?: string }>;
 }
@@ -105,6 +113,9 @@ export interface IssueNode {
    * issue has two assignees.
    */
   assignees: { nodes: Array<{ login: string } | null> };
+  body: string | null;
+  /** Null for an account GitHub has since deleted. */
+  author: { login: string } | null;
 }
 
 /**
@@ -115,7 +126,8 @@ export interface IssueNode {
 export const ISSUE_FIELDS = `
   number title url state stateReason
   labels(first: 100) { nodes { name } }
-  assignees(first: 20) { nodes { login } }`;
+  assignees(first: 20) { nodes { login } }
+  body author { login }`;
 
 const ISSUE_QUERY = `
 query LandraceIssue($owner: String!, $name: String!, $number: Int!) {
@@ -289,6 +301,20 @@ function createClient(opts: GitHubOptions) {
   };
 
   /**
+   * A 403 on a write the preflight could not probe, reported as the permission
+   * it lacks. Closing a pull request and linking a sub-issue have no harmless
+   * form to try at startup, so this is where a token missing either is named.
+   */
+  const named = async (write: Promise<unknown>, permission: string): Promise<void> => {
+    try {
+      await write;
+    } catch (e) {
+      if ((e as { status?: unknown } | null)?.status === 403) throw new Error(`token needs ${permission}`);
+      throw e;
+    }
+  };
+
+  /**
    * Everything a review thread's `isResolved`, a sub-issue and a closing
    * reference need: none of them is in REST.
    *
@@ -377,6 +403,12 @@ function createClient(opts: GitHubOptions) {
       call<Issue>("POST", `/issues`, fields),
     updateIssue: (n: number, fields: { title?: string; body?: string; state?: string }) =>
       call<Issue>("PATCH", `/issues/${n}`, fields),
+    closeIssue: (n: number, reason: "completed" | "not_planned") =>
+      call<Issue>("PATCH", `/issues/${n}`, { state: "closed", state_reason: reason }),
+    closePull: (n: number) =>
+      named(call("PATCH", `/pulls/${n}`, { state: "closed" }), `"Pull requests: Read and write" on ${repo}`),
+    addSubIssue: (parent: number, child: number) =>
+      named(call("POST", `/issues/${parent}/sub_issues`, { sub_issue_id: child }), `"Issues: Read and write" on ${repo}`),
     listComments: (n: number) => call<Comment[]>("GET", `/issues/${n}/comments?per_page=100`),
     createComment: (n: number, body: string) => {
       // Refused before the request goes out, because a 422 here is an apply
@@ -546,6 +578,10 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
       const marker = String(effect.marker);
       return commentsOf(snapshot).some((c) => wroteIt(c, bot) && parseMarker(c.body ?? "")?.marker === marker);
     }
+    case NODES_CLOSE_EFFECT:
+      return allClosed(snapshot.graph as Graph | undefined, (effect.ids as string[] | undefined) ?? []);
+    case CLOSE_EFFECT:
+      return (snapshot.node as Node | undefined)?.closed === "done";
     default:
       return false;
   }
@@ -568,7 +604,7 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
  */
 const PROVIDES = ["ticket", "ticket.body", "ticket.comments", "entries", "tracker", "tracker.bot"];
 
-const HANDLES = [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT];
+const HANDLES = [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT];
 
 /** Observe: the part of an issue a graph cannot hold — its body and its records. */
 async function readTicket(gh: Client, ticket: string): Promise<Record<string, unknown>> {
@@ -589,7 +625,7 @@ async function readTicket(gh: Client, ticket: string): Promise<Record<string, un
 }
 
 /** Act: every write GitHub owns, each beside the check that says it has landed. */
-async function applyEffect(gh: Client, effect: Effect, ticket: string): Promise<void> {
+async function applyEffect(gh: Client, effect: Effect, { ticket, snapshot }: HookContext): Promise<void> {
   const n = issueNumber(ticket);
   switch (effect.type) {
     case LABEL_EFFECT: {
@@ -646,6 +682,22 @@ async function applyEffect(gh: Client, effect: Effect, ticket: string): Promise<
       await gh.createComment(n, neutraliseMarkers(String(effect.body ?? "")) + renderMarker(marker));
       return;
     }
+    case NODES_CLOSE_EFFECT: {
+      const graph = snapshot.graph as Graph | undefined;
+      for (const id of (effect.ids as string[] | undefined) ?? []) {
+        // Already closed is left alone: a merged pull request cannot be
+        // un-merged, and an issue closed as completed must not be re-closed
+        // as not planned. Unknown is attempted, and GitHub says why it cannot.
+        if ((graph?.nodes.find((node) => node.id === id)?.closed ?? null) !== null) continue;
+        const pull = /^pr-([1-9][0-9]*)$/.exec(id);
+        if (pull) await gh.closePull(Number(pull[1]));
+        else await gh.closeIssue(issueNumber(id), "not_planned");
+      }
+      return;
+    }
+    case CLOSE_EFFECT:
+      await gh.closeIssue(n, "completed");
+      return;
     default:
       throw new Error(`the github hook cannot apply effect "${effect.type}"`);
   }
@@ -957,8 +1009,12 @@ function priorityFromLabels(labels: string[]): { priority: number | null; found:
   return { priority: only === undefined ? null : Number(PRIORITY_LABEL.exec(only)?.[1]), found };
 }
 
-/** The one mapping from a GitHub issue to a ticket node. */
-export function nodeOfIssue(issue: IssueNode): Node {
+/**
+ * The one mapping from a GitHub issue to a ticket node. `bot` is the login we
+ * post as: an origin counts only in a body we wrote, because a re-run closes
+ * whatever claims it.
+ */
+export function nodeOfIssue(issue: IssueNode, bot: string): Node {
   const labels = issue.labels.nodes.map((l) => l.name);
   return {
     id: String(issue.number),
@@ -967,7 +1023,7 @@ export function nodeOfIssue(issue: IssueNode): Node {
     link: issue.url,
     closed: closedOf(issue),
     priority: priorityFromLabels(labels).priority,
-    origin: null,
+    origin: parseOrigin(issue.body ?? "", issue.author?.login, bot),
     // Always lists, and empty rather than absent: an eligibility rule reading
     // a path the node does not carry is one the tick cannot answer, and it
     // abstains on those — so an unassigned ticket would be worked by every
@@ -1034,13 +1090,14 @@ async function listGraph(gh: Client, repo: string, ctx: RuntimeContext): Promise
   const [owner = "", name = ""] = repo.split("/");
   const nodes = new Map<string, Node>();
   const parentOf = new Map<string, string>();
+  const bot = await gh.botLogin();
 
   // An issue this hook cannot map is left out, with every edge touching it:
   // one bad issue must not fail the tick for the rest. `read` of anything
   // whose neighbourhood holds it halts, naming it.
   const keep = (issue: IssueNode): void => {
     try {
-      nodes.set(String(issue.number), nodeOfIssue(issue));
+      nodes.set(String(issue.number), nodeOfIssue(issue, bot));
     } catch (e) {
       ctx.log("github.issue.skipped", { issue: issue.number, reason: e instanceof Error ? e.message : String(e) });
     }
@@ -1138,58 +1195,84 @@ async function pullsOf(gh: Client, repo: string, ticket: string): Promise<{ issu
 }
 
 /**
- * One ticket's neighbourhood: itself, its parent, its sub-issues, and every
- * pull request tied to it — merged and closed ones included, because "every
- * pull request is merged" is a count over all of them, and a newer open one
- * beside a merged one is work not yet done.
+ * One ticket's neighbourhood: itself, its parent, every descendant, breadth
+ * first, and every pull request tied to any of them — merged and closed ones
+ * included, because "every pull request is merged" is a count over all of
+ * them, and a newer open one beside a merged one is work not yet done.
  *
- * ponytail: one level of sub-issues. A cascade over a whole epic needs the
- * full subtree, and the plan that adds cascades extends this to it.
+ * The whole subtree, not one level: a re-run's cascade closes what hangs off a
+ * stale child — its pull requests, its own children — and it can only close
+ * what the graph shows it. One query per issue in the subtree, and the read
+ * stops at MAX_SUBGRAPH_NODES rather than paying for a graph the engine would
+ * refuse anyway.
  */
 async function readGraph(gh: Client, repo: string, ticket: string): Promise<Graph> {
-  const { issue, pulls } = await pullsOf(gh, repo, ticket);
+  const bot = await gh.botLogin();
+  const root = await pullsOf(gh, repo, ticket);
 
-  const { found } = priorityFromLabels(issue.labels.nodes.map((l) => l.name));
+  const { found } = priorityFromLabels(root.issue.labels.nodes.map((l) => l.name));
   if (found.length > 1) throw new Error(`#${ticket} carries ${found.join(" and ")}; priority is one`);
 
-  const self = nodeOfIssue(issue);
-  const nodes: Node[] = [self];
+  const nodes = new Map<string, Node>();
   const relationships: Relationship[] = [];
-
-  if (issue.parent) {
-    const parent = nodeOfIssue(issue.parent);
-    nodes.push(parent);
-    relationships.push({ from: self.id, to: parent.id, type: RELATIONS.childOf });
-  }
-  for (const sub of issue.subIssues.nodes) {
-    const child = nodeOfIssue(sub);
-    nodes.push(child);
-    relationships.push({ from: child.id, to: self.id, type: RELATIONS.childOf });
-  }
-
-  for (const pull of pulls) {
-    const named = ticketsNamedBy(pull);
-    // The one thing about a pull request that halts: a single PR claiming two
-    // tickets. Which of them it implements is not something to guess.
-    if (named.size > 1) {
+  const add = (node: Node): void => {
+    nodes.set(node.id, node);
+    if (nodes.size > MAX_SUBGRAPH_NODES) {
       throw new Error(
-        `pull request #${pull.number} is tied to ${[...named].map((t) => `#${t}`).join(" and ")}; ` +
-        "a pull request implements one ticket",
+        `#${ticket} has more than the ${MAX_SUBGRAPH_NODES} nodes one read may carry ` +
+        `(reading stopped at ${nodes.size}); a graph known to be short is not one to decide from`,
       );
     }
-    // Only an open pull request's threads are counted, and only an open one's
-    // are briefed: a thread left unresolved on a merged or abandoned one is
-    // nothing a fix round can act on, and counting it would send the ticket
-    // to fix-review for ever with nothing to fix. So a closed one reports
-    // zero without a query — zero, not nothing: with every pull request
-    // merged, an absent count would leave `sum.openThreads` undefined and
-    // every review trigger reading it false, parking the ticket in review.
-    const node = pullNodeOf(pull, pull.state === "OPEN" ? await countOpenThreads(gh, repo, pull.number) : 0);
-    nodes.push(node);
-    relationships.push({ from: node.id, to: self.id, type: RELATIONS.implements });
+  };
+
+  add(nodeOfIssue(root.issue, bot));
+  if (root.issue.parent) {
+    const parent = nodeOfIssue(root.issue.parent, bot);
+    add(parent);
+    relationships.push({ from: ticket, to: parent.id, type: RELATIONS.childOf });
   }
 
-  return { nodes, relationships };
+  const queue = [root];
+  for (let i = 0; i < queue.length; i++) {
+    const at = queue[i];
+    if (at === undefined) break;
+    const id = String(at.issue.number);
+
+    for (const sub of at.issue.subIssues.nodes) {
+      const child = String(sub.number);
+      // GitHub keeps sub-issues a tree; this only stops a read that is not one
+      // from walking in circles.
+      if (nodes.has(child)) continue;
+      const next = await pullsOf(gh, repo, child);
+      add(nodeOfIssue(next.issue, bot));
+      relationships.push({ from: child, to: id, type: RELATIONS.childOf });
+      queue.push(next);
+    }
+
+    for (const pull of at.pulls) {
+      const named = ticketsNamedBy(pull);
+      // The one thing about a pull request that halts: a single PR claiming two
+      // tickets. Which of them it implements is not something to guess.
+      if (named.size > 1) {
+        throw new Error(
+          `pull request #${pull.number} is tied to ${[...named].map((t) => `#${t}`).join(" and ")}; ` +
+          "a pull request implements one ticket",
+        );
+      }
+      // Only an open pull request's threads are counted, and only an open one's
+      // are briefed: a thread left unresolved on a merged or abandoned one is
+      // nothing a fix round can act on, and counting it would send the ticket
+      // to fix-review for ever with nothing to fix. So a closed one reports
+      // zero without a query — zero, not nothing: with every pull request
+      // merged, an absent count would leave `sum.openThreads` undefined and
+      // every review trigger reading it false, parking the ticket in review.
+      const node = pullNodeOf(pull, pull.state === "OPEN" ? await countOpenThreads(gh, repo, pull.number) : 0);
+      add(node);
+      relationships.push({ from: node.id, to: id, type: RELATIONS.implements });
+    }
+  }
+
+  return { nodes: [...nodes.values()], relationships };
 }
 
 /**
@@ -1333,6 +1416,11 @@ async function briefThreads(gh: Client, repo: string, ticket: string): Promise<R
  * permission already fails there for free, before any money is spent —
  * probing it here would only pay for a fifth round trip to learn the same
  * thing sooner.
+ *
+ * Neither is "Pull requests: Read and write", which closing a dropped child's
+ * pull request needs: there is no harmless pull request write to try. A
+ * classic token has it under "repo"; a fine-grained one without it is named
+ * by the close itself, as `token needs "Pull requests: Read and write"`.
  */
 async function checkPermissions(gh: Client, repo: string): Promise<void> {
   // A classic token carries its scopes on every response; a fine-grained one
@@ -1515,7 +1603,7 @@ export function githubHooks(opts: GitHubOptions): {
       id: "github",
       handles: HANDLES,
       satisfied,
-      apply: (effect, { ticket }) => applyEffect(gh, effect, ticket),
+      apply: (effect, ctx) => applyEffect(gh, effect, ctx),
     }),
 
     source: defineSource({
@@ -1532,9 +1620,29 @@ export function githubHooks(opts: GitHubOptions): {
       id: "github",
       // Both read back through GraphQL, so what an operator is shown is the
       // node `list` and `read` would report, not a second reading beside it.
-      createTicket: async ({ title, body, labels }: NewTicket) => {
-        const created = await gh.createIssue({ title, body: body ?? "", labels: labels ?? [] });
-        return nodeOfIssue(await gh.getIssueNode(created.number));
+      createTicket: async ({ title, body, labels, parent, origin, priority }: NewTicket) => {
+        // Checked before anything is created, so a bad parent leaves nothing behind.
+        const under = parent === undefined ? undefined : issueNumber(parent);
+        const created = await gh.createIssue({
+          title,
+          // Marked under our own login, so the origin reads back as ours — and
+          // only ours: a person's issue carrying the same text is nobody's. The
+          // agent's body is escaped first, so it cannot bring a marker of its own.
+          body: neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : ""),
+          labels: priority === undefined ? (labels ?? []) : [...(labels ?? []), `P${priority}`],
+        });
+        if (under !== undefined) {
+          try {
+            // GitHub links a sub-issue by the child's REST id, not its number.
+            await gh.addSubIssue(under, created.id);
+          } catch (e) {
+            // Unlinked, it is outside the parent's subtree: nothing would ever
+            // see it to drop it, and the step's retry would make another.
+            await gh.closeIssue(created.number, "not_planned").catch(() => {});
+            throw e;
+          }
+        }
+        return nodeOfIssue(await gh.getIssueNode(created.number), await gh.botLogin());
       },
 
       updateTicket: async (ticket: string, patch: TicketPatch) => {
@@ -1548,7 +1656,7 @@ export function githubHooks(opts: GitHubOptions): {
         await gh.addLabels(n, patch.addLabels ?? []);
         if (Object.keys(fields).length) await gh.updateIssue(n, fields);
 
-        return nodeOfIssue(await gh.getIssueNode(n));
+        return nodeOfIssue(await gh.getIssueNode(n), await gh.botLogin());
       },
     }),
   };

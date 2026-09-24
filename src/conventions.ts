@@ -198,6 +198,15 @@ export const NODES_CLOSE_EFFECT = "nodes.close";
 export const CLOSE_EFFECT = "tracker.close";
 
 /**
+ * How big one ticket's neighbourhood may be. `read` returns the whole
+ * descendant subtree, because a cascade close must see every node it closes,
+ * and it runs on every converge pass. Past this, the honest answer is a halt
+ * naming the size, from the engine and from a source that stops reading
+ * there — ponytail: page the subtree when a real epic gets here.
+ */
+export const MAX_SUBGRAPH_NODES = 200;
+
+/**
  * What a step may declare it is allowed to do, and the whole of it.
  *
  * Deliberately two words long. Each one is enforced twice — by the flags an

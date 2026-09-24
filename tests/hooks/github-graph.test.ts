@@ -1,7 +1,10 @@
 import { createFakeTracker, type FakeThread, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
+import { MAX_SUBGRAPH_NODES } from "#conventions.js";
+import { staleClosure } from "#core/children.js";
 import { githubHooks } from "#landrace/hooks/github.js";
+import { createDispatcher } from "#runner/effects.js";
 import type { Condition, Graph, HookContext, Snapshot, Source } from "#namespace.js";
 
 /**
@@ -522,5 +525,67 @@ describe("the operator reads back what it wrote as the source would", () => {
     const gh = createFakeTracker([{ number: 3, labels: ["a"] }]);
     const node = await gh.registry.operator?.updateTicket("3", { state: "closed", addLabels: ["b"], removeLabels: ["a"] }, gh.ctx);
     expect(node).toMatchObject({ id: "3", closed: "done", state: { labels: ["b"] } });
+  });
+});
+
+describe("a read carries the ticket's whole subtree", () => {
+  it("reads grandchildren and every descendant's pull requests, with their edges", async () => {
+    const gh = createFakeTracker([{ number: 1 }, { number: 2, parent: 1 }, { number: 3, parent: 2 }]);
+    gh.openPull({ head: "landrace/2", number: 20, threads: threads([false, true]) });
+    gh.openPull({ head: "feature", number: 30, merged: true, closes: [3], threads: threads([false]) });
+
+    const g = await sourceOf(gh).read("1", ctx(gh));
+
+    expect(g.nodes.map((n) => n.id).sort()).toEqual(["1", "2", "3", "pr-20", "pr-30"]);
+    expect(g.relationships).toEqual(expect.arrayContaining([
+      { from: "2", to: "1", type: "child-of" },
+      { from: "3", to: "2", type: "child-of" },
+      { from: "pr-20", to: "2", type: "implements" },
+      { from: "pr-30", to: "3", type: "implements" },
+    ]));
+    expect(g.relationships).toHaveLength(4);
+    // Threads are counted on an open pull request only; a merged one reads zero.
+    expect(g.nodes.find((n) => n.id === "pr-20")?.state).toMatchObject({ openThreads: 1 });
+    expect(g.nodes.find((n) => n.id === "pr-30")?.state).toMatchObject({ openThreads: 0 });
+  });
+
+  it("halts past the bound, naming it, and stops reading there", async () => {
+    // 1 + 50 children + 4 grandchildren each: 251 issues, past the bound.
+    const seed = [{ number: 1 }];
+    for (let c = 0; c < 50; c++) {
+      const child = 2 + c;
+      seed.push({ number: child, parent: 1 } as never);
+      for (let g = 0; g < 4; g++) seed.push({ number: 100 + c * 4 + g, parent: child } as never);
+    }
+    const gh = createFakeTracker(seed);
+    await expect(sourceOf(gh).read("1", ctx(gh))).rejects.toThrow(
+      new RegExp(`#1 has more than the ${MAX_SUBGRAPH_NODES} nodes one read may carry`),
+    );
+    expect(operations(gh, "LandraceTicket").length).toBeLessThan(seed.length);
+  });
+
+  it("lets a re-run's cascade drop a stale child's pull request and its grandchild on GitHub", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 10 });
+    const origin = { parent: "1", stage: "breakdown", round: 1 };
+    const child = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx);
+    gh.openPull({ head: `landrace/${child.id}`, number: 20 });
+    gh.issues.set(3, { ...gh.issues.get(Number(child.id))!, number: 3, id: 100_003, author: "a-person", parent: Number(child.id) });
+    gh.openPull({ head: "landrace/3", number: 30 });
+
+    const graph = await sourceOf(gh).read("1", ctx(gh));
+    const ids = staleClosure(graph, "1", "breakdown", 2, ["child-of", "implements"]);
+    expect(ids).toEqual(["pr-30", "3", "pr-20", child.id]);
+
+    await createDispatcher(gh.registry.post).apply(
+      { type: "nodes.close", ids }, { ...gh.ctx, ticket: "1", snapshot: { graph } } as HookContext,
+    );
+
+    const after = await sourceOf(gh).read("1", ctx(gh));
+    const closed = (id: string) => after.nodes.find((n) => n.id === id)?.closed;
+    expect(ids.map(closed)).toEqual(["dropped", "dropped", "dropped", "dropped"]);
+    // The ticket's own pull request is not the cascade's to close.
+    expect(closed("pr-10")).toBeNull();
+    expect(gh.registry.post[0]!.satisfied({ graph: after }, { type: "nodes.close", ids })).toBe(true);
   });
 });
