@@ -25,6 +25,7 @@
   "packageManager": "pnpm@11.1.0",
   "scripts": {
     "build": "tsup",
+    "css": "node --experimental-strip-types scripts/build-css.mjs",
     "test": "jest && node --experimental-vm-modules ./node_modules/jest/bin/jest.js -c jest.esm.config.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests .landrace",
@@ -39,10 +40,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",
+    "@tailwindcss/cli": "^4.3.3",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.15.2",
     "eslint": "^9.25.0",
     "jest": "^29.7.0",
+    "tailwindcss": "^4.3.3",
     "ts-jest": "^29.3.2",
     "tsup": "^8.4.0",
     "typescript": "^5.8.3",

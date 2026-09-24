@@ -1,0 +1,26 @@
+/*
+ * Tailwind's input. `source(none)` turns off automatic content scanning —
+ * this file lives beside `dist/` and `node_modules/`, and auto-detection
+ * would happily scan both — so the one file that actually holds class names,
+ * page.ts, is named explicitly below.
+ */
+@import "tailwindcss" source(none);
+@source "./page.ts";
+
+/*
+ * Class-based dark mode: `.dark` on <html>, set by /theme.js before first
+ * paint. `&:where(.dark, .dark *)` (not `.dark &`) so a `dark:` utility on
+ * the <html> element itself still matches, not only on its descendants.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /*
+   * Tailwind's own defaults are already system stacks, but the CSP's whole
+   * point is "no font ever comes from anywhere but this origin" — stated
+   * here explicitly so that promise lives in one auditable place instead of
+   * resting on a default nobody pinned.
+   */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}

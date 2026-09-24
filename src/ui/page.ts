@@ -3,6 +3,7 @@
  * copy step. Script and style are served as their own routes so the CSP can
  * forbid anything inline.
  */
+export { APP_CSS } from "#ui/styles.generated.js";
 
 export const PAGE_HTML = `<!doctype html>
 <html lang="en">
@@ -16,7 +17,7 @@ export const PAGE_HTML = `<!doctype html>
 <body>
 <header>
 <h1>Landrace</h1><span id="meta">connecting…</span>
-<div id="schedule"><span id="next">no tick scheduled</span><button id="tick" type="button">Run next tick now</button></div>
+<div id="schedule" class="ml-auto"><span id="next">no tick scheduled</span><button id="tick" type="button">Run next tick now</button></div>
 </header>
 <main>
 <section data-lane="needs-you"><h2>Needs you</h2><ul></ul></section>
@@ -28,29 +29,6 @@ export const PAGE_HTML = `<!doctype html>
 </main>
 </body>
 </html>
-`;
-
-export const APP_CSS = `
-:root { color-scheme: light dark; --needs: #d33; --run: #2a2; --else: #c90; --muted: #888; }
-body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 1rem clamp(1rem, 4vw, 3rem); }
-header { display: flex; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
-h1 { margin: 0 0 .5rem; font-size: 1.3rem; }
-#meta { color: var(--muted); }
-#schedule { margin-left: auto; display: flex; gap: .5rem; align-items: baseline; }
-#next { color: var(--muted); font-variant-numeric: tabular-nums; }
-#tick { font: inherit; }
-section, details { margin: 1rem 0; }
-h2, summary { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-[data-lane="needs-you"] h2 { color: var(--needs); }
-[data-lane="running"] h2 { color: var(--run); }
-[data-lane="elsewhere"] h2 { color: var(--else); }
-ul { list-style: none; margin: 0; padding: 0; }
-li { display: flex; gap: .75rem; padding: .35rem 0; border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); flex-wrap: wrap; }
-.num { font-variant-numeric: tabular-nums; min-width: 3.5rem; }
-.stage { min-width: 9rem; color: var(--muted); }
-.title { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
-.note, .clock { color: var(--muted); font-variant-numeric: tabular-nums; }
-.empty { color: var(--muted); font-style: italic; }
 `;
 
 export const APP_JS = `

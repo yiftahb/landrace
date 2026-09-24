@@ -1,2 +1,6 @@
 allowBuilds:
+  # Tailwind's file-watcher, pulled in by @tailwindcss/cli. Never used: the
+  # css generator always runs a single build, never `--watch`, so there is
+  # no native binary here worth the install-script surface of allowing it.
+  '@parcel/watcher': false
   esbuild: true

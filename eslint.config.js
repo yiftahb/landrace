@@ -19,6 +19,13 @@ const noRelativeImports = {
 };
 
 export default tseslint.config(
+  {
+    // Not source: a Tailwind CLI dump, regenerated wholesale by `pnpm css`.
+    // Linting a minified stylesheet-as-a-string reports nothing useful, and
+    // the freshness test (tests/ui/styles.test.ts) is the actual guard on
+    // its content; it still typechecks, which is the check that matters.
+    ignores: ["src/ui/styles.generated.ts"],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
