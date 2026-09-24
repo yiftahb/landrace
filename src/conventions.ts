@@ -399,6 +399,18 @@ export const renderOrigin = (o: Origin): string =>
   });
 
 /**
+ * Whether two logins name one account. Case-insensitive, the way trackers
+ * compare them, and blind to a trailing "[bot]": a tracker can report an app's
+ * login without it in one API and with it in another — and in `tracker.bot` —
+ * reading our own children as a stranger's would leave every one of them
+ * outside the cascade that should drop it.
+ */
+export function sameLogin(a: string, b: string): boolean {
+  const norm = (login: string): string => login.trim().toLowerCase().replace(/\[bot\]$/, "");
+  return norm(a) === norm(b);
+}
+
+/**
  * Who created this ticket, when it was a step — or null.
  *
  * Authorship first, exactly as entriesFromComments: an origin is control
@@ -410,7 +422,7 @@ export function parseOrigin(body: string, author: string | undefined, botLogin: 
   if (!botLogin.trim()) {
     throw new Error("parseOrigin needs the login landrace posts as; refusing to read markers without it");
   }
-  if (typeof author !== "string" || author.toLowerCase() !== botLogin.trim().toLowerCase()) return null;
+  if (typeof author !== "string" || !sameLogin(author, botLogin)) return null;
   const m = parseMarker(body);
   if (!m || m.kind !== CHILD_KIND) return null;
   const { parent, round, stage } = m as { parent?: unknown; round: number; stage: string };

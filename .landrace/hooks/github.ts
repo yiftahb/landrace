@@ -42,6 +42,7 @@ import {
   RELATIONS,
   renderMarker,
   renderOrigin,
+  sameLogin,
   STAGE_LABEL_PREFIX,
   STATUS_EFFECT,
   TICKET_KIND,
@@ -116,6 +117,8 @@ export interface IssueNode {
   body: string | null;
   /** Null for an account GitHub has since deleted. */
   author: { login: string } | null;
+  /** Who last edited the body, or null if nobody has since it was opened. */
+  editor: { login: string } | null;
 }
 
 /**
@@ -127,7 +130,7 @@ export const ISSUE_FIELDS = `
   number title url state stateReason
   labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
-  body author { login }`;
+  body author { login } editor { login }`;
 
 const ISSUE_QUERY = `
 query LandraceIssue($owner: String!, $name: String!, $number: Int!) {
@@ -309,7 +312,10 @@ function createClient(opts: GitHubOptions) {
     try {
       await write;
     } catch (e) {
-      if ((e as { status?: unknown } | null)?.status === 403) throw new Error(`token needs ${permission}`);
+      // GitHub's own words kept: a secondary rate limit answers 403 too.
+      if ((e as { status?: unknown } | null)?.status === 403) {
+        throw new Error(`token needs ${permission} (GitHub answered: ${e instanceof Error ? e.message : String(e)})`);
+      }
       throw e;
     }
   };
@@ -581,7 +587,9 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
     case NODES_CLOSE_EFFECT:
       return allClosed(snapshot.graph as Graph | undefined, (effect.ids as string[] | undefined) ?? []);
     case CLOSE_EFFECT:
-      return (snapshot.node as Node | undefined)?.closed === "done";
+      // Closed either way counts: a person who closed it as not planned
+      // decided that, and re-closing it as completed would overrule them.
+      return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
     default:
       return false;
   }
@@ -1023,7 +1031,12 @@ export function nodeOfIssue(issue: IssueNode, bot: string): Node {
     link: issue.url,
     closed: closedOf(issue),
     priority: priorityFromLabels(labels).priority,
-    origin: parseOrigin(issue.body ?? "", issue.author?.login, bot),
+    // Nobody but us may have touched the body since: a person keeps the
+    // bot's authorship when they edit it, and could otherwise rewrite the
+    // marker to claim another stage or round.
+    origin: issue.editor && !sameLogin(issue.editor.login, bot)
+      ? null
+      : parseOrigin(issue.body ?? "", issue.author?.login, bot),
     // Always lists, and empty rather than absent: an eligibility rule reading
     // a path the node does not carry is one the tick cannot answer, and it
     // abstains on those — so an unassigned ticket would be worked by every
@@ -1629,7 +1642,6 @@ export function githubHooks(opts: GitHubOptions): {
           // only ours: a person's issue carrying the same text is nobody's. The
           // agent's body is escaped first, so it cannot bring a marker of its own.
           body: neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : ""),
-          labels: priority === undefined ? (labels ?? []) : [...(labels ?? []), `P${priority}`],
         });
         if (under !== undefined) {
           try {
@@ -1637,11 +1649,23 @@ export function githubHooks(opts: GitHubOptions): {
             await gh.addSubIssue(under, created.id);
           } catch (e) {
             // Unlinked, it is outside the parent's subtree: nothing would ever
-            // see it to drop it, and the step's retry would make another.
-            await gh.closeIssue(created.number, "not_planned").catch(() => {});
+            // see it to drop it. It carries no labels yet, so even if this
+            // close fails too it is inert — nothing will work it.
+            const linkError = e instanceof Error ? e.message : String(e);
+            try {
+              await gh.closeIssue(created.number, "not_planned");
+            } catch (c) {
+              throw new Error(
+                `${linkError}; and closing the unlinked #${created.number} again failed too: ` +
+                `${c instanceof Error ? c.message : String(c)}`,
+              );
+            }
             throw e;
           }
         }
+        // Labelled last: the eligibility label is what lets a tick work it,
+        // and only a linked child is one a re-run's cascade can see.
+        await gh.addLabels(created.number, priority === undefined ? (labels ?? []) : [...(labels ?? []), `P${priority}`]);
         return nodeOfIssue(await gh.getIssueNode(created.number), await gh.botLogin());
       },
 

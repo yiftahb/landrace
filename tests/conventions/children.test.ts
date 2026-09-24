@@ -28,6 +28,13 @@ describe("the origin marker", () => {
     expect(parseOrigin(`x${renderOrigin(origin)}`, "Landrace-Bot", "landrace-bot")).toEqual(origin);
   });
 
+  it("reads a GitHub App's login the same with or without its [bot] suffix, either way round", () => {
+    // GraphQL reports an App author as "name", REST and tracker.bot as "name[bot]".
+    expect(parseOrigin(`x${renderOrigin(origin)}`, "landrace", "landrace[bot]")).toEqual(origin);
+    expect(parseOrigin(`x${renderOrigin(origin)}`, "Landrace[bot]", "landrace")).toEqual(origin);
+    expect(parseOrigin(`x${renderOrigin(origin)}`, "landrace-other", "landrace[bot]")).toBeNull();
+  });
+
   it("is nobody's when a person wrote it — authorship, not syntax, is the check", () => {
     expect(parseOrigin(`x${renderOrigin(origin)}`, "a-person", "landrace-bot")).toBeNull();
     expect(parseOrigin(`x${renderOrigin(origin)}`, undefined, "landrace-bot")).toBeNull();

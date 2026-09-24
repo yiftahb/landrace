@@ -555,6 +555,54 @@ describe("children on GitHub", () => {
     expect(gh.issues.get(2)).toMatchObject({ state: "closed", state_reason: "not_planned" });
   });
 
+  it("leaves nothing eligible behind when the link and the compensating close both fail, and names both", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    gh.breakOn((r) => r.path.endsWith("/sub_issues") || (r.method === "PATCH" && r.path === "/issues/2"), 500);
+    const failure = gh.registry.operator!.createTicket({ title: "api", parent: "1", origin, labels: ["lr:auto", "x"] }, gh.ctx);
+    await expect(failure).rejects.toThrow(/sub_issues[\s\S]*#2[\s\S]*\/issues\/2/);
+    expect(gh.issues.get(2)?.labels).toEqual([]);
+  });
+
+  it("labels the child only once it is linked", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin, labels: ["lr:auto"] }, gh.ctx);
+    const order = gh.requests.map((r) => `${r.method} ${r.path}`);
+    expect(order.indexOf("POST /issues/1/sub_issues")).toBeLessThan(order.indexOf("POST /issues/2/labels"));
+    expect(gh.labelsOf(2)).toEqual(["lr:auto"]);
+  });
+
+  it("reads the origin of a child a person has since edited as nobody's", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    const node = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx);
+    const child = gh.issues.get(Number(node.id))!;
+    // Edited in the UI to claim a different round, keeping our authorship.
+    child.body = `x${renderOrigin({ ...origin, round: 3 })}`;
+    child.editor = "a-person";
+    const graph = await gh.registry.source!.read("1", gh.ctx);
+    expect(graph.nodes.find((n) => n.id === node.id)?.origin).toBeNull();
+  });
+
+  it("still reads the origin when the only editor is the bot", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    const node = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx);
+    gh.issues.get(Number(node.id))!.editor = gh.bot;
+    const graph = await gh.registry.source!.read("1", gh.ctx);
+    expect(graph.nodes.find((n) => n.id === node.id)?.origin).toEqual(origin);
+  });
+
+  it("keeps GitHub's own words when it refuses with a 403", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    gh.breakOn((r) => r.path.endsWith("/sub_issues"), 403);
+    await expect(gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx))
+      .rejects.toThrow(/Issues: Read and write[\s\S]*the repository is unhappy/);
+  });
+
+  it("reads a ticket a person closed as not planned as already closed, and never re-closes it", async () => {
+    const node = { id: "1", kind: "ticket", title: "t", link: "", closed: "dropped" as const, priority: null, origin: null, state: {} };
+    const gh = createFakeTracker([{ number: 1 }]);
+    expect(gh.registry.post[0]!.satisfied({ node }, { type: "tracker.close" })).toBe(true);
+  });
+
   it("reads a person's forged origin as nobody's", async () => {
     const gh = createFakeTracker([
       { number: 1, title: "big", body: "", labels: [] },

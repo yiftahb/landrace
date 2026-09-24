@@ -1,4 +1,4 @@
-import { createFakeTracker, type FakeThread, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { createFakeTracker, type FakeIssue, type FakeThread, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
 import { MAX_SUBGRAPH_NODES } from "#conventions.js";
@@ -551,11 +551,11 @@ describe("a read carries the ticket's whole subtree", () => {
 
   it("halts past the bound, naming it, and stops reading there", async () => {
     // 1 + 50 children + 4 grandchildren each: 251 issues, past the bound.
-    const seed = [{ number: 1 }];
+    const seed: Array<Partial<FakeIssue>> = [{ number: 1 }];
     for (let c = 0; c < 50; c++) {
       const child = 2 + c;
-      seed.push({ number: child, parent: 1 } as never);
-      for (let g = 0; g < 4; g++) seed.push({ number: 100 + c * 4 + g, parent: child } as never);
+      seed.push({ number: child, parent: 1 });
+      for (let g = 0; g < 4; g++) seed.push({ number: 100 + c * 4 + g, parent: child });
     }
     const gh = createFakeTracker(seed);
     await expect(sourceOf(gh).read("1", ctx(gh))).rejects.toThrow(

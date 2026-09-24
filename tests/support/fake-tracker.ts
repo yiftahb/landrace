@@ -34,6 +34,8 @@ export interface FakeIssue {
   state_reason?: "completed" | "not_planned" | null;
   /** Who opened it. A person, unless the hook created it under the bot's login. */
   author: string;
+  /** Who last edited the body, if anyone has since it was opened. */
+  editor?: string;
   /** The issue this one is a sub-issue of, by number. */
   parent?: number;
 }
@@ -201,6 +203,7 @@ export function createFakeTracker(
       assignees: s.assignees ?? [],
       ...(s.stateReason === undefined ? {} : { stateReason: s.stateReason }),
       ...(s.parent === undefined ? {} : { parent: s.parent }),
+      ...(s.editor === undefined ? {} : { editor: s.editor }),
     });
     nextIssue = Math.max(nextIssue, n + 1);
   }
@@ -275,6 +278,7 @@ export function createFakeTracker(
     title: i.title,
     body: i.body,
     author: { login: i.author },
+    editor: i.editor === undefined ? null : { login: i.editor },
     url: i.html_url,
     state: i.state.toUpperCase(),
     stateReason: i.stateReason ?? null,
