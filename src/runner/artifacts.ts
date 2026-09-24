@@ -30,7 +30,7 @@ const MAX_CHARS = 64 * 1024;
  * coerced, because a silently dropped field is a predicate that silently stops
  * matching.
  */
-function problemWith(value: unknown, path: string, depth: number, size: { chars: number }): string | null {
+export function problemWith(value: unknown, path: string, depth: number, size: { chars: number }): string | null {
   if (depth > MAX_DEPTH) return `${path} is nested deeper than ${MAX_DEPTH} levels`;
   if (value === null || typeof value === "boolean") return null;
   if (typeof value === "number") {
