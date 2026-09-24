@@ -1109,6 +1109,25 @@ export interface Running {
   since: number;
 }
 
+/** A known system's display name and the coloured letter mark the page draws for it. */
+export interface SystemMark {
+  name: string;
+  /** `#rrggbb` — the mark's background. */
+  bg: string;
+  /** One or two capital letters, drawn in white on `bg`. */
+  glyph: string;
+}
+
+/**
+ * Which external system a link points into, for a person scanning the tree.
+ * `icon` is null for a host we do not know, whose name is then the bare
+ * hostname — an unrecognised system is still named, never guessed.
+ */
+export interface BoardSystem {
+  name: string;
+  icon: { bg: string; glyph: string } | null;
+}
+
 /**
  * The Chat menu's contents for one ticket, built server-side in
  * `src/ui/chat.ts` from nothing but the ticket number and the workspace

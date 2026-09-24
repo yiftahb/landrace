@@ -9,8 +9,16 @@ const filesUnder = (dir: string): string[] =>
     return statSync(path).isDirectory() ? filesUnder(path) : path.endsWith(".ts") ? [path] : [];
   });
 
+/**
+ * The one file under src/ allowed to name a vendor, by exact path: a table
+ * from a link's hostname to a display name and a coloured letter. It is a
+ * label for a URL a hook already handed us, not an integration — and the
+ * describe block below is what keeps it that way.
+ */
+const DISPLAY_ONLY = join("src", "ui", "systems.ts");
+
 const linesMatching = (pattern: RegExp): string[] =>
-  filesUnder("src").flatMap((file) =>
+  filesUnder("src").filter((file) => file !== DISPLAY_ONLY).flatMap((file) =>
     readFileSync(file, "utf8")
       .split("\n")
       .flatMap((line, i) => (pattern.test(line) ? [`${file}:${i + 1}: ${line.trim()}`] : [])),
@@ -86,5 +94,23 @@ describe("every kind the loader classifies has a way to be registered", () => {
 
     expect(stamped.filter(([, kind]) => kind === null)).toEqual([]);
     expect([...new Set(stamped.map(([, kind]) => kind))].sort()).toEqual([...HOOK_KINDS].sort());
+  });
+});
+
+describe("the one display-only file that may name a vendor", () => {
+  const source = readFileSync(DISPLAY_ONLY, "utf8");
+
+  it("imports nothing but types from the namespace", () => {
+    const imports = source.split("\n").filter((line) => /^\s*import\b/.test(line));
+    expect(imports.every((line) => /^import type .* from "#namespace\.js";$/.test(line.trim()))).toBe(true);
+  });
+
+  it("exports only the table and the lookup", async () => {
+    const mod = (await import("#ui/systems.js")) as Record<string, unknown>;
+    expect(Object.keys(mod).sort()).toEqual(["SYSTEMS", "systemOf"]);
+  });
+
+  it("makes no call out of the process", () => {
+    expect(source).not.toMatch(/\bfetch\(|XMLHttpRequest|node:|require\(|\bimport\(/);
   });
 });
