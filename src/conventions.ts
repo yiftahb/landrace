@@ -4,7 +4,7 @@
  * back as the engine's. None of it belongs to a tracker — a Jira hook would
  * use the same names — so none of it lives in a hook.
  */
-import type { Entry, Marker, Node, TrackerComment, Trailing } from "#namespace.js";
+import type { Entry, Graph, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
 
 export const LABELS = {
   eligible: "lr:auto",
@@ -183,6 +183,21 @@ export const LABEL_EFFECT = "tracker.label";
 export const CONVERSATION_KIND = "conversation";
 
 /**
+ * The marker kind on a child a step created. The marker's own `stage` and
+ * `round` are the creating stage and round; `parent` rides beside them.
+ */
+export const CHILD_KIND = "child";
+
+/** Drop nodes: planned by core from `{ type, follow }` into `{ type, ids }`. */
+export const NODES_CLOSE_EFFECT = "nodes.close";
+
+/**
+ * Close this ticket as done. A finished child has to read closed, or its
+ * parent — which routes on `rel.child-of.in.not.closed` — waits for ever.
+ */
+export const CLOSE_EFFECT = "tracker.close";
+
+/**
  * What a step may declare it is allowed to do, and the whole of it.
  *
  * Deliberately two words long. Each one is enforced twice — by the flags an
@@ -194,8 +209,13 @@ export const CONVERSATION_KIND = "conversation";
  * quietly carried around, and why the list lives here with the labels and the
  * marker format rather than inside the one executor that happens to know a CLI
  * flag for it — a second executor has to answer for the same two words.
+ *
+ * `tickets:create` is enforced twice like the others: an executor offers the
+ * create_child tool only to a step that declares it, and runStep reads the
+ * ticket's graph afterwards — a child stamped with this round's origin that a
+ * step without the word somehow made is a refusal, not a record.
  */
-export const CAPABILITIES = ["repo:read", "repo:write"] as const;
+export const CAPABILITIES = ["repo:read", "repo:write", "tickets:create"] as const;
 
 /** The declared names nothing in the engine knows how to enforce. */
 export const unknownCapabilities = (declared: readonly string[] | undefined): string[] =>
@@ -208,6 +228,10 @@ export const unknownCapabilities = (declared: readonly string[] | undefined): st
  */
 export const mayWriteRepo = (declared: readonly string[] | undefined): boolean =>
   (declared ?? []).includes("repo:write");
+
+/** Whether a step may create children. Absent and empty both mean no. */
+export const mayCreateTickets = (declared: readonly string[] | undefined): boolean =>
+  (declared ?? []).includes("tickets:create");
 
 /*
  * Caps on what a marker may carry, and on how much of a comment is even
@@ -352,6 +376,49 @@ export function parseMarker(body: string): Marker | null {
 export function stripMarker(body: string): string {
   const m = trailing(body);
   return (m ? body.slice(0, m.index) : body).trim();
+}
+
+/**
+ * The origin marker a hook appends to a child's body. The same trailing-marker
+ * format as every record, so the same reader, the same caps and the same
+ * escaping protect it.
+ */
+export const renderOrigin = (o: Origin): string =>
+  renderMarker({
+    stage: o.stage, kind: CHILD_KIND, round: o.round, parent: o.parent,
+    marker: `child:${o.parent}:${o.stage}:${o.round}`,
+  });
+
+/**
+ * Who created this ticket, when it was a step — or null.
+ *
+ * Authorship first, exactly as entriesFromComments: an origin is control
+ * state, because a breakdown re-run closes whatever claims it. A person who
+ * could write one into an issue body could have their issue — and everything
+ * hanging off it — cascaded closed by somebody else's ticket.
+ */
+export function parseOrigin(body: string, author: string | undefined, botLogin: string): Origin | null {
+  if (!botLogin.trim()) {
+    throw new Error("parseOrigin needs the login landrace posts as; refusing to read markers without it");
+  }
+  if (typeof author !== "string" || author.toLowerCase() !== botLogin.trim().toLowerCase()) return null;
+  const m = parseMarker(body);
+  if (!m || m.kind !== CHILD_KIND) return null;
+  const { parent, round, stage } = m as { parent?: unknown; round: number; stage: string };
+  if (!isTicketId(parent) || !Number.isInteger(round) || round < 1) return null;
+  return { parent, stage, round };
+}
+
+/**
+ * The satisfied() every nodes.close handler shares: each id reads back closed,
+ * done or dropped. Either counts, because a merged pull request can never be
+ * dropped, and a check waiting for it to be would re-apply the close on every
+ * tick. A missing id is not closed — it may be a read that did not reach it.
+ */
+export function allClosed(graph: Graph | undefined, ids: readonly string[]): boolean {
+  if (!graph) throw new Error("a nodes.close effect cannot be checked: the snapshot has no graph");
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  return ids.every((id) => (byId.get(id)?.closed ?? null) !== null);
 }
 
 /**

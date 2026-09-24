@@ -464,6 +464,33 @@ export interface NewTicket {
   title: string;
   body?: string | undefined;
   labels?: string[] | undefined;
+  /** The ticket this one is a child of. The hook links it with its tracker's own parent relation. */
+  parent?: string | undefined;
+  /**
+   * Set only by the runner, for a child a step created. The hook appends it as
+   * a trailing marker under its own login, which is what lets a later round of
+   * the same stage find — and drop — what this round made.
+   */
+  origin?: Origin | undefined;
+  priority?: number | undefined;
+}
+
+/**
+ * Who a created child belongs to, fixed by the runner before the agent starts.
+ * The agent names a title and a body; it never names these, so it cannot file
+ * a child under another ticket, stage or round.
+ */
+export interface ChildBinding {
+  parent: string;
+  stage: string;
+  round: number;
+}
+
+/** What the agent may say about a child it creates, and nothing more. */
+export interface NewChild {
+  title: string;
+  body?: string | undefined;
+  priority?: number | undefined;
 }
 
 export interface TicketPatch {
