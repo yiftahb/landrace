@@ -56,6 +56,55 @@ describe("structural validation", () => {
     expect(rules(w)).not.toContain("entry");
   });
 
+  it("recognizes an entry trigger anchored with \"run.stage\": { $eq: null }", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": { $eq: null }, x: 0 } }] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null, x: 1 } }] },
+    ]);
+    expect(rules(w)).not.toContain("entry");
+  });
+
+  it("recognizes an entry trigger anchored on \"run.stage\": null nested under $and", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { $and: [{ "run.stage": null }, { x: 0 }] } }] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null, x: 1 } }] },
+    ]);
+    expect(rules(w)).not.toContain("entry");
+  });
+
+  it("abstains, rather than flags, an entry trigger that mentions run.stage only under $or", () => {
+    // Could hold on a fresh ticket, could hold on one at "b" — unreadable, so
+    // this must not be reported as either anchored or refused.
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { $or: [{ "run.stage": null }, { "run.stage": "b" }] } }] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null, x: 1 } }] },
+    ]);
+    expect(rules(w)).not.toContain("entry");
+  });
+
+  it("still refuses an entry trigger that mentions run.stage nowhere at all", () => {
+    const problems = validateStructure(wf([
+      { id: "a", entry: true, triggers: [{ when: { x: 0 } }] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null, x: 1 } }] },
+    ]));
+    const entry = problems.filter((p) => p.rule === "entry");
+    expect(entry).toHaveLength(1);
+    expect(entry[0]?.message).toMatch(/"a".*"run\.stage": null/);
+  });
+
+  it("flags only the unanchored trigger when an entry stage also has an anchored one", () => {
+    const problems = validateStructure(wf([
+      { id: "a", entry: true, triggers: [
+        { when: { "run.stage": null } },
+        { when: { "rel.child-of.out.total": 1 } },
+      ] },
+      { id: "b", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    ]));
+    const entry = problems.filter((p) => p.rule === "entry");
+    expect(entry).toHaveLength(1);
+    expect(entry[0]?.message).toMatch(/"a".*could also fire mid-workflow/);
+  });
+
   it("flags a stage nothing can reach", () => {
     const w = wf([{ id: "a", entry: true }, { id: "orphan", terminal: true }]);
     expect(rules(w)).toContain("reachability");

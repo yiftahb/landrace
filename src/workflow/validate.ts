@@ -31,16 +31,26 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   if (entries.length > 1) {
     for (const stage of entries) {
       const triggers = stage.triggers ?? [];
-      if (!triggers.some((t) => isFreshTicketOnly(t.when))) {
-        problems.push({
-          rule: "entry",
-          message: `entry stage "${stage.id}" has no trigger anchored on "run.stage": null, ` +
-            "so with several entry stages it can never be chosen for a fresh ticket",
-        });
+      const anchored = triggers.some((t) => isFreshTicketOnly(t.when));
+      if (!anchored) {
+        /*
+         * A trigger that mentions run.stage at all — under an operator this
+         * file cannot read, e.g. $or or $ne — might still be the fresh
+         * anchor; refusing it would be a guess in the direction this
+         * codebase does not guess in. Only a stage where nothing mentions
+         * run.stage anywhere is unambiguous enough to refuse.
+         */
+        if (!triggers.some((t) => mentionsRunStage(t.when))) {
+          problems.push({
+            rule: "entry",
+            message: `entry stage "${stage.id}" has no trigger anchored on "run.stage": null, ` +
+              "so with several entry stages it can never be chosen for a fresh ticket",
+          });
+        }
         continue;
       }
       for (const t of triggers) {
-        if (t.when["run.stage"] === undefined) {
+        if (!mentionsRunStage(t.when)) {
           problems.push({
             rule: "entry",
             message: `entry stage "${stage.id}" has a trigger${t.name ? ` ("${t.name}")` : ""} not anchored on ` +
@@ -183,9 +193,48 @@ function anchorOf(when: Condition): string | null {
  * that has none never reaches a trigger, because decide() sends it to the
  * entry stage without evaluating any. Reading it as "unreadable" is what
  * switched all three rules below off on every workflow that exists.
+ *
+ * `{ $eq: null }` is the same claim spelled as an operator, and either form
+ * nested under $and at any depth is still exactly that claim conjoined with
+ * something else — an author writes `{ "run.stage": null, x: 0 }` and
+ * `{ $and: [{ "run.stage": null }, { x: 0 }] }` to mean the same thing, so
+ * both must read the same. Recursing only into $and mirrors
+ * boundsACounter's read of run.counters.*: an $and member can only narrow
+ * what a condition matches, never widen it, so finding the claim under one
+ * member is as good as finding it at the top.
  */
 function isFreshTicketOnly(when: Condition): boolean {
-  return when["run.stage"] === null;
+  const top = when["run.stage"];
+  if (top === null) return true;
+  if (typeof top === "object" && top !== null && !Array.isArray(top) && (top as Record<string, unknown>).$eq === null) {
+    return true;
+  }
+  const and = when.$and;
+  return Array.isArray(and) && and.some((c) => typeof c === "object" && c !== null && isFreshTicketOnly(c as Condition));
+}
+
+/**
+ * True when a condition mentions run.stage anywhere — at the top level, or
+ * nested under $and, $or or $not at any depth.
+ *
+ * This is the line "abstain rather than guess" draws for the entry rule: a
+ * condition that never mentions run.stage at all cannot possibly anchor a
+ * ticket to a position, so refusing it is not a guess. Everything that does
+ * mention it but is not isFreshTicketOnly — $or, $in, $not, $ne, or a form
+ * this file has not been taught — is read here only far enough to know it
+ * exists, never far enough to claim what it means, so the caller abstains
+ * instead of reporting a possibly-wrong finding.
+ */
+function mentionsRunStage(when: Condition): boolean {
+  if ("run.stage" in when) return true;
+  for (const [key, value] of Object.entries(when)) {
+    if ((key === "$and" || key === "$or") && Array.isArray(value)) {
+      if (value.some((c) => typeof c === "object" && c !== null && mentionsRunStage(c as Condition))) return true;
+    } else if (key === "$not" && typeof value === "object" && value !== null) {
+      if (mentionsRunStage(value as Condition)) return true;
+    }
+  }
+  return false;
 }
 
 /**
