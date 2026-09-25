@@ -674,9 +674,9 @@ function ticketRowFor(row, depth, now, open) {
 // A pull request, a document — anything that is not a ticket — as one line:
 // its system's mark, its title, and ↗ at the far edge, the whole line one link
 // that opens in a new tab. The mark already tells a pull request from a
-// published page and the title tells two of them apart; the system's name,
-// the kind and the summary beside them only crowded the title out, so the
-// name and kind live in the mark's tooltip and the link's accessible name.
+// published page and the title tells two of them apart; the system's name and
+// the kind beside them only crowded the title out, so they live in the mark's
+// tooltip and the link's accessible name.
 // No link, no anchor: a row that goes nowhere must not look like it does.
 function artifactRowFor(row, depth, open) {
   const li = treeItem(row, depth, "flex items-center gap-2 py-1 pr-4 text-sm", open);

@@ -1,6 +1,6 @@
 import type { Graph, Held, Node, Relationship, Running, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
-import { boardView, createBoard, laneOf, summaryOf } from "#ui/board.js";
+import { boardView, createBoard, laneOf } from "#ui/board.js";
 
 const workflow: Workflow = {
   version: 1, name: "t",
@@ -214,10 +214,10 @@ describe("boardView: rows", () => {
     expect(row?.chat).toEqual(chatFor("7", "/repo/landrace"));
   });
 
-  it("gives an artifact row no badge and no chat, a summary, and its system", () => {
+  it("gives an artifact row no badge and no chat, and its system", () => {
     const g = graph([ticket("1"), pr("pr-9", { state: { merged: false, openThreads: 2 } })], [edge("pr-9", "1", "implements")]);
     const row = view(g).rows[0]?.children[0];
-    expect(row).toMatchObject({ kind: "pull-request", badge: null, chat: null, summary: "open · openThreads 2" });
+    expect(row).toMatchObject({ kind: "pull-request", badge: null, chat: null });
     expect(row?.system?.name).toBe("GitHub");
   });
 
@@ -238,7 +238,7 @@ describe("boardView: rows", () => {
     expect(shape(rows)).toEqual([["19", ["spec-19"]]]);
     expect(rows[0]?.children[0]).toMatchObject({
       id: "spec-19", kind: "document", title: "Spec", link: "https://acme.github.io/widgets/specs/19/",
-      system: { name: "GitHub Pages" }, badge: null, chat: null, lane: null, summary: "open",
+      system: { name: "GitHub Pages" }, badge: null, chat: null, lane: null,
     });
     // Not work: the ticket's own badge decides its lane.
     expect(rows[0]).toMatchObject({ badge: "waiting", lane: "waiting" });
@@ -259,7 +259,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "closed", "id", "kind", "lane", "link", "model", "note", "priority",
-      "round", "since", "stage", "summary", "system", "title",
+      "round", "since", "stage", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
@@ -287,18 +287,6 @@ describe("boardView: rows", () => {
   it("passes nextTickAt, folder and workspace straight through", () => {
     const v = view(graph([]), { nextTickAt: 12345, folder: "widgets", workspace: "/w" });
     expect(v).toMatchObject({ nextTickAt: 12345, folder: "widgets", workspace: "/w", rows: [] });
-  });
-});
-
-describe("summaryOf", () => {
-  it("says open/done/dropped, then true flags and non-zero counts, in key order", () => {
-    expect(summaryOf(pr("p", { closed: "done", state: { merged: true, openThreads: 0 } }))).toBe("done · merged");
-    expect(summaryOf(pr("p", { state: { b: true, a: 3, s: "text", z: false } }))).toBe("open · a 3 · b");
-    expect(summaryOf(pr("p", { closed: "dropped", state: {} }))).toBe("dropped");
-  });
-
-  it("keeps it to a one-liner however much state there is", () => {
-    expect(summaryOf(pr("p", { state: { a: 1, b: 2, c: 3, d: 4, e: 5, f: true } }))).toBe("open · a 1 · b 2 · c 3 · d 4");
   });
 });
 

@@ -482,7 +482,7 @@ describe("a row's title line", () => {
 
 describe("an artifact row", () => {
   interface Artifact extends Tree {
-    kind: string; link: string; closed: null; summary: string;
+    kind: string; link: string; closed: null;
     system: { name: string; icon: { bg: string; glyph: string } | null } | null;
   }
   const build = (row: Artifact, depth = 1): FakeElement => runInNewContext(`
@@ -491,16 +491,16 @@ describe("an artifact row", () => {
     artifactRowFor(ROW, ${depth}, ROW.children.length > 0)`, { ROW: row, document: fakeDocument }) as FakeElement;
   const spec: Artifact = {
     id: "spec-19", kind: "document", title: "Spec: Payments revamp", link: "https://acme.github.io/widgets/specs/19/",
-    system: { name: "GitHub Pages", icon: { bg: "#24292f", glyph: "GH" } }, closed: null, summary: "open", children: [],
+    system: { name: "GitHub Pages", icon: { bg: "#24292f", glyph: "GH" } }, closed: null, children: [],
   };
   const pr: Artifact = {
     ...spec, id: "pr:118", kind: "pull-request", title: "API endpoints for payments", link: "https://github.com/a/b/pull/118",
-    system: { name: "GitHub", icon: { bg: "#24292f", glyph: "GH" } }, summary: "open · openThreads 2",
+    system: { name: "GitHub", icon: { bg: "#24292f", glyph: "GH" } },
   };
   const texts = (e: FakeElement): string[] => descendants(e).map((d) => d.text).filter(Boolean);
   const link = (li: FakeElement): FakeElement | undefined => descendants(li).find((d) => d.tag === "a");
 
-  it("shows only the system's mark, the title, and ↗ — no system name, kind or summary on the line", () => {
+  it("shows only the system's mark, the title, and ↗ — no system name or kind on the line", () => {
     expect(texts(build(spec))).toEqual(["GH", "Spec: Payments revamp", "↗"]);
     expect(texts(build(pr))).toEqual(["GH", "API endpoints for payments", "↗"]);
   });

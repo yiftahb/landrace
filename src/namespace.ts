@@ -1170,8 +1170,6 @@ export interface BoardRow {
   stage: string | null;
   priority: number | null;
   closed: Closed;
-  /** A one-line summary of the node's scalar state — `open · openThreads 2`. */
-  summary: string;
   note: string;
   /** When the current state began, if this process knows. Epoch ms. */
   since: number | null;

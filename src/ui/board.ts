@@ -21,25 +21,6 @@ export function laneOf(row: StatusRow, workflow: Workflow): Lane {
 
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 
-/** How many facts a summary carries after open/done/dropped — a one-liner, not a report. */
-const SUMMARY_FACTS = 4;
-
-/**
- * A node's scalar state as one line: open/done/dropped, then each flag that is
- * true and each count that is not zero, in key order so the same node always
- * reads the same. Strings are left out on purpose — they are whatever a remote
- * system called something, and a summary is not the place to print it.
- */
-export function summaryOf(node: Node): string {
-  const facts: string[] = [];
-  for (const key of Object.keys(node.state).sort()) {
-    const value = node.state[key];
-    if (value === true) facts.push(key);
-    else if (typeof value === "number" && Number.isFinite(value) && value !== 0) facts.push(`${key} ${value}`);
-  }
-  return oneLine([node.closed ?? "open", ...facts.slice(0, SUMMARY_FACTS)].join(" · "));
-}
-
 /** Most urgent first — the order a branch's lane cascades in. */
 const URGENCY: readonly Lane[] = ["needs-you", "running", "elsewhere", "waiting", "not-admitted", "discharged"];
 
@@ -103,7 +84,7 @@ export function boardView(input: {
       id: node.id, kind: node.kind, title: oneLine(node.title), link,
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
-      summary: summaryOf(node), note: "", since: null, round: null, model: null,
+      note: "", since: null, round: null, model: null,
       chat: null, children: [],
     };
     const s = status.get(node.id);
