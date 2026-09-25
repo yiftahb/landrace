@@ -66,11 +66,22 @@ describe("the filter row", () => {
     expect(PAGE_HTML).toMatch(/<button id="collapse-all" type="button" class="[^"]*">Collapse all<\/button>/);
     expect(PAGE_HTML).toMatch(/<button id="expand-all" type="button" class="[^"]*">Expand all<\/button>/);
   });
+
+  // A live region toggled in and out of display is not reliably announced;
+  // one that stays put and changes its text is.
+  it("says nothing matched through a polite status region that stays in place and changes its text", () => {
+    const status = /<p id="no-match"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(status).toMatch(/role="status"/);
+    expect(status).toMatch(/aria-live="polite"/);
+    expect(status).toMatch(/empty:hidden/);
+    expect(status).not.toMatch(/\shidden[\s>]/);
+    expect(APP_JS).not.toContain('getElementById("no-match").hidden');
+  });
 });
 
 describe("the page's search", () => {
   const searchOf = (rows: Tree[], q: string): Search =>
-    (runInNewContext(`${fnSource("matches")}${fnSource("searchOf")}searchOf`) as (rows: Tree[], q: string) => Search)(rows, q);
+    (runInNewContext(`${fnSource("normalise")}${fnSource("matches")}${fnSource("searchOf")}searchOf`) as (rows: Tree[], q: string) => Search)(rows, q);
   const found = (q: string) => {
     const s = searchOf(TREE, q);
     return s && { self: [...s.self].sort(), below: [...s.below].sort() };
@@ -201,7 +212,56 @@ describe("a collapsible lane under a search", () => {
 
   it("wires each collapsible lane's summary to chooseLane, and forgets mid-search toggles when the query changes", () => {
     expect(APP_JS).toMatch(/querySelector\("summary"\)\.addEventListener\("click", \(\) => chooseLane\(lane\)\)/);
-    expect(APP_JS).toMatch(/searchBox\.addEventListener\("input", \(\) => \{[^}]*touchedLanes\.clear\(\)/);
+    expect(APP_JS).toMatch(/searchBox\.addEventListener\("input", \(\) => \{ onQuery\(searchBox\.value\);/);
+  });
+});
+
+describe("a change of query", () => {
+  it("forgets mid-search clicks only when the query itself changes, not on a keystroke that leaves it the same", () => {
+    const run = runInNewContext(`
+      const touched = new Set(["12"]);
+      const touchedLanes = new Set(["discharged"]);
+      let lastQuery = "";
+      ${fnSource("normalise")}${fnSource("onQuery")}
+      ({ touched, touchedLanes, onQuery })`) as { touched: Set<string>; touchedLanes: Set<string>; onQuery: (v: string) => void };
+    const held = () => [[...run.touched], [...run.touchedLanes]];
+    run.onQuery("api");
+    expect(held()).toEqual([[], []]);
+    run.touched.add("12");
+    run.touchedLanes.add("discharged");
+    run.onQuery("  API ");
+    expect(held()).toEqual([["12"], ["discharged"]]);
+    run.onQuery("api e");
+    expect(held()).toEqual([[], []]);
+  });
+});
+
+describe("the tree walk", () => {
+  // The row builders stubbed to "<depth>:<id>", "+" when drawn open.
+  const walk = (query: string, expanded: Record<string, boolean> = {}): string[] => [...(runInNewContext(`
+    const userExpanded = new Map(${JSON.stringify(Object.entries(expanded))});
+    const touched = new Set();
+    function ticketRowFor(row, depth, now, open) { return depth + ":" + row.id + (open ? "+" : ""); }
+    function artifactRowFor(row, depth, open) { return depth + ":" + row.id + (open ? "+" : ""); }
+    ${["isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows"].map(fnSource).join("")}
+    treeRows(ROWS, 0, new Set(), 0, [], searchOf(ROWS, ${JSON.stringify(query)}), false)`, { ROWS: TREE }) as string[])];
+
+  it("draws every root, and a row's children only while it is open, with no query", () => {
+    expect(walk("")).toEqual(["0:12", "0:40"]);
+    expect(walk("", { 12: true })).toEqual(["0:12+", "1:31", "1:32", "0:40"]);
+  });
+
+  it("holds a match's ancestors open and hides everything that neither matches nor leads to a match", () => {
+    expect(walk("api e")).toEqual(["0:12+", "1:31"]);
+  });
+
+  it("holds the path open even against a stored collapse, without changing it", () => {
+    expect(walk("token", { 40: false })).toEqual(["0:40+", "1:41"]);
+  });
+
+  it("draws a matched row's own subtree whole once it is open, matching or not", () => {
+    expect(walk("api e", { 31: true })).toEqual(["0:12+", "1:31+", "2:pr:118"]);
+    expect(walk("payments", { 12: true })).toEqual(["0:12+", "1:31", "1:32"]);
   });
 });
 
@@ -243,6 +303,19 @@ describe("a row's title line", () => {
 
   it("reserves no toggle-sized gap on a row with nothing to open", () => {
     expect(APP_JS).not.toContain('el("span", "inline-block h-4 w-4 shrink-0")');
+  });
+
+  // The toggle used to sit inside the title line, so a parent row's note
+  // started under the toggle, a column left of its number.
+  it("gives a parent row's toggle its own column, so the number, the note and wrapped chips share one edge", () => {
+    const src = fnSource("ticketRowFor");
+    expect(src).not.toMatch(/top\.append\(toggleFor/);
+    expect(src).toMatch(/if \(row\.children\.length\) main\.append\(toggleFor\(row, open\)\);/);
+    expect(src).toMatch(/body\.append\(top, bottom\);\s*main\.append\(body\);/);
+  });
+
+  it("indents one toggle-and-gap per level, so a child's toggle sits under its parent's number", () => {
+    expect(APP_JS).toContain('const INDENT = ["pl-4", "pl-10", "pl-16", "pl-22", "pl-28"];');
   });
 });
 

@@ -75,7 +75,7 @@ export const PAGE_HTML = `<!doctype html>
 <button id="expand-all" type="button" class="${BUTTON}">Expand all</button>
 </div>
 </div>
-<p id="no-match" class="mb-4 px-1 text-sm italic text-neutral-400 dark:text-neutral-500" hidden>Nothing matches.</p>
+<p id="no-match" role="status" aria-live="polite" class="mb-4 px-1 text-sm italic text-neutral-400 empty:hidden dark:text-neutral-500"></p>
 ${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
 ${lane("running", "Agent running", " border-l-4 border-l-emerald-500 [&_h2]:text-emerald-600 dark:[&_h2]:text-emerald-400 [&_.lane-count]:bg-emerald-100 [&_.lane-count]:text-emerald-700 dark:[&_.lane-count]:bg-emerald-950 dark:[&_.lane-count]:text-emerald-300", RUNNING_DOT)}
 ${lane("elsewhere", "Held elsewhere", " border-l-4 border-l-amber-500 [&_h2]:text-amber-600 dark:[&_h2]:text-amber-400 [&_.lane-count]:bg-amber-100 [&_.lane-count]:text-amber-700 dark:[&_.lane-count]:bg-amber-950 dark:[&_.lane-count]:text-amber-300")}
@@ -384,11 +384,10 @@ const BADGES = {
 };
 
 // Indentation per depth, as whole classes Tailwind can see — capped, so a
-// pathologically deep tree still fits the card. A row with nothing to open
-// reserves no toggle-sized gap, so each step is the toggle and its gap (1.5rem)
-// plus 1rem more: a child's first mark then starts clearly right of its
-// parent's number, rather than level with it and reading as a sibling.
-const INDENT = ["pl-4", "pl-14", "pl-24", "pl-34", "pl-44"];
+// pathologically deep tree still fits the card. Each step is one toggle and
+// its gap (1.5rem): with the toggle in a column of its own, a child's toggle —
+// or a leaf child's number — starts right under its parent's number.
+const INDENT = ["pl-4", "pl-10", "pl-16", "pl-22", "pl-28"];
 const indentOf = (depth) => INDENT[Math.min(depth, INDENT.length - 1)];
 
 // A person's own expand/collapse choices, by node id. Kept across every
@@ -448,11 +447,16 @@ function matches(row, q) {
   return row.title.toLowerCase().includes(q) || ("#" + row.id).toLowerCase().includes(q);
 }
 
+// The query as the search reads it: blank-trimmed, case folded.
+function normalise(query) {
+  return query.trim().toLowerCase();
+}
+
 // Which rows the query matches, and which have a match somewhere beneath
 // them; null when the box is blank. Worked out afresh from the view and the
 // box on every render, so a poll redraws the same search over fresh data.
 function searchOf(rows, query) {
-  const q = query.trim().toLowerCase();
+  const q = normalise(query);
   if (!q) return null;
   const self = new Set();
   const below = new Set();
@@ -491,6 +495,21 @@ function chooseLane(lane) {
 // Whether a search was showing at the last render, so render() can tell a
 // search starting or ending from one carrying on.
 let searching = false;
+
+// The query the last input event left, as the search reads it.
+let lastQuery = "";
+
+// A new query holds its own matches' paths open again — clicks made under the
+// last query were about that query's results. Only a change the search can
+// see counts: a trailing space or a change of case is the same search, and
+// clearing on it would snap back open a row someone just closed.
+function onQuery(value) {
+  const q = normalise(value);
+  if (q === lastQuery) return;
+  lastQuery = q;
+  touched.clear();
+  touchedLanes.clear();
+}
 
 // \`holds\`: a search is on and this lane has a matching branch. When a search
 // starts, the lane's current state is recorded as the person's — however it
@@ -564,10 +583,14 @@ function ticketRowFor(row, depth, now, open) {
   // pushing the stage chip past the edge instead. Neither reliably fits
   // arbitrary ticket titles at 400px, so the breakpoint sidesteps both.
   const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1", open);
-  const main = el("div", "min-w-0 w-full sm:w-auto sm:flex-1");
+  // The toggle, when there is one, is a column of its own beside the body:
+  // inside the title line it pushed the number right but not the note or a
+  // wrapped chip, which then started under the toggle instead of the number.
+  const main = el("div", "flex min-w-0 w-full items-baseline gap-2 sm:w-auto sm:flex-1");
+  if (row.children.length) main.append(toggleFor(row, open));
+  const body = el("div", "min-w-0 flex-1");
 
   const top = el("div", "flex flex-wrap items-baseline gap-x-2 gap-y-1");
-  if (row.children.length) top.append(toggleFor(row, open));
   const num = el("span", "num shrink-0 font-mono text-sm text-blue-600 dark:text-blue-400");
   if (row.link) num.append(external(el("a", null, "#" + row.id + " ↗"), row));
   else num.textContent = "#" + row.id;
@@ -606,7 +629,8 @@ function ticketRowFor(row, depth, now, open) {
     bottom.append(el("span", "clock font-mono tabular-nums", elapsed(row.since, now)));
   }
 
-  main.append(top, bottom);
+  body.append(top, bottom);
+  main.append(body);
   li.append(main);
   if (row.chat) li.append(actionFor(row));
   return li;
@@ -674,9 +698,7 @@ let lastView = null;
 // focus and caret survive each poll untouched, and render() reads the query
 // back out of it every time.
 const searchBox = document.getElementById("search");
-// A new query holds its own matches' paths open again — clicks made under the
-// last query were about that query's results.
-searchBox.addEventListener("input", () => { touched.clear(); touchedLanes.clear(); if (lastView) render(lastView); });
+searchBox.addEventListener("input", () => { onQuery(searchBox.value); if (lastView) render(lastView); });
 document.getElementById("collapse-all").addEventListener("click", () => setAll(false));
 document.getElementById("expand-all").addEventListener("click", () => setAll(true));
 for (const lane of document.querySelectorAll("details[data-lane]")) {
@@ -719,7 +741,10 @@ function render(view) {
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
   }
-  document.getElementById("no-match").hidden = search === null || matched > 0;
+  // Only on a change: rewriting the same words every poll could re-announce them.
+  const status = document.getElementById("no-match");
+  const said = search !== null && matched === 0 ? "Nothing matches." : "";
+  if (status.textContent !== said) status.textContent = said;
   document.getElementById("folder").textContent = view.folder;
   const listed = view.listedAt === null ? "waiting for the first tick" : "listed " + elapsed(view.listedAt, now) + " ago";
   document.getElementById("meta").textContent = listed;
