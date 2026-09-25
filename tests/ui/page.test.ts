@@ -142,6 +142,94 @@ describe("the page's expand state", () => {
   });
 });
 
+describe("a collapsible lane under a search", () => {
+  interface Details { dataset: { lane: string }; open: boolean }
+  const load = () => runInNewContext(`
+    const laneChoice = new Map();
+    const touchedLanes = new Set();
+    ${fnSource("chooseLane")}${fnSource("syncDetails")}
+    ({ chooseLane, syncDetails })`) as {
+    // A person's click on the summary, before the browser flips `open`.
+    chooseLane: (lane: Details) => void;
+    syncDetails: (lane: Details, holds: boolean, started: boolean, ended: boolean) => void;
+  };
+  const done = (open: boolean): Details => ({ dataset: { lane: "discharged" }, open });
+  const click = (run: ReturnType<typeof load>, lane: Details) => { run.chooseLane(lane); lane.open = !lane.open; };
+
+  it("opens while a search has a match in it, and closes again once the search ends", () => {
+    const run = load();
+    const lane = done(false);
+    run.syncDetails(lane, true, true, false);
+    expect(lane.open).toBe(true);
+    run.syncDetails(lane, true, false, false);
+    expect(lane.open).toBe(true);
+    run.syncDetails(lane, false, false, true);
+    expect(lane.open).toBe(false);
+  });
+
+  it("leaves open a lane the person had open before the search", () => {
+    const run = load();
+    const lane = done(true);
+    run.syncDetails(lane, true, true, false);
+    run.syncDetails(lane, false, false, true);
+    expect(lane.open).toBe(true);
+  });
+
+  it("answers a person's toggle mid-search, and keeps the last state they gave it once the search ends", () => {
+    const run = load();
+    const lane = done(false);
+    run.syncDetails(lane, true, true, false);
+    click(run, lane);
+    run.syncDetails(lane, true, false, false);
+    expect(lane.open).toBe(false);
+    click(run, lane);
+    run.syncDetails(lane, true, false, false);
+    run.syncDetails(lane, false, false, true);
+    expect(lane.open).toBe(true);
+  });
+
+  it("never touches a lane while there is no search", () => {
+    const run = load();
+    const open = done(true);
+    const shut = done(false);
+    click(run, shut);
+    shut.open = false;
+    run.syncDetails(open, false, false, false);
+    run.syncDetails(shut, false, false, false);
+    expect([open.open, shut.open]).toEqual([true, false]);
+  });
+
+  it("wires each collapsible lane's summary to chooseLane, and forgets mid-search toggles when the query changes", () => {
+    expect(APP_JS).toMatch(/querySelector\("summary"\)\.addEventListener\("click", \(\) => chooseLane\(lane\)\)/);
+    expect(APP_JS).toMatch(/searchBox\.addEventListener\("input", \(\) => \{[^}]*touchedLanes\.clear\(\)/);
+  });
+});
+
+describe("a system's mark in dark mode", () => {
+  const faintOnDark = (hex: string): boolean =>
+    (runInNewContext(`${fnSource("luminance")}${fnSource("faintOnDark")}faintOnDark`) as (h: string) => boolean)(hex);
+
+  it("finds the marks too dark to see on the dark card — GitHub, Notion, Cursor, Jira", () => {
+    expect(["#24292f", "#191919", "#18181b", "#0052cc"].map(faintOnDark)).toEqual([true, true, true, true]);
+  });
+
+  it("leaves the marks that already read on it alone", () => {
+    expect(["#fc6d26", "#D97757", "#10a37f", "#4285f4", "#1868db", "#ffffff"].map(faintOnDark))
+      .toEqual([false, false, false, false, false, false]);
+  });
+
+  it("draws every mark — system and chat target alike — on the one square that knows to ring itself", () => {
+    expect(fnSource("systemIcon")).toContain("markSvg(icon.bg)");
+    expect(fnSource("chatIcon")).toContain("markSvg(bg)");
+    expect(fnSource("markSvg")).toMatch(/if \(faintOnDark\(bg\)\) svg\.classList\.add\("dark:ring-1", "dark:ring-neutral-500"\)/);
+  });
+
+  it("ships the ring as dark-only CSS, so switching theme needs no redraw", () => {
+    expect(APP_CSS).toMatch(/\.dark\\:ring-1:where\(\.dark, ?\.dark \*\)/);
+    expect(APP_CSS).toMatch(/\.dark\\:ring-neutral-500:where\(\.dark, ?\.dark \*\)/);
+  });
+});
+
 describe("a row's title line", () => {
   it("names the system only on artifact rows — a ticket row carries no mark and no system name", () => {
     expect(fnSource("ticketRowFor")).not.toContain("systemLabel(");
@@ -255,17 +343,18 @@ describe("the page", () => {
     expect(APP_JS).toContain("Chat ▾");
   });
 
-  it("wires exactly the tick button, the theme toggle, the search box, Collapse all, Expand all, the row expand toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
+  it("wires exactly the tick button, the theme toggle, the search box, Collapse all, Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
     // Pins the count deliberately: the tick button and theme toggle, the
     // search box and the two expand-all buttons (each wired once, outside
-    // anything a render rebuilds), the expand/collapse toggle (defined once,
-    // in toggleFor, not once per row), and for the Chat/… menu one
-    // toggle-button listener, one close-on-choose listener (defined once
+    // anything a render rebuilds), the collapsible lanes' summary clicks
+    // (defined once, in a loop over the two), the expand/collapse toggle
+    // (defined once, in toggleFor, not once per row), and for the Chat/… menu
+    // one toggle-button listener, one close-on-choose listener (defined once
     // inside the per-target loop), one Copy-prompt listener, and one document
     // listener each for outside-click and Escape (both defined once, so
     // re-rendering never multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(11);
+    expect(listeners).toHaveLength(12);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {

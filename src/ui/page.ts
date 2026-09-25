@@ -127,22 +127,48 @@ function elapsed(since, now) {
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-// A small coloured mark per vendor — colour and shape only, not a
-// reproduction of any vendor's logotype, just enough to tell the three
-// deep-link targets apart at a glance, the way the design's small icons do.
-function chatIcon(bg, glyphAttrs) {
+// WCAG relative luminance of "#rrggbb".
+function luminance(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => {
+    const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// Under WCAG's 3:1 for a non-text mark against the dark card: the near-black
+// squares in src/ui/systems.ts vanished there, leaving a floating letter.
+function faintOnDark(hex) {
+  // The dark card, neutral-900 (#171717) — a menu on it too.
+  const card = 0.0086;
+  return (luminance(hex) + 0.05) / (card + 0.05) < 3;
+}
+
+// The coloured rounded square every mark is drawn on. One too dark to see on
+// the dark card gets a light hairline ring in dark mode only — a dark:
+// class, so switching theme needs no redraw and light mode is untouched.
+function markSvg(bg) {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
   svg.setAttribute("width", "14");
   svg.setAttribute("height", "14");
   svg.setAttribute("aria-hidden", "true");
   svg.classList.add("shrink-0", "rounded-sm");
+  if (faintOnDark(bg)) svg.classList.add("dark:ring-1", "dark:ring-neutral-500");
   const rect = document.createElementNS(SVG_NS, "rect");
   rect.setAttribute("width", "16");
   rect.setAttribute("height", "16");
   rect.setAttribute("rx", "4");
   rect.setAttribute("fill", bg);
   svg.append(rect);
+  return svg;
+}
+
+// A small coloured mark per vendor — colour and shape only, not a
+// reproduction of any vendor's logotype, just enough to tell the three
+// deep-link targets apart at a glance, the way the design's small icons do.
+function chatIcon(bg, glyphAttrs) {
+  const svg = markSvg(bg);
   const glyph = document.createElementNS(SVG_NS, "path");
   for (const k in glyphAttrs) glyph.setAttribute(k, glyphAttrs[k]);
   svg.append(glyph);
@@ -153,17 +179,7 @@ function chatIcon(bg, glyphAttrs) {
 // Built from row.system.icon, which the server only ever fills from its own
 // table (src/ui/systems.ts) — colour and letters, never a URL or an image.
 function systemIcon(icon) {
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 16 16");
-  svg.setAttribute("width", "14");
-  svg.setAttribute("height", "14");
-  svg.setAttribute("aria-hidden", "true");
-  svg.classList.add("shrink-0", "rounded-sm");
-  const rect = document.createElementNS(SVG_NS, "rect");
-  rect.setAttribute("width", "16");
-  rect.setAttribute("height", "16");
-  rect.setAttribute("rx", "4");
-  rect.setAttribute("fill", icon.bg);
+  const svg = markSvg(icon.bg);
   const text = document.createElementNS(SVG_NS, "text");
   text.setAttribute("x", "8");
   text.setAttribute("y", "11.5");
@@ -172,7 +188,7 @@ function systemIcon(icon) {
   text.setAttribute("font-weight", "700");
   text.setAttribute("fill", "#fff");
   text.textContent = icon.glyph;
-  svg.append(rect, text);
+  svg.append(text);
   return svg;
 }
 
@@ -456,6 +472,37 @@ function searchOf(rows, query) {
 
 function shows(row, search) { return !search || search.self.has(row.id) || search.below.has(row.id); }
 
+// The open/closed state a person last gave each collapsible lane (Not
+// admitted, Done). A search opens a lane holding a match without writing
+// here, so when the search ends the lane goes back to exactly this.
+const laneChoice = new Map();
+// Collapsible lanes a person toggled since the query last changed: the search
+// stops holding these open, so a click mid-search is answered, not undone by
+// the next poll — the lane twin of \`touched\`.
+const touchedLanes = new Set();
+
+// A click (or Enter/Space) on a lane's summary, which runs before the browser
+// flips \`open\`: the state being given is the opposite of the current one.
+function chooseLane(lane) {
+  laneChoice.set(lane.dataset.lane, !lane.open);
+  touchedLanes.add(lane.dataset.lane);
+}
+
+// Whether a search was showing at the last render, so render() can tell a
+// search starting or ending from one carrying on.
+let searching = false;
+
+// \`holds\`: a search is on and this lane has a matching branch. When a search
+// starts, the lane's current state is recorded as the person's — however it
+// got that way — and it is put back when the search ends. Between searches
+// the lane is never touched, so nothing here fights a person's own toggle.
+function syncDetails(lane, holds, started, ended) {
+  const id = lane.dataset.lane;
+  if (started) laneChoice.set(id, lane.open);
+  if (holds && !touchedLanes.has(id)) lane.open = true;
+  else if (ended && laneChoice.has(id)) lane.open = laneChoice.get(id);
+}
+
 // Keyed like every other control, so render()'s restore-by-key keeps a
 // keyboard user on this link across a poll instead of dropping them to <body>.
 function external(a, row) {
@@ -629,9 +676,12 @@ let lastView = null;
 const searchBox = document.getElementById("search");
 // A new query holds its own matches' paths open again — clicks made under the
 // last query were about that query's results.
-searchBox.addEventListener("input", () => { touched.clear(); if (lastView) render(lastView); });
+searchBox.addEventListener("input", () => { touched.clear(); touchedLanes.clear(); if (lastView) render(lastView); });
 document.getElementById("collapse-all").addEventListener("click", () => setAll(false));
 document.getElementById("expand-all").addEventListener("click", () => setAll(true));
+for (const lane of document.querySelectorAll("details[data-lane]")) {
+  lane.querySelector("summary").addEventListener("click", () => chooseLane(lane));
+}
 
 function render(view) {
   lastView = view;
@@ -647,6 +697,9 @@ function render(view) {
 
   forgetGone(view.rows);
   const search = searchOf(view.rows, searchBox.value);
+  const started = search !== null && !searching;
+  const ended = search === null && searching;
+  searching = search !== null;
   // One seen-set for the whole page: a node is drawn once, in one lane.
   const seen = new Set();
   let matched = 0;
@@ -662,6 +715,8 @@ function render(view) {
     // Without a query every lane stays, saying "None" when empty — a lane that
     // vanished would read as a fault. With one, a lane nothing matched is noise.
     lane.hidden = search !== null && roots.length === 0;
+    // A match inside a closed Not admitted / Done lane would show only as a count.
+    if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
   }
   document.getElementById("no-match").hidden = search === null || matched > 0;
