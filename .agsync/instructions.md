@@ -44,11 +44,24 @@ There is no `on_exit`, and there must not be. Effects are a function of the stat
 
 Every effect needs a `satisfied()` beside its `apply()`, in the same hook. An effect without one gets re-applied on every tick.
 
-### The engine ships no integrations
+### The engine is vendor-agnostic; hooks are the vendor-aware layer, per project
 
-There is no GitHub code in `src/`, and `tests/boundaries.test.ts` fails on the offending file and line. Talking to a tracker, publishing a page, reading a pull request — all of it lives in `.landrace/hooks/*.ts`, written against the `define*` contracts and loaded by path from `workflow.yaml`. The engine's half of the bargain is that it never needs to know which tracker it is driving; that is what makes a workflow portable and a second tracker a file rather than a fork. Shared vocabulary — label names, the marker format, how a record reads back as an entry — lives in `src/conventions.ts`, because a Jira hook would use the same names.
+This is the project's most important boundary. Two layers, and nothing crosses between them except the contracts:
 
-If you are about to import a vendor SDK into `src/`, you are writing a hook.
+- **The engine (`src/`) knows no vendor.** It owns the workflow, the decisions, agent invocation, locks, effect dispatch, the MCP plane and the UI. It defines the *shape* of what it consumes — `Node`, `Relationship`, `Graph`, `Source`, `Operator`, the `define*` hooks — and the shared vocabulary in `src/conventions.ts` (labels, markers, kinds, relationship names), because a Jira hook must use the same names a GitHub one does.
+- **Hooks (`.landrace/hooks/*.ts`) are the integration layer, and they are vendor-aware.** They are defined *per project*, in that project's own `.landrace/`, and loaded by path from its `workflow.yaml`. Everything that talks to a tracker, a forge, a docs site — which issues exist, how a sub-issue or a pull request is read, how a ticket is created, linked or closed, what a close reason or a priority label means — lives there and nowhere else.
+
+The engine asks *what* (give me the graph, create this child under that parent, close these ids); the hook decides *how* for its vendor. A second tracker is a new hook file, never a change to `src/`.
+
+Enforced: `tests/boundaries.test.ts` fails on "github" anywhere under `src/`, naming the file and line. The one deliberate exception is `src/ui/systems.ts`, a display-only table that names the system a link points into; it imports nothing and a test pins that.
+
+If you are about to import a vendor SDK, call a vendor API, or write a vendor's field name into `src/`, you are writing a hook. If a hook seems to need a decision — which stage comes next, whether a step may run — that decision belongs in the engine, expressed as a value the workflow routes on.
+
+Worked example — an agent creating sub-tickets crosses the boundary three times, and each side keeps to its half:
+
+1. **Engine:** a step declaring `tickets:create` gets exactly one MCP tool, `landrace_create_child`, bound by the runner to (parent, stage, round) on the server's argv. The engine validates the input, escapes the body and stamps an origin marker (`src/runner/children.ts`, `src/mcp/server.ts`, `src/agent/claude.ts`).
+2. **Hook:** the project's `Operator.createTicket` does the vendor work — on GitHub, create the issue, link it as a sub-issue, then label it (`.landrace/hooks/github.ts`); the in-memory tracker does the same against a map.
+3. **Engine:** the next tick reads the graph back through `Source.list/read`; the child is a `Node` with an `origin` and a `child-of` edge, and the workflow routes on `rel.*` counts. Re-running the breakdown plans `nodes.close` from the graph in pure core (`src/core/children.ts`); the hook closes the ids its own way and answers `satisfied()`.
 
 A hook is classified by the brand its `define*` helper stamps, never by its shape. Two of anything singular — two sources, two operators, two hooks of a phase under one id — halts at load with both names, like every other ambiguity here.
 
@@ -78,6 +91,7 @@ value flows, what the layers are — goes to `codebase-memory-mcp` first: `searc
 the repository is not indexed yet, run `index_repository` first. Grep, glob and Read
 remain right for prose, config and anything that is not code, and you always Read a
 file before editing it.
+
 ### A broken step output is a hard fail, never a retry
 
 Malformed output halts the ticket with the reason. It is never retried and never treated as "hasn't run yet" — a step whose output was rejected has produced nothing, so without care it looks identical to one that never started, and the engine re-runs it forever. Read validity *before* completeness.
