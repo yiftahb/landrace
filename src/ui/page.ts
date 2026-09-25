@@ -562,11 +562,16 @@ function external(a, row) {
   return a;
 }
 
-function systemLabel(row) {
-  const wrap = el("span", "inline-flex shrink-0 items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400");
-  if (row.system && row.system.icon) wrap.append(systemIcon(row.system.icon));
-  if (row.system) wrap.append(el("span", null, row.system.name));
-  return wrap;
+// The mark with no name beside it: the name is the mark's tooltip and its
+// accessible name instead, so the row reads mark, title, ↗ and still says
+// whose it is to anyone who hovers or listens.
+function systemMark(system) {
+  const mark = el("span", "inline-flex shrink-0");
+  mark.title = system.name;
+  mark.setAttribute("role", "img");
+  mark.setAttribute("aria-label", system.name);
+  mark.append(systemIcon(system.icon));
+  return mark;
 }
 
 function treeItem(row, depth, cls, open) {
@@ -667,23 +672,29 @@ function ticketRowFor(row, depth, now, open) {
 }
 
 // A pull request, a document — anything that is not a ticket — as one line:
-// the whole line is the link, and it opens in a new tab. No link, no anchor:
-// a row that goes nowhere must not look like it does.
+// its system's mark, its title, and ↗ at the far edge, the whole line one link
+// that opens in a new tab. The mark already tells a pull request from a
+// published page and the title tells two of them apart; the system's name,
+// the kind and the summary beside them only crowded the title out, so the
+// name and kind live in the mark's tooltip and the link's accessible name.
+// No link, no anchor: a row that goes nowhere must not look like it does.
 function artifactRowFor(row, depth, open) {
-  const li = treeItem(row, depth, "flex items-center gap-2 py-1.5 pr-4 text-xs", open);
+  const li = treeItem(row, depth, "flex items-center gap-2 py-1 pr-4 text-sm", open);
+  // The padding is the link's own, so the whole band it lights up on hover
+  // is what a click lands on; the negative margin puts the mark back in the
+  // column a ticket's number takes at this depth.
   const line = row.link
-    ? external(el("a", "flex min-w-0 flex-1 items-center gap-2 hover:underline"), row)
-    : el("span", "flex min-w-0 flex-1 items-center gap-2");
-  line.append(
-    systemLabel(row),
-    el("span", "shrink-0 font-mono text-neutral-400", row.kind),
-    el("span", "min-w-0 truncate text-neutral-800 dark:text-neutral-200", row.title),
-    // Not below sm: at phone width a nested artifact's mark, kind and summary
-    // alone outran the card and squeezed the title to nothing. The title is
-    // what tells two pull requests apart; the summary can wait for a wider screen.
-    el("span", "hidden shrink-0 text-neutral-500 dark:text-neutral-400 sm:inline", row.summary),
-  );
-  if (row.link) line.append(el("span", "shrink-0 text-neutral-400", "↗"));
+    ? external(el("a", "-mx-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-neutral-800 dark:focus-visible:outline-blue-400"), row)
+    : el("span", "flex min-w-0 flex-1 items-center gap-2 py-1.5");
+  if (row.system && row.system.icon) line.append(systemMark(row.system));
+  line.append(el("span", "min-w-0 truncate text-neutral-700 dark:text-neutral-300", row.title));
+  if (row.link) {
+    const kind = row.kind.replace(/-/g, " ");
+    line.setAttribute("aria-label", row.title + ", " + kind + (row.system ? " on " + row.system.name : "") + ", opens in a new tab");
+    const arrow = el("span", "ml-auto shrink-0 text-neutral-400 dark:text-neutral-500", "↗");
+    arrow.setAttribute("aria-hidden", "true");
+    line.append(arrow);
+  }
   if (row.children.length) li.append(toggleFor(row, open));
   li.append(line);
   return li;

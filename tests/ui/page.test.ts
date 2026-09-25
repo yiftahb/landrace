@@ -15,6 +15,39 @@ const fnSource = (name: string): string => {
   return APP_JS.slice(start, APP_JS.indexOf("\n}\n", start) + 3);
 };
 
+/** A one-line top-level `const` of the page script, as source. */
+const constSource = (name: string): string => {
+  const start = APP_JS.indexOf(`\nconst ${name} = `);
+  if (start < 0) throw new Error(`APP_JS has no top-level const ${name}`);
+  return APP_JS.slice(start, APP_JS.indexOf("\n", start + 1) + 1);
+};
+
+/**
+ * Just enough of a DOM for one row builder to run against: elements that keep
+ * their classes, attributes, properties, own text and children, so a test can
+ * read back exactly what the page would put on screen.
+ */
+class FakeElement {
+  className = "";
+  text = "";
+  children: FakeElement[] = [];
+  attrs = new Map<string, string>();
+  href?: string; target?: string; rel?: string; title?: string; type?: string;
+  constructor(readonly tag: string) {}
+  readonly classList = { add: (...cls: string[]) => { this.className = [this.className, ...cls].filter(Boolean).join(" "); } };
+  set textContent(v: string) { this.text = v; this.children = []; }
+  get textContent(): string { return this.text + this.children.map((c) => c.textContent).join(""); }
+  setAttribute(k: string, v: string): void { this.attrs.set(k, String(v)); }
+  getAttribute(k: string): string | null { return this.attrs.get(k) ?? null; }
+  append(...nodes: FakeElement[]): void { this.children.push(...nodes); }
+  addEventListener(): void {}
+}
+const fakeDocument = {
+  createElement: (tag: string) => new FakeElement(tag),
+  createElementNS: (_ns: string, tag: string) => new FakeElement(tag),
+};
+const descendants = (e: FakeElement): FakeElement[] => [e, ...e.children.flatMap(descendants)];
+
 interface Tree { id: string; title: string; children: Tree[] }
 type Search = { self: Set<string>; below: Set<string> } | null;
 const node = (id: string, title: string, children: Tree[] = []): Tree => ({ id, title, children });
@@ -420,8 +453,8 @@ describe("a system's mark in dark mode", () => {
 
 describe("a row's title line", () => {
   it("names the system only on artifact rows — a ticket row carries no mark and no system name", () => {
-    expect(fnSource("ticketRowFor")).not.toContain("systemLabel(");
-    expect(fnSource("artifactRowFor")).toContain("systemLabel(row)");
+    expect(fnSource("ticketRowFor")).not.toContain("systemMark(");
+    expect(fnSource("artifactRowFor")).toContain("systemMark(row.system)");
   });
 
   it("shows a ticket's priority only when it has one, never a placeholder", () => {
@@ -444,6 +477,89 @@ describe("a row's title line", () => {
 
   it("indents one toggle-and-gap per level, so a child's toggle sits under its parent's number", () => {
     expect(APP_JS).toContain('const INDENT = ["pl-4", "pl-10", "pl-16", "pl-22", "pl-28"];');
+  });
+});
+
+describe("an artifact row", () => {
+  interface Artifact extends Tree {
+    kind: string; link: string; closed: null; summary: string;
+    system: { name: string; icon: { bg: string; glyph: string } | null } | null;
+  }
+  const build = (row: Artifact, depth = 1): FakeElement => runInNewContext(`
+    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}
+    ${["el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "external", "treeItem", "toggleFor", "artifactRowFor"].map(fnSource).join("")}
+    artifactRowFor(ROW, ${depth}, ROW.children.length > 0)`, { ROW: row, document: fakeDocument }) as FakeElement;
+  const spec: Artifact = {
+    id: "spec-19", kind: "document", title: "Spec: Payments revamp", link: "https://acme.github.io/widgets/specs/19/",
+    system: { name: "GitHub Pages", icon: { bg: "#24292f", glyph: "GH" } }, closed: null, summary: "open", children: [],
+  };
+  const pr: Artifact = {
+    ...spec, id: "pr:118", kind: "pull-request", title: "API endpoints for payments", link: "https://github.com/a/b/pull/118",
+    system: { name: "GitHub", icon: { bg: "#24292f", glyph: "GH" } }, summary: "open · openThreads 2",
+  };
+  const texts = (e: FakeElement): string[] => descendants(e).map((d) => d.text).filter(Boolean);
+  const link = (li: FakeElement): FakeElement | undefined => descendants(li).find((d) => d.tag === "a");
+
+  it("shows only the system's mark, the title, and ↗ — no system name, kind or summary on the line", () => {
+    expect(texts(build(spec))).toEqual(["GH", "Spec: Payments revamp", "↗"]);
+    expect(texts(build(pr))).toEqual(["GH", "API endpoints for payments", "↗"]);
+  });
+
+  it("keeps the system's name on the mark, as its tooltip and its accessible name", () => {
+    const mark = descendants(build(spec)).find((d) => d.getAttribute("role") === "img");
+    expect(mark?.title).toBe("GitHub Pages");
+    expect(mark?.getAttribute("aria-label")).toBe("GitHub Pages");
+    expect(mark?.children[0]?.tag).toBe("svg");
+  });
+
+  it("is one link to the row's own url, opening in a new tab, keyed so focus survives a poll", () => {
+    const a = link(build(spec));
+    expect(a).toMatchObject({ href: spec.link, target: "_blank", rel: "noopener noreferrer" });
+    expect(a?.getAttribute("data-key")).toBe("spec-19:link");
+    expect(descendants(build(spec)).filter((d) => d.tag === "a")).toHaveLength(1);
+  });
+
+  it("names the link for a screen reader by its title, its kind and its system", () => {
+    expect(link(build(spec))?.getAttribute("aria-label")).toBe("Spec: Payments revamp, document on GitHub Pages, opens in a new tab");
+    expect(link(build(pr))?.getAttribute("aria-label")).toBe("API endpoints for payments, pull request on GitHub, opens in a new tab");
+  });
+
+  it("puts the mark first and ↗ last, pushed to the row's far edge and hidden from a screen reader", () => {
+    const a = link(build(spec));
+    expect(a?.children[0]?.getAttribute("role")).toBe("img");
+    const arrow = a?.children.at(-1);
+    expect(arrow?.text).toBe("↗");
+    expect(arrow?.getAttribute("aria-hidden")).toBe("true");
+    expect(arrow?.className.split(" ")).toContain("ml-auto");
+  });
+
+  it("is never underlined on hover, and shows a hover background and a keyboard focus ring instead", () => {
+    const classes = descendants(build(spec)).flatMap((d) => d.className.split(" "));
+    expect(classes.filter((c) => c.includes("underline"))).toEqual([]);
+    const own = link(build(spec))?.className.split(" ") ?? [];
+    expect(own).toEqual(expect.arrayContaining(["hover:bg-neutral-100", "dark:hover:bg-neutral-800", "focus-visible:outline-2"]));
+  });
+
+  it("draws a row with nothing to open as plain text — no anchor, no ↗", () => {
+    const li = build({ ...spec, link: "", system: null });
+    expect(link(li)).toBeUndefined();
+    expect(texts(li)).toEqual(["Spec: Payments revamp"]);
+  });
+
+  it("draws no mark for a system it has none for, rather than printing the host", () => {
+    const li = build({ ...spec, link: "https://wiki.acme.internal/p/1", system: { name: "wiki.acme.internal", icon: null } });
+    expect(texts(li)).toEqual(["Spec: Payments revamp", "↗"]);
+    expect(link(li)?.getAttribute("aria-label")).toBe("Spec: Payments revamp, document on wiki.acme.internal, opens in a new tab");
+  });
+
+  // Same column as a ticket's number at this depth: the toggle is a column of
+  // its own, and the mark opens the line after it.
+  it("keeps the toggle in its own column ahead of the link, so the mark lines up with a ticket's number", () => {
+    const leaf = build(spec, 2);
+    expect(leaf.className.split(" ")).toContain("pl-16");
+    expect(leaf.children.map((c) => c.tag)).toEqual(["a"]);
+    const parent = build({ ...pr, children: [spec] }, 2);
+    expect(parent.children.map((c) => [c.tag, c.getAttribute("data-key")])).toEqual([["button", "pr:118:toggle"], ["a", "pr:118:link"]]);
   });
 });
 
