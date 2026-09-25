@@ -1,4 +1,162 @@
+import { runInNewContext } from "node:vm";
 import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
+
+/**
+ * One top-level function of the page script, as source. The page has no
+ * build step and this suite no DOM, so the script's pure parts are run for
+ * real in a bare context rather than asserted on as text.
+ */
+const fnSource = (name: string): string => {
+  const start = APP_JS.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`APP_JS has no top-level function ${name}`);
+  const line = APP_JS.slice(start, APP_JS.indexOf("\n", start + 1) + 1);
+  // A one-liner ends on its own line; anything else at the first column-0 brace.
+  if (line.trimEnd().endsWith("}")) return line;
+  return APP_JS.slice(start, APP_JS.indexOf("\n}\n", start) + 3);
+};
+
+interface Tree { id: string; title: string; expanded?: boolean; children: Tree[] }
+type Search = { self: Set<string>; below: Set<string> } | null;
+const node = (id: string, title: string, children: Tree[] = []): Tree => ({ id, title, children });
+const TREE = [
+  node("12", "Payments revamp", [node("31", "API endpoints", [node("pr:118", "PR #118 API")]), node("32", "UI wiring")]),
+  node("40", "Rate limiter", [node("41", "Token bucket")]),
+];
+
+describe("the page's lanes", () => {
+  it("draws the six lanes in order, the last two collapsible", () => {
+    const lanes = [...PAGE_HTML.matchAll(/<(section|details) data-lane="([^"]+)"[\s\S]*?<h2[^>]*>([^<]+)<\/h2>/g)]
+      .map((m) => [m[2], m[3], m[1]]);
+    expect(lanes).toEqual([
+      ["needs-you", "Needs you", "section"], ["running", "Agent running", "section"],
+      ["elsewhere", "Held elsewhere", "section"], ["waiting", "Waiting", "section"],
+      ["not-admitted", "Not admitted", "details"], ["discharged", "Done", "details"],
+    ]);
+  });
+
+  // The Chat menu is absolutely positioned inside a row; a clipping card cut
+  // it off on the last row.
+  it("never clips a lane card, so a row's menu can overflow it", () => {
+    const cards = PAGE_HTML.match(/<(section|details) data-lane="[^"]+" class="[^"]*"/g) ?? [];
+    expect(cards).toHaveLength(6);
+    for (const card of cards) expect(card).not.toContain("overflow-hidden");
+  });
+
+  it("gives each lane its own labelled tree and a count", () => {
+    expect(PAGE_HTML.match(/<ul role="tree" aria-label="[^"]+"/g)).toHaveLength(6);
+    expect(PAGE_HTML.match(/class="lane-count /g)).toHaveLength(6);
+  });
+});
+
+describe("the filter row", () => {
+  const input = /<input id="search" type="search"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
+
+  it("sits between the header and the lanes, outside anything a poll redraws", () => {
+    const at = PAGE_HTML.indexOf('id="search"');
+    expect(at).toBeGreaterThan(PAGE_HTML.indexOf("</header>"));
+    expect(at).toBeLessThan(PAGE_HTML.indexOf("data-lane="));
+  });
+
+  it("has a search box with an accessible name", () => {
+    expect(input).toMatch(/aria-label="Search tickets"/);
+    expect(input).toMatch(/placeholder="Search tickets…"/);
+  });
+
+  it("has Collapse all and Expand all buttons", () => {
+    expect(PAGE_HTML).toMatch(/<button id="collapse-all" type="button" class="[^"]*">Collapse all<\/button>/);
+    expect(PAGE_HTML).toMatch(/<button id="expand-all" type="button" class="[^"]*">Expand all<\/button>/);
+  });
+});
+
+describe("the page's search", () => {
+  const searchOf = (rows: Tree[], q: string): Search =>
+    (runInNewContext(`${fnSource("matches")}${fnSource("searchOf")}searchOf`) as (rows: Tree[], q: string) => Search)(rows, q);
+  const found = (q: string) => {
+    const s = searchOf(TREE, q);
+    return s && { self: [...s.self].sort(), below: [...s.below].sort() };
+  };
+
+  it("is off while the box is empty or blank", () => {
+    expect(searchOf(TREE, "")).toBeNull();
+    expect(searchOf(TREE, "   ")).toBeNull();
+  });
+
+  it("matches titles ignoring case, and marks every ancestor of a match", () => {
+    expect(found("  aPi E")).toEqual({ self: ["31"], below: ["12"] });
+  });
+
+  it("matches an id, with or without its #, and artifacts as well as tickets", () => {
+    expect(found("#41")).toEqual({ self: ["41"], below: ["40"] });
+    expect(found("41")).toEqual({ self: ["41"], below: ["40"] });
+    expect(found("pr:118")).toEqual({ self: ["pr:118"], below: ["12", "31"] });
+  });
+
+  it("finds nothing for a query nothing matches", () => {
+    expect(found("zzz")).toEqual({ self: [], below: [] });
+  });
+});
+
+describe("the page's expand state", () => {
+  it("holds a match's ancestors open during a search without storing it as anyone's choice", () => {
+    const run = runInNewContext(`
+      const userExpanded = new Map([["12", false]]);
+      const touched = new Set();
+      ${fnSource("isOpen")}${fnSource("openOf")}
+      ({ userExpanded, touched, openOf })`) as {
+      userExpanded: Map<string, boolean>; touched: Set<string>; openOf: (row: Tree, search: Search) => boolean;
+    };
+    const row = { ...node("12", "Payments revamp"), expanded: false };
+    const search = { self: new Set(["31"]), below: new Set(["12"]) };
+    expect(run.openOf(row, search)).toBe(true);
+    expect(run.userExpanded.get("12")).toBe(false);
+    // Off the search, the stored choice is back.
+    expect(run.openOf(row, null)).toBe(false);
+    // A row clicked mid-search answers the click rather than snapping open.
+    run.touched.add("12");
+    expect(run.openOf(row, search)).toBe(false);
+  });
+
+  it("Collapse all / Expand all store a choice for every row that can open, and redraw at once from the last view", () => {
+    const run = runInNewContext(`
+      const userExpanded = new Map();
+      let lastView = { rows: ${JSON.stringify(TREE)} };
+      let renders = 0;
+      function render(view) { if (view === lastView) renders++; }
+      ${fnSource("setAll")}
+      ({ userExpanded, setAll, renders: () => renders })`) as {
+      userExpanded: Map<string, boolean>; setAll: (open: boolean) => void; renders: () => number;
+    };
+    run.setAll(false);
+    expect([...run.userExpanded].sort()).toEqual([["12", false], ["31", false], ["40", false]]);
+    expect(run.renders()).toBe(1);
+    run.setAll(true);
+    expect([...run.userExpanded].sort()).toEqual([["12", true], ["31", true], ["40", true]]);
+  });
+
+  it("wires the search box and both buttons to a redraw", () => {
+    expect(APP_JS).toMatch(/getElementById\("collapse-all"\)\.addEventListener\("click", \(\) => setAll\(false\)\)/);
+    expect(APP_JS).toMatch(/getElementById\("expand-all"\)\.addEventListener\("click", \(\) => setAll\(true\)\)/);
+    expect(APP_JS).toMatch(/searchBox\.addEventListener\("input"/);
+    // Read from the box on every render, so a poll redraws the same search.
+    expect(APP_JS).toContain("searchOf(view.rows, searchBox.value)");
+  });
+});
+
+describe("a row's title line", () => {
+  it("names the system only on artifact rows — a ticket row carries no mark and no system name", () => {
+    expect(fnSource("ticketRowFor")).not.toContain("systemLabel(");
+    expect(fnSource("artifactRowFor")).toContain("systemLabel(row)");
+  });
+
+  it("shows a ticket's priority only when it has one, never a placeholder", () => {
+    expect(APP_JS).toMatch(/if \(typeof row\.priority === "number"\)/);
+    expect(APP_JS).not.toContain('"–"');
+  });
+
+  it("reserves no toggle-sized gap on a row with nothing to open", () => {
+    expect(APP_JS).not.toContain('el("span", "inline-block h-4 w-4 shrink-0")');
+  });
+});
 
 describe("the page", () => {
   it("loads its script and style from the server, never inline, so CSP can forbid inline", () => {
@@ -7,16 +165,6 @@ describe("the page", () => {
     expect(PAGE_HTML).not.toMatch(/<script>(?!<\/script>)/);
     expect(PAGE_HTML).not.toMatch(/<style/);
     expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
-  });
-
-  // The Chat menu is absolutely positioned inside a row; a clipping card cut
-  // it off on the last row.
-  it("draws one tree card, and never clips it, so a row's menu can overflow the card", () => {
-    const card = /<section id="board" class="[^"]*"/.exec(PAGE_HTML)?.[0] ?? "";
-    expect(card).not.toBe("");
-    expect(card).not.toContain("overflow-hidden");
-    expect(PAGE_HTML).toContain('<ul id="tree" role="tree"');
-    expect(PAGE_HTML).not.toContain("data-lane=");
   });
 
   it("never parses a string as HTML", () => {
@@ -107,15 +255,17 @@ describe("the page", () => {
     expect(APP_JS).toContain("Chat ▾");
   });
 
-  it("wires exactly the tick button, the theme toggle, the row expand toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
+  it("wires exactly the tick button, the theme toggle, the search box, Collapse all, Expand all, the row expand toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
     // Pins the count deliberately: the tick button and theme toggle, the
-    // expand/collapse toggle (defined once, in toggleFor, not once per row),
-    // and for the Chat/… menu one toggle-button listener, one close-on-choose
-    // listener (defined once inside the per-target loop), one Copy-prompt
-    // listener, and one document listener each for outside-click and Escape
-    // (both defined once, so re-rendering never multiplies them).
+    // search box and the two expand-all buttons (each wired once, outside
+    // anything a render rebuilds), the expand/collapse toggle (defined once,
+    // in toggleFor, not once per row), and for the Chat/… menu one
+    // toggle-button listener, one close-on-choose listener (defined once
+    // inside the per-target loop), one Copy-prompt listener, and one document
+    // listener each for outside-click and Escape (both defined once, so
+    // re-rendering never multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(8);
+    expect(listeners).toHaveLength(11);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -230,11 +380,9 @@ describe("the page", () => {
 
   it("redraws a toggle from the last view at once, not after a network round trip that may fail", () => {
     expect(APP_JS).toContain("lastView = view;");
-    expect(APP_JS).toMatch(/userExpanded\.set\(row\.id, !isOpen\(row\)\);\s*render\(lastView\);/);
-  });
-
-  it("shows an unprioritised ticket's priority as –, never as a missing chip", () => {
-    expect(APP_JS).toMatch(/typeof row\.priority === "number" \? "P" \+ row\.priority : "–"/);
+    // `open` is what the row is drawn as — a search may be holding it open —
+    // so a click always flips what the person sees.
+    expect(APP_JS).toMatch(/userExpanded\.set\(row\.id, !open\);\s*touched\.add\(row\.id\);\s*render\(lastView\);/);
   });
 
   it("greys a dropped node", () => {

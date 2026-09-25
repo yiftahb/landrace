@@ -5,6 +5,37 @@
  */
 export { APP_CSS } from "#ui/styles.generated.js";
 
+/**
+ * One <section> lane: a coloured left border, a mono heading, a count badge.
+ * No overflow clipping — a row's Chat menu is absolutely positioned and has to
+ * be free to hang past the card's bottom edge.
+ */
+const lane = (id: string, label: string, accent: string, dot = ""): string => `
+<section data-lane="${id}" class="mb-4 rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900${accent}">
+<div class="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+${dot}<h2 class="font-mono text-xs font-semibold uppercase tracking-wider">${label}</h2>
+<span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-medium">0</span>
+</div>
+<ul role="tree" aria-label="${label}" class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
+</section>`;
+
+/** not-admitted / discharged: same card, collapsible, no colour accent, a rotating chevron. */
+const collapsedLane = (id: string, label: string): string => `
+<details data-lane="${id}" class="group mb-4 rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+<summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 [&::-webkit-details-marker]:hidden">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-3 w-3 shrink-0 text-neutral-400 transition-transform group-open:rotate-90" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+<h2 class="font-mono text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">${label}</h2>
+<span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-neutral-100 px-1.5 py-0.5 text-xs font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">0</span>
+</summary>
+<ul role="tree" aria-label="${label}" class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
+</details>`;
+
+const RUNNING_DOT =
+  '<span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" aria-hidden="true"></span>';
+
+const BUTTON =
+  "rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800";
+
 export const PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -27,7 +58,7 @@ export const PAGE_HTML = `<!doctype html>
 <div class="flex flex-wrap items-center gap-2">
 <div id="schedule" class="flex flex-wrap items-center gap-2">
 <span id="next" class="rounded-full border border-neutral-200 px-3 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">No tick scheduled</span>
-<button id="tick" type="button" class="rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800">Run next tick now</button>
+<button id="tick" type="button" class="${BUTTON}">Run next tick now</button>
 </div>
 <button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
@@ -37,9 +68,20 @@ export const PAGE_HTML = `<!doctype html>
 </div>
 </header>
 <main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
-<section id="board" class="rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-<ul id="tree" role="tree" aria-label="Tickets" class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
-</section>
+<div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
+<input id="search" type="search" placeholder="Search tickets…" aria-label="Search tickets" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
+<div class="flex items-center gap-2">
+<button id="collapse-all" type="button" class="${BUTTON}">Collapse all</button>
+<button id="expand-all" type="button" class="${BUTTON}">Expand all</button>
+</div>
+</div>
+<p id="no-match" class="mb-4 px-1 text-sm italic text-neutral-400 dark:text-neutral-500" hidden>Nothing matches.</p>
+${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
+${lane("running", "Agent running", " border-l-4 border-l-emerald-500 [&_h2]:text-emerald-600 dark:[&_h2]:text-emerald-400 [&_.lane-count]:bg-emerald-100 [&_.lane-count]:text-emerald-700 dark:[&_.lane-count]:bg-emerald-950 dark:[&_.lane-count]:text-emerald-300", RUNNING_DOT)}
+${lane("elsewhere", "Held elsewhere", " border-l-4 border-l-amber-500 [&_h2]:text-amber-600 dark:[&_h2]:text-amber-400 [&_.lane-count]:bg-amber-100 [&_.lane-count]:text-amber-700 dark:[&_.lane-count]:bg-amber-950 dark:[&_.lane-count]:text-amber-300")}
+${lane("waiting", "Waiting", " border-l-4 border-l-neutral-300 dark:border-l-neutral-700 [&_h2]:text-neutral-500 dark:[&_h2]:text-neutral-400 [&_.lane-count]:bg-neutral-100 [&_.lane-count]:text-neutral-600 dark:[&_.lane-count]:bg-neutral-800 dark:[&_.lane-count]:text-neutral-300")}
+${collapsedLane("not-admitted", "Not admitted")}
+${collapsedLane("discharged", "Done")}
 </main>
 </body>
 </html>
@@ -326,8 +368,11 @@ const BADGES = {
 };
 
 // Indentation per depth, as whole classes Tailwind can see — capped, so a
-// pathologically deep tree still fits the card.
-const INDENT = ["pl-4", "pl-10", "pl-16", "pl-22", "pl-28"];
+// pathologically deep tree still fits the card. A row with nothing to open
+// reserves no toggle-sized gap, so each step is the toggle and its gap (1.5rem)
+// plus 1rem more: a child's first mark then starts clearly right of its
+// parent's number, rather than level with it and reading as a sibling.
+const INDENT = ["pl-4", "pl-14", "pl-24", "pl-34", "pl-44"];
 const indentOf = (depth) => INDENT[Math.min(depth, INDENT.length - 1)];
 
 // A person's own expand/collapse choices, by node id. Kept across every
@@ -337,6 +382,19 @@ const indentOf = (depth) => INDENT[Math.min(depth, INDENT.length - 1)];
 // from the server's opinion again rather than a choice made about another node.
 const userExpanded = new Map();
 function isOpen(row) { return userExpanded.has(row.id) ? userExpanded.get(row.id) : row.expanded; }
+
+// Rows opened or closed by hand since the query last changed. A search holds
+// the path to each match open without writing to userExpanded — clearing the
+// box brings every stored choice back — but a row someone clicks mid-search
+// must answer the click, not snap back open, so the hold lets go of these.
+const touched = new Set();
+
+// Whether a row is drawn open: held open while a search has a match beneath
+// it, else the person's own choice, else the server's.
+function openOf(row, search) {
+  if (search && search.below.has(row.id) && !touched.has(row.id)) return true;
+  return isOpen(row);
+}
 
 function forgetGone(rows) {
   const present = new Set();
@@ -348,7 +406,55 @@ function forgetGone(rows) {
     stack.push(...row.children);
   }
   for (const id of userExpanded.keys()) if (!present.has(id)) userExpanded.delete(id);
+  for (const id of touched) if (!present.has(id)) touched.delete(id);
 }
+
+// Collapse all / Expand all: stored exactly as a click on each row would be,
+// so the choice outlives every poll and beats the server's \`expanded\`. Not
+// marked touched: a search still holds its matches' paths open, since hiding
+// what someone just searched for is never what "Collapse all" meant.
+function setAll(open) {
+  if (!lastView) return;
+  const seen = new Set();
+  const stack = [...lastView.rows];
+  while (stack.length) {
+    const row = stack.pop();
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    if (row.children.length) userExpanded.set(row.id, open);
+    stack.push(...row.children);
+  }
+  render(lastView);
+}
+
+// Title or id, ignoring case — the id also as "#12", the way every row prints it.
+function matches(row, q) {
+  return row.title.toLowerCase().includes(q) || ("#" + row.id).toLowerCase().includes(q);
+}
+
+// Which rows the query matches, and which have a match somewhere beneath
+// them; null when the box is blank. Worked out afresh from the view and the
+// box on every render, so a poll redraws the same search over fresh data.
+function searchOf(rows, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return null;
+  const self = new Set();
+  const below = new Set();
+  const seen = new Set();
+  const walk = (row) => {
+    if (seen.has(row.id)) return false;
+    seen.add(row.id);
+    let under = false;
+    for (const child of row.children) if (walk(child)) under = true;
+    if (under) below.add(row.id);
+    if (matches(row, q)) self.add(row.id);
+    return under || self.has(row.id);
+  };
+  for (const row of rows) walk(row);
+  return { self, below };
+}
+
+function shows(row, search) { return !search || search.self.has(row.id) || search.below.has(row.id); }
 
 // Keyed like every other control, so render()'s restore-by-key keeps a
 // keyboard user on this link across a poll instead of dropping them to <body>.
@@ -367,24 +473,22 @@ function systemLabel(row) {
   return wrap;
 }
 
-function treeItem(row, depth, cls) {
+function treeItem(row, depth, cls, open) {
   const li = el("li", cls + " " + indentOf(depth) + (row.closed === "dropped" ? " opacity-50" : ""));
   li.setAttribute("role", "treeitem");
   // The tree is drawn flat, one <li> per visible node, so depth is told to
   // assistive tech here rather than by nesting.
   li.setAttribute("aria-level", String(depth + 1));
-  if (row.children.length) li.setAttribute("aria-expanded", isOpen(row) ? "true" : "false");
+  if (row.children.length) li.setAttribute("aria-expanded", open ? "true" : "false");
   return li;
 }
 
 // The ▸/▾ in front of any row with children — ticket or artifact, since a
 // document can sit under a pull request too, and a row nobody can open would
-// hide its children for good. Keyed like the menu, so render()'s
-// restore-by-key keeps a keyboard user's focus on it across the re-render
-// its own click causes.
-function toggleFor(row) {
-  if (!row.children.length) return el("span", "inline-block h-4 w-4 shrink-0");
-  const open = isOpen(row);
+// hide its children for good. A row with no children gets nothing, not a
+// blank of the same size. Keyed like the menu, so render()'s restore-by-key
+// keeps a keyboard user's focus on it across the re-render its own click causes.
+function toggleFor(row, open) {
   const toggle = el("button", "inline-flex h-4 w-4 shrink-0 items-center justify-center text-neutral-400", open ? "▾" : "▸");
   toggle.type = "button";
   toggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -394,11 +498,16 @@ function toggleFor(row) {
   // userExpanded, so there is no second drawing path — and never held on a
   // /board.json round trip that may be slow or fail. The poll it brings
   // forward then catches up whatever the server has changed since.
-  toggle.addEventListener("click", () => { userExpanded.set(row.id, !isOpen(row)); render(lastView); schedulePoll(0); });
+  toggle.addEventListener("click", () => {
+    userExpanded.set(row.id, !open);
+    touched.add(row.id);
+    render(lastView);
+    schedulePoll(0);
+  });
   return toggle;
 }
 
-function ticketRowFor(row, depth, now) {
+function ticketRowFor(row, depth, now, open) {
   // Stacked below the sm breakpoint, side-by-side above it — a breakpoint, not a
   // content-based flex-wrap. flex-wrap's own line-breaking runs on each
   // item's *hypothetical* (content) size: flex-1's 0% basis told the browser
@@ -407,11 +516,11 @@ function ticketRowFor(row, depth, now) {
   // then sized the title/stage row itself off the unwrapped content width,
   // pushing the stage chip past the edge instead. Neither reliably fits
   // arbitrary ticket titles at 400px, so the breakpoint sidesteps both.
-  const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1");
+  const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1", open);
   const main = el("div", "min-w-0 w-full sm:w-auto sm:flex-1");
 
   const top = el("div", "flex flex-wrap items-baseline gap-x-2 gap-y-1");
-  top.append(toggleFor(row));
+  if (row.children.length) top.append(toggleFor(row, open));
   const num = el("span", "num shrink-0 font-mono text-sm text-blue-600 dark:text-blue-400");
   if (row.link) num.append(external(el("a", null, "#" + row.id + " ↗"), row));
   else num.textContent = "#" + row.id;
@@ -433,10 +542,13 @@ function ticketRowFor(row, depth, now) {
     const [label, cls] = BADGES[row.badge];
     top.append(el("span", "badge shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium " + cls, label));
   }
-  // Always a chip, "–" when unset: an unprioritised ticket is a fact worth
-  // seeing, and a missing chip reads as a rendering fault.
-  top.append(el("span", "priority shrink-0 font-mono text-[11px] text-neutral-500 dark:text-neutral-400", typeof row.priority === "number" ? "P" + row.priority : "–"));
-  top.append(systemLabel(row));
+  // A ticket row names no system: its tracker is the whole board's, and the
+  // mark earns its place only on an artifact row, where it tells a pull
+  // request from a document. An unset priority shows nothing rather than a
+  // placeholder chip on every row.
+  if (typeof row.priority === "number") {
+    top.append(el("span", "priority shrink-0 font-mono text-[11px] text-neutral-500 dark:text-neutral-400", "P" + row.priority));
+  }
 
   const bottom = el("div", "mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-neutral-500 dark:text-neutral-400");
   bottom.append(el("span", "note", row.closed === "dropped" ? "dropped" : row.note));
@@ -456,8 +568,8 @@ function ticketRowFor(row, depth, now) {
 // A pull request, a document — anything that is not a ticket — as one line:
 // the whole line is the link, and it opens in a new tab. No link, no anchor:
 // a row that goes nowhere must not look like it does.
-function artifactRowFor(row, depth) {
-  const li = treeItem(row, depth, "flex items-center gap-2 py-1.5 pr-4 text-xs");
+function artifactRowFor(row, depth, open) {
+  const li = treeItem(row, depth, "flex items-center gap-2 py-1.5 pr-4 text-xs", open);
   const line = row.link
     ? external(el("a", "flex min-w-0 flex-1 items-center gap-2 hover:underline"), row)
     : el("span", "flex min-w-0 flex-1 items-center gap-2");
@@ -465,22 +577,31 @@ function artifactRowFor(row, depth) {
     systemLabel(row),
     el("span", "shrink-0 font-mono text-neutral-400", row.kind),
     el("span", "min-w-0 truncate text-neutral-800 dark:text-neutral-200", row.title),
-    el("span", "shrink-0 text-neutral-500 dark:text-neutral-400", row.summary),
+    // Not below sm: at phone width a nested artifact's mark, kind and summary
+    // alone outran the card and squeezed the title to nothing. The title is
+    // what tells two pull requests apart; the summary can wait for a wider screen.
+    el("span", "hidden shrink-0 text-neutral-500 dark:text-neutral-400 sm:inline", row.summary),
   );
   if (row.link) line.append(el("span", "shrink-0 text-neutral-400", "↗"));
-  li.append(toggleFor(row), line);
+  if (row.children.length) li.append(toggleFor(row, open));
+  li.append(line);
   return li;
 }
 
 // Depth-first, drawing a row's children only while it is open. \`seen\` is the
 // cycle guard's second half: the server already draws each node once, and
 // this makes sure a board.json that somehow did not still cannot hang the tab.
-function treeRows(rows, depth, seen, now, out) {
+// Under a search, a row is drawn only if it matches, leads to a match, or
+// sits inside a matched row — whose children are drawn whole, so a matched
+// parent opens onto everything beneath it like any other row.
+function treeRows(rows, depth, seen, now, out, search, inMatch) {
   for (const row of rows) {
     if (seen.has(row.id)) continue;
+    if (!inMatch && !shows(row, search)) continue;
     seen.add(row.id);
-    out.push(row.kind === "ticket" ? ticketRowFor(row, depth, now) : artifactRowFor(row, depth));
-    if (row.children.length && isOpen(row)) treeRows(row.children, depth + 1, seen, now, out);
+    const open = row.children.length > 0 && openOf(row, search);
+    out.push(row.kind === "ticket" ? ticketRowFor(row, depth, now, open) : artifactRowFor(row, depth, open));
+    if (open) treeRows(row.children, depth + 1, seen, now, out, search, inMatch || (search !== null && search.self.has(row.id)));
   }
   return out;
 }
@@ -502,6 +623,16 @@ function renderNext() {
 // What the last poll drew, so a toggle can redraw without waiting on the next.
 let lastView = null;
 
+// The box sits outside every lane, so no render ever replaces it: its text,
+// focus and caret survive each poll untouched, and render() reads the query
+// back out of it every time.
+const searchBox = document.getElementById("search");
+// A new query holds its own matches' paths open again — clicks made under the
+// last query were about that query's results.
+searchBox.addEventListener("input", () => { touched.clear(); if (lastView) render(lastView); });
+document.getElementById("collapse-all").addEventListener("click", () => setAll(false));
+document.getElementById("expand-all").addEventListener("click", () => setAll(true));
+
 function render(view) {
   lastView = view;
   const now = Date.now();
@@ -515,10 +646,25 @@ function render(view) {
   const wasOpen = openMenuKey;
 
   forgetGone(view.rows);
-  const items = treeRows(view.rows, 0, new Set(), now, []);
-  document.getElementById("tree").replaceChildren(
-    ...(items.length ? items : [el("li", "px-4 py-6 text-sm italic text-neutral-400 dark:text-neutral-600", "None")]),
-  );
+  const search = searchOf(view.rows, searchBox.value);
+  // One seen-set for the whole page: a node is drawn once, in one lane.
+  const seen = new Set();
+  let matched = 0;
+  for (const lane of document.querySelectorAll("[data-lane]")) {
+    // Whole branches, filed by their root's lane — the server's cascade — and
+    // counted as branches, so a lane's number is how many things to look at.
+    const roots = view.rows.filter((r) => r.lane === lane.dataset.lane && shows(r, search));
+    const items = treeRows(roots, 0, seen, now, [], search, false);
+    lane.querySelector("ul").replaceChildren(
+      ...(items.length ? items : [el("li", "px-4 py-6 text-sm italic text-neutral-400 dark:text-neutral-600", "None")]),
+    );
+    lane.querySelector(".lane-count").textContent = String(roots.length);
+    // Without a query every lane stays, saying "None" when empty — a lane that
+    // vanished would read as a fault. With one, a lane nothing matched is noise.
+    lane.hidden = search !== null && roots.length === 0;
+    matched += roots.length;
+  }
+  document.getElementById("no-match").hidden = search === null || matched > 0;
   document.getElementById("folder").textContent = view.folder;
   const listed = view.listedAt === null ? "waiting for the first tick" : "listed " + elapsed(view.listedAt, now) + " ago";
   document.getElementById("meta").textContent = listed;

@@ -374,9 +374,13 @@ exits; press it twice and it says which lock it left behind for the next run to
 reclaim.
 
 `start` also serves a triage page at `http://127.0.0.1:4545/` — every
-candidate ticket in lanes: needs you, agent running now, held by another
-process (your MCP conversation, another instance), waiting, and collapsed
-not-admitted and discharged. Top right, a countdown to the next scheduled
+candidate ticket, with its sub-tickets and pull requests nested beneath it, in
+lanes: needs you, agent running now, held by another process (your MCP
+conversation, another instance), waiting, and collapsed not-admitted and done.
+A branch sits in the lane of its most urgent ticket, so a sub-ticket that needs
+you lifts its whole branch into "Needs you", opened down to it. A search box
+filters by title or id, and Collapse all / Expand all set every branch at once.
+Top right, a countdown to the next scheduled
 tick and a "Run next tick now" button. It polls every two seconds and costs
 no tracker calls: it shows what the tick already fetched and what the
 process already knows is running. `--ui-port` moves it, `--no-ui` turns it
