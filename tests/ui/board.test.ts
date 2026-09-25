@@ -270,6 +270,29 @@ describe("boardView: rows", () => {
     expect(row?.system?.name).toBe("GitHub");
   });
 
+  /*
+   * Ticket #19 sat at spec-human-review with its spec published and nothing on
+   * the board to open. A source reports the page as a document with a
+   * singular `documents` edge, and that is all the board needs: it nests it
+   * under its ticket as an artifact row, and says where the page lives.
+   */
+  it("nests a published spec under its ticket as a document row, linked to it on GitHub Pages", () => {
+    const spec: Node = {
+      id: "spec-19", kind: "document", title: "Spec", link: "https://acme.github.io/widgets/specs/19/",
+      closed: null, priority: null, origin: null, state: {},
+    };
+    const g = graph([ticket("19"), spec], [edge("spec-19", "19", "documents")]);
+    const rows = view(g, { nest: new Set([...NEST, "documents"]) }).rows;
+
+    expect(shape(rows)).toEqual([["19", ["spec-19"]]]);
+    expect(rows[0]?.children[0]).toMatchObject({
+      id: "spec-19", kind: "document", title: "Spec", link: "https://acme.github.io/widgets/specs/19/",
+      system: { name: "GitHub Pages" }, badge: null, chat: null, lane: null, summary: "open",
+    });
+    // Not work: the ticket's own badge decides its lane, and nothing opens for the page.
+    expect(rows[0]).toMatchObject({ badge: "waiting", lane: "waiting", expanded: false });
+  });
+
   it("drops a link that is not http(s), on artifact rows as on tickets", () => {
     expect(view(graph([pr("pr-9", { link: "javascript:alert(1)" })])).rows[0]).toMatchObject({ link: "", system: null });
     expect(view(graph([ticket("1", { link: "javascript:alert(1)" })])).rows[0]).toMatchObject({ link: "", system: null });

@@ -12,6 +12,9 @@ import type { BoardSystem, SystemMark } from "#namespace.js";
  */
 export const SYSTEMS: Readonly<Record<string, SystemMark>> = {
   "github.com": { name: "GitHub", bg: "#24292f", glyph: "GH" },
+  // A project site, where a published spec lives: GitHub's mark, its own name,
+  // so a row says the page is on Pages rather than in the repository.
+  "*.github.io": { name: "GitHub Pages", bg: "#24292f", glyph: "GH" },
   "gitlab.com": { name: "GitLab", bg: "#fc6d26", glyph: "GL" },
   "bitbucket.org": { name: "Bitbucket", bg: "#2684ff", glyph: "B" },
   "*.atlassian.net": { name: "Jira", bg: "#0052cc", glyph: "J" },
