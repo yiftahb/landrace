@@ -211,6 +211,23 @@ describe("boardView: lanes", () => {
     expect(same).toMatchObject({ lane: "waiting", expanded: false });
   });
 
+  it("opens only the path to what sets the lane — not a side branch that merely outranks its own root", () => {
+    // 1 (waiting) → A (closed) → G (waiting), and 1 → B (blocked).
+    const g = graph([ticket("1"), ticket("A", { closed: "done" }), ticket("G"), ticket("B", {}, blocked)], [
+      edge("A", "1"), edge("G", "A"), edge("B", "1"),
+    ]);
+    const rows = view(g).rows;
+    expect(rows[0]).toMatchObject({ lane: "needs-you", expanded: true });
+    const all = byId(rows);
+    expect([all.get("A")?.expanded, all.get("B")?.expanded, all.get("G")?.expanded]).toEqual([false, false, false]);
+  });
+
+  it("opens nothing beneath a row whose own badge already says the lane, not even a running child", () => {
+    const running = new Map<string, Running>([["3", { stage: "build", round: 1, model: null, since: 5 }]]);
+    const g = graph([ticket("1", {}, blocked), ticket("2", {}, blocked), ticket("3")], [edge("2", "1"), edge("3", "1")]);
+    expect(view(g, { running }).rows[0]).toMatchObject({ lane: "needs-you", badge: "needs-you", expanded: false });
+  });
+
   it("never lets an artifact raise a branch or open its ticket", () => {
     const g = graph([ticket("1", {}, []), pr("pr-9")], [edge("pr-9", "1", "implements")]);
     expect(view(g).rows[0]).toMatchObject({ lane: "not-admitted", expanded: false });

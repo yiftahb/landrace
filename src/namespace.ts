@@ -1100,7 +1100,8 @@ export interface Conversation {
 
 /**
  * Where a ticket stands, drawn as its badge — and, for a whole branch, the
- * lane it is drawn in. Listed most urgent first; that order is the cascade's.
+ * lane it is drawn in. The cascade's order, most urgent first, is `URGENCY`
+ * in src/ui/board.ts; nothing reads it from this union.
  */
 export type Lane = "needs-you" | "running" | "elsewhere" | "waiting" | "not-admitted" | "discharged";
 
@@ -1179,9 +1180,11 @@ export interface BoardRow {
   /** Tickets only. */
   chat: Chat | null;
   /**
-   * True when something beneath this row needs you or is running, or is what
-   * puts the branch in a more urgent lane than this row's own badge: the page
-   * opens it without being asked.
+   * True on each row along the path down to whatever set its branch's lane,
+   * where the row's own badge does not already say that lane: the page opens
+   * it without being asked. Nothing off that path is opened — not a side
+   * branch that outranks its own root, and not a running child beneath a
+   * row that itself needs you.
    */
   expanded: boolean;
   children: BoardRow[];

@@ -48,8 +48,6 @@ const outranks = (a: Lane, b: Lane | null): boolean => b === null || URGENCY.ind
 
 const moreUrgent = (a: Lane | null, b: Lane | null): Lane | null => (a !== null && outranks(a, b) ? a : b);
 
-const wantsAttention = (lane: Lane | null): boolean => lane === "needs-you" || lane === "running";
-
 /**
  * Which node each node nests under, if exactly one. Only edges of a type the
  * source declares singular count, and only to a node that is in the graph —
@@ -163,14 +161,22 @@ export function boardView(input: {
     const kids = [...(children.get(node.id) ?? [])].sort(compareWork)
       .map(build).filter((r): r is BoardRow => r !== null);
     const row = rowOf(node);
-    const lanes = kids.map((k) => below.get(k.id) ?? null);
-    below.set(node.id, lanes.reduce(moreUrgent, row.badge));
-    // Opened for what wants attention, and for whatever files this branch in
-    // a lane its own badge does not explain — a branch under "Held elsewhere"
-    // with nothing visible held reads as a fault.
-    const expanded = lanes.some((l) => l !== null && (wantsAttention(l) || outranks(l, row.badge)));
-    return { ...row, children: kids, expanded };
+    below.set(node.id, kids.map((k) => below.get(k.id) ?? null).reduce(moreUrgent, row.badge));
+    return { ...row, children: kids };
   };
+
+  // Top-down, once the branch's lane is known: a row opens only when its own
+  // badge does not already say the lane and one of its children's subtrees
+  // does — the path to whatever filed the branch there, and nothing else. A
+  // branch under "Held elsewhere" with nothing visible held reads as a fault;
+  // a side branch opened because it outranks its own root is noise. Nothing
+  // off the path can open: the lane is the branch's most urgent badge, so a
+  // subtree that reaches it is on the path by definition.
+  const openPath = (row: BoardRow, lane: Lane): BoardRow => ({
+    ...row,
+    expanded: row.badge !== lane && row.children.some((k) => below.get(k.id) === lane),
+    children: row.children.map((k) => openPath(k, lane)),
+  });
 
   const rows: BoardRow[] = [];
   // Roots first; then whatever a cycle left unreached — every member of a
@@ -181,7 +187,9 @@ export function boardView(input: {
     // A branch with no ticket — a pull request whose ticket is not listed —
     // is still drawn rather than lost, and nothing in it is anyone's to act
     // on: it waits while open and is done once closed.
-    if (row) rows.push({ ...row, lane: below.get(row.id) ?? (row.closed === null ? "waiting" : "discharged") });
+    if (!row) continue;
+    const lane = below.get(row.id) ?? (row.closed === null ? "waiting" : "discharged");
+    rows.push({ ...openPath(row, lane), lane });
   }
 
   return {
