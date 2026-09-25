@@ -62,9 +62,13 @@ describe("the filter row", () => {
     expect(input).toMatch(/placeholder="Search tickets…"/);
   });
 
-  it("has Collapse all and Expand all buttons", () => {
-    expect(PAGE_HTML).toMatch(/<button id="collapse-all" type="button" class="[^"]*">Collapse all<\/button>/);
-    expect(PAGE_HTML).toMatch(/<button id="expand-all" type="button" class="[^"]*">Expand all<\/button>/);
+  // Two buttons side by side, one of which always did nothing: the tree was
+  // already all open, or already all shut.
+  it("has one Collapse all / Expand all button, reading Collapse all over a tree that starts open", () => {
+    const filters = /<div id="filters"[\s\S]*?\n<\/div>\n/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(filters.match(/<button /g)).toHaveLength(1);
+    expect(filters).toMatch(/<button id="toggle-all" type="button" class="[^"]*">Collapse all<\/button>/);
+    expect(PAGE_HTML).not.toMatch(/id="(collapse|expand)-all"/);
   });
 
   // A live region toggled in and out of display is not reliably announced;
@@ -158,12 +162,121 @@ describe("the page's expand state", () => {
     expect([...run.userExpanded].sort()).toEqual([["12", true], ["31", true], ["40", true]]);
   });
 
-  it("wires the search box and both buttons to a redraw", () => {
-    expect(APP_JS).toMatch(/getElementById\("collapse-all"\)\.addEventListener\("click", \(\) => setAll\(false\)\)/);
-    expect(APP_JS).toMatch(/getElementById\("expand-all"\)\.addEventListener\("click", \(\) => setAll\(true\)\)/);
+  it("wires the search box and the one button to a redraw", () => {
+    expect(APP_JS).toContain('const toggleAll = document.getElementById("toggle-all");');
     expect(APP_JS).toMatch(/searchBox\.addEventListener\("input"/);
     // Read from the box on every render, so a poll redraws the same search.
     expect(APP_JS).toContain("searchOf(view.rows, searchBox.value)");
+  });
+});
+
+describe("the one Collapse all / Expand all button", () => {
+  // The click handler as the page wires it, run for real below.
+  const listener = /\ntoggleAll\.addEventListener\("click", .*\n/.exec(APP_JS)?.[0] ?? "";
+  // render()'s tree-and-label half, stubbed down to exactly the calls the
+  // real render() makes (pinned in the last test here); rows drawn as
+  // "<depth>:<id>", "+" when open.
+  const load = (rows: Tree[] = TREE) => runInNewContext(`
+    const userExpanded = new Map();
+    const touched = new Set();
+    let lastView = { rows: ROWS };
+    let query = "";
+    let drawn = [];
+    const toggleAll = { textContent: "Collapse all", clicks: [], addEventListener(type, f) { if (type === "click") this.clicks.push(f); } };
+    let collapsesAll = true;
+    function ticketRowFor(row, depth, now, open) { return depth + ":" + row.id + (open ? "+" : ""); }
+    function artifactRowFor(row, depth, open) { return depth + ":" + row.id + (open ? "+" : ""); }
+    function render(view) {
+      lastView = view;
+      const search = searchOf(view.rows, query);
+      const seen = new Set();
+      drawn = treeRows(view.rows, 0, seen, 0, [], search, false);
+      labelToggleAll(anyOpen(view.rows, seen));
+    }
+    ${["isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows", "anyOpen", "labelToggleAll", "setAll"].map(fnSource).join("")}
+    ${listener}
+    render(lastView);
+    ({
+      label: () => toggleAll.textContent,
+      drawn: () => drawn,
+      stored: () => [...userExpanded].sort(),
+      click: () => { for (const f of toggleAll.clicks) f(); },
+      close: (id) => { userExpanded.set(id, false); touched.add(id); render(lastView); },
+      search: (q) => { query = q; touched.clear(); render(lastView); },
+      listeners: () => toggleAll.clicks.length,
+    })`, { ROWS: rows }) as {
+    label: () => string; drawn: () => string[]; stored: () => [string, boolean][]; click: () => void;
+    close: (id: string) => void; search: (q: string) => void; listeners: () => number;
+  };
+  const ALL_OPEN = ["0:12+", "1:31+", "2:pr:118", "1:32", "0:40+", "1:41"];
+
+  it("reads Collapse all over the tree as it first draws, and collapses every row that can open", () => {
+    const run = load();
+    expect(run.listeners()).toBe(1);
+    expect(run.drawn()).toEqual(ALL_OPEN);
+    expect(run.label()).toBe("Collapse all");
+    run.click();
+    expect(run.drawn()).toEqual(["0:12", "0:40"]);
+    expect(run.stored()).toEqual([["12", false], ["31", false], ["40", false]]);
+    expect(run.label()).toBe("Expand all");
+  });
+
+  it("then reads Expand all, and a second click opens every row again", () => {
+    const run = load();
+    run.click();
+    run.click();
+    expect(run.drawn()).toEqual(ALL_OPEN);
+    expect(run.label()).toBe("Collapse all");
+  });
+
+  it("reads Collapse all while any row on screen is open, and Expand all once none is — hidden rows' state aside", () => {
+    const run = load();
+    run.close("12");
+    expect(run.label()).toBe("Collapse all");
+    run.close("40");
+    // #31 is still open, out of sight under #12: a Collapse all would do nothing you could see.
+    expect(run.drawn()).toEqual(["0:12", "0:40"]);
+    expect(run.label()).toBe("Expand all");
+    run.click();
+    expect(run.drawn()).toEqual(ALL_OPEN);
+  });
+
+  it("counts only the rows a search leaves on screen", () => {
+    const run = load();
+    run.close("40");
+    // #12 and #31 are open, but the search hides them; #40, held open for #41, is shut by choice.
+    run.search("token");
+    expect(run.drawn()).toEqual(["0:40+", "1:41"]);
+    expect(run.label()).toBe("Expand all");
+  });
+
+  // Hiding what someone just searched for is never what Collapse all meant,
+  // so a held path stays open — and the label still answers every click.
+  it("reads a row a search holds open by the person's choice, so every click flips the label", () => {
+    const run = load();
+    run.search("token");
+    expect(run.drawn()).toEqual(["0:40+", "1:41"]);
+    expect(run.label()).toBe("Collapse all");
+    run.click();
+    expect(run.drawn()).toEqual(["0:40+", "1:41"]);
+    expect(run.stored()).toEqual([["12", false], ["31", false], ["40", false]]);
+    expect(run.label()).toBe("Expand all");
+    run.click();
+    expect(run.label()).toBe("Collapse all");
+    run.search("api e");
+    expect(run.drawn()).toEqual(["0:12+", "1:31+", "2:pr:118"]);
+    run.click();
+    expect(run.drawn()).toEqual(["0:12+", "1:31"]);
+    expect(run.label()).toBe("Expand all");
+  });
+
+  it("reads Expand all over a board where nothing can open", () => {
+    expect(load([node("1", "a"), node("2", "b")]).label()).toBe("Expand all");
+  });
+
+  it("is relabelled by the real render(), from the rows it has just drawn", () => {
+    expect(fnSource("render")).toContain("labelToggleAll(anyOpen(view.rows, seen));");
+    expect(listener).toBe('\ntoggleAll.addEventListener("click", () => setAll(!collapsesAll));\n');
   });
 });
 
@@ -431,9 +544,9 @@ describe("the page", () => {
     expect(APP_JS).toContain("Chat ▾");
   });
 
-  it("wires exactly the tick button, the theme toggle, the search box, Collapse all, Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
+  it("wires exactly the tick button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
     // Pins the count deliberately: the tick button and theme toggle, the
-    // search box and the two expand-all buttons (each wired once, outside
+    // search box and the one Collapse all / Expand all button (each wired once, outside
     // anything a render rebuilds), the collapsible lanes' summary clicks
     // (defined once, in a loop over the two), the expand/collapse toggle
     // (defined once, in toggleFor, not once per row), and for the Chat/… menu
@@ -442,7 +555,7 @@ describe("the page", () => {
     // listener each for outside-click and Escape (both defined once, so
     // re-rendering never multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(12);
+    expect(listeners).toHaveLength(11);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {

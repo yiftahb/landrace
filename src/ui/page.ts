@@ -70,10 +70,7 @@ export const PAGE_HTML = `<!doctype html>
 <main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
 <input id="search" type="search" placeholder="Search tickets…" aria-label="Search tickets" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
-<div class="flex items-center gap-2">
-<button id="collapse-all" type="button" class="${BUTTON}">Collapse all</button>
-<button id="expand-all" type="button" class="${BUTTON}">Expand all</button>
-</div>
+<button id="toggle-all" type="button" class="${BUTTON}">Collapse all</button>
 </div>
 <p id="no-match" role="status" aria-live="polite" class="mb-4 px-1 text-sm italic text-neutral-400 empty:hidden dark:text-neutral-500"></p>
 ${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
@@ -444,6 +441,37 @@ function setAll(open) {
   render(lastView);
 }
 
+// What the one Collapse all / Expand all button offers: Collapse all while a
+// drawn row is open by the person's choice, else Expand all. Only \`drawn\`
+// rows count: a row shut by hand keeps its children's state out of sight, and
+// a Collapse all over a screen of shut rows would change nothing anyone could
+// see. A shut Not admitted or Done lane's rows are drawn all the same — it
+// opens natively, with no render to relabel the button. A row a search holds
+// open counts by the person's choice, not by the hold, which setAll leaves be:
+// read by the hold, a held path would keep the button on a Collapse all that
+// no click could ever answer.
+function anyOpen(rows, drawn) {
+  const seen = new Set();
+  const stack = [...rows];
+  while (stack.length) {
+    const row = stack.pop();
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    if (drawn.has(row.id) && row.children.length && isOpen(row)) return true;
+    stack.push(...row.children);
+  }
+  return false;
+}
+
+// The button's text is its accessible name, so a screen reader hears the same
+// offer a sighted person reads. Rewritten only on a change: the same words
+// every poll could be re-announced on a focused button.
+function labelToggleAll(open) {
+  collapsesAll = open;
+  const text = open ? "Collapse all" : "Expand all";
+  if (toggleAll.textContent !== text) toggleAll.textContent = text;
+}
+
 // Title or id, ignoring case — the id also as "#12", the way every row prints it.
 function matches(row, q) {
   return row.title.toLowerCase().includes(q) || ("#" + row.id).toLowerCase().includes(q);
@@ -701,8 +729,12 @@ let lastView = null;
 // back out of it every time.
 const searchBox = document.getElementById("search");
 searchBox.addEventListener("input", () => { onQuery(searchBox.value); if (lastView) render(lastView); });
-document.getElementById("collapse-all").addEventListener("click", () => setAll(false));
-document.getElementById("expand-all").addEventListener("click", () => setAll(true));
+// Outside every lane like the box, so a poll never replaces it and a keyboard
+// user on it stays there. \`collapsesAll\` is what a click does right now,
+// kept in step with the label by labelToggleAll.
+const toggleAll = document.getElementById("toggle-all");
+let collapsesAll = true;
+toggleAll.addEventListener("click", () => setAll(!collapsesAll));
 for (const lane of document.querySelectorAll("details[data-lane]")) {
   lane.querySelector("summary").addEventListener("click", () => chooseLane(lane));
 }
@@ -743,6 +775,8 @@ function render(view) {
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
   }
+  // \`seen\` now holds every row just drawn, in every lane.
+  labelToggleAll(anyOpen(view.rows, seen));
   // Only on a change: rewriting the same words every poll could re-announce them.
   const status = document.getElementById("no-match");
   const said = search !== null && matched === 0 ? "Nothing matches." : "";
