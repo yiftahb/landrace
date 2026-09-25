@@ -1156,22 +1156,35 @@ async function countOpenThreads(gh: Client, repo: string, number: number): Promi
 
 /**
  * Which tickets have a spec page, from one listing of the whole Pages branch
- * rather than a read per ticket — or none at all, said in the log, when
- * GitHub cut that listing short. Some of the pages would be a set known to be
- * short: the board would show a spec on one ticket and quietly none on the
- * next, which reads as "not published". Nothing a tick decides from reads
- * these — `read` carries its own — so an empty set costs the board its rows,
- * never a decision, and is no reason to fail the tick.
+ * rather than a read per ticket — or none at all, said in the log, when that
+ * listing could not be had whole.
+ *
+ * Display only, so nothing about it may fail the tick: nothing a tick decides
+ * from reads these — `read` carries its own — and a `list` that throws stalls
+ * every ticket's work for the sake of a board row. A 5xx, an empty
+ * repository's 409, a dropped connection and a body that is not a tree all
+ * cost this tick its documents and a log line saying why; a missing branch is
+ * simply no pages yet, and says nothing.
+ *
+ * And none rather than some when GitHub cut the listing short: part of the
+ * pages is a set known to be short, and the board would show a spec on one
+ * ticket and quietly none on the next, which reads as "not published".
  */
 async function publishedSpecs(gh: Client, ctx: RuntimeContext): Promise<Set<string>> {
-  const listing = await gh.listFiles(PAGES_BRANCH);
+  const skipped = (reason: string): Set<string> => {
+    ctx.log("github.documents.skipped", { branch: PAGES_BRANCH, reason });
+    return new Set();
+  };
+  let listing: Awaited<ReturnType<Client["listFiles"]>>;
+  try {
+    listing = await gh.listFiles(PAGES_BRANCH);
+  } catch (e) {
+    return skipped(`the listing of ${PAGES_BRANCH} failed, so no spec page is reported this tick: ${
+      e instanceof Error ? e.message : String(e)}`);
+  }
   if (listing === null) return new Set();
   if (listing.truncated) {
-    ctx.log("github.documents.skipped", {
-      branch: PAGES_BRANCH,
-      reason: `GitHub truncated its listing of ${PAGES_BRANCH}, so no spec page is reported this tick rather than some of them`,
-    });
-    return new Set();
+    return skipped(`GitHub truncated its listing of ${PAGES_BRANCH}, so no spec page is reported this tick rather than some of them`);
   }
   return new Set(listing.paths.flatMap((path) => ticketOfPage(path) ?? []));
 }

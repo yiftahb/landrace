@@ -704,11 +704,58 @@ describe("a published spec page is a document node", () => {
     expect(events.filter((e) => e.event === "github.documents.skipped")).toEqual([]);
   });
 
-  it("reports a failed tree read rather than reading it as no pages", async () => {
+  /*
+   * The listing is display only, and a list() that throws stalls every
+   * ticket's work for the sake of a board row. So a tree read that fails for
+   * any reason but "no branch" costs this tick its documents, says why, and
+   * nothing else — the tickets and pull requests are listed as ever.
+   */
+  it.each([
+    [500, "a server error"],
+    [409, "an empty repository"],
+  ])("lists without documents when the tree read answers %i (%s), logs why, and does not fail the tick", async (status) => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.seedFile("specs/1/index.md", "one");
-    gh.breakOn((r) => r.path.startsWith("/git/trees/"), 502);
-    await expect(sourceOf(gh).list(ctx(gh))).rejects.toThrow(/502/);
+    gh.openPull({ number: 10, head: "landrace/1", threads: [] });
+    gh.breakOn((r) => r.path.startsWith("/git/trees/"), status);
+    const { events, logged } = logging(gh);
+
+    const g = await sourceOf(gh).list(logged);
+
+    expect(documents(g)).toEqual([]);
+    expect(g.nodes.map((n) => n.id)).toEqual(["1", "pr-10"]);
+    expect(graphProblem(g, sourceOf(gh).relations)).toBeNull();
+    expect(events).toContainEqual({
+      event: "github.documents.skipped",
+      data: expect.objectContaining({ reason: expect.stringContaining(String(status)) }),
+    });
+  });
+
+  it("lists without documents when the tree comes back malformed, and says so", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.seedFile("specs/1/index.md", "one");
+    const malformed = (async (input: string | URL, init?: RequestInit) =>
+      String(input).includes("/git/trees/")
+        ? new Response(JSON.stringify({ truncated: false, tree: "not a list" }), { status: 200, headers: { "Content-Type": "application/json" } })
+        : gh.fetchImpl(input, init)) as typeof fetch;
+    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: malformed });
+    const { events, logged } = logging(gh);
+
+    const g = await hooks.source.list(logged);
+
+    expect(documents(g)).toEqual([]);
+    expect(g.nodes.map((n) => n.id)).toEqual(["1"]);
+    expect(events).toContainEqual({
+      event: "github.documents.skipped",
+      data: expect.objectContaining({ reason: expect.stringMatching(/no list of entries/) }),
+    });
+  });
+
+  it("stays silent about a Pages branch that simply does not exist yet", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const { events, logged } = logging(gh);
+    await sourceOf(gh).list(logged);
+    expect(events.filter((e) => e.event === "github.documents.skipped")).toEqual([]);
   });
 
   it("reads the ticket's page into its neighbourhood, counted under rel.documents", async () => {
