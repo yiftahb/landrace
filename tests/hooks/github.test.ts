@@ -42,6 +42,8 @@ function fake(user: () => Response | never): { fetchImpl: typeof fetch; calls: s
         },
       });
     }
+    // And no Pages branch, which GitHub answers with a 404, not an empty list.
+    if (url.pathname.includes("/git/trees/")) return json({ message: "Not Found" }, 404);
     return json([]);
   }) as unknown as typeof fetch;
   return { fetchImpl, calls };

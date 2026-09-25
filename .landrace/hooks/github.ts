@@ -4,8 +4,9 @@
  * Everything this repository's workflow needs from a tracker is here: the REST
  * and GraphQL client, the pre hook that reads an issue's body and records, the
  * post hook that writes every effect GitHub owns, the artifact hook that
- * publishes the spec to Pages, the source that reports issues, sub-issues and
- * pull requests as a graph, and the operator actions the MCP tools call. `src/` contains no GitHub code at all and a test enforces it,
+ * publishes the spec to Pages, the source that reports issues, sub-issues,
+ * pull requests and published spec pages as a graph, and the operator actions
+ * the MCP tools call. `src/` contains no GitHub code at all and a test enforces it,
  * so this file is also the worked example: a second tracker is a sibling of
  * this one, and nothing else changes.
  *
@@ -28,6 +29,7 @@ import {
   definePreHook,
   definePreflight,
   defineSource,
+  DOCUMENT_KIND,
   entriesFromComments,
   LABEL_EFFECT,
   LABELS,
@@ -454,6 +456,29 @@ function createClient(opts: GitHubOptions) {
       }
     },
 
+    /**
+     * Every file on `branch`, by path, in one request — or null if the branch
+     * is not there. `truncated` is GitHub saying it stopped before the end:
+     * past its own limit on one response a listing is part of the tree, and
+     * a caller must not read it as the whole. An absent flag is read as cut
+     * short too, because nothing then says the listing is complete.
+     */
+    listFiles: async (branch: string): Promise<{ paths: string[]; truncated: boolean } | null> => {
+      try {
+        const listing = await call<{ tree?: unknown; truncated?: unknown }>(
+          "GET",
+          `/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+        );
+        if (!Array.isArray(listing.tree)) throw new Error(`the tree of ${branch} came back with no list of entries`);
+        const paths = (listing.tree as Array<{ type?: unknown; path?: unknown } | null>)
+          .flatMap((e) => (e?.type === "blob" && typeof e.path === "string" ? [e.path] : []));
+        return { paths, truncated: listing.truncated !== false };
+      } catch (e) {
+        if (isMissing(e)) return null;
+        throw e;
+      }
+    },
+
     /** A file's content on `branch`, or null if the branch or the file is not there. */
     getFile: async (branch: string, path: string): Promise<string | null> => {
       try {
@@ -751,6 +776,9 @@ const PAGES_BRANCH = "gh-pages";
  */
 const pagePath = (ticket: string): string => `specs/${ticket}/index.md`;
 
+/** The ticket a path on the Pages branch is the spec page of, when it is one. */
+const ticketOfPage = (path: string): string | null => /^specs\/([1-9][0-9]*)\/index\.md$/.exec(path)?.[1] ?? null;
+
 const pageUrl = (repo: string, ticket: string): string => {
   // GitHub's own default domain for a project site. A repository serving Pages
   // from a custom domain publishes to the same branch and path; only the
@@ -758,6 +786,23 @@ const pageUrl = (repo: string, ticket: string): string => {
   const [owner, name] = repo.split("/");
   return `https://${owner}.github.io/${name}/specs/${ticket}/`;
 };
+
+/**
+ * The same page as the graph reports it: a document beside its ticket, so the
+ * board can draw it. Derived from the ticket like the path and the url, so
+ * there is nothing to remember about it — and nothing routes on it: what the
+ * workflow reads is `artifacts.spec`, below, exactly as before.
+ */
+const specNode = (repo: string, ticket: string): Node => ({
+  id: `spec-${ticket}`,
+  kind: DOCUMENT_KIND,
+  title: "Spec",
+  link: pageUrl(repo, ticket),
+  closed: null,
+  priority: null,
+  origin: null,
+  state: {},
+});
 
 const hashOf = (content: string): string => createHash("sha256").update(content).digest("hex");
 
@@ -820,7 +865,7 @@ function publishSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   return state.hash === hashOf(contentOf(effect));
 }
 
-/* ── the graph: issues, sub-issues and pull requests, over GraphQL ─────── */
+/* ── the graph: issues, sub-issues and pull requests over GraphQL, and pages ── */
 
 /**
  * The engine's id as the number GitHub wants. Only this file knows GitHub ids
@@ -843,10 +888,11 @@ const prBranch = (ticket: string): string => `landrace/${ticket}`;
 /** The ticket a head branch names, when it is one of ours. */
 const ticketOfBranch = (head: string): string | null => /^landrace\/([1-9][0-9]*)$/.exec(head)?.[1] ?? null;
 
-/** Both relationship types this source reports; a node has at most one parent and a pull request one ticket. */
+/** Every relationship type this source reports; a node has one parent, a pull request one ticket, a page one ticket. */
 const RELATION_DECLS: RelationDecl[] = [
   { type: RELATIONS.childOf, singular: true },
   { type: RELATIONS.implements, singular: true },
+  { type: RELATIONS.documents, singular: true },
 ];
 
 /**
@@ -1109,7 +1155,30 @@ async function countOpenThreads(gh: Client, repo: string, number: number): Promi
 }
 
 /**
- * Every open issue and every open pull request, as one graph, once per tick.
+ * Which tickets have a spec page, from one listing of the whole Pages branch
+ * rather than a read per ticket — or none at all, said in the log, when
+ * GitHub cut that listing short. Some of the pages would be a set known to be
+ * short: the board would show a spec on one ticket and quietly none on the
+ * next, which reads as "not published". Nothing a tick decides from reads
+ * these — `read` carries its own — so an empty set costs the board its rows,
+ * never a decision, and is no reason to fail the tick.
+ */
+async function publishedSpecs(gh: Client, ctx: RuntimeContext): Promise<Set<string>> {
+  const listing = await gh.listFiles(PAGES_BRANCH);
+  if (listing === null) return new Set();
+  if (listing.truncated) {
+    ctx.log("github.documents.skipped", {
+      branch: PAGES_BRANCH,
+      reason: `GitHub truncated its listing of ${PAGES_BRANCH}, so no spec page is reported this tick rather than some of them`,
+    });
+    return new Set();
+  }
+  return new Set(listing.paths.flatMap((path) => ticketOfPage(path) ?? []));
+}
+
+/**
+ * Every open issue and every open pull request, as one graph, once per tick —
+ * and every listed ticket's published spec page, as a document beside it.
  *
  * What it must never do is fail the tick for one issue's sake: two priority
  * labels list as unprioritised, and a pull request naming two tickets lists
@@ -1191,6 +1260,16 @@ async function listGraph(gh: Client, repo: string, ctx: RuntimeContext): Promise
     const node = pullNodeOf(pull);
     listed.push(node);
     relationships.push({ from: node.id, to: only, type: RELATIONS.implements });
+  }
+
+  // Only for a ticket this list carries, so no edge dangles: a page whose
+  // ticket is closed and unlisted, or was never an issue, is left out.
+  const paged = await publishedSpecs(gh, ctx);
+  for (const ticket of nodes.keys()) {
+    if (!paged.has(ticket)) continue;
+    const page = specNode(repo, ticket);
+    listed.push(page);
+    relationships.push({ from: page.id, to: ticket, type: RELATIONS.documents });
   }
 
   return { nodes: listed, relationships };
@@ -1301,6 +1380,17 @@ async function readGraph(gh: Client, repo: string, ticket: string): Promise<Grap
       add(node);
       relationships.push({ from: node.id, to: id, type: RELATIONS.implements });
     }
+  }
+
+  // The ticket's own page, by one file read: exact, where the branch listing
+  // `list` makes can come back cut short, and the ticket's own only, because
+  // that is all `rel.documents` counts. The spec artifact reads the same file
+  // again for its hash — the two run in different phases of the snapshot, and
+  // nothing may be carried from one to the other.
+  if ((await gh.getFile(PAGES_BRANCH, pagePath(ticket))) !== null) {
+    const page = specNode(repo, ticket);
+    add(page);
+    relationships.push({ from: page.id, to: ticket, type: RELATIONS.documents });
   }
 
   return { nodes: [...nodes.values()], relationships };

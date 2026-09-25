@@ -100,7 +100,13 @@ export const compareIds = (a: string, b: string): number =>
  */
 export const TICKET_KIND = "ticket";
 export const PULL_REQUEST_KIND = "pull-request";
-export const RELATIONS = { childOf: "child-of", implements: "implements" } as const;
+/**
+ * A page written about a ticket — a published spec, say — reported as a node
+ * so the board can draw it. It points at its ticket with `documents`, and at
+ * one ticket only.
+ */
+export const DOCUMENT_KIND = "document";
+export const RELATIONS = { childOf: "child-of", implements: "implements", documents: "documents" } as const;
 
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];

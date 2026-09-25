@@ -106,6 +106,19 @@ export interface FakeTracker {
   graphqlRepositoryMissing(): void;
   /** What is published on the orphan branch right now, resolved through the git objects the hook wrote. */
   published(branch?: string): Map<string, string>;
+  /**
+   * Put a file on a branch the way somebody else's push would — blob, tree,
+   * commit and ref in the same object store the hook writes to — so a test can
+   * start from a page that is already published. Defaults to the Pages branch.
+   */
+  seedFile(path: string, content: string, branch?: string): void;
+  /**
+   * Answer every recursive tree listing the way GitHub does past its limit:
+   * the first part of the entries, and `truncated: true`. The part kept holds
+   * a real page, so a reader that ignored the flag would report a set it knew
+   * to be short rather than none.
+   */
+  truncateTrees(): void;
   /** The login the fake posts under, so what it writes reads back as ours — the relationship the real client has with its token. */
   bot: string;
   labelsOf(ticket: number): string[];
@@ -231,6 +244,42 @@ export function createFakeTracker(
     const head = refs.get(branch);
     const commit = head === undefined ? undefined : commits.get(head);
     return (commit && trees.get(commit.tree)) ?? new Map<string, string>();
+  };
+
+  const seedFile = (path: string, content: string, branch = "gh-pages"): void => {
+    const blob = objectSha();
+    blobs.set(blob, content);
+    const tree = objectSha();
+    trees.set(tree, new Map([...treeOfRef(branch), [path, blob]]));
+    const head = refs.get(branch);
+    const commit = objectSha();
+    commits.set(commit, { tree, parents: head === undefined ? [] : [head] });
+    refs.set(branch, commit);
+  };
+
+  let treesTruncated = false;
+
+  /**
+   * A tree as `GET /git/trees/{ref}?recursive=1` lists it: every directory on
+   * the way down as a `tree` entry, every file as a `blob`, in path order.
+   * Without `recursive`, the top level only.
+   */
+  const treeListing = (files: Map<string, string>, recursive: boolean) => {
+    const entries = new Map<string, { path: string; mode: string; type: string; sha: string }>();
+    for (const [file, sha] of files) {
+      const parts = file.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        const dir = parts.slice(0, i).join("/");
+        if (!entries.has(dir)) entries.set(dir, { path: dir, mode: "040000", type: "tree", sha: `tree-${dir}` });
+      }
+      entries.set(file, { path: file, mode: "100644", type: "blob", sha });
+    }
+    const all = [...entries.values()]
+      .filter((e) => recursive || !e.path.includes("/"))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    return treesTruncated && recursive
+      ? { tree: all.slice(0, Math.ceil(all.length / 2)), truncated: true }
+      : { tree: all, truncated: false };
   };
 
   const pulls = new Map<number, FakePull>();
@@ -545,6 +594,18 @@ export function createFakeTracker(
       return json({ ref: `refs/heads/${onRef[1]}`, object: { sha, type: "commit" } });
     }
 
+    // A branch name or a tree sha, as GitHub takes either; a branch that is
+    // not there is a 404, which is how the Pages branch reads before anything
+    // has been published.
+    const onTree = /^\/git\/trees\/([^/]+)$/.exec(path);
+    if (onTree && method === "GET") {
+      const name = decodeURIComponent(onTree[1] as string);
+      const head = refs.get(name);
+      const files = trees.get(head === undefined ? name : (commits.get(head)?.tree ?? ""));
+      if (!files) return json({ message: "Not Found" }, 404);
+      return json({ sha: head ?? name, ...treeListing(files, url.searchParams.has("recursive")) });
+    }
+
     const onCommit = /^\/git\/commits\/([0-9a-f]+)$/.exec(path);
     if (onCommit && method === "GET") {
       const commit = commits.get(onCommit[1] as string);
@@ -636,6 +697,8 @@ export function createFakeTracker(
     graphqlRepositoryMissing: () => { repositoryMissing = true; },
     published: (branch = "gh-pages") =>
       new Map([...treeOfRef(branch)].map(([file, blob]) => [file, blobs.get(blob) ?? ""])),
+    seedFile,
+    truncateTrees: () => { treesTruncated = true; },
     bot: BOT,
     labelsOf: (ticket) => issues.get(ticket)?.labels ?? [],
     say: (ticket, body) => post(ticket, BOT, body),

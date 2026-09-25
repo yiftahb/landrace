@@ -5,7 +5,8 @@ import { MAX_SUBGRAPH_NODES } from "#conventions.js";
 import { staleClosure } from "#core/children.js";
 import { githubHooks } from "#landrace/hooks/github.js";
 import { createDispatcher } from "#runner/effects.js";
-import type { Condition, Graph, HookContext, Snapshot, Source } from "#namespace.js";
+import { graphProblem } from "#runner/graph.js";
+import type { Condition, Graph, HookContext, Node, RuntimeContext, Snapshot, Source } from "#namespace.js";
 
 /**
  * The GitHub source, over the in-memory GitHub. The fake is the HTTP boundary
@@ -587,5 +588,162 @@ describe("a read carries the ticket's whole subtree", () => {
     // The ticket's own pull request is not the cascade's to close.
     expect(closed("pr-10")).toBeNull();
     expect(gh.registry.post[0]!.satisfied({ graph: after }, { type: "nodes.close", ids })).toBe(true);
+  });
+});
+
+/**
+ * A published spec is a node of its own: the board draws only what a source
+ * reports, and a page known only to the artifact hook was invisible there —
+ * ticket #19 sat at spec-human-review with its spec published and nothing on
+ * the board to click. The artifact state the workflow routes on is unchanged;
+ * this is the same page, reported as the graph sees it.
+ */
+describe("a published spec page is a document node", () => {
+  const spec = (ticket: string): Node => ({
+    id: `spec-${ticket}`, kind: "document", title: "Spec", link: `https://acme.github.io/widgets/specs/${ticket}/`,
+    closed: null, priority: null, origin: null, state: {},
+  });
+  const documents = (g: Graph) => g.nodes.filter((n) => n.kind === "document");
+  const treeReads = (gh: FakeTracker) => gh.requests.filter((r) => r.path.startsWith("/git/trees/"));
+  const logging = (gh: FakeTracker) => {
+    const events: Array<{ event: string; data: Record<string, unknown> | undefined }> = [];
+    const logged: RuntimeContext = { ...gh.ctx, log: (event, data) => { events.push({ event, data }); } };
+    return { events, logged };
+  };
+
+  it("declares documents as singular: a page documents one ticket", () => {
+    const gh = createFakeTracker();
+    expect(sourceOf(gh).relations).toContainEqual({ type: "documents", singular: true });
+  });
+
+  it("lists a ticket's page as a document, with the edge to its ticket, and none for a ticket without one", async () => {
+    const gh = createFakeTracker([{ number: 19 }, { number: 20 }]);
+    gh.seedFile("specs/19/index.md", "# Spec");
+    const g = await sourceOf(gh).list(ctx(gh));
+    expect(documents(g)).toEqual([spec("19")]);
+    expect(g.relationships).toContainEqual({ from: "spec-19", to: "19", type: "documents" });
+    expect(g.relationships.filter((r) => r.type === "documents")).toHaveLength(1);
+    // A graph the engine would take: the type is declared, and both ends are in it.
+    expect(graphProblem(g, sourceOf(gh).relations)).toBeNull();
+  });
+
+  it("reads the whole Pages branch once per list, however many tickets have a page", async () => {
+    const gh = createFakeTracker([{ number: 1 }, { number: 2 }, { number: 3 }]);
+    for (const n of [1, 2, 3]) gh.seedFile(`specs/${n}/index.md`, `spec ${n}`);
+    const g = await sourceOf(gh).list(ctx(gh));
+    expect(documents(g).map((n) => n.id)).toEqual(["spec-1", "spec-2", "spec-3"]);
+    expect(treeReads(gh)).toEqual([{ method: "GET", path: "/git/trees/gh-pages" }]);
+    expect(gh.requests.filter((r) => r.path.startsWith("/contents/"))).toEqual([]);
+  });
+
+  it("lists no document for a page whose ticket is not listed, nor for a file that is not a spec page", async () => {
+    const gh = createFakeTracker([{ number: 1 }, { number: 2, state: "closed" }]);
+    gh.seedFile("specs/2/index.md", "closed ticket, not listed");
+    gh.seedFile("specs/99/index.md", "no such ticket");
+    gh.seedFile("specs/1/notes.md", "not the page");
+    gh.seedFile("specs/1/index.md.bak", "not the page either");
+    gh.seedFile("index.md", "the site's own home page");
+    const g = await sourceOf(gh).list(ctx(gh));
+    expect(documents(g)).toEqual([]);
+    expect(graphProblem(g, sourceOf(gh).relations)).toBeNull();
+  });
+
+  it("lists no documents, and fails nothing, while the Pages branch does not exist", async () => {
+    const gh = createFakeTracker([{ number: 19 }]);
+    const g = await sourceOf(gh).list(ctx(gh));
+    expect(g.nodes.map((n) => n.id)).toEqual(["19"]);
+    expect(treeReads(gh)).toHaveLength(1);
+  });
+
+  /*
+   * GitHub stops a recursive listing past its own limit and says so. Some of
+   * the pages is a set known to be short — the board would show a spec on one
+   * ticket and silently none on the next — so the answer is none, said out
+   * loud, and the tick goes on: nothing it works from depends on this.
+   */
+  it("lists no document at all from a truncated tree, logs why, and does not fail the tick", async () => {
+    const gh = createFakeTracker([{ number: 1 }, { number: 2 }]);
+    gh.seedFile("specs/1/index.md", "one");
+    gh.seedFile("specs/2/index.md", "two");
+    gh.truncateTrees();
+    const { events, logged } = logging(gh);
+
+    const g = await sourceOf(gh).list(logged);
+
+    expect(documents(g)).toEqual([]);
+    expect(g.nodes.map((n) => n.id)).toEqual(["1", "2"]);
+    expect(events).toContainEqual({
+      event: "github.documents.skipped",
+      data: expect.objectContaining({ reason: expect.stringMatching(/truncated/) }),
+    });
+  });
+
+  it("reads a listing that does not say it is whole as cut short", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.seedFile("specs/1/index.md", "one");
+    // GitHub always sends the flag; a listing without it has promised nothing about being complete.
+    const silent = (async (input: string | URL, init?: RequestInit) => {
+      const res = await gh.fetchImpl(input, init);
+      if (!String(input).includes("/git/trees/")) return res;
+      const body = (await res.json()) as Record<string, unknown>;
+      delete body.truncated;
+      return new Response(JSON.stringify(body), { status: res.status, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: silent });
+    const { events, logged } = logging(gh);
+
+    expect(documents(await hooks.source.list(logged))).toEqual([]);
+    expect(events.map((e) => e.event)).toContain("github.documents.skipped");
+  });
+
+  it("logs nothing when the tree was listed whole", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.seedFile("specs/1/index.md", "one");
+    const { events, logged } = logging(gh);
+    await sourceOf(gh).list(logged);
+    expect(events.filter((e) => e.event === "github.documents.skipped")).toEqual([]);
+  });
+
+  it("reports a failed tree read rather than reading it as no pages", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.seedFile("specs/1/index.md", "one");
+    gh.breakOn((r) => r.path.startsWith("/git/trees/"), 502);
+    await expect(sourceOf(gh).list(ctx(gh))).rejects.toThrow(/502/);
+  });
+
+  it("reads the ticket's page into its neighbourhood, counted under rel.documents", async () => {
+    const gh = createFakeTracker([{ number: 19 }]);
+    gh.seedFile("specs/19/index.md", "# Spec");
+    const source = sourceOf(gh);
+
+    const g = await source.read("19", ctx(gh));
+
+    expect(documents(g)).toEqual([spec("19")]);
+    expect(g.relationships).toContainEqual({ from: "spec-19", to: "19", type: "documents" });
+    expect(graphProblem(g, source.relations, "19")).toBeNull();
+    const rel = deriveRel(g, "19", source.relations.map((r) => r.type));
+    if (!rel.ok) throw new Error(rel.why);
+    expect(rel.rel.documents?.in.total).toBe(1);
+    // One file read for it, and no listing of the whole branch.
+    expect(gh.requests.filter((r) => r.path === "/contents/specs/19/index.md")).toHaveLength(1);
+    expect(treeReads(gh)).toEqual([]);
+  });
+
+  it("reads no document for a ticket with no page, and counts zero", async () => {
+    const gh = createFakeTracker([{ number: 19 }, { number: 20 }]);
+    gh.seedFile("specs/20/index.md", "another ticket's");
+    const source = sourceOf(gh);
+    const g = await source.read("19", ctx(gh));
+    expect(documents(g)).toEqual([]);
+    const rel = deriveRel(g, "19", source.relations.map((r) => r.type));
+    if (!rel.ok) throw new Error(rel.why);
+    expect(rel.rel.documents?.in.total).toBe(0);
+  });
+
+  it("reports a failed page read rather than reading the ticket as having none", async () => {
+    const gh = createFakeTracker([{ number: 19 }]);
+    gh.seedFile("specs/19/index.md", "# Spec");
+    gh.breakOn((r) => r.path.startsWith("/contents/"), 500);
+    await expect(sourceOf(gh).read("19", ctx(gh))).rejects.toThrow(/500/);
   });
 });
