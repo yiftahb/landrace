@@ -27,6 +27,26 @@ describe("landrace validate, against the hooks the workflow loads", () => {
     expect(r.problems.filter((p) => p.rule !== "secret")).toEqual([]);
   });
 
+  /*
+   * The engine's child-ticket feature lives in a fixture now that the shipped
+   * workflow is a single flow, and it has to stay a workflow a project could
+   * actually copy: clean on every rule, including the tickets:create ↔
+   * nodes.close pairing and the entry record a creating stage must write. It
+   * declares no hooks of its own (a hook path must stay inside its directory),
+   * so path coverage is asked against the shipped GitHub hook — the one that
+   * reports child-of — rather than left to abstain.
+   */
+  it("validates the children fixture clean, and covered by the shipped GitHub hook", async () => {
+    const r = await runValidate("tests/fixtures/children");
+    expect(r.problems.filter((p) => p.rule !== "secret")).toEqual([]);
+
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/children");
+    const registry = await loadHooks({ dir: ".landrace", modules: ["hooks/github.ts"] });
+    const provided = snapshotProvides(registry.pre, registry.source);
+    expect(provided).not.toBeNull();
+    expect(validate(workflow, steps, provided ?? undefined)).toEqual([]);
+  });
+
   /**
    * And clean for the right reason.
    *

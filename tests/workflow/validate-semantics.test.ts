@@ -470,6 +470,11 @@ describe("the graph rules, on a workflow that has an entry stage", () => {
     expect(validate(workflow, steps)).toEqual([]);
   });
 
+  it("reports nothing on the children fixture, whose two entry stages are chosen by origin", async () => {
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/children");
+    expect(validate(workflow, steps)).toEqual([]);
+  });
+
   it("reports nothing on the minimal fixture, whose only exit trigger names no stage", async () => {
     const { workflow, steps } = await loadWorkflow("tests/fixtures/minimal");
     expect(validate(workflow, steps)).toEqual([]);

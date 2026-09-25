@@ -392,7 +392,6 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
     ? '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```'
     : '# Export CSV\n\nOne file, comma separated.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
   triage: '```json\n{"intent":"approve"}\n```',
-  breakdown: '```json\n{"kind":"single"}\n```',
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
@@ -446,12 +445,12 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     expect(asked.trail).toEqual(["spec", "spec-questions"]);
     expect(specced.trail).toEqual(["spec", "spec-human-review"]);
     expect(run.trail()).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "breakdown", "build",
+      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build",
       "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
       "code-review", "blocked",
     ]);
     expect(run.counts()).toEqual({
-      spec: 2, triage: 1, breakdown: 1, build: 1, "code-review": 4, "fix-review": 3,
+      spec: 2, triage: 1, build: 1, "code-review": 4, "fix-review": 3,
     });
 
     // The budget, not the cap: the workflow decided this, not the engine.
@@ -644,14 +643,21 @@ describe("a step whose honest report is longer than the tracker will take", () =
 });
 
 /**
- * The shipped workflow's split, over the in-memory tracker.
+ * A split into child tickets, over the in-memory tracker.
+ *
+ * The shipped workflow is a single flow and never splits; splitting is an
+ * engine feature a project turns on in its own workflow, so it is driven
+ * through `tests/fixtures/children`, which is the shipped flow plus a
+ * breakdown.
  *
  * The in-memory tracker speaks the conventions and publishes no documents, so
- * the spec page the shipped `spec` step routes to is stood in here: a post
+ * the spec page the fixture's `spec` step routes to is stood in here: a post
  * hook that keeps each ticket's published body and reads it back as
  * satisfied. Everything else — children, their pull requests, closing — is
  * the tracker's own.
  */
+const CHILDREN = "tests/fixtures/children";
+
 const splitWorld = () => {
   const state = createExternalState({ tickets: [{ id: "1", title: "Payments revamp", body: "big", labels: ["lr:auto"] }] });
   const pages = new Map<string, string>();
@@ -675,7 +681,7 @@ const SPLIT_ANSWERS: Record<string, ScriptedAnswer> = {
 describe("a ticket split into children, each worked to done, and the parent after them", () => {
   it("creates the children, works each through build and review, closes them, and finishes the parent", async () => {
     const { state, ctx, hooks } = splitWorld();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadWorkflow(CHILDREN);
     const bind = (round: number) => ({ parent: "1", stage: "breakdown", round });
 
     const parent = createHarness({
@@ -726,7 +732,7 @@ describe("a ticket split into children, each worked to done, and the parent afte
 describe("when a child starts, and where", () => {
   it("holds a breakdown's child while its parent is still breaking down, and builds it once the parent waits", async () => {
     const { state, ctx, hooks } = splitWorld();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadWorkflow(CHILDREN);
     const early: Array<{ settled: string; why: string | undefined; stage: string | null }> = [];
     const childRun = (kid: string) => createHarness({ workflow, steps, ...hooks, ticket: kid, answers: ANSWERS });
 
@@ -762,7 +768,7 @@ describe("when a child starts, and where", () => {
       { id: "1", title: "Payments revamp", labels: ["lr:auto"] },
       { id: "2", title: "By hand", labels: ["lr:auto"], parent: "1" },
     ] });
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadWorkflow(CHILDREN);
     const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], ticket: "2", answers: SPLIT_ANSWERS });
     await run.converge();
     expect(run.trail()[0]).toBe("spec");
@@ -772,7 +778,7 @@ describe("when a child starts, and where", () => {
 describe("revising a split ticket drops the first round's children and their pull requests", () => {
   it("leaves exactly the second round's children", async () => {
     const { state, ctx, hooks } = splitWorld();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadWorkflow(CHILDREN);
     const titles: Record<number, string[]> = { 1: ["API", "UI"], 2: ["Everything"] };
 
     const parent = createHarness({
@@ -820,7 +826,7 @@ describe("revising a split ticket drops the first round's children and their pul
 describe("a breakdown that crashes after creating its children", () => {
   it("drops the crashed attempt's children before the retry creates its own", async () => {
     const { state, ctx, hooks } = splitWorld();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadWorkflow(CHILDREN);
     let attempts = 0;
     const parent = createHarness({
       workflow, steps, ...hooks, ticket: "1", answers: SPLIT_ANSWERS,
@@ -860,7 +866,7 @@ describe("a breakdown that crashes after creating its children", () => {
 describe("a second breakdown round that breaks its contract", () => {
   it.each([[[]], [["Everything"]]])("is blocked, not ambiguous, when it created %j", async (created) => {
     const { state, ctx, hooks } = splitWorld();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadWorkflow(CHILDREN);
     const parent = createHarness({
       workflow, steps, ...hooks, ticket: "1",
       answers: { ...SPLIT_ANSWERS, breakdown: (round) => round === 1 ? '```json\n{"kind":"children"}\n```' : "no json" },
@@ -899,7 +905,7 @@ describe("a second breakdown round that breaks its contract", () => {
 describe("a second breakdown round, after one of the first round's children finished", () => {
   const upToRound2 = async (kind: string) => {
     const { state, ctx, hooks } = splitWorld();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadWorkflow(CHILDREN);
     const parent = createHarness({
       workflow, steps, ...hooks, ticket: "1",
       answers: {
@@ -954,7 +960,7 @@ describe("a breakdown whose answer contradicts what it created", () => {
     ["single", ["API"]],
   ])("halts at blocked when it says %s and created %j", async (kind, created) => {
     const { state, ctx, hooks } = splitWorld();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadWorkflow(CHILDREN);
     const parent = createHarness({
       workflow, steps, ...hooks, ticket: "1",
       answers: { ...SPLIT_ANSWERS, breakdown: `\`\`\`json\n{"kind":"${kind}"}\n\`\`\`` },

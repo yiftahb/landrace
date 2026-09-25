@@ -116,14 +116,14 @@ describe("structural validation", () => {
   });
 
   /**
-   * Shaped after .landrace/workflow.yaml's build stage with its null anchor
+   * Shaped after tests/fixtures/children's build stage with its null anchor
    * deleted: one trigger with no run.stage mention at all, one with a
    * readable, non-null "run.stage": "triage". Neither is null and both are
    * readable, so this must be refused, not abstained on — the earlier round
    * of this rule treated "mentions run.stage at all" as ambiguous and missed
    * exactly this case.
    */
-  it("refuses an entry stage whose triggers are all readable but none is null — the shipped build repro", () => {
+  it("refuses an entry stage whose triggers are all readable but none is null — the children build repro", () => {
     const problems = validateStructure(wf([
       { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
       {

@@ -196,7 +196,7 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 |---|---|---|
 | Contents | Read and write | reading the spec from gh-pages, and publishing it |
 | Issues | Read and write | tickets, comments, labels |
-| Pull requests | Read and write | review threads; closing a dropped child's pull request when a breakdown re-runs |
+| Pull requests | Read and write | review threads; closing a dropped child's pull request when a workflow that splits work re-runs its breakdown |
 | Metadata | Read-only | granted automatically |
 
 `landrace start` and `landrace mcp` both check these before doing anything else — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions the way a classic token's scopes can. A token missing something refuses to start, naming what is missing, rather than running until the first step that needs it fails midway through a paid agent run. `landrace status` never checks or writes anything — it only reads.
@@ -251,7 +251,7 @@ The skip costs one request for the whole repository, not one per ticket: a sourc
 
 The whole graph, in one readable file. Stages declare **what activates them**, so adding a stage never means editing its predecessor.
 
-A workflow may have several `entry: true` stages — say `spec` for tickets a person made (`"node.origin": null`) and `build` for children a breakdown created, once their parent waits on them. A ticket with no position then enters the one whose `"run.stage": null` trigger matches it; none, or more than one, halts. With a single entry stage, it is entered unconditionally, as before.
+The shipped workflow is a single flow with one entry stage, `spec`: every ticket is specified, approved, built and reviewed as one piece of work. A workflow may have several `entry: true` stages — say `spec` for tickets a person made (`"node.origin": null`) and `build` for children a breakdown created, once their parent waits on them, as [`tests/fixtures/children`](tests/fixtures/children/workflow.yaml) does. A ticket with no position then enters the one whose `"run.stage": null` trigger matches it; none, or more than one, halts. With a single entry stage, it is entered unconditionally, as before.
 
 ```yaml
 stages:
@@ -278,7 +278,9 @@ Workflow-level keys beyond `stages`:
 
 ### Splitting work into sub-tickets
 
-A step that declares `capabilities: [tickets:create]` — the shipped `breakdown` stage — is handed exactly one MCP tool, `landrace_create_child` (`title`, `body`, `priority` 0–9), served by a second server the executor starts beside the agent process: `landrace mcp --workflow <dir> --child <parent> --stage <stage> --round <round>`. That binding is fixed on the command line by the runner, not by anything the agent says, and `--strict-mcp-config` keeps a `.mcp.json` inside the worktree from adding a server of its own. `breakdown` ends by saying `children` — it called the tool at least once — or `single` — it built the spec as one piece of work directly; the two outcomes route to `children-running` and `build`, and a round that says one but did the other halts at `blocked` rather than being guessed at.
+Splitting is an engine feature a project enables in its own workflow; the shipped `.landrace/` workflow does not use it. [`tests/fixtures/children`](tests/fixtures/children/workflow.yaml) is the worked example — the shipped flow plus a `breakdown` stage between `triage` and `build`, a `children-running` stage the parent waits in, `build` as a second entry for the children, and `done` closing a finished ticket so its parent can count it — and it is what the tests drive to keep the feature working.
+
+A step that declares `capabilities: [tickets:create]` — the fixture's `breakdown` stage — is handed exactly one MCP tool, `landrace_create_child` (`title`, `body`, `priority` 0–9), served by a second server the executor starts beside the agent process: `landrace mcp --workflow <dir> --child <parent> --stage <stage> --round <round>`. That binding is fixed on the command line by the runner, not by anything the agent says, and `--strict-mcp-config` keeps a `.mcp.json` inside the worktree from adding a server of its own. `breakdown` ends by saying `children` — it called the tool at least once — or `single` — it built the spec as one piece of work directly; the two outcomes route to `children-running` and `build`, and a round that says one but did the other halts at `blocked` rather than being guessed at.
 
 Re-running `breakdown` — after a revision, or after a crash mid-round — first drops, as not planned, every sub-ticket an earlier round of this stage created and every pull request open on them; anything already finished is left closed as it was. A sub-ticket a person opened under the parent by hand is never touched, this round or any other. The parent itself only reaches `done` once every sub-ticket still counted is closed as completed — one still open, or one an earlier round made that a person is still working, keeps the parent at `children-running`.
 

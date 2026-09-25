@@ -10,9 +10,14 @@ output:
       effect: { type: tracker.comment, marker: "done:{round}" }
 ---
 
-Implement the spec for #{node.id}: {node.title}.
+Implement #{node.id}: {node.title}.
 
-The approved spec is at {artifacts.spec.url}.
+If this ticket went through specification, the approved spec is at
+{artifacts.spec.url} — work from it. A ticket created by a breakdown of a larger
+one has no page there: its own description below is the spec, written when the
+parent was planned. Either way, the description is the ticket's own words:
+
+{ticket.body}
 
 Use the `superpowers:executing-plans` skill. Work through the spec and commit
 as you go. Run the test suite and the lint checks

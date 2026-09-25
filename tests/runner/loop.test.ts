@@ -22,7 +22,6 @@ type Answer = ScriptedAnswer;
 const OUTPUT: Record<string, Answer> = {
   spec: '# The spec\n\nDo the thing.\n\n```json\n{"kind":"spec","title":"T"}\n```',
   triage: '```json\n{"intent":"approve"}\n```',
-  breakdown: '```json\n{"kind":"single"}\n```',
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
@@ -99,9 +98,11 @@ async function run(
     breakOn?: (e: Effect) => boolean;
     /** The review round on which the reviewer resolves what it raised. Never, by default. */
     resolveOn?: number;
+    /** The workflow directory; the shipped one unless a test needs the children fixture. */
+    dir?: string;
   } = {},
 ) {
-  const { workflow, steps } = await loadWorkflow(".landrace");
+  const { workflow, steps } = await loadWorkflow(opts.dir ?? ".landrace");
   const { pre, post, source } = hooksOf(gh);
 
   const harness = createHarness({
@@ -366,7 +367,7 @@ describe("the spec phase routes on what the step actually said", () => {
     expect(r.run.rounds.spec).toEqual({ entered: 2, output: 2 });
   });
 
-  it("routes the reply through triage and breakdown on to build", async () => {
+  it("routes the reply through triage on to build", async () => {
     const gh = world(["lr:auto"]);
     await run(gh, { answers });
     say(gh, "in-house, and CSV only");
@@ -374,9 +375,8 @@ describe("the spec phase routes on what the step actually said", () => {
     say(gh, "looks right, go ahead");
     const r = await run(gh, { answers });
 
-    expect(r.invocations.slice(0, 4)).toEqual([
+    expect(r.invocations.slice(0, 3)).toEqual([
       { stage: "triage", round: 1 },
-      { stage: "breakdown", round: 1 },
       { stage: "build", round: 1 },
       { stage: "code-review", round: 1 },
     ]);
@@ -486,12 +486,11 @@ describe("a ticket goes all the way round §10", () => {
     const done = await run(gh, { answers });
 
     expect(trail(asked, specced, reviewed, done)).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "breakdown", "build",
+      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build",
       "code-review", "fix-review", "code-review", "pr-human-review", "done",
     ]);
     expect(reviewed.invocations).toEqual([
       { stage: "triage", round: 1 },
-      { stage: "breakdown", round: 1 },
       { stage: "build", round: 1 },
       { stage: "code-review", round: 1 },
       { stage: "fix-review", round: 1 },
@@ -500,7 +499,41 @@ describe("a ticket goes all the way round §10", () => {
     // Terminal: the engine's own labels are gone, so the next tick does not
     // pick the ticket up again.
     expect(done.labels).toEqual(["lr:stage:done"]);
-    // And closed as finished, which is how a parent waiting on it would see it.
+    expect(done.result.settled).not.toBe("cap");
+  });
+
+  /*
+   * The same walk through the children fixture, which puts a breakdown between
+   * triage and build and closes a finished ticket — the close is what a parent
+   * waiting on its children counts. The shipped workflow has neither, so this
+   * is where the GitHub hook is shown to carry both.
+   */
+  it("walks through a breakdown that chose one piece of work, and closes the ticket as finished", async () => {
+    const gh = world(["lr:auto"]);
+    const dir = "tests/fixtures/children";
+    const withBreakdown = { ...answers, breakdown: '```json\n{"kind":"single"}\n```' };
+
+    const asked = await run(gh, { answers: withBreakdown, dir });
+    say(gh, "in-house, and CSV only");
+    const specced = await run(gh, { answers: withBreakdown, dir });
+    say(gh, "looks right, go ahead");
+    const reviewed = await run(gh, { answers: withBreakdown, dir, resolveOn: 2 });
+    const pull = gh.pulls.get(7);
+    if (!pull) throw new Error("the build never opened a pull request");
+    pull.merged = true;
+    const done = await run(gh, { answers: withBreakdown, dir });
+
+    expect(trail(asked, specced, reviewed, done)).toEqual([
+      "spec", "spec-questions", "spec", "spec-human-review", "triage", "breakdown", "build",
+      "code-review", "fix-review", "code-review", "pr-human-review", "done",
+    ]);
+    expect(reviewed.invocations.slice(0, 4)).toEqual([
+      { stage: "triage", round: 1 },
+      { stage: "breakdown", round: 1 },
+      { stage: "build", round: 1 },
+      { stage: "code-review", round: 1 },
+    ]);
+    // Closed as finished, which is how a parent waiting on it would see it.
     expect(gh.issues.get(1)).toMatchObject({ state: "closed", state_reason: "completed" });
     expect(done.result.settled).not.toBe("cap");
   });

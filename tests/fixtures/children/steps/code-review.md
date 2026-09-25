@@ -11,7 +11,10 @@ output:
 ---
 
 Review the changes on the pull request for #{node.id} against its spec at
-{artifacts.spec.url}.
+{artifacts.spec.url}. A ticket created by a breakdown has no page there; review
+it against its own description instead:
+
+{ticket.body}
 
 You did not write this code and you will not fix it. Find what is wrong, what is
 missing against the spec, and what will break — then stop.
