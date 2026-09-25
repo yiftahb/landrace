@@ -104,45 +104,24 @@ describe("boardView: the tree", () => {
     expect(view(kids).rows[0]?.children.map((r) => r.id)).toEqual(["11", "2", "12"]);
   });
 
-  it("expands every ancestor of something that needs you, and nothing else", () => {
-    const g = graph(
-      [ticket("1"), ticket("2"), ticket("3", {}, ["go", "lr:blocked"]), ticket("4"), ticket("5")],
-      [edge("2", "1"), edge("3", "2"), edge("5", "4")],
-    );
-    const byId = new Map(flatten(view(g).rows).map((r) => [r.id, r]));
-    expect(byId.get("1")?.expanded).toBe(true);
-    expect(byId.get("2")?.expanded).toBe(true);
-    expect(byId.get("3")?.expanded).toBe(false);
-    expect(byId.get("4")?.expanded).toBe(false);
-  });
-
-  it("expands the ancestors of a running agent too", () => {
-    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
-    const rows = view(graph([ticket("1"), ticket("2")], [edge("2", "1")]), { running }).rows;
-    expect(rows[0]?.expanded).toBe(true);
-    expect(rows[0]?.children[0]?.badge).toBe("running");
-  });
-
   it("keeps a closed or dropped node, marked so the page can grey it", () => {
     const g = graph([ticket("1"), ticket("2", { closed: "dropped" }), ticket("3", { closed: "done" })], [edge("2", "1"), edge("3", "1")]);
     const kids = view(g).rows[0]?.children;
     expect(kids?.map((r) => [r.id, r.closed])).toEqual([["2", "dropped"], ["3", "done"]]);
   });
 
-  it("never gives a closed ticket a needs-you or running badge, and does not open its ancestors for it", () => {
+  it("never gives a closed ticket a needs-you or running badge", () => {
     const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
     const g = graph([ticket("1"), ticket("2", { closed: "done" }), ticket("3", { closed: "dropped" }, ["go", "lr:blocked"])], [
       edge("2", "1"), edge("3", "1"),
     ]);
     const rows = view(g, { running }).rows;
     expect(rows[0]?.children.map((r) => r.badge)).toEqual(["discharged", "discharged"]);
-    expect(rows[0]?.expanded).toBe(false);
   });
 });
 
 describe("boardView: lanes", () => {
   const blocked = ["go", "lr:blocked"];
-  const byId = (rows: Rows) => new Map(flatten(rows).map((r) => [r.id, r]));
 
   it("puts a branch whose child needs you in needs-you, and the child keeps its own badge", () => {
     const rows = view(graph([ticket("1"), ticket("2", {}, blocked)], [edge("2", "1")])).rows;
@@ -150,12 +129,9 @@ describe("boardView: lanes", () => {
     expect(rows[0]?.children[0]).toMatchObject({ id: "2", badge: "needs-you" });
   });
 
-  it("raises a branch for a grandchild that needs you, and opens the whole path to it", () => {
+  it("raises a branch for a grandchild that needs you", () => {
     const g = graph([ticket("1"), ticket("2"), ticket("3", {}, blocked)], [edge("2", "1"), edge("3", "2")]);
-    const rows = view(g).rows;
-    expect(rows[0]?.lane).toBe("needs-you");
-    const all = byId(rows);
-    expect([all.get("1")?.expanded, all.get("2")?.expanded, all.get("3")?.expanded]).toEqual([true, true, false]);
+    expect(view(g).rows[0]?.lane).toBe("needs-you");
   });
 
   it("puts a branch with a running child in running", () => {
@@ -176,12 +152,12 @@ describe("boardView: lanes", () => {
       edge("2", "1"), edge("3", "1"),
     ]);
     const rows = view(g).rows;
-    expect(rows[0]).toMatchObject({ lane: "waiting", expanded: false });
+    expect(rows[0]).toMatchObject({ lane: "waiting" });
   });
 
   it("still raises a closed parent's branch for an open child that needs you", () => {
     const g = graph([ticket("1", { closed: "done" }), ticket("2", {}, blocked)], [edge("2", "1")]);
-    expect(view(g).rows[0]).toMatchObject({ badge: "discharged", lane: "needs-you", expanded: true });
+    expect(view(g).rows[0]).toMatchObject({ badge: "discharged", lane: "needs-you" });
   });
 
   it("puts a ticket with no sub-tickets in the lane of its own badge", () => {
@@ -197,40 +173,15 @@ describe("boardView: lanes", () => {
     ]);
   });
 
-  // A branch in "Held elsewhere" or "Waiting" because of something three
-  // levels down reads as a mistake unless the page shows what put it there.
-  it("opens the path to whatever puts a branch in a lane its root's own badge does not", () => {
+  it("files a branch under Held elsewhere for a grandchild held elsewhere, whatever its root's own badge", () => {
     const other: Held = { ticket: "3", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
     const g = graph([ticket("1", {}, []), ticket("2", {}, []), ticket("3")], [edge("2", "1"), edge("3", "2")]);
-    const rows = view(g, { elsewhere: new Map([["3", other]]) }).rows;
-    expect(rows[0]?.lane).toBe("elsewhere");
-    const all = byId(rows);
-    expect([all.get("1")?.expanded, all.get("2")?.expanded]).toEqual([true, true]);
-    // The root drives its own lane: nothing beneath it is opened for that.
-    const same = view(graph([ticket("1"), ticket("2")], [edge("2", "1")])).rows[0];
-    expect(same).toMatchObject({ lane: "waiting", expanded: false });
+    expect(view(g, { elsewhere: new Map([["3", other]]) }).rows[0]).toMatchObject({ badge: "not-admitted", lane: "elsewhere" });
   });
 
-  it("opens only the path to what sets the lane — not a side branch that merely outranks its own root", () => {
-    // 1 (waiting) → A (closed) → G (waiting), and 1 → B (blocked).
-    const g = graph([ticket("1"), ticket("A", { closed: "done" }), ticket("G"), ticket("B", {}, blocked)], [
-      edge("A", "1"), edge("G", "A"), edge("B", "1"),
-    ]);
-    const rows = view(g).rows;
-    expect(rows[0]).toMatchObject({ lane: "needs-you", expanded: true });
-    const all = byId(rows);
-    expect([all.get("A")?.expanded, all.get("B")?.expanded, all.get("G")?.expanded]).toEqual([false, false, false]);
-  });
-
-  it("opens nothing beneath a row whose own badge already says the lane, not even a running child", () => {
-    const running = new Map<string, Running>([["3", { stage: "build", round: 1, model: null, since: 5 }]]);
-    const g = graph([ticket("1", {}, blocked), ticket("2", {}, blocked), ticket("3")], [edge("2", "1"), edge("3", "1")]);
-    expect(view(g, { running }).rows[0]).toMatchObject({ lane: "needs-you", badge: "needs-you", expanded: false });
-  });
-
-  it("never lets an artifact raise a branch or open its ticket", () => {
+  it("never lets an artifact raise a branch", () => {
     const g = graph([ticket("1", {}, []), pr("pr-9")], [edge("pr-9", "1", "implements")]);
-    expect(view(g).rows[0]).toMatchObject({ lane: "not-admitted", expanded: false });
+    expect(view(g).rows[0]).toMatchObject({ lane: "not-admitted" });
   });
 
   it("puts a branch with no ticket in it in waiting while open, and in discharged once closed", () => {
@@ -289,8 +240,8 @@ describe("boardView: rows", () => {
       id: "spec-19", kind: "document", title: "Spec", link: "https://acme.github.io/widgets/specs/19/",
       system: { name: "GitHub Pages" }, badge: null, chat: null, lane: null, summary: "open",
     });
-    // Not work: the ticket's own badge decides its lane, and nothing opens for the page.
-    expect(rows[0]).toMatchObject({ badge: "waiting", lane: "waiting", expanded: false });
+    // Not work: the ticket's own badge decides its lane.
+    expect(rows[0]).toMatchObject({ badge: "waiting", lane: "waiting" });
   });
 
   it("drops a link that is not http(s), on artifact rows as on tickets", () => {
@@ -307,7 +258,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "closed", "expanded", "id", "kind", "lane", "link", "model", "note", "priority",
+      "badge", "chat", "children", "closed", "id", "kind", "lane", "link", "model", "note", "priority",
       "round", "since", "stage", "summary", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");

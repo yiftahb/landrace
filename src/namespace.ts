@@ -1179,14 +1179,6 @@ export interface BoardRow {
   model: string | null;
   /** Tickets only. */
   chat: Chat | null;
-  /**
-   * True on each row along the path down to whatever set its branch's lane,
-   * where the row's own badge does not already say that lane: the page opens
-   * it without being asked. Nothing off that path is opened — not a side
-   * branch that outranks its own root, and not a running child beneath a
-   * row that itself needs you.
-   */
-  expanded: boolean;
   children: BoardRow[];
 }
 

@@ -15,7 +15,7 @@ const fnSource = (name: string): string => {
   return APP_JS.slice(start, APP_JS.indexOf("\n}\n", start) + 3);
 };
 
-interface Tree { id: string; title: string; expanded?: boolean; children: Tree[] }
+interface Tree { id: string; title: string; children: Tree[] }
 type Search = { self: Set<string>; below: Set<string> } | null;
 const node = (id: string, title: string, children: Tree[] = []): Tree => ({ id, title, children });
 const TREE = [
@@ -108,6 +108,20 @@ describe("the page's search", () => {
 });
 
 describe("the page's expand state", () => {
+  const isOpen = (stored: [string, boolean][], row: Tree): boolean =>
+    (runInNewContext(`const userExpanded = new Map(${JSON.stringify(stored)});${fnSource("isOpen")}isOpen`) as (r: Tree) => boolean)(row);
+
+  // Everything starts open: the board is read top to bottom, and a branch that
+  // arrives shut hides the very ticket someone came to look at.
+  it("opens every row until the person closes it, whatever the row itself carries", () => {
+    const row = { ...node("12", "Payments revamp", [node("31", "API endpoints")]), expanded: false };
+    expect(isOpen([], row)).toBe(true);
+    expect(isOpen([["12", false]], row)).toBe(false);
+    expect(isOpen([["12", true]], row)).toBe(true);
+    // Another row's choice is not this one's.
+    expect(isOpen([["40", false]], row)).toBe(true);
+  });
+
   it("holds a match's ancestors open during a search without storing it as anyone's choice", () => {
     const run = runInNewContext(`
       const userExpanded = new Map([["12", false]]);
@@ -116,7 +130,7 @@ describe("the page's expand state", () => {
       ({ userExpanded, touched, openOf })`) as {
       userExpanded: Map<string, boolean>; touched: Set<string>; openOf: (row: Tree, search: Search) => boolean;
     };
-    const row = { ...node("12", "Payments revamp"), expanded: false };
+    const row = node("12", "Payments revamp");
     const search = { self: new Set(["31"]), below: new Set(["12"]) };
     expect(run.openOf(row, search)).toBe(true);
     expect(run.userExpanded.get("12")).toBe(false);
@@ -246,22 +260,23 @@ describe("the tree walk", () => {
     ${["isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows"].map(fnSource).join("")}
     treeRows(ROWS, 0, new Set(), 0, [], searchOf(ROWS, ${JSON.stringify(query)}), false)`, { ROWS: TREE }) as string[])];
 
-  it("draws every root, and a row's children only while it is open, with no query", () => {
-    expect(walk("")).toEqual(["0:12", "0:40"]);
-    expect(walk("", { 12: true })).toEqual(["0:12+", "1:31", "1:32", "0:40"]);
+  it("draws the whole tree open with no query, and a row's children only while it is open", () => {
+    expect(walk("")).toEqual(["0:12+", "1:31+", "2:pr:118", "1:32", "0:40+", "1:41"]);
+    expect(walk("", { 12: false })).toEqual(["0:12", "0:40+", "1:41"]);
+    expect(walk("", { 31: false, 40: false })).toEqual(["0:12+", "1:31", "1:32", "0:40"]);
   });
 
   it("holds a match's ancestors open and hides everything that neither matches nor leads to a match", () => {
-    expect(walk("api e")).toEqual(["0:12+", "1:31"]);
+    expect(walk("api e", { 31: false })).toEqual(["0:12+", "1:31"]);
   });
 
   it("holds the path open even against a stored collapse, without changing it", () => {
     expect(walk("token", { 40: false })).toEqual(["0:40+", "1:41"]);
   });
 
-  it("draws a matched row's own subtree whole once it is open, matching or not", () => {
-    expect(walk("api e", { 31: true })).toEqual(["0:12+", "1:31+", "2:pr:118"]);
-    expect(walk("payments", { 12: true })).toEqual(["0:12+", "1:31", "1:32"]);
+  it("draws a matched row's own subtree whole while it is open, matching or not", () => {
+    expect(walk("api e")).toEqual(["0:12+", "1:31+", "2:pr:118"]);
+    expect(walk("payments", { 31: false })).toEqual(["0:12+", "1:31", "1:32"]);
   });
 });
 
@@ -518,9 +533,9 @@ describe("the page", () => {
     expect(APP_JS).toContain("seen.add(row.id)");
   });
 
-  it("lets a person's own expand/collapse beat the server's, across every poll", () => {
+  it("keeps a person's own expand/collapse across every poll, and asks the server no opinion", () => {
     expect(APP_JS).toContain("const userExpanded = new Map();");
-    expect(APP_JS).toMatch(/userExpanded\.has\(row\.id\) \? userExpanded\.get\(row\.id\) : row\.expanded/);
+    expect(APP_JS).not.toContain("row.expanded");
   });
 
   it("opens every external link in a new tab without handing it window.opener", () => {

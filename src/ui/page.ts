@@ -391,12 +391,14 @@ const INDENT = ["pl-4", "pl-10", "pl-16", "pl-22", "pl-28"];
 const indentOf = (depth) => INDENT[Math.min(depth, INDENT.length - 1)];
 
 // A person's own expand/collapse choices, by node id. Kept across every
-// render, and consulted before the server's own \`expanded\`: a poll landing
-// every two seconds must never undo what someone just clicked. An entry lives
-// until its node leaves the view (see forgetGone), so a returning id starts
-// from the server's opinion again rather than a choice made about another node.
+// render: a poll landing every two seconds must never undo what someone just
+// clicked. Every row starts open and stays so until someone closes it: the
+// board is read top to bottom, and a branch that arrives shut hides the very
+// ticket someone came to look at. An entry lives until its node leaves the
+// view (see forgetGone), so a returning id starts open again rather than
+// carrying a choice made about another node.
 const userExpanded = new Map();
-function isOpen(row) { return userExpanded.has(row.id) ? userExpanded.get(row.id) : row.expanded; }
+function isOpen(row) { return userExpanded.get(row.id) !== false; }
 
 // Rows opened or closed by hand since the query last changed. A search holds
 // the path to each match open without writing to userExpanded — clearing the
@@ -405,7 +407,7 @@ function isOpen(row) { return userExpanded.has(row.id) ? userExpanded.get(row.id
 const touched = new Set();
 
 // Whether a row is drawn open: held open while a search has a match beneath
-// it, else the person's own choice, else the server's.
+// it, else open unless the person closed it.
 function openOf(row, search) {
   if (search && search.below.has(row.id) && !touched.has(row.id)) return true;
   return isOpen(row);
@@ -425,7 +427,7 @@ function forgetGone(rows) {
 }
 
 // Collapse all / Expand all: stored exactly as a click on each row would be,
-// so the choice outlives every poll and beats the server's \`expanded\`. Not
+// so the choice outlives every poll. Not
 // marked touched: a search still holds its matches' paths open, since hiding
 // what someone just searched for is never what "Collapse all" meant.
 function setAll(open) {

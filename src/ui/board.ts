@@ -104,7 +104,7 @@ export function boardView(input: {
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       summary: summaryOf(node), note: "", since: null, round: null, model: null,
-      chat: null, expanded: false, children: [],
+      chat: null, children: [],
     };
     const s = status.get(node.id);
     if (node.kind !== TICKET_KIND || !s) return base;
@@ -165,19 +165,6 @@ export function boardView(input: {
     return { ...row, children: kids };
   };
 
-  // Top-down, once the branch's lane is known: a row opens only when its own
-  // badge does not already say the lane and one of its children's subtrees
-  // does — the path to whatever filed the branch there, and nothing else. A
-  // branch under "Held elsewhere" with nothing visible held reads as a fault;
-  // a side branch opened because it outranks its own root is noise. Nothing
-  // off the path can open: the lane is the branch's most urgent badge, so a
-  // subtree that reaches it is on the path by definition.
-  const openPath = (row: BoardRow, lane: Lane): BoardRow => ({
-    ...row,
-    expanded: row.badge !== lane && row.children.some((k) => below.get(k.id) === lane),
-    children: row.children.map((k) => openPath(k, lane)),
-  });
-
   const rows: BoardRow[] = [];
   // Roots first; then whatever a cycle left unreached — every member of a
   // cycle has a parent, so none of them was a root — at the top level rather
@@ -189,7 +176,7 @@ export function boardView(input: {
     // on: it waits while open and is done once closed.
     if (!row) continue;
     const lane = below.get(row.id) ?? (row.closed === null ? "waiting" : "discharged");
-    rows.push({ ...openPath(row, lane), lane });
+    rows.push({ ...row, lane });
   }
 
   return {
