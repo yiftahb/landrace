@@ -40,7 +40,15 @@ export function summaryOf(node: Node): string {
   return oneLine([node.closed ?? "open", ...facts.slice(0, SUMMARY_FACTS)].join(" · "));
 }
 
-const wantsAttention = (row: BoardRow): boolean => row.badge === "needs-you" || row.badge === "running";
+/** Most urgent first — the order a branch's lane cascades in. */
+const URGENCY: readonly Lane[] = ["needs-you", "running", "elsewhere", "waiting", "not-admitted", "discharged"];
+
+/** Whether `a` is more urgent than `b`; anything outranks no badge at all. */
+const outranks = (a: Lane, b: Lane | null): boolean => b === null || URGENCY.indexOf(a) < URGENCY.indexOf(b);
+
+const moreUrgent = (a: Lane | null, b: Lane | null): Lane | null => (a !== null && outranks(a, b) ? a : b);
+
+const wantsAttention = (lane: Lane | null): boolean => lane === "needs-you" || lane === "running";
 
 /**
  * Which node each node nests under, if exactly one. Only edges of a type the
@@ -96,7 +104,7 @@ export function boardView(input: {
     const base: BoardRow = {
       id: node.id, kind: node.kind, title: oneLine(node.title), link,
       system: link ? systemOf(link) : null,
-      badge: null, stage: null, priority: node.priority, closed: node.closed,
+      badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       summary: summaryOf(node), note: "", since: null, round: null, model: null,
       chat: null, expanded: false, children: [],
     };
@@ -144,12 +152,24 @@ export function boardView(input: {
   // `seen` is the cycle guard: a node is drawn once, under the first path that
   // reaches it, and a cycle stops instead of recursing forever.
   const seen = new Set<string>();
+  // The most urgent ticket badge in each drawn subtree, null where the subtree
+  // holds no ticket. Only badges count: a closed ticket's is already
+  // `discharged` whatever its labels say, and an artifact has none, so neither
+  // can raise a branch.
+  const below = new Map<string, Lane | null>();
   const build = (node: Node): BoardRow | null => {
     if (seen.has(node.id)) return null;
     seen.add(node.id);
     const kids = [...(children.get(node.id) ?? [])].sort(compareWork)
       .map(build).filter((r): r is BoardRow => r !== null);
-    return { ...rowOf(node), children: kids, expanded: kids.some((k) => wantsAttention(k) || k.expanded) };
+    const row = rowOf(node);
+    const lanes = kids.map((k) => below.get(k.id) ?? null);
+    below.set(node.id, lanes.reduce(moreUrgent, row.badge));
+    // Opened for what wants attention, and for whatever files this branch in
+    // a lane its own badge does not explain — a branch under "Held elsewhere"
+    // with nothing visible held reads as a fault.
+    const expanded = lanes.some((l) => l !== null && (wantsAttention(l) || outranks(l, row.badge)));
+    return { ...row, children: kids, expanded };
   };
 
   const rows: BoardRow[] = [];
@@ -158,7 +178,10 @@ export function boardView(input: {
   // than lost. Both in work order, so the same graph always draws the same.
   for (const node of [...roots.sort(compareWork), ...[...nodes.values()].sort(compareWork)]) {
     const row = build(node);
-    if (row) rows.push(row);
+    // A branch with no ticket — a pull request whose ticket is not listed —
+    // is still drawn rather than lost, and nothing in it is anyone's to act
+    // on: it waits while open and is done once closed.
+    if (row) rows.push({ ...row, lane: below.get(row.id) ?? (row.closed === null ? "waiting" : "discharged") });
   }
 
   return {

@@ -140,6 +140,94 @@ describe("boardView: the tree", () => {
   });
 });
 
+describe("boardView: lanes", () => {
+  const blocked = ["go", "lr:blocked"];
+  const byId = (rows: Rows) => new Map(flatten(rows).map((r) => [r.id, r]));
+
+  it("puts a branch whose child needs you in needs-you, and the child keeps its own badge", () => {
+    const rows = view(graph([ticket("1"), ticket("2", {}, blocked)], [edge("2", "1")])).rows;
+    expect(rows[0]).toMatchObject({ id: "1", lane: "needs-you", badge: "waiting" });
+    expect(rows[0]?.children[0]).toMatchObject({ id: "2", badge: "needs-you" });
+  });
+
+  it("raises a branch for a grandchild that needs you, and opens the whole path to it", () => {
+    const g = graph([ticket("1"), ticket("2"), ticket("3", {}, blocked)], [edge("2", "1"), edge("3", "2")]);
+    const rows = view(g).rows;
+    expect(rows[0]?.lane).toBe("needs-you");
+    const all = byId(rows);
+    expect([all.get("1")?.expanded, all.get("2")?.expanded, all.get("3")?.expanded]).toEqual([true, true, false]);
+  });
+
+  it("puts a branch with a running child in running", () => {
+    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
+    expect(view(graph([ticket("1"), ticket("2")], [edge("2", "1")]), { running }).rows[0]?.lane).toBe("running");
+  });
+
+  it("ranks needs-you over running over elsewhere over waiting, whichever sub-branch they sit in", () => {
+    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
+    const g = graph([ticket("1"), ticket("2"), ticket("3"), ticket("4", {}, blocked)], [edge("2", "1"), edge("3", "1"), edge("4", "3")]);
+    expect(view(g, { running }).rows[0]?.lane).toBe("needs-you");
+    expect(view(graph([ticket("1"), ticket("2"), ticket("3")], [edge("2", "1"), edge("3", "1")]), { running }).rows[0]?.lane)
+      .toBe("running");
+  });
+
+  it("never lets a closed ticket raise its branch, whatever its stale labels say", () => {
+    const g = graph([ticket("1"), ticket("2", { closed: "done" }, blocked), ticket("3", { closed: "dropped" }, blocked)], [
+      edge("2", "1"), edge("3", "1"),
+    ]);
+    const rows = view(g).rows;
+    expect(rows[0]).toMatchObject({ lane: "waiting", expanded: false });
+  });
+
+  it("still raises a closed parent's branch for an open child that needs you", () => {
+    const g = graph([ticket("1", { closed: "done" }), ticket("2", {}, blocked)], [edge("2", "1")]);
+    expect(view(g).rows[0]).toMatchObject({ badge: "discharged", lane: "needs-you", expanded: true });
+  });
+
+  it("puts a ticket with no sub-tickets in the lane of its own badge", () => {
+    const running = new Map<string, Running>([["2", { stage: "spec", round: 1, model: null, since: 5 }]]);
+    const other: Held = { ticket: "3", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
+    const g = graph([
+      ticket("1", {}, blocked), ticket("2"), ticket("3"), ticket("4"), ticket("5", {}, []), ticket("6", { closed: "done" }),
+    ]);
+    const rows = view(g, { running, elsewhere: new Map([["3", other]]) }).rows;
+    expect(rows.map((r) => [r.id, r.lane, r.badge])).toEqual([
+      ["1", "needs-you", "needs-you"], ["2", "running", "running"], ["3", "elsewhere", "elsewhere"],
+      ["4", "waiting", "waiting"], ["5", "not-admitted", "not-admitted"], ["6", "discharged", "discharged"],
+    ]);
+  });
+
+  // A branch in "Held elsewhere" or "Waiting" because of something three
+  // levels down reads as a mistake unless the page shows what put it there.
+  it("opens the path to whatever puts a branch in a lane its root's own badge does not", () => {
+    const other: Held = { ticket: "3", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
+    const g = graph([ticket("1", {}, []), ticket("2", {}, []), ticket("3")], [edge("2", "1"), edge("3", "2")]);
+    const rows = view(g, { elsewhere: new Map([["3", other]]) }).rows;
+    expect(rows[0]?.lane).toBe("elsewhere");
+    const all = byId(rows);
+    expect([all.get("1")?.expanded, all.get("2")?.expanded]).toEqual([true, true]);
+    // The root drives its own lane: nothing beneath it is opened for that.
+    const same = view(graph([ticket("1"), ticket("2")], [edge("2", "1")])).rows[0];
+    expect(same).toMatchObject({ lane: "waiting", expanded: false });
+  });
+
+  it("never lets an artifact raise a branch or open its ticket", () => {
+    const g = graph([ticket("1", {}, []), pr("pr-9")], [edge("pr-9", "1", "implements")]);
+    expect(view(g).rows[0]).toMatchObject({ lane: "not-admitted", expanded: false });
+  });
+
+  it("puts a branch with no ticket in it in waiting while open, and in discharged once closed", () => {
+    const rows = view(graph([pr("pr-1"), pr("pr-2", { closed: "done" })])).rows;
+    expect(rows.map((r) => [r.id, r.lane])).toEqual([["pr-1", "waiting"], ["pr-2", "discharged"]]);
+  });
+
+  it("gives a lane only to a root: a nested row is drawn in its root's", () => {
+    const g = graph([ticket("1"), ticket("2", {}, blocked), pr("pr-9")], [edge("2", "1"), edge("pr-9", "2", "implements")]);
+    const nested = flatten(view(g).rows).filter((r) => r.id !== "1");
+    expect(nested.map((r) => [r.id, r.lane])).toEqual([["2", null], ["pr-9", null]]);
+  });
+});
+
 describe("boardView: rows", () => {
   it("notes a closed ticket as closed or dropped, not as whatever its stale labels last said", () => {
     const g = graph([ticket("2", { closed: "done" }, ["go", "lr:blocked"]), ticket("3", { closed: "dropped" }, ["go", "lr:blocked"])]);
@@ -179,7 +267,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "closed", "expanded", "id", "kind", "link", "model", "note", "priority",
+      "badge", "chat", "children", "closed", "expanded", "id", "kind", "lane", "link", "model", "note", "priority",
       "round", "since", "stage", "summary", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");

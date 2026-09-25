@@ -1098,7 +1098,10 @@ export interface Conversation {
 
 /* -------------------------------------------------------------------- ui -- */
 
-/** Where a ticket stands, drawn as its badge on the tree. */
+/**
+ * Where a ticket stands, drawn as its badge — and, for a whole branch, the
+ * lane it is drawn in. Listed most urgent first; that order is the cascade's.
+ */
 export type Lane = "needs-you" | "running" | "elsewhere" | "waiting" | "not-admitted" | "discharged";
 
 /** An agent this process has in the room right now. */
@@ -1153,8 +1156,16 @@ export interface BoardRow {
   link: string;
   /** Null only when there is no usable link to name a system from. */
   system: BoardSystem | null;
-  /** Tickets only: what used to be the lane. Null on an artifact row. */
+  /** Tickets only: where this ticket itself stands. Null on an artifact row. */
   badge: Lane | null;
+  /**
+   * Root rows only: the lane the whole branch is drawn in — the most urgent
+   * badge of any ticket in it, so a sub-ticket that needs you is never filed
+   * under a parent that merely waits. A branch with no ticket in it waits
+   * while its root is open and is discharged once it is closed. Null on a
+   * nested row, which is drawn in its root's lane.
+   */
+  lane: Lane | null;
   stage: string | null;
   priority: number | null;
   closed: Closed;
@@ -1167,7 +1178,11 @@ export interface BoardRow {
   model: string | null;
   /** Tickets only. */
   chat: Chat | null;
-  /** True when something beneath this row needs you or is running: the page opens it without being asked. */
+  /**
+   * True when something beneath this row needs you or is running, or is what
+   * puts the branch in a more urgent lane than this row's own badge: the page
+   * opens it without being asked.
+   */
   expanded: boolean;
   children: BoardRow[];
 }
