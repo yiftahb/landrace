@@ -15,7 +15,7 @@ import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
-import type { Effect, ExternalState, GotoDeps, Harness, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
+import type { Effect, ExternalState, GotoDeps, Harness, HookContext, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
 
 /** The real GitHub hooks as the harness takes them: the registry, with its source proved present. */
 const hooksOf = (gh: ReturnType<typeof createFakeTracker>) => {
@@ -820,6 +820,110 @@ describe("a step refused by a security check", () => {
     await run.converge();
     expect(run.trail().slice(0, 5)).toEqual(["build", "blocked", "triage", "build", "publish"]);
     expect(run.trail()).not.toContain("spec");
+  });
+});
+
+/**
+ * Spec §8: going back to a step, by a reply the judge reads and by the
+ * command, over the in-memory tracker and the shipped workflow.
+ */
+describe("sending a ticket back to a step", () => {
+  const judged = (intent: string) => `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``;
+  const SPEC = '# Export\n\nJSON, not CSV.\n\n```json\n{"kind":"spec","title":"Export"}\n```';
+  const ctx = {
+    config: {} as HookContext["config"], secrets: new Map<string, string>(),
+    signal: new AbortController().signal, log: () => {},
+  } as unknown as RuntimeContext;
+
+  // The shipped spec step always routes a "spec" answer through
+  // `artifact.publish` (spec.md), never a bare tracker.comment — so any test
+  // that lets a real spec round settle over the in-memory tracker needs
+  // something to publish it to, or converge halts on "no post hook handles
+  // artifact.publish" before the round's own output record is ever written.
+  // The same stand-in `tests/fixtures/children`'s splitWorld() uses.
+  const world = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen?: Record<string, ScriptedAnswer>) => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
+    const pages = new Map<string, string>();
+    const specPage = definePostHook({
+      id: "spec-page",
+      handles: ["artifact.publish"],
+      satisfied: (snapshot, effect) => pages.get(String((snapshot.node as { id: string }).id)) === effect.body,
+      apply: async (effect, { ticket }) => { pages.set(ticket, String(effect.body)); },
+    });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post, specPage], answers,
+      ...(screen === undefined ? {} : { screen }),
+    });
+    const deps: GotoDeps = {
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post, specPage]), ctx, workflow,
+    };
+    const record = (effect: Effect) => state.post.apply(effect, { ...ctx, ticket: "1" } as HookContext);
+    return { state, run, deps, record };
+  };
+
+  it("takes 'go back to spec' at pr-human-review through the judge to a second spec round, and back through review", async () => {
+    const { state, run, record } = await world(["lr:stage:pr-human-review", "lr:awaiting"], {
+      ...ANSWERS, spec: SPEC, triage: (round) => judged(round === 1 ? "goto-spec" : "approve"),
+    });
+    state.openPull("1", { branch: "landrace/1" });
+    await record({ type: "tracker.comment", kind: "output", stage: "spec", round: 1, marker: "output:spec:1", output: { kind: "spec" } });
+
+    state.say("1", "the export has to be JSON — redo the spec");
+    const back = await run.converge();
+    // The trail's first entry is the ticket's own starting position — a real
+    // label, not a fresh ticket's null one — so it is the departure point of
+    // the first transition, exactly as it is for any ticket seeded already in
+    // flight (see "a ticket in review whose only pull request merges" above).
+    expect(back.trail).toEqual(["pr-human-review", "triage", "spec", "spec-human-review"]);
+    expect(back.calls.find((c) => c.stage === "spec")?.round).toBe(2);
+    // Consumed by spec's entry record: nothing re-runs on the next tick.
+    expect((await run.converge()).calls).toEqual([]);
+
+    state.say("1", "looks right");
+    const again = await run.converge();
+    expect(again.trail.slice(0, 4)).toEqual(["triage", "build", "publish", "code-review"]);
+    expect(state.stage("1")).toBe("pr-human-review");
+  });
+
+  it("brings a question asked at a halt back to the halt", async () => {
+    const { state, run } = await world(["lr:stage:blocked", "lr:blocked"], { triage: judged("question") });
+    state.say("1", "why did it stop?");
+    const r = await run.converge();
+    // Same reason as above: "blocked" leads because it is the ticket's own
+    // starting position, pushed as the first transition's departure point.
+    expect(r.trail).toEqual(["blocked", "triage", "blocked"]);
+    expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+  });
+
+  it("re-runs a refused build when the board's Retry sends it back", async () => {
+    const OK = '```json\n{"verdict":"ok"}\n```';
+    const NO = '```json\n{"verdict":"suspicious","reason":"x"}\n```';
+    const { state, run, deps } = await world(["lr:stage:build"], ANSWERS, {
+      build: (round) => (round === 1 ? NO : OK), "code-review": OK,
+    });
+    await run.converge();
+    await run.converge();
+    expect(state.stage("1")).toBe("screened");
+
+    expect(await sendTo(deps, "1", null)).toEqual({ to: "build" });
+    const r = await run.converge();
+    expect(r.trail.slice(0, 2)).toEqual(["build", "publish"]);
+    expect(run.counts().build).toBe(1);
+  });
+
+  it("stops a goto loop at the cap, saying why, and still goes where the cap allows", async () => {
+    const NO = '```json\n{"verdict":"suspicious","reason":"x"}\n```';
+    const { state, run, deps } = await world(["lr:stage:build"], ANSWERS, { build: NO });
+    const tick = async () => { await run.converge(); await run.converge(); };
+    await tick();
+    for (let i = 0; i < 2; i++) {
+      expect(await sendTo(deps, "1", null)).toEqual({ to: "build" });
+      await tick();
+    }
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
+    expect(await sendTo(deps, "1", null)).toEqual({ refused: expect.stringMatching(/run\.counters\.build/) });
+    expect(await sendTo(deps, "1", "spec")).toEqual({ to: "spec" });
   });
 });
 
