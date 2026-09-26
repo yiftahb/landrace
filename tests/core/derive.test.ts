@@ -365,6 +365,36 @@ describe("run.failedStage, the failure that put the ticket where it is", () => {
     expect(deriveRun(entries, "blocked").failedStage).toBe("build");
   });
 
+  /*
+   * The round-trip skip is scoped to the current visit. A judge's earlier
+   * visit also sent the ticket on *from triage* — goto-spec after a failed
+   * build — and at the judge's next visit, read as a round trip, that move
+   * was walked past and the judge at spec-human-review was told "build".
+   */
+  describe("a move an earlier visit to this stage made is not a round trip from this one", () => {
+    const failedBuildThenGotoSpec = (spec: Entry[]) => [
+      entered("build", 1), malformed("build", 1),
+      human(), from("triage", 1, "blocked"), { ...out("triage", 1, { intent: "goto-spec" }), goto: "spec" },
+      from("spec", 2, "triage"), ...spec,
+    ];
+
+    it("is null at the judge reading a reply to the spec that goto produced", () => {
+      const entries = [...failedBuildThenGotoSpec([out("spec", 2, { kind: "spec" })]), human(), from("triage", 2, "spec-human-review")];
+      expect(deriveRun(entries, "triage").failedStage).toBeNull();
+    });
+
+    it("is null at the judge reading answers to the questions that goto produced", () => {
+      const entries = [...failedBuildThenGotoSpec([out("spec", 2, { kind: "questions" })]), human(), from("triage", 2, "spec-questions")];
+      expect(deriveRun(entries, "triage").failedStage).toBeNull();
+    });
+
+    it("is the spec the goto re-ran when it failed, at the judge reading the reply to that halt", () => {
+      const failedAgain = [...failedBuildThenGotoSpec([malformed("spec", 2)]), human()];
+      expect(deriveRun(failedAgain, "blocked").failedStage).toBe("spec");
+      expect(deriveRun([...failedAgain, from("triage", 2, "blocked")], "triage").failedStage).toBe("spec");
+    });
+  });
+
   it("is null once the ticket was sent on past an older failure and came back for another reason", () => {
     // The walk stops at the last review round: entered from another stage,
     // and not failed. The build before it was a round trip from the halt,

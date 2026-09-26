@@ -227,11 +227,21 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * last left", that made Retry answer "nothing has failed" to the ordinary
    * conversation at a halt. A round trip whose stage failed is not walked
    * past — a goto from the halt whose step failed again is what put it here.
+   *
+   * Round trips from the *current visit* only: those newer than this stage's
+   * own latest entry. An earlier visit also sent the ticket on from here — a
+   * judge's goto-spec after a failed build — and walked past as a round trip,
+   * that move let the judge's next visit, at spec-human-review, be told the
+   * build had failed. A stage that records no entry — a halt — leaves no
+   * visit to scope by, so every settled trip from it is walked past; one from
+   * an earlier visit is reached only when the ticket came back with no other
+   * stage's entry in between, since any such entry ends the walk first.
    */
-  const leftLast = [...ordered].reverse().find((e) =>
+  const ownEntry = ordered.findLastIndex((e) => e.kind === ENTRY_KIND && e.stage === stage);
+  const leftLast = ordered.findLast((e, i) =>
     e.kind === ENTRY_KIND &&
     e.stage !== stage &&
-    !(stage !== null && e.from === stage && !failedStages.includes(e.stage)));
+    !(stage !== null && i > ownEntry && e.from === stage && !failedStages.includes(e.stage)));
   const failedStage = leftLast !== undefined && failedStages.includes(leftLast.stage) ? leftLast.stage : null;
 
   return {
