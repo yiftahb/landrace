@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { createTools } from "#mcp/tools.js";
 import { renderMarker } from "#conventions.js";
-import type { Registry, Step, Workflow } from "#namespace.js";
+import type { Registry, Source, Step, Workflow } from "#namespace.js";
+import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
 
 // Its own lock root: these tests must not race the default one a developer's
@@ -161,6 +162,13 @@ describe("landrace_goto", () => {
     const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
     const tools = createTools(tracker.registry, tracker.ctx, { workflow });
     expect(await tools.goto("4", "spec")).toEqual({ ticket: "4", to: "spec", posted: true });
+
+    // The title's claim, checked: the next tick would read this same snapshot.
+    const snapshot = await buildSnapshot({
+      ticket: "4", source: tracker.registry.source as Source,
+      hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "4" },
+    });
+    expect(snapshot.run?.goto).toBe("spec");
   });
 
   it("refuses with the reason, as an error the client shows", async () => {

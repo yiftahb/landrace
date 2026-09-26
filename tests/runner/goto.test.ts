@@ -30,7 +30,11 @@ const world = (labels: string[]) => {
     tracker.say(3, `entered${renderMarker({ stage, kind: "enter", round })}`);
     tracker.say(3, `answered${renderMarker({ stage, kind: "output", round })}`);
   };
-  return { tracker, deps, run, failed, settled };
+  const rejected = (stage: string, round: number) => {
+    tracker.say(3, `entered${renderMarker({ stage, kind: "enter", round })}`);
+    failed(stage, round);
+  };
+  return { tracker, deps, run, failed, settled, rejected };
 };
 
 describe("sending a ticket back to a step", () => {
@@ -55,20 +59,39 @@ describe("sending a ticket back to a step", () => {
     expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
   });
 
+  it("refuses a retry once the stage it would retry has since passed", async () => {
+    // failedStages (core/derive.ts) drops a rejection the moment a later round
+    // of the same stage settles — lastFailed must answer the same question
+    // decide() does, or a Retry could reach back past a success and redo work
+    // nothing asked to redo.
+    const { deps, tracker, failed, settled } = world(["lr:stage:blocked", "lr:blocked"]);
+    failed("spec", 1);
+    settled("spec", 2);
+    const before = tracker.comments.get(3)?.length ?? 0;
+    expect(await sendTo(deps, "3", null)).toEqual({ refused: expect.stringMatching(/nothing has failed on #3/) });
+    expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
+  });
+
   it("refuses a step its stage does not send tickets to, naming what it does", async () => {
-    const { deps } = world(["lr:stage:blocked", "lr:blocked"]);
+    const { deps, tracker } = world(["lr:stage:blocked", "lr:blocked"]);
+    const before = tracker.comments.get(3)?.length ?? 0;
     expect(await sendTo(deps, "3", "done")).toEqual({ refused: expect.stringMatching(/"blocked".*"spec" or "build".*"done"/) });
+    expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
   });
 
   it("refuses a step past its cap, saying which", async () => {
-    const { deps, failed } = world(["lr:stage:blocked", "lr:blocked"]);
+    const { deps, tracker, failed } = world(["lr:stage:blocked", "lr:blocked"]);
     for (const round of [1, 2, 3]) failed("build", round);
+    const before = tracker.comments.get(3)?.length ?? 0;
     expect(await sendTo(deps, "3", "build")).toEqual({ refused: expect.stringMatching(/run\.counters\.build/) });
+    expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
   });
 
   it("refuses a stage that runs a step while that step's round is still owed", async () => {
-    const { deps } = world(["lr:stage:build", "lr:working"]);
+    const { deps, tracker } = world(["lr:stage:build", "lr:working"]);
+    const before = tracker.comments.get(3)?.length ?? 0;
     expect(await sendTo(deps, "3", "spec")).toEqual({ refused: expect.stringMatching(/"build".*still to run/) });
+    expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
   });
 
   it("accepts a goto at a stepped stage once its own round has settled", async () => {
@@ -80,8 +103,77 @@ describe("sending a ticket back to a step", () => {
     expect((await run())?.goto).toBe("spec");
   });
 
+  it("accepts a goto at a stepped stage whose latest round was rejected", async () => {
+    // entered > output is true here too — the rejection produced no output —
+    // and the old rule refused this. assess() calls it "failed", not
+    // "pending" (a rejection is checked first), and a rejected round has no
+    // agent left at work either: this is exactly the judge-recovery case the
+    // brief's own rule change exists for.
+    const { deps, run, rejected } = world(["lr:stage:judge"]);
+    rejected("judge", 1);
+    expect(await sendTo(deps, "3", "spec")).toEqual({ to: "spec" });
+    expect((await run())?.goto).toBe("spec");
+  });
+
   it("refuses a ticket it cannot place", async () => {
-    const { deps } = world(["lr:stage:blocked", "lr:stage:spec"]);
+    const { deps, tracker } = world(["lr:stage:blocked", "lr:stage:spec"]);
+    const before = tracker.comments.get(3)?.length ?? 0;
     expect(await sendTo(deps, "3", "spec")).toEqual({ refused: expect.stringMatching(/cannot be placed/) });
+    expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
+  });
+
+  it("names every stage it matches, rather than refusing to place it at all", async () => {
+    // Two stages whose identity both read the one label a ticket may carry:
+    // ambiguous, and locate() already says which — the refusal should too.
+    const ambiguous: Workflow = { version: 1, name: "t", stages: [
+      { id: "blocked", identity: { "run.stage": "blocked" }, goto: ["spec"] },
+      { id: "blocked-too", identity: { "run.stage": "blocked" }, goto: ["spec"] },
+      { id: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    ] };
+    const tracker = createFakeTracker([{ number: 11, labels: ["lr:auto", "lr:stage:blocked"] }]);
+    const source = tracker.registry.source as Source;
+    const deps: GotoDeps = {
+      source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx,
+      workflow: ambiguous,
+    };
+    expect(await sendTo(deps, "11", "spec")).toEqual({
+      refused: expect.stringMatching(/matches more than one stage.*blocked.*blocked-too/s),
+    });
+  });
+
+  it("refuses a goto at a stage matched only by a custom identity foreign to the label", async () => {
+    // deriveRun scopes a goto record to the *label* stage, never locate()'s —
+    // writing one here would be silently dropped on the very next read.
+    const custom: Workflow = { version: 1, name: "t", stages: [
+      { id: "weird", identity: { "node.priority": 5 }, goto: ["spec"] },
+      { id: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    ] };
+    const tracker = createFakeTracker([{ number: 9, labels: ["lr:auto", "lr:stage:elsewhere", "P5"] }]);
+    const source = tracker.registry.source as Source;
+    const deps: GotoDeps = {
+      source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: custom,
+    };
+    const before = tracker.comments.get(9)?.length ?? 0;
+    expect(await sendTo(deps, "9", "spec")).toEqual({
+      refused: expect.stringMatching(/"weird".*custom identity.*"elsewhere"/s),
+    });
+    expect(tracker.comments.get(9)?.length ?? 0).toBe(before);
+  });
+
+  it("refuses a goto at a stage whose own precondition does not hold", async () => {
+    const gated: Workflow = { version: 1, name: "t", stages: [
+      { id: "blocked", requires: { "run.unblockedAt": { $gt: 0 } }, goto: ["spec"] },
+      { id: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    ] };
+    const tracker = createFakeTracker([{ number: 12, labels: ["lr:auto", "lr:stage:blocked"] }]);
+    const source = tracker.registry.source as Source;
+    const deps: GotoDeps = {
+      source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: gated,
+    };
+    const before = tracker.comments.get(12)?.length ?? 0;
+    expect(await sendTo(deps, "12", "spec")).toEqual({
+      refused: expect.stringMatching(/#12 is halted at "blocked": its precondition does not hold/),
+    });
+    expect(tracker.comments.get(12)?.length ?? 0).toBe(before);
   });
 });
