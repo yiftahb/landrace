@@ -94,6 +94,15 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   );
 
   server.tool(
+    "landrace_goto",
+    "Send a ticket back to an earlier step — spec or build, say — from a stage where it is your turn. " +
+      "The workflow says which steps each stage may send a ticket to, and how many rounds each may run; " +
+      "anything else is refused with the reason. The step re-runs on the next tick.",
+    { ticket, stage: z.string().min(1).max(64) },
+    guard(({ ticket: n, stage }) => tools.goto(n, stage)),
+  );
+
+  server.tool(
     "landrace_ask",
     "Answer a step's open questions, or ask it something. Resumes the step's own session, so " +
       "it still has its draft, and records both halves on the ticket. Returns its reply and " +

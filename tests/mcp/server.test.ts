@@ -37,6 +37,7 @@ describe("mcp server over a real transport", () => {
     expect(names).toEqual([
       "landrace_ask",
       "landrace_create_ticket",
+      "landrace_goto",
       "landrace_reply",
       "landrace_resolve",
       "landrace_status",

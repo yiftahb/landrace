@@ -1042,6 +1042,7 @@ export interface Tools {
     },
   ): Promise<unknown>;
   reply(ticket: string, message: string): Promise<unknown>;
+  goto(ticket: string, stage: string): Promise<unknown>;
   ask(ticket: string, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
   resolve(ticket: string, why?: string | undefined): Promise<unknown>;
 }
@@ -1389,6 +1390,14 @@ export interface ReplyDeps {
   pre: PreHook[];
   dispatcher: Dispatcher;
   ctx: RuntimeContext;
+}
+
+/** What sending a ticket back to a step answers: the step it was sent to, or a sentence saying why not. */
+export type GotoResult = { refused: string } | { to: string };
+
+/** A reply's needs, and the workflow, which is what says where a stage may send a ticket. */
+export interface GotoDeps extends ReplyDeps {
+  workflow: Workflow;
 }
 
 /** How the page's Retry reaches a ticket: the one check, and the one write. */

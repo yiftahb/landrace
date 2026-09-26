@@ -13,6 +13,7 @@ import type { Node, ReplyDeps, Snapshot, Source } from "#namespace.js";
 import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
+import { sendTo } from "#runner/goto.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 
 /**
@@ -203,6 +204,15 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     async reply(ticket, message) {
       await postReply({ source: source(), pre: registry.pre, dispatcher, ctx }, ticket, message);
       return { ticket, posted: true };
+    },
+
+    async goto(ticket, stage) {
+      // The workflow is what says where a stage may send a ticket; guessing
+      // it here would be a second answer free to differ from the loop's.
+      if (!opts.workflow) throw new Error("cannot send a ticket back: this process was not given the workflow");
+      const r = await sendTo({ source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow }, ticket, stage);
+      if ("refused" in r) throw new Error(r.refused);
+      return { ticket, to: r.to, posted: true };
     },
 
     ask: (ticket, message, askOpts) => conversation.ask(ticket, message, askOpts),

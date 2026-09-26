@@ -150,6 +150,31 @@ describe("mcp tools", () => {
   });
 });
 
+describe("landrace_goto", () => {
+  const workflow: Workflow = { version: 1, name: "t", stages: [
+    { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
+      triggers: [{ when: { "run.stage": null } }] },
+    { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+  ] };
+
+  it("sends a ticket back, as a record the next tick reads", async () => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow });
+    expect(await tools.goto("4", "spec")).toEqual({ ticket: "4", to: "spec", posted: true });
+  });
+
+  it("refuses with the reason, as an error the client shows", async () => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow });
+    await expect(tools.goto("4", "build")).rejects.toThrow(/"blocked" sends a ticket only to "spec", not to "build"/);
+  });
+
+  it("says it cannot, rather than guessing, when it was not given the workflow", async () => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked"] }]);
+    await expect(createTools(tracker.registry, tracker.ctx).goto("4", "spec")).rejects.toThrow(/workflow/);
+  });
+});
+
 /**
  * An operator hook is optional, and the two tools that need one have to say so
  * when it is missing: a crash hands an editor a stack trace, and a silent
