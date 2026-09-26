@@ -78,6 +78,16 @@ export interface FakePull {
   threads: FakeThread[];
 }
 
+/** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
+export interface FakePages {
+  /** The site's root as GitHub reports it: a custom domain's own, and not always with a trailing slash. */
+  html_url: string;
+  /** Where the site is built from. Defaults to the root of gh-pages, which is where the hook publishes. */
+  source?: { branch: string; path: string };
+  /** "workflow" for a site an Actions workflow deploys, which serves whatever that workflow uploads. */
+  build_type?: "legacy" | "workflow";
+}
+
 export interface FakeTracker {
   registry: Registry;
   /** A context the hooks ignore: they were built with explicit options, not read out of config. */
@@ -119,6 +129,13 @@ export interface FakeTracker {
    * to be short rather than none.
    */
   truncateTrees(): void;
+  /**
+   * How `GET /pages` answers: a published site, `null` for a repository with
+   * no Pages site at all (a 404 — the default, and what a private repository
+   * that never enabled one answers), or a bare status for a failure that says
+   * nothing either way, such as a fine-grained token without "Pages: Read".
+   */
+  pages(answer: FakePages | number | null): void;
   /** The login the fake posts under, so what it writes reads back as ours — the relationship the real client has with its token. */
   bot: string;
   labelsOf(ticket: number): string[];
@@ -290,6 +307,7 @@ export function createFakeTracker(
   let broken: { match: (r: FakeRequest) => boolean; status: number } | null = null;
   let graphqlFailure: { message: string; type: string } | null = null;
   let repositoryMissing = false;
+  let pagesSite: FakePages | number | null = null;
 
   /**
    * One page of review threads, as a connection.
@@ -479,6 +497,21 @@ export function createFakeTracker(
       // Anything else is the preflight's probe, which asks only that the
       // repository answers at all.
       return json({ data: { repository: { pullRequests: { totalCount: pulls.size } } } });
+    }
+
+    if (path === "/pages" && method === "GET") {
+      if (pagesSite === null) return json({ message: "Not Found" }, 404);
+      if (typeof pagesSite === "number") return json({ message: `the Pages endpoint answered ${pagesSite}` }, pagesSite);
+      return json({
+        url: `https://api.github.com/repos/${REPO}/pages`,
+        status: "built",
+        cname: null,
+        html_url: pagesSite.html_url,
+        build_type: pagesSite.build_type ?? "legacy",
+        source: pagesSite.source ?? { branch: "gh-pages", path: "/" },
+        public: false,
+        https_enforced: true,
+      });
     }
 
     const issueOf = (n: number): FakeIssue | null => issues.get(n) ?? null;
@@ -699,6 +732,7 @@ export function createFakeTracker(
       new Map([...treeOfRef(branch)].map(([file, blob]) => [file, blobs.get(blob) ?? ""])),
     seedFile,
     truncateTrees: () => { treesTruncated = true; },
+    pages: (answer) => { pagesSite = answer; },
     bot: BOT,
     labelsOf: (ticket) => issues.get(ticket)?.labels ?? [],
     say: (ticket, body) => post(ticket, BOT, body),

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
-import type { ArtifactHook, Effect, HookContext, Snapshot } from "#namespace.js";
+import { createFakeTracker, type FakePages, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { githubHooks } from "#landrace/hooks/github.js";
+import type { ArtifactHook, Effect, Graph, HookContext, Snapshot } from "#namespace.js";
 
 /**
  * The spec artifact, over the in-memory GitHub. The fake is the HTTP
@@ -27,21 +28,20 @@ const after = async (spec: ArtifactHook, ctx: HookContext): Promise<Snapshot> =>
 
 const writes = (gh: FakeTracker) => gh.requests.filter((r) => r.method !== "GET");
 
+/** Ticket #12's page as a file on GitHub: the link for a repository with no Pages site, which the fake's is by default. */
+const FILE_12 = "https://github.com/acme/widgets/blob/gh-pages/specs/12/index.md";
+
 describe("the spec artifact's reference is derived, never stored", () => {
   it("names a url computed from the repository and the ticket, with nothing published yet", async () => {
     const { spec, ctx } = world();
-    expect(await spec.read(ctx("12"))).toEqual({
-      exists: false, hash: null, url: "https://acme.github.io/widgets/specs/12/",
-    });
+    expect(await spec.read(ctx("12"))).toEqual({ exists: false, hash: null, url: FILE_12 });
   });
 
   it("reads back exactly what it published, hashed", async () => {
     const { gh, spec, ctx } = world();
     await spec.apply(publish("# Spec\n\nthe plan"), ctx("12"));
 
-    expect(await spec.read(ctx("12"))).toEqual({
-      exists: true, hash: sha256("# Spec\n\nthe plan"), url: "https://acme.github.io/widgets/specs/12/",
-    });
+    expect(await spec.read(ctx("12"))).toEqual({ exists: true, hash: sha256("# Spec\n\nthe plan"), url: FILE_12 });
     expect(gh.published().get("specs/12/index.md")).toBe("# Spec\n\nthe plan");
   });
 
@@ -170,5 +170,130 @@ describe("a publish it cannot account for halts the ticket", () => {
     const { gh, spec, ctx } = world();
     gh.breakOn((r) => r.path.startsWith("/contents/"), 500);
     await expect(spec.read(ctx("404"))).rejects.toThrow(/500/);
+  });
+});
+
+/**
+ * A link to a page nobody can open is worse than none: yiftahb/landrace is
+ * private with no Pages site, so every `<owner>.github.io` link it was handed
+ * — on the board, and in the build and review prompts — was a 404. The link
+ * goes where the page can actually be read, and all three places that carry
+ * it agree on it.
+ */
+describe("the spec link points where the page can actually be read", () => {
+  type Logged = { event: string; data: Record<string, unknown> | undefined };
+
+  const published = () => {
+    const w = world();
+    w.gh.seedFile("specs/12/index.md", "# Spec");
+    return w;
+  };
+
+  /** Every place a spec link surfaces: the listed node, the read node, and the artifact's own url. */
+  const links = async (gh: FakeTracker, spec: ArtifactHook, events: Logged[] = []) => {
+    const source = gh.registry.source;
+    if (!source) throw new Error("the fake tracker registered no source");
+    const ctx = { ...gh.ctx, log: (event: string, data?: Record<string, unknown>) => { events.push({ event, data }); } };
+    const linkIn = (g: Graph) => g.nodes.find((n) => n.id === "spec-12")?.link;
+    return {
+      listed: linkIn(await source.list(ctx)),
+      read: linkIn(await source.read("12", ctx)),
+      artifact: (await spec.read({ ...ctx, ticket: "12", snapshot: {} })).url,
+    };
+  };
+  const everywhere = (link: string) => ({ listed: link, read: link, artifact: link });
+  const probes = (gh: FakeTracker) => gh.requests.filter((r) => r.path === "/pages");
+  const unknown = (events: Logged[]) => events.filter((e) => e.event === "github.pages.unknown");
+
+  it("links the file on GitHub when the repository has no Pages site, and says nothing about it", async () => {
+    const { gh, spec } = published();
+    const events: Logged[] = [];
+    expect(await links(gh, spec, events)).toEqual(everywhere(FILE_12));
+    // A 404 is an answer, not a failure.
+    expect(unknown(events)).toEqual([]);
+  });
+
+  it.each([
+    ["the default domain", "https://acme.github.io/widgets/", "https://acme.github.io/widgets/specs/12/"],
+    ["a custom domain, with no trailing slash", "https://docs.acme.dev", "https://docs.acme.dev/specs/12/"],
+    ["a custom domain served over http", "http://docs.acme.dev/", "http://docs.acme.dev/specs/12/"],
+  ])("links the site's own page when it publishes gh-pages at %s", async (_, htmlUrl, link) => {
+    const { gh, spec } = published();
+    gh.pages({ html_url: htmlUrl });
+    expect(await links(gh, spec)).toEqual(everywhere(link));
+  });
+
+  /*
+   * A 200 says a site exists, not that it serves this branch. One built from
+   * main's docs folder, or deployed by a workflow, answers every spec path
+   * with a 404 — the same dead link, on a different host.
+   */
+  it.each<[string, Partial<FakePages>]>([
+    ["main:/docs", { source: { branch: "main", path: "/docs" } }],
+    ["gh-pages:/docs", { source: { branch: "gh-pages", path: "/docs" } }],
+    ["an Actions workflow", { build_type: "workflow" }],
+  ])("links the file when the site is built from %s, which serves no spec page", async (_, site) => {
+    const { gh, spec } = published();
+    gh.pages({ html_url: "https://acme.github.io/widgets/", ...site });
+    expect(await links(gh, spec)).toEqual(everywhere(FILE_12));
+  });
+
+  it.each([
+    [403, "a token without Pages: Read"],
+    [500, "a server error"],
+  ])("links the file on a %i (%s), logs why once, fails nothing, and asks again next time", async (status) => {
+    const { gh, spec, ctx } = published();
+    gh.pages(status);
+    const events: Logged[] = [];
+
+    expect(await links(gh, spec, events)).toEqual(everywhere(FILE_12));
+    // Not an answer, so not kept: each of the three asked again.
+    expect(probes(gh)).toHaveLength(3);
+    expect(unknown(events)).toEqual([
+      { event: "github.pages.unknown", data: { reason: expect.stringContaining(String(status)) } },
+    ]);
+
+    gh.pages({ html_url: "https://acme.github.io/widgets/" });
+    expect((await spec.read(ctx("12"))).url).toBe("https://acme.github.io/widgets/specs/12/");
+  });
+
+  it("links the file, and says why, when GitHub describes the site with no web address", async () => {
+    const { gh, spec } = published();
+    gh.pages({ html_url: "javascript:alert(1)" });
+    const events: Logged[] = [];
+    expect(await links(gh, spec, events)).toEqual(everywhere(FILE_12));
+    expect(unknown(events)).toEqual([
+      { event: "github.pages.unknown", data: { reason: expect.stringContaining("html_url") } },
+    ]);
+  });
+
+  it("links the file when the connection drops, and fails nothing", async () => {
+    const { gh } = published();
+    const dropping = (async (input: string | URL, init?: RequestInit) => {
+      if (new URL(String(input)).pathname.endsWith("/pages")) throw new TypeError("fetch failed");
+      return gh.fetchImpl(input, init);
+    }) as typeof fetch;
+    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: dropping });
+    const events: Logged[] = [];
+    const log = (event: string, data?: Record<string, unknown>) => { events.push({ event, data }); };
+
+    expect((await hooks.specArtifact.read({ ...gh.ctx, log, ticket: "12", snapshot: {} })).url).toBe(FILE_12);
+    expect(unknown(events)).toEqual([
+      { event: "github.pages.unknown", data: { reason: expect.stringContaining("fetch failed") } },
+    ]);
+  });
+
+  it.each<[string, FakePages | null]>([
+    ["no site", null],
+    ["a site", { html_url: "https://acme.github.io/widgets/" }],
+  ])("asks once per client when the answer is definitive (%s), however many reads", async (_, site) => {
+    const { gh, spec, ctx } = published();
+    gh.pages(site);
+    // Side by side first, the way a pass reads several tickets: the question
+    // still in flight is the one they share, not one each.
+    await Promise.all([spec.read(ctx("12")), spec.read(ctx("13")), links(gh, spec)]);
+    await links(gh, spec);
+    await links(gh, spec);
+    expect(probes(gh)).toHaveLength(1);
   });
 });

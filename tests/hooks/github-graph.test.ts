@@ -600,7 +600,9 @@ describe("a read carries the ticket's whole subtree", () => {
  */
 describe("a published spec page is a document node", () => {
   const spec = (ticket: string): Node => ({
-    id: `spec-${ticket}`, kind: "document", title: "Spec", link: `https://acme.github.io/widgets/specs/${ticket}/`,
+    id: `spec-${ticket}`, kind: "document", title: "Spec",
+    // The fake has no Pages site unless a test gives it one, so the page is linked as the file.
+    link: `https://github.com/acme/widgets/blob/gh-pages/specs/${ticket}/index.md`,
     closed: null, priority: null, origin: null, state: {},
   });
   const documents = (g: Graph) => g.nodes.filter((n) => n.kind === "document");

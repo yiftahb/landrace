@@ -386,9 +386,10 @@ describe("the spec phase routes on what the step actually said", () => {
     // so the judge was shown its own placeholder and asked to classify it.
     expect(r.prompts.find((p) => p.stage === "triage")?.prompt).toContain("looks right, go ahead");
     // `{artifacts.spec.url}` in build.md and code-review.md, filled by the
-    // artifact's own read rather than by a value a test supplied.
+    // artifact's own read rather than by a value a test supplied — the file on
+    // GitHub, since the fake repository publishes no Pages site.
     expect(r.prompts.find((p) => p.stage === "build")?.prompt)
-      .toContain("https://acme.github.io/widgets/specs/1/");
+      .toContain("https://github.com/acme/widgets/blob/gh-pages/specs/1/index.md");
     // Through the spec phase and the whole review cycle in one call, settling
     // on the workflow's own budget rather than on the engine's pass cap.
     expect(r.result.settled).not.toBe("cap");

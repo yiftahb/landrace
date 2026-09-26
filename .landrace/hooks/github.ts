@@ -479,6 +479,20 @@ function createClient(opts: GitHubOptions) {
       }
     },
 
+    /**
+     * How GitHub describes this repository's Pages site, or null when it has
+     * none. Any other failure is thrown: a 403 from a token without "Pages:
+     * Read" says nothing about whether a site exists.
+     */
+    pagesSite: async (): Promise<unknown> => {
+      try {
+        return await call<unknown>("GET", "/pages");
+      } catch (e) {
+        if (isMissing(e)) return null;
+        throw e;
+      }
+    },
+
     /** A file's content on `branch`, or null if the branch or the file is not there. */
     getFile: async (branch: string, path: string): Promise<string | null> => {
       try {
@@ -779,13 +793,59 @@ const pagePath = (ticket: string): string => `specs/${ticket}/index.md`;
 /** The ticket a path on the Pages branch is the spec page of, when it is one. */
 const ticketOfPage = (path: string): string | null => /^specs\/([1-9][0-9]*)\/index\.md$/.exec(path)?.[1] ?? null;
 
-const pageUrl = (repo: string, ticket: string): string => {
-  // GitHub's own default domain for a project site. A repository serving Pages
-  // from a custom domain publishes to the same branch and path; only the
-  // origin below differs, and it would be the one thing worth configuring.
-  const [owner, name] = repo.split("/");
-  return `https://${owner}.github.io/${name}/specs/${ticket}/`;
-};
+/** The page as a file on GitHub, which anyone who can see the repository can open. */
+const fileUrl = (repo: string, ticket: string): string =>
+  `https://github.com/${repo}/blob/${[PAGES_BRANCH, ...pagePath(ticket).split("/")].map(encodeURIComponent).join("/")}`;
+
+/**
+ * Where a Pages site serves the spec pages, or null when it serves none of
+ * them. A 200 says a site exists, not that it serves this branch: one built
+ * from main's docs folder, or deployed by an Actions workflow, answers every
+ * spec path with a 404 — the dead link this exists to stop handing out. The
+ * root is GitHub's own `html_url`, so a custom domain needs no configuring.
+ */
+function pagesRoot(site: unknown): string | null {
+  const s = site as { html_url?: unknown; build_type?: unknown; source?: { branch?: unknown; path?: unknown } | null } | null;
+  if (s === null || s.build_type === "workflow" || s.source?.branch !== PAGES_BRANCH || s.source.path !== "/") return null;
+  if (typeof s.html_url !== "string" || !/^https?:\/\//.test(s.html_url)) {
+    throw new Error(`GitHub described the Pages site with no usable html_url (${String(s.html_url)})`);
+  }
+  return s.html_url.replace(/\/*$/, "/");
+}
+
+/**
+ * A spec page's link, from one question per client: does a Pages site serve
+ * the gh-pages branch? The listed node, the read node and the artifact's url
+ * all come through here, so they cannot disagree about a ticket. A private
+ * repository with no site 404s at every github.io link, so without a site the
+ * link is the file on GitHub, which any viewer of the repository can open.
+ *
+ * Only an answer is kept. A 403, a 5xx or a dropped connection says nothing
+ * either way, so it costs this call the file link and a line in the log —
+ * once, not every tick — and the next call asks again.
+ */
+function specLinks(gh: Client, repo: string) {
+  // ponytail: kept for the process's lifetime — a Pages site enabled or removed later shows after a restart.
+  let root: Promise<string | null> | undefined;
+  let told = false;
+  return async (ticket: string, log: HookContext["log"]): Promise<string> => {
+    root ??= gh.pagesSite().then(pagesRoot).catch((e: unknown) => {
+      root = undefined;
+      if (!told) {
+        told = true;
+        log("github.pages.unknown", {
+          reason: `could not tell whether a Pages site serves ${PAGES_BRANCH}, so spec links point at the file ` +
+            `on GitHub until a later read can: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+      return null;
+    });
+    const at = await root;
+    return at === null ? fileUrl(repo, ticket) : `${at}specs/${ticket}/`;
+  };
+}
+
+type SpecLink = ReturnType<typeof specLinks>;
 
 /**
  * The same page as the graph reports it: a document beside its ticket, so the
@@ -793,11 +853,11 @@ const pageUrl = (repo: string, ticket: string): string => {
  * there is nothing to remember about it — and nothing routes on it: what the
  * workflow reads is `artifacts.spec`, below, exactly as before.
  */
-const specNode = (repo: string, ticket: string): Node => ({
+const specNode = (ticket: string, link: string): Node => ({
   id: `spec-${ticket}`,
   kind: DOCUMENT_KIND,
   title: "Spec",
-  link: pageUrl(repo, ticket),
+  link,
   closed: null,
   priority: null,
   origin: null,
@@ -826,11 +886,11 @@ function mine(effect: Effect): void {
   }
 }
 
-async function readPage(gh: Client, repo: string, ticket: string): Promise<Record<string, unknown>> {
+async function readPage(gh: Client, link: SpecLink, ticket: string, log: HookContext["log"]): Promise<Record<string, unknown>> {
   const content = await gh.getFile(PAGES_BRANCH, pagePath(ticket));
   // `exists` and a content hash are the whole state: presence is what a
   // precondition reads, and the hash is what makes a republish a no-op.
-  return { exists: content !== null, hash: content === null ? null : hashOf(content), url: pageUrl(repo, ticket) };
+  return { exists: content !== null, hash: content === null ? null : hashOf(content), url: await link(ticket, log) };
 }
 
 async function publishPage(gh: Client, effect: Effect, ticket: string): Promise<void> {
@@ -1197,7 +1257,7 @@ async function publishedSpecs(gh: Client, ctx: RuntimeContext): Promise<Set<stri
  * labels list as unprioritised, and a pull request naming two tickets lists
  * with no edge at all. `read` of that ticket is where either halts, naming it.
  */
-async function listGraph(gh: Client, repo: string, ctx: RuntimeContext): Promise<Graph> {
+async function listGraph(gh: Client, repo: string, link: SpecLink, ctx: RuntimeContext): Promise<Graph> {
   const [owner = "", name = ""] = repo.split("/");
   const nodes = new Map<string, Node>();
   const parentOf = new Map<string, string>();
@@ -1280,7 +1340,7 @@ async function listGraph(gh: Client, repo: string, ctx: RuntimeContext): Promise
   const paged = await publishedSpecs(gh, ctx);
   for (const ticket of nodes.keys()) {
     if (!paged.has(ticket)) continue;
-    const page = specNode(repo, ticket);
+    const page = specNode(ticket, await link(ticket, ctx.log));
     listed.push(page);
     relationships.push({ from: page.id, to: ticket, type: RELATIONS.documents });
   }
@@ -1329,7 +1389,7 @@ async function pullsOf(gh: Client, repo: string, ticket: string): Promise<{ issu
  * stops at MAX_SUBGRAPH_NODES rather than paying for a graph the engine would
  * refuse anyway.
  */
-async function readGraph(gh: Client, repo: string, ticket: string): Promise<Graph> {
+async function readGraph(gh: Client, repo: string, link: SpecLink, ticket: string, ctx: RuntimeContext): Promise<Graph> {
   const bot = await gh.botLogin();
   const root = await pullsOf(gh, repo, ticket);
 
@@ -1401,7 +1461,7 @@ async function readGraph(gh: Client, repo: string, ticket: string): Promise<Grap
   // again for its hash — the two run in different phases of the snapshot, and
   // nothing may be carried from one to the other.
   if ((await gh.getFile(PAGES_BRANCH, pagePath(ticket))) !== null) {
-    const page = specNode(repo, ticket);
+    const page = specNode(ticket, await link(ticket, ctx.log));
     add(page);
     relationships.push({ from: page.id, to: ticket, type: RELATIONS.documents });
   }
@@ -1712,6 +1772,7 @@ export function githubHooks(opts: GitHubOptions): {
   preflight: Preflight;
 } {
   const gh = createClient(opts);
+  const link = specLinks(gh, opts.repo);
 
   return {
     preflight: definePreflight({ id: "github", check: () => checkPermissions(gh, opts.repo) }),
@@ -1722,7 +1783,7 @@ export function githubHooks(opts: GitHubOptions): {
     specArtifact: defineArtifactHook({
       id: SPEC,
       handles: [PUBLISH],
-      read: ({ ticket }) => readPage(gh, opts.repo, ticket),
+      read: ({ ticket, log }) => readPage(gh, link, ticket, log),
       satisfied: publishSatisfied,
       apply: (effect, { ticket }) => publishPage(gh, effect, ticket),
     }),
@@ -1743,8 +1804,8 @@ export function githubHooks(opts: GitHubOptions): {
     source: defineSource({
       id: "github",
       relations: RELATION_DECLS,
-      list: (ctx) => listGraph(gh, opts.repo, ctx),
-      read: (id) => readGraph(gh, opts.repo, id),
+      list: (ctx) => listGraph(gh, opts.repo, link, ctx),
+      read: (id, ctx) => readGraph(gh, opts.repo, link, id, ctx),
       // The text half, fetched per invocation rather than per pass: what
       // `fix-review` is told to address, which the graph will not carry.
       brief: ({ ticket }) => briefThreads(gh, opts.repo, ticket),
