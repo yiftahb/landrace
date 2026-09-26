@@ -490,9 +490,10 @@ const blockSource = (name: string): string => {
 };
 
 /**
- * The Retry on a stopped ticket's menu. It hands the ticket back, which
- * re-runs a paid step, so it is offered only where the server says so, asks
- * first, and posts to the path the server built — never one of its own.
+ * A row's actions menu: this ticket's writes — Retry, and Go to step… to
+ * each stage the server offers — each offered only where the server put a
+ * path in the row, asked before either posts, and posted to the path the
+ * server built alone; the Chat caption and its targets follow, as before.
  */
 describe("a stopped ticket's Retry", () => {
   class Listening extends FakeElement {
@@ -502,8 +503,8 @@ describe("a stopped ticket's Retry", () => {
     override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
   }
   const doc = { createElement: (tag: string) => new Listening(tag), createElementNS: (_: string, tag: string) => new Listening(tag) };
-  const row = (retry: string | null) => ({
-    id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry,
+  const row = (retry: string | null, goto: Array<{ stage: string; path: string }> = []) => ({
+    id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry, goto,
   });
 
   /** The menu for a row, with the world a click reaches stood in for and written down. */
@@ -525,22 +526,32 @@ describe("a stopped ticket's Retry", () => {
     };
     const menu = runInNewContext(`
       ${constSource("SVG_NS")}${blockSource("CHAT_TARGETS")}
-      const retryNotes = new Map();
-      const retrying = new Set();
-      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "retryItem", "retry", "buildChatMenu"].map(fnSource).join("")}
-      buildChatMenu(ROW)`, context) as Listening;
+      const writeNotes = new Map();
+      const writing = new Set();
+      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "buildRowMenu"].map(fnSource).join("")}
+      buildRowMenu(ROW)`, context) as Listening;
     return { menu, seen, context };
   };
   const items = (menu: Listening): string[] => menu.children.map((c) => (c.tag === "hr" ? "—" : c.textContent));
   const retryOf = (menu: Listening): Listening | undefined =>
     menu.children.find((c) => c.getAttribute("data-key") === "19:retry") as Listening | undefined;
+  const gotoOf = (menu: Listening, stage: string): Listening | undefined =>
+    menu.children.find((c) => c.getAttribute("data-key") === `19:goto:${stage}`) as Listening | undefined;
+  const BACK = [{ stage: "spec", path: "/tickets/19/goto/spec" }, { stage: "build", path: "/tickets/19/goto/build" }];
   const settle = () => new Promise((r) => setTimeout(r, 0));
 
-  it("comes last, after every chat item, and only on a row the server offered it for", () => {
+  it("comes first, before the Chat caption and every chat item, and only on a row the server offered it for", () => {
     expect(items(menuFor(row("/tickets/19/retry")).menu)).toEqual([
-      "Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt", "—", "Retry",
+      "Retry", "—", "Chat", "Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt",
     ]);
-    expect(items(menuFor(row(null)).menu)).toEqual(["Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt"]);
+    expect(items(menuFor(row(null)).menu)).toEqual(["Chat", "Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt"]);
+  });
+
+  it("lists the steps the server offered under Go to step…, before the writes' divider", () => {
+    expect(items(menuFor(row("/tickets/19/retry", BACK)).menu)).toEqual([
+      "Retry", "Go to step…", "spec", "build", "—", "Chat", "Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt",
+    ]);
+    expect(items(menuFor(row(null, BACK)).menu).slice(0, 3)).toEqual(["Go to step…", "spec", "build"]);
   });
 
   it("is a menu item, keyed so focus on it survives a poll", () => {
@@ -576,7 +587,7 @@ describe("a stopped ticket's Retry", () => {
     expect(seen.closed).toEqual([]);
     // Redrawn from state, so the sentence outlives the render every poll does.
     expect(seen.renders).toBeGreaterThan(0);
-    const again = runInNewContext("buildChatMenu(ROW)", context) as Listening;
+    const again = runInNewContext("buildRowMenu(ROW)", context) as Listening;
     expect(retryOf(again)?.textContent).toMatch(/not blocked or screened/);
   });
 
@@ -584,8 +595,52 @@ describe("a stopped ticket's Retry", () => {
     const { menu, context } = menuFor(row("/tickets/19/retry"), { response: "down" });
     retryOf(menu)?.listeners.get("click")?.();
     await settle();
-    const again = runInNewContext("buildChatMenu(ROW)", context) as Listening;
+    const again = runInNewContext("buildRowMenu(ROW)", context) as Listening;
     expect(retryOf(again)?.textContent).toMatch(/not responding/);
+  });
+
+  it("asks, then posts to the step's own path with the goto header", async () => {
+    const { menu, seen } = menuFor(row(null, BACK));
+    gotoOf(menu, "build")?.listeners.get("click")?.();
+    await settle();
+    expect(seen.confirms[0]).toMatch(/#19[\s\S]*build[\s\S]*paid step/);
+    expect(seen.posts).toEqual([["/tickets/19/goto/build", { method: "POST", headers: { "x-landrace-action": "goto" } }]]);
+  });
+
+  it("shows a refusal on the item that asked, and only there", async () => {
+    const { menu, context } = menuFor(row("/tickets/19/retry", BACK), { response: { ok: false, text: "past its cap" } });
+    gotoOf(menu, "build")?.listeners.get("click")?.();
+    await settle();
+    const again = runInNewContext("buildRowMenu(ROW)", context) as Listening;
+    expect(gotoOf(again, "build")?.textContent).toBe("past its cap");
+    expect(retryOf(again)?.textContent).toBe("Retry");
+  });
+
+  it("forgets a refusal once its menu closes", async () => {
+    const { menu, context } = menuFor(row("/tickets/19/retry"), { response: { ok: false, text: "nope" } });
+    retryOf(menu)?.listeners.get("click")?.();
+    await settle();
+    expect(runInNewContext("writeNotes.size", context)).toBe(1);
+    // closeMenu reads openMenuKey and two helpers from the page's globals.
+    Object.assign(context, { openMenuKey: "19:menu", applyMenuState: () => {}, clearIdleTimer: () => {} });
+    runInNewContext(`${fnSource("closeMenu")} closeMenu();`, context);
+    expect(runInNewContext("writeNotes.size", context)).toBe(0);
+  });
+
+  it("draws a needs-you row's action button as ⋯ too, bordered for emphasis, with an aria-label of Actions", () => {
+    const context = { ROW: { ...row(null), badge: "needs-you" }, document: doc, navigator: {}, lastView: {} };
+    const wrap = runInNewContext(`
+      ${constSource("SVG_NS")}${blockSource("CHAT_TARGETS")}
+      const writeNotes = new Map();
+      const writing = new Set();
+      function menuKeyOf(id) { return id + ":menu"; }
+      function triggerKeyOf(id) { return id + ":trigger"; }
+      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "buildRowMenu", "actionFor"].map(fnSource).join("")}
+      actionFor(ROW)`, context) as Listening;
+    const trigger = wrap.children[0] as Listening;
+    expect(trigger.textContent).toBe("⋯");
+    expect(trigger.getAttribute("aria-label")).toBe("Actions");
+    expect(trigger.className).toContain("border");
   });
 });
 
@@ -814,9 +869,10 @@ describe("the page", () => {
     expect(APP_JS).toContain('"None"');
   });
 
-  it("renders a Chat action on needs-you rows and an inert one everywhere else", () => {
+  it("draws the same ⋯ action on every row, only its border marking a needs-you row", () => {
     expect(APP_JS).toContain('row.badge === "needs-you"');
-    expect(APP_JS).toContain("Chat ▾");
+    expect(APP_JS).not.toContain("Chat ▾");
+    expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
   it("wires exactly the tick button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, and the two document-level close listeners — no more, no less", () => {
@@ -824,12 +880,13 @@ describe("the page", () => {
     // search box and the one Collapse all / Expand all button (each wired once, outside
     // anything a render rebuilds), the collapsible lanes' summary clicks
     // (defined once, in a loop over the two), the expand/collapse toggle
-    // (defined once, in toggleFor, not once per row), and for the Chat/… menu
-    // one toggle-button listener, one close-on-choose listener (defined once
-    // inside the per-target loop), one Copy-prompt listener, one Retry
-    // listener (defined once, in retryItem, and built only on a stopped
-    // ticket's menu), and one document listener each for outside-click and
-    // Escape (both defined once, so re-rendering never multiplies them).
+    // (defined once, in toggleFor, not once per row), and for the row's ⋯
+    // menu one toggle-button listener, one close-on-choose listener (defined
+    // once inside the per-target loop), one Copy-prompt listener, one write
+    // listener (defined once, in writeItem, shared by Retry and every Go to
+    // step… target, and built only where the server offered one), and one
+    // document listener each for outside-click and Escape (both defined
+    // once, so re-rendering never multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
     expect(listeners).toHaveLength(12);
   });

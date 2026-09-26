@@ -214,12 +214,12 @@ const CHAT_TARGETS = [
 // element for a key is always one fresh lookup away.
 let openMenuKey = null;
 
-// Per ticket, what the last Retry heard back when it did not go through, and
-// which Retries are still waiting on the server. Module state rather than the
-// DOM's, because every poll rebuilds every menu: a sentence written only into
-// a button would be gone two seconds later.
-const retryNotes = new Map();
-const retrying = new Set();
+// Per write — "<id>:retry", "<id>:goto:<stage>" — what the last attempt heard
+// back when it did not go through, and which are still waiting on the server.
+// Module state rather than the DOM's, because every poll rebuilds every menu:
+// a sentence written only into a button would be gone two seconds later.
+const writeNotes = new Map();
+const writing = new Set();
 
 function menuKeyOf(id) { return id + ":menu"; }
 function triggerKeyOf(id) { return id + ":trigger"; }
@@ -278,8 +278,10 @@ function closeMenu(opts) {
   if (openMenuKey === null) return;
   const previous = openMenuKey;
   openMenuKey = null;
-  // A refusal is shown for the menu it was asked from, not for good.
-  retryNotes.delete(previous);
+  // A refusal is shown for the menu it was asked from, not for good. Keyed
+  // by write, so every note under this menu's ticket goes.
+  const prefix = previous.slice(0, previous.length - "menu".length);
+  for (const key of [...writeNotes.keys()]) if (key.startsWith(prefix)) writeNotes.delete(key);
   applyMenuState(previous);
   clearIdleTimer();
   if (opts && opts.returnFocus) {
@@ -309,52 +311,82 @@ function menuItem(tag) {
   return node;
 }
 
-// The Retry on a stopped ticket's menu — offered only when the server put a
-// path in row.retry, which it does for a blocked or screened ticket alone.
-function retryItem(row) {
+// One of a ticket's writes — Retry, or a step to send it back to. Offered
+// only where the server put a path in the row, and posted to that path alone.
+function writeItem(w) {
   const item = menuItem("button");
   item.type = "button";
-  item.setAttribute("data-key", row.id + ":retry");
+  item.setAttribute("data-key", w.key);
   // Its own label is what changes, so that is what a screen reader is told.
   item.setAttribute("aria-live", "polite");
-  const busy = retrying.has(row.id);
-  item.textContent = busy ? "Retrying…" : (retryNotes.get(row.id) || "Retry");
+  const busy = writing.has(w.key);
+  item.textContent = busy ? w.busy : (writeNotes.get(w.key) || w.label);
   item.disabled = busy;
-  item.addEventListener("click", () => retry(row));
+  item.addEventListener("click", () => send(w));
   return item;
 }
 
-// A Retry hands the ticket back, and that re-runs a paid step, so it asks
-// first. It posts to the server's own path for this row — this script never
-// puts a URL together — and the server checks again that the ticket is still
-// stopped. What comes back when it is refused is shown where it was asked.
-function retry(row) {
-  if (retrying.has(row.id)) return;
-  if (!confirm("Retry #" + row.id + "? This hands the ticket back and re-runs a paid step.")) return;
-  retrying.add(row.id);
-  retryNotes.delete(row.id);
+// Each write re-runs a paid step, so it asks first. The server checks again
+// that the ticket may go there now, and what it says when it refuses is
+// shown where it was asked.
+function send(w) {
+  if (writing.has(w.key)) return;
+  if (!confirm(w.ask)) return;
+  writing.add(w.key);
+  writeNotes.delete(w.key);
   if (lastView) render(lastView);
-  fetch(row.retry, { method: "POST", headers: { "x-landrace-action": "retry" } })
-    .then((res) => (res.ok ? null : res.text().then((text) => text || "Retry failed", () => "Retry failed")))
-    .then(null, () => "Retry failed: landrace is not responding")
+  fetch(w.path, { method: "POST", headers: { "x-landrace-action": w.action } })
+    .then((res) => (res.ok ? null : res.text().then((text) => text || w.label + " failed", () => w.label + " failed")))
+    .then(null, () => w.label + " failed: landrace is not responding")
     .then((problem) => {
-      retrying.delete(row.id);
+      writing.delete(w.key);
       if (problem === null) {
         closeMenu({ returnFocus: true });
         schedulePoll(0);
         return;
       }
-      retryNotes.set(row.id, problem);
+      writeNotes.set(w.key, problem);
       if (lastView) render(lastView);
     });
 }
 
-// The Chat menu's contents never change per badge — only which button opens
-// it does (see actionFor) — so both "Chat ▾" and "…" share this builder.
-function buildChatMenu(row) {
+// A stopped ticket's Retry — back to the step that failed — and the steps
+// its stage may send it back to, under a caption that is not itself an item.
+function writesOf(row) {
+  const items = [];
+  if (row.retry) {
+    items.push(writeItem({
+      key: row.id + ":retry", label: "Retry", busy: "Retrying…", path: row.retry, action: "retry",
+      ask: "Retry #" + row.id + "? This sends it back to the step that failed and re-runs a paid step.",
+    }));
+  }
+  const targets = row.goto || [];
+  if (targets.length) {
+    const caption = el("div", "px-3 pt-2 pb-1 text-[11px] text-neutral-500 dark:text-neutral-400", "Go to step…");
+    caption.setAttribute("role", "presentation");
+    items.push(caption);
+    for (const g of targets) {
+      items.push(writeItem({
+        key: row.id + ":goto:" + g.stage, label: g.stage, busy: "Sending…", path: g.path, action: "goto",
+        ask: "Send #" + row.id + " back to " + g.stage + "? This re-runs a paid step.",
+      }));
+    }
+  }
+  return items;
+}
+
+// A row's actions: its writes (Retry, Go to step…), if the server offered
+// any, then a divider, then the Chat caption and its targets — the same menu
+// regardless of which row's ⋯ opens it (see actionFor).
+function buildRowMenu(row) {
   const menu = el("div", "absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
   menu.setAttribute("role", "menu");
   menu.hidden = true;
+  const writes = writesOf(row);
+  if (writes.length) menu.append(...writes, el("hr", "my-1 border-neutral-100 dark:border-neutral-800"));
+  const chatCaption = el("div", "px-3 pt-2 pb-1 text-[11px] text-neutral-500 dark:text-neutral-400", "Chat");
+  chatCaption.setAttribute("role", "presentation");
+  menu.append(chatCaption);
   for (const target of CHAT_TARGETS) {
     const a = menuItem("a");
     // Keyed like the trigger/menu (see actionFor) — render()'s restore-by-key
@@ -392,12 +424,12 @@ function buildChatMenu(row) {
     );
   });
   menu.append(copy);
-  if (row.retry) menu.append(el("hr", "my-1 border-neutral-100 dark:border-neutral-800"), retryItem(row));
   return menu;
 }
 
-// The "..." / "Chat ▾" slot on the right of every row, both opening the same
-// menu (Claude Code / Claude Code (CLI) / Cursor / Codex / a divider / Copy prompt).
+// The "⋯" slot on the right of every row with actions — bordered for extra
+// emphasis on a needs-you row, so a row waiting on you still stands out —
+// opening the same menu (see buildRowMenu).
 function actionFor(row) {
   const needsYou = row.badge === "needs-you";
   const button = el(
@@ -405,16 +437,16 @@ function actionFor(row) {
     needsYou
       ? "inline-flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
       : "inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500",
-    needsYou ? "Chat ▾" : "⋯",
+    "⋯",
   );
   button.type = "button";
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-expanded", "false");
   button.setAttribute("data-key", triggerKeyOf(row.id));
-  if (!needsYou) button.setAttribute("aria-label", "Chat");
+  button.setAttribute("aria-label", "Actions");
 
   const wrap = el("div", "relative shrink-0 self-start sm:self-auto");
-  const menu = buildChatMenu(row);
+  const menu = buildRowMenu(row);
   menu.setAttribute("data-key", menuKeyOf(row.id));
   button.addEventListener("click", () => toggleMenu(row.id));
   wrap.append(button, menu);
