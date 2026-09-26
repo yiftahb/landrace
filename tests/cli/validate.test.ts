@@ -245,6 +245,12 @@ describe("landrace validate and the servers a step may use", () => {
     expect(r.problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/does not exist; `agsync sync` generates it/) }]);
   });
 
+  // The one `start` used to refuse in the executor and `validate` passed.
+  it("reports a server name the agent's argv could not carry whole", async () => {
+    const r = await runValidate(await repo('"my server"', { mcpServers: { "my server": { command: "cbm" } } }));
+    expect(r.problems).toEqual([{ rule: "mcp", message: expect.stringContaining('"my server"') }]);
+  });
+
   it("reports the operator server, by name and by command", async () => {
     const r = await runValidate(await repo("landrace, tickets", { mcpServers: {
       landrace: { command: "node", args: ["dist/cli.js", "mcp"] },

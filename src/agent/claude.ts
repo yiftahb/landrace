@@ -14,16 +14,16 @@ import { messageOf } from "#runner/errors.js";
  * not the other, so every value that reaches argv is checked against the
  * shape it is actually allowed to have, not merely isolated.
  */
-const ARG_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+export const ARG_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** The CLI's tools that edit a file or run a command: what a read-only step is denied by name. */
 const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
 
 /**
  * The name the bound create_child server runs under, and the one name an
- * allowlisted server may therefore never have: two definitions under one key
- * is one of them silently replacing the other, and the one that loses could be
- * the binding.
+ * allowlisted server may therefore never have — `resolveStepServers` refuses
+ * it at startup: two definitions under one key is one of them silently
+ * replacing the other, and the one that loses could be the binding.
  */
 const CHILD_SERVER_NAME = "landrace";
 
@@ -153,8 +153,10 @@ export function createClaudeExecutor(opts: {
   plugins?: StepTools["plugins"];
   /**
    * The MCP servers a declared run may use, by name, as the repository root's
-   * `.mcp.json` defines them — resolved and vetted once at startup, never read
-   * from the worktree the agent runs in.
+   * `.mcp.json` defines them — resolved and vetted once at startup by
+   * `resolveStepServers` (config/mcp.ts), which is where a name that argv
+   * could not carry whole, or that collides with the child server's, is
+   * refused. Never read from the worktree the agent runs in.
    */
   mcpServers?: StepTools["mcpServers"];
 } = {}): Executor {
@@ -172,18 +174,6 @@ export function createClaudeExecutor(opts: {
     plugins = [],
     mcpServers = {},
   } = opts;
-
-  // Each name reaches argv as `mcp__<name>` in `--allowedTools`, which the CLI
-  // splits on spaces and commas: a server called "x Bash" would allow Bash.
-  for (const name of Object.keys(mcpServers)) {
-    if (name === CHILD_SERVER_NAME) {
-      throw new Error(
-        `refused mcp server "${name}": that name is reserved for the create_child server a step is bound to, ` +
-        "and landrace's own operator tools must never reach a step agent",
-      );
-    }
-    assertArgShape("mcp server", name);
-  }
 
   if (permissionMode === "bypassPermissions") {
     // Not attacker-reachable (it is construction-time operator config), but

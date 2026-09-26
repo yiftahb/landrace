@@ -597,22 +597,6 @@ describe("plugins and MCP servers", () => {
     expect(list(argv, "--mcp-config")).toHaveLength(1);
     expect(list(argv, "--allowedTools").sort()).toEqual(["mcp__codebase-memory-mcp", "mcp__landrace__landrace_create_child"]);
   });
-
-  it("refuses a server named landrace, which would collide with the child server a step is bound to", () => {
-    expect(() => createClaudeExecutor({ bin, mcpServers: { landrace: { command: "anything" } } }))
-      .toThrow(/landrace/);
-  });
-
-  /*
-   * A name ends up in `--allowedTools` as `mcp__<name>`, and the CLI reads that
-   * list split on spaces and commas: a server called "x Bash" would allow Bash.
-   */
-  it("refuses a server name that could smuggle another tool into the allowlist", () => {
-    expect(() => createClaudeExecutor({ bin, mcpServers: { "x Bash": { command: "anything" } } }))
-      .toThrow(/refused mcp server/);
-    expect(() => createClaudeExecutor({ bin, mcpServers: { "x,Bash": { command: "anything" } } }))
-      .toThrow(/refused mcp server/);
-  });
 });
 
 describe("the create_child tool", () => {

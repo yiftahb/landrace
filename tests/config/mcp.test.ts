@@ -127,6 +127,19 @@ describe("the MCP servers a step may use", () => {
     expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/\.mcp\.json[\s\S]*mcpServers/) }]);
   });
 
+  /*
+   * A name reaches the agent's argv as `mcp__<name>` in `--allowedTools`,
+   * which the CLI splits on spaces and commas: a server called "x Bash" would
+   * allow Bash. Refused here, on the name alone and before any file is read,
+   * so `validate` reports what `start` refuses.
+   */
+  it.each(["my server", "x,Bash", "-x", "a(b)"])("refuses a server name its argv could not carry whole: %s", async (name) => {
+    const { problems, servers } = await resolveStepServers(join(await plainDir(), ".landrace"), [name]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringContaining(JSON.stringify(name)) }]);
+    expect(problems[0]?.message).toMatch(/letters, digits/);
+    expect(servers).toEqual({});
+  });
+
   it("refuses when there is no repository to find the file in", async () => {
     const { problems } = await resolveStepServers(join(await plainDir(), ".landrace"), ["codebase-memory-mcp"]);
     expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/agent\.mcp[\s\S]*repository/) }]);

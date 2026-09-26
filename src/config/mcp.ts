@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { ARG_SHAPE } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { messageOf } from "#runner/errors.js";
 import type { McpServer, Problem, ResolvedMcp } from "#namespace.js";
@@ -45,6 +46,13 @@ const operatorProblem = (name: string, how: string): Problem => ({
     "tickets — a step holding them could move its own ticket — so operator tools must never reach a step agent",
 });
 
+const shapeProblem = (what: string): Problem => ({
+  rule: "mcp",
+  message:
+    `agent.mcp names ${what}, which the agent's command line cannot carry as one name: ` +
+    "use letters, digits, '.', '_' and '-', starting with a letter or digit",
+});
+
 /**
  * The servers `agent.mcp` allows, looked up by name in the repository root's
  * `.mcp.json` — once, at startup, never per step.
@@ -62,10 +70,19 @@ export async function resolveStepServers(dir: string, names: readonly string[]):
   const wanted = [...new Set(names)];
   if (wanted.length === 0) return { servers: {}, problems: [] };
 
-  // Refused on the name alone, before anything is read: this one needs no file
-  // to be wrong, and a missing file must not hide it.
-  const problems = wanted.filter((name) => name === OPERATOR_NAME).map((name) => operatorProblem(name, "which is"));
-  const rest = wanted.filter((name) => name !== OPERATOR_NAME);
+  // Refused on the name alone, before anything is read: these need no file to
+  // be wrong, and a missing file must not hide them. A name reaches the
+  // agent's argv as `mcp__<name>` in `--allowedTools`, which the CLI splits on
+  // spaces and commas — a server called "x Bash" would allow Bash — and
+  // `landrace` is both the operator server and the name the executor gives a
+  // step's create_child server.
+  const problems: Problem[] = [];
+  const rest: string[] = [];
+  for (const name of wanted) {
+    if (!ARG_SHAPE.test(name)) problems.push(shapeProblem(`a server named ${JSON.stringify(name)}`));
+    else if (name === OPERATOR_NAME) problems.push(operatorProblem(name, "which is"));
+    else rest.push(name);
+  }
   if (rest.length === 0) return { servers: {}, problems };
 
   const fail = (message: string): ResolvedMcp => ({ servers: {}, problems: [...problems, { rule: "mcp", message }] });
