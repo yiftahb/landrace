@@ -15,7 +15,7 @@ import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
-import type { Effect, ExternalState, GotoDeps, Harness, HookContext, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
+import type { Effect, ExternalState, GotoDeps, Harness, HookContext, PostHook, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
 
 /** The real GitHub hooks as the harness takes them: the registry, with its source proved present. */
 const hooksOf = (gh: ReturnType<typeof createFakeTracker>) => {
@@ -824,6 +824,24 @@ describe("a step refused by a security check", () => {
 });
 
 /**
+ * A post hook standing in for wherever the shipped `spec` step's `kind:
+ * "spec"` answer actually publishes to — a page, a wiki, a Pages branch — over
+ * the in-memory tracker, which speaks the conventions and publishes no
+ * documents of its own. Keeps each ticket's published body and reads it back
+ * as satisfied; nothing else about it is real. Shared by every world here
+ * that lets a real spec round settle without an integration behind it, so
+ * there is one definition of the stand-in rather than one per describe block.
+ */
+function specPageHook(pages: Map<string, string> = new Map<string, string>()): PostHook {
+  return definePostHook({
+    id: "spec-page",
+    handles: ["artifact.publish"],
+    satisfied: (snapshot, effect) => pages.get(String((snapshot.node as { id: string }).id)) === effect.body,
+    apply: async (effect, { ticket }) => { pages.set(ticket, String(effect.body)); },
+  });
+}
+
+/**
  * Spec §8: going back to a step, by a reply the judge reads and by the
  * command, over the in-memory tracker and the shipped workflow.
  */
@@ -840,16 +858,9 @@ describe("sending a ticket back to a step", () => {
   // that lets a real spec round settle over the in-memory tracker needs
   // something to publish it to, or converge halts on "no post hook handles
   // artifact.publish" before the round's own output record is ever written.
-  // The same stand-in `tests/fixtures/children`'s splitWorld() uses.
   const world = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen?: Record<string, ScriptedAnswer>) => {
     const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
-    const pages = new Map<string, string>();
-    const specPage = definePostHook({
-      id: "spec-page",
-      handles: ["artifact.publish"],
-      satisfied: (snapshot, effect) => pages.get(String((snapshot.node as { id: string }).id)) === effect.body,
-      apply: async (effect, { ticket }) => { pages.set(ticket, String(effect.body)); },
-    });
+    const specPage = specPageHook();
     const { workflow, steps } = await loadWorkflow(".landrace");
     const run = createHarness({
       workflow, steps, source: state.source, pre: [state.pre], post: [state.post, specPage], answers,
@@ -914,7 +925,11 @@ describe("sending a ticket back to a step", () => {
 
   it("stops a goto loop at the cap, saying why, and still goes where the cap allows", async () => {
     const NO = '```json\n{"verdict":"suspicious","reason":"x"}\n```';
-    const { state, run, deps } = await world(["lr:stage:build"], ANSWERS, { build: NO });
+    const OK = '```json\n{"verdict":"ok"}\n```';
+    // "spec" is screened too: once the cap sends this ticket there for real,
+    // its own round has to actually run rather than being screened out for
+    // want of a scripted verdict.
+    const { state, run, deps } = await world(["lr:stage:build"], ANSWERS, { build: NO, spec: OK });
     const tick = async () => { await run.converge(); await run.converge(); };
     await tick();
     for (let i = 0; i < 2; i++) {
@@ -924,6 +939,13 @@ describe("sending a ticket back to a step", () => {
     expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
     expect(await sendTo(deps, "1", null)).toEqual({ refused: expect.stringMatching(/run\.counters\.build/) });
     expect(await sendTo(deps, "1", "spec")).toEqual({ to: "spec" });
+
+    // "still goes where the cap allows" has to mean the ticket actually
+    // moves, not merely that sendTo said yes: a goto grant that decide()
+    // never acted on would leave the ticket sitting at screened for good.
+    const arrived = await run.converge();
+    expect(arrived.trail).toEqual(["spec", "spec-questions"]);
+    expect(state.stage("1")).toBe("spec-questions");
   });
 });
 
@@ -1071,13 +1093,7 @@ const CHILDREN = "tests/fixtures/children";
 
 const splitWorld = () => {
   const state = createExternalState({ tickets: [{ id: "1", title: "Payments revamp", body: "big", labels: ["lr:auto"] }] });
-  const pages = new Map<string, string>();
-  const specPage = definePostHook({
-    id: "spec-page",
-    handles: ["artifact.publish"],
-    satisfied: (snapshot, effect) => pages.get(String((snapshot.node as { id: string }).id)) === effect.body,
-    apply: async (effect, { ticket }) => { pages.set(ticket, String(effect.body)); },
-  });
+  const specPage = specPageHook();
   const ctx = { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
   const hooks = { source: state.source, pre: [state.pre], post: [state.post, specPage] };
   return { state, ctx, hooks };
