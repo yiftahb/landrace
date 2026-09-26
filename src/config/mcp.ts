@@ -4,6 +4,7 @@ import { z } from "zod";
 import { ARG_SHAPE } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { messageOf } from "#runner/errors.js";
+import { MIN_SECRET_LENGTH } from "#runner/events.js";
 import type { McpEntry, McpServer, Problem, ResolvedMcp } from "#namespace.js";
 
 /**
@@ -176,4 +177,29 @@ export async function resolveStepServers(dir: string, entries: readonly McpEntry
     }
   }
   return problems.length ? { servers: {}, tools: {}, problems } : { servers, tools, problems };
+}
+
+/**
+ * The values an allowlisted server's definition carries — every `env` and
+ * `headers` value — for the log's redaction set.
+ *
+ * Both travel in the agent's argv, and an agent's CLI that fails to start a
+ * server can echo them into its stderr, which reaches the log whole in an
+ * `agent exited …` message. Which of them is a credential is not ours to know,
+ * so all of them are redacted, except a value shorter than the logger will
+ * redact by: "1" would take every digit out of every line.
+ */
+export function mcpRedactionValues(servers: Readonly<Record<string, McpServer>>): string[] {
+  const values = new Set<string>();
+  for (const server of Object.values(servers)) {
+    const headers = server["headers"];
+    const carried = [
+      ...Object.values(server.env ?? {}),
+      ...(headers && typeof headers === "object" ? Object.values(headers as Record<string, unknown>) : []),
+    ];
+    for (const value of carried) {
+      if (typeof value === "string" && value.trim().length >= MIN_SECRET_LENGTH) values.add(value.trim());
+    }
+  }
+  return [...values];
 }

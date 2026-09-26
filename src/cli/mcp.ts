@@ -1,5 +1,6 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
+import { mcpRedactionValues } from "#config/mcp.js";
 import { mayCreateTickets, ticketIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import type { ChildBinding, ChildTool, RuntimeContext, Tools } from "#namespace.js";
@@ -38,7 +39,9 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   // stdout carries the MCP protocol, so anything we have to say goes to
   // stderr — which is what the client that spawned us shows.
   const events = createLogger({
-    redactValues: redactionValues(loaded),
+    // With the allowlisted servers' env and header values, as the loop's own
+    // logger has them: a turn's agent carries the same servers.
+    redactValues: [...redactionValues(loaded), ...mcpRedactionValues(tools.mcpServers)],
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
   });
 

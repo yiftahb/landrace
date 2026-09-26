@@ -230,7 +230,7 @@ Servers are resolved once, at startup, from the **repository root's** `.mcp.json
 - a name is not in `.mcp.json` — the refusal lists the names it does define;
 - a name is landrace's own operator server: `landrace`, or a server whose command line runs `landrace mcp` — the bin, `npx landrace@<version>` or `landrace#<ref>`, the `cli` entry with or without its extension, quoted, after `--`, or inside `sh -c`, in any case. Its tools create, update and reply on tickets, and a step agent holding them could move its own ticket. The command match is defence in depth over configuration you already trust, not a guarantee: a wrapper script under another name gets past it, so do not allow one.
 
-`landrace status` runs no step, so it resolves none of this and works without a `.mcp.json`. The screener never gets plugins, servers or tools: it reads attacker-reachable text and needs nothing to judge it. An allowlisted server's `env` travels in the agent's argv, where `ps` can read it for as long as the step runs — keep credentials out of servers you allow.
+`landrace status` runs no step, so it resolves none of this and works without a `.mcp.json`. The screener never gets plugins, servers or tools: it reads attacker-reachable text and needs nothing to judge it. An allowlisted server's `env` and `headers` travel in the agent's argv, where `ps` can read them for as long as the step runs — keep credentials out of servers you allow. Their values, 8 characters or longer, are redacted from landrace's own log like a declared secret's, since an agent that fails to start a server can echo them into the error the loop logs.
 
 ### Token permissions
 

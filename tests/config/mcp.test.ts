@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { loadConfig } from "#config/load.js";
-import { resolveStepServers } from "#config/mcp.js";
+import { mcpRedactionValues, resolveStepServers } from "#config/mcp.js";
 import type { McpConfig } from "#namespace.js";
 import { gitRepo, plainDir, removeRepos } from "#tests/support/repo.js";
 
@@ -240,5 +240,24 @@ describe("the shipped allowlist, against what agsync generates", () => {
     expect((await resolveStepServers(dir, ["renamed"])).problems).toEqual([
       { rule: "mcp", message: expect.stringMatching(/operator tools must never reach a step agent/) },
     ]);
+  });
+});
+
+/*
+ * An allowlisted server's `env` and `headers` travel in the agent's argv, and
+ * whatever the agent's CLI prints about a server that failed to start can land
+ * in an `agent exited …` message — so their values join the redaction set.
+ */
+describe("the values an allowlisted server's definition carries", () => {
+  it("are redacted: every env and header value long enough to redact by", () => {
+    expect(mcpRedactionValues({
+      memory: { command: "cbm", env: { TOKEN: "env-secret-value", DEBUG: "1" } },
+      remote: { type: "http", url: "https://mcp.example.invalid", headers: { Authorization: "Bearer header-secret" } },
+    }).sort()).toEqual(["Bearer header-secret", "env-secret-value"]);
+  });
+
+  // A value that short would redact every occurrence of "1" in every log line.
+  it("skip what is too short to redact by, and anything that is not a string", () => {
+    expect(mcpRedactionValues({ s: { command: "x", env: { A: "short" }, headers: { B: 12345678901 } } })).toEqual([]);
   });
 });

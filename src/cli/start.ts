@@ -2,7 +2,7 @@ import { basename, resolve } from "node:path";
 import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
-import { resolveStepServers } from "#config/mcp.js";
+import { mcpRedactionValues, resolveStepServers } from "#config/mcp.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
 import type {
@@ -293,21 +293,23 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // a configuration the CLI rejects.
   assertConfigUsable(dir, loaded);
 
-  // Before anything else can log: redactionValues throws on a name no secret
-  // defines and on a value too short to redact by, and both of those are the
-  // operator believing the log is clean when it is not.
-  const log = createLogger({
-    ...(opts.debug === undefined ? {} : { debug: opts.debug }),
-    redactValues: redactionValues(loaded),
-    ...(opts.sink === undefined ? {} : { sink: opts.sink }),
-  });
-
   // Before the workflow is read and before any hook module is imported: a
   // server that cannot be handed to a step is a configuration fact, and the
   // hooks' top-level code has no business running under one. Not for
   // `landrace status`, which runs no step: a clone nobody has run `agsync
   // sync` in is exactly where someone asks what landrace makes of it.
   const tools = opts.readOnly ? null : await stepToolsFor(loaded.config, dir);
+
+  // Before anything else can log: redactionValues throws on a name no secret
+  // defines and on a value too short to redact by, and both of those are the
+  // operator believing the log is clean when it is not. An allowlisted
+  // server's env and header values join them — they travel in the agent's
+  // argv and can come back in its stderr.
+  const log = createLogger({
+    ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+    redactValues: [...redactionValues(loaded), ...(tools === null ? [] : mcpRedactionValues(tools.mcpServers))],
+    ...(opts.sink === undefined ? {} : { sink: opts.sink }),
+  });
 
   // With `vars` already substituted in: the graph the daemon runs is the
   // graph `landrace validate` checked, filled in from the same map.

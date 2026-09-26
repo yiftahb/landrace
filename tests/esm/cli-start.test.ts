@@ -461,6 +461,53 @@ describe("runStart --once", () => {
   });
 });
 
+/*
+ * What a server's definition carries in argv — `env`, `headers` — can come
+ * back in the agent's own stderr when a server fails to start, and from there
+ * into an `agent exited …` message the loop logs. The runtime's logger
+ * redacts it like any declared secret.
+ */
+describe("an allowlisted server's env and headers", () => {
+  it("are redacted from an `agent exited …` message the loop logs", async () => {
+    const seen: LandraceEvent[] = [];
+    const { dir } = await fixture({
+      agentKeys: "mcp: [codebase-memory-mcp, remote]",
+      mcpJson: { mcpServers: {
+        "codebase-memory-mcp": { command: "codebase-memory-mcp", env: { MEMORY_TOKEN: "env-secret-value" } },
+        remote: { type: "http", url: "https://mcp.example.invalid", headers: { Authorization: "Bearer header-secret" } },
+      } },
+    });
+    const rt = await buildRuntime(dir, { sink: (e) => seen.push(e) });
+
+    const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
+    await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
+    await chmod(join(bin, "claude"), 0o755);
+    const cwd = await mkdtemp(join(tmpdir(), "lr-exit-"));
+    await writeFile(join(cwd, "fake.json"), JSON.stringify({
+      exit: 3, stderr: "MCP server failed: MEMORY_TOKEN=env-secret-value, Authorization: Bearer header-secret",
+    }));
+
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    let reason = "";
+    try {
+      await rt.deps.executor.run("x", { round: 1, cwd, capabilities: ["repo:read"], signal: new AbortController().signal });
+    } catch (e) {
+      reason = (e as Error).message;
+    } finally {
+      process.env.PATH = path;
+    }
+    // What converge logs when a step's executor fails, through the same logger.
+    expect(reason).toMatch(/^agent exited 3: /);
+    rt.deps.log("step.rejected", { ticket: TICKET, kind: "unavailable", reason });
+
+    const logged = JSON.stringify(seen);
+    expect(logged).not.toContain("env-secret-value");
+    expect(logged).not.toContain("Bearer header-secret");
+    expect(logged).toContain("[redacted]");
+  });
+});
+
 describe("runStatus", () => {
   it("prints one line per ticket, from the same source the loop enumerates", async () => {
     const { dir } = await fixture();
