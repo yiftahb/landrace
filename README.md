@@ -189,7 +189,8 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
 | `security.screen` | `true` | Screen each prompt for injection before invoking an agent |
-| `security.model` | `haiku` | Model used for screening |
+| `security.adapter` | `agent.adapter` | Which executor screens: `claude`, or an id a hook registers with `defineExecutor`. It gets no tools, which it must enforce or refuse the run |
+| `security.model` | `haiku` | Model the screener is asked for on every run; an executor that cannot run it refuses, and the step is blocked |
 | `log.redact` | `[]` | Secret names whose values must never be logged |
 | `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
 | `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |

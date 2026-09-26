@@ -350,9 +350,11 @@ ${EXECUTOR}`);
     try {
       const signal = new AbortController().signal;
       step = JSON.parse((await rt.deps.executor.run("x", { round: 1, cwd: worktree, capabilities: ["repo:read"], signal })).text) as string[];
-      const screen = rt.deps.screen?.executor;
+      const screen = rt.deps.screen;
       if (!screen) throw new Error("screening was configured and the runtime built no screener");
-      screener = JSON.parse((await screen.run("x", { round: 0, cwd: worktree, signal })).text) as string[];
+      // The model on the run, the way screenPrompt asks for it: it is no
+      // longer fixed into the executor, where a hook's never heard it.
+      screener = JSON.parse((await screen.executor.run("x", { round: 0, cwd: worktree, model: screen.model, signal })).text) as string[];
     } finally {
       process.env.PATH = path;
     }

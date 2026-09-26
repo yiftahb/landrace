@@ -107,7 +107,7 @@ export function createHarness(options: HarnessOptions): Harness {
         ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
         dispatcher: dispatcherFor(),
         executor,
-        ...(screener === undefined ? {} : { screen: { executor: screener } }),
+        ...(screener === undefined ? {} : { screen: { executor: screener, model: "screener" } }),
         ctx: {
           ticket,
           config: {} as HookContext["config"],

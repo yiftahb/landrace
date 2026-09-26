@@ -57,11 +57,15 @@ ${candidate}
  */
 export async function screenPrompt(
   prompt: string,
-  opts: { executor: Executor; signal: AbortSignal; log?: Logger },
+  opts: { executor: Executor; model?: string; signal: AbortSignal; log?: Logger },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let text: string;
   try {
-    ({ text } = await opts.executor.run(PROMPT(prompt, nonce()), { round: 0, signal: opts.signal }));
+    ({ text } = await opts.executor.run(PROMPT(prompt, nonce()), {
+      round: 0,
+      ...(opts.model === undefined ? {} : { model: opts.model }),
+      signal: opts.signal,
+    }));
   } catch (e) {
     // An Executor is anything implementing the interface; nothing stops one
     // from rejecting with a non-Error. This module exists so its caller

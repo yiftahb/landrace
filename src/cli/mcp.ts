@@ -11,7 +11,7 @@ import { createLogger } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { loadWorkflow } from "#workflow/load.js";
-import { executorFor, sandboxFor, stepToolsFor } from "#cli/start.js";
+import { executorFor, sandboxFor, screenerFor, stepToolsFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -91,8 +91,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   const executor = executorFor(loaded.config, workflow, registry, events, { tools });
 
   /*
-   * And the screener, resolved through the same lookup with `security.model`,
-   * exactly as the loop's runtime resolves it. §15 screens every agent
+   * And the screener, resolved exactly as the loop's runtime resolves it. §15 screens every agent
    * invocation before it runs, and a conversation turn is one: a person's
    * message reaching an agent that holds repository capabilities. "It came
    * through the MCP" is not evidence that it is safe — the MCP is where an
@@ -105,9 +104,8 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * the frame they will be read in — which is the screening §15 describes and
    * the only kind the screener's own prompt is written to do.
    */
-  const screen = loaded.config.security.screen
-    ? { screen: { executor: executorFor(loaded.config, workflow, registry, events, { model: loaded.config.security.model }) } }
-    : {};
+  const screener = screenerFor(loaded.config, workflow, registry, events);
+  const screen = screener ? { screen: screener } : {};
 
   /*
    * And where a turn runs, resolved exactly as the loop resolves it.

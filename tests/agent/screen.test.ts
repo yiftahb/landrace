@@ -8,6 +8,22 @@ const fake = (text: string): Executor => ({
 const opts = (text: string) => ({ executor: fake(text), signal: new AbortController().signal });
 
 describe("screenPrompt", () => {
+  /*
+   * On the run, where the Executor contract says a named model wins and an
+   * executor that cannot honour it refuses. It used to be fixed when the
+   * engine built its own executor, so a hook's executor never heard it:
+   * `security.model` was dropped without a word.
+   */
+  it("asks the executor for the model it was given, on the run itself", async () => {
+    const seen: Array<string | undefined> = [];
+    const spy: Executor = {
+      id: "spy",
+      run: async (_prompt, o) => { seen.push(o.model); return { text: '```json\n{"verdict":"ok"}\n```', sessionId: null }; },
+    };
+    await screenPrompt("x", { executor: spy, model: "haiku", signal: new AbortController().signal });
+    expect(seen).toEqual(["haiku"]);
+  });
+
   it("passes a clean verdict", async () => {
     expect(await screenPrompt("write a spec", opts('```json\n{"verdict":"ok"}\n```'))).toEqual({ ok: true });
   });

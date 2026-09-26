@@ -82,7 +82,7 @@ const world = (
     executor,
     lock: { root, ...lock },
     ...spec(),
-    ...(screen ? { screen: { executor: screen } } : {}),
+    ...(screen ? { screen: { executor: screen, model: "haiku" } } : {}),
     ...over,
   });
 
@@ -336,6 +336,17 @@ describe("conversation", () => {
    * MCP" is not evidence the text is safe, because the MCP is exactly where an
    * operator pastes something they were sent.
    */
+  it("screens the turn with the screener's own model", async () => {
+    const tracker = seeded();
+    const models: Array<string | undefined> = [];
+    const watching: Executor = {
+      id: "screen",
+      run: async (_prompt, o) => { models.push(o.model); return { text: '```json\n{"verdict":"ok"}\n```', sessionId: null }; },
+    };
+    await world(tracker, agent("Understood."), {}, watching).ask("1", "what next?");
+    expect(models).toEqual(["haiku"]);
+  });
+
   it("screens the turn, and a blocked one reaches neither the agent nor the ticket", async () => {
     const tracker = seeded();
     let invoked = false;

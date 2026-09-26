@@ -414,6 +414,17 @@ export interface ArtifactHook extends PostHook {
 }
 
 /**
+ * What screens a prompt before an agent sees it: the executor
+ * `security.adapter` (or else `agent.adapter`) names, and the model
+ * `security.model` asks it for — on every run, where the Executor contract
+ * makes a named model binding.
+ */
+export interface Screener {
+  executor: Executor;
+  model: string;
+}
+
+/**
  * The execution plane. Not a hook: invoking an agent produces new information,
  * and an effect hook that produced information would need tracker credentials.
  */
@@ -453,6 +464,11 @@ export interface Executor {
        * `src/conventions.ts`. An executor that cannot enforce one of these
        * must refuse the run rather than drop it: the engine's own check on the
        * worktree afterwards is a backstop, not a licence to ignore this.
+       *
+       * Absent altogether only on the screener's run, which reads
+       * attacker-reachable text for a living: it gets no tool at all, less
+       * than any step. An executor named by `security.adapter` must honour
+       * that, or refuse the run.
        */
       capabilities?: readonly string[];
       /**
@@ -739,7 +755,7 @@ export interface ConvergeDeps {
   artifacts?: ArtifactHook[];
   dispatcher: Dispatcher;
   executor: Executor;
-  screen?: { executor: Executor };
+  screen?: Screener;
   ctx: Omit<HookContext, "snapshot">;
   log: Logger;
   maxPasses?: number;
@@ -989,7 +1005,7 @@ export interface ChildTool {
  */
 export interface ToolOptions {
   executor?: Executor;
-  screen?: { executor: Executor };
+  screen?: Screener;
   lock?: LockOptions;
   /**
    * Carried straight through to the conversation, which needs all three to
@@ -1156,7 +1172,7 @@ export interface ConversationDeps {
    * takes, because a turn is an agent invocation like any other and §15 knows
    * of no exemption for one that arrived through the MCP.
    */
-  screen?: { executor: Executor };
+  screen?: Screener;
   lock?: LockOptions;
 }
 
