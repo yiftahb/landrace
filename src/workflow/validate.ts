@@ -826,6 +826,25 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   return dedupe(problems);
 }
 
+/**
+ * A stage's `branch` is where its step's worktree is checked out, and with
+ * `agent.isolation` anything but `worktree` there is no worktree: the agent
+ * commits wherever the operator's checkout happens to be, and the branch is
+ * a promise nothing keeps. Asked by `validate` and refused by `start`, in the
+ * same words, beside the workflow rules rather than among them because the
+ * isolation is the runtime configuration's, not the workflow's.
+ */
+export function branchIsolationProblems(w: Workflow, isolation: string): Problem[] {
+  if (isolation === "worktree") return [];
+  return w.stages.flatMap((stage) => stage.branch === undefined ? [] : [{
+    rule: "branch",
+    message:
+      `stage "${stage.id}" names the branch "${stage.branch}", but agent.isolation is "${isolation}": a branch is ` +
+      "where a step's worktree is checked out, and without worktree isolation there is none, so the agent would " +
+      "commit wherever this checkout is. Set agent.isolation: worktree, or drop the branch",
+  }]);
+}
+
 export function validate(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {
   return dedupe([...validateStructure(w, steps), ...validateSemantics(w, steps, provided)]);
 }

@@ -260,3 +260,60 @@ describe("landrace validate and the servers a step may use", () => {
     expect(r.problems.map((p) => p.message).join("\n")).toMatch(/"landrace"[\s\S]*"tickets"/);
   });
 });
+
+/*
+ * A stage's branch is where its step's worktree is checked out. With
+ * `agent.isolation` anything but `worktree` there is no worktree: the agent
+ * commits wherever the operator's checkout is, and the branch is a promise
+ * nothing keeps — so it is refused rather than silently ignored.
+ */
+describe("landrace validate, a stage's branch, and worktree isolation", () => {
+  const exec = promisify(execFile);
+
+  const repo = async (isolation: string): Promise<string> => {
+    const root = await mkdtemp(join(tmpdir(), "landrace-validate-branch-"));
+    await exec("git", ["init", "-q"], { cwd: root });
+    const dir = join(root, ".landrace");
+    await mkdir(join(dir, "steps"), { recursive: true });
+    await writeFile(join(dir, "workflow.yaml"), `version: 1
+name: t
+stages:
+  - id: build
+    entry: true
+    step: steps/build.md
+    branch: "landrace/{ticket}"
+    triggers: [{ when: { "run.stage": null } }]
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "round {round}" }
+  - id: done
+    terminal: true
+    triggers: [{ when: { "run.outputs.build.kind": done } }]
+`);
+    await writeFile(join(dir, "steps", "build.md"), `---
+capabilities: [repo:read, repo:write]
+output:
+  discriminator: kind
+  shapes: { done: {} }
+  routes:
+    - when: { kind: done }
+      effect: { type: tracker.comment, marker: "done:{round}" }
+---
+
+build
+`);
+    await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude, isolation: ${isolation} }\n`);
+    return dir;
+  };
+
+  it("is clean with worktree isolation", async () => {
+    expect((await runValidate(await repo("worktree"))).problems).toEqual([]);
+  });
+
+  it("reports the stage when there is no worktree for its branch to be checked out in", async () => {
+    const r = await runValidate(await repo("none"));
+    expect(r.ok).toBe(false);
+    expect(r.problems).toEqual([
+      { rule: "branch", message: expect.stringMatching(/stage "build"[\s\S]*agent\.isolation[\s\S]*"none"/) },
+    ]);
+  });
+});

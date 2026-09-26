@@ -223,6 +223,15 @@ export function effectBranch(effect: Effect): string {
   if (typeof effect.branch !== "string" || effect.branch === "") {
     throw new Error(`a ${effect.type} effect must name the branch it is for, and this one names none`);
   }
+  // Braces are legal in a ref, so a template name nothing filled in would
+  // otherwise be pushed as a branch literally called that.
+  const unfilled = /\{[A-Za-z0-9_.]+\}/.exec(effect.branch);
+  if (unfilled) {
+    throw new Error(
+      `a ${effect.type} effect names its branch "${effect.branch}", and nothing filled in ${unfilled[0]}; ` +
+      "an effect's branch is named from {ticket}, {stage} and {round} only",
+    );
+  }
   const problem = branchNameProblem(effect.branch);
   if (problem) throw new Error(`a ${effect.type} effect names a branch git would refuse: ${problem}`);
   return effect.branch;

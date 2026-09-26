@@ -8,7 +8,7 @@ import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
-import { validate } from "#workflow/validate.js";
+import { branchIsolationProblems, validate } from "#workflow/validate.js";
 import type { Problem } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
@@ -133,6 +133,9 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    */
   const graph: Problem[] = validate(workflow, steps);
   problems.push(...(graph.length === 0 ? await coverage(dir, workflow, steps) : graph));
+  // What `start` refuses about the workflow against its runtime, said here
+  // too: validate passing what start will refuse is the two disagreeing.
+  if (loaded) problems.push(...branchIsolationProblems(workflow, loaded.config.agent.isolation));
 
   problems.push(...(await exposedEnv(dir)));
   return { ok: problems.length === 0, problems };

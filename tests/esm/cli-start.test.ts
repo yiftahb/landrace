@@ -221,6 +221,28 @@ describe("buildRuntime", () => {
     await expect(readFile(ran, "utf8")).rejects.toThrow();
   });
 
+  /*
+   * `validate` reports it and `start` refuses it, in the same words: a stage
+   * that names a branch, with no worktree for the branch to be checked out
+   * in, would have its agent commit wherever this checkout happens to be.
+   */
+  it("refuses a stage's branch when steps do not run in worktrees", async () => {
+    const { dir } = await fixture({ agentKeys: "isolation: none" });
+    await mkdir(join(dir, "steps"), { recursive: true });
+    await writeFile(join(dir, "steps", "build.md"), [
+      "---", "capabilities: [repo:read, repo:write]", "output:", "  discriminator: kind", "  shapes: { done: {} }",
+      "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+      "---", "", "build", "",
+    ].join("\n"));
+    await writeFile(join(dir, "workflow.yaml"), WORKFLOW
+      .replace("    terminal: true\n", "    step: steps/build.md\n    branch: \"landrace/{ticket}\"\n")
+      .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/branch: stage "spec"[\s\S]*agent\.isolation[\s\S]*"none"/);
+    // Reading does not run a step, so `status` still works on it.
+    await expect(buildRuntime(dir, { readOnly: true })).resolves.toBeDefined();
+  });
+
   /**
    * §11.8 in the daemon, not only in the CLI.
    *

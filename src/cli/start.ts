@@ -34,7 +34,7 @@ import { tick } from "#runner/tick.js";
 import { createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
 import { loadWorkflow } from "#workflow/load.js";
-import { validate } from "#workflow/validate.js";
+import { branchIsolationProblems, validate } from "#workflow/validate.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
 
 const UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
@@ -325,7 +325,12 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     );
   };
 
-  const problems = validate(workflow, steps);
+  // The isolation rule only where a step can run: `landrace status` reads,
+  // and a workflow it cannot run is still one it can describe.
+  const problems = [
+    ...validate(workflow, steps),
+    ...(opts.readOnly ? [] : branchIsolationProblems(workflow, loaded.config.agent.isolation)),
+  ];
   if (problems.length) refuse(problems);
 
   // The hooks list lives in the workflow, not in landrace.yaml: which

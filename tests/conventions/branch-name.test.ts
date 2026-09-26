@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { branchNameProblem } from "#conventions.js";
+import { branchNameProblem, effectBranch } from "#conventions.js";
 
 const exec = promisify(execFile);
 
@@ -41,5 +41,26 @@ describe("branch names", () => {
   it("says what is wrong, naming the name", () => {
     expect(branchNameProblem("a..b")).toMatch(/"a\.\.b"/);
     expect(branchNameProblem("-f")).toMatch(/-/);
+  });
+});
+
+/*
+ * The branch a publishing effect names, as the workflow's template left it.
+ * A `{name}` nothing filled in is a legal ref to git — braces are allowed —
+ * so it is refused by name, the way a stage's own branch is.
+ */
+describe("the branch an effect names", () => {
+  it("is taken as it stands when it is a usable name", () => {
+    expect(effectBranch({ type: "branch.push", branch: "landrace/7" })).toBe("landrace/7");
+  });
+
+  it("is refused when a template name was left in it", () => {
+    expect(() => effectBranch({ type: "pull.open", branch: "landrace/{ticket}" })).toThrow(/\{ticket\}/);
+    expect(() => effectBranch({ type: "pull.open", branch: "x/{node.title}" })).toThrow(/\{node\.title\}/);
+  });
+
+  it("is refused when it names none, or one git would refuse", () => {
+    expect(() => effectBranch({ type: "branch.push" })).toThrow(/names none/);
+    expect(() => effectBranch({ type: "branch.push", branch: "a..b" })).toThrow(/not a usable branch name/);
   });
 });
