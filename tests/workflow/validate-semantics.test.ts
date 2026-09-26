@@ -632,3 +632,43 @@ describe("children", () => {
     expect(children(validate(wf([enter, close]), stepsWith(breakdownStep)))).toEqual([]);
   });
 });
+
+describe("goto edges", () => {
+  const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
+  const loop = (goto: NonNullable<Workflow["stages"][number]["goto"]>): Workflow => ({
+    version: 1, name: "t", stages: [
+      { id: "a", entry: true, on_enter: [enter], triggers: [{ when: { "run.stage": null } }] },
+      { id: "b", goto, triggers: [{ when: { "run.stage": "a" } }] },
+    ],
+  });
+
+  it("counts a goto as an edge a cycle can run along, bounded only by its `when`", () => {
+    expect(rules(loop(["a"]))).toContain("cycle-bound");
+    expect(rules(loop([{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }]))).not.toContain("cycle-bound");
+  });
+
+  it("counts a goto as a way out of a stage", () => {
+    expect(rules(loop([{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }]))).not.toContain("dead-end");
+  });
+
+  it("counts a route's goto as the edge its shape leads along", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "",
+      output: {
+        discriminator: "i", shapes: { back: {} },
+        routes: [{ when: { i: "back" }, goto: "a", effect: { type: "tracker.comment", marker: "i:{round}" } }],
+      },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, step: "s.md", on_enter: [enter], goto: [{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }],
+        triggers: [{ when: { "run.stage": null } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "a", "run.outputs.a.i": "never" } }] },
+    ] };
+    expect(rules(w, steps)).not.toContain("shape-edge");
+  });
+
+  it("checks the paths a goto's `when` reads, like any trigger's", () => {
+    const problems = validateSemantics(loop([{ stage: "a", when: { "run.nope": 1 } }]), noSteps, ["run.stage", "run.counters.*"]);
+    expect(problems.map((p) => p.message)).toContainEqual(expect.stringMatching(/"b" reads run\.nope/));
+  });
+});

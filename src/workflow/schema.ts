@@ -24,6 +24,10 @@ export const stageSchema = z.object({
   requires: condition.optional(),
   triggers: z.array(trigger).optional(),
   on_enter: z.array(effect).optional(),
+  goto: z.array(z.union([
+    z.string().min(1),
+    z.object({ stage: z.string().min(1), when: condition.optional() }).strict(),
+  ])).optional(),
 }).strict();
 
 export const workflowSchema = z.object({
@@ -72,6 +76,6 @@ export const stepFrontMatterSchema = z.object({
   output: z.object({
     discriminator: z.string(),
     shapes: z.record(z.unknown()),
-    routes: z.array(z.object({ when: condition, effect }).strict()),
+    routes: z.array(z.object({ when: condition, effect, goto: z.string().min(1).optional() }).strict()),
   }).strict().optional(),
 }).strict();

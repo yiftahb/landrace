@@ -80,6 +80,22 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
     await expect(loadWorkflow(workflowDir("version: 1\nname: t\nstages:\n  - id: a\n    entry: true\n    on_exit: []\n")))
       .rejects.toThrow(/on_exit/);
   });
+
+  it("reads a goto list written once and repeated by YAML reference, and refuses a key a goto entry does not have", async () => {
+    const yaml = [
+      "version: 1", "name: t", "stages:",
+      "  - id: a", "    entry: true",
+      "  - id: b", "    goto: &back", "      - a", '      - { stage: a, when: { "run.counters.a": { $lt: 3 } } }',
+      "  - id: c", "    goto: *back", "",
+    ].join("\n");
+    const { workflow } = await loadWorkflow(workflowDir(yaml));
+    const listed = (id: string) => workflow.stages.find((s) => s.id === id)?.goto;
+    expect(listed("c")).toEqual(listed("b"));
+    expect(listed("b")).toEqual(["a", { stage: "a", when: { "run.counters.a": { $lt: 3 } } }]);
+
+    await expect(loadWorkflow(workflowDir(yaml.replace("{ stage: a, when", "{ stage: a, cap: 3, when"))))
+      .rejects.toThrow(/cap/);
+  });
 });
 
 /**

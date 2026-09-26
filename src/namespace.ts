@@ -169,6 +169,15 @@ export interface Trigger {
   when: Condition;
 }
 
+/** An entry in a stage's `goto`: a stage it may always send a ticket to, or one it may while `when` holds. */
+export type GotoEntry = string | { stage: string; when?: Condition | undefined };
+
+/** A `goto` entry as the engine reads it. `when` null means always. */
+export interface GotoTarget {
+  stage: string;
+  when: Condition | null;
+}
+
 export interface Effect {
   type: string;
   [key: string]: unknown;
@@ -189,6 +198,15 @@ export interface Stage {
   requires?: Condition;
   triggers?: Trigger[];
   on_enter?: Effect[];
+  /**
+   * The stages a person may send a ticket at this stage back to — by a judge
+   * step's route, the board's "Go to step…" or `landrace_goto`. A bare id
+   * always; `{ stage, when }` only while `when` holds, which is where a
+   * loop's round cap goes, since a goto takes no trigger. A goto to a stage
+   * not listed here halts; one whose `when` does not hold is declined, and
+   * the stage's triggers decide.
+   */
+  goto?: GotoEntry[] | undefined;
 }
 
 export interface EligibilityRule {
