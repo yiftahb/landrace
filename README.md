@@ -34,12 +34,8 @@ treat the first one as a supervised experiment rather than a deployment.
 | Artifact publishing to GitHub Pages, PR review threads | ✅ built |
 | Worktree sandbox with enforced capabilities | ✅ built |
 | Conversation with a running step, over MCP | ✅ built |
-| Opening the pull request itself | ⏳ next |
+| Pushing the ticket's branch and opening its pull request | ✅ built |
 | Containers, OpenTelemetry, a second tracker | ⏳ planned |
-
-One gap worth knowing before you start it: **nothing pushes a branch or opens
-the pull request yet.** A workflow reaching `build` parks there until someone
-opens one, at which point the review cycle picks it up on its own.
 
 ## Install
 
@@ -135,7 +131,7 @@ The snapshot carries three views built from that graph: `node` is the ticket's o
 
 A source declares which relationship types it reports, and whether a node may have at most one outgoing edge of one (`relations: RelationDecl[]`); the engine refuses any other type, and `rel` counts zero — never nothing — for a declared type nothing relates, so "no threads are open" can still be read when every pull request is merged.
 
-The shipped GitHub hook reports two relationship types: `child-of` (a sub-issue to its parent, singular) and `implements` (a pull request to the ticket it closes or whose branch names it, singular). A pull request is a node like any other — `kind: "pull-request"`, `state.merged`, `state.openThreads` — and "every pull request on the ticket is merged" is `rel.implements.in.total: { $gt: 0 }` **and** `rel.implements.in.not.merged: 0`, never one pull request's own flag, because a ticket can carry more than one. Only an *open* pull request's threads are counted: a merged or closed one reports `openThreads: 0`, never nothing, so the sum stays defined — and readable as "clear" — once every pull request on the ticket is done.
+The shipped GitHub hook reports two relationship types: `child-of` (a sub-issue to its parent, singular) and `implements` (a pull request to the ticket it closes or whose branch names it, singular). A pull request is a node like any other — `kind: "pull-request"`, `state.merged`, `state.openThreads`, and the branch it is from as `state.branch` — and "every pull request on the ticket is merged" is `rel.implements.in.total: { $gt: 0 }` **and** `rel.implements.in.not.merged: 0`, never one pull request's own flag, because a ticket can carry more than one. Only an *open* pull request's threads are counted: a merged or closed one reports `openThreads: 0`, never nothing, so the sum stays defined — and readable as "clear" — once every pull request on the ticket is done.
 
 It also reports a ticket's published spec page as a `document` node, with a third relationship type, `documents`, pointing at its ticket (singular) — so the triage page shows the spec under its ticket. `list` finds every page in one listing of the `gh-pages` branch and reports none for that tick, with a logged reason, when that listing fails or GitHub truncates it — it is display only, so it never fails the tick; `read` checks the ticket's own page directly. The workflow still routes on `artifacts.spec`, not on this node.
 
@@ -244,9 +240,9 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 
 | Permission | Level | Used for |
 |---|---|---|
-| Contents | Read and write | reading the spec from gh-pages, and publishing it |
+| Contents | Read and write | reading the spec from gh-pages, and publishing it; pushing a ticket's branch to an `https://github.com` origin |
 | Issues | Read and write | tickets, comments, labels |
-| Pull requests | Read and write | review threads; closing a dropped child's pull request when a workflow that splits work re-runs its breakdown |
+| Pull requests | Read and write | opening a ticket's pull request; review threads; closing a dropped child's pull request when a workflow that splits work re-runs its breakdown |
 | Metadata | Read-only | granted automatically |
 
 `landrace start` and `landrace mcp` both check these before doing anything else — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions the way a classic token's scopes can. A token missing something refuses to start, naming what is missing, rather than running until the first step that needs it fails midway through a paid agent run. `landrace status` never checks or writes anything — it only reads.
@@ -317,6 +313,25 @@ stages:
     on_enter:
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 ```
+
+A stage that runs a step may name the **branch** that step works on — a template over `{ticket}`, `{stage}` and `{round}`, and nothing else:
+
+```yaml
+  - id: build
+    step: steps/build.md
+    branch: "landrace/{ticket}"
+```
+
+The step's worktree is then checked out on it: the branch itself, created at `HEAD` the first time, for a step declaring `repo:write` — so what it commits outlives the worktree — and that branch's commit, detached, for a read-only step, so a reviewer reads the ticket's code rather than `main`'s and cannot commit onto it. A stage with no `branch` gets a detached `HEAD`, and nothing its step commits is kept. The engine names no branch of its own: a workflow wanting two per ticket names two. A template git would refuse is refused at load; a ticket id that makes an invalid name (`a..b`) halts that ticket before its step runs; a branch already checked out elsewhere — your own checkout, say — halts it with where, and is never taken. The worktree is rebuilt whenever the next step needs it on something else, so only what was committed carries over.
+
+Publishing is two effects, each naming its branch, which the shipped workflow puts on a `publish` stage between `build` and `code-review`:
+
+| Effect | Applies | Satisfied when |
+|---|---|---|
+| `branch.push` | pushes the branch to `origin`, fast-forward only — never forced | the checkout's branch head equals `origin`'s as last fetched or pushed, or the checkout has no such branch |
+| `pull.open` | opens a pull request from the branch into the default branch, `Closes #<ticket>` | the ticket already has an open or merged pull request from that branch |
+
+`code-review` pushes again on entry, so a fix round's commits are on the pull request before the reviewer reads it. The GitHub hook pushes from the repository its own file is in, handing the token to git through its environment (`GIT_CONFIG_*`, as an `http.https://github.com/.extraheader`) — never on a command line, where any process could read it.
 
 Workflow-level keys beyond `stages`:
 
@@ -398,6 +413,7 @@ Both schemas are strict: an unknown key fails to load rather than being ignored.
 | `operator` | A disallowed predicate operator, anywhere including nested |
 | `path-coverage` | A predicate — in a trigger, an `identity`, a `requires` or an `eligible` rule — reading a field no hook provides |
 | `vars` | A variable that does not resolve, a `{vars.x}` nothing defines, a declared variable nothing references, a variable holding a secret's value |
+| `branch` | A stage `branch` git would refuse as a name, one using anything but `{ticket}`, `{stage}` and `{round}`, or one on a stage that runs no step |
 | `mcp` | An `agent.mcp` server with no `.mcp.json` at the repository root, a name `.mcp.json` does not define, or landrace's own operator server |
 
 Every rule runs on every workflow. An earlier version abstained where a trigger

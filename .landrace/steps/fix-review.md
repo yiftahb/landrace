@@ -28,6 +28,8 @@ outcomes.
 **Do not resolve any thread.** The reviewer who raised it closes it on their
 next pass, and you resolving your own critic is how a review becomes theatre.
 
-Commit locally. The orchestrator pushes.
+Commit locally, on the branch you are on — do not create, switch or rename
+branches. The orchestrator pushes your commits to the pull request before the
+reviewer's next round.
 
 End with a fenced json block whose only field is `kind`, set to `addressed`.

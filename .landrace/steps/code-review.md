@@ -11,7 +11,7 @@ output:
 ---
 
 Review the changes on the pull request for #{node.id} against its spec at
-{artifacts.spec.url}.
+{artifacts.spec.url}. Your working directory is the pull request's head.
 
 You did not write this code and you will not fix it. Find what is wrong, what is
 missing against the spec, and what will break — then stop.

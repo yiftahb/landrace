@@ -109,10 +109,13 @@ async function run(
     workflow, steps, source, pre, post,
     artifacts: gh.registry.artifacts,
     answers: { ...OUTPUT, ...opts.answers },
-    // The two things that happen *outside* the engine while a step runs. The
-    // push and the `gh pr create` that follow a build are nobody's hook yet,
-    // and resolving a thread is the reviewer's own act — §10 is explicit that
-    // the fixer never does it.
+    // The two things that happen *outside* the engine while a step runs, as
+    // far as this test is concerned. A pull request appearing after the build
+    // stands in for the push and the `pull.open` the shipped workflow's
+    // publish stage makes — they need a checkout with the branch in it, which
+    // tests/e2e/scenarios.test.ts gives them for real; here publish finds the
+    // pull request already open and moves on. Resolving a thread is the
+    // reviewer's own act — §10 is explicit that the fixer never does it.
     during: ({ stage, round }) => {
       if (stage === "build") openThePr(gh, opts.openThreads ?? 2);
       if (stage === "code-review" && round === opts.resolveOn) resolveEveryThread(gh);
@@ -444,8 +447,8 @@ describe("a halted ticket is handed back to a stage that records its entry", () 
  * Nothing is seeded and nothing is injected: the position comes from a label,
  * the rounds from records on the ticket, the spec from the Pages branch, and
  * every gate in the review half from the pull request artifact's own read. The
- * only things supplied from outside are the two a person and a push do — a
- * pull request appearing after the build, and a merge.
+ * only things supplied from outside are a pull request appearing after the
+ * build — see `run` for why it is not the publish stage's own — and a merge.
  */
 describe("a ticket goes all the way round §10", () => {
   const answers: Record<string, Answer> = {
@@ -487,7 +490,7 @@ describe("a ticket goes all the way round §10", () => {
     const done = await run(gh, { answers });
 
     expect(trail(asked, specced, reviewed, done)).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build",
+      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build", "publish",
       "code-review", "fix-review", "code-review", "pr-human-review", "done",
     ]);
     expect(reviewed.invocations).toEqual([

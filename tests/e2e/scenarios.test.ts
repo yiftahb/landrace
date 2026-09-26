@@ -9,7 +9,9 @@ import { createLogger } from "#runner/events.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { tick } from "#runner/tick.js";
 import { createExternalState, createHarness } from "#testing/index.js";
+import { gitIn } from "#landrace/hooks/github.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
+import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
 import type { Effect, ExternalState, Harness, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
@@ -213,6 +215,75 @@ describe("a ticket in review whose only pull request merges", () => {
   });
 });
 
+/*
+ * The shipped workflow's publish half over the in-memory tracker, which knows
+ * no forge: `pull.open` is a record it keeps and `branch.push` one it is told
+ * about — enough to drive the graph and watch the order things happen in.
+ */
+describe("publishing a build, over the in-memory tracker", () => {
+  it("opens the pull request after the build, reviews it, and pushes before every review round", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:build"] }] });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const seen: Array<{ stage: string; pushes: number }> = [];
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: ANSWERS,
+      during: ({ stage }) => {
+        seen.push({ stage, pushes: state.pushes().length });
+        // The reviewer's first round finds two things, and nobody resolves them.
+        if (stage === "code-review") state.pull("pr-1").openThreads = 2;
+      },
+    });
+
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual([
+      "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
+      "code-review", "blocked",
+    ]);
+    expect(r.result.settled).not.toBe("cap");
+    expect(state.pull("pr-1")).toMatchObject({ ticket: "1", branch: "landrace/1" });
+    // Every push was of the ticket's own branch, and every review round
+    // started after a push the fix before it did not have.
+    expect(new Set(state.pushes())).toEqual(new Set(["landrace/1"]));
+    for (const [i, call] of seen.entries()) {
+      const before = seen[i - 1];
+      if (call.stage === "code-review" && before?.stage === "fix-review") expect(call.pushes).toBeGreaterThan(before.pushes);
+    }
+    expect(seen.filter((c) => c.stage === "code-review")).toHaveLength(4);
+  });
+});
+
+/*
+ * Two stages, two branches, one ticket: the engine assumes no branch of its
+ * own, so a workflow that names two gets two — and a pull request from one
+ * does not stand in for the other's.
+ */
+describe("a ticket whose workflow names two branches", () => {
+  const DIR = "tests/fixtures/two-branches";
+
+  it("validates clean against the in-memory tracker", async () => {
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const { workflow, steps } = await loadWorkflow(DIR);
+    expect(validate(workflow, steps, snapshotProvides([state.pre], state.source) ?? undefined)).toEqual([]);
+  });
+
+  it("opens one pull request per branch, and finishes only once both are open", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto"] }] });
+    const { workflow, steps } = await loadWorkflow(DIR);
+    const done = '```json\n{"kind":"done"}\n```';
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: { api: done, ui: done },
+    });
+
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["api", "publish-api", "ui", "publish-ui", "done"]);
+    expect(r.result.settled).toBe("terminal");
+    expect([state.pull("pr-1").branch, state.pull("pr-2").branch]).toEqual(["api/1", "ui/1"]);
+    expect(state.pushes()).toEqual(["api/1", "ui/1"]);
+  });
+});
+
 describe("several instances over one repository, each taking its own tickets", () => {
   const DIR = "tests/fixtures/assigned";
   const ASSIGNED = ["ann", "bo"];
@@ -398,29 +469,43 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
 };
 
 describe("the §10 cycle, including a fix that does not satisfy the reviewer", () => {
-  /**
-   * What the world does around a running step.
-   *
-   * Opening the pull request is a *push*, not a hook: nothing in `src/` pushes
-   * a branch yet, and the capability that will let the `build` agent do it is
-   * being built elsewhere. The harness's job is to be able to say so — this is
-   * the seam that integration drops into, and until it lands the test stands
-   * the person in explicitly rather than pretending.
+  /*
+   * Real git under the real hooks: the checkout is a temp repository with a
+   * bare one as its origin, so publishing is a real push and a pull request
+   * the fake GitHub really opens.
    */
-  const world = () => {
-    const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
+  jest.setTimeout(60_000);
+  afterAll(removeRepos);
+
+  /**
+   * What the world does around a running step, and nothing the engine does.
+   *
+   * The build and each fix commit to the ticket's branch — which the harness,
+   * running no worktree, does in their place — and the reviewer raises two
+   * findings on its first round and never resolves them. Pushing the branch
+   * and opening the pull request are the workflow's own `publish` effects;
+   * nothing here stands in for either. Each review round notes whether origin
+   * had the branch's head when it started, which is what "the fixer's commits
+   * are on the pull request before the reviewer reads it" means.
+   */
+  const world = async () => {
+    const { root, origin } = await gitRepoWithOrigin();
+    const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }], { git: gitIn(root) });
+    const reviewedAtHead: boolean[] = [];
+    let commits = 0;
     return {
-      gh,
-      during: ({ stage }: { stage: string }) => {
-        if (stage !== "build") return;
-        if ([...gh.pulls.values()].some((p) => p.head === "landrace/1")) return;
-        gh.openPull({
-          head: "landrace/1", number: 7, headSha: "sha-1",
-          threads: [
+      gh, root, origin, reviewedAtHead,
+      during: async ({ stage }: { stage: string }) => {
+        if (stage === "build" || stage === "fix-review") await commitOn(root, "landrace/1", `${stage}-${++commits}.ts`);
+        if (stage !== "code-review") return;
+        reviewedAtHead.push((await commitAt(origin, "refs/heads/landrace/1")) === (await commitAt(root, "refs/heads/landrace/1")));
+        const pull = [...gh.pulls.values()].find((p) => p.head === "landrace/1");
+        if (pull && pull.threads.length === 0) {
+          pull.threads.push(
             { isResolved: false, body: "this leaks a file handle", path: "src/x.ts", line: 12 },
             { isResolved: false, body: "off by one", path: "src/y.ts", line: 3 },
-          ],
-        });
+          );
+        }
       },
     };
   };
@@ -432,7 +517,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
    * loop simply ran out of room.
    */
   it("runs the review round again after each fix, and stops at the budget", async () => {
-    const { gh, during } = world();
+    const { gh, during, reviewedAtHead } = await world();
     const { workflow, steps } = await loadWorkflow(".landrace");
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
 
@@ -445,7 +530,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     expect(asked.trail).toEqual(["spec", "spec-questions"]);
     expect(specced.trail).toEqual(["spec", "spec-human-review"]);
     expect(run.trail()).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build",
+      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build", "publish",
       "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
       "code-review", "blocked",
     ]);
@@ -458,17 +543,41 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     expect(gh.labelsOf(1)).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
     // And nothing resolved a finding on the fixer's behalf.
     expect([...gh.pulls.values()][0]?.threads.filter((t) => !t.isResolved)).toHaveLength(2);
+    // Every review round read what the last fix committed, because entering
+    // code-review pushed it first.
+    expect(reviewedAtHead).toEqual([true, true, true, true]);
   });
 
   /*
-   * The seam, attacked from the other side. With nothing standing in for the
-   * push, the ticket reaches `build`, the step runs, and the review half never
-   * starts — `code-review` requires a pull request and no hook in `src/`
-   * or in `.landrace/` opens one. That is the shape of the gap, and it is what
-   * the integration in the parallel worktree has to close.
+   * What this closes: nothing used to push the branch or open the pull
+   * request, so a finished build sat at `build` for good — `code-review`
+   * requires a pull request, and none ever came.
    */
-  it("parks at build when nothing pushes the branch, which is where the engine is today", async () => {
-    const { gh } = world();
+  it("pushes the build and opens its pull request, which is what lets review start", async () => {
+    const { gh, root, origin, during } = await world();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
+
+    await run.converge();
+    gh.sayAs("a-person", 1, "in-house, and CSV only", new Date(Date.UTC(2026, 1, 1)).toISOString());
+    await run.converge();
+    gh.sayAs("a-person", 1, "looks right, go ahead", new Date(Date.UTC(2026, 1, 2)).toISOString());
+    await run.converge();
+
+    expect(run.trail()).toEqual(expect.arrayContaining(["build", "publish", "code-review"]));
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBe(await commitAt(root, "refs/heads/landrace/1"));
+    expect([...gh.pulls.values()]).toEqual([
+      expect.objectContaining({ head: "landrace/1", base: "main", title: "Add export", body: "Closes #1" }),
+    ]);
+  });
+
+  /*
+   * A build that committed nothing left no branch, and there is nothing to
+   * propose. Said in a sentence, from the step that would have opened it,
+   * and asked again next tick rather than opening an empty pull request.
+   */
+  it("halts with the reason, rather than opening an empty pull request, when the build left no branch", async () => {
+    const { gh } = await world();
     const { workflow, steps } = await loadWorkflow(".landrace");
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS });
 
@@ -478,13 +587,15 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     gh.sayAs("a-person", 1, "looks right, go ahead", new Date(Date.UTC(2026, 1, 2)).toISOString());
     const stalled = await run.converge();
 
-    expect(run.trail().at(-1)).toBe("build");
-    expect(run.counts()["code-review"]).toBeUndefined();
-    expect(stalled.result.settled).toBe("wait");
+    expect(stalled.result.settled).toBe("halt");
+    expect(stalled.result.why).toMatch(/landrace\/1[\s\S]*no such branch/);
+    expect(gh.pulls.size).toBe(0);
+    // Still at build: the position moves only after the pull request is open.
+    expect(gh.labelsOf(1)).toContain("lr:stage:build");
   });
 
   it("shows each fix round the findings it is meant to address", async () => {
-    const { gh, during } = world();
+    const { gh, during } = await world();
     const { workflow, steps } = await loadWorkflow(".landrace");
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
 

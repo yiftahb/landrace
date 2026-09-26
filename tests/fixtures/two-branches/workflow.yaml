@@ -1,0 +1,58 @@
+version: 1
+name: two-branches
+
+# One ticket, two branches: the API and the UI are built, pushed and proposed
+# separately, each on the branch its own stage names. Nothing in the engine
+# says a ticket has one branch — `branch` is per stage, and `branch.push` and
+# `pull.open` each say which one they mean.
+stages:
+  - id: api
+    entry: true
+    step: steps/api.md
+    branch: "api/{ticket}"
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Building the API, round {round}." }
+      - { type: tracker.status, value: api }
+
+  - id: publish-api
+    triggers:
+      - name: the API is built
+        when: { "run.stage": api, "run.outputs.api.kind": done }
+    on_enter:
+      - { type: branch.push, branch: "api/{ticket}" }
+      - { type: pull.open, branch: "api/{ticket}" }
+      - { type: tracker.status, value: publish-api }
+
+  - id: ui
+    step: steps/ui.md
+    branch: "ui/{ticket}"
+    triggers:
+      - name: the API's pull request is open
+        when: { "run.stage": publish-api, "rel.implements.in.total": { $gt: 0 } }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Building the UI, round {round}." }
+      - { type: tracker.status, value: ui }
+
+  # A pull request from api/<ticket> is already on the ticket by now. If
+  # `pull.open` were satisfied by "the ticket has one", this one would be
+  # dropped as done and the ticket would wait here for a second that never
+  # comes.
+  - id: publish-ui
+    triggers:
+      - name: the UI is built
+        when: { "run.stage": ui, "run.outputs.ui.kind": done }
+    on_enter:
+      - { type: branch.push, branch: "ui/{ticket}" }
+      - { type: pull.open, branch: "ui/{ticket}" }
+      - { type: tracker.status, value: publish-ui }
+
+  - id: done
+    terminal: true
+    triggers:
+      - name: both are proposed
+        when: { "run.stage": publish-ui, "rel.implements.in.total": { $gt: 1 } }
+    on_enter:
+      - { type: tracker.status, value: done }
