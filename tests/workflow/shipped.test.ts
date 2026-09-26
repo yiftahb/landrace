@@ -295,6 +295,27 @@ describe("the shipped judge is told where the reply was made, and which step fai
     expect(rendered).not.toMatch(/\{run\./);
   });
 
+  /*
+   * `landrace_resolve` posts a fixed "Carry on — this is answered." as the
+   * person's turn. On main that went straight back to spec; now the judge
+   * reads it, and at spec-questions anything but `revise` sends it home to
+   * spec-questions — where resolving again loops. The answers are in the
+   * conversation above it, so the judge has to be told that is `revise`.
+   */
+  it("tells the judge at spec-questions that 'answered, carry on' is revise", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const snapshot = {
+      run: { previousStage: "spec-questions", failedStage: null, lastHuman: { data: { body: "Carry on — this is answered." } } },
+    } as unknown as Snapshot;
+    const rendered = renderPrompt(steps.get("steps/triage.md")?.prompt ?? "", snapshot);
+
+    expect(rendered).toContain("The ticket was waiting at: spec-questions");
+    const place = rendered.split("\n").find((line) => line.startsWith("- `spec-questions`")) ?? "";
+    expect(place).toMatch(/answered/);
+    expect(place).toMatch(/carry on/i);
+    expect(place).toMatch(/conversation above/);
+  });
+
   it("says plainly that nothing failed, rather than showing the judge a placeholder", async () => {
     const { steps } = await loadWorkflow(".landrace");
     const snapshot = {

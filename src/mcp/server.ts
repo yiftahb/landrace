@@ -114,9 +114,10 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
 
   server.tool(
     "landrace_resolve",
-    "Hand the ticket back to the orchestrator: it picks the step up again on its next tick, " +
-      "with everything said here on the record. Use it once the conversation has answered the " +
-      "question — or to move on even though the step still has questions.",
+    "Hand the ticket back to the orchestrator: `why` (by default, that the questions are answered) " +
+      "is posted as your reply, with everything said here on the record, and the workflow's next " +
+      "step reads it on the next tick. Use it once the conversation has answered the question — " +
+      "or to move on even though the step still has questions.",
     { ticket, why: z.string().optional() },
     guard(({ ticket: n, why }) => tools.resolve(n, why)),
   );
