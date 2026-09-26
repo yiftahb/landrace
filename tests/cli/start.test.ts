@@ -304,6 +304,13 @@ describe("which executor screens", () => {
     expect(() => screenerFor(config, workflow, withExecutor("local"), noop)).toThrow(/security\.model[\s\S]*"local"/);
   });
 
+  // Told apart by where it came from, never by its id: a hook may register
+  // "claude" too, and it is still not the engine's, so haiku is still a guess.
+  it("refuses a hook's executor registered as \"claude\" when security.model names no model", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" } });
+    expect(() => screenerFor(config, workflow, withExecutor("claude"), noop)).toThrow(/security\.model[\s\S]*"claude"/);
+  });
+
   it("builds no screener when screening is off", () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" }, security: { screen: false } });
     expect(screenerFor(config, workflow, empty, noop)).toBeUndefined();
