@@ -256,6 +256,24 @@ describe("an artifact's briefing reaches the prompt and nothing else", () => {
     expect(built.pr?.second).toContain("[truncated]");
   });
 
+  /*
+   * Per hook, though, and the order the hooks are asked in must not decide
+   * who is heard. A fix round is briefed the approved spec and the open
+   * threads side by side; a budget shared between them gave the spec — asked
+   * first — the whole of it, and cut the findings the round exists to
+   * address down to whatever was left.
+   */
+  it("gives each hook its own budget, so a long document cannot starve another hook's briefing", async () => {
+    const findings = "src/x.ts:12 — this leaks a file handle\n".repeat(100);
+    const built = await buildBriefing(
+      [briefing("spec", () => ({ content: "s".repeat(31_000) })), briefing("pr", () => ({ threads: findings }))],
+      ctx(),
+      "{brief.spec.content}\n{brief.pr.threads}",
+    );
+    expect(built.spec?.content).toBe("s".repeat(31_000));
+    expect(built.pr?.threads).toBe(findings);
+  });
+
   /* A hook returning something that is not text is a hook bug, not attacker input: loud, local and named. */
   it("refuses a briefing value that is not a string, naming the artifact and the key", async () => {
     await expect(

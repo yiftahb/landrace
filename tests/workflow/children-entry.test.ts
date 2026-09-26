@@ -11,7 +11,7 @@ import { validate } from "#workflow/validate.js";
 const FIXTURE = "tests/fixtures/children";
 
 const run = (o: object = {}) => ({
-  stage: null, counters: {}, outputs: {}, lastOutputValid: null, failedStages: [], rounds: {},
+  stage: null, counters: {}, outputs: {}, lastOutputValid: null, lastRefused: null, failedStages: [], rounds: {},
   lastEvent: { actor: null, at: null }, lastHuman: null, unblockedAt: 0, ...o,
 });
 /**

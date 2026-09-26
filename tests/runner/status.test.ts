@@ -19,6 +19,16 @@ const candidate = (labels: string[], assignees: string[] = [], id = "1"): Node =
 const noteFor = (labels: string[]): string | undefined => statusRows(workflow, [candidate(labels)])[0]?.note;
 
 describe("statusRows", () => {
+  /*
+   * Blocked either way — the note starts "blocked" for everything that reads
+   * it so — and says which: a security check is not an agent that could not
+   * follow a format, and a person looks in a different place for each.
+   */
+  it("says a ticket a security check stopped is blocked, and why", () => {
+    expect(noteFor(["go", "lr:stage:screened", "lr:blocked", "lr:screened"])).toBe("blocked by a security check");
+    expect(noteFor(["go", "lr:stage:blocked", "lr:blocked"])).toBe("blocked: needs a human");
+  });
+
   it("skips a ticket with the workflow's own reason, not a label name of its own", () => {
     expect(noteFor([])).toBe("skipped: no go label");
   });

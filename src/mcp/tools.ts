@@ -4,11 +4,12 @@ import {
   LABELS,
   labelsOf,
   neutraliseMarkers,
+  RECORD_EFFECT,
   recordBodyProblem,
   stageFromLabels,
   isOpenTicket,
 } from "#conventions.js";
-import type { Node, Snapshot, Source } from "#namespace.js";
+import type { Node, ReplyDeps, Snapshot, Source } from "#namespace.js";
 import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -53,6 +54,42 @@ function requireOperator(operator: Operator | null, what: string): Operator {
 const noSource = (): never => {
   throw new Error("no source hook is configured, so there is nothing to enumerate");
 };
+
+/**
+ * A person's reply on a ticket, posted as the operator: what `landrace_reply`
+ * posts, and what the board's Retry posts, by one path.
+ *
+ * Through the same dispatcher every other write goes through, so an
+ * operator's reply reaches the tracker by the one path the engine knows how
+ * to reason about — and a second tracker gets this for free.
+ *
+ * No marker, because it genuinely is a human turn: a marker separates our
+ * writing from theirs, not who typed the request. Neutralised so a pasted
+ * marker cannot forge state.
+ *
+ * And no lock, unlike `resolve`, which is a decision rather than an
+ * oversight. `resolve` reads the ticket, decides from derived state whether it
+ * is already handed back, and writes only if it is not: that
+ * read-decide-write is what a per-ticket lock exists to make atomic. This
+ * posts one comment unconditionally, so there is nothing to serialise — and
+ * taking the lock would make a person's reply wait on, or fail against, the
+ * ten-minute step they are replying to, which is the one moment a reply is
+ * most wanted.
+ *
+ * The size, though, is the step path's rule and applies here too: a body the
+ * tracker refuses throws with the API's own 422 instead of a sentence naming
+ * the limit.
+ */
+export async function postReply(deps: ReplyDeps, ticket: string, message: string): Promise<void> {
+  const tooLong = recordBodyProblem(message);
+  if (tooLong) throw new Error(`cannot reply: the message ${tooLong}`);
+
+  const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+  await deps.dispatcher.apply(
+    { type: RECORD_EFFECT, body: neutraliseMarkers(message) },
+    { ...deps.ctx, ticket, snapshot },
+  );
+}
 
 export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolOptions = {}): Tools {
   const dispatcher = createDispatcher(registry.post);
@@ -164,34 +201,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     },
 
     async reply(ticket, message) {
-      // Through the same dispatcher every other write goes through, so an
-      // operator's reply reaches the tracker by the one path the engine knows
-      // how to reason about — and a second tracker gets this tool for free.
-      //
-      // No marker, because it genuinely is a human turn: a marker separates
-      // our writing from theirs, not who typed the request. Neutralised so a
-      // pasted marker cannot forge state.
-      //
-      // And no lock, unlike `resolve` beside it, which is a decision rather
-      // than an oversight. `resolve` reads the ticket, decides from derived
-      // state whether it is already handed back, and writes only if it is
-      // not: that read-decide-write is what a per-ticket lock exists to make
-      // atomic. This posts one comment unconditionally, so there is nothing
-      // to serialise — and taking the lock would make a person's reply wait
-      // on, or fail against, the ten-minute step they are replying to, which
-      // is the one moment a reply is most wanted.
-      //
-      // The size, though, is the step path's rule and applies here too: a
-      // body the tracker refuses throws with the API's own 422 instead of a
-      // sentence naming the limit.
-      const tooLong = recordBodyProblem(message);
-      if (tooLong) throw new Error(`cannot reply: the message ${tooLong}`);
-
-      const snapshot = await snapshotOf(ticket);
-      await dispatcher.apply(
-        { type: "tracker.comment", body: neutraliseMarkers(message) },
-        { ...ctx, ticket, snapshot },
-      );
+      await postReply({ source: source(), pre: registry.pre, dispatcher, ctx }, ticket, message);
       return { ticket, posted: true };
     },
 

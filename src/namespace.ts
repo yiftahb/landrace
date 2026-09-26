@@ -126,6 +126,15 @@ export interface Run {
   lastHuman: Entry | null;
   /** Never true: a step is either invalid (false) or has no verdict (null), never affirmatively "valid". */
   lastOutputValid: false | null;
+  /**
+   * Whether that invalid round was *refused* — screened out, or caught doing
+   * what its step never declared — rather than a contract its output broke.
+   * Null exactly when `lastOutputValid` is: there is no failure to classify.
+   * A field of its own rather than a third value of `lastOutputValid`, so a
+   * workflow that routes every failure one way keeps matching on `false`
+   * whichever kind it was.
+   */
+  lastRefused: boolean | null;
   /** Every stage with a rejected round, independent of which stage `lastOutputValid` answers for. */
   failedStages: string[];
   unblockedAt: number;
@@ -695,13 +704,15 @@ export interface LockOptions {
  *   network blip, a timeout, a Ctrl-C). Nothing was produced, so nothing was
  *   rejected; a durable record here would misreport an outage as a broken
  *   contract and permanently poison a stage that never got to try.
- * - "refused": screened out *before* invocation. This looks like
- *   "unavailable" (the executor never ran either), but it is not an outage —
- *   the screener ran fine and returned a verdict. A screening refusal must
- *   be durable and terminal (routed to `blocked`, per spec §15), not a
- *   silent, free-to-repeat retry: treating it as "unavailable" turned a
+ * - "refused": screened out *before* invocation, or caught afterwards doing
+ *   what the step never declared. This looks like "unavailable" (the
+ *   executor never ran either), but it is not an outage — the screener ran
+ *   fine and returned a verdict. A refusal must be durable and terminal, not
+ *   a silent, free-to-repeat retry: treating it as "unavailable" turned a
  *   security refusal into a paid screener call on every single poll,
- *   forever, with nothing ever left on the ticket for anyone to see.
+ *   forever, with nothing ever left on the ticket for anyone to see. It is
+ *   recorded under REFUSED_KIND rather than the contract's MALFORMED_KIND,
+ *   which is what `run.lastRefused` reads back.
  */
 export type StepResult =
   | { ok: true; effects: Effect[]; sessionId: string | null }
@@ -807,6 +818,13 @@ export interface HarnessOptions {
   artifacts?: ArtifactHook[];
   /** What each stage's step answers. A stage that is invoked with nothing scripted is a gap, and says so. */
   answers?: { [stage: string]: ScriptedAnswer };
+  /**
+   * What the prompt screener answers for each stage's step — a fenced json
+   * verdict, as the real one writes. Absent, nothing is screened. Present, a
+   * stage with no answer here is a screener that could not run, which is a
+   * refusal: the same fail-closed reading the engine gives a real one.
+   */
+  screen?: { [stage: string]: ScriptedAnswer };
   ticket?: string;
   /**
    * What the world does while a step runs — a push, a pull request appearing,
@@ -1238,13 +1256,19 @@ export interface BoardRow {
   model: string | null;
   /** Tickets only. */
   chat: Chat | null;
+  /** Stopped by a security check rather than for any other reason — the page draws a shield. */
+  screened: boolean;
+  /**
+   * Where the page's Retry posts, for a ticket that is blocked or screened
+   * right now; null everywhere else. Built by the server from a checked id,
+   * so the page never puts a URL together itself.
+   */
+  retry: string | null;
   children: BoardRow[];
 }
 
 export interface BoardView {
   generatedAt: number;
-  /** When the tick last listed the graph; null before the first tick lands. */
-  listedAt: number | null;
   rows: BoardRow[];
   /** When the next scheduled tick is due, epoch ms; null when nothing is scheduled. */
   nextTickAt: number | null;
@@ -1258,6 +1282,12 @@ export interface Board {
   observe(e: LandraceEvent): void;
   list(graph: Graph): void;
   view(): Promise<BoardView>;
+  /**
+   * Why a Retry may not be posted on this node, read just now, or null when it
+   * may: it must be an open ticket, blocked or screened, whose agent is not
+   * running in this process.
+   */
+  retryRefusal(node: Node): string | null;
 }
 
 export interface UiOptions {
@@ -1268,6 +1298,32 @@ export interface UiOptions {
    * write exists only when something is actually there to run it against.
    */
   tick?: () => boolean;
+  /**
+   * The Retry on a blocked or screened ticket: `refusal` reads the ticket
+   * afresh and says why it may not be retried — the page is never taken at
+   * its word — and `post` hands it back with a human turn.
+   * Absent, POST /tickets/<id>/retry is 404, as /tick is without a tick.
+   */
+  retry?: RetryPath;
+}
+
+/**
+ * What posting a person's reply on a ticket needs: the snapshot a post hook
+ * is handed, read the way the tick reads it, and the dispatcher every other
+ * write goes through.
+ */
+export interface ReplyDeps {
+  source: Source;
+  pre: PreHook[];
+  dispatcher: Dispatcher;
+  ctx: RuntimeContext;
+}
+
+/** How the page's Retry reaches a ticket: the one check, and the one write. */
+export interface RetryPath {
+  /** A sentence saying why this ticket may not be retried right now, or null. */
+  refusal(ticket: string): Promise<string | null>;
+  post(ticket: string): Promise<void>;
 }
 
 export interface UiServer {

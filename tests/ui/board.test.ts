@@ -25,7 +25,7 @@ const NEST = new Set(["child-of", "implements"]);
 
 const view = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
-    workflow, graph: g, nest: NEST, listedAt: 1, now: 100, pid: 1, nextTickAt: null,
+    workflow, graph: g, nest: NEST, now: 100, pid: 1, nextTickAt: null,
     running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
   });
 
@@ -39,6 +39,7 @@ describe("laneOf", () => {
     ["skipped: no go label", "not-admitted"],
     ["halted: more than one lr:stage:* label (a, b)", "needs-you"],
     ["blocked: needs a human", "needs-you"],
+    ["blocked by a security check", "needs-you"],
     ["waiting on you", "needs-you"],
     ["working", "waiting"],
     ["queued", "waiting"],
@@ -52,6 +53,68 @@ describe("laneOf", () => {
 
   it("never discharges a ticket that needs a human, terminal or not", () => {
     expect(laneOf(row("blocked: needs a human", "done"), workflow)).toBe("needs-you");
+  });
+});
+
+/*
+ * Needs you, like any blocked ticket — it is one — with the reason on the row,
+ * so the person who opens it knows to read a security verdict rather than an
+ * agent's broken answer. The reason itself is on the ticket, in a comment the
+ * board does not read: it is drawn from the listed labels, and a comment read
+ * per ticket per tick is a cost this page does not get to add.
+ */
+describe("boardView: a ticket a security check stopped", () => {
+  it("is in Needs you, marked screened, and says it was a security check", () => {
+    const [row] = view(graph([ticket("1", {}, ["go", "lr:stage:screened", "lr:blocked", "lr:screened"])])).rows;
+    expect(row).toMatchObject({ badge: "needs-you", lane: "needs-you", screened: true, note: "blocked by a security check" });
+  });
+
+  it("marks a ticket blocked for any other reason as not screened", () => {
+    const [row] = view(graph([ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"])])).rows;
+    expect(row).toMatchObject({ badge: "needs-you", screened: false, note: "blocked: needs a human" });
+  });
+
+  it("marks no artifact screened", () => {
+    const [row] = view(graph([pr("pr-9")])).rows;
+    expect(row?.screened).toBe(false);
+  });
+});
+
+/*
+ * Retry is offered on exactly the tickets a human turn would hand back: the
+ * blocked and the screened. The path comes from the server, built from an id
+ * it has checked, so the page never puts a URL together itself.
+ */
+describe("boardView: which rows offer a Retry", () => {
+  const rowFor = (labels: string[], over: Partial<Node> = {}, opts: Partial<Parameters<typeof boardView>[0]> = {}) =>
+    view(graph([ticket("7", over, ["go", ...labels])]), opts).rows[0];
+
+  it.each([
+    ["blocked", ["lr:stage:blocked", "lr:blocked"]],
+    ["screened", ["lr:stage:screened", "lr:blocked", "lr:screened"]],
+  ])("offers it on a %s ticket, as the path to post to", (_, labels) => {
+    expect(rowFor(labels)?.retry).toBe("/tickets/7/retry");
+  });
+
+  it.each([
+    ["waiting on you", ["lr:stage:spec-human-review", "lr:awaiting"]],
+    ["working", ["lr:stage:build", "lr:working"]],
+    ["queued", ["lr:stage:spec"]],
+  ])("offers none on a ticket that is %s", (_, labels) => {
+    expect(rowFor(labels)?.retry).toBeNull();
+  });
+
+  it("offers none on a closed ticket, whatever its labels still say", () => {
+    expect(rowFor(["lr:stage:blocked", "lr:blocked"], { closed: "done" })?.retry).toBeNull();
+  });
+
+  it("offers none while an agent is running on it", () => {
+    const running = new Map<string, Running>([["7", { stage: "build", round: 2, model: null, since: 1 }]]);
+    expect(rowFor(["lr:stage:blocked", "lr:blocked"], {}, { running })?.retry).toBeNull();
+  });
+
+  it("offers none on an artifact", () => {
+    expect(view(graph([pr("pr-9")])).rows[0]?.retry).toBeNull();
   });
 });
 
@@ -259,7 +322,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "closed", "id", "kind", "lane", "link", "model", "note", "priority",
-      "round", "since", "stage", "system", "title",
+      "retry", "round", "screened", "since", "stage", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
@@ -294,6 +357,34 @@ describe("createBoard", () => {
   const shell = (now: () => number, held: (t: string) => Promise<Held | null> = async () => null) =>
     createBoard({ workflow, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace", nest: [...NEST] });
 
+  /*
+   * What the server asks before it posts anything, of a node read just now —
+   * never of the tick's listing, which is as old as the tick. A handback's
+   * own step can finish inside one tick, and a Retry accepted off the stale
+   * row was posted as the reviewer's reply wherever the ticket had gone.
+   */
+  it("says why a freshly read ticket may not be retried, or nothing when it may", () => {
+    const board = shell(() => 0);
+    const nodes = [
+      ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"]),
+      ticket("2", {}, ["go", "lr:stage:screened", "lr:blocked", "lr:screened"]),
+      ticket("3", {}, ["go", "lr:stage:spec", "lr:working"]),
+      ticket("4", { closed: "done" }, ["go", "lr:stage:blocked", "lr:blocked"]),
+      pr("pr-5"),
+    ];
+    expect(nodes.map((n) => board.retryRefusal(n) === null)).toEqual([true, true, false, false, false]);
+    expect(board.retryRefusal(nodes[2] as Node)).toMatch(/#3 is not blocked or screened/);
+  });
+
+  it("refuses a Retry while the ticket's agent is running, whatever its labels still say", () => {
+    const board = shell(() => 0);
+    const blocked = ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"]);
+    board.observe({ name: "step.started", ticket: "1", stage: "build", round: 2 });
+    expect(board.retryRefusal(blocked)).toMatch(/running/);
+    board.observe({ name: "step.finished", ticket: "1" });
+    expect(board.retryRefusal(blocked)).toBeNull();
+  });
+
   it("opens a running row on step.started and closes it on step.finished", async () => {
     let t = 10;
     const board = shell(() => t);
@@ -312,9 +403,11 @@ describe("createBoard", () => {
     expect((await board.view()).rows[0]?.badge).toBe("waiting");
   });
 
-  it("reports no rows and a null listedAt before the first tick lands", async () => {
+  // No listedAt: the header's "listed … ago" was the only thing that read it,
+  // and it is gone.
+  it("reports no rows before the first tick lands", async () => {
     expect(await shell(() => 5).view()).toEqual({
-      generatedAt: 5, listedAt: null, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
+      generatedAt: 5, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
     });
   });
 

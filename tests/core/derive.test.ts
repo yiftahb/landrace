@@ -11,6 +11,8 @@ const malformed = (stage: string, round: number): Entry =>
   ({ stage, kind: "malformed", round, at: at(), byAgent: true });
 const entered = (stage: string, round: number): Entry =>
   ({ stage, kind: "enter", round, at: at(), byAgent: true });
+const refused = (stage: string, round: number): Entry =>
+  ({ stage, kind: "refused", round, at: at(), byAgent: true });
 
 describe("deriveRun", () => {
   it("counts rounds, not entries — two entries for one round are one round", () => {
@@ -159,6 +161,57 @@ describe("deriveRun", () => {
       const r = deriveRun([entered("spec", 1), malformed("spec", 1)], "spec");
       expect(r.failedStages).toEqual(["spec"]);
       expect(assess({ run: r } as Snapshot, { id: "spec", step: "steps/spec.md" })).toBe("failed");
+    });
+  });
+
+  /*
+   * A refusal is a rejection a person reads differently: nothing was wrong
+   * with the step's output, because the step was never let run — or ran and
+   * was caught doing what it had not declared. Same failure, same scoping,
+   * one more fact about it for a workflow to route on.
+   */
+  describe("lastRefused, beside lastOutputValid and scoped exactly as it is", () => {
+    it("is true when the current stage's rejected round was refused", () => {
+      const r = deriveRun([entered("build", 1), refused("build", 1)], "build");
+      expect(r.lastOutputValid).toBe(false);
+      expect(r.lastRefused).toBe(true);
+    });
+
+    it("is false when the current stage's rejected round broke its contract", () => {
+      const r = deriveRun([entered("build", 1), malformed("build", 1)], "build");
+      expect(r.lastOutputValid).toBe(false);
+      expect(r.lastRefused).toBe(false);
+    });
+
+    it("is null when the current stage has no rejected round", () => {
+      expect(deriveRun([entered("build", 1), out("build", 1)], "build").lastRefused).toBeNull();
+      expect(deriveRun([], null).lastRefused).toBeNull();
+    });
+
+    it("answers for the current stage only, not for another stage's refusal", () => {
+      const r = deriveRun([refused("build", 1), out("spec", 1)], "spec");
+      expect(r.failedStages).toEqual(["build"]);
+      expect(r.lastRefused).toBeNull();
+    });
+
+    it("clears exactly as failure does, once a later entry record asks for a new round", () => {
+      const r = deriveRun([entered("build", 1), refused("build", 1), entered("build", 2)], "build");
+      expect(r.lastOutputValid).toBeNull();
+      expect(r.lastRefused).toBeNull();
+    });
+
+    it("reads the latest rejected round: a contract failure after a handed-back refusal is not a refusal", () => {
+      const r = deriveRun(
+        [entered("build", 1), refused("build", 1), entered("build", 2), malformed("build", 2)],
+        "build",
+      );
+      expect(r.lastRefused).toBe(false);
+    });
+
+    it("counts a refused round toward the stage's counter, as any rejection does", () => {
+      const r = deriveRun([entered("build", 1), refused("build", 1)], "build");
+      expect(r.counters.build).toBe(1);
+      expect(assess({ run: r } as Snapshot, { id: "build", step: "steps/build.md" })).toBe("failed");
     });
   });
 

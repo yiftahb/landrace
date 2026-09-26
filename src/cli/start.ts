@@ -5,6 +5,8 @@ import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js
 import { mcpRedactionValues, resolveStepServers } from "#config/mcp.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
+import { RECORD_EFFECT } from "#conventions.js";
+import { postReply } from "#mcp/tools.js";
 import type {
   Board,
   BuildOptions,
@@ -12,8 +14,11 @@ import type {
   Executor,
   LandraceEvent,
   Logger,
+  Node,
   Problem,
   Registry,
+  ReplyDeps,
+  RetryPath,
   Runtime,
   RuntimeConfig,
   RuntimeContext,
@@ -28,7 +33,7 @@ import { messageOf } from "#runner/errors.js";
 import { createLogger } from "#runner/events.js";
 import { held } from "#runner/lock.js";
 import { runPreflights } from "#runner/preflight.js";
-import { snapshotProvides } from "#runner/snapshot.js";
+import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { oneLine } from "#runner/status.js";
 import { tick } from "#runner/tick.js";
 import { createBoard } from "#ui/board.js";
@@ -70,7 +75,7 @@ export function parsePort(text: string): number {
  * expected it would otherwise have to notice it is missing.
  */
 export async function startUi(
-  opts: { board: Board; ui: boolean; once: boolean; port: number; tick?: () => boolean },
+  opts: { board: Board; ui: boolean; once: boolean; port: number; tick?: () => boolean; retry?: RetryPath | undefined },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
   try {
@@ -78,6 +83,7 @@ export async function startUi(
       port: opts.port,
       view: () => opts.board.view(),
       ...(opts.tick === undefined ? {} : { tick: opts.tick }),
+      ...(opts.retry === undefined ? {} : { retry: opts.retry }),
     });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
@@ -85,6 +91,36 @@ export async function startUi(
     }
     throw e;
   }
+}
+
+/** What the board's Retry says on the ticket — a person's turn, so it reads as one. */
+export const RETRY_MESSAGE = "Retry requested from the Landrace board.";
+
+/**
+ * The page's Retry: a check that the ticket is stopped right now, and the
+ * reply `landrace_reply` posts, which is the human turn the workflow's
+ * handback triggers read. Undefined when no hook can post a comment, so the
+ * page's server answers the route with a 404 rather than a Retry that could
+ * only fail.
+ *
+ * The check reads the ticket afresh. It used to ask the tick's own listing,
+ * which is as old as the tick: a handback to spec reaches spec-human-review
+ * inside one, the stale row still said blocked, and a second click was posted
+ * as the reviewer's reply there — a paid round spent reading "Retry
+ * requested".
+ */
+export function retryFor(deps: ReplyDeps, board: Pick<Board, "retryRefusal">): RetryPath | undefined {
+  if (!deps.dispatcher.handlerFor(RECORD_EFFECT)) return undefined;
+  return {
+    refusal: async (ticket) => {
+      const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+      // The next tick reads the reply already there; a second one would be
+      // read as the person's words wherever that tick sends the ticket.
+      if (snapshot.run?.lastEvent.actor === "human") return `a reply is already waiting on #${ticket}; the next tick reads it`;
+      return board.retryRefusal(snapshot.node as Node);
+    },
+    post: (ticket) => postReply(deps, ticket, RETRY_MESSAGE),
+  };
 }
 
 /**
@@ -621,6 +657,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
     tick: schedule.trigger,
+    retry: retryFor({ source: rt.source, pre: rt.deps.pre, dispatcher: rt.deps.dispatcher, ctx: rt.deps.ctx }, board),
   });
   if (ui) console.error(`landrace: triage page at ${ui.url}`);
 

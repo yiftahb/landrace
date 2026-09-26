@@ -1,7 +1,9 @@
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { ticketIdProblem } from "#conventions.js";
 import type { UiOptions, UiServer } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
+import { oneLine } from "#runner/status.js";
 import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 const HOST = "127.0.0.1";
@@ -27,8 +29,10 @@ const STATIC: Record<string, { type: string; body: string }> = {
  * the CORS-safelisted set forces a preflight — and this server answers no
  * preflight with permission, so the browser never sends the real request.
  */
-const TICK_HEADER = "x-landrace-action";
-const TICK_HEADER_VALUE = "tick";
+const ACTION_HEADER = "x-landrace-action";
+
+/** Where the page's Retry posts: one ticket, named in the path. */
+const RETRY_PATH = /^\/tickets\/([^/]+)\/retry$/;
 
 function send(res: ServerResponse, status: number, type: string, body: string): void {
   res.writeHead(status, {
@@ -41,9 +45,38 @@ function send(res: ServerResponse, status: number, type: string, body: string): 
 }
 
 /**
- * The triage page, on loopback only. Every route is a GET except the one
- * write this page has: POST /tick, present only when the caller hands us a
- * schedule to trigger.
+ * Why a write did not come from this page's own script, or null if it did —
+ * the one guard both of the page's writes stand behind, so they cannot drift
+ * apart. `action` is the write's own name, carried in the header: a request
+ * made for one write is not accepted by the other.
+ *
+ * HTML forms cannot set a custom header, and a cross-origin fetch that does
+ * triggers a CORS preflight this server never answers with permission — so a
+ * request that has the header proves it came from a script on this origin.
+ * Absent Origin is allowed; present-and-foreign is refused. A browser sends
+ * Origin on same-origin fetch POSTs too, so an absent one in practice means a
+ * non-browser local client (curl, a script) rather than the page itself — and
+ * the header check already covers what a browser could send without our
+ * script's cooperation. Sec-Fetch-Site the same way: a browser that says the
+ * request came from another site is believed.
+ */
+function foreignWrite(req: IncomingMessage, action: string, port: number): string | null {
+  // One sentence for every refusal, shown as-is where the page asked: which
+  // check failed is for a debugger, not for the person clicking.
+  const refused = "refused: this can be asked only from the Landrace page itself";
+  if (req.headers[ACTION_HEADER] !== action) return refused;
+  const origin = req.headers.origin;
+  if (origin !== undefined && origin !== `http://${HOST}:${port}` && origin !== `http://localhost:${port}`) return refused;
+  const site = req.headers["sec-fetch-site"];
+  if (site !== undefined && site !== "same-origin") return refused;
+  return null;
+}
+
+/**
+ * The triage page, on loopback only. Every route is a GET except the page's
+ * two writes: POST /tick, present only when the caller hands us a schedule to
+ * trigger, and POST /tickets/<id>/retry, present only when it hands us a way
+ * to post a reply.
  */
 export function serveBoard(opts: UiOptions): Promise<UiServer> {
   let port: number;
@@ -71,28 +104,73 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
         send(res, 405, "text/plain; charset=utf-8", "method not allowed");
         return;
       }
-      // HTML forms cannot set a custom header, and a cross-origin fetch that
-      // does triggers a CORS preflight this server never answers with
-      // permission — so a request that has this header proves it came from
-      // this page's own script, not a page an attacker put in the user's browser.
-      if (req.headers[TICK_HEADER] !== TICK_HEADER_VALUE) {
-        send(res, 403, "text/plain; charset=utf-8", "forbidden");
-        return;
-      }
-      // Absent Origin is allowed; present-and-foreign is refused. A browser
-      // sends Origin on same-origin fetch POSTs too, so an absent one in
-      // practice means a non-browser local client (curl, a script) rather
-      // than the page itself — and the header check above already covers
-      // what a browser could send without our script's cooperation. The Host
-      // check already pinned the server's own name, so `port` here is the
-      // one the request actually landed on.
-      const origin = req.headers.origin;
-      if (origin !== undefined && origin !== `http://${HOST}:${port}` && origin !== `http://localhost:${port}`) {
-        send(res, 403, "text/plain; charset=utf-8", "forbidden");
+      // The Host check already pinned the server's own name, so `port` here
+      // is the one the request actually landed on.
+      const foreign = foreignWrite(req, "tick", port);
+      if (foreign) {
+        send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
       }
       const started = opts.tick();
       send(res, started ? 202 : 409, "text/plain; charset=utf-8", started ? "tick started" : "a tick is already running");
+      return;
+    }
+
+    // The page's other write, guarded the same way, and answered in short
+    // sentences the page shows beside the Retry that asked.
+    const retrying = RETRY_PATH.exec(path);
+    if (retrying) {
+      if (!opts.retry) {
+        send(res, 404, "text/plain; charset=utf-8", "not found");
+        return;
+      }
+      if (req.method !== "POST") {
+        send(res, 405, "text/plain; charset=utf-8", "method not allowed");
+        return;
+      }
+      const foreign = foreignWrite(req, "retry", port);
+      if (foreign) {
+        send(res, 403, "text/plain; charset=utf-8", foreign);
+        return;
+      }
+      let ticket: string;
+      try {
+        ticket = decodeURIComponent(retrying[1] ?? "");
+      } catch {
+        send(res, 400, "text/plain; charset=utf-8", "that is not a ticket id");
+        return;
+      }
+      const problem = ticketIdProblem(ticket);
+      if (problem) {
+        send(res, 400, "text/plain; charset=utf-8", problem);
+        return;
+      }
+      // Asked of the ticket as it is now, never of the page: the page offered
+      // Retry from a view that may be a poll or more out of date. Through a
+      // resolved promise, so a check or a post that throws before it returns
+      // one still lands in a handler below rather than past this one.
+      const retry = opts.retry;
+      Promise.resolve().then(() => retry.refusal(ticket)).then(
+        (refusal) => {
+          if (refusal !== null) {
+            send(res, 409, "text/plain; charset=utf-8", refusal);
+            return;
+          }
+          Promise.resolve().then(() => retry.post(ticket)).then(
+            () => send(res, 202, "text/plain; charset=utf-8", `retry requested for #${ticket}`),
+            (e: unknown) => {
+              // Logged in full for the operator; the page gets a fixed sentence,
+              // because a tracker's error can quote the ticket it refused.
+              console.error(`landrace: retry of #${ticket} failed: ${oneLine(messageOf(e))}`);
+              send(res, 502, "text/plain; charset=utf-8", "could not post the reply; the landrace log says why");
+            },
+          );
+        },
+        (e: unknown) => {
+          console.error(`landrace: could not tell whether #${ticket} may be retried: ${oneLine(messageOf(e))}`);
+          send(res, 500, "text/plain; charset=utf-8", "could not tell whether this ticket is blocked; the landrace log says why");
+        },
+      );
       return;
     }
 

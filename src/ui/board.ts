@@ -1,5 +1,5 @@
 import { compareWork, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
-import { oneLine, statusRows } from "#runner/status.js";
+import { BLOCKED_NOTE, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
@@ -20,6 +20,16 @@ export function laneOf(row: StatusRow, workflow: Workflow): Lane {
 }
 
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
+
+/**
+ * Whether a human turn would hand this ticket back: it is stopped, blocked or
+ * screened. The status row's own verdict, so the row the page draws and the
+ * check the server makes before posting cannot disagree about a ticket.
+ */
+const stopped = (row: StatusRow): boolean => row.note === BLOCKED_NOTE || row.note === SCREENED_NOTE;
+
+/** The path the page posts a Retry to — built here, from an id already checked, never by the page. */
+const retryPath = (id: string): string | null => (isTicketId(id) ? `/tickets/${id}/retry` : null);
 
 /** Most urgent first — the order a branch's lane cascades in. */
 const URGENCY: readonly Lane[] = ["needs-you", "running", "elsewhere", "waiting", "not-admitted", "discharged"];
@@ -61,7 +71,6 @@ export function boardView(input: {
   graph: Graph;
   /** Relation types the source declares singular — the only edges that nest. */
   nest: ReadonlySet<string>;
-  listedAt: number | null;
   running: ReadonlyMap<string, Running>;
   elsewhere: ReadonlyMap<string, Held>;
   now: number;
@@ -85,7 +94,7 @@ export function boardView(input: {
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, round: null, model: null,
-      chat: null, children: [],
+      chat: null, screened: false, retry: null, children: [],
     };
     const s = status.get(node.id);
     if (node.kind !== TICKET_KIND || !s) return base;
@@ -116,7 +125,13 @@ export function boardView(input: {
       // than a wrong clock.
       return { ...ticket, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
     }
-    return { ...ticket, badge: laneOf(s, input.workflow) };
+    const retry = stopped(s) ? retryPath(node.id) : null;
+    // The status row's own verdict, not the labels read a second time; the
+    // note is the page's wording of the same fact.
+    if (s.note === SCREENED_NOTE) {
+      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry };
+    }
+    return { ...ticket, badge: laneOf(s, input.workflow), retry };
   };
 
   const parent = parentsOf(input.graph, nodes, input.nest);
@@ -161,7 +176,7 @@ export function boardView(input: {
   }
 
   return {
-    generatedAt: input.now, listedAt: input.listedAt, rows, nextTickAt: input.nextTickAt,
+    generatedAt: input.now, rows, nextTickAt: input.nextTickAt,
     folder: input.folder, workspace: input.workspace,
   };
 }
@@ -190,7 +205,6 @@ export function createBoard(opts: {
   const nextTickAt = opts.nextTickAt ?? (() => null);
   const nest = new Set(opts.nest);
   let graph: Graph = { nodes: [], relationships: [] };
-  let listedAt: number | null = null;
   const running = new Map<string, Running>();
 
   return {
@@ -209,7 +223,15 @@ export function createBoard(opts: {
     },
     list(next: Graph): void {
       graph = next;
-      listedAt = now();
+    },
+    retryRefusal(node: Node): string | null {
+      // The labels are the tracker's, and they say blocked until the handback's
+      // own step writes its entry — a step this process may be running now.
+      if (running.has(node.id)) return `#${node.id}'s agent is running right now, so there is nothing to retry`;
+      // Open tickets only, as the row is drawn: a closed one keeps whatever
+      // labels it had, and handing it back would re-run a finished ticket.
+      const [row] = isOpenTicket(node) ? statusRows(opts.workflow, [node]) : [];
+      return row !== undefined && stopped(row) ? null : `#${node.id} is not blocked or screened right now, so there is nothing to retry`;
     },
     async view(): Promise<BoardView> {
       // Open tickets only: nothing else can be held, and a closed ticket's
@@ -220,7 +242,7 @@ export function createBoard(opts: {
         if (h) elsewhere.set(n.id, h);
       }));
       return boardView({
-        workflow: opts.workflow, graph, nest, listedAt, running, elsewhere, now: now(), pid,
+        workflow: opts.workflow, graph, nest, running, elsewhere, now: now(), pid,
         nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },

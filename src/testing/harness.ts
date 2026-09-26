@@ -39,7 +39,10 @@ export function createHarness(options: HarnessOptions): Harness {
 
   const base = options.log ?? createLogger({ sink: () => {} });
   const log: Logger = (name, data = {}) => {
-    if (name === "step.invoked") {
+    // step.started as well as step.invoked: the screener is asked before the
+    // step is invoked, and it answers as the stage about to run, not as the
+    // last one that did.
+    if (name === "step.started" || name === "step.invoked") {
       at = { stage: String(data.stage), round: Number(data.round) };
     }
     if (name === "ticket.evaluated") {
@@ -53,6 +56,9 @@ export function createHarness(options: HarnessOptions): Harness {
   };
 
   const scripted = scriptedExecutor(options.answers ?? {}, () => at);
+  // Its own script, never the step's: a screener that answered with the
+  // step's text would read as unparseable and refuse everything.
+  const screener = options.screen === undefined ? undefined : scriptedExecutor(options.screen, () => at);
   const executor = {
     id: "harness",
     run: async (prompt: string, opts: { round: number; signal: AbortSignal }) => {
@@ -101,6 +107,7 @@ export function createHarness(options: HarnessOptions): Harness {
         ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
         dispatcher: dispatcherFor(),
         executor,
+        ...(screener === undefined ? {} : { screen: { executor: screener } }),
         ctx: {
           ticket,
           config: {} as HookContext["config"],

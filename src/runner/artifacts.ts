@@ -123,8 +123,7 @@ export function artifactPreHook(hook: ArtifactHook): PreHook {
 }
 
 /**
- * How much prompt text every artifact's briefing gets between them, per
- * invocation.
+ * How much prompt text each hook's briefing gets, per invocation.
  *
  * Cut rather than refused, and that is the choice worth stating: a briefing is
  * unbounded text that whoever can comment on a pull request writes, so a
@@ -132,6 +131,13 @@ export function artifactPreHook(hook: ArtifactHook): PreHook {
  * a review thread. Nothing downstream reads a briefing as state, so there is
  * no predicate that silently stops matching when it is cut — unlike artifact
  * state above, where a dropped field is exactly that.
+ *
+ * Per hook, not shared between them. A fix round is briefed the approved spec
+ * and the open threads side by side, and a shared budget let whichever hook
+ * was asked first — the spec — spend all of it, cutting the findings the round
+ * exists to address. 32 KB is several thousand words: a spec the spec step
+ * was told to keep short fits with room over, and one that does not is cut
+ * with the cut said.
  */
 const BRIEF_MAX_CHARS = 32 * 1024;
 
@@ -167,11 +173,11 @@ export async function buildBriefing(
   prompt: string,
 ): Promise<Record<string, Record<string, string>>> {
   const built: Record<string, Record<string, string>> = {};
-  let left = BRIEF_MAX_CHARS;
   const asked = briefingsNamedIn(prompt);
 
   for (const hook of briefers) {
     if (!hook.brief || !asked.has(hook.id)) continue;
+    let left = BRIEF_MAX_CHARS;
 
     let fragment: Record<string, string>;
     try {

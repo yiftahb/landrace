@@ -141,6 +141,8 @@ Priority comes from this repository's own `P0`..`P9` label convention; two of th
 
 A step's prompt can also ask a source for prose the graph itself does not carry — `{brief.<source id>.<key>}`, fetched only when that step is about to run, never routed on by any predicate. `fix-review.md` reads `{brief.github.threads}`: the open review threads across the ticket's pull requests, as a working list for the step to act on.
 
+An artifact can brief a step the same way. The spec artifact briefs `{brief.spec.content}` — the approved spec's own text, read off `gh-pages` — and `build.md`, `code-review.md` and `fix-review.md` embed it between two rules as the approved spec, framed as requirements rather than instructions. With no page published the text says so ("No spec has been published for this ticket.") instead of leaving a hole in the prompt; a page that cannot be read halts the step instead. The spec is handed over as text, never as a link to go and read: a prompt telling the agent to fetch a URL is exactly what the prompt screener refuses, and in a private repository the agent could not open the link anyway. `artifacts.spec.url` stays in those prompts only as a reference line for a person. Every briefing is escaped before it reaches a prompt and cut at 32 KB per hook — a cut says it was cut — so a long spec cannot crowd the review threads out of a fix round's prompt.
+
 ## Structure
 
 ```
@@ -315,6 +317,10 @@ stages:
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 ```
 
+A step whose round fails is never retried; the ticket halts, and there are two halts, one each for the two ways a round fails. A round whose output broke its contract — no json block, an undeclared shape, too long to record — is recorded as `malformed` and goes to `blocked` (`lr:blocked`). A round a security check stopped — the prompt screener said no or could not run, or the agent changed a worktree or created a ticket it had not declared it could — is recorded as `refused`, headed "Step refused by a security check" with the reason, and goes to `screened`, which wears `lr:screened` beside `lr:blocked`: it is still blocked for everything that asks, and says why. The split is `run.lastRefused`, derived beside `run.lastOutputValid` and scoped the same way — `false` for a broken contract, `true` for a refusal, `null` when the current stage has not failed — so exactly one of the two triggers takes any failure. Every other trigger leaving a stage that runs a step reads `"run.lastOutputValid": null`: a failed round is only ever the halts' to route.
+
+A person's reply hands a halted ticket back. From either halt, a failed or refused `build` goes back to `build` — the approved spec did nothing wrong — for at most three build rounds (`run.counters.build: { $lt: 3 }`, a rejected round counting like any other); anything else goes back to `spec`, as before. Both stages take `lr:blocked` and `lr:screened` off again when they are entered.
+
 A stage that runs a step may name the **branch** that step works on — a template over `{ticket}`, `{stage}` and `{round}`, and nothing else:
 
 ```yaml
@@ -436,7 +442,7 @@ anchored edges alone for `cycle-bound`.
 ```bash
 landrace start [-w <dir>] [--once] [--ui-port <port>] [--no-ui]
                                          # watch the tracker; serves the triage page on 127.0.0.1:4545
-landrace status [-w <dir>]               # one line per ticket: where it is, and why one was skipped
+landrace status [-w <dir>]               # one line per ticket: where it is, and why one was skipped or stopped
 landrace validate [dir]                  # prove a workflow sound
 landrace next -w <dir> -s <snapshot>     # the decision for a snapshot, no I/O
 landrace mcp [-w <dir>]                  # MCP server over stdio
@@ -462,14 +468,26 @@ process already knows is running. `--ui-port` moves it, `--no-ui` turns it
 off, and `--once` never serves it. It binds loopback only and answers only
 its own host name.
 
-The button is this page's only write: it starts a tick — and a tick can
-start paid agent runs — so it is guarded beyond the Host check. It requires
-a custom `x-landrace-action: tick` header, which a cross-site `<form>`
-cannot set and a cross-origin `fetch` that does set triggers a CORS
-preflight this server never answers with permission; and it refuses any
-`Origin` other than the page's own. Neither guard is optional: together
-they are what stops another website the user has open from triggering a
-tick just because their browser can still reach 127.0.0.1.
+A ticket a security check stopped sits in "Needs you" with a shield beside
+its badge and the note "blocked by a security check"; the refusal's own reason
+is in the ticket's comments, which the page does not read. `landrace status`
+says "blocked: security check refused a step" for the same ticket.
+
+The page has two writes, and both can start paid agent runs, so both are
+guarded beyond the Host check. The tick button starts a tick. The "Retry" item
+at the end of a blocked or screened ticket's menu asks first, then posts the
+reply "Retry requested from the Landrace board." on the ticket — a human turn,
+exactly as `landrace_reply` posts one — which hands it back on the next tick;
+the server checks against its own latest listing that the ticket is still
+stopped, whatever the page believed, and answers a refusal in a sentence the
+menu shows. Each write requires its own custom `x-landrace-action` header
+(`tick`, `retry`), which a cross-site `<form>` cannot set and a cross-origin
+`fetch` that does set triggers a CORS preflight this server never answers with
+permission; and each refuses any `Origin` other than the page's own, and any
+request the browser marks `Sec-Fetch-Site` as not same-origin. None of the
+guards is optional: together they are what stops another website the user has
+open from triggering a tick or a retry just because their browser can still
+reach 127.0.0.1.
 
 The page follows the OS light/dark preference (or whatever you last toggled,
 top right) with no flash on load. Each row has a menu — "Chat ▾" on rows
@@ -493,7 +511,7 @@ session to have happened already, not the deep link itself.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.
 - A step declares what it may do, and the declaration is enforced by diffing its worktree before and after — not by the flags handed to the agent, which a hook-registered executor never sees. A conversation turn is held to the same declaration as the step it continues.
 - A step or turn gets exactly the MCP servers `agent.mcp` allows, strictly. Landrace's own operator server is refused at startup by name, and by its command line in the common spellings — a best-effort check on operator-trusted config, so do not allowlist a wrapper that runs it.
-- Every agent invocation is screened first, including a turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it.
+- Every agent invocation is screened first, including a turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it. A step the screener refuses is recorded as a refusal, not a broken contract, and lands in `screened` for a person to read.
 - The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workflow directory before it is imported, both ends compared after `realpath`.
 - A comment carries control state only because Landrace's own account wrote it. The account is resolved from the token at startup and verified against any configured override; the process refuses to run rather than guess, because a login it cannot resolve would make its own records read as a stranger's.
 

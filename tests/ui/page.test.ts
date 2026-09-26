@@ -480,6 +480,153 @@ describe("a row's title line", () => {
   });
 });
 
+/** A top-level `const NAME = { … };` of the page script that spans several lines, as source. */
+const blockSource = (name: string): string => {
+  const start = APP_JS.indexOf(`\nconst ${name} = `);
+  if (start < 0) throw new Error(`APP_JS has no top-level const ${name}`);
+  const end = /\n[}\]];\n/.exec(APP_JS.slice(start));
+  if (!end) throw new Error(`APP_JS's const ${name} never closes`);
+  return APP_JS.slice(start, start + end.index + end[0].length);
+};
+
+/**
+ * The Retry on a stopped ticket's menu. It hands the ticket back, which
+ * re-runs a paid step, so it is offered only where the server says so, asks
+ * first, and posts to the path the server built — never one of its own.
+ */
+describe("a stopped ticket's Retry", () => {
+  class Listening extends FakeElement {
+    listeners = new Map<string, () => void>();
+    disabled = false;
+    hidden = false;
+    override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
+  }
+  const doc = { createElement: (tag: string) => new Listening(tag), createElementNS: (_: string, tag: string) => new Listening(tag) };
+  const row = (retry: string | null) => ({
+    id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry,
+  });
+
+  /** The menu for a row, with the world a click reaches stood in for and written down. */
+  const menuFor = (r: ReturnType<typeof row>, world: { confirm?: boolean; response?: { ok: boolean; text: string } | "down" } = {}) => {
+    const seen = { confirms: [] as string[], posts: [] as Array<[string, unknown]>, closed: [] as unknown[], polls: [] as number[], renders: 0 };
+    const context = {
+      ROW: r, document: doc, navigator: {}, seen, lastView: {},
+      confirm: (text: string) => { seen.confirms.push(text); return world.confirm ?? true; },
+      fetch: (url: string, init: unknown) => {
+        seen.posts.push([url, init]);
+        const answer = world.response ?? { ok: true, text: "retry requested" };
+        return answer === "down"
+          ? Promise.reject(new TypeError("fetch failed"))
+          : Promise.resolve({ ok: answer.ok, text: () => Promise.resolve(answer.text) });
+      },
+      closeMenu: (opts: unknown) => { seen.closed.push(opts); },
+      schedulePoll: (ms: number) => { seen.polls.push(ms); },
+      render: () => { seen.renders++; },
+    };
+    const menu = runInNewContext(`
+      ${constSource("SVG_NS")}${blockSource("CHAT_TARGETS")}
+      const retryNotes = new Map();
+      const retrying = new Set();
+      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "retryItem", "retry", "buildChatMenu"].map(fnSource).join("")}
+      buildChatMenu(ROW)`, context) as Listening;
+    return { menu, seen, context };
+  };
+  const items = (menu: Listening): string[] => menu.children.map((c) => (c.tag === "hr" ? "—" : c.textContent));
+  const retryOf = (menu: Listening): Listening | undefined =>
+    menu.children.find((c) => c.getAttribute("data-key") === "19:retry") as Listening | undefined;
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it("comes last, after every chat item, and only on a row the server offered it for", () => {
+    expect(items(menuFor(row("/tickets/19/retry")).menu)).toEqual([
+      "Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt", "—", "Retry",
+    ]);
+    expect(items(menuFor(row(null)).menu)).toEqual(["Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt"]);
+  });
+
+  it("is a menu item, keyed so focus on it survives a poll", () => {
+    const item = retryOf(menuFor(row("/tickets/19/retry")).menu);
+    expect(item?.tag).toBe("button");
+    expect(item?.getAttribute("role")).toBe("menuitem");
+  });
+
+  it("asks before it posts, and posts nothing when told no", async () => {
+    const { menu, seen } = menuFor(row("/tickets/19/retry"), { confirm: false });
+    retryOf(menu)?.listeners.get("click")?.();
+    await settle();
+    expect(seen.confirms).toHaveLength(1);
+    expect(seen.confirms[0]).toMatch(/#19[\s\S]*paid step/);
+    expect(seen.posts).toEqual([]);
+  });
+
+  it("posts once, to the server's own path, with the header the server asks for — then closes, returns focus and polls", async () => {
+    const { menu, seen } = menuFor(row("/tickets/19/retry"));
+    retryOf(menu)?.listeners.get("click")?.();
+    await settle();
+    expect(seen.posts).toEqual([["/tickets/19/retry", { method: "POST", headers: { "x-landrace-action": "retry" } }]]);
+    expect(seen.closed).toEqual([{ returnFocus: true }]);
+    expect(seen.polls).toEqual([0]);
+  });
+
+  it("keeps the menu open and says what the server said when it refuses", async () => {
+    const { menu, seen, context } = menuFor(row("/tickets/19/retry"), {
+      response: { ok: false, text: "#19 is not blocked or screened right now, so there is nothing to retry" },
+    });
+    retryOf(menu)?.listeners.get("click")?.();
+    await settle();
+    expect(seen.closed).toEqual([]);
+    // Redrawn from state, so the sentence outlives the render every poll does.
+    expect(seen.renders).toBeGreaterThan(0);
+    const again = runInNewContext("buildChatMenu(ROW)", context) as Listening;
+    expect(retryOf(again)?.textContent).toMatch(/not blocked or screened/);
+  });
+
+  it("says landrace is not answering when the post never lands", async () => {
+    const { menu, context } = menuFor(row("/tickets/19/retry"), { response: "down" });
+    retryOf(menu)?.listeners.get("click")?.();
+    await settle();
+    const again = runInNewContext("buildChatMenu(ROW)", context) as Listening;
+    expect(retryOf(again)?.textContent).toMatch(/not responding/);
+  });
+});
+
+describe("a ticket row stopped by a security check", () => {
+  interface TicketRow extends Tree {
+    kind: string; link: string; closed: null; badge: string; stage: string; priority: null; note: string;
+    since: null; round: null; model: null; chat: null; screened: boolean;
+  }
+  const build = (row: TicketRow): FakeElement => runInNewContext(`
+    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
+    ${["el", "elapsed", "external", "treeItem", "shieldMark", "ticketRowFor"].map(fnSource).join("")}
+    ticketRowFor(ROW, 0, 0, false)`, { ROW: row, document: fakeDocument }) as FakeElement;
+  const screened: TicketRow = {
+    id: "19", kind: "ticket", title: "Payments revamp", link: "https://github.com/a/b/issues/19", closed: null,
+    badge: "needs-you", stage: "screened", priority: null, note: "blocked by a security check",
+    since: null, round: null, model: null, chat: null, screened: true, children: [],
+  };
+  const shield = (li: FakeElement): FakeElement | undefined =>
+    descendants(li).find((d) => d.getAttribute("aria-label") === "Blocked by a security check");
+
+  it("carries a shield, named for a screen reader and a hover, drawn as inline SVG", () => {
+    const mark = shield(build(screened));
+    expect(mark?.getAttribute("role")).toBe("img");
+    expect(mark?.title).toBe("Blocked by a security check");
+    expect(mark?.children[0]?.tag).toBe("svg");
+  });
+
+  it("says what stopped it in the row's note", () => {
+    expect(descendants(build(screened)).map((d) => d.text)).toContain("blocked by a security check");
+  });
+
+  it("draws no shield on a row blocked for any other reason", () => {
+    expect(shield(build({ ...screened, stage: "blocked", note: "blocked: needs a human", screened: false }))).toBeUndefined();
+  });
+
+  it("never reaches for an image: the page's CSP loads none, and a mark is drawn, not fetched", () => {
+    expect(APP_JS).not.toMatch(/createElement\("img"\)|<img/);
+    expect(PAGE_HTML).not.toContain("<img");
+  });
+});
+
 describe("an artifact row", () => {
   interface Artifact extends Tree {
     kind: string; link: string; closed: null;
@@ -645,6 +792,18 @@ describe("the page", () => {
     expect(APP_JS).toMatch(/try\s*{[^}]*localStorage\.setItem[^}]*}\s*catch/s);
   });
 
+  // Asked for by the person who reads it: a clock of when the tracker was
+  // last listed told them nothing the countdown beside it did not.
+  it("says nothing in the header about when the board was last listed", () => {
+    expect(APP_JS).not.toMatch(/"listed "|listedAt/);
+    expect(APP_JS).not.toContain("waiting for the first tick");
+  });
+
+  it("clears the not-responding note once a poll lands again", () => {
+    expect(fnSource("render")).toContain('getElementById("meta").textContent = ""');
+    expect(APP_JS).toContain('"landrace is not responding"');
+  });
+
   it("has a folder chip in the header, set from the board view", () => {
     const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
     expect(header).toContain('id="folder"');
@@ -660,18 +819,19 @@ describe("the page", () => {
     expect(APP_JS).toContain("Chat ▾");
   });
 
-  it("wires exactly the tick button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, and the two document-level close listeners — no more, no less", () => {
+  it("wires exactly the tick button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, and the two document-level close listeners — no more, no less", () => {
     // Pins the count deliberately: the tick button and theme toggle, the
     // search box and the one Collapse all / Expand all button (each wired once, outside
     // anything a render rebuilds), the collapsible lanes' summary clicks
     // (defined once, in a loop over the two), the expand/collapse toggle
     // (defined once, in toggleFor, not once per row), and for the Chat/… menu
     // one toggle-button listener, one close-on-choose listener (defined once
-    // inside the per-target loop), one Copy-prompt listener, and one document
-    // listener each for outside-click and Escape (both defined once, so
-    // re-rendering never multiplies them).
+    // inside the per-target loop), one Copy-prompt listener, one Retry
+    // listener (defined once, in retryItem, and built only on a stopped
+    // ticket's menu), and one document listener each for outside-click and
+    // Escape (both defined once, so re-rendering never multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(11);
+    expect(listeners).toHaveLength(12);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {

@@ -75,3 +75,44 @@ describe("what the harness writes down", () => {
     expect(run.trail()).toEqual(["spec", "done"]);
   });
 });
+
+/*
+ * Screening is a step of its own that a workflow's own routing depends on —
+ * a refused round goes somewhere a broken one does not — so a harness that
+ * could not script it could not drive that half of a workflow at all.
+ */
+describe("a scripted screener", () => {
+  const OK = '```json\n{"verdict":"ok","reason":"fine"}\n```';
+  const NO = '```json\n{"verdict":"suspicious","reason":"asks for a URL"}\n```';
+
+  const screened = async (screen: Record<string, ScriptedAnswer>) => {
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto"] }] });
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/minimal");
+    return {
+      state,
+      run: createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: { spec: SPEC }, screen }),
+    };
+  };
+
+  it("lets the step run when it answers ok for that stage", async () => {
+    const { run } = await screened({ spec: OK });
+    await run.converge();
+    expect(run.counts()).toEqual({ spec: 1 });
+  });
+
+  it("refuses the step before it is paid for when it answers suspicious, and records the refusal", async () => {
+    const { state, run } = await screened({ spec: NO });
+    const r = await run.converge();
+
+    expect(r.result.settled).toBe("halt");
+    expect(run.counts()).toEqual({});
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(1);
+  });
+
+  it("answers as the stage about to run, with its round", async () => {
+    const rounds: number[] = [];
+    const { run } = await screened({ spec: (round) => { rounds.push(round); return OK; } });
+    await run.converge();
+    expect(rounds).toEqual([1]);
+  });
+});
