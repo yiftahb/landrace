@@ -17,6 +17,11 @@ import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
 import type { Effect, ExternalState, GotoDeps, Harness, HookContext, PostHook, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
 
+// Its own lock root for every goto here: these tests must not race the
+// default one a developer's own loop might be holding.
+let lockRoot: string;
+beforeAll(async () => { lockRoot = await mkdtemp(join(tmpdir(), "lr-e2e-goto-")); });
+
 /** The real GitHub hooks as the harness takes them: the registry, with its source proved present. */
 const hooksOf = (gh: ReturnType<typeof createFakeTracker>) => {
   const { source } = gh.registry;
@@ -868,6 +873,7 @@ describe("sending a ticket back to a step", () => {
     });
     const deps: GotoDeps = {
       source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post, specPage]), ctx, workflow,
+      lock: { root: lockRoot },
     };
     const record = (effect: Effect) => state.post.apply(effect, { ...ctx, ticket: "1" } as HookContext);
     return { state, run, deps, record };
@@ -987,7 +993,9 @@ describe("sending a ticket back to a step", () => {
     expect(waiting.calls).toEqual([]);
     expect(state.stage("1")).toBe("triage");
 
-    const deps: GotoDeps = { source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow };
+    const deps: GotoDeps = {
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow, lock: { root: lockRoot },
+    };
     expect(await sendTo(deps, "1", "build")).toEqual({ to: "build" });
     const recovered = await run.converge();
 
@@ -1008,7 +1016,7 @@ describe("sending a ticket back to a step", () => {
 describe("a halted ticket sent back to a review, from the board", () => {
   const ctx = { config: {}, secrets: new Map<string, string>(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
   const depsOf = (state: ExternalState, workflow: GotoDeps["workflow"]): GotoDeps =>
-    ({ source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow });
+    ({ source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow, lock: { root: lockRoot } });
 
   it("goes back to code-review — not to spec or build — and sheds lr:blocked", async () => {
     const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:code-review"] }] });

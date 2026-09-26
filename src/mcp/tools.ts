@@ -210,7 +210,13 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       // The workflow is what says where a stage may send a ticket; guessing
       // it here would be a second answer free to differ from the loop's.
       if (!opts.workflow) throw new Error("cannot send a ticket back: this process was not given the workflow");
-      const r = await sendTo({ source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow }, ticket, stage);
+      // And the lock this process was told the tick takes, as the
+      // conversation is: a goto has to wait on the tick that would take it.
+      const r = await sendTo(
+        { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
+        ticket,
+        stage,
+      );
       if ("refused" in r) throw new Error(r.refused);
       return { ticket, to: r.to, posted: true };
     },

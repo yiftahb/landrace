@@ -1,7 +1,11 @@
 import { GOTO_KIND, RECORD_EFFECT } from "#conventions.js";
 import { assess, compile, gotoDeclined, gotoNotListed, locate } from "#core/index.js";
 import type { GotoDeps, GotoResult, Node } from "#namespace.js";
+import { withLock } from "#runner/lock.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
+
+/** Long enough to lose a race to a tick reading a ticket that waits, short enough that a click is answered. */
+const WAIT_FOR_TICK_MS = 3_000;
 
 /**
  * A person sending a ticket back to a step: the board's Retry and "Go to
@@ -36,11 +40,24 @@ import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
  * the label `deriveRun` scopes the record to, and a goto recorded there
  * would be silently dropped on the very next read rather than ever taken.
  *
- * No lock, like `postReply`: this reads, checks and writes one record, and
- * the engine re-derives from whatever it finds, so a race costs one goto
- * taken a tick later, never a corrupted run.
+ * Under the ticket's lock, the one a tick converges under, like
+ * `landrace_resolve`: this reads, decides and writes, and that is what the
+ * lock exists to make atomic. Without it a tick could move the ticket between
+ * the read and the write, and the goto — recorded against a stage the ticket
+ * has already left — would read as consumed, after the page had said "sent".
+ * A tick holds the lock for as long as a step runs, so this waits only a
+ * moment and then says so, rather than leaving a click hanging.
  */
 export async function sendTo(deps: GotoDeps, ticket: string, target: string | null): Promise<GotoResult> {
+  try {
+    return await withLock(ticket, "goto", () => sendAt(deps, ticket, target), { waitMs: WAIT_FOR_TICK_MS, ...deps.lock });
+  } catch (e) {
+    if ((e as { code?: unknown } | null)?.code === "ELOCKED") return { refused: `#${ticket} is busy; try again in a moment` };
+    throw e;
+  }
+}
+
+async function sendAt(deps: GotoDeps, ticket: string, target: string | null): Promise<GotoResult> {
   const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
   const node = snapshot.node as Node | undefined;
   if (!node) return { refused: `#${ticket} was not found` };

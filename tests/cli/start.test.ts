@@ -619,6 +619,7 @@ describe("the page's Retry and Go to step", () => {
     const path = gotoFor({
       source, pre: tracker.registry.pre,
       dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: WF,
+      lock: { root: await mkdtemp(join(tmpdir(), "lr-start-goto-")) },
     });
     expect(await path?.send("19", null)).toEqual({ to: "spec" });
 

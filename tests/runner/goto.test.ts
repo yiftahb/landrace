@@ -1,9 +1,18 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { renderMarker } from "#conventions.js";
 import { createDispatcher } from "#runner/effects.js";
 import { sendTo } from "#runner/goto.js";
+import { acquire, held, release } from "#runner/lock.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import type { GotoDeps, Source, Workflow } from "#namespace.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
+
+let root: string;
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "lr-goto-"));
+});
 
 const ENTER = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
 const workflow: Workflow = { version: 1, name: "t", stages: [
@@ -21,6 +30,7 @@ const world = (labels: string[]) => {
   const source = tracker.registry.source as Source;
   const deps: GotoDeps = {
     source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow,
+    lock: { root },
   };
   const run = async () =>
     (await buildSnapshot({ ticket: "3", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "3" } })).run;
@@ -128,6 +138,35 @@ describe("sending a ticket back to a step", () => {
     expect((await run())?.goto).toBe("spec");
   });
 
+  /*
+   * Read, decide, write: a tick moving the ticket between the read and the
+   * write would leave a goto recorded against a stage the ticket has left,
+   * which reads as consumed — after the page had already said "sent".
+   */
+  it("refuses, and writes nothing, while something else holds the ticket", async () => {
+    const { deps, tracker, run } = world(["lr:stage:blocked", "lr:blocked"]);
+    await acquire("3", "tick", { root, holder: "tick:9" });
+    try {
+      const before = tracker.comments.get(3)?.length ?? 0;
+      expect(await sendTo({ ...deps, lock: { root, waitMs: 50 } }, "3", "spec")).toEqual({
+        refused: "#3 is busy; try again in a moment",
+      });
+      expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
+    } finally {
+      await release("3", { root });
+    }
+    expect(await sendTo(deps, "3", "spec")).toEqual({ to: "spec" });
+    expect((await run())?.goto).toBe("spec");
+  });
+
+  it("gives the ticket's lock back, whether it sent the ticket or refused", async () => {
+    const { deps } = world(["lr:stage:blocked", "lr:blocked"]);
+    expect(await sendTo(deps, "3", "spec")).toEqual({ to: "spec" });
+    expect(await held("3", { root })).toBeNull();
+    expect(await sendTo(deps, "3", "done")).toHaveProperty("refused");
+    expect(await held("3", { root })).toBeNull();
+  });
+
   it("refuses a ticket it cannot place", async () => {
     const { deps, tracker } = world(["lr:stage:blocked", "lr:stage:spec"]);
     const before = tracker.comments.get(3)?.length ?? 0;
@@ -147,7 +186,7 @@ describe("sending a ticket back to a step", () => {
     const source = tracker.registry.source as Source;
     const deps: GotoDeps = {
       source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx,
-      workflow: ambiguous,
+      workflow: ambiguous, lock: { root },
     };
     expect(await sendTo(deps, "11", "spec")).toEqual({
       refused: expect.stringMatching(/matches more than one stage.*blocked.*blocked-too/s),
@@ -164,7 +203,7 @@ describe("sending a ticket back to a step", () => {
     const tracker = createFakeTracker([{ number: 9, labels: ["lr:auto", "lr:stage:elsewhere", "P5"] }]);
     const source = tracker.registry.source as Source;
     const deps: GotoDeps = {
-      source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: custom,
+      source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: custom, lock: { root },
     };
     const before = tracker.comments.get(9)?.length ?? 0;
     expect(await sendTo(deps, "9", "spec")).toEqual({
@@ -181,7 +220,7 @@ describe("sending a ticket back to a step", () => {
     const tracker = createFakeTracker([{ number: 12, labels: ["lr:auto", "lr:stage:blocked"] }]);
     const source = tracker.registry.source as Source;
     const deps: GotoDeps = {
-      source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: gated,
+      source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: gated, lock: { root },
     };
     const before = tracker.comments.get(12)?.length ?? 0;
     expect(await sendTo(deps, "12", "spec")).toEqual({

@@ -739,7 +739,7 @@ export interface LandraceEvent {
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
-export type LockKind = "tick" | "conversation" | "execution";
+export type LockKind = "tick" | "conversation" | "execution" | "goto";
 
 export interface Held {
   ticket: string;
@@ -1406,9 +1406,14 @@ export interface ReplyDeps {
 /** What sending a ticket back to a step answers: the step it was sent to, or a sentence saying why not. */
 export type GotoResult = { refused: string } | { to: string };
 
-/** A reply's needs, and the workflow, which is what says where a stage may send a ticket. */
+/**
+ * A reply's needs, the workflow, which is what says where a stage may send a
+ * ticket, and where the per-ticket locks live — the tick's own, by default,
+ * since a goto has to be serialised against the tick that would take it.
+ */
 export interface GotoDeps extends ReplyDeps {
   workflow: Workflow;
+  lock?: LockOptions;
 }
 
 /** How the page's writes reach a ticket. `target` null is a Retry: the stage that last failed. */
