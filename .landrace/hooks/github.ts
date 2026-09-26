@@ -820,22 +820,26 @@ function pagesRoot(site: unknown): string | null {
  * repository with no site 404s at every github.io link, so without a site the
  * link is the file on GitHub, which any viewer of the repository can open.
  *
- * Only an answer is kept. A 403, a 5xx or a dropped connection says nothing
- * either way, so it costs this call the file link and a line in the log —
- * once, not every tick — and the next call asks again.
+ * Only an answer is kept, and a 403 is one: this token lacks "Pages: Read",
+ * and only a new token changes that, so it links the file until a restart
+ * rather than paying a request per call for the same refusal. A 5xx, a
+ * dropped connection or a site described with no address says nothing either
+ * way, so it costs this call the file link and the next call asks again.
+ * Either is said in the log once, not every tick.
  */
 function specLinks(gh: Client, repo: string) {
-  // ponytail: kept for the process's lifetime — a Pages site enabled or removed later shows after a restart.
+  // ponytail: kept for the process's lifetime — a Pages site enabled or removed, or a token granted Pages: Read, shows after a restart.
   let root: Promise<string | null> | undefined;
   let told = false;
   return async (ticket: string, log: HookContext["log"]): Promise<string> => {
     root ??= gh.pagesSite().then(pagesRoot).catch((e: unknown) => {
-      root = undefined;
+      const refused = (e as { status?: unknown } | null)?.status === 403;
+      if (!refused) root = undefined;
       if (!told) {
         told = true;
         log("github.pages.unknown", {
           reason: `could not tell whether a Pages site serves ${PAGES_BRANCH}, so spec links point at the file ` +
-            `on GitHub until a later read can: ${e instanceof Error ? e.message : String(e)}`,
+            `on GitHub ${refused ? "until a restart" : "until a later read can"}: ${e instanceof Error ? e.message : String(e)}`,
         });
       }
       return null;

@@ -238,23 +238,50 @@ describe("the spec link points where the page can actually be read", () => {
     expect(await links(gh, spec)).toEqual(everywhere(FILE_12));
   });
 
-  it.each([
-    [403, "a token without Pages: Read"],
-    [500, "a server error"],
-  ])("links the file on a %i (%s), logs why once, fails nothing, and asks again next time", async (status) => {
+  it("links the file on a 5xx, logs why once, fails nothing, and asks again next time", async () => {
     const { gh, spec, ctx } = published();
-    gh.pages(status);
+    gh.pages(500);
     const events: Logged[] = [];
 
     expect(await links(gh, spec, events)).toEqual(everywhere(FILE_12));
     // Not an answer, so not kept: each of the three asked again.
     expect(probes(gh)).toHaveLength(3);
     expect(unknown(events)).toEqual([
-      { event: "github.pages.unknown", data: { reason: expect.stringContaining(String(status)) } },
+      { event: "github.pages.unknown", data: { reason: expect.stringContaining("500") } },
     ]);
 
     gh.pages({ html_url: "https://acme.github.io/widgets/" });
     expect((await spec.read(ctx("12"))).url).toBe("https://acme.github.io/widgets/specs/12/");
+  });
+
+  /*
+   * A 403 is this token lacking "Pages: Read", and only a new token changes
+   * that — asking again on every read would buy one request per call and the
+   * same answer. So it is kept like a 404, until a restart.
+   */
+  it("links the file on a 403, logs why once, fails nothing, and asks once for the life of the client", async () => {
+    const { gh, spec, ctx } = published();
+    gh.pages(403);
+    const events: Logged[] = [];
+
+    await Promise.all([spec.read(ctx("12")), spec.read(ctx("13"))]);
+    expect(await links(gh, spec, events)).toEqual(everywhere(FILE_12));
+    expect(await links(gh, spec, events)).toEqual(everywhere(FILE_12));
+    expect(probes(gh)).toHaveLength(1);
+
+    // Kept even once a site appears: the token that was refused is the one still asking.
+    gh.pages({ html_url: "https://acme.github.io/widgets/" });
+    expect((await spec.read(ctx("12"))).url).toBe(FILE_12);
+    expect(probes(gh)).toHaveLength(1);
+
+    const all: Logged[] = [];
+    const fresh = published();
+    fresh.gh.pages(403);
+    await links(fresh.gh, fresh.spec, all);
+    await links(fresh.gh, fresh.spec, all);
+    expect(unknown(all)).toEqual([
+      { event: "github.pages.unknown", data: { reason: expect.stringMatching(/until a restart[\s\S]*403/) } },
+    ]);
   });
 
   it("links the file, and says why, when GitHub describes the site with no web address", async () => {
