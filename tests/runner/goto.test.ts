@@ -62,6 +62,18 @@ describe("sending a ticket back to a step", () => {
     expect((await run())?.goto).toBe("build");
   });
 
+  // The ordinary conversation at a halt: a question goes through the judge
+  // and comes home. That round trip is not what put the ticket here.
+  it("retries the failed step after a question at the halt came home from the judge", async () => {
+    const { deps, run, rejected, tracker } = world(["lr:stage:blocked", "lr:blocked"]);
+    rejected("build", 1);
+    tracker.sayAs("someone", 3, "why did it stop?");
+    tracker.say(3, `entered${renderMarker({ stage: "judge", kind: "enter", round: 1, from: "blocked" })}`);
+    tracker.say(3, `answered${renderMarker({ stage: "judge", kind: "output", round: 1, output: { intent: "question" } })}`);
+    expect(await sendTo(deps, "3", null)).toEqual({ to: "build" });
+    expect((await run())?.goto).toBe("build");
+  });
+
   it("refuses a retry of an older failure the ticket was since sent around, and writes nothing", async () => {
     // spec failed, a person sent the ticket on to build, and it came back
     // here for another reason. spec is still failed — nothing has run it

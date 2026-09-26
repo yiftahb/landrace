@@ -220,10 +220,18 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * for. Only the latest stage the ticket was in before this one can have
    * put it here; anything older it has since left behind.
    *
-   * The current stage's own entry is skipped, so the judge reading a reply to
-   * a halt — entered from `blocked` — is still told what failed before it.
+   * Two kinds of entry are walked past. The current stage's own, so the judge
+   * reading a reply to a halt — entered from `blocked` — is still told what
+   * failed before it. And a round trip from here that settled: a question at
+   * a halt goes through the judge and comes home, and read as "the stage it
+   * last left", that made Retry answer "nothing has failed" to the ordinary
+   * conversation at a halt. A round trip whose stage failed is not walked
+   * past — a goto from the halt whose step failed again is what put it here.
    */
-  const leftLast = [...ordered].reverse().find((e) => e.kind === ENTRY_KIND && e.stage !== stage);
+  const leftLast = [...ordered].reverse().find((e) =>
+    e.kind === ENTRY_KIND &&
+    e.stage !== stage &&
+    !(stage !== null && e.from === stage && !failedStages.includes(e.stage)));
   const failedStage = leftLast !== undefined && failedStages.includes(leftLast.stage) ? leftLast.stage : null;
 
   return {

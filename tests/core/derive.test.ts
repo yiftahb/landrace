@@ -344,13 +344,39 @@ describe("run.failedStage, the failure that put the ticket where it is", () => {
     expect(deriveRun(entries, "blocked").failedStage).toBe("build");
   });
 
+  /*
+   * A reply at a halt goes through the judge and, unless it asks for a goto,
+   * comes home. That round trip left from here and settled; it did not put
+   * the ticket here. Read as "the stage it last left", Retry answered
+   * "nothing has failed" to the ordinary conversation at a halt.
+   */
+  it("looks past a settled round trip from here — a question at the halt the judge sent home", () => {
+    const failed = [entered("build", 1), malformed("build", 1)];
+    const question = (round: number) => [human(), from("triage", round, "blocked"), out("triage", round, { intent: "question" })];
+    expect(deriveRun([...failed, ...question(1)], "blocked").failedStage).toBe("build");
+    expect(deriveRun([...failed, ...question(1), ...question(2)], "blocked").failedStage).toBe("build");
+  });
+
+  it("stops at a round trip from here that failed — a goto from the halt whose step failed again", () => {
+    const entries = [
+      entered("spec", 1), malformed("spec", 1),
+      going("blocked", "build"), from("build", 1, "blocked"), malformed("build", 1),
+    ];
+    expect(deriveRun(entries, "blocked").failedStage).toBe("build");
+  });
+
   it("is null once the ticket was sent on past an older failure and came back for another reason", () => {
-    const reviews = [1, 2, 3, 4].flatMap((round) => [entered("code-review", round), out("code-review", round)]);
+    // The walk stops at the last review round: entered from another stage,
+    // and not failed. The build before it was a round trip from the halt,
+    // but the reviews came in between.
+    // Built in the order they happen: `at()` stamps each as it is made.
     const entries = [
       entered("spec", 1), malformed("spec", 1), entered("spec", 2), malformed("spec", 2),
       going("blocked", "build"), from("build", 1, "blocked"), out("build", 1, { kind: "done" }),
-      ...reviews,
     ];
+    for (const round of [1, 2, 3, 4]) {
+      entries.push(from("code-review", round, round === 1 ? "publish" : "fix-review"), out("code-review", round));
+    }
     const run = deriveRun(entries, "blocked");
     // Still failed — nothing has run spec since — but not what put it here.
     expect(run.failedStages).toContain("spec");
