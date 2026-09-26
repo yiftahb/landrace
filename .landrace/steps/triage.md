@@ -30,6 +30,7 @@ output:
 Classify one message a person wrote on a ticket while it was their turn.
 
 The ticket was waiting at: {run.previousStage}
+The step that failed, if any: {run.failedStages}
 
 What each place means, and which answers make sense there:
 
@@ -43,6 +44,10 @@ Anywhere, the person may ask to go back:
 
 - `goto-spec` — they want the spec written again ("redo the spec", "the spec misunderstood X").
 - `goto-build` — they want the implementation redone or retried ("retry the build", "build it again").
+
+At `blocked` or `screened`, "try again" means the step that failed: answer
+`goto-spec` if spec failed and `goto-build` if build failed. For any other
+failed step, answer `unclear` — the board's Retry is what retries it.
 
 `question` — they asked something rather than deciding. `unclear` — you cannot tell.
 

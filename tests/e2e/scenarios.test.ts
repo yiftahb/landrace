@@ -672,9 +672,9 @@ describe("a human reply to a ticket blocked by a rejected output", () => {
     const handback = await run.converge();
 
     expect(handback.result.settled).not.toBe("cap");
-    // The ping-pong wrote a status and a label on each of thirty passes; a
-    // judged handback writes about ten.
-    expect(writes.length - before).toBeLessThan(15);
+    // The ping-pong wrote a status and a label on every one of thirty passes;
+    // a judged handback writes nine.
+    expect(writes.length - before).toBeLessThan(10);
     // Taken back once and worked on, rather than bounced between the two.
     expect(handback.trail).toEqual(["blocked", "triage", "spec"]);
   });
@@ -776,10 +776,12 @@ describe("a step refused by a security check", () => {
     // Three build rounds, all refused; the third reply's goto was past the cap and came home.
     expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
     expect(state.stage("1")).toBe("screened");
+    expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:screened", "lr:screened"]));
 
     state.say("1", "revise the spec instead");
     await tick();
     expect(run.trail().slice(-3)).toEqual(["triage", "spec", "spec-questions"]);
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
     expect(state.ticket("1").labels).not.toContain("lr:screened");
   });
 
@@ -825,9 +827,15 @@ describe("a step refused by a security check", () => {
  * Retry is a goto to the stage whose round failed, and a review can fail like
  * any other step. With the halts listing only spec and build, a review that
  * broke its contract could be retried only by rewriting the spec or rebuilding
- * the work, neither of which was what failed.
+ * the work, neither of which was what failed. And a review with no pull
+ * request to read is not offered at all: sent there, the ticket would halt on
+ * the stage's precondition, where no goto can reach it.
  */
-describe("a review that broke its contract, retried from the board", () => {
+describe("a halted ticket sent back to a review, from the board", () => {
+  const ctx = { config: {}, secrets: new Map<string, string>(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+  const depsOf = (state: ExternalState, workflow: GotoDeps["workflow"]): GotoDeps =>
+    ({ source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow });
+
   it("goes back to code-review — not to spec or build — and sheds lr:blocked", async () => {
     const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:code-review"] }] });
     state.openPull("1", { branch: "landrace/1" });
@@ -836,8 +844,7 @@ describe("a review that broke its contract, retried from the board", () => {
       workflow, steps, source: state.source, pre: [state.pre], post: [state.post],
       answers: { "code-review": (round) => (round === 1 ? "no json" : '```json\n{"kind":"reviewed"}\n```') },
     });
-    const ctx = { config: {}, secrets: new Map<string, string>(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
-    const deps: GotoDeps = { source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow };
+    const deps = depsOf(state, workflow);
 
     // Two converges: the rejection is recorded, then read back and routed.
     await run.converge();
@@ -851,14 +858,29 @@ describe("a review that broke its contract, retried from the board", () => {
     expect(retried.calls.map(({ stage, round }) => ({ stage, round }))).toEqual([{ stage: "code-review", round: 2 }]);
     expect(state.ticket("1").labels).not.toContain("lr:blocked");
   });
+
+  it("refuses to send a ticket with no pull request to a review, and writes nothing", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }] });
+    const { workflow } = await loadWorkflow(".landrace");
+    const deps = depsOf(state, workflow);
+    const before = state.comments("1").length;
+
+    for (const to of ["code-review", "fix-review"]) {
+      expect(await sendTo(deps, "1", to)).toEqual({ refused: expect.stringMatching(/rel\.implements\.in\.total/) });
+    }
+    expect(state.comments("1").length).toBe(before);
+    expect(state.stage("1")).toBe("blocked");
+  });
 });
 
 /**
- * §10: `triage --question--> spec-questions`, and `unclear` "waits and asks
- * rather than guessing". Both shapes were declared, routed to a comment, and
- * led nowhere: the ticket sat at `triage` wearing `lr:awaiting` and the
- * human's next reply did nothing at all, because decide() excludes the current
- * stage's own triggers and nothing else claimed a human turn from `triage`.
+ * A `question`, and an `unclear` that "waits and asks rather than guessing",
+ * come home to where the reply was made — here `spec-human-review` — so the
+ * person's next reply is read again. Both shapes were once declared, routed
+ * to a comment, and led nowhere: the ticket sat at `triage` wearing
+ * `lr:awaiting` and the human's next reply did nothing at all, because
+ * decide() excludes the current stage's own triggers and nothing else
+ * claimed a human turn from `triage`.
  */
 describe("a reviewer's reply that triage cannot read as approve or revise", () => {
   const upTo = async (intent: string) => {

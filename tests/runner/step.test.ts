@@ -40,6 +40,14 @@ describe("renderPrompt", () => {
   it("leaves an unknown path visible rather than printing undefined", () => {
     expect(renderPrompt("{ticket.nope}", snapshot)).toBe("{ticket.nope}");
   });
+
+  // String() ran a list together as "code-review,build", and a judge told
+  // which steps failed has to be able to read them apart.
+  it("writes a list out with its items apart, and an empty one as nothing", () => {
+    const s = { run: { failedStages: ["code-review", "build"], none: [] } } as unknown as Snapshot;
+    expect(renderPrompt("failed: {run.failedStages}.", s)).toBe("failed: code-review, build.");
+    expect(renderPrompt("failed: {run.none}.", s)).toBe("failed: .");
+  });
 });
 
 describe("the model a step declares", () => {

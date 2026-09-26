@@ -196,17 +196,23 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
 
   /*
    * Retry is a goto to the stage whose round failed, and any step can fail:
-   * a halt listing only spec and build left a broken review or judge with no
-   * retry at all. Each target is capped by the bound its own triggers use.
+   * a halt listing only spec and build left a broken review with no retry at
+   * all. Each target is capped by its own rounds — fix-review by code-review's
+   * too, the loop the two share — and offered only where it could run: a
+   * review needs a pull request, and the judge a message to read. A goto
+   * that landed on a stage whose precondition fails would halt there, and
+   * nothing could send the ticket on.
    */
-  it("lets a halt send the ticket back to every step, each within its own rounds", async () => {
+  it("lets a halt send the ticket back to every step, within that step's rounds and only where it can run", async () => {
     const { workflow } = await loadWorkflow(".landrace");
     const every = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
-      { stage: "code-review", when: { "run.counters.code-review": { $lt: 4 } } },
-      { stage: "fix-review", when: { "run.counters.code-review": { $lt: 4 } } },
-      { stage: "triage", when: { "run.counters.triage": { $lt: 20 } } },
+      { stage: "code-review", when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } } },
+      { stage: "fix-review", when: {
+        "run.counters.code-review": { $lt: 4 }, "run.counters.fix-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 },
+      } },
+      { stage: "triage", when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } } },
     ];
     for (const id of ["blocked", "screened"]) {
       expect(workflow.stages.find((s) => s.id === id)?.goto).toEqual(every);
@@ -222,7 +228,20 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(at("triage"))).toBe("triage");
     expect(await destination(at("code-review", { "code-review": 4 }))).toMatch(/^wait: .*only while/);
     expect(await destination(at("fix-review", { "code-review": 4 }))).toMatch(/^wait: .*only while/);
+    // A failed fix round advances only its own counter, so code-review's
+    // alone would let Retry run it for ever.
+    expect(await destination(at("fix-review", { "fix-review": 4 }))).toMatch(/^wait: .*only while.*run\.counters\.fix-review/);
     expect(await destination(at("triage", { triage: 20 }))).toMatch(/^wait: .*only while/);
+  });
+
+  it.each(["blocked", "screened"])("from %s, declines a review with no pull request and the judge with no message", async (halt) => {
+    const noPull = { total: 0, merged: 0, openThreads: 0 };
+    expect(await destination(snapshotAt(halt, { goto: "code-review" }, noPull)))
+      .toMatch(/^wait: .*"code-review" only while.*rel\.implements\.in\.total/);
+    expect(await destination(snapshotAt(halt, { goto: "fix-review" }, noPull)))
+      .toMatch(/^wait: .*"fix-review" only while.*rel\.implements\.in\.total/);
+    expect(await destination(snapshotAt(halt, { goto: "triage", lastHuman: null })))
+      .toMatch(/^wait: .*"triage" only while.*run\.lastHuman/);
   });
 
   /*
@@ -248,6 +267,26 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
       "run.stage": "triage", "run.lastOutputValid": null,
       "run.previousStage": "spec-human-review", "run.outputs.triage.intent": "approve",
     }]);
+  });
+});
+
+/*
+ * One judge serves every stage where it is a person's turn, so it is told
+ * which one the reply was made at — and, at a halt, which step failed: "try
+ * again" means that step, and only the judge's two goto answers can reach it.
+ */
+describe("the shipped judge is told where the reply was made, and which step failed", () => {
+  it("renders the halt and the failed step into triage's prompt", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const snapshot = {
+      run: { previousStage: "blocked", failedStages: ["build"], lastHuman: { data: { body: "try again" } } },
+    } as unknown as Snapshot;
+    const rendered = renderPrompt(steps.get("steps/triage.md")?.prompt ?? "", snapshot);
+
+    expect(rendered).toContain("The ticket was waiting at: blocked");
+    expect(rendered).toContain("The step that failed, if any: build");
+    expect(rendered).toContain("try again");
+    expect(rendered).not.toMatch(/\{run\./);
   });
 });
 

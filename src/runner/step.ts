@@ -56,7 +56,10 @@ export function renderPrompt(
   // this one recognises is a name they all do.
   return fillTemplate(template, (path) => {
     const value = resolve(scope, path);
-    return value === undefined || value === null ? undefined : String(value);
+    if (value === undefined || value === null) return undefined;
+    // String() runs a list together — "code-review,build" — and a model
+    // reading which steps failed has to be able to tell the items apart.
+    return Array.isArray(value) ? value.join(", ") : String(value);
   });
 }
 

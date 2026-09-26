@@ -283,21 +283,37 @@ stages:
       - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
 
   # The halts list every step, where the stages waiting on a person list two.
-  # Retry is a goto to the stage whose round failed, and any step can fail: a
-  # review, a fix or the judge that broke its contract or was refused would
-  # otherwise have no retry at all, only a rewritten spec or a rebuild, and
-  # neither is what failed. Each target is capped by the bound its own
-  # triggers use — fix-review's is code-review's, the loop the two share —
-  # and each takes lr:blocked and lr:screened off as it is entered, bar
+  # Retry is a goto to the stage whose round failed, and any step can fail. A
+  # review or a fix that broke its contract or was refused would otherwise be
+  # retried only by a rewritten spec or a rebuild, neither of which is what
+  # failed. A judge that failed is read again by any new reply, which enters
+  # triage anyway; Retry re-judges the message it failed on.
+  #
+  # Each target runs only within its rounds. Its own counter first: a failed
+  # fix round advances fix-review's and not code-review's, so code-review's
+  # alone would let Retry run it for ever. fix-review is held to
+  # code-review's as well, the loop the two share. And each is offered only
+  # where it can run — a review needs a pull request, the judge a message to
+  # read — because a goto that landed on a stage whose `requires` fails would
+  # halt there, and no goto is taken from a stage whose precondition does
+  # not hold.
+  #
+  # Each target takes lr:blocked and lr:screened off as it is entered, bar
   # triage, whose answers come back here or go on to spec or build. Written
   # once, here, and repeated on `screened`.
   - id: blocked
     goto: &halt
       - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
-      - { stage: code-review, when: { "run.counters.code-review": { $lt: 4 } } }
-      - { stage: fix-review, when: { "run.counters.code-review": { $lt: 4 } } }
-      - { stage: triage, when: { "run.counters.triage": { $lt: 20 } } }
+      - stage: code-review
+        when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } }
+      - stage: fix-review
+        when:
+          "run.counters.code-review": { $lt: 4 }
+          "run.counters.fix-review": { $lt: 4 }
+          "rel.implements.in.total": { $gt: 0 }
+      - stage: triage
+        when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } }
     triggers:
       # The open-thread count is part of the condition, not decoration: the
       # last review round can finish with nothing left open, and then
