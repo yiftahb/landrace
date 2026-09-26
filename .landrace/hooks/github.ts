@@ -866,31 +866,42 @@ function githubRemote(url: string): { repo: string; https: boolean; ownCredentia
   return { repo: path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "").toLowerCase(), https, ownCredentials };
 }
 
+/** A URL fit to name in a message: whatever credentials it carries, left out. */
+const shown = (url: string): string => url.replace(/\/\/[^/@]*@/, "//");
+
 /**
  * Publish one branch to origin, fast-forward only.
  *
- * Everything the push starts inherits its environment, so the token goes
- * into that environment only for the one origin it is for: an https URL on
- * github.com naming this very repository, as `git remote get-url --push`
- * reports it after every rewrite a config could apply. An ssh origin, one
+ * To exactly one destination. `git push origin` pushes to every push URL
+ * origin has, and a step that may write shares this repository's config, so
+ * one more pushurl is one line away. An origin with anything but one push
+ * URL — `git remote get-url --push --all`, after every rewrite a config could
+ * apply — is refused before anything else is built.
+ *
+ * The token goes into the push's environment only when that one URL is an
+ * https URL on github.com naming this very repository. An ssh origin, one
  * whose URL carries its own credentials, or one on another host is pushed
- * with the operator's own credentials and no token at all. A GitHub origin
- * naming some other repository is refused: its branch would never be the
- * head of a pull request on this one.
+ * with the operator's own credentials and no token at all; a GitHub origin
+ * naming some other repository is refused, since its branch could never be
+ * the head of a pull request here.
  *
  * With the token, it rides in git's environment and never on its command
  * line: argv is readable by every process on the machine. `GIT_CONFIG_*` is
  * git's own way to take configuration from the environment — appended after
- * any the operator already set. The header is scoped to github.com, an empty
- * value first clears a header some other tool left configured (a CI checkout
- * does), and credential helpers and askpass are cleared so nothing git would
- * start to ask for credentials sees the token either.
+ * any the operator already set. The header is scoped to that exact URL, not
+ * to github.com, so no other destination that slipped in would be handed it;
+ * an empty value first clears a header some other tool left configured (a CI
+ * checkout does), and credential helpers and askpass are cleared so nothing
+ * git would start to ask for credentials sees the token either.
  *
- * Hooks are off for every push. A step that may write shares this
- * repository's config, so it can point core.hooksPath at a script of its
- * own — and a pre-push or reference-transaction hook runs inside this very
- * environment. Whatever git says back is scrubbed of both spellings of the
- * token before it becomes an error, a log line or a comment.
+ * Hooks are off for every push. A step that may write can point
+ * core.hooksPath at a script of its own, and a pre-push or
+ * reference-transaction hook runs inside this very environment. The push is
+ * the one branch and nothing more: an explicit refspec makes git ignore
+ * `remote.origin.push`, a mirror remote refuses one outright, and following
+ * tags or pushing submodules is switched off here rather than left to config.
+ * Whatever git says back is scrubbed of both spellings of the token before
+ * it becomes an error, a log line or a comment.
  *
  * Never forced: a branch origin has moved on is somebody else's work, and
  * the way through it is a person's.
@@ -899,17 +910,24 @@ function pusher(git: Git, token: string, repo: string): (branch: string, ticket:
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
   return async (branch, ticket, signal) => {
-    const urls = (await git(["remote", "get-url", "--push", "origin"], {}, { signal }))
+    const urls = (await git(["remote", "get-url", "--push", "--all", "origin"], {}, { signal }))
       .split("\n").map((u) => u.trim()).filter(Boolean);
-    const remotes = urls.map(githubRemote);
-    const elsewhere = urls.find((_, i) => remotes[i] && remotes[i]?.repo !== repo.toLowerCase());
-    if (elsewhere !== undefined) {
+    const [url] = urls;
+    if (urls.length !== 1 || url === undefined) {
       throw new Error(
-        `refusing to push ${branch}: origin pushes to ${scrub(elsewhere)}, which is not ${repo}, the repository ` +
+        `refusing to push ${branch}: origin has ${urls.length} push URLs, and landrace pushes a ticket's branch ` +
+        "to exactly one destination — the one it can check. Leave origin a single push URL " +
+        "(git remote set-url --push origin <url>) and the ticket carries on",
+      );
+    }
+    const remote = githubRemote(url);
+    if (remote && remote.repo !== repo.toLowerCase()) {
+      throw new Error(
+        `refusing to push ${branch}: origin pushes to ${shown(url)}, which is not ${repo}, the repository ` +
         "this workflow's tracker is — a pull request here could never be opened from it",
       );
     }
-    const withToken = remotes.length === 1 && remotes[0]?.https === true && !remotes[0].ownCredentials;
+    const withToken = remote?.https === true && !remote.ownCredentials;
 
     // Nothing to publish: the branch is origin's default branch, or behind
     // it. Asked of refs this checkout already has — origin/HEAD, as the clone
@@ -921,9 +939,11 @@ function pusher(git: Git, token: string, repo: string): (branch: string, ticket:
       if (ahead === "0") throw nothingCommitted(branch, ticket);
     }
 
-    const config: Array<[string, string]> = [["core.hooksPath", "/dev/null"]];
+    const config: Array<[string, string]> = [
+      ["core.hooksPath", "/dev/null"], ["push.followTags", "false"], ["push.recurseSubmodules", "no"],
+    ];
     if (withToken) {
-      const header = "http.https://github.com/.extraheader";
+      const header = `http.${url}.extraheader`;
       config.push(
         [header, ""], [header, `AUTHORIZATION: basic ${basic}`], ["credential.helper", ""], ["core.askPass", ""],
       );

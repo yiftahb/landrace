@@ -42,7 +42,7 @@ const ORIGIN = "https://github.com/acme/widgets.git";
  * taken exactly as it would be for a GitHub origin, while the push itself
  * still lands in the local bare repository and nothing leaves the machine.
  */
-const recording = (root: string, url?: string): { git: Git; calls: Call[] } => {
+const recording = (root: string, url?: string, intercept = false): { git: Git; calls: Call[] } => {
   const calls: Call[] = [];
   const real = gitIn(root);
   return {
@@ -50,6 +50,8 @@ const recording = (root: string, url?: string): { git: Git; calls: Call[] } => {
     git: async (args, env = {}, opts) => {
       calls.push({ args, env });
       if (url !== undefined && args[0] === "remote" && args[1] === "get-url") return `${url}\n`;
+      // Intercepted where the destination is real GitHub: recorded, never sent.
+      if (intercept && args[0] === "push") return "";
       return real(args, env, opts);
     },
   };
@@ -166,7 +168,99 @@ describe("branch.push", () => {
       expect(call.args.join(" ")).not.toContain(TOKEN);
       expect(call.args.join(" ")).not.toContain(BASIC);
     }
-    expect(configOf(pushOf(calls).env)).toContainEqual(["http.https://github.com/.extraheader", `AUTHORIZATION: basic ${BASIC}`]);
+    expect(configOf(pushOf(calls).env)).toContainEqual([`http.${ORIGIN}.extraheader`, `AUTHORIZATION: basic ${BASIC}`]);
+  });
+
+  /*
+   * `git push origin` pushes to every push URL origin has, and a step that
+   * may write shares this config: one more pushurl, pointing at another
+   * repository on github.com, and a header scoped to the host would go there
+   * too. landrace pushes to exactly one destination — the one it checked.
+   */
+  it("refuses an origin with more than one push URL, before any token is built", async () => {
+    const { root } = await checkout();
+    await build(root, "landrace/1");
+    await run(root, "config", "--add", "remote.origin.pushurl", ORIGIN);
+    await run(root, "config", "--add", "remote.origin.pushurl", "https://github.com/attacker/evil.git");
+    const { git, calls } = recording(root, undefined, true);
+    const gh = createFakeTracker([{ number: 1 }], { git });
+
+    await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh))))
+      .rejects.toThrow(/2 push URLs[\s\S]*exactly one/);
+    expect(calls.filter((c) => c.args[0] === "push")).toEqual([]);
+    expect(JSON.stringify(calls)).not.toContain(BASIC);
+  });
+
+  it("pushes nowhere at all when origin names two destinations", async () => {
+    const { root, origin } = await checkout();
+    await build(root, "landrace/1");
+    const second = await mkdtemp(join(tmpdir(), "lr-second-"));
+    made.push(second);
+    await run(second, "init", "-q", "--bare", "-b", "main");
+    await run(root, "config", "--add", "remote.origin.pushurl", `file://${origin}`);
+    await run(root, "config", "--add", "remote.origin.pushurl", `file://${second}`);
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+
+    await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh)))).rejects.toThrow(/exactly one/);
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBeNull();
+    expect(await commitAt(second, "refs/heads/landrace/1")).toBeNull();
+  });
+
+  /*
+   * And the header is scoped to that one URL, not to github.com: were a
+   * second destination to slip in some other way, git would not hand it
+   * the token. Asked of git itself, under the environment the push was given.
+   */
+  it("scopes the header to the exact URL origin pushes to", async () => {
+    const { root } = await checkout();
+    await build(root, "landrace/1");
+    await run(root, "remote", "set-url", "origin", ORIGIN);
+    const { git, calls } = recording(root, undefined, true);
+    const gh = createFakeTracker([{ number: 1 }], { git });
+
+    await post(gh).apply(push, contextOf(gh, await snapshotOf(gh)));
+
+    const env = pushOf(calls).env;
+    expect(configOf(env).map(([key]) => key)).not.toContain("http.https://github.com/.extraheader");
+    const header = (url: string): Promise<string | null> =>
+      exec("git", ["config", "--get-urlmatch", "http.extraheader", url], { cwd: root, env: { ...process.env, ...env } })
+        .then((r) => r.stdout.trim(), () => null);
+    expect(await header(ORIGIN)).toBe(`AUTHORIZATION: basic ${BASIC}`);
+    expect(await header(`${ORIGIN}/info/refs`)).toBe(`AUTHORIZATION: basic ${BASIC}`);
+    expect(await header("https://github.com/attacker/evil.git")).toBeNull();
+    expect(await header("https://github.com/acme/widgets.git-evil")).toBeNull();
+  });
+
+  /*
+   * An explicit refspec is the whole of what is pushed: git ignores
+   * remote.origin.push when one is given, refuses a mirror remote outright,
+   * and follows tags only when asked — which the push says it is not.
+   */
+  it("pushes the ticket's branch and nothing else, whatever origin's push settings say", async () => {
+    const { root, origin } = await checkout();
+    const sha = await build(root, "landrace/1");
+    await run(root, "branch", "secret", "main");
+    await run(root, "-c", "user.email=t@example.com", "-c", "user.name=t", "tag", "-a", "v1", "-m", "v1", "main");
+    await run(root, "config", "remote.origin.push", "refs/heads/*:refs/heads/*");
+    await run(root, "config", "push.followTags", "true");
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+
+    await post(gh).apply(push, contextOf(gh, await snapshotOf(gh)));
+
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBe(sha);
+    expect(await commitAt(origin, "refs/heads/secret")).toBeNull();
+    expect(await commitAt(origin, "refs/tags/v1")).toBeNull();
+  });
+
+  it("pushes nothing to a mirror remote, and says why", async () => {
+    const { root, origin } = await checkout();
+    await build(root, "landrace/1");
+    await run(root, "config", "remote.origin.mirror", "true");
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+
+    await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh))))
+      .rejects.toThrow(/could not push landrace\/1[\s\S]*mirror/);
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBeNull();
   });
 
   /*

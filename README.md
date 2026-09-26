@@ -334,7 +334,9 @@ Publishing is two effects, each naming its branch, which the shipped workflow pu
 
 `code-review` pushes again on entry, so a fix round's commits are on the pull request before the reviewer reads it. The GitHub hook pushes from the repository its own file is in:
 
-- The token goes to git only when `origin` pushes to `https://github.com/<tracker.repo>` (with or without `.git`), and then through git's environment (`GIT_CONFIG_*`, as an `http.https://github.com/.extraheader`) — never on a command line, where any process could read it. An ssh origin, or one whose URL carries its own credentials, is pushed with your own credentials and no token; a GitHub origin naming any other repository is refused.
+- `origin` must have exactly one push URL (`git remote get-url --push --all origin`); `git push` would otherwise push to every one of them, so any other count is refused.
+- The token goes to git only when that URL is `https://github.com/<tracker.repo>` (with or without `.git`), and then through git's environment (`GIT_CONFIG_*`, as an `extraheader` scoped to that exact URL, not to github.com) — never on a command line, where any process could read it. An ssh origin, or one whose URL carries its own credentials, is pushed with your own credentials and no token; a GitHub origin naming any other repository is refused.
+- The push is the ticket's branch and nothing else: an explicit refspec (so `remote.origin.push` does not widen it, and a mirror remote refuses it), with tag-following and submodule pushing off.
 - Every push runs with `core.hooksPath=/dev/null`, so none of the checkout's hooks run — a step that may write shares the repository's config and could otherwise install one that runs inside the push's environment. Your own pre-push hooks do not run on landrace's pushes either.
 - A branch with nothing committed beyond `origin/HEAD` (as this checkout knows it — no fetch) is not pushed; the ticket halts saying so, and carries on once something is committed. GitHub's "No commits between" on `pull.open` says the same.
 - A push is stopped after five minutes, or when the run is.
