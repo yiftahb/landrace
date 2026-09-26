@@ -2,7 +2,7 @@ import { renderMarker, renderOrigin } from "#conventions.js";
 import { githubHooks, source } from "#landrace/hooks/github.js";
 import type { Effect, HookContext, RuntimeContext, Snapshot } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
-import { createFakeTracker } from "#tests/support/fake-tracker.js";
+import { createFakeTracker, noBranches } from "#tests/support/fake-tracker.js";
 import type { FakeTracker } from "#tests/support/fake-tracker.js";
 
 /**
@@ -55,7 +55,7 @@ const build = (opts: { bot?: string; user: () => Response | never }) => {
   const { fetchImpl, calls } = fake(opts.user);
   return {
     calls,
-    hooks: githubHooks({ repo: "acme/widgets", token: "t", fetchImpl, ...(opts.bot ? { bot: opts.bot } : {}) }),
+    hooks: githubHooks({ repo: "acme/widgets", token: "t", fetchImpl, git: noBranches, ...(opts.bot ? { bot: opts.bot } : {}) }),
   };
 };
 
@@ -187,7 +187,7 @@ describe("who a ticket is assigned to", () => {
 });
 
 describe("the repo is an owner/name pair and nothing else", () => {
-  const make = (repo: string) => () => githubHooks({ repo, token: "t", bot: "b" });
+  const make = (repo: string) => () => githubHooks({ repo, token: "t", bot: "b", git: noBranches });
 
   it("accepts an ordinary repository", () => {
     expect(make("acme/widgets.js")).not.toThrow();
@@ -470,7 +470,7 @@ describe("the startup preflight", () => {
       return gh.fetchImpl(input, init);
     }) as unknown as typeof fetch;
 
-    const hooks = githubHooks({ repo: "acme/widgets", token: "t", fetchImpl: capturing });
+    const hooks = githubHooks({ repo: "acme/widgets", token: "t", fetchImpl: capturing, git: noBranches });
     await hooks.preflight.check(gh.ctx);
 
     expect(bodies).toEqual([{ content: "", encoding: "utf-8" }]);
@@ -655,7 +655,7 @@ describe("children on GitHub", () => {
 });
 
 describe("a comment effect lands under either spelling of an app's login", () => {
-  const { post } = githubHooks({ repo: "acme/widgets", token: "t", bot: "b" });
+  const { post } = githubHooks({ repo: "acme/widgets", token: "t", bot: "b", git: noBranches });
   const snapshot = (author: string, bot: string): Snapshot => ({
     node: { state: { labels: [] } },
     tracker: { bot },

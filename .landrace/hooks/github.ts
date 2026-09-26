@@ -186,8 +186,15 @@ export interface GitHubOptions {
   git?: Git | undefined;
 }
 
-/** Runs git with these arguments and this extra environment, in one checkout, and answers its stdout. */
-export type Git = (args: string[], env?: Record<string, string>) => Promise<string>;
+/**
+ * Runs git with these arguments and this extra environment, in one checkout,
+ * and answers its stdout — stopped when `signal` aborts or `timeoutMs` passes.
+ */
+export type Git = (
+  args: string[],
+  env?: Record<string, string>,
+  opts?: { signal?: AbortSignal | undefined; timeoutMs?: number | undefined },
+) => Promise<string>;
 
 const execFileAsync = promisify(execFile);
 
@@ -200,17 +207,24 @@ const execFileAsync = promisify(execFile);
  * nobody is watching.
  */
 export function gitIn(dir: string): Git {
-  return async (args, env = {}) => {
+  return async (args, env = {}, { signal, timeoutMs } = {}) => {
     try {
       const { stdout } = await execFileAsync("git", args, {
         cwd: dir,
         env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
         maxBuffer: 16 * 1024 * 1024,
+        ...(signal === undefined ? {} : { signal }),
+        ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
       });
       return stdout;
     } catch (e) {
+      const what = `git ${args[0] ?? ""} in ${dir}`;
+      if (signal?.aborted) throw new Error(`${what} was aborted`);
+      if ((e as { killed?: unknown }).killed === true && timeoutMs !== undefined) {
+        throw new Error(`${what} did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped`);
+      }
       const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
-      throw new Error(`git ${args[0] ?? ""} in ${dir}: ${stderr || (e instanceof Error ? e.message : String(e))}`);
+      throw new Error(`${what}: ${stderr || (e instanceof Error ? e.message : String(e))}`);
     }
   };
 }
@@ -242,9 +256,9 @@ export async function hookRepository(): Promise<string> {
 /** git in the hook's own repository, found the first time it is needed. */
 function ownGit(): Git {
   let root: Promise<string> | undefined;
-  return async (args, env) => {
+  return async (args, env, opts) => {
     root ??= hookRepository();
-    return gitIn(await root)(args, env);
+    return gitIn(await root)(args, env, opts);
   };
 }
 
@@ -811,40 +825,121 @@ async function branchHeads(git: Git): Promise<{ local: Record<string, string>; r
   return { local, remote };
 }
 
+/** How long one push may take before it is stopped: it holds the ticket's lock while it runs. */
+const PUSH_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * What a publishing effect says when there is nothing on the branch to
+ * publish. The push checks for it and GitHub answers it to `pull.open`, so
+ * both say it in one sentence: a halt that clears itself once somebody
+ * commits, because the next tick asks again.
+ */
+const nothingCommitted = (branch: string, ticket: string): Error =>
+  new Error(
+    `nothing was committed on ${branch} for #${ticket}: it is already part of origin's default branch, so ` +
+    "there is nothing to push or propose. Commit to the branch and the next tick carries on",
+  );
+
+/** A remote URL as far as this hook cares: on GitHub, for which repository, over https, with credentials of its own. */
+function githubRemote(url: string): { repo: string; https: boolean; ownCredentials: boolean } | null {
+  // scp-like `git@github.com:owner/name.git` has no scheme, and URL cannot read it.
+  const scp = /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(url);
+  let host: string;
+  let path: string;
+  let https = false;
+  let ownCredentials = false;
+  if (!url.includes("://") && scp) {
+    [, host = "", path = ""] = scp;
+  } else {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return null;
+    }
+    host = parsed.hostname;
+    path = parsed.pathname;
+    https = parsed.protocol === "https:";
+    ownCredentials = parsed.username !== "" || parsed.password !== "";
+  }
+  if (host.toLowerCase() !== "github.com") return null;
+  return { repo: path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "").toLowerCase(), https, ownCredentials };
+}
+
 /**
  * Publish one branch to origin, fast-forward only.
  *
- * The token rides in git's environment, never on its command line: argv is
- * readable by every process on the machine, and a token in a remote URL ends
- * up in git's own messages and config. `GIT_CONFIG_*` is git's own way to take
- * configuration from the environment — appended after any the operator
- * already set — and the header is scoped to github.com, so an origin anywhere
- * else never sees it. An empty value first clears a header some other tool
- * left configured (a CI checkout does), so exactly one reaches GitHub. And
- * whatever git says back is scrubbed of both spellings of the token before it
- * becomes an error, a log line or a comment.
+ * Everything the push starts inherits its environment, so the token goes
+ * into that environment only for the one origin it is for: an https URL on
+ * github.com naming this very repository, as `git remote get-url --push`
+ * reports it after every rewrite a config could apply. An ssh origin, one
+ * whose URL carries its own credentials, or one on another host is pushed
+ * with the operator's own credentials and no token at all. A GitHub origin
+ * naming some other repository is refused: its branch would never be the
+ * head of a pull request on this one.
  *
- * Never forced. A branch origin has moved on is somebody else's work, and
+ * With the token, it rides in git's environment and never on its command
+ * line: argv is readable by every process on the machine. `GIT_CONFIG_*` is
+ * git's own way to take configuration from the environment — appended after
+ * any the operator already set. The header is scoped to github.com, an empty
+ * value first clears a header some other tool left configured (a CI checkout
+ * does), and credential helpers and askpass are cleared so nothing git would
+ * start to ask for credentials sees the token either.
+ *
+ * Hooks are off for every push. A step that may write shares this
+ * repository's config, so it can point core.hooksPath at a script of its
+ * own — and a pre-push or reference-transaction hook runs inside this very
+ * environment. Whatever git says back is scrubbed of both spellings of the
+ * token before it becomes an error, a log line or a comment.
+ *
+ * Never forced: a branch origin has moved on is somebody else's work, and
  * the way through it is a person's.
  */
-function pusher(git: Git, token: string): (branch: string) => Promise<void> {
+function pusher(git: Git, token: string, repo: string): (branch: string, ticket: string, signal: AbortSignal) => Promise<void> {
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
-  return async (branch) => {
+  return async (branch, ticket, signal) => {
+    const urls = (await git(["remote", "get-url", "--push", "origin"], {}, { signal }))
+      .split("\n").map((u) => u.trim()).filter(Boolean);
+    const remotes = urls.map(githubRemote);
+    const elsewhere = urls.find((_, i) => remotes[i] && remotes[i]?.repo !== repo.toLowerCase());
+    if (elsewhere !== undefined) {
+      throw new Error(
+        `refusing to push ${branch}: origin pushes to ${scrub(elsewhere)}, which is not ${repo}, the repository ` +
+        "this workflow's tracker is — a pull request here could never be opened from it",
+      );
+    }
+    const withToken = remotes.length === 1 && remotes[0]?.https === true && !remotes[0].ownCredentials;
+
+    // Nothing to publish: the branch is origin's default branch, or behind
+    // it. Asked of refs this checkout already has — origin/HEAD, as the clone
+    // or `git remote set-head` left it — and skipped when it has none;
+    // GitHub's own answer to `pull.open` says the same thing then.
+    const base = (await git(["for-each-ref", "--format=%(objectname)", "refs/remotes/origin/HEAD"], {}, { signal })).trim();
+    if (base !== "") {
+      const ahead = (await git(["rev-list", "--count", `${base}..refs/heads/${branch}`], {}, { signal })).trim();
+      if (ahead === "0") throw nothingCommitted(branch, ticket);
+    }
+
+    const config: Array<[string, string]> = [["core.hooksPath", "/dev/null"]];
+    if (withToken) {
+      const header = "http.https://github.com/.extraheader";
+      config.push(
+        [header, ""], [header, `AUTHORIZATION: basic ${basic}`], ["credential.helper", ""], ["core.askPass", ""],
+      );
+    }
     const at = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10) || 0;
-    const key = "http.https://github.com/.extraheader";
-    const env = {
-      GIT_CONFIG_COUNT: String(at + 2),
-      [`GIT_CONFIG_KEY_${at}`]: key,
-      [`GIT_CONFIG_VALUE_${at}`]: "",
-      [`GIT_CONFIG_KEY_${at + 1}`]: key,
-      [`GIT_CONFIG_VALUE_${at + 1}`]: `AUTHORIZATION: basic ${basic}`,
-    };
+    const env: Record<string, string> = { GIT_CONFIG_COUNT: String(at + config.length) };
+    for (const [i, [key, value]] of config.entries()) {
+      env[`GIT_CONFIG_KEY_${at + i}`] = key;
+      env[`GIT_CONFIG_VALUE_${at + i}`] = value;
+    }
+
     try {
-      await git(["push", "origin", `refs/heads/${branch}:refs/heads/${branch}`], env);
+      await git(["push", "origin", `refs/heads/${branch}:refs/heads/${branch}`], env, { signal, timeoutMs: PUSH_TIMEOUT_MS });
     } catch (e) {
       const said = scrub(e instanceof Error ? e.message : String(e));
-      const behind = /rejected|non-fast-forward|fetch first/i.test(said)
+      const behind = /non-fast-forward|fetch first/i.test(said)
         ? ` — origin's ${branch} has commits this checkout does not, and landrace does not force-push; ` +
           "bring the branch up to date by hand and the ticket carries on"
         : "";
@@ -904,9 +999,9 @@ async function readTicket(gh: Client, git: Git, ticket: string): Promise<Record<
 /** Act: every write GitHub owns, each beside the check that says it has landed. */
 async function applyEffect(
   gh: Client,
-  push: (branch: string) => Promise<void>,
+  push: (branch: string, ticket: string, signal: AbortSignal) => Promise<void>,
   effect: Effect,
-  { ticket, snapshot }: HookContext,
+  { ticket, snapshot, signal }: HookContext,
 ): Promise<void> {
   const n = issueNumber(ticket);
   switch (effect.type) {
@@ -981,7 +1076,7 @@ async function applyEffect(
       await gh.closeIssue(n, "completed");
       return;
     case BRANCH_PUSH_EFFECT:
-      await push(effectBranch(effect));
+      await push(effectBranch(effect), ticket, signal);
       return;
     case PULL_OPEN_EFFECT: {
       const branch = effectBranch(effect);
@@ -995,14 +1090,21 @@ async function applyEffect(
           "so no step has committed anything to it",
         );
       }
-      await gh.openPull({
-        head: branch,
-        base: await gh.defaultBranch(),
-        title: (snapshot.node as Node | undefined)?.title ?? `#${n}`,
-        // The closing reference is the second way a pull request is tied to
-        // its ticket, and the one that survives a branch named any way at all.
-        body: `Closes #${n}`,
-      });
+      try {
+        await gh.openPull({
+          head: branch,
+          base: await gh.defaultBranch(),
+          title: (snapshot.node as Node | undefined)?.title ?? `#${n}`,
+          // The closing reference is the second way a pull request is tied to
+          // its ticket, and the one that survives a branch named any way at all.
+          body: `Closes #${n}`,
+        });
+      } catch (e) {
+        if ((e as { status?: unknown } | null)?.status === 422 && /No commits between/i.test(String(e))) {
+          throw nothingCommitted(branch, ticket);
+        }
+        throw e;
+      }
       return;
     }
     default:
@@ -1224,7 +1326,7 @@ const MAX_ISSUE_PAGES = 10;
  * a fix round moves. No thread in it — see THREADS_QUERY — and no body.
  */
 const PULL_FIELDS = `
-  number title url state merged headRefName headRefOid
+  number title url state merged headRefName headRefOid isCrossRepository
   closingIssuesReferences(first: 20) { nodes { number } }`;
 
 /**
@@ -1313,6 +1415,8 @@ interface PullNode {
   merged: boolean;
   headRefName: string;
   headRefOid: string;
+  /** From a fork, whose head branch is named in somebody else's repository — and so could be named anything. */
+  isCrossRepository: boolean;
   closingIssuesReferences: { nodes: Array<{ number: number }> };
 }
 
@@ -1425,20 +1529,26 @@ function pullNodeOf(pull: PullNode, openThreads?: number): Node {
     priority: null,
     origin: null,
     // The head branch, so `pull.open` can tell one branch's pull request from
-    // another's: a ticket has as many as its workflow's stages name.
+    // another's: a ticket has as many as its workflow's stages name. Not for
+    // a fork's, whose branch is in another repository and could carry any
+    // name — ours included — and so stand in for the one we would open.
     state: {
       merged: pull.merged,
       headSha: pull.headRefOid,
-      branch: pull.headRefName,
+      ...(pull.isCrossRepository ? {} : { branch: pull.headRefName }),
       ...(openThreads === undefined ? {} : { openThreads }),
     },
   };
 }
 
-/** Every ticket a pull request names: the one its branch is for, and every issue it closes. */
+/**
+ * Every ticket a pull request names: every issue it closes, and the one its
+ * branch is for — unless the branch is a fork's, which anybody can name
+ * after any ticket.
+ */
 const ticketsNamedBy = (pull: PullNode): Set<string> => {
   const named = new Set(pull.closingIssuesReferences.nodes.map((i) => String(i.number)));
-  const branch = ticketOfBranch(pull.headRefName);
+  const branch = pull.isCrossRepository ? null : ticketOfBranch(pull.headRefName);
   if (branch !== null) named.add(branch);
   return named;
 };
@@ -1625,8 +1735,11 @@ async function pullsOf(gh: Client, repo: string, ticket: string): Promise<{ issu
     }
   }
 
+  // A fork's pull request found by its head name alone is not this ticket's:
+  // the name is in somebody else's repository. By closing reference, it is.
   const byNumber = new Map<number, PullNode>();
-  for (const pull of [...data.repository.pullRequests.nodes, ...issue.closedByPullRequestsReferences.nodes]) {
+  const onBranch = data.repository.pullRequests.nodes.filter((pull) => !pull.isCrossRepository);
+  for (const pull of [...onBranch, ...issue.closedByPullRequestsReferences.nodes]) {
     if (!byNumber.has(pull.number)) byNumber.set(pull.number, pull);
   }
   return { issue, pulls: [...byNumber.values()] };
@@ -2031,7 +2144,7 @@ export function githubHooks(opts: GitHubOptions): {
   const gh = createClient(opts);
   const link = specLinks(gh, opts.repo);
   const git = opts.git ?? ownGit();
-  const push = pusher(git, opts.token);
+  const push = pusher(git, opts.token, opts.repo);
 
   return {
     preflight: definePreflight({ id: "github", check: () => checkPermissions(gh, opts.repo) }),

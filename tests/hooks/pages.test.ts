@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createFakeTracker, type FakePages, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { createFakeTracker, noBranches, type FakePages, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { githubHooks } from "#landrace/hooks/github.js";
 import type { ArtifactHook, Effect, Graph, HookContext, Snapshot } from "#namespace.js";
 
@@ -300,7 +300,7 @@ describe("the spec link points where the page can actually be read", () => {
       if (new URL(String(input)).pathname.endsWith("/pages")) throw new TypeError("fetch failed");
       return gh.fetchImpl(input, init);
     }) as typeof fetch;
-    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: dropping });
+    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: dropping, git: noBranches });
     const events: Logged[] = [];
     const log = (event: string, data?: Record<string, unknown>) => { events.push({ event, data }); };
 

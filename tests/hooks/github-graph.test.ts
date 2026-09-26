@@ -1,7 +1,7 @@
-import { createFakeTracker, type FakeIssue, type FakeThread, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { createFakeTracker, noBranches, type FakeIssue, type FakeThread, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
-import { MAX_SUBGRAPH_NODES } from "#conventions.js";
+import { hasPullFrom, MAX_SUBGRAPH_NODES } from "#conventions.js";
 import { staleClosure } from "#core/children.js";
 import { githubHooks } from "#landrace/hooks/github.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -131,6 +131,27 @@ describe("the GitHub source", () => {
 
     expect(branches(await sourceOf(gh).list(ctx(gh)))).toEqual({ "pr-30": "api/7", "pr-31": "ui/7" });
     expect(branches(await sourceOf(gh).read("7", ctx(gh)))).toEqual({ "pr-30": "api/7", "pr-31": "ui/7" });
+  });
+
+  /*
+   * A fork names its head branch in its own repository, and can name it
+   * anything — ours included. Tied to a ticket by that name, anybody's fork
+   * could stand in for the pull request `pull.open` is waiting to open, or
+   * pull a ticket into review. A fork's pull request still counts when it
+   * says it closes the ticket, and then carries no branch for `pull.open` to
+   * match on.
+   */
+  it("ties a fork's pull request to a ticket only by what it closes, and reports no branch for it", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 40, head: "landrace/7", crossRepository: true });
+    gh.openPull({ number: 41, head: "landrace/7", crossRepository: true, closes: [7] });
+
+    for (const g of [await sourceOf(gh).read("7", ctx(gh)), await sourceOf(gh).list(ctx(gh))]) {
+      expect(g.nodes.map((n) => n.id)).not.toContain("pr-40");
+      expect(g.relationships).toContainEqual({ from: "pr-41", to: "7", type: "implements" });
+      expect(g.nodes.find((n) => n.id === "pr-41")?.state).not.toHaveProperty("branch");
+      expect(hasPullFrom(g, "7", "landrace/7")).toBe(false);
+    }
   });
 
   it("reads a pull request closed without merging as dropped", async () => {
@@ -405,7 +426,7 @@ describe("a failed read is a failure, not an absent pull request", () => {
   it("reports a repository it cannot see rather than reading it as no pull request", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", threads: threads([false]) });
-    const elsewhere = githubHooks({ repo: "acme/other", token: "test-token", fetchImpl: gh.fetchImpl });
+    const elsewhere = githubHooks({ repo: "acme/other", token: "test-token", fetchImpl: gh.fetchImpl, git: noBranches });
     await expect(elsewhere.source.read("1", ctx(gh))).rejects.toThrow(/acme\/other/);
     await expect(elsewhere.source.list(ctx(gh))).rejects.toThrow(/acme\/other/);
   });
@@ -522,7 +543,7 @@ describe("the open threads reach the prompt, and only the prompt", () => {
 
   it("reports a repository it cannot see rather than briefing an empty list", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
-    const other = githubHooks({ repo: "acme/other", token: "t", fetchImpl: gh.fetchImpl });
+    const other = githubHooks({ repo: "acme/other", token: "t", fetchImpl: gh.fetchImpl, git: noBranches });
     const brief = other.source.brief;
     if (!brief) throw new Error("the github source briefs nothing");
     await expect(Promise.resolve(brief({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext)))
@@ -707,7 +728,7 @@ describe("a published spec page is a document node", () => {
       delete body.truncated;
       return new Response(JSON.stringify(body), { status: res.status, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
-    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: silent });
+    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: silent, git: noBranches });
     const { events, logged } = logging(gh);
 
     expect(documents(await hooks.source.list(logged))).toEqual([]);
@@ -756,7 +777,7 @@ describe("a published spec page is a document node", () => {
       String(input).includes("/git/trees/")
         ? new Response(JSON.stringify({ truncated: false, tree: "not a list" }), { status: 200, headers: { "Content-Type": "application/json" } })
         : gh.fetchImpl(input, init)) as typeof fetch;
-    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: malformed });
+    const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: malformed, git: noBranches });
     const { events, logged } = logging(gh);
 
     const g = await hooks.source.list(logged);

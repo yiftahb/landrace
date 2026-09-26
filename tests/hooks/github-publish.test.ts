@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { gitIn, hookRepository, type Git } from "#landrace/hooks/github.js";
 import type { Effect, HookContext, Snapshot } from "#namespace.js";
 import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
-import { commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
+import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 
 /*
  * Real git, real processes: see tests/agent/worktree.test.ts for why a minute.
@@ -31,11 +31,52 @@ afterAll(async () => {
 const checkout = gitRepoWithOrigin;
 const build = (root: string, branch: string, file = "built.ts"): Promise<string> => commitOn(root, branch, file);
 
-/** git, run for real, with every call it was handed written down. */
-const recording = (root: string): { git: Git; calls: Array<{ args: string[]; env: Record<string, string> }> } => {
-  const calls: Array<{ args: string[]; env: Record<string, string> }> = [];
+type Call = { args: string[]; env: Record<string, string> };
+
+/** The origin the fake GitHub is: the only one landrace hands its token to. */
+const ORIGIN = "https://github.com/acme/widgets.git";
+
+/**
+ * git, run for real, with every call it was handed written down — and, when
+ * `url` is given, reporting that as origin's push URL. The token path is then
+ * taken exactly as it would be for a GitHub origin, while the push itself
+ * still lands in the local bare repository and nothing leaves the machine.
+ */
+const recording = (root: string, url?: string): { git: Git; calls: Call[] } => {
+  const calls: Call[] = [];
   const real = gitIn(root);
-  return { calls, git: async (args, env = {}) => { calls.push({ args, env }); return real(args, env); } };
+  return {
+    calls,
+    git: async (args, env = {}, opts) => {
+      calls.push({ args, env });
+      if (url !== undefined && args[0] === "remote" && args[1] === "get-url") return `${url}\n`;
+      return real(args, env, opts);
+    },
+  };
+};
+
+/** No git at all: origin's URL, one local branch never pushed, and a push that does what it is told. */
+const scripted = (url: string, push: () => Promise<string> = async () => ""): { git: Git; calls: Call[] } => {
+  const calls: Call[] = [];
+  const git: Git = async (args, env = {}) => {
+    calls.push({ args, env });
+    if (args[0] === "remote") return `${url}\n`;
+    if (args[0] === "for-each-ref") return args.includes("refs/heads") ? `refs/heads/landrace/1\0${"a".repeat(40)}\n` : "";
+    if (args[0] === "push") return push();
+    throw new Error(`the script has no answer for git ${args.join(" ")}`);
+  };
+  return { git, calls };
+};
+
+/** The configuration a call handed git through its environment, as key/value pairs. */
+const configOf = (env: Record<string, string>): Array<[string, string]> =>
+  Array.from({ length: Number(env.GIT_CONFIG_COUNT ?? 0) }, (_, i) =>
+    [env[`GIT_CONFIG_KEY_${i}`] ?? "", env[`GIT_CONFIG_VALUE_${i}`] ?? ""] as [string, string]);
+
+const pushOf = (calls: Call[]): Call => {
+  const found = calls.find((c) => c.args[0] === "push");
+  if (!found) throw new Error("git was never asked to push");
+  return found;
 };
 
 const snapshotOf = async (gh: FakeTracker, ticket = "1"): Promise<Snapshot> => {
@@ -116,19 +157,131 @@ describe("branch.push", () => {
   it("carries the token in git's environment, never on its command line", async () => {
     const { root } = await checkout();
     await build(root, "landrace/1");
-    const { git, calls } = recording(root);
+    const { git, calls } = recording(root, ORIGIN);
     const gh = createFakeTracker([{ number: 1 }], { git });
 
     await post(gh).apply(push, contextOf(gh, await snapshotOf(gh)));
 
-    const pushed = calls.find((c) => c.args[0] === "push");
-    expect(pushed).toBeDefined();
     for (const call of calls) {
       expect(call.args.join(" ")).not.toContain(TOKEN);
       expect(call.args.join(" ")).not.toContain(BASIC);
     }
-    expect(Object.values(pushed?.env ?? {})).toContain(`AUTHORIZATION: basic ${BASIC}`);
-    expect(Object.values(pushed?.env ?? {})).toContain("http.https://github.com/.extraheader");
+    expect(configOf(pushOf(calls).env)).toContainEqual(["http.https://github.com/.extraheader", `AUTHORIZATION: basic ${BASIC}`]);
+  });
+
+  /*
+   * The environment the token rides in is inherited by everything git starts
+   * — and an agent in a write step shares this repository's config, so it
+   * can point core.hooksPath at a script of its own. The control push shows
+   * the planted hooks really do run; landrace's own push runs none of them.
+   */
+  it("runs none of the checkout's hooks, not even ones an agent configured", async () => {
+    const { root, origin } = await checkout();
+    const sha = await build(root, "landrace/1");
+    const hooks = await mkdtemp(join(tmpdir(), "lr-hooks-"));
+    made.push(hooks);
+    const seen = join(hooks, "seen.txt");
+    for (const name of ["pre-push", "reference-transaction"]) {
+      await writeFile(join(hooks, name), `#!/bin/sh\nenv >> "${seen}"\ncat > /dev/null\nexit 0\n`, { mode: 0o755 });
+    }
+    await run(root, "config", "core.hooksPath", hooks);
+
+    await run(root, "branch", "control", "main");
+    await run(root, "push", "-q", "origin", "control");
+    expect(existsSync(seen)).toBe(true);
+    await rm(seen);
+
+    const { git, calls } = recording(root, ORIGIN);
+    const gh = createFakeTracker([{ number: 1 }], { git });
+    await post(gh).apply(push, contextOf(gh, await snapshotOf(gh)));
+
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBe(sha);
+    expect(configOf(pushOf(calls).env)).toContainEqual(["core.hooksPath", "/dev/null"]);
+    expect(existsSync(seen)).toBe(false);
+  });
+
+  /*
+   * The token goes to GitHub, for this repository, and nowhere else. Any
+   * other origin is pushed with the operator's own credentials — an ssh
+   * key, a URL that carries its own — and gets no header at all.
+   */
+  it.each([
+    [ORIGIN, true],
+    ["https://github.com/acme/widgets", true],
+    ["https://GitHub.com/Acme/Widgets.git", true],
+    ["https://me:pat@github.com/acme/widgets.git", false],
+    ["git@github.com:acme/widgets.git", false],
+    ["ssh://git@github.com/acme/widgets.git", false],
+    ["file:///srv/git/widgets.git", false],
+  ])("hands the token to a push to %s: %s", async (url, token) => {
+    const { git, calls } = scripted(url);
+    const gh = createFakeTracker([{ number: 1 }], { git });
+
+    await post(gh).apply(push, contextOf(gh, await snapshotOf(gh)));
+
+    const config = configOf(pushOf(calls).env);
+    expect(config.some(([, value]) => value.includes(BASIC))).toBe(token);
+    expect(JSON.stringify(pushOf(calls).env)).toContain(token ? BASIC : "core.hooksPath");
+    expect(config).toContainEqual(["core.hooksPath", "/dev/null"]);
+  });
+
+  it.each(["https://github.com/someone/else.git", "git@github.com:someone/else.git"])(
+    "refuses to push to %s, which is not the tracker's repository",
+    async (url) => {
+      const { git, calls } = scripted(url);
+      const gh = createFakeTracker([{ number: 1 }], { git });
+
+      await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh))))
+        .rejects.toThrow(/someone\/else[\s\S]*acme\/widgets/);
+      expect(calls.filter((c) => c.args[0] === "push")).toEqual([]);
+    },
+  );
+
+  /*
+   * A build that committed nothing leaves the branch where origin's default
+   * branch already is: pushing it proposes nothing, and GitHub would refuse
+   * the pull request anyway. Said here, naming the ticket and the way out,
+   * and asked again every tick — so it clears itself once somebody commits.
+   */
+  it("refuses a branch nothing was committed to, naming the ticket and the way out", async () => {
+    const { root, origin } = await checkout();
+    await run(root, "remote", "set-head", "origin", "main");
+    await run(root, "branch", "landrace/1", "main");
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+
+    await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh))))
+      .rejects.toThrow(/nothing was committed on landrace\/1 for #1[\s\S]*commit to the branch/i);
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBeNull();
+
+    await commitOn(root, "landrace/1", "late.ts");
+    await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh)))).resolves.toBeUndefined();
+  });
+
+  it("counts a branch origin's default branch has since moved past as nothing committed too", async () => {
+    const { root } = await checkout();
+    await run(root, "remote", "set-head", "origin", "main");
+    await run(root, "branch", "landrace/1", "main");
+    await writeFile(join(root, "later.ts"), "export const later = 1;\n");
+    await run(root, "add", "-A");
+    await run(root, "commit", "-qm", "later");
+    await run(root, "push", "-q", "origin", "main");
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+
+    await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh))))
+      .rejects.toThrow(/nothing was committed on landrace\/1/);
+  });
+
+  /* Bounded, and stopped with the run: a push that hangs holds the ticket's lock. */
+  it("stops when the run is aborted", async () => {
+    const { root, origin } = await checkout();
+    await build(root, "landrace/1");
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+    const stop = new AbortController();
+    stop.abort();
+
+    await expect(post(gh).apply(push, { ...contextOf(gh, await snapshotOf(gh)), signal: stop.signal }))
+      .rejects.toThrow(/abort/i);
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBeNull();
   });
 
   it("never forces, and says so when origin has moved on without this checkout", async () => {
@@ -166,10 +319,9 @@ describe("branch.push", () => {
    */
   it("keeps the token out of the error when git's own output quotes it", async () => {
     const logged: string[] = [];
-    const leaky: Git = async (args) => {
-      if (args[0] === "for-each-ref") return `refs/heads/landrace/1\0${"a".repeat(40)}\n`;
+    const { git: leaky } = scripted(ORIGIN, async () => {
       throw new Error(`fatal: unable to access: header AUTHORIZATION: basic ${BASIC} (token ${TOKEN})`);
-    };
+    });
     const gh = createFakeTracker([{ number: 1 }], { git: leaky });
     const snapshot = await snapshotOf(gh);
 
@@ -181,6 +333,23 @@ describe("branch.push", () => {
     expect(failure).not.toContain(TOKEN);
     expect(failure).not.toContain(BASIC);
     expect(logged.join("\n")).not.toContain(TOKEN);
+  });
+
+  /*
+   * Only a push that was behind gets the "not forced" explanation: a server
+   * hook refusing it is a different problem, and pointing the operator at
+   * the branch history would send them the wrong way.
+   */
+  it("says the branch moved on only when that is why the push was refused", async () => {
+    const { git } = scripted(ORIGIN, async () => {
+      throw new Error("! [remote rejected] landrace/1 -> landrace/1 (pre-receive hook declined)\nerror: failed to push some refs");
+    });
+    const gh = createFakeTracker([{ number: 1 }], { git });
+
+    const failure = await post(gh).apply(push, contextOf(gh, await snapshotOf(gh))).then(() => "", (e: unknown) => String(e));
+
+    expect(failure).toMatch(/pre-receive hook declined/);
+    expect(failure).not.toMatch(/force-push/);
   });
 
   it("refuses an effect that names no branch, or one git would refuse", async () => {
@@ -248,6 +417,20 @@ describe("pull.open", () => {
     expect(gh.pulls.size).toBe(1);
   });
 
+  /* GitHub's own way of saying what the push check says, in the same words. */
+  it("reads GitHub's 'No commits between' as nothing committed on the branch", async () => {
+    const { root } = await checkout();
+    await build(root, "landrace/1");
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+    gh.breakOn((r) => r.method === "POST" && r.path === "/pulls", 422, {
+      message: "Validation Failed",
+      errors: [{ resource: "PullRequest", code: "custom", message: "No commits between main and landrace/1" }],
+    });
+
+    await expect(post(gh).apply(open, contextOf(gh, await snapshotOf(gh))))
+      .rejects.toThrow(/nothing was committed on landrace\/1 for #1[\s\S]*commit to the branch/i);
+  });
+
   it("names the permission when the token may not open pull requests", async () => {
     const { root } = await checkout();
     await build(root, "landrace/1");
@@ -277,5 +460,22 @@ describe("the checkout the shipped hook works in", () => {
   it("is the repository the hook file lives in", async () => {
     const expected = realpathSync(await run(join(process.cwd(), ".landrace"), "rev-parse", "--show-toplevel"));
     expect(realpathSync(await hookRepository())).toBe(expected);
+  });
+});
+
+/* git that does not finish is stopped, whether it overran or the run was stopped. */
+describe("the git the hook runs", () => {
+  it("is stopped when it overruns its time, and says so", async () => {
+    const { root } = await checkout();
+    // Waits on stdin, which nothing will ever write to.
+    await expect(gitIn(root)(["hash-object", "--stdin"], {}, { timeoutMs: 300 })).rejects.toThrow(/did not finish within/);
+  });
+
+  it("is stopped when the run is aborted, and says so", async () => {
+    const { root } = await checkout();
+    const stop = new AbortController();
+    const waiting = gitIn(root)(["hash-object", "--stdin"], {}, { signal: stop.signal });
+    stop.abort();
+    await expect(waiting).rejects.toThrow(/aborted/);
   });
 });

@@ -79,6 +79,8 @@ export interface FakePull {
   /** What a `POST /pulls` asked for, as it asked: the branch it goes into, and its description. */
   base?: string;
   body?: string;
+  /** From a fork: its head branch is named in somebody else's repository, and may be named anything. */
+  crossRepository?: boolean;
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -99,8 +101,11 @@ export interface FakeTracker {
   comments: Map<number, FakeComment[]>;
   /** Every request that reached the boundary, so a test can count what an "idempotent" publish actually cost. */
   requests: FakeRequest[];
-  /** Answer matching requests with a failure instead, for the failures a hook has to tell apart from "not there". */
-  breakOn(match: (request: FakeRequest) => boolean, status?: number): void;
+  /**
+   * Answer matching requests with a failure instead, for the failures a hook has to tell apart from "not there" —
+   * with GitHub's own JSON body when one is given, since some failures are told apart by what that says.
+   */
+  breakOn(match: (request: FakeRequest) => boolean, status?: number, body?: unknown): void;
   /**
    * Answer every GraphQL query the way a failed one actually arrives: HTTP
    * 200, an `errors` array, and a `data` that still parses — partial success
@@ -196,7 +201,7 @@ const json = (value: unknown, status = 200): Response =>
  * own — the repository these tests run from, whose branches and whose origin
  * are real.
  */
-const noBranches: Git = async (args) => {
+export const noBranches: Git = async (args) => {
   if (args[0] === "for-each-ref") return "";
   throw new Error(`the fake GitHub has no checkout to run "git ${args.join(" ")}" in; pass one as opts.git`);
 };
@@ -321,7 +326,7 @@ export function createFakeTracker(
 
   const requests: FakeRequest[] = [];
   const graphql: Array<{ query: string; variables: Record<string, unknown> }> = [];
-  let broken: { match: (r: FakeRequest) => boolean; status: number } | null = null;
+  let broken: { match: (r: FakeRequest) => boolean; status: number; body?: unknown } | null = null;
   let graphqlFailure: { message: string; type: string } | null = null;
   let repositoryMissing = false;
   let pagesSite: FakePages | number | null = null;
@@ -387,6 +392,7 @@ export function createFakeTracker(
     merged: p.merged,
     headRefName: p.head,
     headRefOid: p.headSha,
+    isCrossRepository: p.crossRepository ?? false,
     closingIssuesReferences: { nodes: (p.closes ?? []).map((number) => ({ number })) },
   });
 
@@ -400,7 +406,9 @@ export function createFakeTracker(
     const path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : url.pathname;
     requests.push({ method, path });
     if (broken && broken.match({ method, path })) {
-      return new Response(`the repository is unhappy about ${path}`, { status: broken.status });
+      return broken.body === undefined
+        ? new Response(`the repository is unhappy about ${path}`, { status: broken.status })
+        : json(broken.body, broken.status);
     }
 
     if (url.pathname === "/user") {
@@ -762,12 +770,13 @@ export function createFakeTracker(
         ...(pull.title === undefined ? {} : { title: pull.title }),
         ...(pull.state === undefined ? {} : { state: pull.state }),
         ...(pull.closes === undefined ? {} : { closes: pull.closes }),
+        ...(pull.crossRepository === undefined ? {} : { crossRepository: pull.crossRepository }),
       };
       pulls.set(number, created);
       nextPull = Math.max(nextPull, number + 1);
       return created;
     },
-    breakOn: (match, status = 500) => { broken = { match, status }; },
+    breakOn: (match, status = 500, body) => { broken = { match, status, ...(body === undefined ? {} : { body }) }; },
     graphqlError: (message, type = "FORBIDDEN") => { graphqlFailure = { message, type }; },
     graphqlRepositoryMissing: () => { repositoryMissing = true; },
     published: (branch = "gh-pages") =>
