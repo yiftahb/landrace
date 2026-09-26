@@ -840,34 +840,47 @@ const nothingCommitted = (branch: string, ticket: string): Error =>
     "there is nothing to push or propose. Commit to the branch and the next tick carries on",
   );
 
-/** A remote URL as far as this hook cares: on GitHub, for which repository, over https, with credentials of its own. */
-function githubRemote(url: string): { repo: string; https: boolean; ownCredentials: boolean } | null {
-  // scp-like `git@github.com:owner/name.git` has no scheme, and URL cannot read it.
-  const scp = /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(url);
-  let host: string;
-  let path: string;
-  let https = false;
-  let ownCredentials = false;
-  if (!url.includes("://") && scp) {
-    [, host = "", path = ""] = scp;
-  } else {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return null;
-    }
-    host = parsed.hostname;
-    path = parsed.pathname;
-    https = parsed.protocol === "https:";
-    ownCredentials = parsed.username !== "" || parsed.password !== "";
-  }
-  if (host.toLowerCase() !== "github.com") return null;
-  return { repo: path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "").toLowerCase(), https, ownCredentials };
-}
+/** An owner or a repository name, as `tracker.repo` itself is validated: nothing a parser could read two ways. */
+const NAME = "[A-Za-z0-9_-][A-Za-z0-9._-]*";
 
-/** A URL fit to name in a message: whatever credentials it carries, left out. */
-const shown = (url: string): string => url.replace(/\/\/[^/@]*@/, "//");
+/**
+ * The only forms of a GitHub push URL this hook will act on, matched against
+ * the exact string git will use — never a parsed reading of it.
+ *
+ * git and curl parse a URL themselves, and a string two parsers read
+ * differently — `https://github.com\@evil.com/…`, a percent-encoded `@` or
+ * `/`, userinfo, a port — could have one of them see github.com while the
+ * other sends the header somewhere else. So the decision is not a parse at
+ * all: a URL in exactly one of these shapes, with github.com as its whole
+ * host (case aside), or no GitHub decision is made from it.
+ */
+const GITHUB_URLS: Array<{ pattern: RegExp; https: boolean }> = [
+  { pattern: new RegExp(`^https://([^/]+)/(${NAME})/(${NAME}?)(?:\\.git)?/?$`), https: true },
+  { pattern: new RegExp(`^git@([^:/]+):(${NAME})/(${NAME}?)(?:\\.git)?/?$`), https: false },
+  { pattern: new RegExp(`^ssh://git@([^/]+)/(${NAME})/(${NAME}?)(?:\\.git)?/?$`), https: false },
+];
+
+/**
+ * Which repository a push URL names on GitHub, and whether it is the https
+ * form the token may go to — or null for a URL that is not one of those
+ * forms. `looksLikeGithub` says whether such a URL mentions github.com at
+ * all: one that does and is not in a verifiable form is refused rather than
+ * pushed to, since it might be another repository.
+ */
+function githubRemote(url: string): { repo: string; https: boolean } | null {
+  for (const { pattern, https } of GITHUB_URLS) {
+    const m = pattern.exec(url);
+    if (m && m[1]?.toLowerCase() === "github.com") return { repo: `${m[2]}/${m[3]}`.toLowerCase(), https };
+  }
+  return null;
+}
+const looksLikeGithub = (url: string): boolean => /github\.com/i.test(url);
+
+/**
+ * A URL fit to name in a message: everything up to the last "@" before the
+ * host is left out, because a password may itself carry a raw "@".
+ */
+const shown = (url: string): string => url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, "$1");
 
 /**
  * Publish one branch to origin, fast-forward only.
@@ -921,13 +934,21 @@ function pusher(git: Git, token: string, repo: string): (branch: string, ticket:
       );
     }
     const remote = githubRemote(url);
+    if (remote === null && looksLikeGithub(url)) {
+      throw new Error(
+        `refusing to push ${branch}: origin's push URL ${shown(url)} mentions github.com but is not in a form ` +
+        "landrace can verify — https://github.com/<owner>/<repo>(.git), git@github.com:<owner>/<repo>.git or " +
+        "ssh://git@github.com/<owner>/<repo>.git. A URL git could read differently from how it reads here is " +
+        "not one to push to, or hand a token to; set it in one of those forms and the ticket carries on",
+      );
+    }
     if (remote && remote.repo !== repo.toLowerCase()) {
       throw new Error(
         `refusing to push ${branch}: origin pushes to ${shown(url)}, which is not ${repo}, the repository ` +
         "this workflow's tracker is — a pull request here could never be opened from it",
       );
     }
-    const withToken = remote?.https === true && !remote.ownCredentials;
+    const withToken = remote?.https === true;
 
     // Nothing to publish: the branch is origin's default branch, or behind
     // it. Asked of refs this checkout already has — origin/HEAD, as the clone

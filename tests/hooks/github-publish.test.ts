@@ -295,28 +295,88 @@ describe("branch.push", () => {
   });
 
   /*
-   * The token goes to GitHub, for this repository, and nowhere else. Any
-   * other origin is pushed with the operator's own credentials — an ssh
-   * key, a URL that carries its own — and gets no header at all.
+   * The token goes to GitHub, for this repository, and nowhere else — and
+   * only for a URL in a form nothing can read two ways. The decision is made
+   * on the string git will use; a parser here that disagreed with git's or
+   * curl's about where the host ends would hand the token to wherever git
+   * thinks the host is.
    */
   it.each([
-    [ORIGIN, true],
-    ["https://github.com/acme/widgets", true],
-    ["https://GitHub.com/Acme/Widgets.git", true],
-    ["https://me:pat@github.com/acme/widgets.git", false],
-    ["git@github.com:acme/widgets.git", false],
-    ["ssh://git@github.com/acme/widgets.git", false],
-    ["file:///srv/git/widgets.git", false],
-  ])("hands the token to a push to %s: %s", async (url, token) => {
+    ORIGIN,
+    "https://github.com/acme/widgets",
+    "https://github.com/acme/widgets/",
+    "https://github.com/acme/widgets.git/",
+    "https://GITHUB.com/acme/widgets.git",
+    "https://GitHub.com/Acme/Widgets.git",
+  ])("hands the token to a push to %s", async (url) => {
     const { git, calls } = scripted(url);
     const gh = createFakeTracker([{ number: 1 }], { git });
 
     await post(gh).apply(push, contextOf(gh, await snapshotOf(gh)));
 
     const config = configOf(pushOf(calls).env);
-    expect(config.some(([, value]) => value.includes(BASIC))).toBe(token);
-    expect(JSON.stringify(pushOf(calls).env)).toContain(token ? BASIC : "core.hooksPath");
+    expect(config).toContainEqual([`http.${url}.extraheader`, `AUTHORIZATION: basic ${BASIC}`]);
     expect(config).toContainEqual(["core.hooksPath", "/dev/null"]);
+  });
+
+  /* ssh, and hosts that are not GitHub: the operator's own credentials, and no token at all. */
+  it.each([
+    "git@github.com:acme/widgets.git",
+    "git@GitHub.com:acme/widgets",
+    "ssh://git@github.com/acme/widgets.git",
+    "file:///srv/git/widgets.git",
+    "https://gitlab.example.com/acme/widgets.git",
+  ])("pushes to %s with no token", async (url) => {
+    const { git, calls } = scripted(url);
+    const gh = createFakeTracker([{ number: 1 }], { git });
+
+    await post(gh).apply(push, contextOf(gh, await snapshotOf(gh)));
+
+    expect(JSON.stringify(calls)).not.toContain(BASIC);
+    expect(configOf(pushOf(calls).env)).toContainEqual(["core.hooksPath", "/dev/null"]);
+  });
+
+  /*
+   * Everything that looks like GitHub and is not in one of those forms:
+   * userinfo, a backslash or percent-encoding a parser may or may not read
+   * as part of the host, a port, a host that only starts with github.com, a
+   * query, a fragment, an upper-case scheme. Pushing without a token would
+   * still be pushing to something that might be another repository, so it
+   * is refused — and no token is ever built.
+   */
+  it.each([
+    "https://github.com\\@evil.com/acme/widgets.git",
+    "https://github.com%40evil.com/acme/widgets.git",
+    "https://github.com/acme%2Fwidgets.git",
+    "https://github.com/acme/wid%67ets.git",
+    "https://github.com:443/acme/widgets.git",
+    "https://github.com.evil.com/acme/widgets.git",
+    "https://me:pat@github.com/acme/widgets.git",
+    "https://github.com@evil.com/acme/widgets.git",
+    "https://github.com/acme/widgets.git?x=1",
+    "https://github.com/acme/widgets.git#main",
+    "HTTPS://github.com/acme/widgets.git",
+    "https://github.com/acme/widgets/extra.git",
+    "http://github.com/acme/widgets.git",
+  ])("refuses to push to %s, and builds no token", async (url) => {
+    const { git, calls } = scripted(url);
+    const gh = createFakeTracker([{ number: 1 }], { git });
+
+    await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh))))
+      .rejects.toThrow(/refusing to push landrace\/1/);
+    expect(calls.filter((c) => c.args[0] === "push")).toEqual([]);
+    expect(JSON.stringify(calls)).not.toContain(BASIC);
+  });
+
+  /* A password may carry a raw "@": everything up to the last one before the host is left out. */
+  it("names no credentials when it refuses a URL that carries them", async () => {
+    const { git } = scripted("https://u:p@ss@github.com/other/x");
+    const gh = createFakeTracker([{ number: 1 }], { git });
+
+    const failure = await post(gh).apply(push, contextOf(gh, await snapshotOf(gh))).then(() => "", (e: unknown) => String(e));
+
+    expect(failure).toMatch(/refusing to push/);
+    expect(failure).not.toMatch(/ss@|p@ss|u:p/);
   });
 
   it.each(["https://github.com/someone/else.git", "git@github.com:someone/else.git"])(
