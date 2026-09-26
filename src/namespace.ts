@@ -1039,6 +1039,13 @@ export interface BuildOptions {
   debug?: boolean;
   /** Where events go. `landrace status` sends them to stderr, because stdout is its report. */
   sink?: (event: LandraceEvent) => void;
+  /**
+   * `landrace status`: it enumerates and never runs a step, so the plugins and
+   * servers a step would be handed are neither resolved nor refused over — and
+   * the step executor it gets refuses every run rather than running one
+   * without them.
+   */
+  readOnly?: boolean;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */

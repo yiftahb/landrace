@@ -3,6 +3,7 @@ import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js"
 import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { resolveStepServers } from "#config/mcp.js";
+import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
 import type {
   Board,
@@ -247,6 +248,20 @@ export async function stepToolsFor(config: RuntimeConfig, dir: string): Promise<
 }
 
 /**
+ * The step executor of a runtime built only to read. Still resolved through
+ * `executorFor`, so `status` refuses an adapter nothing answers to exactly as
+ * `start` does; it just never runs — a step run without the tools its
+ * configuration hands it is a step run bare, and nothing that reads should be
+ * able to start one.
+ */
+function readOnlyExecutor(executor: Executor): Executor {
+  return defineExecutor({
+    id: executor.id,
+    run: () => Promise.reject(new Error("this runtime was built to read tickets, not to run steps")),
+  });
+}
+
+/**
  * The triage page's header chip: the repository checkout landrace is
  * actually running in, and its own name.
  *
@@ -289,8 +304,10 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
 
   // Before the workflow is read and before any hook module is imported: a
   // server that cannot be handed to a step is a configuration fact, and the
-  // hooks' top-level code has no business running under one.
-  const tools = await stepToolsFor(loaded.config, dir);
+  // hooks' top-level code has no business running under one. Not for
+  // `landrace status`, which runs no step: a clone nobody has run `agsync
+  // sync` in is exactly where someone asks what landrace makes of it.
+  const tools = opts.readOnly ? null : await stepToolsFor(loaded.config, dir);
 
   // With `vars` already substituted in: the graph the daemon runs is the
   // graph `landrace validate` checked, filled in from the same map.
@@ -369,7 +386,9 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       pre: registry.pre,
       artifacts: registry.artifacts,
       dispatcher: createDispatcher(registry.post),
-      executor: executorFor(loaded.config, workflow, registry, log, { dir, tools }),
+      executor: tools === null
+        ? readOnlyExecutor(executorFor(loaded.config, workflow, registry, log, { dir }))
+        : executorFor(loaded.config, workflow, registry, log, { dir, tools }),
       ...(sandbox === null ? {} : { sandbox }),
       ...(loaded.config.security.screen
         ? { screen: { executor: executorFor(loaded.config, workflow, registry, log, { model: loaded.config.security.model }) } }

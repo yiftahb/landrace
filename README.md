@@ -212,13 +212,13 @@ Neither read-only steps nor the screener run in plan mode. Checked against the r
 
 Every step and turn runs with `--strict-mcp-config`: it gets exactly the servers `agent.mcp` names, as `.mcp.json` defines them (`env` included), each allowed as `mcp__<name>` — and nothing from a `.mcp.json` committed to the repository, from your user-level config, or from anywhere else. With an empty `agent.mcp` it gets no server at all. A step holding `create_child` gets its bound child server beside them.
 
-Servers are resolved once, at startup, from the **repository root's** `.mcp.json` — the file agsync generates, not anything in the step's worktree. `landrace start`, `landrace status` and `landrace mcp` refuse to start, and `landrace validate` reports the same sentence, when:
+Servers are resolved once, at startup, from the **repository root's** `.mcp.json` — the file agsync generates, not anything in the step's worktree. `landrace start` and `landrace mcp` refuse to start, and `landrace validate` reports the same sentence, when:
 
 - `agent.mcp` names a server but there is no `.mcp.json` at the repository root — run `agsync sync`, which generates it;
 - a name is not in `.mcp.json` — the refusal lists the names it does define;
 - a name is landrace's own operator server: `landrace`, or any server whose command runs `landrace mcp`, `cli.js mcp` or `dist/cli.js mcp`, however it is spelled. Its tools create, update and reply on tickets, and a step agent holding them could move its own ticket — so operator tools never reach a step agent.
 
-The screener never gets plugins, servers or tools: it reads attacker-reachable text and needs nothing to judge it. An allowlisted server's `env` travels in the agent's argv, where `ps` can read it for as long as the step runs — keep credentials out of servers you allow.
+`landrace status` runs no step, so it resolves none of this and works without a `.mcp.json`. The screener never gets plugins, servers or tools: it reads attacker-reachable text and needs nothing to judge it. An allowlisted server's `env` travels in the agent's argv, where `ps` can read it for as long as the step runs — keep credentials out of servers you allow.
 
 ### Token permissions
 

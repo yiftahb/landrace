@@ -465,4 +465,24 @@ describe("runStatus", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(new RegExp(`#${TICKET}.*Add export.*queued`));
   });
+
+  /*
+   * `status` never runs a step, so what a step would be handed is none of its
+   * business: a fresh clone nobody has run `agsync sync` in yet is exactly
+   * where someone asks what landrace thinks of their tickets. `start` still
+   * refuses the same checkout — the buildRuntime tests pin that.
+   */
+  it("reads the tickets with agent.mcp set and no .mcp.json at all", async () => {
+    const { dir } = await fixture({ agentKeys: "mcp: [codebase-memory-mcp]" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/\.mcp\.json does not exist/);
+
+    const lines = await runStatus(dir);
+    expect(lines[0]).toMatch(new RegExp(`#${TICKET}.*Add export.*queued`));
+
+    // And what it built can read and nothing more: a step run without the
+    // servers its configuration names would be a step run bare.
+    const rt = await buildRuntime(dir, { readOnly: true });
+    await expect(rt.deps.executor.run("x", { round: 1, capabilities: ["repo:read"], signal: new AbortController().signal }))
+      .rejects.toThrow(/not to run steps/);
+  });
 });
