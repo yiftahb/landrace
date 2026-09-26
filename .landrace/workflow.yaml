@@ -17,9 +17,10 @@ eligible:
     else: "no lr:auto label"
 
 # One key, because one key is read. The spec and review caps are the `$lt`
-# comparisons in the triggers below, where the validator can see them (§11.4)
-# and where editing one actually changes what happens — `spec: 3` here was a
-# number an operator could edit to no effect at all.
+# comparisons in the triggers below and in each `goto` entry's `when`, where
+# the validator can see them (§11.4) and where editing one actually changes
+# what happens — `spec: 3` here was a number an operator could edit to no
+# effect at all.
 budget:
   # The default for a step that names no `timeout` of its own — triage, the
   # one quick classifier. Every step that does real work says 120m.
@@ -289,11 +290,13 @@ stages:
       - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
 
   # The halts list every step, where the stages waiting on a person list two.
-  # Retry is a goto to the stage whose round failed, and any step can fail. A
-  # review or a fix that broke its contract or was refused would otherwise be
-  # retried only by a rewritten spec or a rebuild, neither of which is what
-  # failed. A judge that failed is read again by any new reply, which enters
-  # triage anyway; Retry re-judges the message it failed on.
+  # Retry is a goto to the step whose failure put the ticket here, and any
+  # step can fail. A review or a fix that broke its contract or was refused
+  # would otherwise be retried only by a rewritten spec or a rebuild, neither
+  # of which is what failed. A judge that failed is read again by any new
+  # reply, which enters triage anyway. Retry re-judges the message it failed
+  # on, but as one made here at the halt, not where it was first written: it
+  # comes back here unless it asks for a goto.
   #
   # Each target runs only within its rounds. Its own counter first: a failed
   # fix round advances fix-review's and not code-review's, so code-review's

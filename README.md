@@ -68,7 +68,8 @@ Escalate in that order the first time. `start --once` runs a single tick and
 exits, and `--debug` prints the assembled snapshot, the planned effects and the
 agent subprocess's own output, so you can watch a decision before it becomes a
 write. **A step invocation spends real money**; the round caps are the `$lt`
-counters in your workflow, not something the engine imposes.
+counters in your workflow — on its triggers, and on the `when` of each `goto`
+entry — not something the engine imposes.
 
 Landrace only touches tickets your `eligible` rule admits — in the shipped
 workflow, those labelled `lr:auto`. Everything else is listed and skipped.
@@ -366,7 +367,7 @@ Workflow-level keys beyond `stages`:
 | Key | Meaning |
 |---|---|
 | `eligible` | Which tickets Landrace touches at all, each rule carrying the `else` reason `status` prints for a ticket it skipped |
-| `budget.stepTimeout` | How long one agent invocation may take, unless its step names its own `timeout`. The round caps are the `$lt` counters in the triggers themselves, where the validator can see and bound them |
+| `budget.stepTimeout` | How long one agent invocation may take, unless its step names its own `timeout`. The round caps are the `$lt` counters in the triggers themselves and in each `goto` entry's `when`, where the validator can see and bound them |
 | `hooks` | The integration modules, by path, in the order pre hooks run |
 
 ### Splitting work into sub-tickets
@@ -425,7 +426,7 @@ Write the spec for #{node.id}: {node.title}…
 | `timeout` | Overrides `budget.stepTimeout` for this step, e.g. `120m`. A step that writes code can need hours where a classifier needs minutes |
 | `output.discriminator` | The field whose value picks the shape |
 | `output.shapes` | What each value of the discriminator must look like. Output that matches none is a hard fail, recorded, never retried |
-| `output.routes` | Where each shape goes. One route, one effect — two routes matching one output is ambiguity, and ambiguity halts |
+| `output.routes` | Where each shape goes. One route, one effect — two routes matching one output is ambiguity, and ambiguity halts. A route may also name a `goto`, a stage its stage lists, which the engine takes before any trigger |
 
 Both schemas are strict: an unknown key fails to load rather than being ignored. A field the engine silently ignores is a lie, and this codebase had four of them until the last review.
 
@@ -444,6 +445,9 @@ Both schemas are strict: an unknown key fails to load rather than being ignored.
 | `vars` | A variable that does not resolve, a `{vars.x}` nothing defines, a declared variable nothing references, a variable holding a secret's value |
 | `branch` | A stage `branch` git would refuse as a name, one using anything but `{ticket}`, `{stage}` and `{round}`, one on a stage that runs no step, or one with `agent.isolation` other than `worktree` |
 | `mcp` | An `agent.mcp` server with no `.mcp.json` at the repository root, a name `.mcp.json` does not define, or landrace's own operator server |
+| `goto` | A `goto` target that is not a stage, is named twice, or records no `enter` naming `{round}` — its entry record is what consumes a goto; a route sending tickets somewhere its stage does not list |
+| `trigger-name` | A trigger named `goto`, the name a goto transition is logged under |
+| `reserved-field` | A `goto` or `from` field in an `on_enter` effect or a route's effect — fields only the engine writes |
 
 Every rule runs on every workflow. An earlier version abstained where a trigger
 could fire from anywhere, which turned out to mean *always* — the entry trigger

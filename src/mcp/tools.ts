@@ -58,7 +58,8 @@ const noSource = (): never => {
 
 /**
  * A person's reply on a ticket, posted as the operator: what `landrace_reply`
- * posts, and what the board's Retry posts, by one path.
+ * posts. The board's Retry is not a reply: it is a goto, and goes through
+ * `sendTo`.
  *
  * Through the same dispatcher every other write goes through, so an
  * operator's reply reaches the tracker by the one path the engine knows how

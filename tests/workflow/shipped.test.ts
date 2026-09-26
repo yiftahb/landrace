@@ -195,7 +195,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
   });
 
   /*
-   * Retry is a goto to the stage whose round failed, and any step can fail:
+   * Retry is a goto to the step whose failure put the ticket there, and any step can fail:
    * a halt listing only spec and build left a broken review with no retry at
    * all. Each target is capped by its own rounds — fix-review by code-review's
    * too, the loop the two share — and offered only where it could run: a

@@ -1006,7 +1006,7 @@ describe("sending a ticket back to a step", () => {
 });
 
 /*
- * Retry is a goto to the stage whose round failed, and a review can fail like
+ * Retry is a goto to the step whose failure put the ticket there, and a review can fail like
  * any other step. With the halts listing only spec and build, a review that
  * broke its contract could be retried only by rewriting the spec or rebuilding
  * the work, neither of which was what failed. And a review with no pull

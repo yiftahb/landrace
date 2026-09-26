@@ -1416,7 +1416,7 @@ export interface GotoDeps extends ReplyDeps {
   lock?: LockOptions;
 }
 
-/** How the page's writes reach a ticket. `target` null is a Retry: the stage that last failed. */
+/** How the page's writes reach a ticket. `target` null is a Retry: `run.failedStage`, the failure that put the ticket where it is. */
 export interface GotoPath {
   send(ticket: string, target: string | null): Promise<GotoResult>;
 }

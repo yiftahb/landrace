@@ -24,9 +24,10 @@ const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 
 /**
  * Whether this row offers a Retry: the ticket is blocked or screened right
- * now. A Retry is a goto with no step named — the stage whose round last
- * failed — and this is only the board's own offer; `sendTo` re-reads the
- * ticket and is the one authority on whether a given send is actually taken.
+ * now. A Retry is a goto with no step named — the step whose failure put
+ * the ticket there — and this is only the board's own offer; `sendTo`
+ * re-reads the ticket and is the one authority on whether a given send is
+ * actually taken.
  */
 const stopped = (row: StatusRow): boolean => row.note === BLOCKED_NOTE || row.note === SCREENED_NOTE;
 
