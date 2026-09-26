@@ -760,19 +760,25 @@ describe("a step refused by a security check", () => {
   /*
    * The handback is a loop, and its bound is the workflow's own
    * `run.counters.build: { $lt: 3 }` — three attempts, a refused one counting
-   * like any other rejected round.
+   * like any other rejected round. Past that a reply sends the ticket back to
+   * spec, the one text that can change what the screener is shown.
    */
-  it("stops handing a refused build back once the build's budget is spent", async () => {
-    const { state, tick } = await at(["lr:stage:build"], ANSWERS, { build: NO });
+  it("hands a refused build back to spec once the build's budget is spent", async () => {
+    const { state, run, tick } = await at(["lr:stage:build"], ANSWERS, { build: NO, spec: OK });
     await tick();
 
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= 2; i++) {
       state.say("1", `try again ${i}`);
       await tick();
     }
-
     expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
     expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:screened", "lr:screened"]));
+
+    state.say("1", "revise the spec instead");
+    await tick();
+    expect(run.trail().slice(-3)).toEqual(["screened", "spec", "spec-questions"]);
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
+    expect(state.ticket("1").labels).not.toContain("lr:screened");
   });
 
   it("hands a refused spec back to spec, the stage that was refused", async () => {

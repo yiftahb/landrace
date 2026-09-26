@@ -118,6 +118,35 @@ describe("the shipped workflow splits every failure between blocked and screened
     }
   });
 
+  /*
+   * A reply at a halt goes somewhere, whatever the budgets say — until every
+   * budget it could spend is spent. A build whose three rounds were all
+   * refused used to have no route at all: the build handback needs budget
+   * left and the spec handback excluded a failed build, so a spec text that
+   * tripped the screener could be retried until the budget ran out and then
+   * never revised.
+   */
+  it.each(["blocked", "screened"])("hands a reply at %s to exactly one stage while a budget is left", async (halt) => {
+    const { workflow } = await loadWorkflow(".landrace");
+    const at = (failedStages: string[], build: number, spec: number): Snapshot => {
+      const s = failedAt(halt, halt === "screened");
+      const run = s.run as object;
+      return { ...s, run: { ...run, stage: halt, failedStages, counters: { spec, build },
+        lastEvent: { actor: "human", at: null } } } as unknown as Snapshot;
+    };
+    const to = (failedStages: string[], build: number, spec = 1): string => {
+      const d = decide(workflow, at(failedStages, build, spec));
+      return d.action === "transition" ? d.to?.id ?? "?" : d.action;
+    };
+
+    expect(to(["build"], 1)).toBe("build");
+    expect(to(["build"], 3)).toBe("spec");
+    expect(to(["code-review", "build"], 3)).toBe("spec");
+    expect(to(["spec"], 1)).toBe("spec");
+    expect(to([], 3)).toBe("spec");
+    expect(to(["build"], 3, 3)).not.toBe("spec");
+  });
+
   it("marks a screened ticket blocked too, and says why beside it", async () => {
     const { workflow } = await loadWorkflow(".landrace");
     const screened = workflow.stages.find((s) => s.id === "screened");

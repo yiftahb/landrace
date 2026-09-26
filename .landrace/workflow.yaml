@@ -81,6 +81,12 @@ stages:
       # budget spent with no stage failed at all — and a failed build goes
       # back to build, below. `$nin` and `$in` on the one list are exact
       # complements, so exactly one of the two can take any reply.
+      #
+      # Until the build's own three rounds are spent: then a failed build
+      # comes here too. A build refused three times over the same spec text
+      # otherwise had no route at all, and the spec that tripped the screener
+      # could never be revised. `$lt` and `$gte` on the one counter are exact
+      # complements too.
       - name: a halt was handed back
         when:
           "run.stage": blocked
@@ -92,6 +98,20 @@ stages:
           "run.stage": screened
           "run.lastEvent.actor": human
           "run.failedStages": { $nin: [build] }
+          "run.counters.spec": { $lt: 3 }
+      - name: a build out of rounds was handed back
+        when:
+          "run.stage": blocked
+          "run.lastEvent.actor": human
+          "run.failedStages": { $in: [build] }
+          "run.counters.build": { $gte: 3 }
+          "run.counters.spec": { $lt: 3 }
+      - name: a build refused out of rounds was handed back
+        when:
+          "run.stage": screened
+          "run.lastEvent.actor": human
+          "run.failedStages": { $in: [build] }
+          "run.counters.build": { $gte: 3 }
           "run.counters.spec": { $lt: 3 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
