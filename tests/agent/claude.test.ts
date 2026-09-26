@@ -389,30 +389,6 @@ describe("claude executor", () => {
     await expect(run("x", {}, { cwd: dir, resume: "sid-1; rm -rf /" })).rejects.toThrow(/refused resume/);
   });
 
-  it("refuses a permissionMode outside the known set", async () => {
-    const dir = withCfg({ out: "unreachable" });
-    await expect(run("x", { permissionMode: "sudo" }, { cwd: dir })).rejects.toThrow(/refused permissionMode/);
-  });
-
-  it("accepts the real CLI's other permission modes, not just the ones this project happens to use", async () => {
-    const dir = withCfg({ out: "{{ARGV}}" });
-    const r = await run("x", { permissionMode: "auto" }, { cwd: dir });
-    expect(r.text).toContain("--permission-mode auto");
-  });
-
-  it("warns at startup when configured for bypassPermissions, since that disables every prompt", () => {
-    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      createClaudeExecutor({ permissionMode: "bypassPermissions" });
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("bypassPermissions"));
-      warn.mockClear();
-      createClaudeExecutor({ permissionMode: "plan" });
-      expect(warn).not.toHaveBeenCalled();
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
   it("refuses a relative cwd", async () => {
     await expect(run("x", {}, { cwd: "relative/path" })).rejects.toThrow(/must be an absolute path/);
   });
@@ -426,10 +402,9 @@ describe("claude executor", () => {
 
   // --- a step's declared capabilities, translated into what the CLI enforces.
   //
-  // The executor's construction-time options are the *operator's* setting for
-  // every run it makes; a step's declaration is narrower and specific to one
-  // invocation. These check that the declaration decides, in both directions,
-  // rather than being merged with or quietly overridden by the default.
+  // There is no operator-wide permission setting to merge with or fall back
+  // on: the declaration alone decides, and a run that makes none is the
+  // screener's, which gets less than any step.
 
   /*
    * Not plan mode, which is what this was until a live check against the real
@@ -439,11 +414,8 @@ describe("claude executor", () => {
    * list are what keep "read-only" meaning it, and the same check refused a
    * write attempted under them.
    */
-  it("gives a read-only step manual mode with the write and exec tools denied, even when the executor was built wider", async () => {
-    const argv = await argvOf(
-      createClaudeExecutor({ bin, permissionMode: "acceptEdits", restricted: false }),
-      { capabilities: ["repo:read"] },
-    );
+  it("gives a read-only step manual mode with the write and exec tools denied", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
     expect(argv.slice(0, 7)).toEqual(["-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
     expect(argv.slice(7, 12).sort()).toEqual([...WRITE_TOOLS]);
     expect(argv).not.toContain("plan");
@@ -463,10 +435,7 @@ describe("claude executor", () => {
   });
 
   it("treats a step that declares no capabilities as the most restricted one, not the least", async () => {
-    const argv = await argvOf(
-      createClaudeExecutor({ bin, permissionMode: "acceptEdits", restricted: false }),
-      { capabilities: [] },
-    );
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: [] });
     expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("manual");
     expect(argv).toContain("--restricted");
     expect(argv.slice(argv.indexOf("--disallowedTools") + 1, argv.indexOf("--disallowedTools") + 6).sort()).toEqual([...WRITE_TOOLS]);

@@ -27,28 +27,9 @@ const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as co
  */
 const CHILD_SERVER_NAME = "landrace";
 
-/**
- * The CLI's own six modes (`acceptEdits, auto, bypassPermissions, manual,
- * dontAsk, plan`) — not a project-specific subset. `bypassPermissions` stays
- * in the allowlist even though it disables every permission prompt: this is
- * operator config, not attacker input, and unattended orchestration has no
- * human standing by to answer a prompt in the first place. It is dangerous
- * enough to be worth a startup warning rather than silent acceptance — see
- * the check in createClaudeExecutor below.
- */
-const PERMISSION_MODES = new Set(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
-
 function assertArgShape(kind: string, value: string): void {
   if (!ARG_SHAPE.test(value)) {
     throw new Error(`refused ${kind} ${JSON.stringify(value)}: does not match the allowed shape for a claude CLI argument`);
-  }
-}
-
-function assertPermissionMode(mode: string): void {
-  if (!PERMISSION_MODES.has(mode)) {
-    throw new Error(
-      `refused permissionMode ${JSON.stringify(mode)}: must be one of ${[...PERMISSION_MODES].join(", ")}`,
-    );
   }
 }
 
@@ -134,8 +115,6 @@ function killGroup(child: ChildProcess): void {
  */
 export function createClaudeExecutor(opts: {
   model?: string;
-  restricted?: boolean;
-  permissionMode?: string;
   timeoutMs?: number;
   bin?: string;
   log?: Logger;
@@ -164,11 +143,6 @@ export function createClaudeExecutor(opts: {
 } = {}): Executor {
   const {
     model,
-    restricted = true,
-    // For a run that declares nothing — the screener's. Not plan mode: the
-    // live check that moved read-only steps off it showed it ignores
-    // `--model`, so a screener configured as haiku screened on sonnet.
-    permissionMode = "manual",
     timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
     bin = "claude",
     log,
@@ -177,16 +151,6 @@ export function createClaudeExecutor(opts: {
     mcpServers = {},
     mcpTools = {},
   } = opts;
-
-  if (permissionMode === "bypassPermissions") {
-    // Not attacker-reachable (it is construction-time operator config), but
-    // dangerous enough that silent acceptance would be the wrong default —
-    // this disables the one guard that would otherwise catch a misconfigured
-    // workflow before it touches a real repository.
-    console.warn(
-      'claude executor: permissionMode "bypassPermissions" disables every permission prompt for every run this executor makes',
-    );
-  }
 
   return defineExecutor({
     id: "claude",
@@ -209,36 +173,36 @@ export function createClaudeExecutor(opts: {
         );
       }
 
-      // A step's declaration decides, in both directions, whenever it made
-      // one. The constructor's options are the operator's default for every
-      // run this executor makes, so a step declaring only `repo:read` under an
-      // operator default of acceptEdits must still come out unable to edit.
+      // A step's declaration decides, and nothing widens it: there is no
+      // operator-wide permission setting for a run to fall back on. A run that
+      // declares nothing at all is the screener's, and gets less than any step.
       const declared = capabilities !== undefined;
       const mayWrite = mayWriteRepo(capabilities);
       // A permission, not an obligation: a turn that declares the word but was
       // handed no binding simply gets no tool.
       const bound = binding !== undefined && mayCreateTickets(capabilities) ? binding : undefined;
-      // Not plan mode, which is what a read-only step ran in until a live
-      // check against the real CLI (2.1.282) showed what it cost: plan mode
-      // refuses every MCP call — create_child and every allowlisted server
-      // alike — and ignored `--model`, running sonnet for a step that asked
-      // for haiku. So a read-only step runs in the CLI's default mode
-      // (`manual`), still `--restricted`, with the write and exec tools denied
-      // by name — the same check refused a write attempted under exactly
-      // these flags, so "read-only" keeps meaning it.
+      // Not plan mode, which is what a read-only step and the screener ran in
+      // until a live check against the real CLI (2.1.282) showed what it
+      // cost: plan mode refuses every MCP call — create_child and every
+      // allowlisted server alike — and ignored `--model`, running sonnet for
+      // a step (or a screener) that asked for haiku. So anything that may not
+      // write runs in the CLI's default mode, `manual`.
+      const mode = mayWrite ? "acceptEdits" : "manual";
+      // `--restricted` removes the tools that run commands or code (Bash and
+      // the rest) and WebFetch, and ignores the operator's user, project and
+      // local settings. It does not remove Edit or Write: the deny list does
+      // that, for a read-only step, and `--tools ""` removes every built-in
+      // tool for the screener. The same live check refused a write attempted
+      // under the read-only step's flags. A step that may write keeps all of
+      // them, and the operator's settings with them.
+      const restricted = !mayWrite;
       const denyWrites = declared && !mayWrite;
-      const mode = declared ? (mayWrite ? "acceptEdits" : "manual") : permissionMode;
-      // A step that may write needs tools to write with; anything else gets
-      // none. `--restricted` is what makes "read-only" mean read-only rather
-      // than "asked nicely".
-      const noTools = declared ? !mayWrite : restricted;
 
       // The step's own declaration, or the operator's default when it made
       // none — checked here rather than at construction alone, because a
       // per-run value comes out of a repo file a contributor's PR can edit.
       const chosenModel = stepModel ?? model;
 
-      assertPermissionMode(mode);
       if (chosenModel !== undefined) assertArgShape("model", chosenModel);
       if (resume !== undefined) assertArgShape("resume", resume);
       const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
@@ -254,13 +218,13 @@ export function createClaudeExecutor(opts: {
 
       // json output carries session_id; without it a conversation cannot continue.
       const args = ["-p", "--output-format", "json", "--permission-mode", mode];
-      if (noTools) args.push("--restricted");
+      if (restricted) args.push("--restricted");
       // A run that declares nothing is the screener's, and it reads
       // attacker-reachable text for a living: no built-in tool at all, not
       // even Read. Variadic, and the empty list must not swallow what follows
       // — a flag always does, since `--mcp-config` is pushed below whatever
       // else is.
-      if (!declared && restricted) args.push("--tools", "");
+      if (!declared) args.push("--tools", "");
       // Variadic like `--allowedTools`: the next flag ends it.
       if (denyWrites) args.push("--disallowedTools", ...WRITE_TOOLS);
       if (chosenModel !== undefined) args.push("--model", chosenModel);
