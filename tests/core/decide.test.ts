@@ -230,8 +230,10 @@ describe("a pending goto", () => {
     expect(d.why).toMatch(/"review".*"spec" or "build".*"done"/);
   });
 
-  it("halts on a target that is not a stage at all", () => {
-    expect(decide(w, at("review", { goto: "zz" }))).toMatchObject({ action: "halt", why: expect.stringMatching(/"zz"/) });
+  it("halts on a target that is not a stage at all, naming both", () => {
+    expect(decide(w, at("review", { goto: "zz" }))).toMatchObject({
+      action: "halt", why: expect.stringMatching(/"review".*"zz"/),
+    });
   });
 
   /*
@@ -248,6 +250,20 @@ describe("a pending goto", () => {
       .toMatchObject({ action: "transition", to: { id: "done" } });
   });
 
+  it("keeps the declined reason on an ambiguity halt, the same way a wait gets it", () => {
+    const ambiguous: Stage[] = [
+      { id: "review", goto: [{ stage: "build", when: { "run.counters.build": { $lt: 3 } } }] },
+      { id: "build" },
+      { id: "a", triggers: [{ name: "a", when: { "run.stage": "review" } }] },
+      { id: "b", triggers: [{ name: "b", when: { "run.stage": "review" } }] },
+    ];
+    const aw: Workflow = { version: 1, name: "t", stages: ambiguous };
+    const d = decide(aw, at("review", { goto: "build", counters: { build: 3 } }));
+    expect(d).toMatchObject({ action: "halt" });
+    expect(d.why).toMatch(/ambiguous triggers/);
+    expect(d.why).toMatch(/run\.counters\.build/);
+  });
+
   /*
    * A round owed is run to its verdict before the ticket goes anywhere. Left
    * behind, it would be re-entered under the same number, its entry record
@@ -261,6 +277,8 @@ describe("a pending goto", () => {
   });
 
   it("still enforces the target's own precondition once the ticket arrives", () => {
+    expect(decide(w, at("review", { goto: "build", counters: { build: 0 } })))
+      .toMatchObject({ action: "transition", to: { id: "build" } });
     expect(decide(w, at("build", { rounds: { build: { entered: 1, output: 0 } } }, { ok: false })))
       .toMatchObject({ action: "halt", why: expect.stringMatching(/precondition for "build"/) });
   });

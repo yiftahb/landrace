@@ -137,14 +137,21 @@ export function decide(w: Workflow, s: Snapshot): Decision {
    * step above, so a round that was owed reaches its verdict rather than
    * being abandoned. A target the stage does not list is a workflow or a
    * command that should never have written it, and halts. One the list names
-   * but whose `when` does not hold is declined: the triggers below decide,
-   * because a halt here would leave the ticket at a stage no command can
-   * send it on from.
+   * but whose `when` does not hold is declined: the decision is left to the
+   * stage's own triggers below, neither retried nor halted here. That is not
+   * a guarantee the ticket has somewhere to go — a workflow that wants the
+   * reply to come home once the cap is hit must give this stage a trigger
+   * that says so, or the ticket only waits.
    */
   let declined: string | null = null;
   if (run.goto) {
     const to = w.stages.find((x) => x.id === run.goto);
-    if (!to) return { action: "halt", stage, subState, why: `a goto names "${run.goto}", which is not a stage of this workflow` };
+    if (!to) {
+      return {
+        action: "halt", stage, subState,
+        why: `"${stage.id}" was asked to send a ticket to "${run.goto}", which is not a stage of this workflow`,
+      };
+    }
     const unlisted = gotoNotListed(stage, to.id);
     if (unlisted) return { action: "halt", stage, subState, why: unlisted };
     declined = gotoDeclined(stage, s, to.id);
@@ -163,7 +170,8 @@ export function decide(w: Workflow, s: Snapshot): Decision {
 
   if (matches.length > 1) {
     const listed = matches.map((m) => `${m.to.id} (${m.trigger})`).join(", ");
-    return { action: "halt", stage, subState, why: `ambiguous triggers: ${listed}` };
+    const why = `ambiguous triggers: ${listed}`;
+    return { action: "halt", stage, subState, why: declined ? `${why}; ${declined}` : why };
   }
 
   const only = matches[0];

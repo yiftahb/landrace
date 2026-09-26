@@ -177,12 +177,30 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * stage. Position in the ordered list, not timestamps: a tracker can stamp
    * comments to the second, a goto and the entry that consumes it can share
    * one, and the stable sort above keeps the order the tracker listed them in.
+   *
+   * It is also scoped to the stage that wrote it. A decline leaves it
+   * unconsumed, and a trigger can then carry the ticket on to a stage that
+   * writes no entry record of its own — `blocked`, a terminal `done`. Read
+   * back there, a goto whose reason and cap belonged to the stage it was
+   * declined at would be judged again against a stage nobody sent it from:
+   * taken past the cap it was declined under, halted for a target the new
+   * stage never lists, or left decorating a wait with a stale reason. So it
+   * answers only while `stage` — the position passed in, i.e. the ticket's
+   * own current one — is the stage the record naming it was written at;
+   * anywhere else it reads as already consumed.
    */
   let goto: string | null = null;
+  let gotoStage: string | null = null;
   for (const e of ordered) {
-    if (e.kind === ENTRY_KIND) goto = null;
-    else if (e.byAgent && e.goto !== undefined) goto = e.goto;
+    if (e.kind === ENTRY_KIND) {
+      goto = null;
+      gotoStage = null;
+    } else if (e.byAgent && e.goto !== undefined) {
+      goto = e.goto;
+      gotoStage = e.stage;
+    }
   }
+  if (gotoStage !== stage) goto = null;
 
   /*
    * Only the current stage's own entry record answers "where did it come

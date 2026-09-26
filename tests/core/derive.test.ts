@@ -289,11 +289,25 @@ describe("run.goto, derived from records and consumed by entering a stage", () =
     const g = { ...going("blocked", "build"), at: same };
     const e = { ...entered("build", 2), at: same };
     expect(deriveRun([g, e], "build").goto).toBeNull();
-    expect(deriveRun([e, g], "build").goto).toBe("build");
+    // The entry comes first here, so it is the goto — written at "blocked" —
+    // that survives, and it answers only while the ticket is still there.
+    expect(deriveRun([e, g], "blocked").goto).toBe("build");
   });
 
   it("is null when nothing asked", () => {
     expect(deriveRun([entered("spec", 1)], "spec").goto).toBeNull();
+  });
+
+  /*
+   * A decline leaves a goto unconsumed, and a trigger can then carry the
+   * ticket on to a stage — `blocked`, a terminal `done` — that writes no
+   * entry record of its own. Read back there, the goto must not still
+   * answer: it was written at "triage", not at the stage the ticket now
+   * sits in, and nothing has consumed it in between.
+   */
+  it("is null once the position has moved on from the stage that wrote it, with no entry record in between", () => {
+    const entries = [entered("triage", 1), { ...out("triage", 1), goto: "spec" }];
+    expect(deriveRun(entries, "blocked").goto).toBeNull();
   });
 });
 
