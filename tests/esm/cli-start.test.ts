@@ -337,8 +337,15 @@ ${EXECUTOR}`);
 
     expect(JSON.parse(step[step.indexOf("--mcp-config") + 1] as string)).toEqual({ mcpServers: { "codebase-memory-mcp": memory } });
     expect(step).toContain("--settings");
-    expect(screener).not.toContain("--mcp-config");
+    // The screener: no plugin, no server, no tool, and the model
+    // `security.model` names — honoured, because it no longer runs in plan mode.
+    const after = (argv: string[], name: string): string | undefined => argv[argv.indexOf(name) + 1];
+    expect(JSON.parse(after(screener, "--mcp-config") as string)).toEqual({ mcpServers: {} });
+    expect(screener).toContain("--strict-mcp-config");
+    expect(after(screener, "--tools")).toBe("");
     expect(screener).not.toContain("--settings");
+    expect(after(screener, "--permission-mode")).toBe("manual");
+    expect(after(screener, "--model")).toBe("haiku");
   });
 });
 

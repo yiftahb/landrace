@@ -161,7 +161,10 @@ export function createClaudeExecutor(opts: {
   const {
     model,
     restricted = true,
-    permissionMode = "plan",
+    // For a run that declares nothing — the screener's. Not plan mode: the
+    // live check that moved read-only steps off it showed it ignores
+    // `--model`, so a screener configured as haiku screened on sonnet.
+    permissionMode = "manual",
     timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
     bin = "claude",
     log,
@@ -259,50 +262,54 @@ export function createClaudeExecutor(opts: {
       // json output carries session_id; without it a conversation cannot continue.
       const args = ["-p", "--output-format", "json", "--permission-mode", mode];
       if (noTools) args.push("--restricted");
+      // A run that declares nothing is the screener's, and it reads
+      // attacker-reachable text for a living: no built-in tool at all, not
+      // even Read. Variadic, and the empty list must not swallow what follows
+      // — a flag always does, since `--mcp-config` is pushed below whatever
+      // else is.
+      if (!declared && restricted) args.push("--tools", "");
       // Variadic like `--allowedTools`: the next flag ends it.
       if (denyWrites) args.push("--disallowedTools", ...WRITE_TOOLS);
       if (chosenModel !== undefined) args.push("--model", chosenModel);
       if (resume !== undefined) args.push("--resume", resume);
-      // A run that declares nothing is the screener's, and none of what
-      // follows is for it: a plugin that speaks up at session start would be
-      // speaking to the one agent whose only job is to judge a prompt.
-      if (declared) {
-        if (plugins.length) {
-          // One argv element holding the JSON: `--restricted` ignores the
-          // operator's own settings file, so this is the only way a plugin
-          // enabled there reaches a read-only step at all.
-          args.push("--settings", JSON.stringify({ enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) }));
-        }
-        const servers: Record<string, unknown> = { ...mcpServers };
-        if (bound && childServer) {
-          // The binding is argv to a process the agent's CLI starts, not text
-          // in its prompt: nothing the agent says can file a child anywhere
-          // else.
-          servers[CHILD_SERVER_NAME] = {
-            command: childServer.command,
-            args: [...childServer.args, "--child", bound.parent, "--stage", bound.stage, "--round", String(bound.round)],
-          };
-        }
-        const allowed = [
-          ...Object.keys(mcpServers).map((name) => `mcp__${name}`),
-          ...(bound ? ["mcp__landrace__landrace_create_child"] : []),
-        ];
-        // Inline JSON rather than a config file: there is no path for the
-        // agent's worktree to shadow and nothing to clean up after a crash.
-        // Strict always, with nothing to allow as much as with something: a
-        // `.mcp.json` committed to the repository the worktree is cut from,
-        // or the operator's own user-level servers, would otherwise load
-        // beside the step — landrace's own operator server among them, which
-        // can move the step's own ticket. The child server reads the
-        // workflow's own .env and holds no secret; an allowlisted server's
-        // `env` goes as `.mcp.json` wrote it, and is visible in `ps` for as
-        // long as the step runs.
-        //
-        // `--mcp-config` is variadic, so a flag follows it; so is
-        // `--allowedTools`, so it goes last with nothing after it.
-        args.push("--mcp-config", JSON.stringify({ mcpServers: servers }), "--strict-mcp-config");
-        if (allowed.length) args.push("--allowedTools", ...allowed);
+      // Plugins and servers are for steps and turns, never the screener: a
+      // plugin that speaks up at session start would be speaking to the one
+      // agent whose only job is to judge a prompt.
+      if (declared && plugins.length) {
+        // One argv element holding the JSON: `--restricted` ignores the
+        // operator's own settings file, so this is the only way a plugin
+        // enabled there reaches a read-only step at all.
+        args.push("--settings", JSON.stringify({ enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) }));
       }
+      const servers: Record<string, unknown> = declared ? { ...mcpServers } : {};
+      if (bound && childServer) {
+        // The binding is argv to a process the agent's CLI starts, not text
+        // in its prompt: nothing the agent says can file a child anywhere
+        // else.
+        servers[CHILD_SERVER_NAME] = {
+          command: childServer.command,
+          args: [...childServer.args, "--child", bound.parent, "--stage", bound.stage, "--round", String(bound.round)],
+        };
+      }
+      const allowed = [
+        ...Object.keys(servers).filter((name) => name !== CHILD_SERVER_NAME).map((name) => `mcp__${name}`),
+        ...(bound ? ["mcp__landrace__landrace_create_child"] : []),
+      ];
+      // Inline JSON rather than a config file: there is no path for the
+      // agent's worktree to shadow and nothing to clean up after a crash.
+      // Strict always, for every run and with nothing to allow as much as with
+      // something: a `.mcp.json` committed to the repository the worktree is
+      // cut from, or the operator's own user-level servers, would otherwise
+      // load beside the agent — landrace's own operator server among them,
+      // which can move a step's own ticket. The child server reads the
+      // workflow's own .env and holds no secret; an allowlisted server's `env`
+      // goes as `.mcp.json` wrote it, and is visible in `ps` for as long as
+      // the step runs.
+      //
+      // `--mcp-config` is variadic, so a flag follows it; so is
+      // `--allowedTools`, so it goes last with nothing after it.
+      args.push("--mcp-config", JSON.stringify({ mcpServers: servers }), "--strict-mcp-config");
+      if (allowed.length) args.push("--allowedTools", ...allowed);
 
       return new Promise((resolve, reject) => {
         let child: ChildProcessWithoutNullStreams;

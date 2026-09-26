@@ -137,26 +137,38 @@ describe("claude executor", () => {
     expect(r.text).toContain("--resume sid-9");
   });
 
-  it("restricts the agent by default, non-interactively: --restricted strips tools, plan mode makes no edits", async () => {
-    const dir = withCfg({ out: "{{ARGV}}" });
-    const argv = (await run("x", {}, { cwd: dir })).text;
-    expect(argv).toContain("--restricted");
-    expect(argv).toContain("--permission-mode plan");
-  });
-
   /*
    * A run that declares nothing is the screener's: it is handed no step's
-   * capabilities, and it reads attacker-reachable text for a living. The
-   * plugins and servers an operator gives the steps are not for it — a plugin
-   * that injects its own instructions at session start would be talking to
-   * the one agent whose only job is to judge a prompt.
+   * capabilities, and it reads attacker-reachable text for a living. So it
+   * gets nothing at all — no built-in tool (`--tools ""`), no MCP server (an
+   * empty, strict config), and none of the plugins or servers an operator
+   * gives the steps: a plugin that injects its own instructions at session
+   * start would be talking to the one agent whose only job is to judge a
+   * prompt.
+   *
+   * And manual mode, not plan mode, which is what it ran in until a live check
+   * against the real CLI (2.1.282) showed plan mode ignores `--model`: the
+   * screener configured as haiku was screening on sonnet, while the events
+   * said haiku.
    */
-  it("keeps a run that declares nothing — the screener's — on exactly today's flags, whatever the steps are given", async () => {
+  it("gives a run that declares nothing — the screener's — no tool and no server, whatever the steps are given", async () => {
     const argv = await argvOf(
       createClaudeExecutor({ bin, plugins: [PLUGIN], mcpServers: { "codebase-memory-mcp": MEMORY } }),
       {},
     );
-    expect(argv).toEqual(["-p", "--output-format", "json", "--permission-mode", "plan", "--restricted"]);
+    expect(argv).toEqual([
+      "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--tools", "",
+      "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
+    ]);
+  });
+
+  it("hands the screener the model it was configured with, which plan mode ignored", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, model: "haiku" }), {});
+    expect(flag(argv, "--permission-mode")).toBe("manual");
+    expect(flag(argv, "--model")).toBe("haiku");
+    // `--tools` is variadic: the empty list has to end at a flag, not swallow
+    // the model's name as a tool.
+    expect(list(argv, "--tools")).toEqual([""]);
   });
 
   it("spawns in the caller's own working directory when no cwd is given", async () => {

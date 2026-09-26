@@ -204,8 +204,9 @@ A step's `capabilities` decide how the engine's `claude` executor starts the age
 |---|---|---|
 | no `repo:write` (read-only) | `manual` | `--restricted`, and `Bash`, `Edit`, `MultiEdit`, `NotebookEdit`, `Write` denied by name |
 | `repo:write` | `acceptEdits` | — |
+| — (the screener, which declares nothing) | `manual` | `--restricted`, `--tools ""` (no built-in tool at all), and an empty strict MCP config |
 
-Read-only steps do not run in plan mode. Checked against the real CLI (2.1.282), plan mode refuses every MCP call — the codebase graph and `create_child` alike — and ignores `--model`, running a different model from the one the step asked for. Manual mode with the write and exec tools denied honours both, and refuses a write attempted under it. The worktree diff after the run stays the backstop either way.
+Neither read-only steps nor the screener run in plan mode. Checked against the real CLI (2.1.282), plan mode refuses every MCP call — the codebase graph and `create_child` alike — and ignores `--model`, running a different model from the one the step asked for — the screener configured as `security.model: haiku` was screening on sonnet. Manual mode with the write and exec tools denied honours both, and refuses a write attempted under it. The worktree diff after the run stays the backstop either way.
 
 `--restricted` ignores your own Claude settings, and with them every plugin you enabled there, so a read-only step has none unless `agent.plugins` names it. The list goes to the agent as one inline `--settings` document.
 
@@ -217,7 +218,7 @@ Servers are resolved once, at startup, from the **repository root's** `.mcp.json
 - a name is not in `.mcp.json` — the refusal lists the names it does define;
 - a name is landrace's own operator server: `landrace`, or any server whose command runs `landrace mcp`, `cli.js mcp` or `dist/cli.js mcp`, however it is spelled. Its tools create, update and reply on tickets, and a step agent holding them could move its own ticket — so operator tools never reach a step agent.
 
-The screener never gets plugins or servers: it reads attacker-reachable text and needs no tool to judge it. An allowlisted server's `env` travels in the agent's argv, where `ps` can read it for as long as the step runs — keep credentials out of servers you allow.
+The screener never gets plugins, servers or tools: it reads attacker-reachable text and needs nothing to judge it. An allowlisted server's `env` travels in the agent's argv, where `ps` can read it for as long as the step runs — keep credentials out of servers you allow.
 
 ### Token permissions
 
