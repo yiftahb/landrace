@@ -28,7 +28,7 @@ treat the first one as a supervised experiment rather than a deployment.
 |---|---|
 | Decision engine, workflow format, validator | ✅ built |
 | CLI: `validate`, `next`, `mcp`, `start`, `status` | ✅ built |
-| MCP server: read, create, update, comment, ask, resolve | ✅ built |
+| MCP server: read, create, update, comment, ask, resolve, goto | ✅ built |
 | Hook loader, GitHub hook, agent execution | ✅ built |
 | Tick loop: polling, concurrency, per-ticket locking | ✅ built |
 | Artifact publishing to GitHub Pages, PR review threads | ✅ built |
@@ -320,7 +320,20 @@ stages:
 
 A step whose round fails is never retried; the ticket halts, and there are two halts, one each for the two ways a round fails. A round whose output broke its contract — no json block, an undeclared shape, too long to record — is recorded as `malformed` and goes to `blocked` (`lr:blocked`). A round a security check stopped — the prompt screener said no or could not run, or the agent changed a worktree or created a ticket it had not declared it could — is recorded as `refused`, headed "Step refused by a security check" with the reason, and goes to `screened`, which wears `lr:screened` beside `lr:blocked`: it is still blocked for everything that asks, and says why. The split is `run.lastRefused`, derived beside `run.lastOutputValid` and scoped the same way — `false` for a broken contract, `true` for a refusal, `null` when the current stage has not failed — so exactly one of the two triggers takes any failure. Every other trigger leaving a stage that runs a step reads `"run.lastOutputValid": null`: a failed round is only ever the halts' to route.
 
-A person's reply hands a halted ticket back. From either halt, a failed or refused `build` goes back to `build` — the approved spec did nothing wrong — for at most three build rounds (`run.counters.build: { $lt: 3 }`, a rejected round counting like any other); anything else goes back to `spec`, as before. Both stages take `lr:blocked` and `lr:screened` off again when they are entered.
+Wherever it is a person's turn — `spec-questions`, `spec-human-review`, `pr-human-review`, `blocked`, `screened` — a reply goes to `triage`, one judge for all five. It reads the reply into a closed set of answers: `approve`, `revise`, `question`, `unclear`, `goto-spec`, `goto-build`. An answer that changes nothing where the reply was made sends the ticket back there; `run.previousStage` says where, read off `triage`'s own entry record. At a halt, `triage` is also told which step failed, off `run.failedStages`, and "try again" there means that step when it was `spec` or `build` — for any other failure, that is the board's Retry to retry, not a reply's to say. `triage` runs at most twenty times per ticket.
+
+A person can also send a ticket back to an earlier step. `spec-questions`, `spec-human-review`, `pr-human-review` and `triage` itself list, under `goto`, the same two steps a `goto-spec` or `goto-build` answer may reach — `spec` and `build`, each while it has run fewer than three rounds:
+
+```yaml
+  - id: spec-questions
+    goto:
+      - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
+      - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
+```
+
+The two halts, `blocked` and `screened`, list more: `code-review` and `fix-review` while the ticket has a pull request — `code-review` capped at four rounds, `fix-review` capped on its own counter at four as well — and `triage` while a person has written on the ticket, capped at twenty. That is because a halt's Retry is a goto to the stage whose latest round failed, and any stepped stage can fail, not only `spec` or `build`.
+
+A `goto-spec` or `goto-build` answer, "Go to step…", or `landrace_goto` names its target outright; the page's Retry names none — it is a goto to whichever stage's latest round failed, read off `run.failedStages`, and refuses, saying so, if nothing has. Whichever way it is asked, it writes a goto record as Landrace. The engine takes it before any trigger. A target the stage does not list halts the ticket. One whose `when` does not hold is declined — the reply comes home — and the command refuses it up front with the reason, reading the ticket afresh: not found or closed, unplaceable or ambiguous, a precondition that fails, a step still owed, an unlisted target, or one past its cap. A stepped stage whose round is already settled — `triage` once it has answered, say — still accepts a goto: that is also how a person recovers a ticket a crash stranded between a target's entry comment and its status label. A goto is consumed by the entry record its target writes on arrival, so a target must record its entry; `landrace validate` checks that, and that a judge's route only sends where its stage lists.
 
 A stage that runs a step may name the **branch** that step works on — a template over `{ticket}`, `{stage}` and `{round}`, and nothing else:
 
@@ -475,28 +488,32 @@ its badge and the note "blocked by a security check"; the refusal's own reason
 is in the ticket's comments, which the page does not read. `landrace status`
 says "blocked: security check refused a step" for the same ticket.
 
-The page has two writes, and both can start paid agent runs, so both are
-guarded beyond the Host check. The tick button starts a tick. The "Retry" item
-at the end of a blocked or screened ticket's menu asks first, then posts the
-reply "Retry requested from the Landrace board." on the ticket — a human turn,
-exactly as `landrace_reply` posts one — which hands it back on the next tick;
-the server checks against its own latest listing that the ticket is still
-stopped, whatever the page believed, and answers a refusal in a sentence the
-menu shows. Each write requires its own custom `x-landrace-action` header
-(`tick`, `retry`), which a cross-site `<form>` cannot set and a cross-origin
-`fetch` that does set triggers a CORS preflight this server never answers with
-permission; and each refuses any `Origin` other than the page's own, and any
-request the browser marks `Sec-Fetch-Site` as not same-origin. None of the
-guards is optional: together they are what stops another website the user has
-open from triggering a tick or a retry just because their browser can still
-reach 127.0.0.1.
+The page has three writes, and all of them can start paid agent runs, so all
+are guarded beyond the Host check. The tick button starts a tick. The "Retry"
+item at the end of a blocked or screened ticket's menu sends the ticket back
+to the step whose round last failed. The "Go to step…" items, offered on any
+open ticket whose agent is not running and whose stage lists a goto, send it
+back to a step its stage names. Each asks first, and each writes the same
+goto record `landrace_goto` does, after reading the ticket afresh: a ticket
+that has moved on, a step its stage does not list, or one past its cap is
+refused in a sentence the menu shows. Each write requires its own custom
+`x-landrace-action` header (`tick`, `retry`, `goto`), which a cross-site
+`<form>` cannot set, and a cross-origin `fetch` that does set one triggers a
+CORS preflight this server never answers with permission. Each also refuses
+any `Origin` other than the page's own, and any request the browser marks
+`Sec-Fetch-Site` as not same-origin. None of the guards is optional: together
+they are what stops another website the user has open from starting paid
+work just because their browser can still reach 127.0.0.1.
 
 The page follows the OS light/dark preference (or whatever you last toggled,
-top right) with no flash on load. Each row has a menu — "Chat ▾" on rows
-that need you, "…" everywhere else — with Claude Code, Claude Code (CLI), Cursor and
-Codex, and a "Copy prompt" item below a divider. All four links pre-fill a chat about
-that ticket, over the landrace MCP, and never send anything on their own —
-picking one just opens the editor with the prompt sitting in the box. Cursor
+top right) with no flash on load. Every row has one menu, opened by its "⋯"
+(aria-label "Actions"): its writes first, where the server offered any —
+"Retry" on a blocked or screened row, then "Go to step…" and the steps its
+stage lists — then a divider, then "Chat": Claude Code, Claude Code (CLI),
+Cursor and Codex, and a "Copy prompt" item below its own divider. All four
+links pre-fill a chat about that ticket, over the landrace MCP, and never
+send anything on their own — picking one just opens the editor with the
+prompt sitting in the box. Cursor
 has no per-window deep-link target, so its link opens in whatever window is
 already active rather than the ticket's own checkout. "Claude Code" opens a
 new session in the desktop app's Code tab (`claude://`); "Claude Code (CLI)"
