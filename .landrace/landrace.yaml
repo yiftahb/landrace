@@ -11,7 +11,7 @@ tracker:
   repo: yiftahb/landrace
 
 tick:
-  interval: 60s
+  interval: 2m
   concurrency: 3
 
 security:
