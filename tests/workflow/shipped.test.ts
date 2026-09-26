@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { decide } from "#core/decide.js";
 import type { Snapshot } from "#namespace.js";
+import { renderPrompt } from "#runner/step.js";
 import { loadWorkflow } from "#workflow/load.js";
 
 /**
@@ -134,5 +135,51 @@ describe("the shipped workflow splits every failure between blocked and screened
       const removed = (stage.on_enter ?? []).flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
       expect(removed).toEqual(expect.arrayContaining(["lr:blocked", "lr:screened"]));
     }
+  });
+});
+
+/*
+ * Ticket #19: the build prompt said "the approved spec is at <url>", the
+ * screener refused it as an instruction to fetch something off the network —
+ * which it was — and the URL was a blob in a private repository the agent
+ * could not have opened anyway. Every step that works from the spec is handed
+ * its text, and a link, where one is kept, is only a reference for a person.
+ */
+describe("the shipped steps are handed the approved spec as text", () => {
+  const WORKING_FROM_THE_SPEC = ["build", "code-review", "fix-review"];
+  const snapshot = { node: { id: "7", title: "Add export" }, artifacts: { spec: { url: "https://example.test/specs/7" } } } as unknown as Snapshot;
+
+  it.each(WORKING_FROM_THE_SPEC)("%s embeds the spec and sends nobody off to fetch it", async (id) => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get(`steps/${id}.md`)?.prompt ?? "";
+
+    expect(prompt).toContain("{brief.spec.content}");
+    // The paragraph that keeps the link tells nobody to go to it: not the
+    // sentence #19's screener refused, and no imperative that would be it again.
+    const paragraph = prompt.split(/\n\s*\n/).find((p) => p.includes("{artifacts.spec.url}")) ?? "";
+    expect(paragraph).not.toMatch(/is at \{artifacts\.spec\.url\}/i);
+    expect(paragraph).not.toMatch(/(^|[.:;]\s+)(open|fetch|read|visit|follow|download|go to|see|check|consult|refer to|use)\b/im);
+  });
+
+  it.each(WORKING_FROM_THE_SPEC)("%s renders the spec's text, delimited, with no placeholder left", async (id) => {
+    const { steps } = await loadWorkflow(".landrace");
+    const rendered = renderPrompt(steps.get(`steps/${id}.md`)?.prompt ?? "", snapshot, {
+      spec: { content: "# Export CSV\n\nOne file, comma separated." },
+      github: { threads: "1. src/x.ts:12 — this leaks a file handle" },
+    });
+
+    expect(rendered).toContain("One file, comma separated.");
+    expect(rendered).not.toMatch(/\{brief\./);
+    // Fenced off as the approved spec, so the agent can tell where it ends.
+    expect(rendered).toMatch(/approved spec[\s\S]*One file, comma separated\.[\s\S]*end of the approved spec/i);
+  });
+
+  it("says so plainly when no spec was published, rather than leaving a hole in the prompt", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const rendered = renderPrompt(steps.get("steps/build.md")?.prompt ?? "", snapshot, {
+      spec: { content: "No spec has been published for this ticket." },
+    });
+    expect(rendered).toContain("No spec has been published for this ticket.");
+    expect(rendered).not.toMatch(/\{brief\./);
   });
 });

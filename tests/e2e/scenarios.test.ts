@@ -612,6 +612,30 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
       expect(fix.prompt).toContain("off by one");
     }
   });
+
+  /*
+   * The spec the person approved, as the text the spec step published — read
+   * back off the Pages branch through the real hook — and not a link to it:
+   * a link is what #19's screener refused.
+   */
+  it("hands the build, every review and every fix the approved spec as text", async () => {
+    const { gh, during } = await world();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
+
+    await run.converge();
+    gh.sayAs("a-person", 1, "in-house, and CSV only", new Date(Date.UTC(2026, 1, 1)).toISOString());
+    await run.converge();
+    gh.sayAs("a-person", 1, "looks right, go ahead", new Date(Date.UTC(2026, 1, 2)).toISOString());
+    await run.converge();
+
+    const working = run.calls().filter((c) => ["build", "code-review", "fix-review"].includes(c.stage));
+    expect(new Set(working.map((c) => c.stage))).toEqual(new Set(["build", "code-review", "fix-review"]));
+    for (const call of working) {
+      expect(call.prompt).toContain("# Export CSV\n\nOne file, comma separated.");
+      expect(call.prompt).not.toMatch(/\{brief\./);
+    }
+  });
 });
 
 /**

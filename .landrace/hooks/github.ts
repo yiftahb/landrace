@@ -1284,6 +1284,25 @@ async function readPage(gh: Client, link: SpecLink, ticket: string, log: HookCon
   return { exists: content !== null, hash: content === null ? null : hashOf(content), url: await link(ticket, log) };
 }
 
+/** What a step is told when there is no page to hand it — said, so the prompt never shows a bare placeholder. */
+const NO_SPEC = "No spec has been published for this ticket.";
+
+/**
+ * The page's own text, for a step to work from — the prose half of the
+ * artifact, beside `readPage`'s state.
+ *
+ * Handed over as text rather than as a link. A link sends the agent off to
+ * fetch something, which a prompt screener rightly reads as an injection
+ * vector and which, in a private repository, it could not have opened in the
+ * first place. Escaping and the size bound are the engine's, applied to every
+ * briefing on the way in; a failed read throws, because "the spec could not
+ * be read" and "there is no spec" are different things to tell a build.
+ */
+async function briefPage(gh: Client, ticket: string): Promise<Record<string, string>> {
+  const content = await gh.getFile(PAGES_BRANCH, pagePath(ticket));
+  return { content: content ?? NO_SPEC };
+}
+
 async function publishPage(gh: Client, effect: Effect, ticket: string): Promise<void> {
   mine(effect);
   const content = contentOf(effect);
@@ -2197,6 +2216,8 @@ export function githubHooks(opts: GitHubOptions): {
       id: SPEC,
       handles: [PUBLISH],
       read: ({ ticket, log }) => readPage(gh, link, ticket, log),
+      // Asked only by a step whose prompt names {brief.spec.…}, once per invocation.
+      brief: ({ ticket }) => briefPage(gh, ticket),
       satisfied: publishSatisfied,
       apply: (effect, { ticket }) => publishPage(gh, effect, ticket),
     }),
@@ -2354,6 +2375,11 @@ export const specArtifact = defineArtifactHook({
   id: SPEC,
   handles: [PUBLISH],
   read: async (ctx: HookContext) => hooksFor(ctx).specArtifact.read(ctx),
+  brief: async (ctx: HookContext) => {
+    const hook = hooksFor(ctx).specArtifact;
+    if (!hook.brief) throw new Error("the spec artifact briefs nothing");
+    return hook.brief(ctx);
+  },
   // Not delegated: it reads the snapshot and hashes a string, so it needs no
   // client and no configuration to build one from.
   satisfied: publishSatisfied,
