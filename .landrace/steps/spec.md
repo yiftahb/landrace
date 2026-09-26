@@ -1,6 +1,7 @@
 ---
 capabilities: [repo:read]
 model: opus
+timeout: 120m
 output:
   discriminator: kind
   shapes:

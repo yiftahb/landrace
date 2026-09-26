@@ -353,7 +353,7 @@ Workflow-level keys beyond `stages`:
 | Key | Meaning |
 |---|---|
 | `eligible` | Which tickets Landrace touches at all, each rule carrying the `else` reason `status` prints for a ticket it skipped |
-| `budget.stepTimeout` | How long one agent invocation may take. The round caps are the `$lt` counters in the triggers themselves, where the validator can see and bound them |
+| `budget.stepTimeout` | How long one agent invocation may take, unless its step names its own `timeout`. The round caps are the `$lt` counters in the triggers themselves, where the validator can see and bound them |
 | `hooks` | The integration modules, by path, in the order pre hooks run |
 
 ### Splitting work into sub-tickets
@@ -409,6 +409,7 @@ Write the spec for #{node.id}: {node.title}…
 |---|---|
 | `capabilities` | What the agent may do — `repo:read`, `repo:write`, `tickets:create`. The first two are enforced by diffing the worktree afterwards, the third by which MCP tool the executor hands the agent — not by the flags handed to the agent, because a hook-registered executor never sees those. An unenforceable capability refuses the step rather than pretending |
 | `model` | Overrides `agent.model` for this step. A cheap step should say so |
+| `timeout` | Overrides `budget.stepTimeout` for this step, e.g. `120m`. A step that writes code can need hours where a classifier needs minutes |
 | `output.discriminator` | The field whose value picks the shape |
 | `output.shapes` | What each value of the discriminator must look like. Output that matches none is a hard fail, recorded, never retried |
 | `output.routes` | Where each shape goes. One route, one effect — two routes matching one output is ambiguity, and ambiguity halts |
