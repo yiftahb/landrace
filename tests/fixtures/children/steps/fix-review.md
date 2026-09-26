@@ -28,6 +28,7 @@ outcomes.
 **Do not resolve any thread.** The reviewer who raised it closes it on their
 next pass, and you resolving your own critic is how a review becomes theatre.
 
-Commit locally. The orchestrator pushes.
+Commit locally. This workflow publishes nothing: getting your commits onto the
+pull request is not the orchestrator's here.
 
 End with a fenced json block whose only field is `kind`, set to `addressed`.

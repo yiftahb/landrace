@@ -24,8 +24,9 @@ as you go. Run the test suite and the lint checks
 before you finish — a reviewer's round spent on something you could have caught
 yourself is a wasted round.
 
-Commit locally only. You have no credentials and cannot push; the orchestrator
-pushes your branch and opens the pull request.
+Commit locally only; you have no credentials and cannot push. This workflow
+names no branch and publishes nothing: review starts once a pull request for
+the ticket exists, opened some other way.
 
 Summarise what you did in your own words, then end with a fenced json block
 whose only field is `kind`, set to `done`.

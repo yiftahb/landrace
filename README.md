@@ -241,6 +241,7 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 | Permission | Level | Used for |
 |---|---|---|
 | Contents | Read and write | reading the spec from gh-pages, and publishing it; pushing a ticket's branch to an `https://github.com` origin |
+| Workflows | Read and write | only when a build changes anything under `.github/workflows/` — GitHub refuses a push that does without it |
 | Issues | Read and write | tickets, comments, labels |
 | Pull requests | Read and write | opening a ticket's pull request; review threads; closing a dropped child's pull request when a workflow that splits work re-runs its breakdown |
 | Metadata | Read-only | granted automatically |
@@ -322,7 +323,7 @@ A stage that runs a step may name the **branch** that step works on — a templa
     branch: "landrace/{ticket}"
 ```
 
-The step's worktree is then checked out on it: the branch itself, created at `HEAD` the first time, for a step declaring `repo:write` — so what it commits outlives the worktree — and that branch's commit, detached, for a read-only step, so a reviewer reads the ticket's code rather than `main`'s and cannot commit onto it. A stage with no `branch` gets a detached `HEAD`, and nothing its step commits is kept. The engine names no branch of its own: a workflow wanting two per ticket names two. A template git would refuse is refused at load; a ticket id that makes an invalid name (`a..b`) halts that ticket before its step runs; a branch already checked out elsewhere — your own checkout, say — halts it with where, and is never taken. The worktree is rebuilt whenever the next step needs it on something else, so only what was committed carries over.
+The step's worktree is then checked out on it: the branch itself for a step declaring `repo:write` — so what it commits outlives the worktree — and that branch's commit, detached, for a read-only step, so a reviewer reads the ticket's code rather than `main`'s and cannot commit onto it. The branch is created, the first time, at whatever your own checkout's `HEAD` is right then — not at `origin`'s default branch — so local commits you have not pushed yet, and whatever branch you happen to have checked out, end up in the ticket's pull request. A stage with no `branch` gets a detached `HEAD`, and nothing its step commits is kept. The engine names no branch of its own: a workflow wanting two per ticket names two. A branch needs `agent.isolation: worktree` — with no worktree there is nowhere to check it out, so `validate` reports and `start` refuses a stage naming one without it. A template git would refuse is refused at load; a ticket id that makes an invalid name (`a..b`) halts that ticket before its step runs; a branch already checked out elsewhere — your own checkout, say — halts it with where, and is never taken. The worktree is rebuilt whenever the next step needs it on something else, so only what was committed carries over.
 
 Publishing is two effects, each naming its branch, which the shipped workflow puts on a `publish` stage between `build` and `code-review`:
 
@@ -331,7 +332,12 @@ Publishing is two effects, each naming its branch, which the shipped workflow pu
 | `branch.push` | pushes the branch to `origin`, fast-forward only — never forced | the checkout's branch head equals `origin`'s as last fetched or pushed, or the checkout has no such branch |
 | `pull.open` | opens a pull request from the branch into the default branch, `Closes #<ticket>` | the ticket already has an open or merged pull request from that branch |
 
-`code-review` pushes again on entry, so a fix round's commits are on the pull request before the reviewer reads it. The GitHub hook pushes from the repository its own file is in, handing the token to git through its environment (`GIT_CONFIG_*`, as an `http.https://github.com/.extraheader`) — never on a command line, where any process could read it.
+`code-review` pushes again on entry, so a fix round's commits are on the pull request before the reviewer reads it. The GitHub hook pushes from the repository its own file is in:
+
+- The token goes to git only when `origin` pushes to `https://github.com/<tracker.repo>` (with or without `.git`), and then through git's environment (`GIT_CONFIG_*`, as an `http.https://github.com/.extraheader`) — never on a command line, where any process could read it. An ssh origin, or one whose URL carries its own credentials, is pushed with your own credentials and no token; a GitHub origin naming any other repository is refused.
+- Every push runs with `core.hooksPath=/dev/null`, so none of the checkout's hooks run — a step that may write shares the repository's config and could otherwise install one that runs inside the push's environment. Your own pre-push hooks do not run on landrace's pushes either.
+- A branch with nothing committed beyond `origin/HEAD` (as this checkout knows it — no fetch) is not pushed; the ticket halts saying so, and carries on once something is committed. GitHub's "No commits between" on `pull.open` says the same.
+- A push is stopped after five minutes, or when the run is.
 
 Workflow-level keys beyond `stages`:
 
@@ -343,7 +349,7 @@ Workflow-level keys beyond `stages`:
 
 ### Splitting work into sub-tickets
 
-Splitting is an engine feature a project enables in its own workflow; the shipped `.landrace/` workflow does not use it. [`tests/fixtures/children`](tests/fixtures/children/workflow.yaml) is the worked example — the shipped flow plus a `breakdown` stage between `triage` and `build`, a `children-running` stage the parent waits in, `build` as a second entry for the children, and `done` closing a finished ticket so its parent can count it — and it is what the tests drive to keep the feature working.
+Splitting is an engine feature a project enables in its own workflow; the shipped `.landrace/` workflow does not use it. [`tests/fixtures/children`](tests/fixtures/children/workflow.yaml) is the worked example — the shipped flow as it stood before `publish`, plus a `breakdown` stage between `triage` and `build`, a `children-running` stage the parent waits in, `build` as a second entry for the children, and `done` closing a finished ticket so its parent can count it — and it is what the tests drive to keep the feature working. Its stages name no branch and it publishes nothing, so its review starts once a pull request for the ticket exists, however that was opened; a project copying it wants the shipped workflow's `branch` fields and `publish` stage too.
 
 A step that declares `capabilities: [tickets:create]` — the fixture's `breakdown` stage — is handed exactly one landrace tool beside the servers `agent.mcp` allows, `landrace_create_child` (`title`, `body`, `priority` 0–9), served by a second server the executor starts beside the agent process: `landrace mcp --workflow <dir> --child <parent> --stage <stage> --round <round>`. That binding is fixed on the command line by the runner, not by anything the agent says, and `--strict-mcp-config` keeps a `.mcp.json` inside the worktree from adding a server of its own — or a `landrace` of its own, whose create_child the allowlist would approve. `breakdown` ends by saying `children` — it called the tool at least once — or `single` — it built the spec as one piece of work directly; the two outcomes route to `children-running` and `build`, and a round that says one but did the other halts at `blocked` rather than being guessed at.
 
@@ -413,7 +419,7 @@ Both schemas are strict: an unknown key fails to load rather than being ignored.
 | `operator` | A disallowed predicate operator, anywhere including nested |
 | `path-coverage` | A predicate — in a trigger, an `identity`, a `requires` or an `eligible` rule — reading a field no hook provides |
 | `vars` | A variable that does not resolve, a `{vars.x}` nothing defines, a declared variable nothing references, a variable holding a secret's value |
-| `branch` | A stage `branch` git would refuse as a name, one using anything but `{ticket}`, `{stage}` and `{round}`, or one on a stage that runs no step |
+| `branch` | A stage `branch` git would refuse as a name, one using anything but `{ticket}`, `{stage}` and `{round}`, one on a stage that runs no step, or one with `agent.isolation` other than `worktree` |
 | `mcp` | An `agent.mcp` server with no `.mcp.json` at the repository root, a name `.mcp.json` does not define, or landrace's own operator server |
 
 Every rule runs on every workflow. An earlier version abstained where a trigger
