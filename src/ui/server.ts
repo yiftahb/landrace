@@ -61,11 +61,14 @@ function send(res: ServerResponse, status: number, type: string, body: string): 
  * request came from another site is believed.
  */
 function foreignWrite(req: IncomingMessage, action: string, port: number): string | null {
-  if (req.headers[ACTION_HEADER] !== action) return "forbidden";
+  // One sentence for every refusal, shown as-is where the page asked: which
+  // check failed is for a debugger, not for the person clicking.
+  const refused = "refused: this can be asked only from the Landrace page itself";
+  if (req.headers[ACTION_HEADER] !== action) return refused;
   const origin = req.headers.origin;
-  if (origin !== undefined && origin !== `http://${HOST}:${port}` && origin !== `http://localhost:${port}`) return "forbidden";
+  if (origin !== undefined && origin !== `http://${HOST}:${port}` && origin !== `http://localhost:${port}`) return refused;
   const site = req.headers["sec-fetch-site"];
-  if (site !== undefined && site !== "same-origin") return "forbidden";
+  if (site !== undefined && site !== "same-origin") return refused;
   return null;
 }
 
@@ -142,30 +145,30 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
         send(res, 400, "text/plain; charset=utf-8", problem);
         return;
       }
-      // Asked of the board's own latest listing, never of the page: the page
-      // offered Retry from a view that may be a poll or more out of date.
+      // Asked of the ticket as it is now, never of the page: the page offered
+      // Retry from a view that may be a poll or more out of date. Through a
+      // resolved promise, so a check or a post that throws before it returns
+      // one still lands in a handler below rather than past this one.
       const retry = opts.retry;
-      let allowed: boolean;
-      try {
-        allowed = retry.allowed(ticket);
-      } catch (e) {
-        console.error(`landrace: could not tell whether #${ticket} may be retried: ${oneLine(messageOf(e))}`);
-        send(res, 500, "text/plain; charset=utf-8", "could not tell whether this ticket is blocked");
-        return;
-      }
-      if (!allowed) {
-        send(res, 409, "text/plain; charset=utf-8", `#${ticket} is not blocked or screened right now, so there is nothing to retry`);
-        return;
-      }
-      // Through a resolved promise, so a post that throws before it returns
-      // one still lands in the handler below rather than past this one.
-      Promise.resolve().then(() => retry.post(ticket)).then(
-        () => send(res, 202, "text/plain; charset=utf-8", `retry requested for #${ticket}`),
+      Promise.resolve().then(() => retry.refusal(ticket)).then(
+        (refusal) => {
+          if (refusal !== null) {
+            send(res, 409, "text/plain; charset=utf-8", refusal);
+            return;
+          }
+          Promise.resolve().then(() => retry.post(ticket)).then(
+            () => send(res, 202, "text/plain; charset=utf-8", `retry requested for #${ticket}`),
+            (e: unknown) => {
+              // Logged in full for the operator; the page gets a fixed sentence,
+              // because a tracker's error can quote the ticket it refused.
+              console.error(`landrace: retry of #${ticket} failed: ${oneLine(messageOf(e))}`);
+              send(res, 502, "text/plain; charset=utf-8", "could not post the reply; the landrace log says why");
+            },
+          );
+        },
         (e: unknown) => {
-          // Logged in full for the operator; the page gets a fixed sentence,
-          // because a tracker's error can quote the ticket it refused.
-          console.error(`landrace: retry of #${ticket} failed: ${oneLine(messageOf(e))}`);
-          send(res, 502, "text/plain; charset=utf-8", "could not post the reply; the landrace log says why");
+          console.error(`landrace: could not tell whether #${ticket} may be retried: ${oneLine(messageOf(e))}`);
+          send(res, 500, "text/plain; charset=utf-8", "could not tell whether this ticket is blocked; the landrace log says why");
         },
       );
       return;

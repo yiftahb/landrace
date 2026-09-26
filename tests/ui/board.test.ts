@@ -39,7 +39,7 @@ describe("laneOf", () => {
     ["skipped: no go label", "not-admitted"],
     ["halted: more than one lr:stage:* label (a, b)", "needs-you"],
     ["blocked: needs a human", "needs-you"],
-    ["blocked: security check refused a step", "needs-you"],
+    ["blocked by a security check", "needs-you"],
     ["waiting on you", "needs-you"],
     ["working", "waiting"],
     ["queued", "waiting"],
@@ -358,25 +358,31 @@ describe("createBoard", () => {
     createBoard({ workflow, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace", nest: [...NEST] });
 
   /*
-   * What the server asks before it posts anything: the board's own latest
-   * listing, not the page's. A ticket handed back since the page last polled
-   * is no longer blocked, and a second reply would be a second handback.
+   * What the server asks before it posts anything, of a node read just now —
+   * never of the tick's listing, which is as old as the tick. A handback's
+   * own step can finish inside one tick, and a Retry accepted off the stale
+   * row was posted as the reviewer's reply wherever the ticket had gone.
    */
-  it("answers whether a ticket may be retried from what the tick last listed", () => {
+  it("says why a freshly read ticket may not be retried, or nothing when it may", () => {
     const board = shell(() => 0);
-    expect(board.retryable("1")).toBe(false);
-
-    board.list(graph([
+    const nodes = [
       ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"]),
       ticket("2", {}, ["go", "lr:stage:screened", "lr:blocked", "lr:screened"]),
       ticket("3", {}, ["go", "lr:stage:spec", "lr:working"]),
       ticket("4", { closed: "done" }, ["go", "lr:stage:blocked", "lr:blocked"]),
       pr("pr-5"),
-    ]));
-    expect(["1", "2", "3", "4", "pr-5", "99"].map((id) => board.retryable(id))).toEqual([true, true, false, false, false, false]);
+    ];
+    expect(nodes.map((n) => board.retryRefusal(n) === null)).toEqual([true, true, false, false, false]);
+    expect(board.retryRefusal(nodes[2] as Node)).toMatch(/#3 is not blocked or screened/);
+  });
 
-    board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
-    expect(board.retryable("1")).toBe(false);
+  it("refuses a Retry while the ticket's agent is running, whatever its labels still say", () => {
+    const board = shell(() => 0);
+    const blocked = ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"]);
+    board.observe({ name: "step.started", ticket: "1", stage: "build", round: 2 });
+    expect(board.retryRefusal(blocked)).toMatch(/running/);
+    board.observe({ name: "step.finished", ticket: "1" });
+    expect(board.retryRefusal(blocked)).toBeNull();
   });
 
   it("opens a running row on step.started and closes it on step.finished", async () => {

@@ -412,7 +412,7 @@ describe("boardSink", () => {
           observe: () => { throw new Error("display broke"); },
           list: () => {},
           view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
-          retryable: () => false,
+          retryRefusal: () => "not blocked",
         },
       };
       const sink = boardSink((e) => printed.push(e), board);
@@ -435,7 +435,7 @@ describe("boardSink", () => {
         observe: (e) => { observed.push(e); },
         list: () => {},
         view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
-        retryable: () => false,
+        retryRefusal: () => "not blocked",
       },
     };
     const event: LandraceEvent = { name: "step.finished", ticket: "1" };
@@ -560,18 +560,37 @@ describe("the page's Retry", () => {
     const { gh, board, deps } = await world();
     const retry = retryFor(deps, board);
 
-    expect(retry?.allowed("19")).toBe(true);
+    expect(await retry?.refusal("19")).toBeNull();
     await retry?.post("19");
 
     expect((gh.comments.get(19) ?? []).map((c) => c.body)).toEqual(["Retry requested from the Landrace board."]);
     expect(gh.entriesOf(19).at(-1)).toMatchObject({ kind: "human", byAgent: false });
   });
 
-  it("answers from the board, so a ticket that is not stopped is not retried", async () => {
+  it("refuses a ticket that is not stopped, in a sentence naming it", async () => {
+    const { board, deps } = await world();
+    expect(await retryFor(deps, board)?.refusal("20")).toMatch(/#20 is not blocked or screened/);
+  });
+
+  /*
+   * The listing is as old as the last tick, and a handback's own step can
+   * finish inside one: a Retry accepted off it was posted as the reviewer's
+   * reply at spec-human-review, and a paid round ran on "Retry requested".
+   */
+  it("asks the tracker now, not the tick's listing", async () => {
+    const { gh, board, deps } = await world();
+    const issue = gh.issues.get(19);
+    if (!issue) throw new Error("no #19");
+    issue.labels = ["lr:auto", "lr:stage:spec-human-review", "lr:awaiting"];
+    expect(await retryFor(deps, board)?.refusal("19")).toMatch(/#19 is not blocked or screened/);
+    expect(gh.comments.get(19) ?? []).toEqual([]);
+  });
+
+  it("refuses a second Retry while the first reply is still waiting to be read", async () => {
     const { board, deps } = await world();
     const retry = retryFor(deps, board);
-    expect(retry?.allowed("20")).toBe(false);
-    expect(retry?.allowed("404")).toBe(false);
+    await retry?.post("19");
+    expect(await retry?.refusal("19")).toMatch(/already waiting/);
   });
 
   it("offers no Retry at all when no hook can post a reply", async () => {
@@ -584,7 +603,7 @@ describe("the page's Retry", () => {
     const board = createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
     const ui = await startUi({
       board, ui: true, once: false, port: 0,
-      retry: { allowed: () => true, post: async (ticket) => { calls.push(ticket); } },
+      retry: { refusal: async () => null, post: async (ticket) => { calls.push(ticket); } },
     });
     try {
       const res = await fetch(`http://127.0.0.1:${ui?.port}/tickets/19/retry`, {

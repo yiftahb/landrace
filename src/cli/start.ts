@@ -14,6 +14,7 @@ import type {
   Executor,
   LandraceEvent,
   Logger,
+  Node,
   Problem,
   Registry,
   ReplyDeps,
@@ -32,7 +33,7 @@ import { messageOf } from "#runner/errors.js";
 import { createLogger } from "#runner/events.js";
 import { held } from "#runner/lock.js";
 import { runPreflights } from "#runner/preflight.js";
-import { snapshotProvides } from "#runner/snapshot.js";
+import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { oneLine } from "#runner/status.js";
 import { tick } from "#runner/tick.js";
 import { createBoard } from "#ui/board.js";
@@ -96,16 +97,28 @@ export async function startUi(
 export const RETRY_MESSAGE = "Retry requested from the Landrace board.";
 
 /**
- * The page's Retry: the board's own check that the ticket is stopped right
- * now, and the reply `landrace_reply` posts, which is the human turn the
- * workflow's handback triggers read. Undefined when no hook can post a
- * comment, so the page's server answers the route with a 404 rather than a
- * Retry that could only fail.
+ * The page's Retry: a check that the ticket is stopped right now, and the
+ * reply `landrace_reply` posts, which is the human turn the workflow's
+ * handback triggers read. Undefined when no hook can post a comment, so the
+ * page's server answers the route with a 404 rather than a Retry that could
+ * only fail.
+ *
+ * The check reads the ticket afresh. It used to ask the tick's own listing,
+ * which is as old as the tick: a handback to spec reaches spec-human-review
+ * inside one, the stale row still said blocked, and a second click was posted
+ * as the reviewer's reply there — a paid round spent reading "Retry
+ * requested".
  */
-export function retryFor(deps: ReplyDeps, board: Pick<Board, "retryable">): RetryPath | undefined {
+export function retryFor(deps: ReplyDeps, board: Pick<Board, "retryRefusal">): RetryPath | undefined {
   if (!deps.dispatcher.handlerFor(RECORD_EFFECT)) return undefined;
   return {
-    allowed: (ticket) => board.retryable(ticket),
+    refusal: async (ticket) => {
+      const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+      // The next tick reads the reply already there; a second one would be
+      // read as the person's words wherever that tick sends the ticket.
+      if (snapshot.run?.lastEvent.actor === "human") return `a reply is already waiting on #${ticket}; the next tick reads it`;
+      return board.retryRefusal(snapshot.node as Node);
+    },
     post: (ticket) => postReply(deps, ticket, RETRY_MESSAGE),
   };
 }

@@ -129,7 +129,7 @@ export function boardView(input: {
     // The status row's own verdict, not the labels read a second time; the
     // note is the page's wording of the same fact.
     if (s.note === SCREENED_NOTE) {
-      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: "blocked by a security check", retry };
+      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry };
     }
     return { ...ticket, badge: laneOf(s, input.workflow), retry };
   };
@@ -224,12 +224,14 @@ export function createBoard(opts: {
     list(next: Graph): void {
       graph = next;
     },
-    retryable(ticket: string): boolean {
+    retryRefusal(node: Node): string | null {
+      // The labels are the tracker's, and they say blocked until the handback's
+      // own step writes its entry — a step this process may be running now.
+      if (running.has(node.id)) return `#${node.id}'s agent is running right now, so there is nothing to retry`;
       // Open tickets only, as the row is drawn: a closed one keeps whatever
       // labels it had, and handing it back would re-run a finished ticket.
-      const node = graph.nodes.find((n) => n.id === ticket && isOpenTicket(n));
-      const [row] = node ? statusRows(opts.workflow, [node]) : [];
-      return row !== undefined && stopped(row);
+      const [row] = isOpenTicket(node) ? statusRows(opts.workflow, [node]) : [];
+      return row !== undefined && stopped(row) ? null : `#${node.id} is not blocked or screened right now, so there is nothing to retry`;
     },
     async view(): Promise<BoardView> {
       // Open tickets only: nothing else can be held, and a closed ticket's

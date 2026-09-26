@@ -346,19 +346,22 @@ describe("POST /tick", () => {
  * The page's second write, and the one that spends money: a Retry posts a
  * human turn on a blocked or screened ticket, which is what hands it back and
  * re-runs a paid step. So it carries every guard POST /tick does, and one
- * more that only it needs — the ticket has to be blocked *now*, by the
- * board's own latest listing, whatever the page that asked believed.
+ * more that only it needs — the ticket has to be blocked *now*, read afresh
+ * when the request arrives, whatever the page that asked believed.
  */
 describe("POST /tickets/<id>/retry", () => {
   let server: UiServer;
   afterEach(async () => { await server?.close(); });
 
   const HEADER = { "x-landrace-action": "retry" };
-  const retrying = (allowed: (ticket: string) => boolean = () => true, post: (ticket: string) => Promise<void> = async () => {}) => {
+  const retrying = (
+    refusal: (ticket: string) => Promise<string | null> = async () => null,
+    post: (ticket: string) => Promise<void> = async () => {},
+  ) => {
     const calls: string[] = [];
     return {
       calls,
-      retry: { allowed, post: async (ticket: string) => { calls.push(ticket); await post(ticket); } },
+      retry: { refusal, post: async (ticket: string) => { calls.push(ticket); await post(ticket); } },
     };
   };
   const ours = () => ({ ...HEADER, origin: `http://127.0.0.1:${server.port}`, "sec-fetch-site": "same-origin" });
@@ -371,13 +374,27 @@ describe("POST /tickets/<id>/retry", () => {
     expect(r.calls).toEqual(["19"]);
   });
 
-  it("refuses a ticket the board does not list as blocked or screened, and posts nothing", async () => {
-    const r = retrying(() => false);
+  it("refuses with the refusal's own sentence, and posts nothing", async () => {
+    const r = retrying(async () => "a reply is already waiting on #19");
     server = await serveBoard({ port: 0, view: async () => empty, retry: r.retry });
     const res = await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours() });
     expect(res.status).toBe(409);
-    expect(res.body).toMatch(/#19 is not blocked/);
+    expect(res.body).toBe("a reply is already waiting on #19");
     expect(r.calls).toEqual([]);
+  });
+
+  it("says in a sentence that it could not tell, and posts nothing, when the check itself fails", async () => {
+    const r = retrying(async () => { throw new Error("tracker down"); });
+    server = await serveBoard({ port: 0, view: async () => empty, retry: r.retry });
+    const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours() });
+      expect(res.status).toBe(500);
+      expect(res.body).toMatch(/could not tell/);
+      expect(r.calls).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it.each(["..", "a%20b", "-rf", "%2E%2E%2Fetc"])("refuses a ticket id that is not one (%s), and posts nothing", async (id) => {
@@ -419,6 +436,8 @@ describe("POST /tickets/<id>/retry", () => {
     server = await serveBoard({ port: 0, view: async () => empty, retry: r.retry });
     const res = await get(server.port, "/tickets/19/retry", { method: "POST", headers: { ...HEADER, "sec-fetch-site": "cross-site" } });
     expect(res.status).toBe(403);
+    // Shown as-is beside the Retry that asked, so it is a sentence.
+    expect(res.body).toMatch(/only from the Landrace page/);
     expect(r.calls).toEqual([]);
   });
 
@@ -437,7 +456,7 @@ describe("POST /tickets/<id>/retry", () => {
   });
 
   it("says in a sentence that the reply could not be posted, without echoing why", async () => {
-    const r = retrying(() => true, async () => { throw new Error("422 from the tracker, quoting ticket text"); });
+    const r = retrying(async () => null, async () => { throw new Error("422 from the tracker, quoting ticket text"); });
     server = await serveBoard({ port: 0, view: async () => empty, retry: r.retry });
     const spy = jest.spyOn(console, "error").mockImplementation(() => {});
     try {

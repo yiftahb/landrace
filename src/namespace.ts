@@ -1282,8 +1282,12 @@ export interface Board {
   observe(e: LandraceEvent): void;
   list(graph: Graph): void;
   view(): Promise<BoardView>;
-  /** Whether the ticket is blocked or screened in what the tick last listed — the check a Retry is posted behind. */
-  retryable(ticket: string): boolean;
+  /**
+   * Why a Retry may not be posted on this node, read just now, or null when it
+   * may: it must be an open ticket, blocked or screened, whose agent is not
+   * running in this process.
+   */
+  retryRefusal(node: Node): string | null;
 }
 
 export interface UiOptions {
@@ -1295,9 +1299,9 @@ export interface UiOptions {
    */
   tick?: () => boolean;
   /**
-   * The Retry on a blocked or screened ticket: `allowed` asks the board's own
-   * latest listing whether the ticket is stopped right now — the page is
-   * never taken at its word — and `post` hands it back with a human turn.
+   * The Retry on a blocked or screened ticket: `refusal` reads the ticket
+   * afresh and says why it may not be retried — the page is never taken at
+   * its word — and `post` hands it back with a human turn.
    * Absent, POST /tickets/<id>/retry is 404, as /tick is without a tick.
    */
   retry?: RetryPath;
@@ -1317,7 +1321,8 @@ export interface ReplyDeps {
 
 /** How the page's Retry reaches a ticket: the one check, and the one write. */
 export interface RetryPath {
-  allowed(ticket: string): boolean;
+  /** A sentence saying why this ticket may not be retried right now, or null. */
+  refusal(ticket: string): Promise<string | null>;
   post(ticket: string): Promise<void>;
 }
 

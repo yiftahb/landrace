@@ -25,7 +25,7 @@ describe("statusRows", () => {
    * follow a format, and a person looks in a different place for each.
    */
   it("says a ticket a security check stopped is blocked, and why", () => {
-    expect(noteFor(["go", "lr:stage:screened", "lr:blocked", "lr:screened"])).toBe("blocked: security check refused a step");
+    expect(noteFor(["go", "lr:stage:screened", "lr:blocked", "lr:screened"])).toBe("blocked by a security check");
     expect(noteFor(["go", "lr:stage:blocked", "lr:blocked"])).toBe("blocked: needs a human");
   });
 

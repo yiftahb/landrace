@@ -30,7 +30,7 @@ export function oneLine(text: string): string {
  * "blocked", which is what files either one under Needs you.
  */
 export const BLOCKED_NOTE = "blocked: needs a human";
-export const SCREENED_NOTE = "blocked: security check refused a step";
+export const SCREENED_NOTE = "blocked by a security check";
 
 const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, width - 1)}…` : text;
