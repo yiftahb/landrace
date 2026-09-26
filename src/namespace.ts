@@ -1334,9 +1334,16 @@ export interface BoardRow {
   /**
    * Where the page's Retry posts, for a ticket that is blocked or screened
    * right now; null everywhere else. Built by the server from a checked id,
-   * so the page never puts a URL together itself.
+   * so the page never puts a URL together itself. A Retry is now a goto with
+   * no step named — the stage that last failed.
    */
   retry: string | null;
+  /**
+   * The steps this ticket's stage may send it back to, each with the path
+   * the page posts to — built by the server. Empty unless it is a person's
+   * turn.
+   */
+  goto: Array<{ stage: string; path: string }>;
   children: BoardRow[];
 }
 
@@ -1355,12 +1362,6 @@ export interface Board {
   observe(e: LandraceEvent): void;
   list(graph: Graph): void;
   view(): Promise<BoardView>;
-  /**
-   * Why a Retry may not be posted on this node, read just now, or null when it
-   * may: it must be an open ticket, blocked or screened, whose agent is not
-   * running in this process.
-   */
-  retryRefusal(node: Node): string | null;
 }
 
 export interface UiOptions {
@@ -1372,12 +1373,11 @@ export interface UiOptions {
    */
   tick?: () => boolean;
   /**
-   * The Retry on a blocked or screened ticket: `refusal` reads the ticket
-   * afresh and says why it may not be retried — the page is never taken at
-   * its word — and `post` hands it back with a human turn.
-   * Absent, POST /tickets/<id>/retry is 404, as /tick is without a tick.
+   * The page's Retry and "Go to step…": both send the ticket back through
+   * `sendTo`, read afresh when the request arrives — the page is never taken
+   * at its word. Absent, both routes are 404, as /tick is without a tick.
    */
-  retry?: RetryPath;
+  goto?: GotoPath;
 }
 
 /**
@@ -1400,11 +1400,9 @@ export interface GotoDeps extends ReplyDeps {
   workflow: Workflow;
 }
 
-/** How the page's Retry reaches a ticket: the one check, and the one write. */
-export interface RetryPath {
-  /** A sentence saying why this ticket may not be retried right now, or null. */
-  refusal(ticket: string): Promise<string | null>;
-  post(ticket: string): Promise<void>;
+/** How the page's writes reach a ticket. `target` null is a Retry: the stage that last failed. */
+export interface GotoPath {
+  send(ticket: string, target: string | null): Promise<GotoResult>;
 }
 
 export interface UiServer {

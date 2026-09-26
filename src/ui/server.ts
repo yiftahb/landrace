@@ -34,6 +34,9 @@ const ACTION_HEADER = "x-landrace-action";
 /** Where the page's Retry posts: one ticket, named in the path. */
 const RETRY_PATH = /^\/tickets\/([^/]+)\/retry$/;
 
+/** Where the page's "Go to step…" posts: one ticket, and the step it names. */
+const GOTO_PATH = /^\/tickets\/([^/]+)\/goto\/([^/]+)$/;
+
 function send(res: ServerResponse, status: number, type: string, body: string): void {
   res.writeHead(status, {
     "content-type": type,
@@ -74,9 +77,9 @@ function foreignWrite(req: IncomingMessage, action: string, port: number): strin
 
 /**
  * The triage page, on loopback only. Every route is a GET except the page's
- * two writes: POST /tick, present only when the caller hands us a schedule to
- * trigger, and POST /tickets/<id>/retry, present only when it hands us a way
- * to post a reply.
+ * three writes: POST /tick, present only when the caller hands us a schedule
+ * to trigger, and POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>,
+ * present only when it hands us a way to send a ticket back.
  */
 export function serveBoard(opts: UiOptions): Promise<UiServer> {
   let port: number;
@@ -116,11 +119,14 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
       return;
     }
 
-    // The page's other write, guarded the same way, and answered in short
-    // sentences the page shows beside the Retry that asked.
+    // The page's ticket writes, guarded the same way as /tick, and answered
+    // in short sentences the page shows beside the item that asked. A Retry
+    // is a goto with no step named: the stage that last failed.
     const retrying = RETRY_PATH.exec(path);
-    if (retrying) {
-      if (!opts.retry) {
+    const going = retrying ? null : GOTO_PATH.exec(path);
+    const writing = retrying ?? going;
+    if (writing) {
+      if (!opts.goto) {
         send(res, 404, "text/plain; charset=utf-8", "not found");
         return;
       }
@@ -128,16 +134,18 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
         send(res, 405, "text/plain; charset=utf-8", "method not allowed");
         return;
       }
-      const foreign = foreignWrite(req, "retry", port);
+      const foreign = foreignWrite(req, retrying ? "retry" : "goto", port);
       if (foreign) {
         send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
       }
       let ticket: string;
+      let target: string | null = null;
       try {
-        ticket = decodeURIComponent(retrying[1] ?? "");
+        ticket = decodeURIComponent(writing[1] ?? "");
+        if (going) target = decodeURIComponent(going[2] ?? "");
       } catch {
-        send(res, 400, "text/plain; charset=utf-8", "that is not a ticket id");
+        send(res, 400, "text/plain; charset=utf-8", "that is not a ticket and a step");
         return;
       }
       const problem = ticketIdProblem(ticket);
@@ -145,30 +153,23 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
         send(res, 400, "text/plain; charset=utf-8", problem);
         return;
       }
-      // Asked of the ticket as it is now, never of the page: the page offered
-      // Retry from a view that may be a poll or more out of date. Through a
-      // resolved promise, so a check or a post that throws before it returns
-      // one still lands in a handler below rather than past this one.
-      const retry = opts.retry;
-      Promise.resolve().then(() => retry.refusal(ticket)).then(
-        (refusal) => {
-          if (refusal !== null) {
-            send(res, 409, "text/plain; charset=utf-8", refusal);
-            return;
-          }
-          Promise.resolve().then(() => retry.post(ticket)).then(
-            () => send(res, 202, "text/plain; charset=utf-8", `retry requested for #${ticket}`),
-            (e: unknown) => {
-              // Logged in full for the operator; the page gets a fixed sentence,
-              // because a tracker's error can quote the ticket it refused.
-              console.error(`landrace: retry of #${ticket} failed: ${oneLine(messageOf(e))}`);
-              send(res, 502, "text/plain; charset=utf-8", "could not post the reply; the landrace log says why");
-            },
-          );
-        },
+      // A step id is the workflow's, and sendTo refuses one it does not
+      // list; this only keeps what is echoed back short and printable.
+      // eslint-disable-next-line no-control-regex -- checking for control characters is the point
+      if (target !== null && (target === "" || target.length > 64 || /[\u0000-\u001f\u007f]/.test(target))) {
+        send(res, 400, "text/plain; charset=utf-8", "that is not a step");
+        return;
+      }
+      const goto = opts.goto;
+      Promise.resolve().then(() => goto.send(ticket, target)).then(
+        (r) => ("refused" in r
+          ? send(res, 409, "text/plain; charset=utf-8", r.refused)
+          : send(res, 202, "text/plain; charset=utf-8", `sent #${ticket} back to ${r.to}`)),
         (e: unknown) => {
-          console.error(`landrace: could not tell whether #${ticket} may be retried: ${oneLine(messageOf(e))}`);
-          send(res, 500, "text/plain; charset=utf-8", "could not tell whether this ticket is blocked; the landrace log says why");
+          // Logged in full for the operator; the page gets a fixed sentence,
+          // because a tracker's error can quote the ticket it refused.
+          console.error(`landrace: sending #${ticket} back failed: ${oneLine(messageOf(e))}`);
+          send(res, 502, "text/plain; charset=utf-8", "could not send it back; the landrace log says why");
         },
       );
       return;
