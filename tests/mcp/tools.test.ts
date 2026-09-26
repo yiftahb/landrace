@@ -132,6 +132,7 @@ describe("mcp tools", () => {
     const tools = createTools(tracker.registry, tracker.ctx, {
       executor: { id: "agent", run: async () => ({ text: "whatever", sessionId: "sid-2" }) },
       screen: {
+        model: "haiku",
         executor: {
           id: "screen",
           run: async () => ({ text: '```json\n{"verdict":"suspicious","reason":"exfiltration"}\n```', sessionId: null }),

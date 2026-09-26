@@ -23,6 +23,7 @@ import type {
   RuntimeConfig,
   RuntimeContext,
   Schedule,
+  Screener,
   StartOptions,
   StepTools,
   UiServer,
@@ -184,18 +185,11 @@ export function executorFor(
   log: Logger,
   opts: {
     /**
-     * Which model the *engine's own* executor should use — `security.model`
-     * when this is the screener, `agent.model` when absent. A hook's executor
-     * chose its model when the hook built it, and no id here can change that;
-     * what matters is that screening resolves through this same lookup at all.
-     * It used to construct a claude executor unconditionally, so a workflow
-     * whose hook registers an executor screened with something the operator
-     * never configured — or, with no claude on the machine, did not screen at
-     * all while reporting that it did. §15 calls screening a security control,
-     * and a security control that silently ignores its configuration is the
-     * kind this codebase refuses to ship.
+     * The id to resolve instead of `agent.adapter`, and the key it came from,
+     * which is what a name nothing answers to is reported under. Only the
+     * screener's: `security.adapter`, see `screenerFor`.
      */
-    model?: string | undefined;
+    adapter?: { key: string; id: string };
     /**
      * The workflow directory, given only for the loop's own step executor: it
      * is what lets a `tickets:create` step be handed its create_child server.
@@ -211,14 +205,16 @@ export function executorFor(
     tools?: StepTools;
   } = {},
 ): Executor {
-  const { model = config.agent.model, dir, tools } = opts;
+  const { dir, tools } = opts;
+  const model = config.agent.model;
+  const { key, id } = opts.adapter ?? { key: "agent.adapter", id: config.agent.adapter };
   // A hook's executor is constructed by the hook, so the budget cannot reach
   // it: the engine has a number and no way to hand it over. Enforcing one out
   // here would mean holding a stopwatch over somebody else's subprocess with
   // no way to kill it — so a hook owns its own timeout, and says so.
-  const fromHook = registry.executors.get(config.agent.adapter);
+  const fromHook = registry.executors.get(id);
   if (fromHook) return fromHook;
-  if (config.agent.adapter === "claude") {
+  if (id === "claude") {
     return createClaudeExecutor({
       ...(model === undefined ? {} : { model }),
       timeoutMs: stepTimeoutMs(workflow),
@@ -237,9 +233,40 @@ export function executorFor(
   }
   const registered = [...registry.executors.keys()];
   throw new Error(
-    `agent.adapter "${config.agent.adapter}" names no executor: the engine ships "claude", and the ` +
+    `${key} "${id}" names no executor: the engine ships "claude", and the ` +
     `loaded hooks register ${registered.length ? registered.map((id) => `"${id}"`).join(", ") : "none"}`,
   );
+}
+
+/**
+ * The screener, or none when `security.screen` is off.
+ *
+ * Resolved through `executorFor`'s own lookup, so a name nothing answers to
+ * fails at startup here as it does for the steps. It used to construct a
+ * claude executor unconditionally, so a workflow whose hook registers an
+ * executor screened with something the operator never configured — or, with
+ * no claude on the machine, did not screen at all while reporting that it
+ * did. Then it followed `agent.adapter` alone, and `security.model` was fixed
+ * into the engine's own executor at construction, where a hook's executor
+ * never heard it. §15 calls screening a security control, and a security
+ * control that silently ignores its configuration is the kind this codebase
+ * refuses to ship: the model now travels on every run (`Screener`).
+ */
+export function screenerFor(config: RuntimeConfig, workflow: Workflow, registry: Registry, log: Logger): Screener | undefined {
+  if (!config.security.screen) return undefined;
+  const adapter = config.security.adapter;
+  const executor = executorFor(config, workflow, registry, log, adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } });
+  // haiku is a claude model, and a hook's executor asked for one it cannot
+  // run must refuse: a default here would start cleanly and then block every
+  // ticket as screened at its first step.
+  const fromHook = registry.executors.get(executor.id) === executor;
+  const model = config.security.model ?? (fromHook ? undefined : "haiku");
+  if (model === undefined) {
+    throw new Error(
+      `security.model names no model, and "${executor.id}" is a hook's executor: set security.model to one it can run`,
+    );
+  }
+  return { executor, model };
 }
 
 /**
@@ -413,6 +440,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // in this function is: a loop started outside a repository would otherwise
   // assemble, run, and fail at its first paid step.
   const sandbox = await sandboxFor(loaded.config, dir);
+  const screener = screenerFor(loaded.config, workflow, registry, log);
 
   return {
     source: registry.source,
@@ -433,9 +461,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
         ? readOnlyExecutor(executorFor(loaded.config, workflow, registry, log, { dir }))
         : executorFor(loaded.config, workflow, registry, log, { dir, tools }),
       ...(sandbox === null ? {} : { sandbox }),
-      ...(loaded.config.security.screen
-        ? { screen: { executor: executorFor(loaded.config, workflow, registry, log, { model: loaded.config.security.model }) } }
-        : {}),
+      ...(screener ? { screen: screener } : {}),
       ctx,
       log,
     },

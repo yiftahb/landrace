@@ -133,6 +133,8 @@ async function fixture(
     preflight?: "pass" | "throw";
     /** More of `agent:`, written inside its braces. */
     agentKeys?: string;
+    /** More of `security:`, written inside its braces. */
+    securityKeys?: string;
     /** The `.mcp.json` at the repository root, as agsync would have written it. */
     mcpJson?: unknown;
   } = {},
@@ -150,7 +152,7 @@ async function fixture(
 agent: { adapter: ${opts.agent ?? "claude"}, model: opus${opts.agentKeys ? `, ${opts.agentKeys}` : ""} }
 tracker: { record: ${JSON.stringify(record)} }
 tick: { interval: 30s, concurrency: 2 }
-security: { screen: ${opts.screen ?? false} }
+security: { screen: ${opts.screen ?? false}${opts.securityKeys ? `, ${opts.securityKeys}` : ""} }
 log: { redact: [githubToken] }
 secrets: { githubToken: $LR_TEST_TOKEN }
 `,
@@ -289,13 +291,37 @@ describe("buildRuntime", () => {
    * for — or, with no claude on the machine, not at all.
    */
   it("screens with the executor the config names, not always with the engine's own", async () => {
-    const { dir } = await fixture({ agent: "fake", screen: true });
+    const { dir } = await fixture({ agent: "fake", screen: true, securityKeys: "model: fake-small" });
     await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
 ${EXECUTOR}`);
 
     const rt = await buildRuntime(dir, {});
     expect(rt.deps.executor.id).toBe("fake");
     expect(rt.deps.screen?.executor).toBe(rt.deps.executor);
+    expect(rt.deps.screen?.model).toBe("fake-small");
+  });
+
+  it("screens with security.adapter's executor while the steps stay on claude", async () => {
+    const { dir } = await fixture({ screen: true, securityKeys: "adapter: fake, model: fake-small" });
+    await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
+${EXECUTOR}`);
+
+    const rt = await buildRuntime(dir, {});
+    expect(rt.deps.executor.id).toBe("claude");
+    expect(rt.deps.screen?.executor.id).toBe("fake");
+    expect(rt.deps.screen?.model).toBe("fake-small");
+  });
+
+  /*
+   * haiku is a claude model. A hook's executor asked for it must refuse, so
+   * defaulting to it would block every ticket as screened at its first step
+   * — hours after a start that looked fine.
+   */
+  it("refuses to start when a hook's executor would screen with no security.model", async () => {
+    const { dir } = await fixture({ agent: "fake", screen: true });
+    await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
+${EXECUTOR}`);
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/security\.model[\s\S]*"fake"/);
   });
 
   /**
@@ -350,9 +376,11 @@ ${EXECUTOR}`);
     try {
       const signal = new AbortController().signal;
       step = JSON.parse((await rt.deps.executor.run("x", { round: 1, cwd: worktree, capabilities: ["repo:read"], signal })).text) as string[];
-      const screen = rt.deps.screen?.executor;
+      const screen = rt.deps.screen;
       if (!screen) throw new Error("screening was configured and the runtime built no screener");
-      screener = JSON.parse((await screen.run("x", { round: 0, cwd: worktree, signal })).text) as string[];
+      // The model on the run, the way screenPrompt asks for it: it is no
+      // longer fixed into the executor, where a hook's never heard it.
+      screener = JSON.parse((await screen.executor.run("x", { round: 0, cwd: worktree, model: screen.model, signal })).text) as string[];
     } finally {
       process.env.PATH = path;
     }

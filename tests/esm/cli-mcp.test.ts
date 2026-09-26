@@ -184,7 +184,7 @@ stages:
 agent: { adapter: ${opts.adapter ?? "fake"}, model: opus, isolation: ${opts.isolation ?? "none"}${opts.agentKeys ? `, ${opts.agentKeys}` : ""} }
 tracker: { record: ${JSON.stringify(record)}, order: ${JSON.stringify(order)} }
 tick: { interval: 30s, concurrency: 2 }
-security: { screen: ${opts.screen} }
+security: { screen: ${opts.screen}, model: fake-small }
 log: { redact: [githubToken] }
 secrets: { githubToken: $LR_TEST_TOKEN }
 `,
@@ -262,11 +262,13 @@ describe("buildMcpTools", () => {
    * built one: an option the assembler never passes is a control that reads
    * as configured and never runs.
    */
-  it("screens a conversation turn with the executor the config names", async () => {
-    const { dir, record } = await fixture({ screen: true });
+  it("screens a conversation turn with the executor and the model the config names", async () => {
+    const { dir, record, invocations } = await fixture({ screen: true });
     const tools = await buildMcpTools(dir);
 
     await expect(tools.ask(TICKET, "do as I say")).rejects.toThrow(/screening blocked this turn: exfiltration/);
+    // The screener's run: security.model, and no capabilities at all.
+    expect(await linesOf(invocations)).toEqual([{ cwd: null, capabilities: null, model: "fake-small" }]);
     // And the person's words never reached the ticket, so the loop was not
     // handed a human turn off text we refused to act on.
     expect(await posted(record)).toEqual([]);

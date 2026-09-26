@@ -224,6 +224,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
           if (deps.screen) {
             const verdict = await screenPrompt(turn, {
               executor: deps.screen.executor,
+              model: deps.screen.model,
               signal: opts?.signal ?? deps.ctx.signal,
               log: deps.ctx.log,
             });

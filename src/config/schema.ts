@@ -33,7 +33,19 @@ export const runtimeConfigSchema = z.object({
    */
   tracker: z.record(z.unknown()).default({}),
   tick: z.object({ interval: z.string().default("60s"), concurrency: z.number().int().positive().default(3) }).default({}),
-  security: z.object({ screen: z.boolean().default(true), model: z.string().default("haiku") }).default({}),
+  /**
+   * `adapter` names the executor that screens, by the same lookup as
+   * `agent.adapter` and falling back to it: a screener on a different
+   * provider from the agent it guards is a second opinion rather than the
+   * same model reading its own attack. `model` is asked of it on every run.
+   *
+   * No default here: `haiku` is right for the engine's own claude executor
+   * and nothing else, so `screenerFor` supplies it there and refuses to
+   * start a hook's executor screening without one.
+   */
+  security: z
+    .object({ screen: z.boolean().default(true), adapter: z.string().min(1).optional(), model: z.string().min(1).optional() })
+    .default({}),
   log: z.object({ redact: z.array(z.string()).default([]) }).default({}),
   secrets: z.record(z.string()).default({}),
   /**

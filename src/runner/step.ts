@@ -11,7 +11,7 @@ import {
   recordBodyProblem,
   unknownCapabilities,
 } from "#conventions.js";
-import type { Executor } from "#namespace.js";
+import type { Executor, Screener } from "#namespace.js";
 import { screenPrompt } from "#agent/screen.js";
 import { changedSince, worktreeState } from "#agent/worktree.js";
 import { extractJsonBlock } from "#agent/json-block.js";
@@ -162,7 +162,7 @@ export async function runStep(opts: {
   briefing?: Record<string, Record<string, string>>;
   executor: Executor;
   signal: AbortSignal;
-  screen?: { executor: Executor };
+  screen?: Screener;
   /**
    * The worktree this step runs in, when the runtime made one. Its presence is
    * what turns a step's declared capabilities into something checkable: we
@@ -210,6 +210,7 @@ export async function runStep(opts: {
     // never look at the one part that is actually untrusted.
     const verdict = await screenPrompt(prompt, {
       executor: opts.screen.executor,
+      model: opts.screen.model,
       signal,
       ...(log ? { log } : {}),
     });

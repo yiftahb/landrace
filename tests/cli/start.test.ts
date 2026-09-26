@@ -15,6 +15,7 @@ import {
   buildRuntime,
   createInterrupt,
   executorFor,
+  screenerFor,
   loop,
   parseInterval,
   parsePort,
@@ -251,35 +252,68 @@ describe("the step timeout", () => {
  * own claude executor: a workflow whose hook registers an executor screened
  * with something the operator never configured — silently, since nothing said
  * so — or, with no claude on the machine, not at all.
+ *
+ * Then it followed `agent.adapter` and nothing else, so screening on anything
+ * but the executor that runs the steps meant moving the steps too; and a hook
+ * executor never heard `security.model`, which was fixed into the engine's
+ * own executor when it was built.
  */
 describe("which executor screens", () => {
   const workflow: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true }] };
+  const noop = () => {};
+  const empty: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
 
   const withExecutor = (id: string): Registry => {
     const executor = defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) });
-    return { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map([[id, executor]]) };
+    return { ...empty, executors: new Map([[id, executor]]) };
   };
 
-  it("screens with the hook's executor when the config names one, not with the engine's", () => {
+  it("screens with the hook's executor when agent.adapter names one, asking it for security.model", () => {
     const registry = withExecutor("fake");
-    const config = runtimeConfigSchema.parse({
-      version: 1,
-      agent: { adapter: "fake" },
-      security: { screen: true, model: "haiku" },
-    });
-
-    // The security model is the engine executor's business and cannot reach a
-    // hook's, which builds its own: what must not happen is the id being
-    // ignored and a claude subprocess screening for an agent that is not one.
-    const screener = executorFor(config, workflow, registry, () => {}, { model: config.security.model });
-    expect(screener).toBe(registry.executors.get("fake"));
-    expect(screener).toBe(executorFor(config, workflow, registry, () => {}));
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, security: { model: "small" } });
+    expect(screenerFor(config, workflow, registry, noop)).toEqual({ executor: registry.executors.get("fake"), model: "small" });
   });
 
-  it("still refuses an adapter no executor answers to, whichever model it is asked for", () => {
+  it("screens with security.adapter's executor while the steps stay on agent.adapter", () => {
+    const registry = withExecutor("local");
+    const config = runtimeConfigSchema.parse({
+      version: 1, agent: { adapter: "claude" }, security: { adapter: "local", model: "llama" },
+    });
+    expect(screenerFor(config, workflow, registry, noop)).toEqual({ executor: registry.executors.get("local"), model: "llama" });
+    expect(executorFor(config, workflow, registry, noop).id).toBe("claude");
+  });
+
+  it("refuses a security.adapter no executor answers to, naming the key", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, security: { adapter: "gpt-9" } });
+    expect(() => screenerFor(config, workflow, empty, noop)).toThrow(/security\.adapter "gpt-9"/);
+  });
+
+  it("still refuses an agent.adapter no executor answers to, naming the key", () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" } });
-    const empty: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
-    expect(() => executorFor(config, workflow, empty, () => {}, { model: "haiku" })).toThrow(/gpt-9/);
+    expect(() => executorFor(config, workflow, empty, noop)).toThrow(/agent\.adapter "gpt-9"/);
+    expect(() => screenerFor(config, workflow, empty, noop)).toThrow(/agent\.adapter "gpt-9"/);
+  });
+
+  it("asks the engine's own claude for haiku when security.model names none", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude", model: "opus" } });
+    expect(screenerFor(config, workflow, empty, noop)?.model).toBe("haiku");
+  });
+
+  it("refuses to screen with a hook's executor when security.model names no model for it", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, security: { adapter: "local" } });
+    expect(() => screenerFor(config, workflow, withExecutor("local"), noop)).toThrow(/security\.model[\s\S]*"local"/);
+  });
+
+  // Told apart by where it came from, never by its id: a hook may register
+  // "claude" too, and it is still not the engine's, so haiku is still a guess.
+  it("refuses a hook's executor registered as \"claude\" when security.model names no model", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" } });
+    expect(() => screenerFor(config, workflow, withExecutor("claude"), noop)).toThrow(/security\.model[\s\S]*"claude"/);
+  });
+
+  it("builds no screener when screening is off", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" }, security: { screen: false } });
+    expect(screenerFor(config, workflow, empty, noop)).toBeUndefined();
   });
 });
 
