@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { configProblems, loadConfig } from "#config/load.js";
+import { resolveStepServers } from "#config/mcp.js";
 import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
 import { snapshotProvides } from "#runner/snapshot.js";
@@ -88,6 +89,16 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    */
   const loaded = await loadConfig(dir).catch(() => null);
   if (loaded) problems.push(...configProblems(dir, loaded));
+
+  /*
+   * The servers `agent.mcp` allows, looked up exactly as `start` looks them up
+   * and reported in the same words it refuses with. A missing `.mcp.json` is
+   * reported too, although it is a fact about this checkout rather than the
+   * workflow — agsync generates it and it is gitignored — because the one
+   * place skipping it would help is the one command whose "valid" an operator
+   * reads as "start will run".
+   */
+  if (loaded) problems.push(...(await resolveStepServers(dir, loaded.config.agent.mcp)).problems);
 
   /*
    * A var that did not resolve stops here, and the early return is the point.

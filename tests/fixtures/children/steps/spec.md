@@ -22,10 +22,11 @@ you propose to do about it, and how someone will know it worked.
 
 Rules:
 * Use the `superpowers:brainstorming` and `superpowers:writing-plans` skills.
-  Front matter cannot ask for them — nothing in this engine hands a skill to an
-  agent, so a `skills:` key there would be a claim nobody keeps. Said here, it
-  is at least read, and a skill that is not installed says so out loud.
-* Use codebase-memory-mcp to discover the codebase and understand the architecture.
+  They reach you through `agent.plugins` in landrace.yaml, which hands the same
+  plugins to every step — front matter cannot ask for a skill. If one is not
+  installed, say so out loud rather than working around it.
+* Use codebase-memory-mcp, handed to you through `agent.mcp`, to discover the
+  codebase and understand the architecture.
 * Keep it simple and short, do not over engineer or over complicate.
 * No pre-text, post-text or slop.
 

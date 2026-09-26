@@ -4,6 +4,28 @@ agent:
   adapter: claude
   model: opus
   isolation: worktree
+  # A read-only step runs --restricted, which ignores ~/.claude/settings.json
+  # and every plugin enabled there, and its worktree has no .mcp.json — so the
+  # skills and the codebase graph the step prompts ask for are named here.
+  # Servers are names looked up in the repository root's .mcp.json (`agsync
+  # sync` writes it); the landrace operator server is refused, never allowed.
+  plugins: [superpowers@claude-plugins-official]
+  # The graph's reading tools, and index_repository because a fresh worktree
+  # is not indexed yet — never the whole server, which could also delete a
+  # project, rewrite its ADRs or ingest traces.
+  mcp:
+    - name: codebase-memory-mcp
+      tools:
+        - search_graph
+        - trace_path
+        - get_code_snippet
+        - query_graph
+        - get_architecture
+        - search_code
+        - get_graph_schema
+        - index_status
+        - list_projects
+        - index_repository
 
 # Opaque to the engine, handed to the hooks as it stands. `repo` is here
 # because hooks/github.ts reads it, not because landrace knows what a repo is.

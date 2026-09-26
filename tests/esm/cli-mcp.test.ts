@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -131,6 +131,14 @@ async function fixture(opts: {
   verdict?: "ok" | "suspicious";
   isolation?: "none" | "worktree";
   preflight?: "pass" | "throw";
+  /** `claude` to have the engine's own executor answer rather than the hook's. */
+  adapter?: string;
+  /** More of `agent:`, written inside its braces. */
+  agentKeys?: string;
+  /** Files committed at the repository root, so a turn's worktree has them too. */
+  committed?: Record<string, string>;
+  /** The `.mcp.json` left at the root after the commit — the operator's own, which no worktree sees. */
+  mcpJson?: unknown;
 }): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-mcp-"));
   const dir = join(root, ".landrace");
@@ -173,7 +181,7 @@ stages:
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
-agent: { adapter: fake, model: opus, isolation: ${opts.isolation ?? "none"} }
+agent: { adapter: ${opts.adapter ?? "fake"}, model: opus, isolation: ${opts.isolation ?? "none"}${opts.agentKeys ? `, ${opts.agentKeys}` : ""} }
 tracker: { record: ${JSON.stringify(record)}, order: ${JSON.stringify(order)} }
 tick: { interval: 30s, concurrency: 2 }
 security: { screen: ${opts.screen} }
@@ -186,6 +194,7 @@ secrets: { githubToken: $LR_TEST_TOKEN }
   // After the files, so there is something to commit: a repository with no
   // HEAD has no tree for `git worktree add` to check out, which is a fixture
   // failing rather than the thing under test.
+  for (const [name, text] of Object.entries(opts.committed ?? {})) await writeFile(join(root, name), text);
   if (opts.isolation === "worktree") {
     await exec("git", ["init", "-q", "-b", "main"], { cwd: root });
     await exec("git", ["config", "user.email", "t@example.com"], { cwd: root });
@@ -193,6 +202,7 @@ secrets: { githubToken: $LR_TEST_TOKEN }
     await exec("git", ["add", "-A"], { cwd: root });
     await exec("git", ["commit", "-qm", "init"], { cwd: root });
   }
+  if (opts.mcpJson !== undefined) await writeFile(join(root, ".mcp.json"), JSON.stringify(opts.mcpJson));
 
   return { root, dir, record, invocations, order };
 }
@@ -306,5 +316,68 @@ describe("buildMcpTools and what a turn is held to", () => {
     // check rather than a courtesy.
     expect(invoked?.cwd).toBeTruthy();
     expect(invoked?.cwd).not.toBe(root);
+  });
+});
+
+/*
+ * And what else a turn is handed. A turn resumes a step's own session, so it
+ * holds what the step held: the operator's plugins, and the servers
+ * `agent.mcp` allows — looked up in the repository root's `.mcp.json`, never
+ * in the worktree the turn runs in, and never the operator server sitting
+ * beside them in the same file.
+ */
+describe("buildMcpTools and the servers a turn is handed", () => {
+  const MEMORY = { command: "codebase-memory-mcp", args: [], env: {} };
+
+  it("hands a turn the step's plugins and allowlisted servers, from the root's .mcp.json and no other", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
+    await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
+    await chmod(join(bin, "claude"), 0o755);
+
+    const { dir } = await fixture({
+      screen: false,
+      isolation: "worktree",
+      adapter: "claude",
+      agentKeys: "plugins: [superpowers@claude-plugins-official], mcp: [codebase-memory-mcp]",
+      committed: {
+        "fake.json": JSON.stringify({ out: "{{ARGV_JSON}}" }),
+        // What the worktree sees: a committed file naming the same server
+        // differently. Reading this one would be reading the repository's
+        // word for what the operator configured.
+        ".mcp.json": JSON.stringify({ mcpServers: { "codebase-memory-mcp": { command: "decoy" } } }),
+      },
+      mcpJson: { mcpServers: { "codebase-memory-mcp": MEMORY, landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } },
+    });
+
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    let argv: string[];
+    try {
+      const tools = await buildMcpTools(dir);
+      const { reply } = (await tools.ask(TICKET, "carry on")) as { reply: string };
+      argv = JSON.parse(reply) as string[];
+    } finally {
+      process.env.PATH = path;
+    }
+
+    const after = (name: string): string => argv[argv.indexOf(name) + 1] as string;
+    expect(JSON.parse(after("--mcp-config"))).toEqual({ mcpServers: { "codebase-memory-mcp": MEMORY } });
+    expect(argv).toContain("--strict-mcp-config");
+    expect(argv.slice(argv.indexOf("--allowedTools") + 1)).toEqual(["mcp__codebase-memory-mcp"]);
+    expect(JSON.parse(after("--settings"))).toEqual({ enabledPlugins: { "superpowers@claude-plugins-official": true } });
+    // The step's own declaration still decides the rest: read-only, manual,
+    // on the model the step asked for.
+    expect(after("--permission-mode")).toBe("manual");
+    expect(after("--model")).toBe("haiku");
+  });
+
+  it("refuses to assemble when a server the steps are allowed is the operator's own", async () => {
+    const { dir } = await fixture({
+      screen: false,
+      isolation: "worktree",
+      agentKeys: "mcp: [tickets]",
+      mcpJson: { mcpServers: { tickets: { command: "node", args: ["dist/cli.js", "mcp"] } } },
+    });
+    await expect(buildMcpTools(dir)).rejects.toThrow(/"tickets"[\s\S]*operator tools must never reach a step agent/);
   });
 });

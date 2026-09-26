@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -131,6 +131,10 @@ async function fixture(
     reads?: string;
     git?: boolean;
     preflight?: "pass" | "throw";
+    /** More of `agent:`, written inside its braces. */
+    agentKeys?: string;
+    /** The `.mcp.json` at the repository root, as agsync would have written it. */
+    mcpJson?: unknown;
   } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
@@ -143,7 +147,7 @@ async function fixture(
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
-agent: { adapter: ${opts.agent ?? "claude"}, model: opus }
+agent: { adapter: ${opts.agent ?? "claude"}, model: opus${opts.agentKeys ? `, ${opts.agentKeys}` : ""} }
 tracker: { record: ${JSON.stringify(record)} }
 tick: { interval: 30s, concurrency: 2 }
 security: { screen: ${opts.screen ?? false} }
@@ -152,6 +156,7 @@ secrets: { githubToken: $LR_TEST_TOKEN }
 `,
   );
   await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\n`);
+  if (opts.mcpJson !== undefined) await writeFile(join(root, ".mcp.json"), JSON.stringify(opts.mcpJson));
   return { dir, record };
 }
 
@@ -290,6 +295,62 @@ ${EXECUTOR}`);
     const { dir } = await fixture({ agent: "gpt-9" });
     await expect(buildRuntime(dir, {})).rejects.toThrow(/gpt-9[\s\S]*claude/);
   });
+
+  /*
+   * `agent.plugins` and `agent.mcp`, end to end through the runtime a loop
+   * actually runs: resolved from the repository root once, and handed to the
+   * step's executor as definitions — so a step running somewhere with a
+   * `.mcp.json` of its own still gets the operator's, and only the servers
+   * named. The screener gets none of it.
+   */
+  it("hands the step's executor the servers resolved from the repository root, wherever the step runs, and the screener none", async () => {
+    const memory = { command: "codebase-memory-mcp", args: [], env: {} };
+    const { dir } = await fixture({
+      screen: true,
+      agentKeys: "plugins: [superpowers@claude-plugins-official], mcp: [{ name: codebase-memory-mcp, tools: [search_graph, trace_path] }]",
+      mcpJson: { mcpServers: { "codebase-memory-mcp": memory, landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } },
+    });
+    const rt = await buildRuntime(dir, {});
+
+    const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
+    await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
+    await chmod(join(bin, "claude"), 0o755);
+    // Where the step runs: somewhere with a `.mcp.json` of its own, the way a
+    // worktree cut from a repository that committed one would be.
+    const worktree = await mkdtemp(join(tmpdir(), "lr-worktree-"));
+    await writeFile(join(worktree, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify({ mcpServers: { "codebase-memory-mcp": { command: "decoy" } } }));
+
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    let step: string[];
+    let screener: string[];
+    try {
+      const signal = new AbortController().signal;
+      step = JSON.parse((await rt.deps.executor.run("x", { round: 1, cwd: worktree, capabilities: ["repo:read"], signal })).text) as string[];
+      const screen = rt.deps.screen?.executor;
+      if (!screen) throw new Error("screening was configured and the runtime built no screener");
+      screener = JSON.parse((await screen.run("x", { round: 0, cwd: worktree, signal })).text) as string[];
+    } finally {
+      process.env.PATH = path;
+    }
+
+    expect(JSON.parse(step[step.indexOf("--mcp-config") + 1] as string)).toEqual({ mcpServers: { "codebase-memory-mcp": memory } });
+    // Only the tools landrace.yaml listed, never the whole server.
+    expect(step.slice(step.indexOf("--allowedTools") + 1)).toEqual([
+      "mcp__codebase-memory-mcp__search_graph", "mcp__codebase-memory-mcp__trace_path",
+    ]);
+    expect(step).toContain("--settings");
+    // The screener: no plugin, no server, no tool, and the model
+    // `security.model` names — honoured, because it no longer runs in plan mode.
+    const after = (argv: string[], name: string): string | undefined => argv[argv.indexOf(name) + 1];
+    expect(JSON.parse(after(screener, "--mcp-config") as string)).toEqual({ mcpServers: {} });
+    expect(screener).toContain("--strict-mcp-config");
+    expect(after(screener, "--tools")).toBe("");
+    expect(screener).not.toContain("--settings");
+    expect(after(screener, "--permission-mode")).toBe("manual");
+    expect(after(screener, "--model")).toBe("haiku");
+  });
 });
 
 /**
@@ -400,6 +461,53 @@ describe("runStart --once", () => {
   });
 });
 
+/*
+ * What a server's definition carries in argv — `env`, `headers` — can come
+ * back in the agent's own stderr when a server fails to start, and from there
+ * into an `agent exited …` message the loop logs. The runtime's logger
+ * redacts it like any declared secret.
+ */
+describe("an allowlisted server's env and headers", () => {
+  it("are redacted from an `agent exited …` message the loop logs", async () => {
+    const seen: LandraceEvent[] = [];
+    const { dir } = await fixture({
+      agentKeys: "mcp: [codebase-memory-mcp, remote]",
+      mcpJson: { mcpServers: {
+        "codebase-memory-mcp": { command: "codebase-memory-mcp", env: { MEMORY_TOKEN: "env-secret-value" } },
+        remote: { type: "http", url: "https://mcp.example.invalid", headers: { Authorization: "Bearer header-secret" } },
+      } },
+    });
+    const rt = await buildRuntime(dir, { sink: (e) => seen.push(e) });
+
+    const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
+    await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
+    await chmod(join(bin, "claude"), 0o755);
+    const cwd = await mkdtemp(join(tmpdir(), "lr-exit-"));
+    await writeFile(join(cwd, "fake.json"), JSON.stringify({
+      exit: 3, stderr: "MCP server failed: MEMORY_TOKEN=env-secret-value, Authorization: Bearer header-secret",
+    }));
+
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    let reason = "";
+    try {
+      await rt.deps.executor.run("x", { round: 1, cwd, capabilities: ["repo:read"], signal: new AbortController().signal });
+    } catch (e) {
+      reason = (e as Error).message;
+    } finally {
+      process.env.PATH = path;
+    }
+    // What converge logs when a step's executor fails, through the same logger.
+    expect(reason).toMatch(/^agent exited 3: /);
+    rt.deps.log("step.rejected", { ticket: TICKET, kind: "unavailable", reason });
+
+    const logged = JSON.stringify(seen);
+    expect(logged).not.toContain("env-secret-value");
+    expect(logged).not.toContain("Bearer header-secret");
+    expect(logged).toContain("[redacted]");
+  });
+});
+
 describe("runStatus", () => {
   it("prints one line per ticket, from the same source the loop enumerates", async () => {
     const { dir } = await fixture();
@@ -407,5 +515,25 @@ describe("runStatus", () => {
 
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(new RegExp(`#${TICKET}.*Add export.*queued`));
+  });
+
+  /*
+   * `status` never runs a step, so what a step would be handed is none of its
+   * business: a fresh clone nobody has run `agsync sync` in yet is exactly
+   * where someone asks what landrace thinks of their tickets. `start` still
+   * refuses the same checkout — the buildRuntime tests pin that.
+   */
+  it("reads the tickets with agent.mcp set and no .mcp.json at all", async () => {
+    const { dir } = await fixture({ agentKeys: "mcp: [codebase-memory-mcp]" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/\.mcp\.json does not exist/);
+
+    const lines = await runStatus(dir);
+    expect(lines[0]).toMatch(new RegExp(`#${TICKET}.*Add export.*queued`));
+
+    // And what it built can read and nothing more: a step run without the
+    // servers its configuration names would be a step run bare.
+    const rt = await buildRuntime(dir, { readOnly: true });
+    await expect(rt.deps.executor.run("x", { round: 1, capabilities: ["repo:read"], signal: new AbortController().signal }))
+      .rejects.toThrow(/not to run steps/);
   });
 });

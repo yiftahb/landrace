@@ -1,5 +1,6 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
+import { mcpRedactionValues } from "#config/mcp.js";
 import { mayCreateTickets, ticketIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import type { ChildBinding, ChildTool, RuntimeContext, Tools } from "#namespace.js";
@@ -10,7 +11,7 @@ import { createLogger } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { loadWorkflow } from "#workflow/load.js";
-import { executorFor, sandboxFor } from "#cli/start.js";
+import { executorFor, sandboxFor, stepToolsFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -25,6 +26,11 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   // runs the same workflow under the same configuration.
   assertConfigUsable(dir, loaded);
 
+  // A turn resumes a step's own session, so it holds what the step holds —
+  // resolved here exactly as the loop resolves it, and refused for the same
+  // reasons, before any hook module is imported.
+  const tools = await stepToolsFor(loaded.config, dir);
+
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
   const { workflow, steps } = await loadWorkflow(dir, loaded.vars);
@@ -33,7 +39,9 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   // stdout carries the MCP protocol, so anything we have to say goes to
   // stderr — which is what the client that spawned us shows.
   const events = createLogger({
-    redactValues: redactionValues(loaded),
+    // With the allowlisted servers' env and header values, as the loop's own
+    // logger has them: a turn's agent carries the same servers.
+    redactValues: [...redactionValues(loaded), ...mcpRedactionValues(tools.mcpServers)],
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
   });
 
@@ -76,8 +84,11 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * is. They coordinate through the per-ticket lock, and it is the default one
    * — the same $TMPDIR path the loop takes — because the entire mechanism is
    * two processes finding the same file.
+   *
+   * With the same plugins and servers, and without the directory: a turn is
+   * never handed a create_child binding, so it never needs the child server.
    */
-  const executor = executorFor(loaded.config, workflow, registry, events);
+  const executor = executorFor(loaded.config, workflow, registry, events, { tools });
 
   /*
    * And the screener, resolved through the same lookup with `security.model`,
@@ -95,7 +106,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * the only kind the screener's own prompt is written to do.
    */
   const screen = loaded.config.security.screen
-    ? { screen: { executor: executorFor(loaded.config, workflow, registry, events, loaded.config.security.model) } }
+    ? { screen: { executor: executorFor(loaded.config, workflow, registry, events, { model: loaded.config.security.model }) } }
     : {};
 
   /*

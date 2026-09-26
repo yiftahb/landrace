@@ -47,7 +47,7 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
 
   afterEach(() => { while (dirs.length) rmSync(dirs.pop() as string, { recursive: true, force: true }); });
 
-  it("refuses a step declaring skills, which nothing hands to an agent", () => {
+  it("refuses a step declaring skills: plugins come from agent.plugins for every step, never from front matter", () => {
     expect(() => parseStep("---\nskills: [superpowers:brainstorming]\n---\nbody"))
       .toThrow(/skills/);
   });
