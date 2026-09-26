@@ -290,6 +290,23 @@ describe("goto", () => {
     }
   });
 
+  // The route-effect half: a judge's route writes its record through its
+  // effect, and a goto there would carry a target past the check that the
+  // route's own `goto` gets — the stage's list.
+  it("refuses a goto or a from written into a step route's effect", () => {
+    for (const field of ["goto", "from"]) {
+      const steps = new Map<string, Step>([["j.md", {
+        prompt: "",
+        output: {
+          discriminator: "i", shapes: { back: {} },
+          routes: [{ when: { i: "back" }, effect: { type: "tracker.comment", marker: "i:{round}", [field]: "a" } }],
+        },
+      }]]);
+      expect(validateStructure(w(["a"], { step: "j.md", on_enter: [enter] }), steps).map((p) => p.rule))
+        .toContain("reserved-field");
+    }
+  });
+
   it("refuses a trigger named like a goto transition", () => {
     expect(rules(w(["a"], { triggers: [{ name: "goto", when: { "run.stage": "a" } }] }))).toContain("trigger-name");
   });

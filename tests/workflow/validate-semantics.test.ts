@@ -650,6 +650,12 @@ describe("goto edges", () => {
     expect(rules(loop([{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }]))).not.toContain("cycle-bound");
   });
 
+  // A `when` is a bound only when it bounds a counter: a goto that may run
+  // for as long as some unrelated field holds loops for as long as it does.
+  it("does not take a goto's `when` for a bound unless it bounds a counter", () => {
+    expect(rules(loop([{ stage: "a", when: { x: 1 } }]))).toContain("cycle-bound");
+  });
+
   it("counts a goto as a way out of a stage", () => {
     expect(rules(loop([{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }]))).not.toContain("dead-end");
   });
