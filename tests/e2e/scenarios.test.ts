@@ -954,6 +954,47 @@ describe("sending a ticket back to a step", () => {
     expect(arrived.trail).toEqual(["spec", "spec-questions"]);
     expect(state.stage("1")).toBe("spec-questions");
   });
+
+  /*
+   * The window the workflow accepts rather than closes. triage's approve →
+   * build reads `run.previousStage`, which is read off triage's own entry
+   * record; a crash after build's entry comment and before its status label
+   * leaves build's entry the latest, so at triage previousStage reads null and
+   * no trigger fires again. One "Go to step… build" is the recovery: triage
+   * lists build, a settled triage accepts a goto, and build's entry record —
+   * already there — reconciles at the same round rather than being posted twice.
+   */
+  it("recovers a crash between build's entry comment and its status label with one Go to step", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:spec-human-review", "lr:awaiting"] }] });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const answers = { ...ANSWERS, triage: judged("approve") };
+    const harness = (over: Partial<Parameters<typeof createHarness>[0]> = {}) =>
+      createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, ...over });
+    await state.post.apply(
+      { type: "tracker.comment", kind: "output", stage: "spec", round: 1, marker: "output:spec:1", output: { kind: "spec" } },
+      { ...ctx, ticket: "1" } as HookContext,
+    );
+    const buildEntries = () => state.entriesOf("1").filter((e) => e.kind === "enter" && e.stage === "build");
+
+    state.say("1", "looks right");
+    const crashed = await harness({ interrupt: (e) => e.type === "tracker.status" && e.value === "build" }).converge();
+    expect(crashed.result.settled).toBe("halt");
+    expect(buildEntries().map((e) => e.round)).toEqual([1]);
+    expect(state.stage("1")).toBe("triage");
+
+    const run = harness();
+    const waiting = await run.converge();
+    expect(waiting.calls).toEqual([]);
+    expect(state.stage("1")).toBe("triage");
+
+    const deps: GotoDeps = { source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow };
+    expect(await sendTo(deps, "1", "build")).toEqual({ to: "build" });
+    const recovered = await run.converge();
+
+    expect(recovered.trail.slice(0, 2)).toEqual(["build", "publish"]);
+    expect(recovered.calls[0]).toMatchObject({ stage: "build", round: 1 });
+    expect(buildEntries().map((e) => e.round)).toEqual([1]);
+  });
 });
 
 /*

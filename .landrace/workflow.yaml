@@ -35,11 +35,17 @@ budget:
 #
 # 2. The `enter` record comes first, before the status that moves the position.
 #    It is what tells the engine the stage owes another round — a crash between
-#    the two effects must leave the ticket at the *previous* stage, whose
-#    trigger simply fires again and replans the identical entry record (the
-#    round is derived, so it does not move). Written after the status instead,
-#    a crash would land the ticket on a stage that still reads as complete from
-#    its last round, and that round would be silently skipped.
+#    the two effects must leave the ticket at the *previous* stage. Written
+#    after the status instead, a crash would land the ticket on a stage that
+#    still reads as complete from its last round, and that round would be
+#    silently skipped. From the previous stage, a trigger that reads only what
+#    the crash left unchanged fires again and replans the identical entry
+#    record (the round is derived, so it does not move). One that reads
+#    `run.previousStage` does not: that is read off the current stage's own
+#    entry record, and the target's is now the latest, so a crash on triage's
+#    way to spec or build leaves it waiting at triage. One "Go to step…" to
+#    that target recovers it — triage lists both, and the entry record already
+#    there reconciles at the same round.
 #
 # And one rule for triggers: every trigger leaving a stage that runs a step
 # reads `"run.lastOutputValid": null` — that stage's latest round did not
