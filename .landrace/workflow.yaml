@@ -21,7 +21,7 @@ eligible:
 # and where editing one actually changes what happens — `spec: 3` here was a
 # number an operator could edit to no effect at all.
 budget:
-  stepTimeout: 10m
+  stepTimeout: 120m
 
 # Two rules govern every on_enter list below, and both are load-bearing.
 #
