@@ -1056,3 +1056,37 @@ describe("the tickets:create backstop", () => {
     expect(seen).toEqual([{ parent: "1", stage: "s", round: 3 }, undefined]);
   });
 });
+
+describe("a route that sends the ticket somewhere", () => {
+  const judge: Step = {
+    prompt: "judge",
+    output: {
+      discriminator: "intent",
+      shapes: { "goto-build": {}, question: {}, publish: {} },
+      routes: [
+        { when: { intent: "goto-build" }, goto: "build", effect: { type: "tracker.comment", marker: "intent:{round}" } },
+        { when: { intent: "question" }, effect: { type: "tracker.comment", marker: "intent:{round}" } },
+        { when: { intent: "publish" }, goto: "build", effect: { type: "artifact.publish", artifact: "spec" } },
+      ],
+    },
+  };
+  const answer = (intent: string) => run(`\`\`\`json\n{"intent":"${intent}"}\n\`\`\``, { step: judge, stageId: "triage" });
+
+  it("records the goto on the step's own output record, so the two land as one write", async () => {
+    const r = (await answer("goto-build")) as Ok;
+    expect(r.effects).toEqual([
+      expect.objectContaining({ kind: "output", stage: "triage", goto: "build", output: { intent: "goto-build" } }),
+    ]);
+  });
+
+  it("records it on the output record when the content goes off the tracker, too", async () => {
+    const r = (await answer("publish")) as Ok;
+    expect(r.effects[0]).not.toHaveProperty("goto");
+    expect(r.effects[1]).toMatchObject({ kind: "output", goto: "build" });
+  });
+
+  it("records none for an answer whose route sends nowhere", async () => {
+    const r = (await answer("question")) as Ok;
+    expect(r.effects[0]).not.toHaveProperty("goto");
+  });
+});
