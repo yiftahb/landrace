@@ -5,7 +5,7 @@ import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js
 import { mcpRedactionValues, resolveStepServers } from "#config/mcp.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
-import { RECORD_EFFECT } from "#conventions.js";
+import { durationMs, RECORD_EFFECT } from "#conventions.js";
 import { postReply } from "#mcp/tools.js";
 import type {
   Board,
@@ -43,8 +43,6 @@ import { loadWorkflow } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
 
-const UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
-
 /**
  * "60s", "2m", "1h" — anything else is a configuration error, not a default.
  * A bare number is the likeliest typo and the two ways of reading it are both
@@ -52,12 +50,9 @@ const UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
  * it quietly means something nobody wrote down.
  */
 export function parseInterval(text: string): number {
-  const m = /^(\d+)(s|m|h)$/.exec(text.trim());
-  const unit = m?.[2] === undefined ? undefined : UNITS[m[2]];
-  if (!m || unit === undefined) {
-    throw new Error(`tick.interval must look like "60s", "2m" or "1h", got "${text}"`);
-  }
-  return Number(m[1]) * unit;
+  const ms = durationMs(text);
+  if (ms === null) throw new Error(`tick.interval must look like "60s", "2m" or "1h", got "${text}"`);
+  return ms;
 }
 
 export const DEFAULT_UI_PORT = 4545;

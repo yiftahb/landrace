@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { durationMs } from "#conventions.js";
 
 const condition = z.record(z.unknown());
 
@@ -58,6 +59,16 @@ export const stepFrontMatterSchema = z.object({
    * that says `haiku` must not be billed as `opus`.
    */
   model: z.string().min(1).optional(),
+  /**
+   * How long this step's agent may run before it is killed, overriding
+   * `budget.stepTimeout`: a build can need two hours where a classifier needs
+   * two minutes, and one number for both is too short for one or too loose
+   * for the other. Checked here, at load, so a value nobody can apply is a
+   * file that does not load rather than a cap that silently is not there.
+   */
+  timeout: z.string()
+    .refine((t) => (durationMs(t) ?? 0) > 0, { message: 'must be a duration like "30m" or "2h", above zero and at most 596h' })
+    .optional(),
   output: z.object({
     discriminator: z.string(),
     shapes: z.record(z.unknown()),

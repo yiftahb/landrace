@@ -461,6 +461,14 @@ export interface Executor {
        */
       model?: string;
       /**
+       * How long this run may take, in milliseconds, when the step named its
+       * own `timeout`: it wins over whatever the executor was built with, as
+       * the step's model does. An executor that cannot stop a run at this
+       * limit must refuse it — the limit is the operator's cap on what one
+       * run may spend.
+       */
+      timeoutMs?: number;
+      /**
        * What the step declared it may do — the vocabulary is in
        * `src/conventions.ts`. An executor that cannot enforce one of these
        * must refuse the run rather than drop it: the engine's own check on the

@@ -185,6 +185,25 @@ export const OUTPUT_KIND = "output";
 export const MALFORMED_KIND = "malformed";
 export const REFUSED_KIND = "refused";
 
+const DURATION_UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
+/** The longest delay setTimeout holds; past it Node fires after about a millisecond. */
+const LONGEST_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * "60s", "2m", "1h" in milliseconds, or null for anything else: the one way a
+ * duration is spelt in every file an operator writes — `tick.interval`,
+ * `budget.stepTimeout`, a step's own `timeout`. A bare number is the likeliest
+ * typo, and both ways of guessing its unit are wrong.
+ */
+export function durationMs(text: string): number | null {
+  const m = /^(\d+)(s|m|h)$/.exec(text.trim());
+  const unit = m?.[2] === undefined ? undefined : DURATION_UNITS[m[2]];
+  const ms = m && unit !== undefined ? Number(m[1]) * unit : null;
+  // Every duration ends up in a timer, and one too long for it fires at once:
+  // a stray digit would kill every agent the moment it started.
+  return ms !== null && ms <= LONGEST_TIMER_MS ? ms : null;
+}
+
 /**
  * The effect type that leaves a durable record on the tracker.
  *

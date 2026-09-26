@@ -21,7 +21,9 @@ eligible:
 # and where editing one actually changes what happens — `spec: 3` here was a
 # number an operator could edit to no effect at all.
 budget:
-  stepTimeout: 120m
+  # The default for a step that names no `timeout` of its own — triage, the
+  # one quick classifier. Every step that does real work says 120m.
+  stepTimeout: 10m
 
 # Two rules govern every on_enter list below, and both are load-bearing.
 #

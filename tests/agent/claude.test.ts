@@ -209,6 +209,13 @@ describe("claude executor", () => {
     await expect(run("x", { timeoutMs: 100 }, { cwd: dir })).rejects.toThrow(/exceeded 100ms/);
   });
 
+  // A step's own timeout, on the run: a build that needs two hours and a
+  // classifier that needs two minutes are run by the same executor.
+  it("kills a hung agent at the run's own timeout, which wins over the one it was built with", async () => {
+    const dir = withCfg({ hang: true });
+    await expect(run("x", { timeoutMs: 60_000 }, { cwd: dir, timeoutMs: 100 })).rejects.toThrow(/exceeded 100ms/);
+  }, 5_000);
+
   it("kills the agent when the caller aborts, leaving the promise settled rather than hanging", async () => {
     const dir = withCfg({ hang: true });
     const controller = new AbortController();

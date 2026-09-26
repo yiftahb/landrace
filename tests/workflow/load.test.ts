@@ -57,6 +57,13 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
     expect(step.model).toBe("haiku");
   });
 
+  it("reads a step's own timeout, and refuses one that is not a duration it could keep", () => {
+    expect(parseStep("---\ntimeout: 120m\n---\nbody").timeout).toBe("120m");
+    for (const bad of ["120", "2 hours", "0m", "1.5h", "999999h"]) {
+      expect(() => parseStep(`---\ntimeout: ${bad}\n---\nbody`)).toThrow(/timeout/);
+    }
+  });
+
   it("refuses a budget key nothing reads, while keeping the one that is read", async () => {
     await expect(loadWorkflow(workflowDir(graph("budget:\n  spec: 3\n  review: 4\n"))))
       .rejects.toThrow(/spec/);

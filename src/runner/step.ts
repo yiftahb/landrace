@@ -2,6 +2,7 @@ import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
 import type { Effect, Graph, Logger, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   CAPABILITIES,
+  durationMs,
   isReservedId,
   mayCreateTickets,
   mayWriteRepo,
@@ -248,6 +249,8 @@ export async function runStep(opts: {
    */
   log?.("step.invoked", { stage: stageId, round, executor: executor.id, model: step.model ?? null });
 
+  // Checked at load (schema.ts), so null here only means the step named none.
+  const stepTimeout = step.timeout === undefined ? null : durationMs(step.timeout);
   let text: string;
   let sessionId: string | null;
   try {
@@ -262,6 +265,7 @@ export async function runStep(opts: {
       // decides", and `model: undefined` is a different claim under
       // exactOptionalPropertyTypes than no key at all.
       ...(step.model === undefined ? {} : { model: step.model }),
+      ...(stepTimeout === null ? {} : { timeoutMs: stepTimeout }),
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
       // Derived here, from what this call already names, rather than accepted
       // from the caller: the step's own declaration is the one thing that may

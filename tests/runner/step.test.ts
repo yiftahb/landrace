@@ -235,6 +235,14 @@ describe("runStep", () => {
     expect(models).toEqual(["haiku"]);
   });
 
+  it("hands the executor the step's own timeout, and none when the step names none", async () => {
+    const seen: Array<number | undefined> = [];
+    const spy: Executor = { id: "t", run: async (_p, o) => { seen.push(o.timeoutMs); return { text: "free text", sessionId: null }; } };
+    await run("free text", { step: { prompt: "go", timeout: "120m" }, executor: spy });
+    await run("free text", { step: { prompt: "go" }, executor: spy });
+    expect(seen).toEqual([7_200_000, undefined]);
+  });
+
   it("reports an agent failure as a rejected step rather than throwing", async () => {
     const boom: Executor = { id: "b", run: async () => { throw new Error("no quota"); } };
     const r = await run("", { executor: boom });
