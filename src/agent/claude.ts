@@ -154,7 +154,7 @@ export function createClaudeExecutor(opts: {
 
   return defineExecutor({
     id: "claude",
-    async run(prompt, { round, resume, cwd, capabilities, model: stepModel, child: binding, signal }) {
+    async run(prompt, { round, resume, cwd, capabilities, model: stepModel, timeoutMs: stepTimeoutMs, child: binding, signal }) {
       if (signal.aborted) {
         // Nothing checked this before `spawn` in the first cut, so a run
         // cancelled before it started launched the (paid) agent anyway.
@@ -310,10 +310,12 @@ export function createClaudeExecutor(opts: {
           signal.removeEventListener("abort", onAbort);
           fn();
         };
+        // The step's own limit when it named one, as with its model.
+        const limit = stepTimeoutMs ?? timeoutMs;
         const timer = setTimeout(() => {
           killGroup(child);
-          finish(() => reject(new Error(`agent exceeded ${timeoutMs}ms`)));
-        }, timeoutMs);
+          finish(() => reject(new Error(`agent exceeded ${limit}ms`)));
+        }, limit);
         const onAbort = () => {
           killGroup(child);
           finish(() => reject(new Error("agent aborted")));

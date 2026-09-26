@@ -185,6 +185,20 @@ export const OUTPUT_KIND = "output";
 export const MALFORMED_KIND = "malformed";
 export const REFUSED_KIND = "refused";
 
+const DURATION_UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
+
+/**
+ * "60s", "2m", "1h" in milliseconds, or null for anything else: the one way a
+ * duration is spelt in every file an operator writes — `tick.interval`,
+ * `budget.stepTimeout`, a step's own `timeout`. A bare number is the likeliest
+ * typo, and both ways of guessing its unit are wrong.
+ */
+export function durationMs(text: string): number | null {
+  const m = /^(\d+)(s|m|h)$/.exec(text.trim());
+  const unit = m?.[2] === undefined ? undefined : DURATION_UNITS[m[2]];
+  return m && unit !== undefined ? Number(m[1]) * unit : null;
+}
+
 /**
  * The effect type that leaves a durable record on the tracker.
  *
