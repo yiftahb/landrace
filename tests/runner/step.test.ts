@@ -48,6 +48,16 @@ describe("renderPrompt", () => {
     expect(renderPrompt("failed: {run.failedStages}.", s)).toBe("failed: code-review, build.");
     expect(renderPrompt("failed: {run.none}.", s)).toBe("failed: .");
   });
+
+  // A field the engine derives as null — nothing failed, no stage before
+  // this one — is an answer, and the judge was shown "{run.failedStage}"
+  // for it. A path that is not there at all is still left visible.
+  it("writes a path that is there but null as none, and still leaves a missing one visible", () => {
+    const s = { run: { failedStage: null, lastHuman: null } } as unknown as Snapshot;
+    expect(renderPrompt("failed: {run.failedStage}.", s)).toBe("failed: none.");
+    expect(renderPrompt("{run.lastHuman.data.body}", s)).toBe("{run.lastHuman.data.body}");
+    expect(renderPrompt("{run.previousStage}", s)).toBe("{run.previousStage}");
+  });
 });
 
 describe("the model a step declares", () => {

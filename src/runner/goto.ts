@@ -1,37 +1,14 @@
-import { GOTO_KIND, MALFORMED_KIND, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
+import { GOTO_KIND, RECORD_EFFECT } from "#conventions.js";
 import { assess, compile, gotoDeclined, gotoNotListed, locate } from "#core/index.js";
-import type { Entry, GotoDeps, GotoResult, Node, Run } from "#namespace.js";
+import type { GotoDeps, GotoResult, Node } from "#namespace.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
 
 /**
- * The stage whose round was last rejected — what a Retry re-runs — or null.
- *
- * Scoped to `run.failedStages`, the stages `core/derive.ts` still counts as
- * failed, not to "any malformed or refused entry this ticket has ever
- * carried": a stage that failed once and has since settled a later round is
- * not failed any more (a rejection is scoped to the round it judges), and a
- * Retry that reached back past that success would redo work nothing asked it
- * to.
- *
- * One ascending sort, then `findLast`, rather than sort-reverse-find: both
- * read as "the latest that qualifies", but only the former sends a tie
- * — two records sharing one timestamp — to the one listed later, which is
- * the one a tracker actually returns last.
- */
-const lastFailed = (run: Run | undefined, entries: Entry[]): string | null => {
-  const failing = new Set(run?.failedStages ?? []);
-  return (
-    [...entries]
-      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
-      .findLast((e) => e.byAgent && failing.has(e.stage) && (e.kind === MALFORMED_KIND || e.kind === REFUSED_KIND))
-      ?.stage ?? null
-  );
-};
-
-/**
  * A person sending a ticket back to a step: the board's Retry and "Go to
- * step…", and `landrace_goto`. `target` null is a Retry — the stage whose
- * round was last rejected.
+ * step…", and `landrace_goto`. `target` null is a Retry — `run.failedStage`,
+ * the failure that put the ticket where it is. Never an older one it has
+ * since been sent around: that one is still in `failedStages`, and a Retry
+ * reading the list paid for a round nobody asked for.
  *
  * Read afresh, never from a listing a tick made: the ticket can have moved
  * since. Refused, with a sentence, wherever the engine would not take the
@@ -98,7 +75,7 @@ export async function sendTo(deps: GotoDeps, ticket: string, target: string | nu
     return { refused: `#${ticket} is at "${from.id}", whose step is still to run; wait for its answer` };
   }
 
-  const to = target ?? lastFailed(snapshot.run, snapshot.entries ?? []);
+  const to = target ?? snapshot.run?.failedStage ?? null;
   if (to === null) return { refused: `nothing has failed on #${ticket}, so there is nothing to retry` };
   const refused = gotoNotListed(from, to) ?? gotoDeclined(from, snapshot, to);
   if (refused) return { refused: `#${ticket}: ${refused}` };

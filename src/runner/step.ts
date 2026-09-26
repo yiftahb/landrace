@@ -56,7 +56,12 @@ export function renderPrompt(
   // this one recognises is a name they all do.
   return fillTemplate(template, (path) => {
     const value = resolve(scope, path);
-    if (value === undefined || value === null) return undefined;
+    if (value === undefined) return undefined;
+    // A path that is there and null is an answer — nothing failed, no stage
+    // before this one — and left as a bare `{run.failedStage}` it read to the
+    // judge as a hole in its prompt. Only a path that is not there at all
+    // stays visible.
+    if (value === null) return "none";
     // String() runs a list together — "code-review,build" — and a model
     // reading which steps failed has to be able to tell the items apart.
     return Array.isArray(value) ? value.join(", ") : String(value);

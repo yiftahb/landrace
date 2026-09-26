@@ -873,6 +873,11 @@ describe("sending a ticket back to a step", () => {
     return { state, run, deps, record };
   };
 
+  // A ticket seeded at build carries build's own entry record, as one that
+  // got there does: Retry names the failure by the stage the ticket last
+  // entered, and a seed with none would have failed nowhere.
+  const BUILD_ENTERED: Effect = { type: "tracker.comment", kind: "enter", stage: "build", round: 1, marker: "enter:build:1" };
+
   it("takes 'go back to spec' at pr-human-review through the judge to a second spec round, and back through review", async () => {
     const { state, run, record } = await world(["lr:stage:pr-human-review", "lr:awaiting"], {
       ...ANSWERS, spec: SPEC, triage: (round) => judged(round === 1 ? "goto-spec" : "approve"),
@@ -910,9 +915,10 @@ describe("sending a ticket back to a step", () => {
   it("re-runs a refused build when the board's Retry sends it back", async () => {
     const OK = '```json\n{"verdict":"ok"}\n```';
     const NO = '```json\n{"verdict":"suspicious","reason":"x"}\n```';
-    const { state, run, deps } = await world(["lr:stage:build"], ANSWERS, {
+    const { state, run, deps, record } = await world(["lr:stage:build"], ANSWERS, {
       build: (round) => (round === 1 ? NO : OK), "code-review": OK,
     });
+    await record(BUILD_ENTERED);
     await run.converge();
     await run.converge();
     expect(state.stage("1")).toBe("screened");
@@ -929,7 +935,8 @@ describe("sending a ticket back to a step", () => {
     // "spec" is screened too: once the cap sends this ticket there for real,
     // its own round has to actually run rather than being screened out for
     // want of a scripted verdict.
-    const { state, run, deps } = await world(["lr:stage:build"], ANSWERS, { build: NO, spec: OK });
+    const { state, run, deps, record } = await world(["lr:stage:build"], ANSWERS, { build: NO, spec: OK });
+    await record(BUILD_ENTERED);
     const tick = async () => { await run.converge(); await run.converge(); };
     await tick();
     for (let i = 0; i < 2; i++) {
@@ -971,6 +978,11 @@ describe("a halted ticket sent back to a review, from the board", () => {
       answers: { "code-review": (round) => (round === 1 ? "no json" : '```json\n{"kind":"reviewed"}\n```') },
     });
     const deps = depsOf(state, workflow);
+    // Its own entry record, as a ticket that reached code-review carries.
+    await state.post.apply(
+      { type: "tracker.comment", kind: "enter", stage: "code-review", round: 1, marker: "enter:code-review:1" },
+      { ...ctx, ticket: "1" } as HookContext,
+    );
 
     // Two converges: the rejection is recorded, then read back and routed.
     await run.converge();

@@ -158,6 +158,14 @@ export interface Run {
   previousStage: string | null;
   /** Every stage with a rejected round, independent of which stage `lastOutputValid` answers for. */
   failedStages: string[];
+  /**
+   * The failure that put the ticket where it is: the stage of the latest
+   * entry record of any stage but the current one, when that stage is still
+   * in `failedStages`; otherwise null. What Retry re-runs and what the judge
+   * is told failed — never an older failure the ticket has since been sent
+   * around, which `failedStages` still lists.
+   */
+  failedStage: string | null;
   unblockedAt: number;
 }
 

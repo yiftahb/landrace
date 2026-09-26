@@ -45,11 +45,24 @@ describe("sending a ticket back to a step", () => {
   });
 
   it("retries the stage that failed last when no step is named", async () => {
-    const { deps, run, failed } = world(["lr:stage:blocked", "lr:blocked"]);
-    failed("spec", 1);
-    failed("build", 1);
+    const { deps, run, rejected } = world(["lr:stage:blocked", "lr:blocked"]);
+    rejected("spec", 1);
+    rejected("build", 1);
     expect(await sendTo(deps, "3", null)).toEqual({ to: "build" });
     expect((await run())?.goto).toBe("build");
+  });
+
+  it("refuses a retry of an older failure the ticket was since sent around, and writes nothing", async () => {
+    // spec failed, a person sent the ticket on to build, and it came back
+    // here for another reason. spec is still failed — nothing has run it
+    // since — but it is not what put the ticket here, and a Retry that
+    // reached back to it would pay for a round nobody asked for.
+    const { deps, tracker, rejected, settled } = world(["lr:stage:blocked", "lr:blocked"]);
+    rejected("spec", 1);
+    settled("build", 1);
+    const before = tracker.comments.get(3)?.length ?? 0;
+    expect(await sendTo(deps, "3", null)).toEqual({ refused: expect.stringMatching(/nothing has failed on #3/) });
+    expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
   });
 
   it("says so, and writes nothing, when nothing has failed and a retry is asked", async () => {
@@ -61,8 +74,8 @@ describe("sending a ticket back to a step", () => {
 
   it("refuses a retry once the stage it would retry has since passed", async () => {
     // failedStages (core/derive.ts) drops a rejection the moment a later round
-    // of the same stage settles — lastFailed must answer the same question
-    // decide() does, or a Retry could reach back past a success and redo work
+    // of the same stage settles — Retry must answer the same question
+    // decide() does, or it could reach back past a success and redo work
     // nothing asked to redo.
     const { deps, tracker, failed, settled } = world(["lr:stage:blocked", "lr:blocked"]);
     failed("spec", 1);

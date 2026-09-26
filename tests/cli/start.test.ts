@@ -613,6 +613,7 @@ describe("the page's Retry and Go to step", () => {
 
   it("sends a stopped ticket back to the stage that failed", async () => {
     const tracker = createFakeTracker([{ number: 19, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
+    tracker.say(19, `entered${renderMarker({ stage: "spec", kind: "enter", round: 1 })}`);
     tracker.say(19, `broken${renderMarker({ stage: "spec", kind: "malformed", round: 1 })}`);
     const source = tracker.registry.source as Source;
     const path = gotoFor({

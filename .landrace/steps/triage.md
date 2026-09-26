@@ -30,7 +30,7 @@ output:
 Classify one message a person wrote on a ticket while it was their turn.
 
 The ticket was waiting at: {run.previousStage}
-The step that failed, if any: {run.failedStages}
+The step that failed, if any: {run.failedStage}
 
 What each place means, and which answers make sense there:
 

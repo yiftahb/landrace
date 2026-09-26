@@ -211,6 +211,21 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   const lastEntry = [...ordered].reverse().find((e) => e.kind === ENTRY_KIND);
   const previousStage = lastEntry !== undefined && lastEntry.stage === stage ? lastEntry.from ?? null : null;
 
+  /*
+   * The failure that put the ticket here, which is the step it last left.
+   * `failedStages` alone answered "what has failed and not run since", and
+   * that outlives being routed around: spec fails, a person sends the ticket
+   * on to build, the reviews run out and it halts again — spec is still
+   * listed, and Retry, reading the list, paid for a spec round nobody asked
+   * for. Only the latest stage the ticket was in before this one can have
+   * put it here; anything older it has since left behind.
+   *
+   * The current stage's own entry is skipped, so the judge reading a reply to
+   * a halt — entered from `blocked` — is still told what failed before it.
+   */
+  const leftLast = [...ordered].reverse().find((e) => e.kind === ENTRY_KIND && e.stage !== stage);
+  const failedStage = leftLast !== undefined && failedStages.includes(leftLast.stage) ? leftLast.stage : null;
+
   return {
     stage,
     counters,
@@ -222,6 +237,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     goto,
     previousStage,
     failedStages,
+    failedStage,
     rounds,
     unblockedAt,
   };

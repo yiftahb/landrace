@@ -276,16 +276,33 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
  * again" means that step, and only the judge's two goto answers can reach it.
  */
 describe("the shipped judge is told where the reply was made, and which step failed", () => {
+  // The failure that put the ticket at the halt, not every stage still
+  // failed: spec failed before a person sent the ticket on to build, and a
+  // judge told "spec" would send "try again" there.
   it("renders the halt and the failed step into triage's prompt", async () => {
     const { steps } = await loadWorkflow(".landrace");
     const snapshot = {
-      run: { previousStage: "blocked", failedStages: ["build"], lastHuman: { data: { body: "try again" } } },
+      run: {
+        previousStage: "blocked", failedStages: ["spec", "build"], failedStage: "build",
+        lastHuman: { data: { body: "try again" } },
+      },
     } as unknown as Snapshot;
     const rendered = renderPrompt(steps.get("steps/triage.md")?.prompt ?? "", snapshot);
 
     expect(rendered).toContain("The ticket was waiting at: blocked");
-    expect(rendered).toContain("The step that failed, if any: build");
+    expect(rendered).toMatch(/The step that failed, if any: build$/m);
     expect(rendered).toContain("try again");
+    expect(rendered).not.toMatch(/\{run\./);
+  });
+
+  it("says plainly that nothing failed, rather than showing the judge a placeholder", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const snapshot = {
+      run: { previousStage: "spec-human-review", failedStages: [], failedStage: null, lastHuman: { data: { body: "ship it" } } },
+    } as unknown as Snapshot;
+    const rendered = renderPrompt(steps.get("steps/triage.md")?.prompt ?? "", snapshot);
+
+    expect(rendered).toMatch(/The step that failed, if any: none$/m);
     expect(rendered).not.toMatch(/\{run\./);
   });
 });

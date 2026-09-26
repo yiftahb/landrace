@@ -327,3 +327,52 @@ describe("run.previousStage, from the current stage's own entry record", () => {
     expect(deriveRun([entered("triage", 1)], "triage").previousStage).toBeNull();
   });
 });
+
+/*
+ * What Retry re-runs and what the judge is told failed: the failure that put
+ * the ticket where it is, never an older one the ticket has since been sent
+ * around. `failedStages` alone kept a spec that failed before a person sent
+ * the ticket on to build, and Retry — reading it — paid for a spec round
+ * after the reviews ran out, which nobody had asked for.
+ */
+describe("run.failedStage, the failure that put the ticket where it is", () => {
+  const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
+  const going = (stage: string, to: string): Entry => ({ stage, kind: "goto", round: 0, goto: to, at: at(), byAgent: true });
+
+  it("is the step that failed, at the halt it failed into", () => {
+    const entries = [entered("spec", 1), out("spec", 1), entered("build", 1), malformed("build", 1)];
+    expect(deriveRun(entries, "blocked").failedStage).toBe("build");
+  });
+
+  it("is null once the ticket was sent on past an older failure and came back for another reason", () => {
+    const reviews = [1, 2, 3, 4].flatMap((round) => [entered("code-review", round), out("code-review", round)]);
+    const entries = [
+      entered("spec", 1), malformed("spec", 1), entered("spec", 2), malformed("spec", 2),
+      going("blocked", "build"), from("build", 1, "blocked"), out("build", 1, { kind: "done" }),
+      ...reviews,
+    ];
+    const run = deriveRun(entries, "blocked");
+    // Still failed — nothing has run spec since — but not what put it here.
+    expect(run.failedStages).toContain("spec");
+    expect(run.failedStage).toBeNull();
+  });
+
+  it("looks past the judge's own entry, at the judge reading a reply to a halt", () => {
+    const entries = [entered("build", 1), malformed("build", 1), human(), from("triage", 1, "blocked")];
+    expect(deriveRun(entries, "triage").failedStage).toBe("build");
+  });
+
+  it("is null at the judge reading a reply to a spec that did not fail", () => {
+    const entries = [entered("spec", 1), out("spec", 1), human(), from("triage", 1, "spec-human-review")];
+    expect(deriveRun(entries, "triage").failedStage).toBeNull();
+  });
+
+  it("is the judge itself when the judge is what failed", () => {
+    const entries = [entered("spec", 1), out("spec", 1), human(), from("triage", 1, "spec-human-review"), malformed("triage", 1)];
+    expect(deriveRun(entries, "blocked").failedStage).toBe("triage");
+  });
+
+  it("is null when no stage has been entered at all", () => {
+    expect(deriveRun([], null).failedStage).toBeNull();
+  });
+});
