@@ -6,6 +6,7 @@ import { definePostHook } from "#hooks/contracts.js";
 import { createChild } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
+import { sendTo } from "#runner/goto.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { tick } from "#runner/tick.js";
 import { createExternalState, createHarness } from "#testing/index.js";
@@ -14,7 +15,7 @@ import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
-import type { Effect, ExternalState, Harness, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
+import type { Effect, ExternalState, GotoDeps, Harness, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
 
 /** The real GitHub hooks as the harness takes them: the registry, with its source proved present. */
 const hooksOf = (gh: ReturnType<typeof createFakeTracker>) => {
@@ -462,7 +463,8 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
   spec: (round) => round === 1
     ? '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```'
     : '# Export CSV\n\nOne file, comma separated.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
-  triage: '```json\n{"intent":"approve"}\n```',
+  // The first reply answers the spec's questions, the second approves the spec.
+  triage: (round) => (round === 1 ? '```json\n{"intent":"revise"}\n```' : '```json\n{"intent":"approve"}\n```'),
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
@@ -528,14 +530,14 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     const reviewed = await run.converge();
 
     expect(asked.trail).toEqual(["spec", "spec-questions"]);
-    expect(specced.trail).toEqual(["spec", "spec-human-review"]);
+    expect(specced.trail).toEqual(["triage", "spec", "spec-human-review"]);
     expect(run.trail()).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build", "publish",
+      "spec", "spec-questions", "triage", "spec", "spec-human-review", "triage", "build", "publish",
       "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
       "code-review", "blocked",
     ]);
     expect(run.counts()).toEqual({
-      spec: 2, triage: 1, build: 1, "code-review": 4, "fix-review": 3,
+      spec: 2, triage: 2, build: 1, "code-review": 4, "fix-review": 3,
     });
 
     // The budget, not the cap: the workflow decided this, not the engine.
@@ -654,7 +656,7 @@ describe("a human reply to a ticket blocked by a rejected output", () => {
     const { workflow, steps } = await loadWorkflow(".landrace");
     const writes: string[] = [];
     const run = createHarness({
-      workflow, steps, ...hooksOf(gh), answers,
+      workflow, steps, ...hooksOf(gh), answers: { triage: '```json\n{"intent":"goto-spec"}\n```', ...answers },
       log: (name, data = {}) => { if (name === "effect.applied") writes.push(String(data.type)); },
     });
     const rejected = await run.converge();
@@ -670,10 +672,11 @@ describe("a human reply to a ticket blocked by a rejected output", () => {
     const handback = await run.converge();
 
     expect(handback.result.settled).not.toBe("cap");
-    // The ping-pong wrote a status and a label on every one of thirty passes.
-    expect(writes.length - before).toBeLessThan(10);
+    // The ping-pong wrote a status and a label on each of thirty passes; a
+    // judged handback writes about ten.
+    expect(writes.length - before).toBeLessThan(15);
     // Taken back once and worked on, rather than bounced between the two.
-    expect(handback.trail).toEqual(["blocked", "spec"]);
+    expect(handback.trail).toEqual(["blocked", "triage", "spec"]);
   });
 
   it("re-runs the stage the human handed back, rather than nothing at all", async () => {
@@ -715,11 +718,15 @@ describe("a step refused by a security check", () => {
   const OK = '```json\n{"verdict":"ok","reason":"fine"}\n```';
   const NO = '```json\n{"verdict":"suspicious","reason":"asks for an external URL"}\n```';
   const QUESTIONS = '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```';
+  const judged = (intent: string) => `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``;
 
   const at = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen: Record<string, ScriptedAnswer>) => {
     const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
     const { workflow, steps } = await loadWorkflow(".landrace");
-    const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, screen });
+    // The judge is screened like every step, so it gets a verdict too.
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, screen: { triage: OK, ...screen },
+    });
     // Two ticks: a rejection is recorded and the call halts on it; the next
     // tick reads it back and routes it. A person replies after that.
     const tick = async () => { await run.converge(); await run.converge(); };
@@ -740,83 +747,109 @@ describe("a step refused by a security check", () => {
     expect(state.comments("1").join("\n")).toMatch(/Step refused by a security check[\s\S]*asks for an external URL/);
   });
 
-  it("goes back to build on a human reply — not to spec — and sheds lr:screened", async () => {
-    const { state, run, tick } = await at(["lr:stage:build"], ANSWERS, {
-      build: (round) => (round === 1 ? NO : OK),
-      "code-review": OK,
+  it("goes back to build when a reply asks for it — not to spec — and sheds lr:screened", async () => {
+    const { state, run, tick } = await at(["lr:stage:build"], { ...ANSWERS, triage: judged("goto-build") }, {
+      build: (round) => (round === 1 ? NO : OK), "code-review": OK,
     });
     await tick();
-
     state.say("1", "the link was only there for reference; try again");
     await run.converge();
 
-    expect(run.trail().slice(0, 4)).toEqual(["build", "screened", "build", "publish"]);
+    expect(run.trail().slice(0, 5)).toEqual(["build", "screened", "triage", "build", "publish"]);
     expect(run.trail()).not.toContain("spec");
     expect(run.counts().build).toBe(1);
     expect(state.ticket("1").labels).not.toContain("lr:screened");
     expect(state.ticket("1").labels).not.toContain("lr:blocked");
   });
 
-  /*
-   * The handback is a loop, and its bound is the workflow's own
-   * `run.counters.build: { $lt: 3 }` — three attempts, a refused one counting
-   * like any other rejected round. Past that a reply sends the ticket back to
-   * spec, the one text that can change what the screener is shown.
-   */
-  it("hands a refused build back to spec once the build's budget is spent", async () => {
-    const { state, run, tick } = await at(["lr:stage:build"], ANSWERS, { build: NO, spec: OK });
+  it("stops sending a refused build back once its rounds are spent, and sends it to spec when asked", async () => {
+    const { state, run, tick } = await at(
+      ["lr:stage:build"],
+      { ...ANSWERS, spec: QUESTIONS, triage: (round) => judged(round <= 3 ? "goto-build" : "goto-spec") },
+      { build: NO, spec: OK },
+    );
     await tick();
-
-    for (let i = 1; i <= 2; i++) {
+    for (let i = 1; i <= 3; i++) {
       state.say("1", `try again ${i}`);
       await tick();
     }
+    // Three build rounds, all refused; the third reply's goto was past the cap and came home.
     expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
-    expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:screened", "lr:screened"]));
+    expect(state.stage("1")).toBe("screened");
 
     state.say("1", "revise the spec instead");
     await tick();
-    expect(run.trail().slice(-3)).toEqual(["screened", "spec", "spec-questions"]);
-    expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
+    expect(run.trail().slice(-3)).toEqual(["triage", "spec", "spec-questions"]);
     expect(state.ticket("1").labels).not.toContain("lr:screened");
   });
 
-  it("hands a refused spec back to spec, the stage that was refused", async () => {
-    const { state, run, tick } = await at([], { spec: QUESTIONS }, { spec: (round) => (round === 1 ? NO : OK) });
-
+  it("sends a refused spec back to spec when a reply asks for it", async () => {
+    const { state, run, tick } = await at([], { spec: QUESTIONS, triage: judged("goto-spec") }, { spec: (round) => (round === 1 ? NO : OK) });
     await tick();
     expect(run.trail()).toEqual(["spec", "screened"]);
     state.say("1", "go ahead");
     await run.converge();
-    expect(run.trail()).toEqual(["spec", "screened", "spec", "spec-questions"]);
+    expect(run.trail()).toEqual(["spec", "screened", "triage", "spec", "spec-questions"]);
   });
 
-  it("still sends a broken contract to blocked, never screened, and a reply there back to spec", async () => {
-    const { state, run, tick } = await at([], { spec: (round) => (round === 1 ? "no json at all" : QUESTIONS) }, { spec: OK });
-
+  it("still sends a broken contract to blocked, never screened", async () => {
+    const { state, run, tick } = await at([], {
+      spec: (round) => (round === 1 ? "no json at all" : QUESTIONS), triage: judged("goto-spec"),
+    }, { spec: OK });
     await tick();
     expect(run.trail()).toEqual(["spec", "blocked"]);
     expect(state.ticket("1").labels).toContain("lr:blocked");
     expect(state.ticket("1").labels).not.toContain("lr:screened");
-
     state.say("1", "sorry, try again");
     await run.converge();
-    expect(run.trail()).toEqual(["spec", "blocked", "spec", "spec-questions"]);
+    expect(run.trail()).toEqual(["spec", "blocked", "triage", "spec", "spec-questions"]);
   });
 
-  it("sends a build that broke its contract to blocked, and a reply there back to build", async () => {
+  it("sends a build that broke its contract back to build when a reply asks for it", async () => {
     const done = '```json\n{"kind":"done"}\n```';
-    const { state, run, tick } = await at(["lr:stage:build"], { ...ANSWERS, build: (round) => (round === 1 ? "no json" : done) }, {
-      build: OK, "code-review": OK,
-    });
-
+    const { state, run, tick } = await at(
+      ["lr:stage:build"],
+      { ...ANSWERS, build: (round) => (round === 1 ? "no json" : done), triage: judged("goto-build") },
+      { build: OK, "code-review": OK },
+    );
     await tick();
     expect(run.trail()).toEqual(["build", "blocked"]);
     state.say("1", "try again");
     await run.converge();
-
-    expect(run.trail().slice(0, 4)).toEqual(["build", "blocked", "build", "publish"]);
+    expect(run.trail().slice(0, 5)).toEqual(["build", "blocked", "triage", "build", "publish"]);
     expect(run.trail()).not.toContain("spec");
+  });
+});
+
+/*
+ * Retry is a goto to the stage whose round failed, and a review can fail like
+ * any other step. With the halts listing only spec and build, a review that
+ * broke its contract could be retried only by rewriting the spec or rebuilding
+ * the work, neither of which was what failed.
+ */
+describe("a review that broke its contract, retried from the board", () => {
+  it("goes back to code-review — not to spec or build — and sheds lr:blocked", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:code-review"] }] });
+    state.openPull("1", { branch: "landrace/1" });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post],
+      answers: { "code-review": (round) => (round === 1 ? "no json" : '```json\n{"kind":"reviewed"}\n```') },
+    });
+    const ctx = { config: {}, secrets: new Map<string, string>(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+    const deps: GotoDeps = { source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow };
+
+    // Two converges: the rejection is recorded, then read back and routed.
+    await run.converge();
+    await run.converge();
+    expect(run.trail()).toEqual(["code-review", "blocked"]);
+
+    expect(await sendTo(deps, "1", null)).toEqual({ to: "code-review" });
+    const retried = await run.converge();
+
+    expect(retried.trail).toEqual(["code-review", "pr-human-review"]);
+    expect(retried.calls.map(({ stage, round }) => ({ stage, round }))).toEqual([{ stage: "code-review", round: 2 }]);
+    expect(state.ticket("1").labels).not.toContain("lr:blocked");
   });
 });
 
@@ -835,7 +868,7 @@ describe("a reviewer's reply that triage cannot read as approve or revise", () =
       workflow, steps, ...hooksOf(gh),
       answers: {
         spec: '# Export CSV\n\nOne file.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
-        triage: `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``,
+        triage: (round) => (round === 1 ? `\`\`\`json\n{"intent":"${intent}"}\n\`\`\`` : '```json\n{"intent":"revise"}\n```'),
       },
     });
     await run.converge();
@@ -844,9 +877,10 @@ describe("a reviewer's reply that triage cannot read as approve or revise", () =
     return { gh, run, triaged };
   };
 
-  it.each(["question", "unclear"])("moves the ticket somewhere a human turn can reach, on %s", async (intent) => {
+  it.each(["question", "unclear"])("brings the ticket back to where the reply was made, on %s, and a later reply moves it on", async (intent) => {
     const { gh, run, triaged } = await upTo(intent);
     expect(triaged.trail.at(-1)).not.toBe("triage");
+    expect(triaged.trail).toEqual(["triage", "spec-human-review"]);
 
     gh.sayAs("a-person", 1, "no tabs, commas only", new Date(Date.UTC(2026, 1, 2)).toISOString());
     const answered = await run.converge();
@@ -926,6 +960,9 @@ const splitWorld = () => {
 const SPLIT_ANSWERS: Record<string, ScriptedAnswer> = {
   ...ANSWERS,
   spec: '# Spec\n\n```json\n{"kind":"spec","title":"Payments"}\n```',
+  // The spec asks nothing here, so every reply triage reads is made at
+  // spec-human-review, and each one approves.
+  triage: '```json\n{"intent":"approve"}\n```',
   breakdown: '```json\n{"kind":"children"}\n```',
 };
 

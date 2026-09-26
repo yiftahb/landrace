@@ -559,13 +559,16 @@ describe("every declared output shape has somewhere to go next", () => {
   it("catches the two triage shapes that stranded a real ticket", async () => {
     const { workflow, steps } = await loadWorkflow(".landrace");
     // The shipped workflow as it was: `question` and `unclear` declared, routed
-    // to a comment, and led away from by nothing.
+    // to a comment, and led away from by nothing — every trigger out of triage
+    // that does not demand an answer by name taken out, which leaves only the
+    // ones that read `approve` or `revise`.
     const stranded: Workflow = {
       ...workflow,
-      stages: workflow.stages.map((stage) =>
-        stage.id === "spec-questions"
-          ? { ...stage, triggers: (stage.triggers ?? []).filter((t) => t.when["run.stage"] !== "triage") }
-          : stage),
+      stages: workflow.stages.map((stage) => ({
+        ...stage,
+        triggers: (stage.triggers ?? []).filter((t) =>
+          t.when["run.stage"] !== "triage" || typeof t.when["run.outputs.triage.intent"] === "string"),
+      })),
     };
     const found = validateSemantics(stranded, steps).filter((p) => p.rule === "shape-edge");
     expect(found.map((p) => p.message).join(" ")).toMatch(/"question"/);

@@ -322,6 +322,8 @@ describe("the spec phase routes on what the step actually said", () => {
     spec: (round) => round === 1
       ? '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```'
       : '# Export CSV\n\nOne file, comma separated.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
+    // The first reply answers the spec's questions, the second approves the spec.
+    triage: (round) => (round === 1 ? '```json\n{"intent":"revise"}\n```' : '```json\n{"intent":"approve"}\n```'),
   };
 
   it("reaches spec-questions because outputs.spec.kind resolved to questions", async () => {
@@ -340,7 +342,7 @@ describe("the spec phase routes on what the step actually said", () => {
     say(gh, "in-house, and CSV only");
     const r = await run(gh, { answers });
 
-    expect(r.invocations).toEqual([{ stage: "spec", round: 2 }]);
+    expect(r.invocations).toEqual([{ stage: "triage", round: 1 }, { stage: "spec", round: 2 }]);
     expect(r.run.outputs.spec).toEqual({ kind: "spec", title: "Export CSV" });
     expect(r.run.counters.spec).toBe(2);
     expect(r.labels).toContain("lr:stage:spec-human-review");
@@ -365,7 +367,7 @@ describe("the spec phase routes on what the step actually said", () => {
     say(gh, "in-house, and CSV only");
     const r = await run(gh, { answers });
 
-    expect(r.invocations).toEqual([{ stage: "spec", round: 2 }]);
+    expect(r.invocations).toEqual([{ stage: "triage", round: 1 }, { stage: "spec", round: 2 }]);
     expect(r.result.why ?? "").not.toMatch(/left nothing readable/);
     expect(r.run.rounds.spec).toEqual({ entered: 2, output: 2 });
   });
@@ -379,7 +381,7 @@ describe("the spec phase routes on what the step actually said", () => {
     const r = await run(gh, { answers });
 
     expect(r.invocations.slice(0, 3)).toEqual([
-      { stage: "triage", round: 1 },
+      { stage: "triage", round: 2 },
       { stage: "build", round: 1 },
       { stage: "code-review", round: 1 },
     ]);
@@ -434,8 +436,8 @@ describe("a halted ticket is handed back to a stage that records its entry", () 
 
     say(gh, "try again");
 
-    const handed = await run(gh);
-    expect(handed.invocations[0]).toEqual({ stage: "spec", round: 1 });
+    const handed = await run(gh, { answers: { triage: '```json\n{"intent":"goto-spec"}\n```' } });
+    expect(handed.invocations.slice(0, 2)).toEqual([{ stage: "triage", round: 1 }, { stage: "spec", round: 1 }]);
     expect(entryRecords(handed.markers, "spec")).toEqual([1]);
     expect(handed.labels).not.toContain("lr:blocked");
   });
@@ -473,28 +475,30 @@ describe("a ticket goes all the way round §10", () => {
 
   it("walks spec → review → done, and the pull request is what turns the second half", async () => {
     const gh = world(["lr:auto"]);
+    // The first reply answers the spec's questions, the second approves the spec.
+    const judged = { ...answers, triage: (round: number) => (round === 1 ? '```json\n{"intent":"revise"}\n```' : '```json\n{"intent":"approve"}\n```') };
 
-    const asked = await run(gh, { answers });
+    const asked = await run(gh, { answers: judged });
     say(gh, "in-house, and CSV only");
-    const specced = await run(gh, { answers });
+    const specced = await run(gh, { answers: judged });
     say(gh, "looks right, go ahead");
     // The reviewer closes its own findings on its second pass — §10's "the
     // party that raised a finding closes it", which is also the only thing
     // that can end the loop.
-    const reviewed = await run(gh, { answers, resolveOn: 2 });
+    const reviewed = await run(gh, { answers: judged, resolveOn: 2 });
 
     // A person merges it.
     const pull = gh.pulls.get(7);
     if (!pull) throw new Error("the build never opened a pull request");
     pull.merged = true;
-    const done = await run(gh, { answers });
+    const done = await run(gh, { answers: judged });
 
     expect(trail(asked, specced, reviewed, done)).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build", "publish",
+      "spec", "spec-questions", "triage", "spec", "spec-human-review", "triage", "build", "publish",
       "code-review", "fix-review", "code-review", "pr-human-review", "done",
     ]);
     expect(reviewed.invocations).toEqual([
-      { stage: "triage", round: 1 },
+      { stage: "triage", round: 2 },
       { stage: "build", round: 1 },
       { stage: "code-review", round: 1 },
       { stage: "fix-review", round: 1 },
