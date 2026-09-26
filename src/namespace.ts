@@ -279,8 +279,13 @@ export type McpConfig = z.infer<typeof mcpConfigSchema>;
  */
 export interface ResolvedMcp {
   servers: Record<string, McpServer>;
+  /** The tools a server's entry listed, by server name; a server named bare has none here and allows every tool. */
+  tools: Record<string, string[]>;
   problems: Problem[];
 }
+
+/** One `agent.mcp` entry: a server's bare name, or its name and the only tools a step may call on it. */
+export type McpEntry = RuntimeConfig["agent"]["mcp"][number];
 
 /**
  * What a declared run is handed beyond its own tools, resolved once at
@@ -290,6 +295,8 @@ export interface ResolvedMcp {
 export interface StepTools {
   plugins: readonly string[];
   mcpServers: Readonly<Record<string, McpServer>>;
+  /** Per server, the only tools a step may call; a server absent here allows every tool it has. */
+  mcpTools: Readonly<Record<string, readonly string[]>>;
 }
 
 /* -------------------------------------------------------------- workflow -- */

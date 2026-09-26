@@ -186,7 +186,7 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `agent.model` | — | Default model; a step may override it |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` |
 | `agent.plugins` | `[]` | Plugin ids (`name@marketplace`) enabled for every step and conversation turn, e.g. `superpowers@claude-plugins-official` |
-| `agent.mcp` | `[]` | MCP server **names** a step may use, looked up in the repository root's `.mcp.json`. Never `landrace` — see below |
+| `agent.mcp` | `[]` | MCP servers a step may use, looked up by name in the repository root's `.mcp.json`: a bare name allows **every** tool on the server, `{ name, tools: [...] }` only those. Never `landrace` — see below |
 | `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` — which a GitHub App token needs (e.g. `myapp`), since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
@@ -210,7 +210,19 @@ Neither read-only steps nor the screener run in plan mode. Checked against the r
 
 `--restricted` ignores your own Claude settings, and with them every plugin you enabled there, so a read-only step has none unless `agent.plugins` names it. The list goes to the agent as one inline `--settings` document.
 
-Every step and turn runs with `--strict-mcp-config`: it gets exactly the servers `agent.mcp` names, as `.mcp.json` defines them (`env` included), each allowed as `mcp__<name>` — and nothing from a `.mcp.json` committed to the repository, from your user-level config, or from anywhere else. With an empty `agent.mcp` it gets no server at all. A step holding `create_child` gets its bound child server beside them.
+Every step and turn runs with `--strict-mcp-config`: it gets exactly the servers `agent.mcp` names, as `.mcp.json` defines them (`env` included) — and nothing from a `.mcp.json` committed to the repository, from your user-level config, or from anywhere else. With an empty `agent.mcp` it gets no server at all. A step holding `create_child` gets its bound child server beside them.
+
+**An allowlisted server is not read-only because the step is.** A bare name is allowed as `mcp__<name>` — every tool the server has, whatever it does. For the codebase graph that includes indexing any path it is handed (which writes its index there), deleting a project, rewriting ADRs, ingesting traces, and reading any project indexed on this machine — your own checkout, uncommitted work included. List the tools instead:
+
+```yaml
+agent:
+  mcp:
+    - name: codebase-memory-mcp
+      tools: [search_graph, trace_path, get_code_snippet, query_graph, get_architecture,
+              search_code, get_graph_schema, index_status, list_projects, index_repository]
+```
+
+Then only `mcp__codebase-memory-mcp__<tool>` for each listed tool is allowed. That is this repository's own configuration, and it still leaves two things open: `index_repository` is there because a step's fresh worktree is not indexed yet, so a step can still index a path of its choosing; and the reading tools take a project, so a step can still read any project already indexed on the machine. A tool name follows the same rule as a server name — letters, digits, `.`, `_`, `-` — and an entry with an empty list, or a server named twice, is refused.
 
 Servers are resolved once, at startup, from the **repository root's** `.mcp.json` — the file agsync generates, not anything in the step's worktree. `landrace start` and `landrace mcp` refuse to start, and `landrace validate` reports the same sentence, when:
 

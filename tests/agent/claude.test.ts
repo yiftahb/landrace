@@ -537,6 +537,23 @@ describe("plugins and MCP servers", () => {
     expect(list(argv, "--allowedTools")).toEqual(["mcp__codebase-memory-mcp"]);
   });
 
+  it("allows only the listed tools of a server that lists them, and every tool of one named bare", async () => {
+    const argv = await argvOf(
+      createClaudeExecutor({
+        bin,
+        mcpServers: { "codebase-memory-mcp": MEMORY, other: { command: "other" } },
+        mcpTools: { "codebase-memory-mcp": ["search_graph", "trace_path"] },
+      }),
+      { capabilities: ["repo:read"] },
+    );
+    expect(list(argv, "--allowedTools").sort()).toEqual([
+      "mcp__codebase-memory-mcp__search_graph", "mcp__codebase-memory-mcp__trace_path", "mcp__other",
+    ]);
+    // Every server still loads — the list narrows what may be called, and the
+    // config has to define a server for any of its tools to exist at all.
+    expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers).sort()).toEqual(["codebase-memory-mcp", "other"]);
+  });
+
   /*
    * Strict even with nothing to allow: without it, a `.mcp.json` committed to
    * the repository — which is what the step's worktree is checked out from —

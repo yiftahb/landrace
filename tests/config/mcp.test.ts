@@ -49,9 +49,41 @@ describe("the MCP servers a step may use", () => {
     expect((await resolveStepServers(nested, ["codebase-memory-mcp"])).servers).toEqual({ "codebase-memory-mcp": MEMORY });
   });
 
+  /*
+   * Allowlisting a server by bare name allows every tool on it — for the
+   * codebase graph that includes indexing any path, deleting a project and
+   * reading every other indexed checkout. Listing tools narrows it to those.
+   */
+  it("carries a server's tool list beside its definition, and none for a bare name", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": MEMORY, other: { command: "other" } } });
+    const r = await resolveStepServers(dir, [{ name: "codebase-memory-mcp", tools: ["search_graph", "trace_path"] }, "other"]);
+    expect(r.problems).toEqual([]);
+    expect(r.servers).toEqual({ "codebase-memory-mcp": MEMORY, other: { command: "other" } });
+    expect(r.tools).toEqual({ "codebase-memory-mcp": ["search_graph", "trace_path"] });
+  });
+
+  it("refuses an entry that lists no tools, which would allow nothing while reading as configured", async () => {
+    const { problems } = await resolveStepServers(join(await plainDir(), ".landrace"), [{ name: "codebase-memory-mcp", tools: [] }]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/"codebase-memory-mcp"[\s\S]*no tools/) }]);
+  });
+
+  it.each(["search graph", "a,Bash", "-x"])("refuses a tool name its argv could not carry whole: %s", async (tool) => {
+    const { problems } = await resolveStepServers(join(await plainDir(), ".landrace"), [{ name: "codebase-memory-mcp", tools: ["search_graph", tool] }]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringContaining(JSON.stringify(tool)) }]);
+  });
+
+  // Two entries for one server could disagree about its tools, and picking
+  // one of them is the "first match wins" this codebase does not do.
+  it("refuses a server named twice, whatever the two entries say", async () => {
+    const { problems } = await resolveStepServers(join(await plainDir(), ".landrace"), [
+      "codebase-memory-mcp", { name: "codebase-memory-mcp", tools: ["search_graph"] },
+    ]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/"codebase-memory-mcp" more than once/) }]);
+  });
+
   it("asks nothing of the file system when no server is allowed", async () => {
     const r = await resolveStepServers(join(await plainDir(), ".landrace"), []);
-    expect(r).toEqual({ servers: {}, problems: [] });
+    expect(r).toEqual({ servers: {}, tools: {}, problems: [] });
   });
 
   it("refuses when there is no .mcp.json, saying agsync sync generates it", async () => {
@@ -104,7 +136,7 @@ describe("the MCP servers a step may use", () => {
     ["a remote server", { type: "http", url: "https://mcp.example.invalid/landrace" }],
   ])("lets through what only looks like it: %s", async (_, definition) => {
     const { dir } = await repo({ mcpServers: { other: definition } });
-    expect(await resolveStepServers(dir, ["other"])).toEqual({ servers: { other: definition }, problems: [] });
+    expect(await resolveStepServers(dir, ["other"])).toEqual({ servers: { other: definition }, tools: {}, problems: [] });
   });
 
   /*
@@ -172,7 +204,15 @@ describe("the shipped allowlist, against what agsync generates", () => {
     const { dir } = await repo(await generated());
     const r = await resolveStepServers(dir, config.agent.mcp);
     expect(r.problems).toEqual([]);
-    expect(Object.keys(r.servers)).toEqual(config.agent.mcp);
+    expect(Object.keys(r.servers)).toEqual(config.agent.mcp.map((e) => (typeof e === "string" ? e : e.name)));
+  });
+
+  // This repository's own steps get the codebase graph's reading tools and
+  // its indexer, never the whole server — not delete_project, not
+  // manage_adr, not ingest_traces.
+  it("names the tools of every server it allows, rather than allowing the whole server", async () => {
+    const { config } = await loadConfig(".landrace");
+    for (const entry of config.agent.mcp) expect(typeof entry).toBe("object");
   });
 
   it("recognises the operator server agsync defines, under any name", async () => {

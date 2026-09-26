@@ -14,11 +14,15 @@ export const runtimeConfigSchema = z.object({
      */
     plugins: z.array(z.string().min(1)).default([]),
     /**
-     * MCP server *names* a step may use, each looked up in the repository
-     * root's `.mcp.json` at startup. Names, not definitions, so the file agsync
-     * generates stays the one place a server is described.
+     * MCP servers a step may use, each looked up by name in the repository
+     * root's `.mcp.json` at startup — names, not definitions, so the file
+     * agsync generates stays the one place a server is described. A bare name
+     * allows every tool the server has; `{ name, tools }` allows only those.
+     * Strict, so a misspelt `tool:` is refused rather than read as "every tool".
      */
-    mcp: z.array(z.string().min(1)).default([]),
+    mcp: z
+      .array(z.union([z.string().min(1), z.object({ name: z.string().min(1), tools: z.array(z.string().min(1)) }).strict()]))
+      .default([]),
   }),
   /**
    * Opaque on purpose. Whatever a tracker needs — a repository, a project key,

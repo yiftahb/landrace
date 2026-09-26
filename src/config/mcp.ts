@@ -4,7 +4,7 @@ import { z } from "zod";
 import { ARG_SHAPE } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { messageOf } from "#runner/errors.js";
-import type { McpServer, Problem, ResolvedMcp } from "#namespace.js";
+import type { McpEntry, McpServer, Problem, ResolvedMcp } from "#namespace.js";
 
 /**
  * One server as `.mcp.json` defines it. Only the fields the operator-server
@@ -66,26 +66,50 @@ const shapeProblem = (what: string): Problem => ({
  * and neither is the file's own text, which node's JSON.parse would otherwise
  * echo around a syntax error.
  */
-export async function resolveStepServers(dir: string, names: readonly string[]): Promise<ResolvedMcp> {
-  const wanted = [...new Set(names)];
-  if (wanted.length === 0) return { servers: {}, problems: [] };
+export async function resolveStepServers(dir: string, entries: readonly McpEntry[]): Promise<ResolvedMcp> {
+  if (entries.length === 0) return { servers: {}, tools: {}, problems: [] };
 
-  // Refused on the name alone, before anything is read: these need no file to
-  // be wrong, and a missing file must not hide them. A name reaches the
-  // agent's argv as `mcp__<name>` in `--allowedTools`, which the CLI splits on
-  // spaces and commas — a server called "x Bash" would allow Bash — and
-  // `landrace` is both the operator server and the name the executor gives a
-  // step's create_child server.
-  const problems: Problem[] = [];
+  // Refused on the entries alone, before anything is read: these need no file
+  // to be wrong, and a missing file must not hide them. A name reaches the
+  // agent's argv as `mcp__<name>[__<tool>]` in `--allowedTools`, which the CLI
+  // splits on spaces and commas — a server or tool called "x Bash" would allow
+  // Bash — and `landrace` is both the operator server and the name the
+  // executor gives a step's create_child server.
+  const nameOf = (entry: McpEntry): string => (typeof entry === "string" ? entry : entry.name);
+  const names = entries.map(nameOf);
+  // Two entries for one server could disagree about its tools, and choosing
+  // one of them would be "first match wins".
+  const repeated = new Set(names.filter((name, i) => names.indexOf(name) !== i));
+  const problems: Problem[] = [...repeated].map((name) => ({
+    rule: "mcp",
+    message: `agent.mcp names "${name}" more than once; name it once, with every tool a step may use on it`,
+  }));
   const rest: string[] = [];
-  for (const name of wanted) {
+  const tools: Record<string, string[]> = {};
+  for (const entry of entries) {
+    const name = nameOf(entry);
+    const listed = typeof entry === "string" ? undefined : entry.tools;
+    const badTools = (listed ?? []).filter((tool) => !ARG_SHAPE.test(tool));
+    if (repeated.has(name)) continue;
     if (!ARG_SHAPE.test(name)) problems.push(shapeProblem(`a server named ${JSON.stringify(name)}`));
     else if (name === OPERATOR_NAME) problems.push(operatorProblem(name, "which is"));
-    else rest.push(name);
+    else if (listed !== undefined && listed.length === 0) {
+      problems.push({
+        rule: "mcp",
+        message:
+          `agent.mcp names "${name}" with no tools, which would load the server and allow nothing on it; ` +
+          "name it bare to allow every tool, or list the ones a step may use",
+      });
+    } else if (badTools.length) {
+      problems.push(...badTools.map((tool) => shapeProblem(`a tool named ${JSON.stringify(tool)} on "${name}"`)));
+    } else {
+      rest.push(name);
+      if (listed !== undefined) tools[name] = [...new Set(listed)];
+    }
   }
-  if (rest.length === 0) return { servers: {}, problems };
+  if (rest.length === 0) return { servers: {}, tools: {}, problems };
 
-  const fail = (message: string): ResolvedMcp => ({ servers: {}, problems: [...problems, { rule: "mcp", message }] });
+  const fail = (message: string): ResolvedMcp => ({ servers: {}, tools: {}, problems: [...problems, { rule: "mcp", message }] });
 
   let root: string;
   try {
@@ -138,5 +162,5 @@ export async function resolveStepServers(dir: string, names: readonly string[]):
       servers[name] = server;
     }
   }
-  return problems.length ? { servers: {}, problems } : { servers, problems };
+  return problems.length ? { servers: {}, tools: {}, problems } : { servers, tools, problems };
 }

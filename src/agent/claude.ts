@@ -159,6 +159,8 @@ export function createClaudeExecutor(opts: {
    * refused. Never read from the worktree the agent runs in.
    */
   mcpServers?: StepTools["mcpServers"];
+  /** Per server, the only tools a run may call on it; a server absent here allows every tool it has. */
+  mcpTools?: StepTools["mcpTools"];
 } = {}): Executor {
   const {
     model,
@@ -173,6 +175,7 @@ export function createClaudeExecutor(opts: {
     childServer,
     plugins = [],
     mcpServers = {},
+    mcpTools = {},
   } = opts;
 
   if (permissionMode === "bypassPermissions") {
@@ -281,8 +284,13 @@ export function createClaudeExecutor(opts: {
           args: [...childServer.args, "--child", bound.parent, "--stage", bound.stage, "--round", String(bound.round)],
         };
       }
+      // A server whose entry listed tools allows exactly those; one named bare
+      // allows every tool it has — which, for a server that can index or
+      // delete, is a lot more than reading.
       const allowed = [
-        ...Object.keys(servers).filter((name) => name !== CHILD_SERVER_NAME).map((name) => `mcp__${name}`),
+        ...Object.keys(servers)
+          .filter((name) => name !== CHILD_SERVER_NAME)
+          .flatMap((name) => mcpTools[name]?.map((tool) => `mcp__${name}__${tool}`) ?? [`mcp__${name}`]),
         ...(bound ? ["mcp__landrace__landrace_create_child"] : []),
       ];
       // Inline JSON rather than a config file: there is no path for the

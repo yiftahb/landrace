@@ -338,7 +338,7 @@ describe("the create_child server the loop's executor starts", () => {
    * configured and never runs.
    */
   it("hands the step the plugins and servers it was given, beside its child server", async () => {
-    const tools = { plugins: ["superpowers@claude-plugins-official"], mcpServers: { "codebase-memory-mcp": { command: "cbm" } } };
+    const tools = { plugins: ["superpowers@claude-plugins-official"], mcpServers: { "codebase-memory-mcp": { command: "cbm" } }, mcpTools: {} };
     const argv = await withFakeClaude(async (cwd) => {
       const executor = executorFor(config, workflow, registry, () => {}, { dir: "relative/.landrace", tools });
       const r = await executor.run("x", {

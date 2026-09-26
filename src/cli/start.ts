@@ -187,7 +187,7 @@ export function executorFor(
       ...(model === undefined ? {} : { model }),
       timeoutMs: stepTimeoutMs(workflow),
       log,
-      ...(tools === undefined ? {} : { plugins: tools.plugins, mcpServers: tools.mcpServers }),
+      ...(tools === undefined ? {} : { plugins: tools.plugins, mcpServers: tools.mcpServers, mcpTools: tools.mcpTools }),
       ...(dir === undefined ? {} : {
         // This same process, started again as `landrace mcp`: the node binary,
         // its own flags (type stripping, --import), the CLI entry, and the
@@ -242,9 +242,9 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<{ 
  * config/mcp.ts so `landrace validate` says the same sentence.
  */
 export async function stepToolsFor(config: RuntimeConfig, dir: string): Promise<StepTools> {
-  const { servers, problems } = await resolveStepServers(dir, config.agent.mcp);
+  const { servers, tools, problems } = await resolveStepServers(dir, config.agent.mcp);
   if (problems.length) throw new Error(problems.map((p) => `${p.rule}: ${p.message}`).join("\n"));
-  return { plugins: config.agent.plugins, mcpServers: servers };
+  return { plugins: config.agent.plugins, mcpServers: servers, mcpTools: tools };
 }
 
 /**

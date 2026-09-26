@@ -167,6 +167,19 @@ agent:
     expect(config.agent.mcp).toEqual(["codebase-memory-mcp"]);
   });
 
+  /*
+   * A bare name allows every tool the server has; an entry with `tools` allows
+   * only those. Strict, so a misspelt `tool:` is refused rather than read as
+   * "every tool".
+   */
+  it("take a server either by bare name or with the tools a step may use", () => {
+    const r = parse({ mcp: ["other", { name: "codebase-memory-mcp", tools: ["search_graph", "trace_path"] }] });
+    expect(r.success && r.data.agent.mcp).toEqual(["other", { name: "codebase-memory-mcp", tools: ["search_graph", "trace_path"] }]);
+    expect(parse({ mcp: [{ name: "codebase-memory-mcp", tool: ["search_graph"] }] }).success).toBe(false);
+    expect(parse({ mcp: [{ tools: ["search_graph"] }] }).success).toBe(false);
+    expect(parse({ mcp: [{ name: "codebase-memory-mcp", tools: "search_graph" }] }).success).toBe(false);
+  });
+
   it("refuse anything but a list of names", () => {
     expect(parse({ mcp: "codebase-memory-mcp" }).success).toBe(false);
     expect(parse({ plugins: "superpowers@claude-plugins-official" }).success).toBe(false);

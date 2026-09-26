@@ -307,7 +307,7 @@ ${EXECUTOR}`);
     const memory = { command: "codebase-memory-mcp", args: [], env: {} };
     const { dir } = await fixture({
       screen: true,
-      agentKeys: "plugins: [superpowers@claude-plugins-official], mcp: [codebase-memory-mcp]",
+      agentKeys: "plugins: [superpowers@claude-plugins-official], mcp: [{ name: codebase-memory-mcp, tools: [search_graph, trace_path] }]",
       mcpJson: { mcpServers: { "codebase-memory-mcp": memory, landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });
     const rt = await buildRuntime(dir, {});
@@ -336,6 +336,10 @@ ${EXECUTOR}`);
     }
 
     expect(JSON.parse(step[step.indexOf("--mcp-config") + 1] as string)).toEqual({ mcpServers: { "codebase-memory-mcp": memory } });
+    // Only the tools landrace.yaml listed, never the whole server.
+    expect(step.slice(step.indexOf("--allowedTools") + 1)).toEqual([
+      "mcp__codebase-memory-mcp__search_graph", "mcp__codebase-memory-mcp__trace_path",
+    ]);
     expect(step).toContain("--settings");
     // The screener: no plugin, no server, no tool, and the model
     // `security.model` names — honoured, because it no longer runs in plan mode.
