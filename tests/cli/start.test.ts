@@ -10,6 +10,7 @@ import { renderMarker } from "#conventions.js";
 import type { Board, LandraceEvent, Registry, Runtime, Schedule, Source, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import { createDispatcher } from "#runner/effects.js";
+import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import {
   boardSink,
@@ -569,6 +570,32 @@ describe("startUi", () => {
       await ui?.close();
     }
   });
+
+  /**
+   * The wiring itself: startUi is the one place a caller's `goto` reaches
+   * serveBoard, so this is what stands between `gotoFor` and a working POST
+   * /tickets/<id>/goto/<stage> — proven with a real request rather than a
+   * spy on serveBoard. Deleting `opts.goto` from `startUi`'s call to
+   * `serveBoard` would leave every other test in this file green while
+   * Retry and "Go to step…" quietly 404; this is what catches that.
+   */
+  it("passes goto through to serveBoard, so POST /tickets/<id>/goto/<stage> reaches it", async () => {
+    const calls: Array<[string, string | null]> = [];
+    const ui = await startUi({
+      board: board(), ui: true, once: false, port: 0,
+      goto: { send: async (t, s) => { calls.push([t, s]); return { to: "spec" }; } },
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/tickets/19/goto/spec`, {
+        method: "POST",
+        headers: { "x-landrace-action": "goto", origin: `http://127.0.0.1:${ui?.port}` },
+      });
+      expect(res.status).toBe(202);
+      expect(calls).toEqual([["19", "spec"]]);
+    } finally {
+      await ui?.close();
+    }
+  });
 });
 
 const WF: Workflow = { version: 1, name: "t", stages: [
@@ -587,11 +614,17 @@ describe("the page's Retry and Go to step", () => {
   it("sends a stopped ticket back to the stage that failed", async () => {
     const tracker = createFakeTracker([{ number: 19, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
     tracker.say(19, `broken${renderMarker({ stage: "spec", kind: "malformed", round: 1 })}`);
+    const source = tracker.registry.source as Source;
     const path = gotoFor({
-      source: tracker.registry.source as Source, pre: tracker.registry.pre,
+      source, pre: tracker.registry.pre,
       dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: WF,
     });
     expect(await path?.send("19", null)).toEqual({ to: "spec" });
+
+    // A record the next tick actually reads, not just an answer this call
+    // happened to return.
+    const snapshot = await buildSnapshot({ ticket: "19", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "19" } });
+    expect(snapshot.run?.goto).toBe("spec");
   });
 });
 

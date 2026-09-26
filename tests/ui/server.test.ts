@@ -395,10 +395,22 @@ describe("the page's writes to a ticket: POST /tickets/<id>/retry and /tickets/<
     try {
       const res = await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours("retry") });
       expect(res.status).toBe(502);
+      expect(res.body).toMatch(/could not send it back/);
       expect(res.body).not.toMatch(/ghp_/);
+      expect(spy).toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("refuses a request with no custom header — what a cross-site <form> sends — and sends nothing", async () => {
+    const g = going();
+    server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
+    const res = await get(server.port, "/tickets/19/retry", {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "a=1",
+    });
+    expect(res.status).toBe(403);
+    expect(g.calls).toEqual([]);
   });
 
   it.each([["retry", "/tickets/19/goto/spec"], ["goto", "/tickets/19/retry"], ["tick", "/tickets/19/goto/spec"]])(
@@ -416,7 +428,29 @@ describe("the page's writes to a ticket: POST /tickets/<id>/retry and /tickets/<
     expect(g.calls).toEqual([]);
   });
 
-  it.each(["%00", "%E0%A4%A", "x".repeat(65)])("refuses a step that is not one (%s)", async (stage) => {
+  it("refuses a ticket id that is not one on the retry route too", async () => {
+    const g = going();
+    server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
+    expect((await get(server.port, "/tickets/../retry", { method: "POST", headers: ours("retry") })).status).toBe(400);
+    expect(g.calls).toEqual([]);
+  });
+
+  it("says 'ticket id' for a malformed % on the retry route, and 'ticket and a step' on the goto route", async () => {
+    const g = going();
+    server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
+    const retrying = await get(server.port, "/tickets/%E0%A4%A/retry", { method: "POST", headers: ours("retry") });
+    expect(retrying.status).toBe(400);
+    expect(retrying.body).toBe("that is not a ticket id");
+    const going_ = await get(server.port, "/tickets/%E0%A4%A/goto/spec", { method: "POST", headers: ours("goto") });
+    expect(going_.status).toBe(400);
+    expect(going_.body).toBe("that is not a ticket and a step");
+    expect(g.calls).toEqual([]);
+  });
+
+  // "%E2%80%8B" is U+200B ZERO WIDTH SPACE — Unicode category Cf (Format),
+  // proving the check reaches past C0/DEL to every control-like category, not
+  // just the ones a naive ASCII check would catch.
+  it.each(["%00", "%E0%A4%A", "%E2%80%8B"])("refuses a step that is not one (%s)", async (stage) => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
     expect((await get(server.port, `/tickets/19/goto/${stage}`, { method: "POST", headers: ours("goto") })).status).toBe(400);
@@ -436,5 +470,14 @@ describe("the page's writes to a ticket: POST /tickets/<id>/retry and /tickets/<
   it("is not there at all when nothing can write to the tracker", async () => {
     server = await serveBoard({ port: 0, view: async () => empty });
     expect((await get(server.port, "/tickets/19/goto/spec", { method: "POST", headers: ours("goto") })).status).toBe(404);
+  });
+
+  it("sends the CSP and no-store headers, and no Access-Control-Allow-*, on a write response", async () => {
+    const g = going();
+    server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
+    const res = await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours("retry") });
+    expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(Object.keys(res.headers).some((h) => h.toLowerCase().startsWith("access-control-allow"))).toBe(false);
   });
 });

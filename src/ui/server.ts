@@ -145,7 +145,10 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
         ticket = decodeURIComponent(writing[1] ?? "");
         if (going) target = decodeURIComponent(going[2] ?? "");
       } catch {
-        send(res, 400, "text/plain; charset=utf-8", "that is not a ticket and a step");
+        // A Retry's path names only a ticket, so a malformed `%` there can
+        // only be a bad ticket id; a goto's path names both, and decoding
+        // does not say which one broke.
+        send(res, 400, "text/plain; charset=utf-8", retrying ? "that is not a ticket id" : "that is not a ticket and a step");
         return;
       }
       const problem = ticketIdProblem(ticket);
@@ -153,10 +156,14 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
         send(res, 400, "text/plain; charset=utf-8", problem);
         return;
       }
-      // A step id is the workflow's, and sendTo refuses one it does not
-      // list; this only keeps what is echoed back short and printable.
-      // eslint-disable-next-line no-control-regex -- checking for control characters is the point
-      if (target !== null && (target === "" || target.length > 64 || /[\u0000-\u001f\u007f]/.test(target))) {
+      // A step id is the workflow's own and unbounded in the schema — a
+      // length cap invented here would refuse a longer valid one for no
+      // reason — so this only guards an empty target and what would ride
+      // along into the 409 sentence the page shows: any Unicode control,
+      // format, or line/paragraph separator, printable otherwise or not.
+      // `sendTo`, not this route, is what decides whether the step itself is
+      // one this stage actually lists.
+      if (target !== null && (target === "" || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(target))) {
         send(res, 400, "text/plain; charset=utf-8", "that is not a step");
         return;
       }

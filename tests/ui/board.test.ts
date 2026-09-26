@@ -143,6 +143,11 @@ describe("boardView: where a row may send its ticket back to", () => {
     const running = new Map<string, Running>([["7", { stage: "spec", round: 2, model: null, since: 1 }]]);
     expect(rowFor(["lr:stage:blocked"], {}, { running })?.goto).toEqual([]);
   });
+
+  it("offers none on a row held elsewhere", () => {
+    const other: Held = { ticket: "7", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
+    expect(rowFor(["lr:stage:blocked"], {}, { elsewhere: new Map([["7", other]]) })?.goto).toEqual([]);
+  });
 });
 
 describe("boardView: the tree", () => {
@@ -399,6 +404,23 @@ describe("createBoard", () => {
       board.observe({ name: "ticket.evaluated", ticket: "1", decision: "transition", to: "done", why: "the spec was published" });
       return board.view();
     }).then((v) => expect(v.rows[0]?.note).toBe("agent running"));
+  });
+
+  /*
+   * `sent` never clears on its own the way `running` does (no event says
+   * "nobody will ever goto this again"), so a ticket that leaves the graph —
+   * closed, or simply not relisted — has to be the thing that prunes it, or
+   * a stale "sent back to X" could resurface if the same id is ever listed
+   * again with no fresh goto behind it.
+   */
+  it("prunes sent for a ticket once it leaves the graph, so a stale note cannot resurface", async () => {
+    const board = shell(() => 0);
+    board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
+    board.observe({ name: "ticket.evaluated", ticket: "1", decision: "transition", to: "spec", why: "goto" });
+    board.list(graph([])); // ticket 1 is gone from this listing
+    board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])])); // and back, with no new goto
+    board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 3 });
+    expect((await board.view()).rows[0]?.note).toBe("agent running");
   });
 
   it("opens a running row on step.started and closes it on step.finished", async () => {

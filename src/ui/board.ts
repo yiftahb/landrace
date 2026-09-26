@@ -23,9 +23,10 @@ export function laneOf(row: StatusRow, workflow: Workflow): Lane {
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 
 /**
- * Whether a human turn would hand this ticket back: it is stopped, blocked or
- * screened. The status row's own verdict, so the row the page draws and the
- * check the server makes before posting cannot disagree about a ticket.
+ * Whether this row offers a Retry: the ticket is blocked or screened right
+ * now. A Retry is a goto with no step named — the stage whose round last
+ * failed — and this is only the board's own offer; `sendTo` re-reads the
+ * ticket and is the one authority on whether a given send is actually taken.
  */
 const stopped = (row: StatusRow): boolean => row.note === BLOCKED_NOTE || row.note === SCREENED_NOTE;
 
@@ -260,6 +261,13 @@ export function createBoard(opts: {
     },
     list(next: Graph): void {
       graph = next;
+      // A ticket that has left the graph — closed and eventually not
+      // relisted, or never eligible again — never fires another
+      // ticket.evaluated for `sent` to clear; without this it would sit
+      // there forever, on the very ids `sent` no longer has an opinion worth
+      // keeping about.
+      const ids = new Set(next.nodes.map((n) => n.id));
+      for (const id of sent.keys()) if (!ids.has(id)) sent.delete(id);
     },
     async view(): Promise<BoardView> {
       // Open tickets only: nothing else can be held, and a closed ticket's
