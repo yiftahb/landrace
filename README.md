@@ -62,7 +62,9 @@ landrace start                             # watch, on the interval
 ```
 
 `validate` fails if a secret does not resolve, if your `.env` is not gitignored,
-or if a predicate reads a path no hook provides. `status` invokes no agent and
+if a server `agent.mcp` allows cannot be handed to a step (see
+[What a step's agent is handed](#what-a-steps-agent-is-handed)), or if a
+predicate reads a path no hook provides. `status` invokes no agent and
 writes nothing, so it is the safe way to see what Landrace thinks of your
 tickets — including the workflow's own reason for skipping one.
 
@@ -183,6 +185,8 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `agent.adapter` | — | Which coding agent to invoke (`claude`) |
 | `agent.model` | — | Default model; a step may override it |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` |
+| `agent.plugins` | `[]` | Plugin ids (`name@marketplace`) enabled for every step and conversation turn, e.g. `superpowers@claude-plugins-official` |
+| `agent.mcp` | `[]` | MCP server **names** a step may use, looked up in the repository root's `.mcp.json`. Never `landrace` — see below |
 | `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` — which a GitHub App token needs (e.g. `myapp`), since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
@@ -191,6 +195,29 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `log.redact` | `[]` | Secret names whose values must never be logged |
 | `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
 | `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |
+
+### What a step's agent is handed
+
+A step's `capabilities` decide how the engine's `claude` executor starts the agent:
+
+| Step declares | Permission mode | Also |
+|---|---|---|
+| no `repo:write` (read-only) | `manual` | `--restricted`, and `Bash`, `Edit`, `MultiEdit`, `NotebookEdit`, `Write` denied by name |
+| `repo:write` | `acceptEdits` | — |
+
+Read-only steps do not run in plan mode. Checked against the real CLI (2.1.282), plan mode refuses every MCP call — the codebase graph and `create_child` alike — and ignores `--model`, running a different model from the one the step asked for. Manual mode with the write and exec tools denied honours both, and refuses a write attempted under it. The worktree diff after the run stays the backstop either way.
+
+`--restricted` ignores your own Claude settings, and with them every plugin you enabled there, so a read-only step has none unless `agent.plugins` names it. The list goes to the agent as one inline `--settings` document.
+
+Every step and turn runs with `--strict-mcp-config`: it gets exactly the servers `agent.mcp` names, as `.mcp.json` defines them (`env` included), each allowed as `mcp__<name>` — and nothing from a `.mcp.json` committed to the repository, from your user-level config, or from anywhere else. With an empty `agent.mcp` it gets no server at all. A step holding `create_child` gets its bound child server beside them.
+
+Servers are resolved once, at startup, from the **repository root's** `.mcp.json` — the file agsync generates, not anything in the step's worktree. `landrace start`, `landrace status` and `landrace mcp` refuse to start, and `landrace validate` reports the same sentence, when:
+
+- `agent.mcp` names a server but there is no `.mcp.json` at the repository root — run `agsync sync`, which generates it;
+- a name is not in `.mcp.json` — the refusal lists the names it does define;
+- a name is landrace's own operator server: `landrace`, or any server whose command runs `landrace mcp`, `cli.js mcp` or `dist/cli.js mcp`, however it is spelled. Its tools create, update and reply on tickets, and a step agent holding them could move its own ticket — so operator tools never reach a step agent.
+
+The screener never gets plugins or servers: it reads attacker-reachable text and needs no tool to judge it. An allowlisted server's `env` travels in the agent's argv, where `ps` can read it for as long as the step runs — keep credentials out of servers you allow.
 
 ### Token permissions
 
@@ -284,7 +311,7 @@ Workflow-level keys beyond `stages`:
 
 Splitting is an engine feature a project enables in its own workflow; the shipped `.landrace/` workflow does not use it. [`tests/fixtures/children`](tests/fixtures/children/workflow.yaml) is the worked example — the shipped flow plus a `breakdown` stage between `triage` and `build`, a `children-running` stage the parent waits in, `build` as a second entry for the children, and `done` closing a finished ticket so its parent can count it — and it is what the tests drive to keep the feature working.
 
-A step that declares `capabilities: [tickets:create]` — the fixture's `breakdown` stage — is handed exactly one MCP tool, `landrace_create_child` (`title`, `body`, `priority` 0–9), served by a second server the executor starts beside the agent process: `landrace mcp --workflow <dir> --child <parent> --stage <stage> --round <round>`. That binding is fixed on the command line by the runner, not by anything the agent says, and `--strict-mcp-config` keeps a `.mcp.json` inside the worktree from adding a server of its own. `breakdown` ends by saying `children` — it called the tool at least once — or `single` — it built the spec as one piece of work directly; the two outcomes route to `children-running` and `build`, and a round that says one but did the other halts at `blocked` rather than being guessed at.
+A step that declares `capabilities: [tickets:create]` — the fixture's `breakdown` stage — is handed exactly one landrace tool beside the servers `agent.mcp` allows, `landrace_create_child` (`title`, `body`, `priority` 0–9), served by a second server the executor starts beside the agent process: `landrace mcp --workflow <dir> --child <parent> --stage <stage> --round <round>`. That binding is fixed on the command line by the runner, not by anything the agent says, and `--strict-mcp-config` keeps a `.mcp.json` inside the worktree from adding a server of its own — or a `landrace` of its own, whose create_child the allowlist would approve. `breakdown` ends by saying `children` — it called the tool at least once — or `single` — it built the spec as one piece of work directly; the two outcomes route to `children-running` and `build`, and a round that says one but did the other halts at `blocked` rather than being guessed at.
 
 Re-running `breakdown` — after a revision, or after a crash mid-round — first drops, as not planned, every sub-ticket an earlier round of this stage created and every pull request open on them; anything already finished is left closed as it was. A sub-ticket a person opened under the parent by hand is never touched, this round or any other. The parent itself only reaches `done` once every sub-ticket still counted is closed as completed — one still open, or one an earlier round made that a person is still working, keeps the parent at `children-running`.
 
@@ -352,6 +379,7 @@ Both schemas are strict: an unknown key fails to load rather than being ignored.
 | `operator` | A disallowed predicate operator, anywhere including nested |
 | `path-coverage` | A predicate — in a trigger, an `identity`, a `requires` or an `eligible` rule — reading a field no hook provides |
 | `vars` | A variable that does not resolve, a `{vars.x}` nothing defines, a declared variable nothing references, a variable holding a secret's value |
+| `mcp` | An `agent.mcp` server with no `.mcp.json` at the repository root, a name `.mcp.json` does not define, or landrace's own operator server |
 
 Every rule runs on every workflow. An earlier version abstained where a trigger
 could fire from anywhere, which turned out to mean *always* — the entry trigger
@@ -421,6 +449,7 @@ session to have happened already, not the deep link itself.
 - Everything a step writes is escaped before posting, so an agent cannot emit Landrace's own control tokens.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.
 - A step declares what it may do, and the declaration is enforced by diffing its worktree before and after — not by the flags handed to the agent, which a hook-registered executor never sees. A conversation turn is held to the same declaration as the step it continues.
+- A step or turn gets exactly the MCP servers `agent.mcp` allows, strictly, and never landrace's own operator server — refused at startup by name and by command, so an agent cannot hold the tools that move its own ticket.
 - Every agent invocation is screened first, including a turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it.
 - The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workflow directory before it is imported, both ends compared after `realpath`.
 - A comment carries control state only because Landrace's own account wrote it. The account is resolved from the token at startup and verified against any configured override; the process refuses to run rather than guess, because a login it cannot resolve would make its own records read as a stranger's.
