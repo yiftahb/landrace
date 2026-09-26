@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { branchNameProblem, effectBranch } from "#conventions.js";
 
@@ -21,8 +24,24 @@ const CORPUS = [
   "a@{b", "@{-1}", "a b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a\tb", "a\u007fb", "",
 ];
 
+/*
+ * Asked from an empty directory outside any repository: `--branch` expands
+ * `@{-N}` against the checkout's own history, so inside a repository the answer
+ * for "@{-1}" depended on which branch that checkout happened to have been on.
+ */
+let outside = "";
+beforeAll(async () => {
+  outside = await mkdtemp(join(tmpdir(), "landrace-refname-"));
+});
+afterAll(async () => {
+  await rm(outside, { recursive: true, force: true });
+});
+
 const gitSays = async (name: string): Promise<boolean> =>
-  exec("git", ["check-ref-format", "--branch", name]).then(() => true, () => false);
+  exec("git", ["check-ref-format", "--branch", name], {
+    cwd: outside,
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: outside },
+  }).then(() => true, () => false);
 
 describe("branch names", () => {
   it.each(CORPUS)("agrees with git check-ref-format --branch about %j", async (name) => {
