@@ -121,6 +121,24 @@ describe("runStep", () => {
     expect((r as Ok).effects[0]?.marker).toBe("questions:2");
   });
 
+  /*
+   * The same vocabulary an on_enter effect gets, so a route can name the
+   * ticket's branch the way a stage does — the id the runner was handed, and
+   * never the snapshot's `{ticket.title}` beside it.
+   */
+  it("expands {ticket} from the ticket being run, and nothing from the snapshot", async () => {
+    const named: Step = {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { spec: {} },
+        routes: [{ when: {}, effect: { type: "tracker.comment", marker: "m:{ticket}:{ticket.title}" } }],
+      },
+    };
+    const r = await run('```json\n{"kind":"spec"}\n```', { step: named, ticket: "42" });
+    expect((r as Ok).effects[0]?.marker).toBe("m:42:{ticket.title}");
+  });
+
   it("carries the step's prose into the effect body", async () => {
     const r = await run('Here are my questions.\n```json\n{"kind":"questions"}\n```');
     expect((r as Ok).effects[0]?.body).toBe("Here are my questions.");

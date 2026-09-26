@@ -89,7 +89,7 @@ const snap: Snapshot = { node: t("P"), graph };
 
 describe("planNodesClose / planEffects", () => {
   it("expands the declaration into a concrete list, and leaves every other effect alone", () => {
-    const effects = planEffects({ action: "transition", to: breakdown, round: 2 }, snap);
+    const effects = planEffects({ action: "transition", to: breakdown, round: 2 }, snap, "P");
     expect(effects[0]).toEqual({ type: "nodes.close", ids: ["pr-7", "A1", "A", "B"], stage: "breakdown", round: 2 });
     expect(effects[1]).toEqual({ type: "tracker.status", value: "breakdown", stage: "breakdown", round: 2 });
   });

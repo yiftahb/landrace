@@ -1,12 +1,12 @@
-import { NODES_CLOSE_EFFECT } from "#conventions.js";
+import { branchNameProblem, NODES_CLOSE_EFFECT } from "#conventions.js";
 import { planNodesClose } from "#core/children.js";
-import type { Decision, Effect, Snapshot } from "#namespace.js";
+import type { Decision, Effect, Snapshot, Stage } from "#namespace.js";
 
 /**
  * One `{}` template syntax, and one place that knows what a name looks like.
  *
  * Three passes fill these in and each answers for a different vocabulary: the
- * engine's own `{round}` and `{stage}` on an effect field (below), a snapshot
+ * engine's own `{round}`, `{stage}` and `{ticket}` on an effect field (below), a snapshot
  * path in a step's prompt (runner/step.ts), and `{vars.x}` from the
  * configuration at load (workflow/vars.ts). What they must agree on is the
  * *shape* of a name and what happens to one nobody answers for — it is left
@@ -33,8 +33,11 @@ const expand = (value: unknown, vars: Record<string, string>): unknown =>
 
 /**
  * An effect's fields, templated only with what the engine itself knows about
- * this entry or this invocation — the round, the stage id, the
- * already-validated output shape — never with snapshot content. An effect is
+ * this entry or this invocation — the round, the stage id, the ticket's own
+ * id, the already-validated output shape — never with snapshot content. The
+ * id is identity rather than content: the engine locks, sandboxes and names
+ * branches by it, and it has passed `ticketIdProblem` before anything is
+ * planned for it. An effect is
  * structure, not prose: a marker assembled from a ticket body would be a
  * control token forged by whoever opened the ticket, which is exactly what
  * neutraliseMarkers exists to prevent downstream. An unrecognised `{name}` is
@@ -72,13 +75,15 @@ export const expandEffectFields = (
  * same entry — after a crash, or on the next poll — produces the identical
  * marker rather than a second record of one entry.
  */
-export function planEffects(d: Decision, s: Snapshot): Effect[] {
+export function planEffects(d: Decision, s: Snapshot, ticket: string | null): Effect[] {
   if (d.action !== "transition" || !d.to) return [];
 
   const to = d.to;
   const stage = to.id;
   const round = d.round ?? 1;
-  const vars = { round: String(round), stage };
+  // An argument, not `s.node.id`: what may reach an effect is decided by what
+  // this function is handed, and the snapshot is handed to it for the graph.
+  const vars = { round: String(round), stage, ...(ticket === null ? {} : { ticket }) };
   // Expanded once, in declaration order: a close declared first is applied
   // first, which is what the shipped workflow relies on — see its on_enter.
   const closes = planNodesClose(to, s, round);
@@ -96,4 +101,42 @@ export function planEffects(d: Decision, s: Snapshot): Effect[] {
       ...(effect.round === undefined ? { round } : {}),
     };
   });
+}
+
+/**
+ * The branch a stage's step works on, for this ticket and round — null for a
+ * stage that names none — or why there cannot be one.
+ *
+ * The workflow names it, per stage, so a ticket has as many branches as its
+ * stages say and the engine assumes none. Filled from the same three names an
+ * effect may use and nothing else: a branch is argv for git, and a name this
+ * does not recognise would otherwise stay in it as literal braces, which git
+ * accepts. `landrace validate` asks this of every stage with an example ticket;
+ * the runner asks it again with the real one, because a valid ticket id —
+ * "a..b" — is not always a valid ref.
+ */
+export function stageBranch(
+  stage: Stage,
+  ticket: string,
+  round: number,
+): { ok: true; branch: string | null } | { ok: false; reason: string } {
+  if (stage.branch === undefined) return { ok: true, branch: null };
+  const vars: Record<string, string> = { ticket, stage: stage.id, round: String(round) };
+  const unknown: string[] = [];
+  const branch = fillTemplate(stage.branch, (name) => {
+    if (Object.hasOwn(vars, name)) return vars[name];
+    unknown.push(name);
+    return undefined;
+  });
+  if (unknown.length) {
+    return {
+      ok: false,
+      reason: `stage "${stage.id}" names its branch with {${unknown.join("}, {")}}; ` +
+        "a branch is named from {ticket}, {stage} and {round} only",
+    };
+  }
+  const problem = branchNameProblem(branch);
+  return problem === null
+    ? { ok: true, branch }
+    : { ok: false, reason: `stage "${stage.id}" cannot name a branch for #${ticket}: ${problem}` };
 }

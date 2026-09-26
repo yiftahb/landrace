@@ -431,7 +431,7 @@ export async function runStep(opts: {
     };
   }
 
-  const vars = { round: String(round), stage: stageId, shape };
+  const vars = { round: String(round), stage: stageId, ticket: opts.ticket, shape };
   // The exact span extractJsonBlock parsed — not a second, independently-run
   // regex — is what gets removed to build the body. Two regexes matching
   // different spans is how a recognised block whose own value happened to

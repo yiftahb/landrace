@@ -22,5 +22,8 @@ export async function runNext(
   const decision = decide(workflow, snapshot);
   // Reconcile needs post hooks to answer "already satisfied", and there are
   // none in this plan, so `next` prints the unreconciled plan.
-  return { decision, effects: planEffects(decision, snapshot) };
+  // The ticket the snapshot is of, when it says: `{ticket}` in an effect is
+  // that id, and a snapshot with no node leaves it visible rather than blank.
+  const id = (snapshot.node as { id?: unknown } | undefined)?.id;
+  return { decision, effects: planEffects(decision, snapshot, typeof id === "string" ? id : null) };
 }

@@ -1,7 +1,10 @@
 import {
   allClosed,
+  BRANCH_PUSH_EFFECT,
   CLOSE_EFFECT,
+  effectBranch,
   entriesFromComments,
+  hasPullFrom,
   LABEL_EFFECT,
   LABELS,
   labelsOf,
@@ -9,6 +12,7 @@ import {
   NODES_CLOSE_EFFECT,
   parseMarker,
   parseOrigin,
+  PULL_OPEN_EFFECT,
   PULL_REQUEST_KIND,
   RECORD_EFFECT,
   RELATIONS,
@@ -88,7 +92,11 @@ const prNodeOf = (p: ExternalPull): Node => ({
   // can act on, and counting it would loop the ticket through review for
   // ever. Zero rather than absent, so the sum stays defined when every pull
   // request is merged and "no threads are open" can still be read.
-  state: { merged: p.merged, openThreads: p.closed === null ? p.openThreads : 0 },
+  state: {
+    merged: p.merged,
+    openThreads: p.closed === null ? p.openThreads : 0,
+    ...(p.branch === undefined ? {} : { branch: p.branch }),
+  },
 });
 
 /**
@@ -129,6 +137,7 @@ export function createExternalState(
 ): ExternalState {
   const rows = new Map<string, ExternalTicket>();
   const pulls = new Map<string, ExternalPull>();
+  const pushed: string[] = [];
   const at = clock();
   let nextId = 1000;
 
@@ -221,6 +230,7 @@ export function createExternalState(
       if (!pull) throw new Error(`no such pull request ${id}`);
       return pull;
     },
+    pushes: () => [...pushed],
 
     source: defineSource({
       id: "memory",
@@ -291,7 +301,7 @@ export function createExternalState(
 
     post: definePostHook({
       id: "memory",
-      handles: [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT],
+      handles: [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT, BRANCH_PUSH_EFFECT, PULL_OPEN_EFFECT],
 
       /*
        * Asked of the snapshot rather than of the map behind it, exactly as a
@@ -333,6 +343,16 @@ export function createExternalState(
             // person who dropped it decided that, and closing it again as
             // done would overrule them.
             return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
+          case BRANCH_PUSH_EFFECT:
+            // No repository behind this tracker, so nothing can say the remote
+            // already has the branch's head — and a push of a branch that is
+            // already there changes nothing, so it is applied whenever planned.
+            effectBranch(effect);
+            return false;
+          case PULL_OPEN_EFFECT:
+            return hasPullFrom(
+              snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect),
+            );
           default:
             return false;
         }
@@ -386,6 +406,16 @@ export function createExternalState(
           }
           case CLOSE_EFFECT: {
             if (row.closed === null) row.closed = "done";
+            return;
+          }
+          case BRANCH_PUSH_EFFECT:
+            pushed.push(effectBranch(effect));
+            return;
+          case PULL_OPEN_EFFECT: {
+            const number = pulls.size + 1;
+            pulls.set(`pr-${number}`, {
+              id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, closed: null, branch: effectBranch(effect),
+            });
             return;
           }
           default:

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadWorkflow, parseStep } from "#workflow/load.js";
@@ -72,5 +72,64 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
   it("refuses a stage key the engine does not read, such as the on_exit that must never exist", async () => {
     await expect(loadWorkflow(workflowDir("version: 1\nname: t\nstages:\n  - id: a\n    entry: true\n    on_exit: []\n")))
       .rejects.toThrow(/on_exit/);
+  });
+});
+
+/**
+ * A stage's `branch` is a template the runner fills per ticket and hands to
+ * git as argv. What it can be is decided here, once, with an example ticket —
+ * a workflow whose branch git would refuse for every ticket is found by
+ * `landrace validate`, not by the first build that runs.
+ */
+describe("a stage's branch", () => {
+  const dirs: string[] = [];
+  const withBranch = (branch: string, step = true): string => {
+    const dir = mkdtempSync(join(tmpdir(), "landrace-wf-"));
+    dirs.push(dir);
+    mkdirSync(join(dir, "steps"));
+    writeFileSync(join(dir, "steps", "build.md"), "---\ncapabilities: [repo:read, repo:write]\n---\nbuild\n");
+    writeFileSync(join(dir, "workflow.yaml"), [
+      "version: 1",
+      "name: t",
+      "stages:",
+      "  - id: build",
+      "    entry: true",
+      ...(step ? ["    step: steps/build.md"] : []),
+      `    branch: ${JSON.stringify(branch)}`,
+      "",
+    ].join("\n"));
+    return dir;
+  };
+
+  afterEach(() => { while (dirs.length) rmSync(dirs.pop() as string, { recursive: true, force: true }); });
+
+  it("loads a template that makes a branch git accepts", async () => {
+    const { workflow } = await loadWorkflow(withBranch("landrace/{ticket}"));
+    expect(workflow.stages[0]?.branch).toBe("landrace/{ticket}");
+  });
+
+  it("refuses a template git could never accept, naming the stage and the rendered name", async () => {
+    await expect(loadWorkflow(withBranch("feat..{ticket}")))
+      .rejects.toMatchObject({ rule: "branch", message: expect.stringMatching(/stage "build"[\s\S]*"feat\.\.1"/) });
+    await expect(loadWorkflow(withBranch("-{ticket}"))).rejects.toMatchObject({ rule: "branch" });
+  });
+
+  /*
+   * Snapshot content is not branch material: `{node.title}` would be
+   * whatever a person typed, handed to git. Left in place it is even a legal
+   * ref, braces and all, which is why it is refused by name.
+   */
+  it("refuses a name outside {ticket}, {stage} and {round}", async () => {
+    await expect(loadWorkflow(withBranch("landrace/{node.title}")))
+      .rejects.toMatchObject({ rule: "branch", message: expect.stringMatching(/\{node\.title\}/) });
+  });
+
+  /*
+   * A declaration nothing reads: the branch is where a step's worktree is
+   * checked out, and a stage with no step has no worktree.
+   */
+  it("refuses a branch on a stage that runs no step", async () => {
+    await expect(loadWorkflow(withBranch("landrace/{ticket}", false)))
+      .rejects.toMatchObject({ rule: "branch", message: expect.stringMatching(/no step/) });
   });
 });

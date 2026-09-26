@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import type { z } from "zod";
 import type { ContainedPath, LoadFailureRule, Step, Workflow } from "#namespace.js";
+import { stageBranch } from "#core/index.js";
 import { stepFrontMatterSchema, workflowSchema } from "#workflow/schema.js";
 import { substituteVars } from "#workflow/vars.js";
 import { messageOf } from "#runner/errors.js";
@@ -211,6 +212,28 @@ export async function loadWorkflow(
         `vars entry "${name}" is declared and nothing references it; ` +
         "a variable nothing reads is usually the same typo as one nothing defines"),
     ].join("; "));
+  }
+
+  /*
+   * A branch is a template the runner fills per ticket and hands to git as
+   * argv, so what it can be is settled here, with an example ticket standing
+   * in for every one: a template git refuses for "1" it refuses for all of
+   * them, and finding that out at the first build is finding it out after the
+   * spec was paid for. The runner asks again with the real id — a valid
+   * ticket id is not always a valid ref. After the vars, so `{vars.x}` in a
+   * branch is reported as the var it is.
+   */
+  for (const stage of workflow.stages) {
+    if (stage.branch === undefined) continue;
+    if (!stage.step) {
+      throw new WorkflowLoadError(
+        "branch",
+        `stage "${stage.id}" names a branch but runs no step; a branch is where a step's worktree is ` +
+        "checked out, so nothing would read it",
+      );
+    }
+    const example = stageBranch(stage, "1", 1);
+    if (!example.ok) throw new WorkflowLoadError("branch", example.reason);
   }
 
   return { workflow, steps };

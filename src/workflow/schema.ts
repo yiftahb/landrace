@@ -16,6 +16,7 @@ const trigger = z.object({ name: z.string().optional(), when: condition }).stric
 export const stageSchema = z.object({
   id: z.string().min(1),
   step: z.string().optional(),
+  branch: z.string().min(1).optional(),
   entry: z.boolean().optional(),
   terminal: z.boolean().optional(),
   identity: condition.optional(),

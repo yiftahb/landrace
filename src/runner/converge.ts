@@ -1,7 +1,9 @@
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
-import { decide, planEffects, planNodesClose, reconcile } from "#core/index.js";
-import { RECORD_EFFECT } from "#conventions.js";
-import type { ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot, StepResult } from "#namespace.js";
+import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
+import { mayWriteRepo, RECORD_EFFECT } from "#conventions.js";
+import type {
+  ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot, StepResult, WorktreeBranch,
+} from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { MIN_SECRET_LENGTH, redactValue } from "#runner/events.js";
 import { buildBriefing } from "#runner/artifacts.js";
@@ -58,30 +60,40 @@ function redactValuesFrom(secrets: ReadonlyMap<string, string>): string[] {
  */
 export async function converge(ticket: string, deps: ConvergeDeps): Promise<ConvergeResult> {
   const root = deps.sandbox?.root;
-  let path: string | null = null;
+  let entered = false;
 
-  // Created on the first invoke — a converge that never runs a step never pays
+  // Created at the first invoke — a converge that never runs a step never pays
   // for a checkout — and removed when this call unwinds, whichever way it
   // unwinds: a return, a halt, a thrown hook, an agent that timed out, a
   // Ctrl-C. A worktree left behind is a slow disk leak and a `git worktree
   // list` nobody can read; it is also *stored state*, which the next tick
-  // would silently build on instead of deriving. Re-creating it from HEAD is
-  // this design's ordinary answer — re-derivation, at the price of a checkout.
+  // would silently build on instead of deriving. Re-creating it is this
+  // design's ordinary answer — re-derivation, at the price of a checkout. What
+  // survives is what a step committed to its stage's branch, which is the
+  // repository's own record rather than ours.
+  //
+  // Asked again at every invoke, because the next step's stage may need the
+  // worktree on something else: triage reads HEAD, then build writes its
+  // branch, then code-review reads that branch detached. Marked entered before
+  // the call, so a worktree half-made by a call that threw is removed too.
   const enter = root === undefined
     ? null
-    : async (): Promise<string> => (path ??= await ensureWorktree(ticket, root));
+    : async (on?: WorktreeBranch): Promise<string> => {
+        entered = true;
+        return ensureWorktree(ticket, root, on);
+      };
 
   try {
     return await converging(ticket, deps, enter);
   } finally {
-    if (path !== null && root !== undefined) await removeWorktree(ticket, root);
+    if (entered && root !== undefined) await removeWorktree(ticket, root);
   }
 }
 
 async function converging(
   ticket: string,
   deps: ConvergeDeps,
-  enterSandbox: (() => Promise<string>) | null,
+  enterSandbox: ((on?: WorktreeBranch) => Promise<string>) | null,
 ): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
   const redactValues = redactValuesFrom(deps.ctx.secrets);
@@ -294,10 +306,24 @@ async function converging(
       // Before the step, and reported rather than thrown: "this is not a git
       // repository" is an operator's mistake, and a stack trace out of
       // converge would tell them nothing about which ticket or stage it was.
+      //
+      // On the stage's branch when it names one: the step's own if it may
+      // write, a detached look at it otherwise. Checked for this ticket before
+      // anything is checked out — a template that was fine for the example
+      // ticket at load is not always fine for this one.
       let sandbox: { path: string } | null = null;
       if (enterSandbox) {
+        const branch = stageBranch(stage, ticket, round);
+        if (!branch.ok) {
+          deps.log("step.rejected", { ticket, stage: stage.id, round, reason: branch.reason });
+          return { passes: pass, settled: "halt", why: branch.reason };
+        }
         try {
-          sandbox = { path: await enterSandbox() };
+          sandbox = {
+            path: await enterSandbox(
+              branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) },
+            ),
+          };
         } catch (e) {
           const reason = messageOf(e);
           deps.log("step.rejected", { ticket, stage: stage.id, round, reason });
@@ -395,7 +421,7 @@ async function converging(
     // converge, and never a guess at an empty cascade.
     let planned: Effect[];
     try {
-      planned = planEffects(decision, snapshot);
+      planned = planEffects(decision, snapshot, ticket);
     } catch (e) {
       const reason = messageOf(e);
       deps.log("effect.failed", { ticket, reason });

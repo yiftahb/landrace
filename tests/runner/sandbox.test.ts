@@ -477,3 +477,159 @@ describe("converge and the sandbox", () => {
     expect(ranIn).toBeUndefined();
   });
 });
+
+/* ------------------------------------------------------ a stage's branch -- */
+
+/**
+ * The branch a stage names is where its step's commits go, and what outlives
+ * the worktree converge removes on the way out. Before this, a build committed
+ * onto a detached HEAD in a directory that was then deleted: the work was
+ * unreferenced, the pull request never came, and the ticket waited at build.
+ */
+describe("converge and a stage's branch", () => {
+  const git = async (cwd: string, ...args: string[]): Promise<string> => (await exec("git", args, { cwd })).stdout.trim();
+  const tip = (root: string, branch: string): Promise<string | null> =>
+    exec("git", ["rev-parse", "--verify", "-q", `refs/heads/${branch}`], { cwd: root }).then((r) => r.stdout.trim(), () => null);
+
+  const writing = step(["repo:read", "repo:write"]);
+  const branched = (branch?: string): Workflow => ({
+    ...stepWorkflow,
+    stages: stepWorkflow.stages.map((s) => (s.id === "spec" && branch !== undefined ? { ...s, branch } : s)),
+  });
+
+  /** An agent that commits a file, and remembers the commit it made. */
+  const committer = (made: string[], file = "built.ts"): Executor => ({
+    id: "committer",
+    run: async (_p, { cwd }) => {
+      if (cwd === undefined) throw new Error("the sandbox handed the agent no cwd");
+      await writeFile(join(cwd, file), `export const built = ${JSON.stringify(file)};\n`);
+      await git(cwd, "add", "-A");
+      await git(cwd, "commit", "-qm", `add ${file}`);
+      made.push(await git(cwd, "rev-parse", "HEAD"));
+      return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
+    },
+  });
+
+  it("keeps the step's commits on the stage's branch after the worktree is gone", async () => {
+    const root = await repo();
+    const made: string[] = [];
+
+    const r = await converge("1", deps(world(), {
+      workflow: branched("landrace/{ticket}"),
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: committer(made),
+      sandbox: { root },
+    }));
+
+    expect(r.settled).toBe("terminal");
+    expect(made).toHaveLength(1);
+    expect(await tip(root, "landrace/1")).toBe(made[0]);
+    expect(await sandboxes(root)).toEqual([]);
+    // The operator's checkout is where it was, untouched.
+    expect(await git(root, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(existsSync(join(root, "built.ts"))).toBe(false);
+  });
+
+  it("makes no branch for a stage that names none, exactly as before", async () => {
+    const root = await repo();
+    const made: string[] = [];
+
+    await converge("1", deps(world(), {
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: committer(made),
+      sandbox: { root },
+    }));
+
+    expect(made).toHaveLength(1);
+    expect(await git(root, "branch", "--format=%(refname:short)")).toBe("main");
+    expect(await git(root, "branch", "--contains", made[0] as string)).toBe("");
+  });
+
+  /*
+   * "a..b" is a perfectly good ticket id and no branch at all. Found before
+   * the step is paid for, and said in a sentence rather than as git's stderr.
+   */
+  it("halts before the step when this ticket's id cannot make the stage's branch", async () => {
+    const root = await repo();
+    let invoked = false;
+    const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
+
+    const r = await converge("a..b", deps(world(), {
+      workflow: branched("landrace/{ticket}"),
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: spy,
+      sandbox: { root },
+    }));
+
+    expect(r.settled).toBe("halt");
+    expect(r.why).toMatch(/#a\.\.b[\s\S]*not a usable branch name/);
+    expect(invoked).toBe(false);
+    expect(await sandboxes(root)).toEqual([]);
+  });
+
+  it("halts, naming where, when the branch is checked out in the operator's own checkout", async () => {
+    const root = await repo();
+    await git(root, "checkout", "-q", "-b", "landrace/1");
+    let invoked = false;
+    const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
+
+    const r = await converge("1", deps(world(), {
+      workflow: branched("landrace/{ticket}"),
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: spy,
+      sandbox: { root },
+    }));
+
+    expect(r.settled).toBe("halt");
+    expect(r.why).toMatch(/landrace\/1 is checked out at/);
+    expect(invoked).toBe(false);
+    expect(await git(root, "symbolic-ref", "--short", "HEAD")).toBe("landrace/1");
+  });
+
+  /*
+   * Nothing in the engine limits a ticket to one branch: each stage names its
+   * own, and two stages naming two templates leave two branches, each holding
+   * only what its own stage committed.
+   */
+  it("gives one ticket two branches when two stages name two", async () => {
+    const root = await repo();
+    const made: string[] = [];
+    const twoBranches: Workflow = {
+      version: 1, name: "t",
+      stages: [
+        {
+          id: "api", step: "api", entry: true, branch: "api/{ticket}",
+          triggers: [{ when: { "run.stage": null } }],
+          on_enter: [{ type: "tracker.status", value: "api" }],
+        },
+        {
+          id: "ui", step: "ui", branch: "ui/{ticket}",
+          triggers: [{ when: { "run.stage": "api", "run.outputs.api": { $exists: true } } }],
+          on_enter: [{ type: "tracker.status", value: "ui" }],
+        },
+        { id: "done", terminal: true, triggers: [{ when: { "run.stage": "ui", "run.outputs.ui": { $exists: true } } }] },
+      ],
+    };
+    let calls = 0;
+    const perStage: Executor = {
+      id: "per-stage",
+      run: async (prompt, opts) => committer(made, calls++ === 0 ? "api.ts" : "ui.ts").run(prompt, opts),
+    };
+
+    const r = await converge("1", deps(world(), {
+      workflow: twoBranches,
+      steps: new Map<string, Step>([["api", writing], ["ui", writing]]),
+      executor: perStage,
+      sandbox: { root },
+    }));
+
+    expect(r.settled).toBe("terminal");
+    expect(await tip(root, "api/1")).toBe(made[0]);
+    expect(await tip(root, "ui/1")).toBe(made[1]);
+    // Each branch holds its own stage's work and not the other's.
+    expect(await git(root, "ls-tree", "--name-only", "api/1")).toMatch(/api\.ts/);
+    expect(await git(root, "ls-tree", "--name-only", "api/1")).not.toMatch(/ui\.ts/);
+    expect(await git(root, "ls-tree", "--name-only", "ui/1")).not.toMatch(/api\.ts/);
+    expect(await sandboxes(root)).toEqual([]);
+  });
+});

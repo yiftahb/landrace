@@ -147,6 +147,12 @@ export interface Effect {
 export interface Stage {
   id: string;
   step?: string;
+  /**
+   * The branch this stage's step works on, as a template over `{ticket}`,
+   * `{stage}` and `{round}`. Absent, the step gets a detached checkout of HEAD
+   * and nothing it commits outlives the worktree.
+   */
+  branch?: string;
   entry?: boolean;
   terminal?: boolean;
   identity?: Condition;
@@ -315,7 +321,7 @@ export interface Step extends StepFrontMatter {
  * shape as every other problem, instead of pattern-matching an error message
  * after the fact.
  */
-export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path" | "vars";
+export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path" | "vars" | "branch";
 
 /** One tree with every `{vars.x}` filled in, what it took to fill it, and what it could not. */
 export interface VarSubstitution {
@@ -866,6 +872,8 @@ export interface ExternalPull {
   merged: boolean;
   openThreads: number;
   closed: Closed;
+  /** The branch it was opened from, when it says: what `pull.open` looks a pull request up by. */
+  branch?: string;
 }
 
 /**
@@ -883,7 +891,9 @@ export interface ExternalState {
   source: Source;
   operator: Operator;
   /** Open a pull request implementing `ticket`; returns its node id, `pr-<n>`, numbered from 1 in creation order. */
-  openPull(ticket: string, pr?: { merged?: boolean; openThreads?: number; closed?: Closed }): string;
+  openPull(ticket: string, pr?: { merged?: boolean; openThreads?: number; closed?: Closed; branch?: string }): string;
+  /** Every branch a `branch.push` was applied for, in order: there is no repository here to push to. */
+  pushes(): string[];
   /** The live record behind a pull request node, for a test to merge, close or comment on. */
   pull(id: string): ExternalPull;
   ticket(id: string): ExternalTicket;
@@ -1066,6 +1076,16 @@ export interface BuildOptions {
 export interface WorktreeState {
   head: string;
   changes: string[];
+}
+
+/**
+ * The branch a step's worktree is checked out on, from its stage's `branch`,
+ * and whether the step may commit to it — the branch itself if it may, its
+ * commit detached if it may not.
+ */
+export interface WorktreeBranch {
+  branch: string;
+  write: boolean;
 }
 
 /* ------------------------------------------------ conversation (§12, §7) -- */

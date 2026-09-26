@@ -3,7 +3,7 @@ import { mkdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import type { WorktreeState } from "#namespace.js";
+import type { WorktreeBranch, WorktreeState } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
 import { messageOf } from "#runner/errors.js";
@@ -88,34 +88,97 @@ export async function repositoryRoot(dir: string): Promise<string> {
   return out.trim();
 }
 
-/**
- * A detached worktree at HEAD, one per ticket.
- *
- * The agent therefore sees committed state only: it cannot read the operator's
- * work in progress and cannot damage it. This is filesystem isolation, not
- * process isolation — the agent still runs as you, with your credentials on
- * disk — which is exactly why containers remain on the roadmap and why the
- * capability check in `runStep` is the half of this that actually refuses
- * something.
- */
-export async function ensureWorktree(ticket: string, repoRoot: string): Promise<string> {
-  const path = await pathFor(ticket, repoRoot);
-  const listed = await git(["worktree", "list", "--porcelain"], repoRoot, `could not create a worktree for #${ticket}`);
-  // Re-used, not rebuilt: a run that crashed mid-step left one registered, and
-  // git refuses to add a second worktree at the same path anyway.
-  if (listed.split("\n").includes(`worktree ${path}`)) return path;
+/** The commit `ref` names, or null when there is no such ref. */
+async function commitOf(ref: string, cwd: string, what: string): Promise<string | null> {
+  try {
+    const { stdout } = await exec("git", ["rev-parse", "--verify", "-q", `${ref}^{commit}`], { cwd });
+    return stdout.trim();
+  } catch (e) {
+    // `-q` makes a ref that is not there exit 1 and say nothing. Anything
+    // else — not a repository, a corrupt ref — is a failure, not an absence.
+    const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
+    if ((e as { code?: unknown }).code === 1 && stderr === "") return null;
+    throw new Error(`${what}: ${stderr || messageOf(e)}`);
+  }
+}
 
-  // A directory that exists but is registered nowhere is the residue of a
-  // `worktree remove` that was interrupted, or of a pruned registration. git
-  // would refuse to add onto it; the path is ours — `pathFor` is what makes
-  // that a fact rather than an assumption — so clearing it is safe.
-  await git(["worktree", "prune"], repoRoot, `could not create a worktree for #${ticket}`);
+/** `git worktree list --porcelain`, one entry per worktree: where, at which commit, on which branch (null when detached). */
+function registered(porcelain: string): Array<{ path: string; head: string | null; branch: string | null }> {
+  return porcelain.split("\n\n").flatMap((block) => {
+    const field = (name: string): string | null =>
+      block.split("\n").find((line) => line.startsWith(`${name} `))?.slice(name.length + 1) ?? null;
+    const path = field("worktree");
+    const branch = field("branch")?.replace(/^refs\/heads\//, "") ?? null;
+    return path === null ? [] : [{ path, head: field("HEAD"), branch }];
+  });
+}
+
+/**
+ * A worktree for one ticket, checked out on what its stage names.
+ *
+ * With no branch — a stage that names none — a detached HEAD: the agent sees
+ * committed state only, cannot read the operator's work in progress and
+ * cannot damage it, and nothing it commits outlives the worktree. With one, a
+ * step that may write gets the branch itself, created at HEAD the first time,
+ * so its commits are kept when the worktree goes; a read-only step gets the
+ * branch's commit detached — the ticket's code, not main's, and no branch for
+ * a commit it should never have made to land on.
+ *
+ * This is filesystem isolation, not process isolation — the agent still runs
+ * as you, with your credentials on disk — which is exactly why containers
+ * remain on the roadmap and why the capability check in `runStep` is the half
+ * of this that actually refuses something.
+ */
+export async function ensureWorktree(
+  ticket: string,
+  repoRoot: string,
+  on?: WorktreeBranch,
+): Promise<string> {
+  const path = await pathFor(ticket, repoRoot);
+  const what = `could not create a worktree for #${ticket}`;
+  // Pruned first, so a registration whose directory is already gone reads as
+  // gone rather than as a worktree to reuse or a branch someone still holds.
+  await git(["worktree", "prune"], repoRoot, what);
+  const all = registered(await git(["worktree", "list", "--porcelain"], repoRoot, what));
+
+  const tip = on === undefined ? null : await commitOf(`refs/heads/${on.branch}`, repoRoot, what);
+  const attach = on?.write ? on.branch : null;
+  const detach = attach === null ? (tip ?? (await commitOf("HEAD", repoRoot, what))) : null;
+
+  if (attach !== null) {
+    // git checks a branch out in one place at a time, and the other place is
+    // usually the operator's own checkout. Taking it from there is not ours
+    // to do, and git would refuse in words that name neither the ticket nor
+    // the way out.
+    const holder = all.find((w) => w.branch === attach && w.path !== path);
+    if (holder) {
+      throw new Error(
+        `#${ticket}'s branch ${attach} is checked out at ${holder.path}, and git checks a branch out in one ` +
+        "place at a time; landrace will not take it from there. Switch that checkout to another branch and " +
+        "the ticket carries on.",
+      );
+    }
+  }
+
+  // Re-used as it stands when it is already on what this step needs: a run
+  // that crashed mid-step left it registered, and git refuses to add a second
+  // worktree at the same path anyway.
+  const mine = all.find((w) => w.path === path);
+  if (mine && (attach !== null ? mine.branch === attach : mine.branch === null && mine.head === detach)) return path;
+
+  // Anything else is rebuilt rather than switched: the worktree is disposable
+  // and a commit lives on a branch, so what a previous step left uncommitted
+  // does not carry over — the same as when converge unwinds. A directory that
+  // exists but is registered nowhere is the residue of an interrupted remove;
+  // the path is ours — `pathFor` is what makes that a fact rather than an
+  // assumption — so clearing it is safe.
+  if (mine) await git(["worktree", "remove", "--force", path], repoRoot, what);
   await rm(path, { recursive: true, force: true });
-  await git(
-    ["worktree", "add", "--detach", path, "HEAD"],
-    repoRoot,
-    `could not create a worktree for #${ticket}`,
-  );
+  let add: string[];
+  if (attach !== null) add = tip === null ? ["-b", attach, path, "HEAD"] : [path, attach];
+  else if (detach !== null) add = ["--detach", path, detach];
+  else throw new Error(`${what}: the repository has no commit to check out`);
+  await git(["worktree", "add", ...add], repoRoot, what);
   return path;
 }
 

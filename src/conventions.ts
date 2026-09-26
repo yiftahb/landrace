@@ -4,7 +4,7 @@
  * back as the engine's. None of it belongs to a tracker — a Jira hook would
  * use the same names — so none of it lives in a hook.
  */
-import type { Entry, Graph, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
+import type { Effect, Entry, Graph, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
 
 export const LABELS = {
   eligible: "lr:auto",
@@ -202,6 +202,79 @@ export const NODES_CLOSE_EFFECT = "nodes.close";
  * parent — which routes on `rel.child-of.in.not.closed` — waits for ever.
  */
 export const CLOSE_EFFECT = "tracker.close";
+
+/**
+ * Publish the branch the effect names, and open a pull request from it. Named
+ * here for the reason the tracker writes are: the in-memory tracker handles
+ * both, and a forge hook for somebody else's tracker has to spell them the
+ * same way or a workflow does not carry over. Which branch is always the
+ * effect's own `branch` field — the workflow says, never a convention — so a
+ * ticket can have as many branches as its stages name.
+ */
+export const BRANCH_PUSH_EFFECT = "branch.push";
+export const PULL_OPEN_EFFECT = "pull.open";
+
+/**
+ * The branch a publishing effect names. Which branch is the workflow's to
+ * say, so an effect that names none — or names one git would refuse — is
+ * refused here, in `satisfied()` as well as in `apply()`, rather than guessed.
+ */
+export function effectBranch(effect: Effect): string {
+  if (typeof effect.branch !== "string" || effect.branch === "") {
+    throw new Error(`a ${effect.type} effect must name the branch it is for, and this one names none`);
+  }
+  const problem = branchNameProblem(effect.branch);
+  if (problem) throw new Error(`a ${effect.type} effect names a branch git would refuse: ${problem}`);
+  return effect.branch;
+}
+
+/**
+ * The satisfied() every `pull.open` handler shares: this ticket already has a
+ * pull request from this branch, open or merged, in the graph the engine read.
+ *
+ * By branch, never "the ticket has one": a ticket has as many branches as its
+ * stages name, and a pull request from one says nothing about another. An
+ * abandoned one does not count — the work on the branch is not merged and no
+ * longer proposed, so a new pull request is what "open one" still means.
+ */
+export function hasPullFrom(graph: Graph | undefined, ticket: string | undefined, branch: string): boolean {
+  if (!graph) throw new Error("a pull.open effect cannot be checked: the snapshot has no graph");
+  const implementing = new Set(graph.relationships
+    .filter((r) => r.type === RELATIONS.implements && r.to === ticket)
+    .map((r) => r.from));
+  return graph.nodes.some((n) =>
+    implementing.has(n.id) && n.kind === PULL_REQUEST_KIND && n.state.branch === branch && n.closed !== "dropped");
+}
+
+/**
+ * Why git would refuse this as a branch name, or null if it would take it —
+ * `git check-ref-format --branch`, which tests/conventions/branch-name.test.ts
+ * holds this level with.
+ *
+ * Asked before git is: a branch name becomes argv for `git worktree add` and
+ * `git push`, and a name git refuses there surfaces as git's own stderr from
+ * the middle of a step, while one that starts with "-" is not refused at all
+ * — it is read as an option. Stricter than git about `@`, which git accepts
+ * as a branch and every other command reads as HEAD.
+ */
+export function branchNameProblem(name: string): string | null {
+  const bad = (why: string): string => `"${name.slice(0, 80)}" is not a usable branch name: ${why}`;
+  if (name === "") return bad("it is empty");
+  if (name.startsWith("-")) return bad('it starts with "-", which git would read as an option');
+  if (name === "HEAD" || name === "@") return bad("git reads it as the current checkout");
+  if ([...name].some((c) => c <= " " || c === "\u007f" || "~^:?*[\\".includes(c))) {
+    return bad("it contains a space, a control character, or one of ~ ^ : ? * [ \\");
+  }
+  if (name.includes("..")) return bad('it contains ".."');
+  if (name.includes("@{")) return bad('it contains "@{"');
+  if (name.endsWith(".")) return bad('it ends with "."');
+  for (const part of name.split("/")) {
+    if (part === "") return bad('it has an empty component — a leading, trailing or doubled "/"');
+    if (part.startsWith(".")) return bad(`its component "${part}" starts with "."`);
+    if (part.endsWith(".lock")) return bad(`its component "${part}" ends with ".lock"`);
+  }
+  return null;
+}
 
 /**
  * How big one ticket's neighbourhood may be. `read` returns the whole

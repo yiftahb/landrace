@@ -206,6 +206,191 @@ describe("worktree", () => {
 });
 
 /**
+ * The branch a stage names, and what a step finds checked out because of it.
+ *
+ * A build's commits used to be made on a detached HEAD inside a worktree that
+ * was removed when converge unwound — unreferenced, and gone at the next gc.
+ * A branch is what keeps them, and whether the step gets the branch itself or
+ * only a look at it is decided by whether it may write.
+ */
+describe("a stage's branch", () => {
+  const git = async (cwd: string, ...args: string[]): Promise<string> =>
+    (await run("git", args, { cwd })).stdout.trim();
+  /** The branch checked out at `path`, or null when its HEAD is detached. */
+  const attached = async (path: string): Promise<string | null> =>
+    run("git", ["symbolic-ref", "-q", "--short", "HEAD"], { cwd: path }).then((r) => r.stdout.trim(), () => null);
+  const sha = (cwd: string, ref: string): Promise<string | null> =>
+    run("git", ["rev-parse", "--verify", "-q", ref], { cwd }).then((r) => r.stdout.trim(), () => null);
+  const commitIn = async (path: string, file: string): Promise<string> => {
+    await writeFile(join(path, file), `export const x = ${JSON.stringify(file)};\n`);
+    await git(path, "add", "-A");
+    await git(path, "commit", "-qm", `add ${file}`);
+    return git(path, "rev-parse", "HEAD");
+  };
+
+  it("gives a step that may write the branch itself, created at HEAD", async () => {
+    const root = await repo();
+    const path = await ensureWorktree("40", root, { branch: "landrace/40", write: true });
+
+    expect(await attached(path)).toBe("landrace/40");
+    expect(await sha(root, "refs/heads/landrace/40")).toBe(await sha(root, "HEAD"));
+    await removeWorktree("40", root);
+  });
+
+  it("keeps what the step committed after the worktree is gone", async () => {
+    const root = await repo();
+    const path = await ensureWorktree("41", root, { branch: "landrace/41", write: true });
+    const made = await commitIn(path, "built.ts");
+
+    await removeWorktree("41", root);
+
+    expect(existsSync(path)).toBe(false);
+    expect(await sha(root, "refs/heads/landrace/41")).toBe(made);
+    // And the operator's own checkout never moved.
+    expect(await attached(root)).toBe("main");
+    expect(existsSync(join(root, "built.ts"))).toBe(false);
+  });
+
+  it("continues the same branch on the next write, rather than starting again from HEAD", async () => {
+    const root = await repo();
+    const first = await ensureWorktree("42", root, { branch: "landrace/42", write: true });
+    const made = await commitIn(first, "round1.ts");
+    await removeWorktree("42", root);
+
+    const again = await ensureWorktree("42", root, { branch: "landrace/42", write: true });
+
+    expect(await attached(again)).toBe("landrace/42");
+    expect(await sha(again, "HEAD")).toBe(made);
+    expect(existsSync(join(again, "round1.ts"))).toBe(true);
+    await removeWorktree("42", root);
+  });
+
+  /*
+   * The reviewer reads the ticket's code, not main's — and reads it detached,
+   * so a commit it should never have made cannot land on the branch the next
+   * push publishes.
+   */
+  it("shows a read-only step the branch's commit, detached from the branch", async () => {
+    const root = await repo();
+    const built = await ensureWorktree("43", root, { branch: "landrace/43", write: true });
+    const made = await commitIn(built, "built.ts");
+    await removeWorktree("43", root);
+
+    const path = await ensureWorktree("43", root, { branch: "landrace/43", write: false });
+
+    expect(await attached(path)).toBeNull();
+    expect(await sha(path, "HEAD")).toBe(made);
+    expect(existsSync(join(path, "built.ts"))).toBe(true);
+    await removeWorktree("43", root);
+  });
+
+  it("shows a read-only step HEAD before the branch exists, and creates no branch", async () => {
+    const root = await repo();
+    const path = await ensureWorktree("44", root, { branch: "landrace/44", write: false });
+
+    expect(await attached(path)).toBeNull();
+    expect(await sha(path, "HEAD")).toBe(await sha(root, "HEAD"));
+    expect(await sha(root, "refs/heads/landrace/44")).toBeNull();
+    await removeWorktree("44", root);
+  });
+
+  /*
+   * One converge reuses one worktree across passes — triage reads, then build
+   * writes. What the second step needs is not what the first one had, so the
+   * worktree is rebuilt on what it needs rather than handed over as it was.
+   */
+  it("moves a worktree a read-only step had onto the branch when a writing step follows", async () => {
+    const root = await repo();
+    const read = await ensureWorktree("45", root, { branch: "landrace/45", write: false });
+    const write = await ensureWorktree("45", root, { branch: "landrace/45", write: true });
+
+    expect(write).toBe(read);
+    expect(await attached(write)).toBe("landrace/45");
+    expect(await worktrees(root)).toHaveLength(2);
+    await removeWorktree("45", root);
+  });
+
+  it("detaches a worktree a writing step had when a read-only step follows, and keeps the branch", async () => {
+    const root = await repo();
+    const built = await ensureWorktree("46", root, { branch: "landrace/46", write: true });
+    const made = await commitIn(built, "built.ts");
+    // Left uncommitted: a worktree is disposable, and only a commit outlives it.
+    await writeFile(join(built, "stray.ts"), "export const stray = 1;\n");
+
+    const review = await ensureWorktree("46", root, { branch: "landrace/46", write: false });
+
+    expect(await attached(review)).toBeNull();
+    expect(await sha(review, "HEAD")).toBe(made);
+    expect(existsSync(join(review, "stray.ts"))).toBe(false);
+    expect(await sha(root, "refs/heads/landrace/46")).toBe(made);
+    await removeWorktree("46", root);
+  });
+
+  it("reuses a worktree that is already on what the step needs, as it stands", async () => {
+    const root = await repo();
+    const first = await ensureWorktree("47", root, { branch: "landrace/47", write: true });
+    await writeFile(join(first, "leftover.ts"), "export const leftover = 1;\n");
+
+    expect(await ensureWorktree("47", root, { branch: "landrace/47", write: true })).toBe(first);
+    expect(existsSync(join(first, "leftover.ts"))).toBe(true);
+    await removeWorktree("47", root);
+  });
+
+  /*
+   * git lets a branch be checked out in one place at a time, and the other
+   * place here is the operator's own checkout. Forcing it would pull the
+   * branch out from under them; the step is refused instead, in a sentence
+   * that says where it is checked out.
+   */
+  it("refuses, naming where, when the branch is checked out somewhere else", async () => {
+    const root = await repo();
+    await git(root, "checkout", "-q", "-b", "landrace/48");
+
+    await expect(ensureWorktree("48", root, { branch: "landrace/48", write: true }))
+      .rejects.toThrow(new RegExp(`landrace/48[\\s\\S]*checked out at ${realpathSync(root)}`));
+    expect(await attached(root)).toBe("landrace/48");
+    expect(await worktrees(root)).toHaveLength(1);
+  });
+
+  it("still lets a read-only step look at a branch checked out elsewhere", async () => {
+    const root = await repo();
+    await git(root, "checkout", "-q", "-b", "landrace/49");
+    const path = await ensureWorktree("49", root, { branch: "landrace/49", write: false });
+    expect(await sha(path, "HEAD")).toBe(await sha(root, "refs/heads/landrace/49"));
+    await removeWorktree("49", root);
+  });
+
+  /* The stage that names no branch, exactly as before. */
+  it("names no branch for a stage with none: detached at HEAD, and nothing created", async () => {
+    const root = await repo();
+    const path = await ensureWorktree("50", root);
+
+    expect(await attached(path)).toBeNull();
+    expect(await sha(path, "HEAD")).toBe(await sha(root, "HEAD"));
+    expect(await git(root, "branch", "--format=%(refname:short)")).toBe("main");
+    await removeWorktree("50", root);
+  });
+
+  /*
+   * A step without a branch that follows one with a branch gets HEAD, not the
+   * ticket's code: what the stage declared, rather than whatever the worktree
+   * happened to be on.
+   */
+  it("detaches onto HEAD for a stage with no branch, after one that had a branch", async () => {
+    const root = await repo();
+    const built = await ensureWorktree("51", root, { branch: "landrace/51", write: true });
+    await commitIn(built, "built.ts");
+
+    const plain = await ensureWorktree("51", root);
+
+    expect(await attached(plain)).toBeNull();
+    expect(await sha(plain, "HEAD")).toBe(await sha(root, "HEAD"));
+    expect(existsSync(join(plain, "built.ts"))).toBe(false);
+    await removeWorktree("51", root);
+  });
+});
+
+/**
  * Where a sandbox lives, and what is allowed to be deleted there.
  *
  * `rm -rf` on a path built from outside input is the highest-consequence line

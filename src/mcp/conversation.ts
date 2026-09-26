@@ -5,16 +5,19 @@ import {
   CAPABILITIES,
   CONVERSATION_KIND,
   fitRecordBody,
+  mayWriteRepo,
   neutraliseMarkers,
   recordBodyProblem,
   unknownCapabilities,
 } from "#conventions.js";
+import { stageBranch } from "#core/index.js";
 import type {
   Conversation,
   ConversationDeps,
   Entry,
   JoinedSession,
   Snapshot,
+  Stage,
   Step,
 } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
@@ -138,10 +141,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
    * can say the limits of is a turn nobody is holding to them, and this
    * process has already proved it can run one.
    */
-  const stepBehind = (ticket: string, stage: string): Step => {
+  const stepBehind = (ticket: string, stage: string): { declared: Stage; step: Step } => {
     const declared = deps.workflow?.stages.find((s) => s.id === stage);
     const step = declared?.step === undefined ? undefined : deps.steps?.get(declared.step);
-    if (!step) {
+    if (!declared || !step) {
       throw new Error(
         `cannot ask: #${ticket}'s conversation belongs to stage "${stage}", and this process cannot see what ` +
         "that step declared — a turn that is not held to the step's own capabilities is a way around them",
@@ -157,7 +160,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
         `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}`,
       );
     }
-    return step;
+    return { declared, step };
   };
 
   return {
@@ -191,8 +194,14 @@ export function createConversation(deps: ConversationDeps): Conversation {
           // Before anything is screened, posted or paid for: what the step
           // declared is the frame this whole turn runs inside, and a turn
           // that cannot be held to it must not start.
-          const step = stepBehind(ticket, stage);
+          const { declared, step } = stepBehind(ticket, stage);
           const root = deps.sandbox?.root;
+          // Where the step worked, which is where its session continues: the
+          // stage's branch when it names one — converge's own rule, so a turn
+          // on a build commits where the build did rather than onto a
+          // detached HEAD that is deleted with the worktree.
+          const branch = stageBranch(declared, ticket, round);
+          if (!branch.ok) throw new Error(`cannot ask: ${branch.reason}`);
 
           const turn = TURN(message);
 
@@ -235,7 +244,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
            */
           let sandbox: { path: string } | undefined;
           try {
-            if (root !== undefined) sandbox = { path: await ensureWorktree(ticket, root) };
+            if (root !== undefined) {
+              const on = branch.branch === null
+                ? undefined
+                : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
+              sandbox = { path: await ensureWorktree(ticket, root, on) };
+            }
 
             // Read before the agent runs, and a failure refuses the turn
             // rather than skipping the check: a check that could not run has

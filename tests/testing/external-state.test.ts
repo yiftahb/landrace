@@ -137,3 +137,74 @@ describe("children in the in-memory tracker", () => {
     await expect(state.operator.createTicket({ title: "x", parent: "9" }, ctx)).rejects.toThrow(/no such ticket #9/);
   });
 });
+
+/**
+ * Publishing, as far as a tracker with no repository behind it can go: a pull
+ * request is a record it keeps, found by the branch it was opened from, and a
+ * push is something it can only be told about.
+ */
+describe("publishing in the in-memory tracker", () => {
+  const ctx = { config: {} as never, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
+  const read = async (state: ReturnType<typeof createExternalState>): Promise<Snapshot> => {
+    const graph = await state.source.read("1", ctx);
+    return { graph, node: graph.nodes.find((n) => n.id === "1") };
+  };
+  const apply = async (state: ReturnType<typeof createExternalState>, effect: { type: string; [k: string]: unknown }) =>
+    state.post.apply(effect, { ...ctx, ticket: "1", snapshot: await read(state) } as HookContext);
+
+  it("opens a pull request from the effect's branch, which then reads back as satisfied", async () => {
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const open = { type: "pull.open", branch: "landrace/1" };
+
+    expect(state.post.satisfied(await read(state), open)).toBe(false);
+    await apply(state, open);
+
+    const snapshot = await read(state);
+    expect(state.post.satisfied(snapshot, open)).toBe(true);
+    expect(snapshot.graph).toMatchObject({
+      nodes: expect.arrayContaining([expect.objectContaining({ kind: "pull-request", state: expect.objectContaining({ branch: "landrace/1" }) })]),
+      relationships: expect.arrayContaining([expect.objectContaining({ to: "1", type: "implements" })]),
+    });
+  });
+
+  /*
+   * One ticket, two branches, two pull requests: a pull request from one
+   * branch says nothing about whether the other has one.
+   */
+  it("keeps two branches' pull requests apart", async () => {
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    await apply(state, { type: "pull.open", branch: "api/1" });
+
+    expect(state.post.satisfied(await read(state), { type: "pull.open", branch: "api/1" })).toBe(true);
+    expect(state.post.satisfied(await read(state), { type: "pull.open", branch: "ui/1" })).toBe(false);
+  });
+
+  it("counts a merged pull request as opened, and an abandoned one as not", async () => {
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    state.openPull("1", { branch: "landrace/1", merged: true });
+    state.openPull("1", { branch: "other/1", closed: "dropped" });
+
+    expect(state.post.satisfied(await read(state), { type: "pull.open", branch: "landrace/1" })).toBe(true);
+    expect(state.post.satisfied(await read(state), { type: "pull.open", branch: "other/1" })).toBe(false);
+  });
+
+  it("refuses a publishing effect that names no branch", async () => {
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    expect(() => state.post.satisfied({}, { type: "pull.open" })).toThrow(/branch/);
+    expect(() => state.post.satisfied({}, { type: "branch.push" })).toThrow(/branch/);
+  });
+
+  /*
+   * There is no repository here, so nothing can say the remote already has
+   * the branch's head — and pushing a branch that is already there changes
+   * nothing, so the push is simply applied every time it is planned.
+   */
+  it("takes a push every time it is planned, and records it", async () => {
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const push = { type: "branch.push", branch: "landrace/1" };
+    expect(state.post.satisfied(await read(state), push)).toBe(false);
+    await apply(state, push);
+    await apply(state, push);
+    expect(state.pushes()).toEqual(["landrace/1", "landrace/1"]);
+  });
+});

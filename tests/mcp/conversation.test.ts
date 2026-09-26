@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { OUTPUT_KIND, renderMarker } from "#conventions.js";
 import type { ConversationDeps, Executor, LockOptions, Source, Step } from "#namespace.js";
@@ -624,6 +626,39 @@ describe("a conversation turn is held to what its step declared", () => {
 
     expect(ranIn).toBeDefined();
     expect(ranIn).not.toBe(checkout);
+    expect(await worktreesOf(checkout)).toEqual([]);
+  });
+
+  /*
+   * A turn continues the step's session, so it works where the step worked:
+   * on the stage's branch. Anywhere else, a build's agent resumed through
+   * conversation would be looking at main and committing into a worktree
+   * that is about to be deleted.
+   */
+  it("works on the stage's branch when the stage names one, and keeps what it commits there", async () => {
+    const checkout = await gitRepo();
+    const run = promisify(execFile);
+    let made = "";
+    const committer: Executor = {
+      id: "committer",
+      run: async (_p, { cwd }) => {
+        if (cwd === undefined) throw new Error("no worktree");
+        await writeFile(join(cwd, "fixed.ts"), "export const fixed = true;\n");
+        await run("git", ["add", "-A"], { cwd });
+        await run("git", ["commit", "-qm", "fix"], { cwd });
+        made = (await run("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim();
+        return { text: "Fixed and committed.", sessionId: null };
+      },
+    };
+
+    await world(seeded(), committer, {}, undefined, {
+      workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", branch: "landrace/{ticket}", triggers: [] }] },
+      steps: new Map<string, Step>([["spec", { prompt: "write", capabilities: ["repo:read", "repo:write"] }]]),
+      sandbox: { root: checkout },
+    }).ask("1", "carry on");
+
+    expect(made).not.toBe("");
+    expect((await run("git", ["rev-parse", "refs/heads/landrace/1"], { cwd: checkout })).stdout.trim()).toBe(made);
     expect(await worktreesOf(checkout)).toEqual([]);
   });
 
