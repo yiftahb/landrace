@@ -200,3 +200,68 @@ describe("decide", () => {
     });
   });
 });
+
+describe("a pending goto", () => {
+  const stages: Stage[] = [
+    { id: "spec", entry: true, step: "steps/spec.md", triggers: [{ name: "fresh", when: { "run.stage": null } }] },
+    { id: "review", goto: ["spec", { stage: "build", when: { "run.counters.build": { $lt: 3 } } }],
+      triggers: [{ name: "spec done", when: { "run.stage": "spec" } }] },
+    { id: "build", step: "steps/build.md", requires: { "ok": true },
+      triggers: [{ name: "never", when: { "run.stage": "nowhere" } }] },
+    { id: "done", terminal: true, triggers: [{ name: "reviewed", when: { "run.stage": "review", "reviewed": true } }] },
+  ];
+  const w: Workflow = { version: 1, name: "t", stages };
+  const at = (stage: string, o: object = {}, top: object = {}) => snap({ ...top, run: run({ stage, ...o }) });
+
+  it("sends the ticket to a target its stage lists, at the target's next round", () => {
+    expect(decide(w, at("review", { goto: "spec", counters: { spec: 1 } }))).toMatchObject({
+      action: "transition", to: { id: "spec" }, trigger: "goto", round: 2,
+    });
+  });
+
+  it("outranks a trigger that also matches, rather than being one candidate among them", () => {
+    expect(decide(w, at("review", {}, { reviewed: true }))).toMatchObject({ action: "transition", to: { id: "done" } });
+    expect(decide(w, at("review", { goto: "spec" }, { reviewed: true }))).toMatchObject({ action: "transition", to: { id: "spec" } });
+  });
+
+  it("halts on a target its stage does not list, naming both", () => {
+    const d = decide(w, at("review", { goto: "done" }));
+    expect(d.action).toBe("halt");
+    expect(d.why).toMatch(/"review".*"spec" or "build".*"done"/);
+  });
+
+  it("halts on a target that is not a stage at all", () => {
+    expect(decide(w, at("review", { goto: "zz" }))).toMatchObject({ action: "halt", why: expect.stringMatching(/"zz"/) });
+  });
+
+  /*
+   * A cap the list declares turns the goto down without stopping the
+   * ticket: the stage's own triggers decide. Halting would leave it at a
+   * judge that runs a step, where no command can reach it and nothing
+   * would ever consume the goto.
+   */
+  it("declines a target whose `when` does not hold, and lets the triggers decide", () => {
+    const declined = decide(w, at("review", { goto: "build", counters: { build: 3 } }));
+    expect(declined).toMatchObject({ action: "wait" });
+    expect(declined.why).toMatch(/run\.counters\.build/);
+    expect(decide(w, at("review", { goto: "build", counters: { build: 3 } }, { reviewed: true })))
+      .toMatchObject({ action: "transition", to: { id: "done" } });
+  });
+
+  /*
+   * A round owed is run to its verdict before the ticket goes anywhere. Left
+   * behind, it would be re-entered under the same number, its entry record
+   * reconciled away as already posted, and the goto that left it would read
+   * as pending again.
+   */
+  it("runs a step still owed before taking a goto", () => {
+    const s = at("spec", { goto: "review", rounds: { spec: { entered: 1, output: 0 } } });
+    expect(decide({ ...w, stages: stages.map((x) => (x.id === "spec" ? { ...x, goto: ["review"] } : x)) }, s))
+      .toMatchObject({ action: "invoke", step: "steps/spec.md" });
+  });
+
+  it("still enforces the target's own precondition once the ticket arrives", () => {
+    expect(decide(w, at("build", { rounds: { build: { entered: 1, output: 0 } } }, { ok: false })))
+      .toMatchObject({ action: "halt", why: expect.stringMatching(/precondition for "build"/) });
+  });
+});
