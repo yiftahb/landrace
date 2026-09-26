@@ -4,6 +4,7 @@ import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
 import {
   CAPABILITIES,
   CONVERSATION_KIND,
+  durationMs,
   fitRecordBody,
   mayWriteRepo,
   neutraliseMarkers,
@@ -265,6 +266,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // would otherwise read back as control state we wrote.
             await say(ticket, snapshot, neutraliseMarkers(message));
 
+            const turnTimeout = step.timeout === undefined ? null : durationMs(step.timeout);
             const { text, sessionId } = await deps.executor.run(turn, {
               round,
               resume: session,
@@ -279,6 +281,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
               // default instead.
               capabilities: step.capabilities ?? [],
               ...(step.model === undefined ? {} : { model: step.model }),
+              // And its time limit: a turn on a two-hour build's session, held
+              // to the operator's default, is killed long before the build
+              // would have been. Checked at load, so null means none named.
+              ...(turnTimeout === null ? {} : { timeoutMs: turnTimeout }),
               ...(sandbox ? { cwd: sandbox.path } : {}),
               // The caller's own signal when there is one: an MCP client that
               // disconnects mid-turn aborts the request, which kills the agent

@@ -685,6 +685,18 @@ describe("a conversation turn is held to what its step declared", () => {
     expect(seen).toMatchObject({ capabilities: ["repo:read"], model: "haiku" });
   });
 
+  // A turn resumes a two-hour build's session; held to the ten-minute
+  // default, it is killed long before the build it continues would have been.
+  it("hands the executor the step's own timeout", async () => {
+    let seen: { timeoutMs?: number } | undefined;
+    const spy: Executor = {
+      id: "spy",
+      run: async (_p, o) => { seen = o; return { text: "Understood.", sessionId: null }; },
+    };
+    await world(seeded(), spy, {}, undefined, spec({ capabilities: ["repo:read"], timeout: "120m" })).ask("1", "carry on");
+    expect(seen?.timeoutMs).toBe(7_200_000);
+  });
+
   /*
    * Fail closed before spending anything, exactly as runStep does: a word the
    * engine cannot enforce is the operator believing in a restriction that was

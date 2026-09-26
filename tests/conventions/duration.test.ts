@@ -11,6 +11,16 @@ describe("durationMs", () => {
       .toEqual([30_000, 120_000, 7_200_000, 3_600_000]);
   });
 
+  /*
+   * Every one of these ends up in a setTimeout, which holds at most 2^31-1 ms
+   * (about 24.8 days) and fires almost at once for anything longer: a stray
+   * digit would kill every agent the moment it started.
+   */
+  it("reads nothing a timer cannot hold", () => {
+    expect(durationMs("596h")).toBe(2_145_600_000);
+    for (const long of ["597h", "999999h", "99999999999s"]) expect(durationMs(long)).toBeNull();
+  });
+
   it("reads nothing else, rather than guessing a unit", () => {
     for (const bad of ["60", "", "2 m", "0.5m", "2d", "-1s", "s"]) expect(durationMs(bad)).toBeNull();
   });

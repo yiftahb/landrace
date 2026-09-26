@@ -67,7 +67,7 @@ export const stepFrontMatterSchema = z.object({
    * file that does not load rather than a cap that silently is not there.
    */
   timeout: z.string()
-    .refine((t) => (durationMs(t) ?? 0) > 0, { message: 'must be a duration like "30m" or "2h", above zero' })
+    .refine((t) => (durationMs(t) ?? 0) > 0, { message: 'must be a duration like "30m" or "2h", above zero and at most 596h' })
     .optional(),
   output: z.object({
     discriminator: z.string(),
