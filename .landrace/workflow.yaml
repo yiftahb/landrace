@@ -38,6 +38,15 @@ budget:
 #    round is derived, so it does not move). Written after the status instead,
 #    a crash would land the ticket on a stage that still reads as complete from
 #    its last round, and that round would be silently skipped.
+#
+# And one rule for triggers: every trigger leaving a stage that runs a step
+# reads `"run.lastOutputValid": null` — that stage's latest round did not
+# fail. A failed round is the halts' to route, and only theirs. Without it a
+# failure matched both a halt and the way on: a refused review round also
+# read "no threads are open", a failed fix round also read "the fixer
+# finished a round", a failed second spec also read the first one's
+# `kind: questions` — two triggers, an ambiguity halt, and the ticket left
+# wearing lr:working at a stage nothing would ever run again.
 # Pull requests are graph nodes: rel.implements.in.* counts every PR tied to the ticket — "all merged" is total > 0 and not.merged: 0, never a single PR's flag.
 stages:
   # ── spec phase ───────────────────────────────────────────────────────────
@@ -64,17 +73,30 @@ stages:
       - name: reviewer's reply read as a change request
         when:
           "run.stage": triage
+          "run.lastOutputValid": null
           "run.outputs.triage.intent": revise
           "run.counters.spec": { $lt: 3 }
+      # A halt goes back to the stage that failed. Anything but a failed
+      # build comes here — a failed spec, triage or review, and a review
+      # budget spent with no stage failed at all — and a failed build goes
+      # back to build, below. `$nin` and `$in` on the one list are exact
+      # complements, so exactly one of the two can take any reply.
       - name: a halt was handed back
         when:
           "run.stage": blocked
           "run.lastEvent.actor": human
+          "run.failedStages": { $nin: [build] }
+          "run.counters.spec": { $lt: 3 }
+      - name: a security refusal was handed back
+        when:
+          "run.stage": screened
+          "run.lastEvent.actor": human
+          "run.failedStages": { $nin: [build] }
           "run.counters.spec": { $lt: 3 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
       - { type: tracker.status, value: spec }
-      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked"] }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
   # Where the conversation rests while it is the human's turn. §10 routes
   # `triage --question--> spec-questions`, and `unclear` here too: the enum
@@ -88,11 +110,11 @@ stages:
   - id: spec-questions
     triggers:
       - name: the agent has blocking questions
-        when: { "run.stage": spec, "run.outputs.spec.kind": questions }
+        when: { "run.stage": spec, "run.lastOutputValid": null, "run.outputs.spec.kind": questions }
       - name: the reviewer's reply was a question
-        when: { "run.stage": triage, "run.outputs.triage.intent": question }
+        when: { "run.stage": triage, "run.lastOutputValid": null, "run.outputs.triage.intent": question }
       - name: the reviewer's reply could not be read either way
-        when: { "run.stage": triage, "run.outputs.triage.intent": unclear }
+        when: { "run.stage": triage, "run.lastOutputValid": null, "run.outputs.triage.intent": unclear }
     on_enter:
       - { type: tracker.status, value: spec-questions }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
@@ -101,7 +123,7 @@ stages:
     requires: { "run.outputs.spec.kind": spec }
     triggers:
       - name: the spec was published
-        when: { "run.stage": spec, "run.outputs.spec.kind": spec }
+        when: { "run.stage": spec, "run.lastOutputValid": null, "run.outputs.spec.kind": spec }
     on_enter:
       - { type: tracker.status, value: spec-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
@@ -129,11 +151,26 @@ stages:
     branch: "landrace/{ticket}"
     triggers:
       - name: the spec was approved
-        when: { "run.stage": triage, "run.outputs.triage.intent": approve }
+        when: { "run.stage": triage, "run.lastOutputValid": null, "run.outputs.triage.intent": approve }
+      # A build that failed is handed back to build, not to spec: the spec was
+      # approved and did nothing wrong. Three attempts, a refused or broken
+      # one counting like any other.
+      - name: a failed build was handed back
+        when:
+          "run.stage": blocked
+          "run.lastEvent.actor": human
+          "run.failedStages": { $in: [build] }
+          "run.counters.build": { $lt: 3 }
+      - name: a refused build was handed back
+        when:
+          "run.stage": screened
+          "run.lastEvent.actor": human
+          "run.failedStages": { $in: [build] }
+          "run.counters.build": { $lt: 3 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
       - { type: tracker.status, value: build }
-      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
   # Publishing is the orchestrator's, not an agent's, so there is no step. The
   # push and the pull request come before the status that moves the position:
@@ -142,7 +179,7 @@ stages:
   - id: publish
     triggers:
       - name: the build is done
-        when: { "run.stage": build, "run.outputs.build.kind": done }
+        when: { "run.stage": build, "run.lastOutputValid": null, "run.outputs.build.kind": done }
     on_enter:
       - { type: branch.push, branch: "landrace/{ticket}" }
       - { type: pull.open, branch: "landrace/{ticket}" }
@@ -159,6 +196,7 @@ stages:
       - name: the fixer finished a round
         when:
           "run.stage": fix-review
+          "run.lastOutputValid": null
           "run.counters.code-review": { $lt: 4 }
     on_enter:
       # Pushed first: a fix round's commits have to be on the pull request
@@ -176,6 +214,7 @@ stages:
       - name: the reviewer left open threads
         when:
           "run.stage": code-review
+          "run.lastOutputValid": null
           "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $lt: 4 }
       - name: you reopened a thread
@@ -193,6 +232,7 @@ stages:
       - name: no threads are open
         when:
           "run.stage": code-review
+          "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.sum.openThreads": 0
     on_enter:
@@ -221,10 +261,27 @@ stages:
       - name: the review budget is exhausted
         when:
           "run.stage": code-review
+          "run.lastOutputValid": null
           "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $gte: 4 }
+      # `run.lastRefused` is false for a broken contract and true for a
+      # refusal, never null while `lastOutputValid` is false — so this and
+      # `screened` below split every failure between them, one each.
       - name: a step broke its output contract
-        when: { "run.lastOutputValid": false }
+        when: { "run.lastOutputValid": false, "run.lastRefused": false }
     on_enter:
       - { type: tracker.status, value: blocked }
       - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }
+
+  # A step a security check stopped: screened out before it ran, or caught
+  # afterwards doing what its step never declared. Still a halt, and still
+  # `lr:blocked` — everything that asks whether a ticket is stopped must keep
+  # hearing yes — with `lr:screened` beside it to say it was not the agent's
+  # answer that failed but the prompt, or what the agent did.
+  - id: screened
+    triggers:
+      - name: a security check refused a step
+        when: { "run.lastOutputValid": false, "run.lastRefused": true }
+    on_enter:
+      - { type: tracker.status, value: screened }
+      - { type: tracker.label, add: ["lr:blocked", "lr:screened"], remove: ["lr:working", "lr:awaiting"] }

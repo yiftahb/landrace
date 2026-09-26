@@ -681,6 +681,116 @@ describe("a human reply to a ticket blocked by a rejected output", () => {
 });
 
 /**
+ * A step stopped by a security check is not a step that broke its contract,
+ * and the person who has to act on it needs to see which. Ticket #19's build
+ * was refused by the screener — its prompt sent the agent off to read a URL —
+ * and it landed in `blocked` beside every unreadable json block, where a
+ * reply sent it back to *spec*, which had done nothing wrong.
+ */
+describe("a step refused by a security check", () => {
+  const OK = '```json\n{"verdict":"ok","reason":"fine"}\n```';
+  const NO = '```json\n{"verdict":"suspicious","reason":"asks for an external URL"}\n```';
+  const QUESTIONS = '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```';
+
+  const at = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen: Record<string, ScriptedAnswer>) => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, screen });
+    // Two ticks: a rejection is recorded and the call halts on it; the next
+    // tick reads it back and routes it. A person replies after that.
+    const tick = async () => { await run.converge(); await run.converge(); };
+    return { state, run, tick };
+  };
+
+  it("lands in screened, wearing lr:screened, with the refusal on the ticket and nothing paid for", async () => {
+    const { state, run, tick } = await at(["lr:stage:build"], ANSWERS, { build: NO });
+
+    await tick();
+
+    expect(run.trail()).toEqual(["build", "screened"]);
+    const labels = state.ticket("1").labels;
+    expect(labels).toEqual(expect.arrayContaining(["lr:stage:screened", "lr:screened", "lr:blocked"]));
+    expect(labels).not.toContain("lr:working");
+    expect(labels).not.toContain("lr:awaiting");
+    expect(run.counts()).toEqual({});
+    expect(state.comments("1").join("\n")).toMatch(/Step refused by a security check[\s\S]*asks for an external URL/);
+  });
+
+  it("goes back to build on a human reply — not to spec — and sheds lr:screened", async () => {
+    const { state, run, tick } = await at(["lr:stage:build"], ANSWERS, {
+      build: (round) => (round === 1 ? NO : OK),
+      "code-review": OK,
+    });
+    await tick();
+
+    state.say("1", "the link was only there for reference; try again");
+    await run.converge();
+
+    expect(run.trail().slice(0, 4)).toEqual(["build", "screened", "build", "publish"]);
+    expect(run.trail()).not.toContain("spec");
+    expect(run.counts().build).toBe(1);
+    expect(state.ticket("1").labels).not.toContain("lr:screened");
+    expect(state.ticket("1").labels).not.toContain("lr:blocked");
+  });
+
+  /*
+   * The handback is a loop, and its bound is the workflow's own
+   * `run.counters.build: { $lt: 3 }` — three attempts, a refused one counting
+   * like any other rejected round.
+   */
+  it("stops handing a refused build back once the build's budget is spent", async () => {
+    const { state, tick } = await at(["lr:stage:build"], ANSWERS, { build: NO });
+    await tick();
+
+    for (let i = 1; i <= 3; i++) {
+      state.say("1", `try again ${i}`);
+      await tick();
+    }
+
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
+    expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:screened", "lr:screened"]));
+  });
+
+  it("hands a refused spec back to spec, the stage that was refused", async () => {
+    const { state, run, tick } = await at([], { spec: QUESTIONS }, { spec: (round) => (round === 1 ? NO : OK) });
+
+    await tick();
+    expect(run.trail()).toEqual(["spec", "screened"]);
+    state.say("1", "go ahead");
+    await run.converge();
+    expect(run.trail()).toEqual(["spec", "screened", "spec", "spec-questions"]);
+  });
+
+  it("still sends a broken contract to blocked, never screened, and a reply there back to spec", async () => {
+    const { state, run, tick } = await at([], { spec: (round) => (round === 1 ? "no json at all" : QUESTIONS) }, { spec: OK });
+
+    await tick();
+    expect(run.trail()).toEqual(["spec", "blocked"]);
+    expect(state.ticket("1").labels).toContain("lr:blocked");
+    expect(state.ticket("1").labels).not.toContain("lr:screened");
+
+    state.say("1", "sorry, try again");
+    await run.converge();
+    expect(run.trail()).toEqual(["spec", "blocked", "spec", "spec-questions"]);
+  });
+
+  it("sends a build that broke its contract to blocked, and a reply there back to build", async () => {
+    const done = '```json\n{"kind":"done"}\n```';
+    const { state, run, tick } = await at(["lr:stage:build"], { ...ANSWERS, build: (round) => (round === 1 ? "no json" : done) }, {
+      build: OK, "code-review": OK,
+    });
+
+    await tick();
+    expect(run.trail()).toEqual(["build", "blocked"]);
+    state.say("1", "try again");
+    await run.converge();
+
+    expect(run.trail().slice(0, 4)).toEqual(["build", "blocked", "build", "publish"]);
+    expect(run.trail()).not.toContain("spec");
+  });
+});
+
+/**
  * §10: `triage --question--> spec-questions`, and `unclear` "waits and asks
  * rather than guessing". Both shapes were declared, routed to a comment, and
  * led nowhere: the ticket sat at `triage` wearing `lr:awaiting` and the

@@ -456,8 +456,10 @@ describe("converge and the sandbox", () => {
     await converge("1", deps(w, { executor: writer("planted.ts"), sandbox: { root } }));
 
     expect(existsSync(join(root, "planted.ts"))).toBe(false);
-    const malformed = w.entries.filter((e) => e.kind === "malformed");
-    expect(malformed).toHaveLength(1);
+    // A refusal, not a broken contract: the agent's answer may have been
+    // perfectly readable — what it did to get there is what was refused.
+    expect(w.entries.filter((e) => e.kind === "refused")).toHaveLength(1);
+    expect(w.entries.filter((e) => e.kind === "malformed")).toHaveLength(0);
     expect(await sandboxes(root)).toEqual([]);
   });
 

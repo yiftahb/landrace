@@ -1,4 +1,4 @@
-import { ENTRY_KIND, OUTPUT_KIND } from "#conventions.js";
+import { ENTRY_KIND, MALFORMED_KIND, OUTPUT_KIND, REFUSED_KIND } from "#conventions.js";
 import type { Entry, Run, StageRounds } from "#namespace.js";
 
 /**
@@ -11,7 +11,8 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   const outputsByStage = new Map<string, Entry>();
   const roundsByStage = new Map<string, Set<number>>();
   const settledRoundsByStage = new Map<string, Set<number>>();
-  const maxMalformedRoundByStage = new Map<string, number>();
+  const maxRejectedRoundByStage = new Map<string, number>();
+  const maxRefusedRoundByStage = new Map<string, number>();
   const maxEnteredRoundByStage = new Map<string, number>();
 
   const note = (map: Map<string, Set<number>>, stage: string, round: number): void => {
@@ -20,10 +21,17 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     map.set(stage, rounds);
   };
 
+  const raise = (map: Map<string, number>, stage: string, round: number): void => {
+    const cur = map.get(stage);
+    if (cur === undefined || round > cur) map.set(stage, round);
+  };
+
   for (const e of ordered) {
-    if (e.kind === "malformed") {
-      const cur = maxMalformedRoundByStage.get(e.stage);
-      if (cur === undefined || e.round > cur) maxMalformedRoundByStage.set(e.stage, e.round);
+    // A refusal is a rejection like any other — the same hard fail, the same
+    // settled round — and is remembered apart only so lastRefused can say so.
+    if (e.kind === MALFORMED_KIND || e.kind === REFUSED_KIND) {
+      raise(maxRejectedRoundByStage, e.stage, e.round);
+      if (e.kind === REFUSED_KIND) raise(maxRefusedRoundByStage, e.stage, e.round);
       note(settledRoundsByStage, e.stage, e.round);
     }
 
@@ -101,11 +109,12 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   const lastHuman = [...ordered].reverse().find((e) => !e.byAgent) ?? null;
 
   /*
-   * A "malformed" entry marks its own round as invalid, regardless of whether
-   * it happens to be logged before or after the "output" entry for that same
-   * round — a hook can write them in either order. So validity is judged per
-   * (stage, round): compare the highest malformed round to the highest output
-   * round for that stage, not by which entry has the latest timestamp.
+   * A rejection — a "malformed" or a "refused" entry — marks its own round as
+   * invalid, regardless of whether it happens to be logged before or after the
+   * "output" entry for that same round — a hook can write them in either
+   * order. So validity is judged per (stage, round): compare the highest
+   * rejected round to the highest output round for that stage, not by which
+   * entry has the latest timestamp.
    *
    * A stage can also be rejected with no output entry at all — a step whose
    * output fails its contract gets a "malformed" entry *instead of* an
@@ -136,14 +145,27 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * "hasn't happened yet".
    */
   const failedStages: string[] = [];
-  for (const [s, malRound] of maxMalformedRoundByStage) {
+  for (const [s, rejectedRound] of maxRejectedRoundByStage) {
     const outRound = outputsByStage.get(s)?.round ?? -Infinity;
     // A stage that records no entry at all reads as entered once, exactly as
     // `rounds` does — for it, this is the old rule unchanged.
     const enteredRound = maxEnteredRoundByStage.get(s) ?? 1;
-    if (malRound >= outRound && malRound >= enteredRound) failedStages.push(s);
+    if (rejectedRound >= outRound && rejectedRound >= enteredRound) failedStages.push(s);
   }
   const lastOutputValid: false | null = stage !== null && failedStages.includes(stage) ? false : null;
+
+  /*
+   * Of that failure, whether the round it judges was refused. The failing
+   * round is the stage's highest rejected one, so a refusal handed back and
+   * followed by a broken contract reads as the contract, which is what the
+   * person is now looking at. One invocation writes one verdict; should a
+   * round ever carry both, the refusal is what it reads as — a security
+   * verdict a person has not seen is the costlier one to hide, and this is a
+   * rule about the set of records, not about which came first.
+   */
+  const lastRefused: boolean | null = lastOutputValid === false && stage !== null
+    ? maxRefusedRoundByStage.get(stage) === maxRejectedRoundByStage.get(stage)
+    : null;
 
   /** Per-stage: an unblock recorded against a different stage must not reset this one's budget. */
   const unblockedAt = ordered
@@ -157,6 +179,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     lastEvent: { actor: last ? (last.byAgent ? "agent" : "human") : null, at: last?.at ?? null },
     lastHuman,
     lastOutputValid,
+    lastRefused,
     failedStages,
     rounds,
     unblockedAt,

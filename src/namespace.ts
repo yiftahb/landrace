@@ -126,6 +126,15 @@ export interface Run {
   lastHuman: Entry | null;
   /** Never true: a step is either invalid (false) or has no verdict (null), never affirmatively "valid". */
   lastOutputValid: false | null;
+  /**
+   * Whether that invalid round was *refused* — screened out, or caught doing
+   * what its step never declared — rather than a contract its output broke.
+   * Null exactly when `lastOutputValid` is: there is no failure to classify.
+   * A field of its own rather than a third value of `lastOutputValid`, so a
+   * workflow that routes every failure one way keeps matching on `false`
+   * whichever kind it was.
+   */
+  lastRefused: boolean | null;
   /** Every stage with a rejected round, independent of which stage `lastOutputValid` answers for. */
   failedStages: string[];
   unblockedAt: number;
@@ -695,13 +704,15 @@ export interface LockOptions {
  *   network blip, a timeout, a Ctrl-C). Nothing was produced, so nothing was
  *   rejected; a durable record here would misreport an outage as a broken
  *   contract and permanently poison a stage that never got to try.
- * - "refused": screened out *before* invocation. This looks like
- *   "unavailable" (the executor never ran either), but it is not an outage —
- *   the screener ran fine and returned a verdict. A screening refusal must
- *   be durable and terminal (routed to `blocked`, per spec §15), not a
- *   silent, free-to-repeat retry: treating it as "unavailable" turned a
+ * - "refused": screened out *before* invocation, or caught afterwards doing
+ *   what the step never declared. This looks like "unavailable" (the
+ *   executor never ran either), but it is not an outage — the screener ran
+ *   fine and returned a verdict. A refusal must be durable and terminal, not
+ *   a silent, free-to-repeat retry: treating it as "unavailable" turned a
  *   security refusal into a paid screener call on every single poll,
- *   forever, with nothing ever left on the ticket for anyone to see.
+ *   forever, with nothing ever left on the ticket for anyone to see. It is
+ *   recorded under REFUSED_KIND rather than the contract's MALFORMED_KIND,
+ *   which is what `run.lastRefused` reads back.
  */
 export type StepResult =
   | { ok: true; effects: Effect[]; sessionId: string | null }
@@ -807,6 +818,13 @@ export interface HarnessOptions {
   artifacts?: ArtifactHook[];
   /** What each stage's step answers. A stage that is invoked with nothing scripted is a gap, and says so. */
   answers?: { [stage: string]: ScriptedAnswer };
+  /**
+   * What the prompt screener answers for each stage's step — a fenced json
+   * verdict, as the real one writes. Absent, nothing is screened. Present, a
+   * stage with no answer here is a screener that could not run, which is a
+   * refusal: the same fail-closed reading the engine gives a real one.
+   */
+  screen?: { [stage: string]: ScriptedAnswer };
   ticket?: string;
   /**
    * What the world does while a step runs — a push, a pull request appearing,

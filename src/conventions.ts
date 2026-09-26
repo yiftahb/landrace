@@ -11,6 +11,12 @@ export const LABELS = {
   working: "lr:working",
   awaiting: "lr:awaiting",
   blocked: "lr:blocked",
+  /**
+   * Beside `blocked`, never instead of it: a ticket a security check stopped
+   * is still stopped, and every reader that asks "is it blocked" must keep
+   * saying yes. This one only says why, so a person knows what to look at.
+   */
+  screened: "lr:screened",
   approved: "lr:approved",
   stage: (id: string) => `lr:stage:${id}`,
 } as const;
@@ -158,6 +164,26 @@ export const ENTRY_KIND = "enter";
  * route retargets it. Four files that must mean the same thing by one name.
  */
 export const OUTPUT_KIND = "output";
+
+/**
+ * The two marker kinds a rejected round is recorded under, and the whole of
+ * the difference between them is who a person should look at.
+ *
+ * MALFORMED_KIND: the step ran and broke its output contract — the agent's
+ * answer was unreadable, undeclared, ambiguous or too large. REFUSED_KIND: the
+ * step was stopped on security grounds — screened out before it ran, or caught
+ * afterwards doing what it never declared (a write, a child ticket). Core
+ * treats both as the same hard fail, and counts both toward the round; it
+ * tells them apart only so a workflow can route a refusal somewhere a person
+ * reads it as one.
+ *
+ * A kind rather than a flag inside a malformed record, because a tracker hook
+ * copies `kind` onto its marker already and would have to be taught to copy a
+ * flag — and a hook that was not would quietly report every refusal as a
+ * broken contract.
+ */
+export const MALFORMED_KIND = "malformed";
+export const REFUSED_KIND = "refused";
 
 /**
  * The effect type that leaves a durable record on the tracker.

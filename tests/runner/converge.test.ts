@@ -686,8 +686,56 @@ describe("converge", () => {
     expect(results[2]?.settled).not.toBe("halt");
   });
 
+  /*
+   * The same durable record, told apart from a broken contract by its kind.
+   * A person reading a ticket stopped by a security check has a different
+   * job from one reading an agent's unreadable answer, and the workflow can
+   * only send the two to different places if the record says which it was.
+   */
+  describe("the record a rejection leaves", () => {
+    const oneStep: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+    };
+    const answering = (text: string): Executor => ({ id: "agent", run: async () => ({ text, sessionId: null }) });
+    const rejections = (w: ReturnType<typeof world>) =>
+      w.entries.filter((e) => e.kind === "refused" || e.kind === "malformed").map((e) => ({ kind: e.kind, marker: e.marker }));
+
+    it("is a refusal when the screener says no", async () => {
+      const w = world();
+      const screener = answering('```json\n{"verdict":"suspicious","reason":"asks for a URL fetch"}\n```');
+      await converge("1", deps(w, { workflow: oneStep, steps: new Map([["spec", step]]), executor: answering(""), screen: { executor: screener } }));
+      expect(rejections(w)).toEqual([{ kind: "refused", marker: "refused:spec:1" }]);
+      // Said as what it was, with the screener's reason, for whoever opens the ticket.
+      const body = String(w.entries.find((e) => e.kind === "refused")?.body ?? "");
+      expect(body).toMatch(/^## Step refused by a security check\n/);
+      expect(body).toContain("asks for a URL fetch");
+    });
+
+    it("is a refusal when the screener cannot run at all", async () => {
+      const w = world();
+      const broken: Executor = { id: "screen", run: async () => { throw new Error("spawn claude ENOENT"); } };
+      await converge("1", deps(w, { workflow: oneStep, steps: new Map([["spec", step]]), executor: answering(""), screen: { executor: broken } }));
+      expect(rejections(w)).toEqual([{ kind: "refused", marker: "refused:spec:1" }]);
+    });
+
+    it("is a broken contract, not a refusal, when the step's answer cannot be read", async () => {
+      const w = world();
+      await converge("1", deps(w, { workflow: oneStep, steps: new Map([["spec", step]]), executor: answering("no json here") }));
+      expect(rejections(w)).toEqual([{ kind: "malformed", marker: "malformed:spec:1" }]);
+    });
+  });
+
   // N2's reclassification routes a screening failure through
-  // malformedEffect, so the screening executor's own error text — including
+  // malformedEffect (as a "refused" record), so the screening executor's own error text — including
   // one that failed to run at all, not just one that returned a verdict —
   // now lands in a durable, *public* tracker comment. The shipped executor's
   // real message is "agent exited N: <up to 400 chars of stderr>", and a
@@ -724,7 +772,7 @@ describe("converge", () => {
       },
     }));
 
-    const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"));
+    const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("refused:"));
     expect(posted).toBeDefined();
     expect(String(posted?.body ?? "")).not.toContain(secretValue);
   });
@@ -764,7 +812,7 @@ describe("converge", () => {
       },
     }));
 
-    const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"));
+    const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("refused:"));
     expect(posted).toBeDefined();
     expect(String(posted?.body ?? "")).not.toContain(bareSecret);
   });

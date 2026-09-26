@@ -1,6 +1,6 @@
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
-import { mayWriteRepo, RECORD_EFFECT } from "#conventions.js";
+import { MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
   ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot, StepResult, WorktreeBranch,
 } from "#namespace.js";
@@ -23,7 +23,7 @@ const DEFAULT_MAX_PASSES = 30;
  */
 const MAX_MALFORMED_BODY = 4000;
 
-function malformedBody(reason: string, redactValues: string[]): string {
+function malformedBody(reason: string, redactValues: string[], kind: string = MALFORMED_KIND): string {
   // `reason` is not our own text: it can carry the screening executor's own
   // error output verbatim ("agent exited N: <up to 400 chars of stderr>"),
   // and stderr can contain a secret the same way any subprocess output can.
@@ -31,7 +31,10 @@ function malformedBody(reason: string, redactValues: string[]): string {
   // log-sink only — a body composed here goes straight to the tracker,
   // bypassing the logger's own redaction entirely.
   const redacted = redactValue(reason, redactValues) as string;
-  const full = `## Step output rejected\n\n${redacted}. Nothing was retried.`;
+  // Headed as what it was: a person opening a ticket stopped by a security
+  // check has a different job from one reading an agent's unreadable answer.
+  const heading = kind === REFUSED_KIND ? "Step refused by a security check" : "Step output rejected";
+  const full = `## ${heading}\n\n${redacted}. Nothing was retried.`;
   return full.length > MAX_MALFORMED_BODY ? `${full.slice(0, MAX_MALFORMED_BODY)}\n\n…[truncated]` : full;
 }
 
@@ -379,8 +382,14 @@ async function converging(
         // this same call — that is the whole point of a hard fail: a
         // rejected round looks nothing like a round that never ran, so
         // nothing here retries it.
+        //
+        // Recorded under different kinds, though, and that is not a second
+        // decision taken here: core reads both as the same failure, and a
+        // workflow that wants a person to see a security refusal as one —
+        // rather than as an agent that could not follow a format — routes on
+        // run.lastRefused, which is read back from this kind.
         const posted = await tryApply(
-          [malformedEffect(stage.id, round, result.reason, redactValues)],
+          [malformedEffect(stage.id, round, result.reason, redactValues, result.kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)],
           ticket, snapshot, deps,
         );
         if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
@@ -456,11 +465,14 @@ async function converging(
   return { passes: maxPasses, settled: "cap" };
 }
 
-function malformedEffect(stage: string, round: number, reason: string, redactValues: string[]): Effect {
+/** The durable record of a rejected round; `kind` says whether it was a broken contract or a refusal. */
+function malformedEffect(
+  stage: string, round: number, reason: string, redactValues: string[], kind: string = MALFORMED_KIND,
+): Effect {
   return {
-    type: RECORD_EFFECT, kind: "malformed", stage, round,
-    marker: `malformed:${stage}:${round}`,
-    body: malformedBody(reason, redactValues),
+    type: RECORD_EFFECT, kind, stage, round,
+    marker: `${kind}:${stage}:${round}`,
+    body: malformedBody(reason, redactValues, kind),
   };
 }
 
