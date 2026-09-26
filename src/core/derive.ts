@@ -172,6 +172,27 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     .filter((e) => e.kind === "unblocked" && e.stage === stage)
     .reduce((max, e) => Math.max(max, e.round), 0);
 
+  /*
+   * A goto is pending from when it is written until the ticket next enters a
+   * stage. Position in the ordered list, not timestamps: a tracker can stamp
+   * comments to the second, a goto and the entry that consumes it can share
+   * one, and the stable sort above keeps the order the tracker listed them in.
+   */
+  let goto: string | null = null;
+  for (const e of ordered) {
+    if (e.kind === ENTRY_KIND) goto = null;
+    else if (e.byAgent && e.goto !== undefined) goto = e.goto;
+  }
+
+  /*
+   * Only the current stage's own entry record answers "where did it come
+   * from". A stage that writes none — every stage where it is a person's
+   * turn — would otherwise read the `from` of whatever step ran before it,
+   * which names the wrong stage with complete confidence.
+   */
+  const lastEntry = [...ordered].reverse().find((e) => e.kind === ENTRY_KIND);
+  const previousStage = lastEntry !== undefined && lastEntry.stage === stage ? lastEntry.from ?? null : null;
+
   return {
     stage,
     counters,
@@ -180,6 +201,8 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     lastHuman,
     lastOutputValid,
     lastRefused,
+    goto,
+    previousStage,
     failedStages,
     rounds,
     unblockedAt,

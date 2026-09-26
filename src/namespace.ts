@@ -143,6 +143,19 @@ export interface Run {
    * whichever kind it was.
    */
   lastRefused: boolean | null;
+  /**
+   * Where a goto record written since the ticket last entered a stage asks
+   * it to go; null when there is none. Entering any stage writes an entry
+   * record, and that is what consumes it — nothing is ever cleared.
+   */
+  goto: string | null;
+  /**
+   * The stage the ticket left to enter the current one, read off the current
+   * stage's own entry record. Null when the current stage records no entry,
+   * or was entered as a fresh ticket: an older stage's answer would be a
+   * wrong one, not an approximate one.
+   */
+  previousStage: string | null;
   /** Every stage with a rejected round, independent of which stage `lastOutputValid` answers for. */
   failedStages: string[];
   unblockedAt: number;

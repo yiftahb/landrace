@@ -259,3 +259,57 @@ describe("assess uses deriveRun's per-stage failedStages, not the stage lastOutp
     expect(assess(snapshot, specStage)).toBe("failed");
   });
 });
+
+describe("run.goto, derived from records and consumed by entering a stage", () => {
+  const going = (stage: string, to: string): Entry => ({ stage, kind: "goto", round: 0, goto: to, at: at(), byAgent: true });
+
+  it("is the latest goto written since the ticket last entered a stage", () => {
+    expect(deriveRun([entered("spec", 1), going("blocked", "spec"), going("blocked", "build")], "blocked").goto).toBe("build");
+  });
+
+  it("is consumed by the next entry record, whichever stage that enters", () => {
+    expect(deriveRun([going("blocked", "build"), entered("build", 2)], "build").goto).toBeNull();
+  });
+
+  it("rides on a judge's own output record", () => {
+    expect(deriveRun([entered("triage", 1), { ...out("triage", 1), goto: "spec" }], "triage").goto).toBe("spec");
+  });
+
+  it("is ignored when a person wrote it", () => {
+    expect(deriveRun([{ ...going("blocked", "build"), byAgent: false }], "blocked").goto).toBeNull();
+  });
+
+  /*
+   * GitHub stamps comments to the second. A goto and the entry that consumes
+   * it can share one, and the tracker lists comments in the order they were
+   * made — which the sort keeps, being stable.
+   */
+  it("orders a goto and an entry that share a second by the order they were listed in", () => {
+    const same = "2026-02-01T00:00:00.000Z";
+    const g = { ...going("blocked", "build"), at: same };
+    const e = { ...entered("build", 2), at: same };
+    expect(deriveRun([g, e], "build").goto).toBeNull();
+    expect(deriveRun([e, g], "build").goto).toBe("build");
+  });
+
+  it("is null when nothing asked", () => {
+    expect(deriveRun([entered("spec", 1)], "spec").goto).toBeNull();
+  });
+});
+
+describe("run.previousStage, from the current stage's own entry record", () => {
+  const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
+
+  it("is the stage that record says the ticket left", () => {
+    expect(deriveRun([from("spec", 1, "x"), from("triage", 1, "spec-human-review")], "triage").previousStage)
+      .toBe("spec-human-review");
+  });
+
+  it("is null at a stage that records no entry, rather than an older stage's answer", () => {
+    expect(deriveRun([from("build", 1, "triage")], "blocked").previousStage).toBeNull();
+  });
+
+  it("is null for an entry record written before entry records named where they came from", () => {
+    expect(deriveRun([entered("triage", 1)], "triage").previousStage).toBeNull();
+  });
+});
