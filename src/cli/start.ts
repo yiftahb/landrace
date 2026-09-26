@@ -2,6 +2,7 @@ import { basename, resolve } from "node:path";
 import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
+import { resolveStepServers } from "#config/mcp.js";
 import { loadHooks } from "#hooks/load.js";
 import type {
   Board,
@@ -17,6 +18,7 @@ import type {
   RuntimeContext,
   Schedule,
   StartOptions,
+  StepTools,
   UiServer,
   Workflow,
 } from "#namespace.js";
@@ -143,26 +145,36 @@ export function executorFor(
   workflow: Workflow,
   registry: Registry,
   log: Logger,
-  /**
-   * Which model the *engine's own* executor should use — `security.model` when
-   * this is the screener. A hook's executor chose its model when the hook
-   * built it, and no id here can change that; what matters is that screening
-   * resolves through this same lookup at all. It used to construct a claude
-   * executor unconditionally, so a workflow whose hook registers an executor
-   * screened with something the operator never configured — or, with no claude
-   * on the machine, did not screen at all while reporting that it did. §15
-   * calls screening a security control, and a security control that silently
-   * ignores its configuration is the kind this codebase refuses to ship.
-   */
-  model: string | undefined = config.agent.model,
-  /**
-   * The workflow directory, given only for the loop's own step executor: it is
-   * what lets a `tickets:create` step be handed its create_child server.
-   * Conversation turns and the screener never create children, so they are
-   * built without it — and a step that asks is then refused, not run bare.
-   */
-  dir?: string,
+  opts: {
+    /**
+     * Which model the *engine's own* executor should use — `security.model`
+     * when this is the screener, `agent.model` when absent. A hook's executor
+     * chose its model when the hook built it, and no id here can change that;
+     * what matters is that screening resolves through this same lookup at all.
+     * It used to construct a claude executor unconditionally, so a workflow
+     * whose hook registers an executor screened with something the operator
+     * never configured — or, with no claude on the machine, did not screen at
+     * all while reporting that it did. §15 calls screening a security control,
+     * and a security control that silently ignores its configuration is the
+     * kind this codebase refuses to ship.
+     */
+    model?: string | undefined;
+    /**
+     * The workflow directory, given only for the loop's own step executor: it
+     * is what lets a `tickets:create` step be handed its create_child server.
+     * Conversation turns and the screener never create children, so they are
+     * built without it — and a step that asks is then refused, not run bare.
+     */
+    dir?: string;
+    /**
+     * The plugins and MCP servers `stepToolsFor` resolved, for the executors
+     * that run steps and conversation turns. Never the screener's: it reads
+     * attacker-reachable text for a living and needs no tool to do it.
+     */
+    tools?: StepTools;
+  } = {},
 ): Executor {
+  const { model = config.agent.model, dir, tools } = opts;
   // A hook's executor is constructed by the hook, so the budget cannot reach
   // it: the engine has a number and no way to hand it over. Enforcing one out
   // here would mean holding a stopwatch over somebody else's subprocess with
@@ -174,6 +186,7 @@ export function executorFor(
       ...(model === undefined ? {} : { model }),
       timeoutMs: stepTimeoutMs(workflow),
       log,
+      ...(tools === undefined ? {} : { plugins: tools.plugins, mcpServers: tools.mcpServers }),
       ...(dir === undefined ? {} : {
         // This same process, started again as `landrace mcp`: the node binary,
         // its own flags (type stripping, --import), the CLI entry, and the
@@ -218,6 +231,22 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<{ 
 }
 
 /**
+ * What every declared step and conversation turn is handed beyond its own
+ * tools, resolved once, before the first request goes out.
+ *
+ * Shared with the MCP plane for the reason `sandboxFor` is: a turn is an agent
+ * invocation on a step's own session, and a turn holding servers the step did
+ * not — or missing the ones it did — would be a different agent answering. A
+ * server that cannot be handed over is a refusal to start, worded in
+ * config/mcp.ts so `landrace validate` says the same sentence.
+ */
+export async function stepToolsFor(config: RuntimeConfig, dir: string): Promise<StepTools> {
+  const { servers, problems } = await resolveStepServers(dir, config.agent.mcp);
+  if (problems.length) throw new Error(problems.map((p) => `${p.rule}: ${p.message}`).join("\n"));
+  return { plugins: config.agent.plugins, mcpServers: servers };
+}
+
+/**
  * The triage page's header chip: the repository checkout landrace is
  * actually running in, and its own name.
  *
@@ -257,6 +286,11 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     redactValues: redactionValues(loaded),
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
   });
+
+  // Before the workflow is read and before any hook module is imported: a
+  // server that cannot be handed to a step is a configuration fact, and the
+  // hooks' top-level code has no business running under one.
+  const tools = await stepToolsFor(loaded.config, dir);
 
   // With `vars` already substituted in: the graph the daemon runs is the
   // graph `landrace validate` checked, filled in from the same map.
@@ -335,10 +369,10 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       pre: registry.pre,
       artifacts: registry.artifacts,
       dispatcher: createDispatcher(registry.post),
-      executor: executorFor(loaded.config, workflow, registry, log, loaded.config.agent.model, dir),
+      executor: executorFor(loaded.config, workflow, registry, log, { dir, tools }),
       ...(sandbox === null ? {} : { sandbox }),
       ...(loaded.config.security.screen
-        ? { screen: { executor: executorFor(loaded.config, workflow, registry, log, loaded.config.security.model) } }
+        ? { screen: { executor: executorFor(loaded.config, workflow, registry, log, { model: loaded.config.security.model }) } }
         : {}),
       ctx,
       log,

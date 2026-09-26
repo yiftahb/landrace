@@ -43,6 +43,42 @@ const run = (
     ...runOver,
   });
 
+/** The argv a run was started with, element by element — an inline JSON config is one element. */
+const argvOf = async (
+  executor: ReturnType<typeof createClaudeExecutor>,
+  opts: {
+    capabilities?: readonly string[];
+    model?: string;
+    child?: { parent: string; stage: string; round: number };
+  },
+): Promise<string[]> => {
+  const cwd = withCfg({ out: "{{ARGV_JSON}}" });
+  const r = await executor.run("p", { round: 1, signal: new AbortController().signal, cwd, ...opts });
+  return JSON.parse(r.text) as string[];
+};
+
+/** The value a flag was given — the single element after it. */
+const flag = (argv: string[], name: string): string | undefined =>
+  argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined;
+
+/**
+ * Everything a variadic flag was given: the CLI reads values until the next
+ * flag, so this does too — which is exactly what a test of where a list ends
+ * has to read.
+ */
+const list = (argv: string[], name: string): string[] => {
+  if (!argv.includes(name)) return [];
+  const rest = argv.slice(argv.indexOf(name) + 1);
+  const end = rest.findIndex((a) => a.startsWith("-"));
+  return end === -1 ? rest : rest.slice(0, end);
+};
+
+const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
+const PLUGIN = "superpowers@claude-plugins-official";
+const MEMORY = { command: "codebase-memory-mcp", args: [], env: { MEMORY_HOME: "/var/memory" } };
+const CHILD_SERVER = { command: "/usr/bin/node", args: ["/opt/landrace/cli.js", "mcp", "--workflow", "/repo/.landrace"] };
+const BINDING = { parent: "12", stage: "breakdown", round: 2 };
+
 const isAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -106,6 +142,21 @@ describe("claude executor", () => {
     const argv = (await run("x", {}, { cwd: dir })).text;
     expect(argv).toContain("--restricted");
     expect(argv).toContain("--permission-mode plan");
+  });
+
+  /*
+   * A run that declares nothing is the screener's: it is handed no step's
+   * capabilities, and it reads attacker-reachable text for a living. The
+   * plugins and servers an operator gives the steps are not for it — a plugin
+   * that injects its own instructions at session start would be talking to
+   * the one agent whose only job is to judge a prompt.
+   */
+  it("keeps a run that declares nothing — the screener's — on exactly today's flags, whatever the steps are given", async () => {
+    const argv = await argvOf(
+      createClaudeExecutor({ bin, plugins: [PLUGIN], mcpServers: { "codebase-memory-mcp": MEMORY } }),
+      {},
+    );
+    expect(argv).toEqual(["-p", "--output-format", "json", "--permission-mode", "plan", "--restricted"]);
   });
 
   it("spawns in the caller's own working directory when no cwd is given", async () => {
@@ -368,15 +419,28 @@ describe("claude executor", () => {
   // invocation. These check that the declaration decides, in both directions,
   // rather than being merged with or quietly overridden by the default.
 
-  it("gives a read-only step plan mode and no tools, even when the executor was built wider", async () => {
-    const dir = withCfg({ out: "{{ARGV}}" });
-    const argv = (await run(
-      "x",
-      { permissionMode: "acceptEdits", restricted: false },
-      { cwd: dir, capabilities: ["repo:read"] },
-    )).text;
-    expect(argv).toContain("--permission-mode plan");
-    expect(argv).toContain("--restricted");
+  /*
+   * Not plan mode, which is what this was until a live check against the real
+   * CLI (2.1.282): plan mode refuses every MCP call — the codebase graph a spec
+   * step is told to ask first included — and quietly ran sonnet for a step that
+   * said `model: haiku`. Manual mode honours both; `--restricted` and the deny
+   * list are what keep "read-only" meaning it, and the same check refused a
+   * write attempted under them.
+   */
+  it("gives a read-only step manual mode with the write and exec tools denied, even when the executor was built wider", async () => {
+    const argv = await argvOf(
+      createClaudeExecutor({ bin, permissionMode: "acceptEdits", restricted: false }),
+      { capabilities: ["repo:read"] },
+    );
+    expect(argv.slice(0, 7)).toEqual(["-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
+    expect(argv.slice(7, 12).sort()).toEqual([...WRITE_TOOLS]);
+    expect(argv).not.toContain("plan");
+  });
+
+  it("still hands a read-only step the model it asked for, which plan mode ignored", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, model: "opus" }), { capabilities: ["repo:read"], model: "haiku" });
+    expect(argv[argv.indexOf("--model") + 1]).toBe("haiku");
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("manual");
   });
 
   it("lets a step that declared repo:write actually edit, where the executor default would not", async () => {
@@ -387,14 +451,13 @@ describe("claude executor", () => {
   });
 
   it("treats a step that declares no capabilities as the most restricted one, not the least", async () => {
-    const dir = withCfg({ out: "{{ARGV}}" });
-    const argv = (await run(
-      "x",
-      { permissionMode: "acceptEdits", restricted: false },
-      { cwd: dir, capabilities: [] },
-    )).text;
-    expect(argv).toContain("--permission-mode plan");
+    const argv = await argvOf(
+      createClaudeExecutor({ bin, permissionMode: "acceptEdits", restricted: false }),
+      { capabilities: [] },
+    );
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("manual");
     expect(argv).toContain("--restricted");
+    expect(argv.slice(argv.indexOf("--disallowedTools") + 1, argv.indexOf("--disallowedTools") + 6).sort()).toEqual([...WRITE_TOOLS]);
   });
 
   /**
@@ -433,18 +496,116 @@ describe("claude executor", () => {
   });
 });
 
-describe("the create_child tool", () => {
-  const server = { command: "/usr/bin/node", args: ["/opt/landrace/cli.js", "mcp", "--workflow", "/repo/.landrace"] };
-  const binding = { parent: "12", stage: "breakdown", round: 2 };
+/*
+ * What a declared run is handed beyond its own tools: the operator's plugins
+ * and the MCP servers `agent.mcp` allows, resolved once at startup from the
+ * repository root's `.mcp.json` and handed over as definitions — never as a
+ * path the agent's worktree could shadow.
+ */
+describe("plugins and MCP servers", () => {
+  const tools = { plugins: [PLUGIN, "other@market"], mcpServers: { "codebase-memory-mcp": MEMORY } };
 
-  const argvOf = async (
-    executor: ReturnType<typeof createClaudeExecutor>,
-    opts: { capabilities?: readonly string[]; child?: { parent: string; stage: string; round: number } },
-  ): Promise<string[]> => {
-    const cwd = withCfg({ out: "{{ARGV_JSON}}" });
-    const r = await executor.run("p", { round: 1, signal: new AbortController().signal, cwd, ...opts });
-    return JSON.parse(r.text) as string[];
-  };
+  it("enables the operator's plugins through one --settings element holding the JSON", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), { capabilities: ["repo:read"] });
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({
+      enabledPlugins: { [PLUGIN]: true, "other@market": true },
+    });
+    expect(argv.filter((a) => a === "--settings")).toHaveLength(1);
+  });
+
+  it("passes no --settings when no plugin is configured", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
+    expect(argv).not.toContain("--settings");
+  });
+
+  it("hands the step only the allowlisted servers, as defined, strictly, and allows them by name", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), { capabilities: ["repo:read"] });
+    expect(JSON.parse(flag(argv, "--mcp-config") as string)).toEqual({ mcpServers: { "codebase-memory-mcp": MEMORY } });
+    expect(argv).toContain("--strict-mcp-config");
+    expect(list(argv, "--allowedTools")).toEqual(["mcp__codebase-memory-mcp"]);
+  });
+
+  /*
+   * Strict even with nothing to allow: without it, a `.mcp.json` committed to
+   * the repository — which is what the step's worktree is checked out from —
+   * or the operator's own user-level servers would load beside the step. The
+   * operator's server is one of those, and it can move the step's own ticket.
+   */
+  it("gives a step with an empty allowlist an empty, strict config and allows nothing", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
+    expect(JSON.parse(flag(argv, "--mcp-config") as string)).toEqual({ mcpServers: {} });
+    expect(argv).toContain("--strict-mcp-config");
+    expect(argv).not.toContain("--allowedTools");
+  });
+
+  it("gives a writing step the same plugins and servers, and otherwise leaves it as it was", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), { capabilities: ["repo:read", "repo:write"] });
+    expect(flag(argv, "--permission-mode")).toBe("acceptEdits");
+    expect(argv).not.toContain("--restricted");
+    expect(argv).not.toContain("--disallowedTools");
+    expect(flag(argv, "--settings")).toBeDefined();
+    expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers)).toEqual(["codebase-memory-mcp"]);
+    expect(argv).toContain("--strict-mcp-config");
+    expect(list(argv, "--allowedTools")).toEqual(["mcp__codebase-memory-mcp"]);
+  });
+
+  it("hands a conversation turn the same servers, and never the create_child server it holds no binding for", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools, childServer: CHILD_SERVER }), {
+      capabilities: ["tickets:create", "repo:read"],
+    });
+    expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers)).toEqual(["codebase-memory-mcp"]);
+    expect(list(argv, "--allowedTools")).toEqual(["mcp__codebase-memory-mcp"]);
+  });
+
+  it("gives a read-only step holding create_child both the allowlisted servers and its bound child server", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools, childServer: CHILD_SERVER }), {
+      capabilities: ["tickets:create", "repo:read"], child: BINDING,
+    });
+    const servers = JSON.parse(flag(argv, "--mcp-config") as string).mcpServers;
+    expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
+    expect(servers["codebase-memory-mcp"]).toEqual(MEMORY);
+    expect(servers.landrace.args).toEqual([...CHILD_SERVER.args, "--child", "12", "--stage", "breakdown", "--round", "2"]);
+    expect(list(argv, "--allowedTools").sort()).toEqual(["mcp__codebase-memory-mcp", "mcp__landrace__landrace_create_child"]);
+    expect(flag(argv, "--permission-mode")).toBe("manual");
+  });
+
+  /*
+   * `--allowedTools`, `--disallowedTools` and `--mcp-config` are all variadic:
+   * the CLI keeps reading values until the next flag. So each list has to be
+   * followed by a flag or by nothing at all, or whatever sits after it —
+   * another setting's value — would be allowed, denied or loaded as config.
+   */
+  it("ends every variadic list at the next flag or at the end of argv, with everything configured", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools, childServer: CHILD_SERVER }), {
+      capabilities: ["tickets:create", "repo:read"], child: BINDING, model: "haiku",
+    });
+    // Read the way the CLI reads them, up to the next flag: exactly what each
+    // was meant to hold, and not one element more.
+    expect(list(argv, "--disallowedTools").sort()).toEqual([...WRITE_TOOLS]);
+    expect(list(argv, "--mcp-config")).toHaveLength(1);
+    expect(list(argv, "--allowedTools").sort()).toEqual(["mcp__codebase-memory-mcp", "mcp__landrace__landrace_create_child"]);
+  });
+
+  it("refuses a server named landrace, which would collide with the child server a step is bound to", () => {
+    expect(() => createClaudeExecutor({ bin, mcpServers: { landrace: { command: "anything" } } }))
+      .toThrow(/landrace/);
+  });
+
+  /*
+   * A name ends up in `--allowedTools` as `mcp__<name>`, and the CLI reads that
+   * list split on spaces and commas: a server called "x Bash" would allow Bash.
+   */
+  it("refuses a server name that could smuggle another tool into the allowlist", () => {
+    expect(() => createClaudeExecutor({ bin, mcpServers: { "x Bash": { command: "anything" } } }))
+      .toThrow(/refused mcp server/);
+    expect(() => createClaudeExecutor({ bin, mcpServers: { "x,Bash": { command: "anything" } } }))
+      .toThrow(/refused mcp server/);
+  });
+});
+
+describe("the create_child tool", () => {
+  const server = CHILD_SERVER;
+  const binding = BINDING;
 
   it("starts the agent with the bound child server when the step may create tickets", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), {
@@ -490,22 +651,26 @@ describe("the create_child tool", () => {
     expect(argv).not.toContain("--disallowedTools");
   });
 
-  it("keeps a step without the binding on exactly today's flags", async () => {
-    const readOnly = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["tickets:create", "repo:read"] });
-    expect(readOnly).toEqual(["-p", "--output-format", "json", "--permission-mode", "plan", "--restricted"]);
+  it("keeps a read-only step without the binding on exactly the flags any read-only step gets", async () => {
+    const readOnly = [
+      "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted",
+      "--disallowedTools", ...WRITE_TOOLS, "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
+    ];
+    const declaring = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["tickets:create", "repo:read"] });
+    expect(declaring).toEqual(readOnly);
     const unbound = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["repo:read"], child: binding });
-    expect(unbound).toEqual(["-p", "--output-format", "json", "--permission-mode", "plan", "--restricted"]);
+    expect(unbound).toEqual(readOnly);
   });
 
   it("offers nothing to a step that did not declare it, even with a binding", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["repo:read"], child: binding });
-    expect(argv).not.toContain("--mcp-config");
+    expect(JSON.parse(flag(argv, "--mcp-config") as string)).toEqual({ mcpServers: {} });
     expect(argv).not.toContain("--allowedTools");
   });
 
   it("offers nothing to a conversation turn, which is handed no binding", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["tickets:create"] });
-    expect(argv).not.toContain("--mcp-config");
+    expect(JSON.parse(flag(argv, "--mcp-config") as string)).toEqual({ mcpServers: {} });
     expect(argv).not.toContain("--allowedTools");
   });
 

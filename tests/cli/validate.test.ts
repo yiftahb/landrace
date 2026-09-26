@@ -1,7 +1,9 @@
 import { runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
 import { loadWorkflow } from "#workflow/load.js";
-import { writeFile, mkdtemp } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -208,5 +210,47 @@ describe("landrace next", () => {
     expect(r.decision.action).toBe("transition");
     expect(r.effects[0]).toMatchObject({ body: "ann is writing the spec, round 1." });
     delete process.env.LR_E2E_ASSIGNEE;
+  });
+});
+
+/*
+ * `agent.mcp`, reported by `validate` in the same words `start` refuses with:
+ * a daemon that refuses what the CLI passed is the two disagreeing about
+ * what is fatal, and the operator finds out one start at a time.
+ */
+describe("landrace validate and the servers a step may use", () => {
+  const exec = promisify(execFile);
+
+  const repo = async (names: string, mcpJson?: unknown): Promise<string> => {
+    const root = await mkdtemp(join(tmpdir(), "landrace-validate-mcp-"));
+    await exec("git", ["init", "-q"], { cwd: root });
+    await writeFile(join(root, ".gitignore"), ".env\n");
+    const dir = join(root, ".landrace");
+    await mkdir(join(dir, "steps"), { recursive: true });
+    await copyFile("tests/fixtures/minimal/workflow.yaml", join(dir, "workflow.yaml"));
+    await copyFile("tests/fixtures/minimal/steps/spec.md", join(dir, "steps", "spec.md"));
+    await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude, mcp: [${names}] }\n`);
+    if (mcpJson !== undefined) await writeFile(join(root, ".mcp.json"), JSON.stringify(mcpJson));
+    return dir;
+  };
+
+  it("is clean when every allowed server resolves", async () => {
+    const r = await runValidate(await repo("codebase-memory-mcp", { mcpServers: { "codebase-memory-mcp": { command: "cbm" } } }));
+    expect(r.problems).toEqual([]);
+  });
+
+  it("reports a missing .mcp.json, and says what generates it", async () => {
+    const r = await runValidate(await repo("codebase-memory-mcp"));
+    expect(r.ok).toBe(false);
+    expect(r.problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/does not exist; `agsync sync` generates it/) }]);
+  });
+
+  it("reports the operator server, by name and by command", async () => {
+    const r = await runValidate(await repo("landrace, tickets", { mcpServers: {
+      landrace: { command: "node", args: ["dist/cli.js", "mcp"] },
+      tickets: { command: "landrace", args: ["mcp"] },
+    } }));
+    expect(r.problems.map((p) => p.rule)).toEqual(["mcp", "mcp"]);
+    expect(r.problems.map((p) => p.message).join("\n")).toMatch(/"landrace"[\s\S]*"tickets"/);
   });
 });

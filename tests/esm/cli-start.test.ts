@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -131,6 +131,10 @@ async function fixture(
     reads?: string;
     git?: boolean;
     preflight?: "pass" | "throw";
+    /** More of `agent:`, written inside its braces. */
+    agentKeys?: string;
+    /** The `.mcp.json` at the repository root, as agsync would have written it. */
+    mcpJson?: unknown;
   } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
@@ -143,7 +147,7 @@ async function fixture(
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
-agent: { adapter: ${opts.agent ?? "claude"}, model: opus }
+agent: { adapter: ${opts.agent ?? "claude"}, model: opus${opts.agentKeys ? `, ${opts.agentKeys}` : ""} }
 tracker: { record: ${JSON.stringify(record)} }
 tick: { interval: 30s, concurrency: 2 }
 security: { screen: ${opts.screen ?? false} }
@@ -152,6 +156,7 @@ secrets: { githubToken: $LR_TEST_TOKEN }
 `,
   );
   await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\n`);
+  if (opts.mcpJson !== undefined) await writeFile(join(root, ".mcp.json"), JSON.stringify(opts.mcpJson));
   return { dir, record };
 }
 
@@ -289,6 +294,51 @@ ${EXECUTOR}`);
   it("refuses an agent.adapter no executor answers to, naming what it could have used", async () => {
     const { dir } = await fixture({ agent: "gpt-9" });
     await expect(buildRuntime(dir, {})).rejects.toThrow(/gpt-9[\s\S]*claude/);
+  });
+
+  /*
+   * `agent.plugins` and `agent.mcp`, end to end through the runtime a loop
+   * actually runs: resolved from the repository root once, and handed to the
+   * step's executor as definitions — so a step running somewhere with a
+   * `.mcp.json` of its own still gets the operator's, and only the servers
+   * named. The screener gets none of it.
+   */
+  it("hands the step's executor the servers resolved from the repository root, wherever the step runs, and the screener none", async () => {
+    const memory = { command: "codebase-memory-mcp", args: [], env: {} };
+    const { dir } = await fixture({
+      screen: true,
+      agentKeys: "plugins: [superpowers@claude-plugins-official], mcp: [codebase-memory-mcp]",
+      mcpJson: { mcpServers: { "codebase-memory-mcp": memory, landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } },
+    });
+    const rt = await buildRuntime(dir, {});
+
+    const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
+    await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
+    await chmod(join(bin, "claude"), 0o755);
+    // Where the step runs: somewhere with a `.mcp.json` of its own, the way a
+    // worktree cut from a repository that committed one would be.
+    const worktree = await mkdtemp(join(tmpdir(), "lr-worktree-"));
+    await writeFile(join(worktree, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify({ mcpServers: { "codebase-memory-mcp": { command: "decoy" } } }));
+
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    let step: string[];
+    let screener: string[];
+    try {
+      const signal = new AbortController().signal;
+      step = JSON.parse((await rt.deps.executor.run("x", { round: 1, cwd: worktree, capabilities: ["repo:read"], signal })).text) as string[];
+      const screen = rt.deps.screen?.executor;
+      if (!screen) throw new Error("screening was configured and the runtime built no screener");
+      screener = JSON.parse((await screen.run("x", { round: 0, cwd: worktree, signal })).text) as string[];
+    } finally {
+      process.env.PATH = path;
+    }
+
+    expect(JSON.parse(step[step.indexOf("--mcp-config") + 1] as string)).toEqual({ mcpServers: { "codebase-memory-mcp": memory } });
+    expect(step).toContain("--settings");
+    expect(screener).not.toContain("--mcp-config");
+    expect(screener).not.toContain("--settings");
   });
 });
 

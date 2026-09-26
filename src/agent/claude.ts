@@ -2,7 +2,7 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "n
 import { isAbsolute } from "node:path";
 import { CAPABILITIES, isTicketId, mayCreateTickets, mayWriteRepo, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
-import type { Executor, Logger } from "#namespace.js";
+import type { Executor, Logger, StepTools } from "#namespace.js";
 import { containedPath } from "#workflow/load.js";
 import { messageOf } from "#runner/errors.js";
 
@@ -16,6 +16,17 @@ import { messageOf } from "#runner/errors.js";
  */
 const ARG_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+/** The CLI's tools that edit a file or run a command: what a read-only step is denied by name. */
+const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
+
+/**
+ * The name the bound create_child server runs under, and the one name an
+ * allowlisted server may therefore never have: two definitions under one key
+ * is one of them silently replacing the other, and the one that loses could be
+ * the binding.
+ */
+const CHILD_SERVER_NAME = "landrace";
+
 /**
  * The CLI's own six modes (`acceptEdits, auto, bypassPermissions, manual,
  * dontAsk, plan`) — not a project-specific subset. `bypassPermissions` stays
@@ -25,9 +36,6 @@ const ARG_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * enough to be worth a startup warning rather than silent acceptance — see
  * the check in createClaudeExecutor below.
  */
-/** The CLI's tools that edit a file or run a command: what a read-only step outside plan mode is denied by name. */
-const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
-
 const PERMISSION_MODES = new Set(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
 
 function assertArgShape(kind: string, value: string): void {
@@ -137,6 +145,18 @@ export function createClaudeExecutor(opts: {
    * a step that may create children is refused rather than run without it.
    */
   childServer?: { command: string; args: readonly string[] };
+  /**
+   * Plugin ids (`name@marketplace`) enabled for every declared run.
+   * `--restricted` ignores the operator's own settings, and with them every
+   * plugin enabled there, so a read-only step would otherwise have none.
+   */
+  plugins?: StepTools["plugins"];
+  /**
+   * The MCP servers a declared run may use, by name, as the repository root's
+   * `.mcp.json` defines them — resolved and vetted once at startup, never read
+   * from the worktree the agent runs in.
+   */
+  mcpServers?: StepTools["mcpServers"];
 } = {}): Executor {
   const {
     model,
@@ -146,7 +166,21 @@ export function createClaudeExecutor(opts: {
     bin = "claude",
     log,
     childServer,
+    plugins = [],
+    mcpServers = {},
   } = opts;
+
+  // Each name reaches argv as `mcp__<name>` in `--allowedTools`, which the CLI
+  // splits on spaces and commas: a server called "x Bash" would allow Bash.
+  for (const name of Object.keys(mcpServers)) {
+    if (name === CHILD_SERVER_NAME) {
+      throw new Error(
+        `refused mcp server "${name}": that name is reserved for the create_child server a step is bound to, ` +
+        "and landrace's own operator tools must never reach a step agent",
+      );
+    }
+    assertArgShape("mcp server", name);
+  }
 
   if (permissionMode === "bypassPermissions") {
     // Not attacker-reachable (it is construction-time operator config), but
@@ -188,12 +222,16 @@ export function createClaudeExecutor(opts: {
       // A permission, not an obligation: a turn that declares the word but was
       // handed no binding simply gets no tool.
       const bound = binding !== undefined && mayCreateTickets(capabilities) ? binding : undefined;
-      // Plan mode refuses every MCP call, create_child included, so a
-      // read-only step holding the tool runs in the CLI's default mode
-      // (`manual`) instead — still `--restricted`, and with the write and exec
-      // tools denied by name below, so "read-only" keeps meaning it.
-      const denyWrites = bound !== undefined && declared && !mayWrite;
-      const mode = declared ? (mayWrite ? "acceptEdits" : denyWrites ? "manual" : "plan") : permissionMode;
+      // Not plan mode, which is what a read-only step ran in until a live
+      // check against the real CLI (2.1.282) showed what it cost: plan mode
+      // refuses every MCP call — create_child and every allowlisted server
+      // alike — and ignored `--model`, running sonnet for a step that asked
+      // for haiku. So a read-only step runs in the CLI's default mode
+      // (`manual`), still `--restricted`, with the write and exec tools denied
+      // by name — the same check refused a write attempted under exactly
+      // these flags, so "read-only" keeps meaning it.
+      const denyWrites = declared && !mayWrite;
+      const mode = declared ? (mayWrite ? "acceptEdits" : "manual") : permissionMode;
       // A step that may write needs tools to write with; anything else gets
       // none. `--restricted` is what makes "read-only" mean read-only rather
       // than "asked nicely".
@@ -225,26 +263,45 @@ export function createClaudeExecutor(opts: {
       if (denyWrites) args.push("--disallowedTools", ...WRITE_TOOLS);
       if (chosenModel !== undefined) args.push("--model", chosenModel);
       if (resume !== undefined) args.push("--resume", resume);
-      if (bound && childServer) {
-        // The binding is argv to a process the agent's CLI starts, not text in
-        // its prompt: nothing the agent says can file a child anywhere else.
-        //
+      // A run that declares nothing is the screener's, and none of what
+      // follows is for it: a plugin that speaks up at session start would be
+      // speaking to the one agent whose only job is to judge a prompt.
+      if (declared) {
+        if (plugins.length) {
+          // One argv element holding the JSON: `--restricted` ignores the
+          // operator's own settings file, so this is the only way a plugin
+          // enabled there reaches a read-only step at all.
+          args.push("--settings", JSON.stringify({ enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) }));
+        }
+        const servers: Record<string, unknown> = { ...mcpServers };
+        if (bound && childServer) {
+          // The binding is argv to a process the agent's CLI starts, not text
+          // in its prompt: nothing the agent says can file a child anywhere
+          // else.
+          servers[CHILD_SERVER_NAME] = {
+            command: childServer.command,
+            args: [...childServer.args, "--child", bound.parent, "--stage", bound.stage, "--round", String(bound.round)],
+          };
+        }
+        const allowed = [
+          ...Object.keys(mcpServers).map((name) => `mcp__${name}`),
+          ...(bound ? ["mcp__landrace__landrace_create_child"] : []),
+        ];
         // Inline JSON rather than a config file: there is no path for the
         // agent's worktree to shadow and nothing to clean up after a crash.
-        // It holds no secret — the server reads the workflow's own .env — so
-        // being visible in `ps` costs nothing. `--strict-mcp-config` keeps a
-        // `.mcp.json` in the worktree from adding servers, or from defining a
-        // "landrace" of its own whose create_child the allowlist would approve.
-        // `--allowedTools` is variadic, so it goes last with nothing after it.
-        const mcpConfig = JSON.stringify({
-          mcpServers: {
-            landrace: {
-              command: childServer.command,
-              args: [...childServer.args, "--child", bound.parent, "--stage", bound.stage, "--round", String(bound.round)],
-            },
-          },
-        });
-        args.push("--mcp-config", mcpConfig, "--strict-mcp-config", "--allowedTools", "mcp__landrace__landrace_create_child");
+        // Strict always, with nothing to allow as much as with something: a
+        // `.mcp.json` committed to the repository the worktree is cut from,
+        // or the operator's own user-level servers, would otherwise load
+        // beside the step — landrace's own operator server among them, which
+        // can move the step's own ticket. The child server reads the
+        // workflow's own .env and holds no secret; an allowlisted server's
+        // `env` goes as `.mcp.json` wrote it, and is visible in `ps` for as
+        // long as the step runs.
+        //
+        // `--mcp-config` is variadic, so a flag follows it; so is
+        // `--allowedTools`, so it goes last with nothing after it.
+        args.push("--mcp-config", JSON.stringify({ mcpServers: servers }), "--strict-mcp-config");
+        if (allowed.length) args.push("--allowedTools", ...allowed);
       }
 
       return new Promise((resolve, reject) => {

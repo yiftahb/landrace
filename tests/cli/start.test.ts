@@ -2,6 +2,8 @@ import { chmod, copyFile, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import type { Board, LandraceEvent, Registry, Runtime, Schedule, Workflow } from "#namespace.js";
@@ -20,6 +22,7 @@ import {
 } from "#cli/start.js";
 
 const TOKEN = "ghp_a_token_long_enough_to_redact";
+const exec = promisify(execFile);
 
 /**
  * A workflow directory on disk, because that is the only thing `buildRuntime`
@@ -30,15 +33,19 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * import a module by file URL at all (see jest.esm.config.mjs), and the tests
  * that need a real hook module live in tests/esm/cli-start.test.ts.
  */
-async function fixture(config: Partial<Record<"log" | "agent" | "extra", string>> = {}): Promise<string> {
-  const dir = join(await mkdtemp(join(tmpdir(), "lr-start-")), ".landrace");
+async function fixture(
+  config: Partial<Record<"log" | "agent" | "agentKeys" | "extra", string>> & { git?: boolean } = {},
+): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "lr-start-"));
+  if (config.git) await exec("git", ["init", "-q", "-b", "main"], { cwd: root });
+  const dir = join(root, ".landrace");
   await mkdir(join(dir, "steps"), { recursive: true });
   await cp("tests/fixtures/minimal/workflow.yaml", join(dir, "workflow.yaml"));
   await cp("tests/fixtures/minimal/steps/spec.md", join(dir, "steps", "spec.md"));
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
-agent: { adapter: ${config.agent ?? "claude"}, model: opus }
+agent: { adapter: ${config.agent ?? "claude"}, model: opus${config.agentKeys ? `, ${config.agentKeys}` : ""} }
 tracker: { repo: acme/widgets }
 tick: { interval: 30s, concurrency: 2 }
 security: { screen: false }
@@ -132,6 +139,47 @@ describe("buildRuntime", () => {
     const dir = await fixture({ extra: "vars: { leaked: $LR_TEST_TOKEN }\n" });
     await expect(buildRuntime(dir, {})).rejects.toThrow(/leaked[\s\S]*secret/);
   });
+
+  /*
+   * `agent.mcp` is resolved against the repository root's `.mcp.json` before
+   * anything else is loaded — and before any hook module is imported — so a
+   * server that cannot be handed to a step is a refusal to start, in a
+   * sentence, rather than a step that finds its tools missing hours in.
+   */
+  describe("agent.mcp", () => {
+    const withServers = async (mcpJson: unknown | null, names: string): Promise<string> => {
+      const dir = await fixture({ git: true, agentKeys: `mcp: [${names}]` });
+      if (mcpJson !== null) await writeFile(join(dir, "..", ".mcp.json"), JSON.stringify(mcpJson));
+      return dir;
+    };
+
+    it("refuses to start when there is no .mcp.json at the repository root, naming the command that writes one", async () => {
+      await expect(buildRuntime(await withServers(null, "codebase-memory-mcp"), {}))
+        .rejects.toThrow(/mcp: agent\.mcp names "codebase-memory-mcp", but .*\.mcp\.json does not exist; `agsync sync` generates it/);
+    });
+
+    it("refuses to start on a name .mcp.json does not define, listing the ones it does", async () => {
+      await expect(buildRuntime(await withServers({ mcpServers: { "codebase-memory-mcp": { command: "cbm" } } }, "memory"), {}))
+        .rejects.toThrow(/"memory"[\s\S]*defines codebase-memory-mcp/);
+    });
+
+    it("refuses to start when the operator server is allowed by name", async () => {
+      await expect(buildRuntime(await withServers({ mcpServers: { landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } }, "landrace"), {}))
+        .rejects.toThrow(/operator tools must never reach a step agent/);
+    });
+
+    it("refuses to start when the operator server is allowed under another name", async () => {
+      await expect(buildRuntime(await withServers({ mcpServers: { tickets: { command: "node", args: ["dist/cli.js", "mcp"] } } }, "tickets"), {}))
+        .rejects.toThrow(/"tickets"[\s\S]*operator tools must never reach a step agent/);
+    });
+
+    // And the refusal comes first: this fixture has no source hook either,
+    // and it is the server that is reported, not the hook.
+    it("gets past the check when every name resolves", async () => {
+      await expect(buildRuntime(await withServers({ mcpServers: { "codebase-memory-mcp": { command: "cbm" } } }, "codebase-memory-mcp"), {}))
+        .rejects.toThrow(/no source hook/);
+    });
+  });
 });
 
 describe("the step timeout", () => {
@@ -220,7 +268,7 @@ describe("which executor screens", () => {
     // The security model is the engine executor's business and cannot reach a
     // hook's, which builds its own: what must not happen is the id being
     // ignored and a claude subprocess screening for an agent that is not one.
-    const screener = executorFor(config, workflow, registry, () => {}, config.security.model);
+    const screener = executorFor(config, workflow, registry, () => {}, { model: config.security.model });
     expect(screener).toBe(registry.executors.get("fake"));
     expect(screener).toBe(executorFor(config, workflow, registry, () => {}));
   });
@@ -228,7 +276,7 @@ describe("which executor screens", () => {
   it("still refuses an adapter no executor answers to, whichever model it is asked for", () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" } });
     const empty: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
-    expect(() => executorFor(config, workflow, empty, () => {}, "haiku")).toThrow(/gpt-9/);
+    expect(() => executorFor(config, workflow, empty, () => {}, { model: "haiku" })).toThrow(/gpt-9/);
   });
 });
 
@@ -261,7 +309,7 @@ describe("the create_child server the loop's executor starts", () => {
 
   it("is this process started again as `landrace mcp` on the absolute workflow directory", async () => {
     const argv = await withFakeClaude(async (cwd) => {
-      const executor = executorFor(config, workflow, registry, () => {}, undefined, "relative/.landrace");
+      const executor = executorFor(config, workflow, registry, () => {}, { dir: "relative/.landrace" });
       const r = await executor.run("x", {
         round: 1, cwd, capabilities: ["tickets:create"], child: binding, signal: new AbortController().signal,
       });
@@ -281,6 +329,27 @@ describe("the create_child server the loop's executor starts", () => {
       await expect(executor.run("x", {
         round: 1, cwd, capabilities: ["tickets:create"], child: binding, signal: new AbortController().signal,
       })).rejects.toThrow(/cannot give this step create_child/);
+    });
+  });
+
+  /*
+   * The same wiring for what `agent.plugins` and `agent.mcp` resolved to: an
+   * option the assembler accepts and never hands on is a control that reads as
+   * configured and never runs.
+   */
+  it("hands the step the plugins and servers it was given, beside its child server", async () => {
+    const tools = { plugins: ["superpowers@claude-plugins-official"], mcpServers: { "codebase-memory-mcp": { command: "cbm" } } };
+    const argv = await withFakeClaude(async (cwd) => {
+      const executor = executorFor(config, workflow, registry, () => {}, { dir: "relative/.landrace", tools });
+      const r = await executor.run("x", {
+        round: 1, cwd, capabilities: ["tickets:create"], child: binding, signal: new AbortController().signal,
+      });
+      return JSON.parse(r.text) as string[];
+    });
+    const servers = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string).mcpServers;
+    expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
+    expect(JSON.parse(argv[argv.indexOf("--settings") + 1] as string)).toEqual({
+      enabledPlugins: { "superpowers@claude-plugins-official": true },
     });
   });
 });

@@ -2,6 +2,7 @@ import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, varsHoldingSecrets } from "#config/load.js";
+import { runtimeConfigSchema } from "#config/schema.js";
 
 const CONFIG = `version: 1
 agent: { adapter: claude, model: opus }
@@ -134,5 +135,43 @@ describe("a var that is really a secret", () => {
   it("says nothing about an ordinary var", async () => {
     const loaded = await loadConfig(await fixture("GITHUB_TOKEN=ghp_x", "vars:\n  team: platform\n"));
     expect(varsHoldingSecrets(loaded)).toEqual([]);
+  });
+});
+
+/*
+ * What every declared step is handed beyond its own tools. Both default to
+ * nothing: a plugin or a server a step never asked for is one more thing
+ * reading the repository, and the operator names each of them on purpose.
+ */
+describe("agent.plugins and agent.mcp", () => {
+  const parse = (agent: Record<string, unknown>) =>
+    runtimeConfigSchema.safeParse({ version: 1, agent: { adapter: "claude", ...agent } });
+
+  it("default to empty lists", () => {
+    const r = parse({});
+    expect(r.success && r.data.agent.plugins).toEqual([]);
+    expect(r.success && r.data.agent.mcp).toEqual([]);
+  });
+
+  it("read as written in landrace.yaml", async () => {
+    const dir = join(await mkdtemp(join(tmpdir(), "landrace-cfg-")), ".landrace");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "landrace.yaml"), `version: 1
+agent:
+  adapter: claude
+  plugins: [superpowers@claude-plugins-official]
+  mcp: [codebase-memory-mcp]
+`);
+    const { config } = await loadConfig(dir);
+    expect(config.agent.plugins).toEqual(["superpowers@claude-plugins-official"]);
+    expect(config.agent.mcp).toEqual(["codebase-memory-mcp"]);
+  });
+
+  it("refuse anything but a list of names", () => {
+    expect(parse({ mcp: "codebase-memory-mcp" }).success).toBe(false);
+    expect(parse({ plugins: "superpowers@claude-plugins-official" }).success).toBe(false);
+    expect(parse({ mcp: [""] }).success).toBe(false);
+    expect(parse({ plugins: [""] }).success).toBe(false);
+    expect(parse({ mcp: [3] }).success).toBe(false);
   });
 });

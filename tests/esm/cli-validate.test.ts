@@ -6,6 +6,7 @@ import { loadHooks } from "#hooks/load.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
+import type { Problem } from "#namespace.js";
 
 /**
  * `landrace validate` with the hooks it will actually run.
@@ -19,12 +20,19 @@ import { validate } from "#workflow/validate.js";
 describe("landrace validate, against the hooks the workflow loads", () => {
   /*
    * The whole file, every rule, proved against the real thing rather than a
-   * fixture. "secret" is the one exception: it asks whether a token resolves
-   * on this machine, which is a fact about the machine and not the workflow.
+   * fixture. Two exceptions, both facts about the machine and not the
+   * workflow: whether a token resolves here ("secret"), and whether `agsync
+   * sync` has written this checkout's gitignored `.mcp.json` — which CI never
+   * has. Only the missing file is excused: with the file present, a name it
+   * does not define or the operator server still fails here, and the test in
+   * tests/config/mcp.test.ts asks the same question of the file agsync would
+   * generate, on every machine.
    */
   it("validates the shipped .landrace workflow clean, on every rule", async () => {
     const r = await runValidate(".landrace");
-    expect(r.problems.filter((p) => p.rule !== "secret")).toEqual([]);
+    const machine = (p: Problem): boolean =>
+      p.rule === "secret" || (p.rule === "mcp" && /\.mcp\.json does not exist/.test(p.message));
+    expect(r.problems.filter((p) => !machine(p))).toEqual([]);
   });
 
   /*

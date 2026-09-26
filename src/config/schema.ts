@@ -7,6 +7,18 @@ export const runtimeConfigSchema = z.object({
     adapter: z.string().min(1),
     model: z.string().optional(),
     isolation: z.enum(["none", "worktree", "container"]).default("worktree"),
+    /**
+     * Plugin ids (`name@marketplace`) enabled for every step and conversation
+     * turn. A read-only step runs `--restricted`, which ignores the operator's
+     * own settings — and every plugin enabled there with them.
+     */
+    plugins: z.array(z.string().min(1)).default([]),
+    /**
+     * MCP server *names* a step may use, each looked up in the repository
+     * root's `.mcp.json` at startup. Names, not definitions, so the file agsync
+     * generates stays the one place a server is described.
+     */
+    mcp: z.array(z.string().min(1)).default([]),
   }),
   /**
    * Opaque on purpose. Whatever a tracker needs — a repository, a project key,
