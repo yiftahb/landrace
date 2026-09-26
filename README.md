@@ -228,7 +228,7 @@ Servers are resolved once, at startup, from the **repository root's** `.mcp.json
 
 - `agent.mcp` names a server but there is no `.mcp.json` at the repository root — run `agsync sync`, which generates it;
 - a name is not in `.mcp.json` — the refusal lists the names it does define;
-- a name is landrace's own operator server: `landrace`, or any server whose command runs `landrace mcp`, `cli.js mcp` or `dist/cli.js mcp`, however it is spelled. Its tools create, update and reply on tickets, and a step agent holding them could move its own ticket — so operator tools never reach a step agent.
+- a name is landrace's own operator server: `landrace`, or a server whose command line runs `landrace mcp` — the bin, `npx landrace@<version>` or `landrace#<ref>`, the `cli` entry with or without its extension, quoted, after `--`, or inside `sh -c`, in any case. Its tools create, update and reply on tickets, and a step agent holding them could move its own ticket. The command match is defence in depth over configuration you already trust, not a guarantee: a wrapper script under another name gets past it, so do not allow one.
 
 `landrace status` runs no step, so it resolves none of this and works without a `.mcp.json`. The screener never gets plugins, servers or tools: it reads attacker-reachable text and needs nothing to judge it. An allowlisted server's `env` travels in the agent's argv, where `ps` can read it for as long as the step runs — keep credentials out of servers you allow.
 
@@ -462,7 +462,7 @@ session to have happened already, not the deep link itself.
 - Everything a step writes is escaped before posting, so an agent cannot emit Landrace's own control tokens.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.
 - A step declares what it may do, and the declaration is enforced by diffing its worktree before and after — not by the flags handed to the agent, which a hook-registered executor never sees. A conversation turn is held to the same declaration as the step it continues.
-- A step or turn gets exactly the MCP servers `agent.mcp` allows, strictly, and never landrace's own operator server — refused at startup by name and by command, so an agent cannot hold the tools that move its own ticket.
+- A step or turn gets exactly the MCP servers `agent.mcp` allows, strictly. Landrace's own operator server is refused at startup by name, and by its command line in the common spellings — a best-effort check on operator-trusted config, so do not allowlist a wrapper that runs it.
 - Every agent invocation is screened first, including a turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it.
 - The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workflow directory before it is imported, both ends compared after `realpath`.
 - A comment carries control state only because Landrace's own account wrote it. The account is resolved from the token at startup and verified against any configured override; the process refuses to run rather than guess, because a login it cannot resolve would make its own records read as a stranger's.

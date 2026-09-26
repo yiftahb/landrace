@@ -26,14 +26,27 @@ export const mcpConfigSchema = z.object({ mcpServers: z.record(mcpServerSchema) 
 const OPERATOR_NAME = "landrace";
 
 /**
- * `landrace mcp` however it is spelled: the bin, `npx landrace@<tag>`, the
- * built `cli.js`, the source entry, or any of those inside a shell's `-c`.
- * Matched on the whole command line, so wrapping it in `sh` hides nothing.
- * Broad on purpose: refusing a server that merely resembles it costs the
- * operator a rename, and letting the real one through hands a step agent the
- * tools that move tickets.
+ * `landrace mcp` in the spellings a real configuration uses: the bin,
+ * `npx landrace@<version>` or `landrace#<ref>`, the built `cli` entry with or
+ * without its extension, the source entry, any of them quoted, with `--`
+ * before the subcommand, or inside a shell's `-c` followed by `;`, `&` or `|`
+ * — and in any case. Matched on the whole command line, so wrapping it in `sh`
+ * hides nothing.
+ *
+ * Defence in depth over configuration the operator already trusts, not a
+ * guarantee against every spelling: a wrapper script under another name gets
+ * past it, and nothing could stop that short of running the server to ask.
+ * Broad on purpose where it can be: refusing a server that merely resembles
+ * it costs the operator a rename, and letting the real one through hands a
+ * step agent the tools that move tickets.
  */
-const RUNS_OPERATOR = /(?:^|[\s/\\])(?:landrace(?:@\S*)?|cli\.[cm]?[jt]s|cli[/\\]index\.[cm]?[jt]s)\s+mcp(?:\s|$)/;
+// In order: where a program name can start (the line, a space, a path
+// separator, a quote or a shell operator); `landrace` with an npx-style
+// version or ref, or the `cli` entry, built or source, with or without an
+// extension; its closing quote, any `--` markers and `mcp`, quoted or not; and
+// the end of that word (a space, the end, a quote or a shell operator).
+const RUNS_OPERATOR =
+  /(?:^|[\s/\\'"`;&|(])(?:landrace(?:[@#][^\s'"`;&|)]*)?|cli(?:[/\\]index)?(?:\.[cm]?[jt]s)?)['"`]?\s+(?:--\s+)*['"`]?mcp['"`]?(?=$|[\s;&|)'"`])/i;
 
 const runsOperator = (server: McpServer): boolean =>
   RUNS_OPERATOR.test([server.command ?? "", ...(server.args ?? [])].join(" "));

@@ -123,6 +123,18 @@ describe("the MCP servers a step may use", () => {
     ["cli.js mcp", { command: "cli.js", args: ["mcp"] }],
     ["the source entry", { command: "node", args: ["--experimental-strip-types", "src/cli/index.ts", "mcp"] }],
     ["a shell wrapping it", { command: "sh", args: ["-c", "landrace mcp --workflow .landrace"] }],
+    // Each of these got past the first version of the match.
+    ["an end-of-options marker", { command: "node", args: ["dist/cli.js", "--", "mcp"] }],
+    ["an entry with no extension", { command: "node", args: ["dist/cli", "mcp"] }],
+    ["a shell sequence after it", { command: "sh", args: ["-c", "node dist/cli.js mcp; echo done"] }],
+    ["a shell && with no space", { command: "sh", args: ["-c", "landrace mcp&&true"] }],
+    ["a pipe with no space", { command: "sh", args: ["-c", "landrace mcp|tee log"] }],
+    ["a quoted entry", { command: "sh", args: ["-c", 'node "dist/cli.js" mcp'] }],
+    ["a quoted subcommand", { command: "sh", args: ["-c", "landrace 'mcp'"] }],
+    ["an upper-case entry", { command: "node", args: ["dist/CLI.js", "mcp"] }],
+    ["an upper-case subcommand", { command: "landrace", args: ["MCP"] }],
+    ["an npx git ref", { command: "npx", args: ["landrace#main", "mcp"] }],
+    ["a module entry", { command: "node", args: ["./dist/cli.mjs", "mcp"] }],
   ])("refuses the operator server under another name: %s", async (_, definition) => {
     const { dir } = await repo({ mcpServers: { tickets: definition } });
     const { problems, servers } = await resolveStepServers(dir, ["tickets"]);
@@ -134,6 +146,11 @@ describe("the MCP servers a step may use", () => {
     ["a server whose own name ends in mcp", { command: "codebase-memory-mcp" }],
     ["a different tool's mcp subcommand", { command: "node", args: ["tools/landrace-docs.js", "mcp"] }],
     ["a remote server", { type: "http", url: "https://mcp.example.invalid/landrace" }],
+    ["an entry whose name only starts with cli", { command: "node", args: ["client.js", "mcp"] }],
+    ["a subcommand that only starts with mcp", { command: "landrace", args: ["mcp-docs"] }],
+    ["a python server", { command: "uvx", args: ["mcp-server-git", "--repository", "."] }],
+    ["an npx package", { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] }],
+    ["a container", { command: "docker", args: ["run", "-i", "--rm", "mcp/github"] }],
   ])("lets through what only looks like it: %s", async (_, definition) => {
     const { dir } = await repo({ mcpServers: { other: definition } });
     expect(await resolveStepServers(dir, ["other"])).toEqual({ servers: { other: definition }, tools: {}, problems: [] });
