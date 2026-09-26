@@ -2,7 +2,7 @@ import { buildRegistry } from "#hooks/load.js";
 import { entriesFromComments } from "#conventions.js";
 import type { Entry, Registry, RuntimeConfig } from "#namespace.js";
 import type { RuntimeContext } from "#namespace.js";
-import { githubHooks } from "#landrace/hooks/github.js";
+import { githubHooks, type Git } from "#landrace/hooks/github.js";
 
 /**
  * The shipped GitHub integration, over an in-memory GitHub.
@@ -76,6 +76,9 @@ export interface FakePull {
   /** The issues it closes when merged — its closing references, the other way a PR is tied to a ticket. */
   closes?: number[];
   threads: FakeThread[];
+  /** What a `POST /pulls` asked for, as it asked: the branch it goes into, and its description. */
+  base?: string;
+  body?: string;
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -186,6 +189,18 @@ export const GITHUB_COMMENT_MAX = 65_536;
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
+/**
+ * The checkout behind the fake GitHub when a test brings none: a repository
+ * with no branches, so nothing is ever pushed. A test about pushing hands in
+ * `gitIn` over a checkout of its own. The default must never be the hook's
+ * own — the repository these tests run from, whose branches and whose origin
+ * are real.
+ */
+const noBranches: Git = async (args) => {
+  if (args[0] === "for-each-ref") return "";
+  throw new Error(`the fake GitHub has no checkout to run "git ${args.join(" ")}" in; pass one as opts.git`);
+};
+
 export function createFakeTracker(
   seed: Array<Partial<FakeIssue>> = [],
   opts: {
@@ -195,6 +210,8 @@ export function createFakeTracker(
      * test in this file needs that default unchanged.
      */
     scopes?: string[];
+    /** git in the operator's checkout, for a test about branches: a real one over a temp repository. */
+    git?: Git;
   } = {},
 ): FakeTracker {
   const issues = new Map<number, FakeIssue>();
@@ -566,6 +583,31 @@ export function createFakeTracker(
       return json(parent, 201);
     }
 
+    // The repository itself, for the one thing asked of it: which branch a
+    // pull request is proposed into.
+    if (path === "" && method === "GET") return json({ full_name: REPO, default_branch: "main" });
+
+    // GitHub refuses a second open pull request from one head, and says so in
+    // these words — which the hook reads as the first one having landed.
+    if (path === "/pulls" && method === "POST") {
+      const head = String(body.head ?? "");
+      if ([...pulls.values()].some((p) => p.head === head && pullState(p) === "OPEN")) {
+        return json({
+          message: "Validation Failed",
+          errors: [{ resource: "PullRequest", code: "custom", message: `A pull request already exists for acme:${head}.` }],
+        }, 422);
+      }
+      const number = nextPull++;
+      const text = String(body.body ?? "");
+      const closes = [...text.matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #(\d+)/gi)].map((m) => Number(m[1]));
+      pulls.set(number, {
+        number, head, headSha: `sha-${number}`, merged: false, threads: [],
+        title: String(body.title ?? ""), base: String(body.base ?? ""), body: text,
+        ...(closes.length ? { closes } : {}),
+      });
+      return json({ number, state: "open", head: { ref: head } }, 201);
+    }
+
     const onPull = /^\/pulls\/(\d+)$/.exec(path);
     if (onPull && method === "PATCH") {
       const pull = pulls.get(Number(onPull[1]));
@@ -691,7 +733,7 @@ export function createFakeTracker(
     return new Response(`no route for ${method} ${url.pathname}`, { status: 404 });
   }) as unknown as typeof fetch;
 
-  const hooks = githubHooks({ repo: REPO, token: "test-token", fetchImpl });
+  const hooks = githubHooks({ repo: REPO, token: "test-token", fetchImpl, git: opts.git ?? noBranches });
 
   return {
     // Through the real loader, so the brands and the ambiguity rules are

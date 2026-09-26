@@ -30,6 +30,46 @@ export async function gitRepo(): Promise<string> {
   return dir;
 }
 
+/**
+ * The operator's checkout with a bare repository beside it as `origin` — a
+ * file:// remote, so a push really lands and really moves the remote-tracking
+ * ref, and nothing leaves the machine.
+ */
+export async function gitRepoWithOrigin(): Promise<{ root: string; origin: string }> {
+  const root = await gitRepo();
+  const origin = await mkdtemp(join(tmpdir(), "lr-origin-"));
+  made.push(origin);
+  await exec("git", ["init", "-q", "--bare", "-b", "main"], { cwd: origin });
+  await exec("git", ["remote", "add", "origin", `file://${origin}`], { cwd: root });
+  await exec("git", ["push", "-q", "origin", "main"], { cwd: root });
+  return { root, origin };
+}
+
+/**
+ * A commit on `branch` — created from main if it is not there yet — made the
+ * way a step makes one, in a worktree of its own, so the operator's checkout
+ * never moves. Returns the commit.
+ */
+export async function commitOn(root: string, branch: string, file: string): Promise<string> {
+  const exists = await exec("git", ["rev-parse", "--verify", "-q", `refs/heads/${branch}`], { cwd: root }).then(() => true, () => false);
+  if (!exists) await exec("git", ["branch", branch, "main"], { cwd: root });
+  const at = await mkdtemp(join(tmpdir(), "lr-commit-"));
+  await rm(at, { recursive: true, force: true });
+  await exec("git", ["worktree", "add", "-q", at, branch], { cwd: root });
+  try {
+    await writeFile(join(at, file), `export const made = ${JSON.stringify(file)};\n`);
+    await exec("git", ["add", "-A"], { cwd: at });
+    await exec("git", ["commit", "-qm", `add ${file}`], { cwd: at });
+    return (await exec("git", ["rev-parse", "HEAD"], { cwd: at })).stdout.trim();
+  } finally {
+    await exec("git", ["worktree", "remove", "--force", at], { cwd: root });
+  }
+}
+
+/** The commit `ref` names in the repository at `cwd`, or null. */
+export const commitAt = (cwd: string, ref: string): Promise<string | null> =>
+  exec("git", ["rev-parse", "--verify", "-q", ref], { cwd }).then((r) => r.stdout.trim(), () => null);
+
 /** A directory that is not a repository, cleared by the same afterAll. */
 export async function plainDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "lr-plain-"));

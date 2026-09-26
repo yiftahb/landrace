@@ -18,10 +18,19 @@
  *    so nobody adds a write and forgets how to tell it has already happened.
  *  - A marker counts as control state only because *we* wrote it, so no
  *    request goes out until this token's own login is known.
+ *
+ * And one part that is not HTTP at all: publishing a branch a step committed
+ * to is a `git push` from the operator's own checkout, with the token handed
+ * to git through its environment rather than its command line.
  */
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   allClosed,
+  BRANCH_PUSH_EFFECT,
   CLOSE_EFFECT,
   defineArtifactHook,
   defineOperator,
@@ -30,7 +39,10 @@ import {
   definePreflight,
   defineSource,
   DOCUMENT_KIND,
+  effectBranch,
   entriesFromComments,
+  hasPullFrom,
+  isReservedId,
   LABEL_EFFECT,
   LABELS,
   labelsOf,
@@ -39,6 +51,7 @@ import {
   NODES_CLOSE_EFFECT,
   parseMarker,
   parseOrigin,
+  PULL_OPEN_EFFECT,
   PULL_REQUEST_KIND,
   RECORD_EFFECT,
   RELATIONS,
@@ -164,6 +177,75 @@ export interface GitHubOptions {
   /** Overrides the login resolved from the token, for a GitHub App posting under a bot name. */
   bot?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
+  /**
+   * git, in the checkout whose branches are pushed and read. By default the
+   * repository this file is in — `gitIn(await hookRepository())` — which a
+   * test replaces with a checkout of its own, so nothing here ever reads or
+   * pushes the repository the tests happen to run from.
+   */
+  git?: Git | undefined;
+}
+
+/** Runs git with these arguments and this extra environment, in one checkout, and answers its stdout. */
+export type Git = (args: string[], env?: Record<string, string>) => Promise<string>;
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * git in `dir`, reporting git's own words rather than a stack trace.
+ *
+ * The operator's environment is passed through — HOME, an ssh agent, a proxy
+ * are all how their git already reaches their remote — with prompting off: a
+ * push that wants a password must fail and say so, not wait on a terminal
+ * nobody is watching.
+ */
+export function gitIn(dir: string): Git {
+  return async (args, env = {}) => {
+    try {
+      const { stdout } = await execFileAsync("git", args, {
+        cwd: dir,
+        env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      return stdout;
+    } catch (e) {
+      const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
+      throw new Error(`git ${args[0] ?? ""} in ${dir}: ${stderr || (e instanceof Error ? e.message : String(e))}`);
+    }
+  };
+}
+
+/**
+ * The repository this file is in: for a project's `.landrace/hooks/`, that
+ * project — whatever directory the process was started from.
+ *
+ * `import.meta.dirname` is the obvious spelling and cannot be written here:
+ * ts-jest's default pass compiles this file as CommonJS and refuses
+ * `import.meta` outright (TS1343; see tests/agent/claude.test.ts). The file
+ * name V8 records for this very frame is the same fact, in either module
+ * system — a path under jest, a file: URL under node.
+ */
+export async function hookRepository(): Promise<string> {
+  const saved = Error.prepareStackTrace;
+  let file: string | null | undefined;
+  try {
+    Error.prepareStackTrace = (_error, frames) => frames;
+    file = (new Error().stack as unknown as NodeJS.CallSite[] | undefined)?.[0]?.getFileName();
+  } finally {
+    Error.prepareStackTrace = saved;
+  }
+  if (!file) throw new Error("the github hook cannot tell which file it was loaded from, so it cannot find its repository");
+  const here = dirname(file.startsWith("file:") ? fileURLToPath(file) : file);
+  return (await gitIn(here)(["rev-parse", "--show-toplevel"])).trim();
+}
+
+/** git in the hook's own repository, found the first time it is needed. */
+function ownGit(): Git {
+  let root: Promise<string> | undefined;
+  return async (args, env) => {
+    root ??= hookRepository();
+    return gitIn(await root)(args, env);
+  };
 }
 
 /** A 404 from the API, told apart from every other failure by its status rather than by its text. */
@@ -430,6 +512,30 @@ function createClient(opts: GitHubOptions) {
       call<Issue>("PATCH", `/issues/${n}`, { state: "closed", state_reason: reason }),
     closePull: (n: number) =>
       named(call("PATCH", `/pulls/${n}`, { state: "closed" }), `"Pull requests: Read and write" on ${repo}`),
+
+    /** The branch a pull request is proposed into: the repository's own default, never an assumed "main". */
+    defaultBranch: async (): Promise<string> => {
+      const info = await call<{ default_branch?: unknown }>("GET", "");
+      if (typeof info.default_branch !== "string" || info.default_branch === "") {
+        throw new Error(`${repo} did not say what its default branch is`);
+      }
+      return info.default_branch;
+    },
+
+    /**
+     * Open a pull request — or find one already open from this head, which
+     * GitHub answers with a 422 saying so. That is the effect having landed,
+     * most likely on an attempt a crash cut off before the next read could
+     * see it, so it counts as done rather than as a failure.
+     */
+    openPull: async (fields: { head: string; base: string; title: string; body: string }): Promise<void> => {
+      try {
+        await named(call("POST", "/pulls", fields), `"Pull requests: Read and write" on ${repo}`);
+      } catch (e) {
+        if ((e as { status?: unknown } | null)?.status === 422 && /already exists/i.test(String(e))) return;
+        throw e;
+      }
+    },
     addSubIssue: (parent: number, child: number) =>
       named(call("POST", `/issues/${parent}/sub_issues`, { sub_issue_id: child }), `"Issues: Read and write" on ${repo}`),
     listComments: (n: number) => call<Comment[]>("GET", `/issues/${n}/comments?per_page=100`),
@@ -645,9 +751,106 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
       // Closed either way counts: a person who closed it as not planned
       // decided that, and re-closing it as completed would overrule them.
       return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
+    case BRANCH_PUSH_EFFECT: {
+      // Done when origin's head, as this checkout last saw it, is the local
+      // one. A branch the checkout does not have has nothing to publish —
+      // pushing it would fail, not push — so that is done too.
+      const branch = effectBranch(effect);
+      const { local, remote } = headsOf(snapshot);
+      const head = headIn(local, branch);
+      return head === undefined || headIn(remote, branch) === head;
+    }
+    case PULL_OPEN_EFFECT:
+      return hasPullFrom(snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect));
     default:
       return false;
   }
+}
+
+/**
+ * The branch heads the pre hook read this pass. Absent is a halt, for the
+ * reason botLoginOf gives: "satisfied" would drop a push that never happened,
+ * and "not satisfied" would push on every tick.
+ */
+function headsOf(s: Snapshot): { local: Record<string, unknown>; remote: Record<string, unknown> } {
+  const git = s.git as { local?: unknown; remote?: unknown } | undefined;
+  const isMap = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+  if (!git || !isMap(git.local) || !isMap(git.remote)) {
+    throw new Error("the snapshot does not record this checkout's branches, so no push can be checked");
+  }
+  return { local: git.local, remote: git.remote };
+}
+
+/** One branch's head out of a map a snapshot carried, own keys only: a branch called "constructor" is still a branch. */
+const headIn = (heads: Record<string, unknown>, branch: string): string | undefined =>
+  Object.hasOwn(heads, branch) && typeof heads[branch] === "string" ? heads[branch] : undefined;
+
+/**
+ * Every local branch head, and every head origin had when this checkout last
+ * heard from it — out of the checkout's own refs, never the network. A
+ * remote-tracking ref is exactly what a push moves, so the pass after
+ * `branch.push` reads its own push back from here.
+ *
+ * ponytail: every branch, on every pass, into the snapshot. A repository with
+ * thousands of branches pays for all of them each time; narrow this to the
+ * branches the workflow's effects name if one ever does.
+ */
+async function branchHeads(git: Git): Promise<{ local: Record<string, string>; remote: Record<string, string> }> {
+  const out = await git(["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads", "refs/remotes/origin"]);
+  const local: Record<string, string> = {};
+  const remote: Record<string, string> = {};
+  for (const line of out.split("\n")) {
+    const [ref = "", sha = ""] = line.split("\0");
+    const into = ref.startsWith("refs/heads/") ? local : ref.startsWith("refs/remotes/origin/") ? remote : null;
+    const name = ref.replace(/^refs\/(heads|remotes\/origin)\//, "");
+    // origin/HEAD points at a branch rather than being one, and a reserved
+    // key is a prototype write rather than a name.
+    if (into === null || sha === "" || name === "HEAD" || isReservedId(name)) continue;
+    into[name] = sha;
+  }
+  return { local, remote };
+}
+
+/**
+ * Publish one branch to origin, fast-forward only.
+ *
+ * The token rides in git's environment, never on its command line: argv is
+ * readable by every process on the machine, and a token in a remote URL ends
+ * up in git's own messages and config. `GIT_CONFIG_*` is git's own way to take
+ * configuration from the environment — appended after any the operator
+ * already set — and the header is scoped to github.com, so an origin anywhere
+ * else never sees it. An empty value first clears a header some other tool
+ * left configured (a CI checkout does), so exactly one reaches GitHub. And
+ * whatever git says back is scrubbed of both spellings of the token before it
+ * becomes an error, a log line or a comment.
+ *
+ * Never forced. A branch origin has moved on is somebody else's work, and
+ * the way through it is a person's.
+ */
+function pusher(git: Git, token: string): (branch: string) => Promise<void> {
+  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+  const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
+  return async (branch) => {
+    const at = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10) || 0;
+    const key = "http.https://github.com/.extraheader";
+    const env = {
+      GIT_CONFIG_COUNT: String(at + 2),
+      [`GIT_CONFIG_KEY_${at}`]: key,
+      [`GIT_CONFIG_VALUE_${at}`]: "",
+      [`GIT_CONFIG_KEY_${at + 1}`]: key,
+      [`GIT_CONFIG_VALUE_${at + 1}`]: `AUTHORIZATION: basic ${basic}`,
+    };
+    try {
+      await git(["push", "origin", `refs/heads/${branch}:refs/heads/${branch}`], env);
+    } catch (e) {
+      const said = scrub(e instanceof Error ? e.message : String(e));
+      const behind = /rejected|non-fast-forward|fetch first/i.test(said)
+        ? ` — origin's ${branch} has commits this checkout does not, and landrace does not force-push; ` +
+          "bring the branch up to date by hand and the ticket carries on"
+        : "";
+      throw new Error(`could not push ${branch} to origin${behind}: ${said}`);
+    }
+  };
 }
 
 /* ── the four hooks ─────────────────────────────────────────────────────── */
@@ -665,12 +868,20 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
  * disagree. tests/hooks/provides.test.ts holds this list level with the
  * fragment, for this tracker and for the in-memory one.
  */
-const PROVIDES = ["ticket", "ticket.body", "ticket.comments", "entries", "tracker", "tracker.bot"];
+const PROVIDES = [
+  "ticket", "ticket.body", "ticket.comments", "entries", "tracker", "tracker.bot", "git", "git.local", "git.remote",
+];
 
-const HANDLES = [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT];
+const HANDLES = [
+  LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT, BRANCH_PUSH_EFFECT, PULL_OPEN_EFFECT,
+];
 
-/** Observe: the part of an issue a graph cannot hold — its body and its records. */
-async function readTicket(gh: Client, ticket: string): Promise<Record<string, unknown>> {
+/**
+ * Observe: the part of an issue a graph cannot hold — its body and its
+ * records — and the branch heads a push is judged against, which live in the
+ * operator's checkout rather than on GitHub.
+ */
+async function readTicket(gh: Client, git: Git, ticket: string): Promise<Record<string, unknown>> {
   const n = issueNumber(ticket);
   const issue = await gh.getIssue(n);
   const raw = await gh.listComments(n);
@@ -684,11 +895,19 @@ async function readTicket(gh: Client, ticket: string): Promise<Record<string, un
     // Recorded because the post hook's satisfied() is synchronous and needs to
     // know which comments are ours.
     tracker: { bot },
+    // And for the same reason: satisfied() cannot ask git whether a push has
+    // landed, so the heads are read here, once a pass.
+    git: await branchHeads(git),
   };
 }
 
 /** Act: every write GitHub owns, each beside the check that says it has landed. */
-async function applyEffect(gh: Client, effect: Effect, { ticket, snapshot }: HookContext): Promise<void> {
+async function applyEffect(
+  gh: Client,
+  push: (branch: string) => Promise<void>,
+  effect: Effect,
+  { ticket, snapshot }: HookContext,
+): Promise<void> {
   const n = issueNumber(ticket);
   switch (effect.type) {
     case LABEL_EFFECT: {
@@ -761,6 +980,31 @@ async function applyEffect(gh: Client, effect: Effect, { ticket, snapshot }: Hoo
     case CLOSE_EFFECT:
       await gh.closeIssue(n, "completed");
       return;
+    case BRANCH_PUSH_EFFECT:
+      await push(effectBranch(effect));
+      return;
+    case PULL_OPEN_EFFECT: {
+      const branch = effectBranch(effect);
+      // Asked of the checkout first: a branch that is nowhere — never
+      // committed to, never pushed — has nothing to propose, and GitHub's own
+      // answer to it ("head invalid") names neither the ticket nor why.
+      const { local, remote } = headsOf(snapshot);
+      if (headIn(local, branch) === undefined && headIn(remote, branch) === undefined) {
+        throw new Error(
+          `cannot open a pull request for #${ticket} from ${branch}: this checkout has no such branch, ` +
+          "so no step has committed anything to it",
+        );
+      }
+      await gh.openPull({
+        head: branch,
+        base: await gh.defaultBranch(),
+        title: (snapshot.node as Node | undefined)?.title ?? `#${n}`,
+        // The closing reference is the second way a pull request is tied to
+        // its ticket, and the one that survives a branch named any way at all.
+        body: `Closes #${n}`,
+      });
+      return;
+    }
     default:
       throw new Error(`the github hook cannot apply effect "${effect.type}"`);
   }
@@ -1180,7 +1424,14 @@ function pullNodeOf(pull: PullNode, openThreads?: number): Node {
     closed: pull.merged ? "done" : pull.state === "CLOSED" ? "dropped" : null,
     priority: null,
     origin: null,
-    state: { merged: pull.merged, headSha: pull.headRefOid, ...(openThreads === undefined ? {} : { openThreads }) },
+    // The head branch, so `pull.open` can tell one branch's pull request from
+    // another's: a ticket has as many as its workflow's stages name.
+    state: {
+      merged: pull.merged,
+      headSha: pull.headRefOid,
+      branch: pull.headRefName,
+      ...(openThreads === undefined ? {} : { openThreads }),
+    },
   };
 }
 
@@ -1615,10 +1866,12 @@ async function briefThreads(gh: Client, repo: string, ticket: string): Promise<R
  * probing it here would only pay for a fifth round trip to learn the same
  * thing sooner.
  *
- * Neither is "Pull requests: Read and write", which closing a dropped child's
- * pull request needs: there is no harmless pull request write to try. A
- * classic token has it under "repo"; a fine-grained one without it is named
- * by the close itself, as `token needs "Pull requests: Read and write"`.
+ * Neither is "Pull requests: Read and write", which opening a ticket's pull
+ * request and closing a dropped child's both need: there is no harmless pull
+ * request write to try. A classic token has it under "repo"; a fine-grained
+ * one without it is named by the write itself, as `token needs "Pull
+ * requests: Read and write"`. Pushing a branch needs "Contents: Read and
+ * write", which the blob write below already proves.
  */
 async function checkPermissions(gh: Client, repo: string): Promise<void> {
   // A classic token carries its scopes on every response; a fine-grained one
@@ -1777,6 +2030,8 @@ export function githubHooks(opts: GitHubOptions): {
 } {
   const gh = createClient(opts);
   const link = specLinks(gh, opts.repo);
+  const git = opts.git ?? ownGit();
+  const push = pusher(git, opts.token);
 
   return {
     preflight: definePreflight({ id: "github", check: () => checkPermissions(gh, opts.repo) }),
@@ -1795,14 +2050,14 @@ export function githubHooks(opts: GitHubOptions): {
     pre: definePreHook({
       id: "github",
       provides: PROVIDES,
-      run: ({ ticket }) => readTicket(gh, ticket),
+      run: ({ ticket }) => readTicket(gh, git, ticket),
     }),
 
     post: definePostHook({
       id: "github",
       handles: HANDLES,
       satisfied,
-      apply: (effect, ctx) => applyEffect(gh, effect, ctx),
+      apply: (effect, ctx) => applyEffect(gh, push, effect, ctx),
     }),
 
     source: defineSource({
