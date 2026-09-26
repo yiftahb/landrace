@@ -255,10 +255,18 @@ export function executorFor(
 export function screenerFor(config: RuntimeConfig, workflow: Workflow, registry: Registry, log: Logger): Screener | undefined {
   if (!config.security.screen) return undefined;
   const adapter = config.security.adapter;
-  return {
-    executor: executorFor(config, workflow, registry, log, adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } }),
-    model: config.security.model,
-  };
+  const executor = executorFor(config, workflow, registry, log, adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } });
+  // haiku is a claude model, and a hook's executor asked for one it cannot
+  // run must refuse: a default here would start cleanly and then block every
+  // ticket as screened at its first step.
+  const fromHook = registry.executors.get(executor.id) === executor;
+  const model = config.security.model ?? (fromHook ? undefined : "haiku");
+  if (model === undefined) {
+    throw new Error(
+      `security.model names no model, and "${executor.id}" is a hook's executor: set security.model to one it can run`,
+    );
+  }
+  return { executor, model };
 }
 
 /**

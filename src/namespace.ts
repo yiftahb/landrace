@@ -437,10 +437,11 @@ export interface Executor {
       resume?: string;
       cwd?: string;
       /**
-       * The model the *step* asked for, which wins over whatever default the
-       * executor was built with — the same way a step's capabilities win over
-       * the operator's permission mode. Absent means "the operator decides":
-       * a step that names no model must not be quietly pinned to one here.
+       * The model the *step* asked for — or, on the screener's run,
+       * `security.model` — which wins over whatever default the executor was
+       * built with, the same way a step's capabilities win over the
+       * operator's permission mode. Absent means "the operator decides": a
+       * step that names no model must not be quietly pinned to one here.
        *
        * An executor that cannot honour a named model must refuse the run.
        * Dropping it silently is how `triage.md`'s `model: haiku` came to be
@@ -467,8 +468,8 @@ export interface Executor {
        *
        * Absent altogether only on the screener's run, which reads
        * attacker-reachable text for a living: it gets no tool at all, less
-       * than any step. An executor named by `security.adapter` must honour
-       * that, or refuse the run.
+       * than any step. Any executor that screens — `security.adapter`'s, or
+       * `agent.adapter`'s when that is unset — must honour that, or refuse.
        */
       capabilities?: readonly string[];
       /**

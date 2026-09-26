@@ -294,6 +294,16 @@ describe("which executor screens", () => {
     expect(() => screenerFor(config, workflow, empty, noop)).toThrow(/agent\.adapter "gpt-9"/);
   });
 
+  it("asks the engine's own claude for haiku when security.model names none", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude", model: "opus" } });
+    expect(screenerFor(config, workflow, empty, noop)?.model).toBe("haiku");
+  });
+
+  it("refuses to screen with a hook's executor when security.model names no model for it", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, security: { adapter: "local" } });
+    expect(() => screenerFor(config, workflow, withExecutor("local"), noop)).toThrow(/security\.model[\s\S]*"local"/);
+  });
+
   it("builds no screener when screening is off", () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" }, security: { screen: false } });
     expect(screenerFor(config, workflow, empty, noop)).toBeUndefined();
