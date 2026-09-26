@@ -15,6 +15,7 @@ import {
   PULL_OPEN_EFFECT,
   PULL_REQUEST_KIND,
   RECORD_EFFECT,
+  recordMarker,
   RELATIONS,
   renderMarker,
   renderOrigin,
@@ -31,7 +32,6 @@ import type {
   ExternalState,
   ExternalTicket,
   Graph,
-  Marker,
   Node,
   RelationDecl,
   Relationship,
@@ -385,13 +385,7 @@ export function createExternalState(
               post(ticket, BOT, body);
               return;
             }
-            const marker: Marker = {
-              stage: String(effect.stage ?? "-"),
-              kind: String(effect.kind),
-              round: Number(effect.round ?? 0),
-              ...(effect.marker ? { marker: String(effect.marker) } : {}),
-              ...(effect.output === undefined ? {} : { output: effect.output }),
-            };
+            const marker = recordMarker(effect);
             post(ticket, BOT, body + renderMarker(marker));
             return;
           }

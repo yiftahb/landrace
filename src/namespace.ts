@@ -82,6 +82,14 @@ export interface Entry {
    * something the step said.
    */
   session?: string;
+  /**
+   * Where a goto record asks the ticket to go: a stage id, written by
+   * Landrace alone — beside a judge's output, or on the record the board's
+   * "Go to step…" or `landrace_goto` writes. `run.goto` reads it.
+   */
+  goto?: string;
+  /** On an entry record, the stage the ticket left to enter this one. `run.previousStage` reads it. */
+  from?: string;
   /** ISO 8601. Ordering is by this field, not array position. */
   at: string;
   /** True when we wrote it. False means a person did. */
@@ -227,6 +235,14 @@ export interface Marker {
    * cannot meet — the step's value is the agent's, and this is ours.
    */
   session?: string;
+  /**
+   * Where a goto record asks the ticket to go: a stage id, written by
+   * Landrace alone — beside a judge's output, or on the record the board's
+   * "Go to step…" or `landrace_goto` writes. `run.goto` reads it.
+   */
+  goto?: string;
+  /** On an entry record, the stage the ticket left to enter this one. `run.previousStage` reads it. */
+  from?: string;
   [key: string]: unknown;
 }
 
