@@ -167,6 +167,22 @@ describe("sending a ticket back to a step", () => {
     expect(await held("3", { root })).toBeNull();
   });
 
+  // decide() skips a ticket the workflow's `eligible` rules turn away before
+  // it reads anything else, so a goto written there would sit unread.
+  it("refuses, with the workflow's own reason, a ticket its eligible rules skip", async () => {
+    const eligible: Workflow = {
+      ...workflow, eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+    };
+    const tracker = createFakeTracker([{ number: 13, labels: ["lr:stage:blocked", "lr:blocked"] }]);
+    const deps: GotoDeps = {
+      source: tracker.registry.source as Source, pre: tracker.registry.pre,
+      dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: eligible, lock: { root },
+    };
+    const before = tracker.comments.get(13)?.length ?? 0;
+    expect(await sendTo(deps, "13", "spec")).toEqual({ refused: expect.stringMatching(/#13 .*no lr:auto label/) });
+    expect(tracker.comments.get(13)?.length ?? 0).toBe(before);
+  });
+
   it("refuses a ticket it cannot place", async () => {
     const { deps, tracker } = world(["lr:stage:blocked", "lr:stage:spec"]);
     const before = tracker.comments.get(3)?.length ?? 0;

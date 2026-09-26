@@ -1,5 +1,5 @@
 import { GOTO_KIND, RECORD_EFFECT } from "#conventions.js";
-import { assess, compile, gotoDeclined, gotoNotListed, locate } from "#core/index.js";
+import { assess, checkEligible, compile, gotoDeclined, gotoNotListed, locate } from "#core/index.js";
 import type { GotoDeps, GotoResult, Node } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
@@ -18,8 +18,9 @@ const WAIT_FOR_TICK_MS = 3_000;
  * since. Refused, with a sentence, wherever the engine would not take the
  * goto — a stage that does not list the target, or lists it with a cap that
  * does not hold — so the engine's own halt is only a backstop; and wherever
- * `decide` would never reach the goto at all: its own `requires` unsatisfied,
- * or its round still pending.
+ * `decide` would never reach the goto at all: a ticket the workflow's
+ * `eligible` rules skip, a stage whose own `requires` is unsatisfied, or one
+ * whose round is still pending.
  *
  * "Still pending" is asked of `assess()` — the exact function `decide` calls
  * — never re-derived here by hand. A stage whose latest round was *rejected*
@@ -62,6 +63,10 @@ async function sendAt(deps: GotoDeps, ticket: string, target: string | null): Pr
   const node = snapshot.node as Node | undefined;
   if (!node) return { refused: `#${ticket} was not found` };
   if (node.closed !== null) return { refused: `#${ticket} is closed, so there is nothing to send back` };
+  // decide() turns an ineligible ticket away before it reads anything else,
+  // so a goto written on one would sit unread for as long as it stays so.
+  const eligibility = checkEligible(deps.workflow, snapshot);
+  if (!eligibility.eligible) return { refused: `#${ticket} is not worked by this workflow: ${eligibility.reason}` };
   const unplaceable = positionProblem(snapshot);
   if (unplaceable) return { refused: `#${ticket} cannot be placed: ${unplaceable}` };
 
