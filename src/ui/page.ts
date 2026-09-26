@@ -574,6 +574,32 @@ function systemMark(system) {
   return mark;
 }
 
+// A ticket a security check stopped: a shield beside its badge, drawn inline
+// — the page loads no image — and named, so hovering or a screen reader says
+// what it means rather than leaving an icon to be guessed at.
+function shieldMark() {
+  const mark = el("span", "inline-flex shrink-0 self-center text-rose-600 dark:text-rose-400");
+  const name = "Blocked by a security check";
+  mark.title = name;
+  mark.setAttribute("role", "img");
+  mark.setAttribute("aria-label", name);
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z");
+  svg.append(path);
+  mark.append(svg);
+  return mark;
+}
+
 function treeItem(row, depth, cls, open) {
   const li = el("li", cls + " " + indentOf(depth) + (row.closed === "dropped" ? " opacity-50" : ""));
   li.setAttribute("role", "treeitem");
@@ -647,6 +673,7 @@ function ticketRowFor(row, depth, now, open) {
     const [label, cls] = BADGES[row.badge];
     top.append(el("span", "badge shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium " + cls, label));
   }
+  if (row.screened) top.append(shieldMark());
   // A ticket row names no system: its tracker is the whole board's, and the
   // mark earns its place only on an artifact row, where it tells a pull
   // request from a document. An unset priority shows nothing rather than a
@@ -793,8 +820,8 @@ function render(view) {
   const said = search !== null && matched === 0 ? "Nothing matches." : "";
   if (status.textContent !== said) status.textContent = said;
   document.getElementById("folder").textContent = view.folder;
-  const listed = view.listedAt === null ? "waiting for the first tick" : "listed " + elapsed(view.listedAt, now) + " ago";
-  document.getElementById("meta").textContent = listed;
+  // Empty unless a poll failed: a view that landed means landrace is answering.
+  document.getElementById("meta").textContent = "";
   nextTickAt = view.nextTickAt;
   renderNext();
 

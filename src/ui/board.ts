@@ -1,5 +1,5 @@
 import { compareWork, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
-import { oneLine, statusRows } from "#runner/status.js";
+import { oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
@@ -61,7 +61,6 @@ export function boardView(input: {
   graph: Graph;
   /** Relation types the source declares singular — the only edges that nest. */
   nest: ReadonlySet<string>;
-  listedAt: number | null;
   running: ReadonlyMap<string, Running>;
   elsewhere: ReadonlyMap<string, Held>;
   now: number;
@@ -85,7 +84,7 @@ export function boardView(input: {
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, round: null, model: null,
-      chat: null, children: [],
+      chat: null, screened: false, children: [],
     };
     const s = status.get(node.id);
     if (node.kind !== TICKET_KIND || !s) return base;
@@ -115,6 +114,11 @@ export function boardView(input: {
       // else tells us when a foreign hold began, so this reports null rather
       // than a wrong clock.
       return { ...ticket, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
+    }
+    // The status row's own verdict, not the labels read a second time; the
+    // note is the page's wording of the same fact.
+    if (s.note === SCREENED_NOTE) {
+      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: "blocked by a security check" };
     }
     return { ...ticket, badge: laneOf(s, input.workflow) };
   };
@@ -161,7 +165,7 @@ export function boardView(input: {
   }
 
   return {
-    generatedAt: input.now, listedAt: input.listedAt, rows, nextTickAt: input.nextTickAt,
+    generatedAt: input.now, rows, nextTickAt: input.nextTickAt,
     folder: input.folder, workspace: input.workspace,
   };
 }
@@ -190,7 +194,6 @@ export function createBoard(opts: {
   const nextTickAt = opts.nextTickAt ?? (() => null);
   const nest = new Set(opts.nest);
   let graph: Graph = { nodes: [], relationships: [] };
-  let listedAt: number | null = null;
   const running = new Map<string, Running>();
 
   return {
@@ -209,7 +212,6 @@ export function createBoard(opts: {
     },
     list(next: Graph): void {
       graph = next;
-      listedAt = now();
     },
     async view(): Promise<BoardView> {
       // Open tickets only: nothing else can be held, and a closed ticket's
@@ -220,7 +222,7 @@ export function createBoard(opts: {
         if (h) elsewhere.set(n.id, h);
       }));
       return boardView({
-        workflow: opts.workflow, graph, nest, listedAt, running, elsewhere, now: now(), pid,
+        workflow: opts.workflow, graph, nest, running, elsewhere, now: now(), pid,
         nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },

@@ -24,6 +24,14 @@ export function oneLine(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * The two ways a row says a ticket is stopped for a person, named so the page
+ * can tell them apart without reading the labels a second time. Both start
+ * "blocked", which is what files either one under Needs you.
+ */
+export const BLOCKED_NOTE = "blocked: needs a human";
+export const SCREENED_NOTE = "blocked: security check refused a step";
+
 const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, width - 1)}…` : text;
 
@@ -86,13 +94,17 @@ export function statusRows(workflow: Workflow, tickets: Node[]): StatusRow[] {
     // reading a table cannot see the labels from here.
     if (ambiguous) return { ...row, stage: null, note: `halted: more than one lr:stage:* label (${found.join(", ")})` };
 
-    const note = labels.includes(LABELS.blocked)
-      ? "blocked: needs a human"
-      : labels.includes(LABELS.awaiting)
-        ? "waiting on you"
-        : labels.includes(LABELS.working)
-          ? "working"
-          : "queued";
+    // Screened before blocked: a screened ticket wears both, and the more
+    // specific reason is the one a person can act on.
+    const note = labels.includes(LABELS.screened)
+      ? SCREENED_NOTE
+      : labels.includes(LABELS.blocked)
+        ? BLOCKED_NOTE
+        : labels.includes(LABELS.awaiting)
+          ? "waiting on you"
+          : labels.includes(LABELS.working)
+            ? "working"
+            : "queued";
     return { ...row, stage, note };
   });
 }

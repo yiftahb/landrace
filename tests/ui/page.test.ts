@@ -480,6 +480,51 @@ describe("a row's title line", () => {
   });
 });
 
+/** A top-level `const NAME = { … };` of the page script that spans several lines, as source. */
+const blockSource = (name: string): string => {
+  const start = APP_JS.indexOf(`\nconst ${name} = `);
+  if (start < 0) throw new Error(`APP_JS has no top-level const ${name}`);
+  return APP_JS.slice(start, APP_JS.indexOf("\n};\n", start) + 4);
+};
+
+describe("a ticket row stopped by a security check", () => {
+  interface TicketRow extends Tree {
+    kind: string; link: string; closed: null; badge: string; stage: string; priority: null; note: string;
+    since: null; round: null; model: null; chat: null; screened: boolean;
+  }
+  const build = (row: TicketRow): FakeElement => runInNewContext(`
+    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
+    ${["el", "elapsed", "external", "treeItem", "shieldMark", "ticketRowFor"].map(fnSource).join("")}
+    ticketRowFor(ROW, 0, 0, false)`, { ROW: row, document: fakeDocument }) as FakeElement;
+  const screened: TicketRow = {
+    id: "19", kind: "ticket", title: "Payments revamp", link: "https://github.com/a/b/issues/19", closed: null,
+    badge: "needs-you", stage: "screened", priority: null, note: "blocked by a security check",
+    since: null, round: null, model: null, chat: null, screened: true, children: [],
+  };
+  const shield = (li: FakeElement): FakeElement | undefined =>
+    descendants(li).find((d) => d.getAttribute("aria-label") === "Blocked by a security check");
+
+  it("carries a shield, named for a screen reader and a hover, drawn as inline SVG", () => {
+    const mark = shield(build(screened));
+    expect(mark?.getAttribute("role")).toBe("img");
+    expect(mark?.title).toBe("Blocked by a security check");
+    expect(mark?.children[0]?.tag).toBe("svg");
+  });
+
+  it("says what stopped it in the row's note", () => {
+    expect(descendants(build(screened)).map((d) => d.text)).toContain("blocked by a security check");
+  });
+
+  it("draws no shield on a row blocked for any other reason", () => {
+    expect(shield(build({ ...screened, stage: "blocked", note: "blocked: needs a human", screened: false }))).toBeUndefined();
+  });
+
+  it("never reaches for an image: the page's CSP loads none, and a mark is drawn, not fetched", () => {
+    expect(APP_JS).not.toMatch(/createElement\("img"\)|<img/);
+    expect(PAGE_HTML).not.toContain("<img");
+  });
+});
+
 describe("an artifact row", () => {
   interface Artifact extends Tree {
     kind: string; link: string; closed: null;
@@ -643,6 +688,18 @@ describe("the page", () => {
     expect(APP_JS).toContain('getElementById("theme-toggle")');
     expect(APP_JS).toContain("classList.toggle(\"dark\"");
     expect(APP_JS).toMatch(/try\s*{[^}]*localStorage\.setItem[^}]*}\s*catch/s);
+  });
+
+  // Asked for by the person who reads it: a clock of when the tracker was
+  // last listed told them nothing the countdown beside it did not.
+  it("says nothing in the header about when the board was last listed", () => {
+    expect(APP_JS).not.toMatch(/"listed "|listedAt/);
+    expect(APP_JS).not.toContain("waiting for the first tick");
+  });
+
+  it("clears the not-responding note once a poll lands again", () => {
+    expect(fnSource("render")).toContain('getElementById("meta").textContent = ""');
+    expect(APP_JS).toContain('"landrace is not responding"');
   });
 
   it("has a folder chip in the header, set from the board view", () => {

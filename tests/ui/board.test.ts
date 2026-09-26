@@ -25,7 +25,7 @@ const NEST = new Set(["child-of", "implements"]);
 
 const view = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
-    workflow, graph: g, nest: NEST, listedAt: 1, now: 100, pid: 1, nextTickAt: null,
+    workflow, graph: g, nest: NEST, now: 100, pid: 1, nextTickAt: null,
     running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
   });
 
@@ -39,6 +39,7 @@ describe("laneOf", () => {
     ["skipped: no go label", "not-admitted"],
     ["halted: more than one lr:stage:* label (a, b)", "needs-you"],
     ["blocked: needs a human", "needs-you"],
+    ["blocked: security check refused a step", "needs-you"],
     ["waiting on you", "needs-you"],
     ["working", "waiting"],
     ["queued", "waiting"],
@@ -52,6 +53,30 @@ describe("laneOf", () => {
 
   it("never discharges a ticket that needs a human, terminal or not", () => {
     expect(laneOf(row("blocked: needs a human", "done"), workflow)).toBe("needs-you");
+  });
+});
+
+/*
+ * Needs you, like any blocked ticket — it is one — with the reason on the row,
+ * so the person who opens it knows to read a security verdict rather than an
+ * agent's broken answer. The reason itself is on the ticket, in a comment the
+ * board does not read: it is drawn from the listed labels, and a comment read
+ * per ticket per tick is a cost this page does not get to add.
+ */
+describe("boardView: a ticket a security check stopped", () => {
+  it("is in Needs you, marked screened, and says it was a security check", () => {
+    const [row] = view(graph([ticket("1", {}, ["go", "lr:stage:screened", "lr:blocked", "lr:screened"])])).rows;
+    expect(row).toMatchObject({ badge: "needs-you", lane: "needs-you", screened: true, note: "blocked by a security check" });
+  });
+
+  it("marks a ticket blocked for any other reason as not screened", () => {
+    const [row] = view(graph([ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"])])).rows;
+    expect(row).toMatchObject({ badge: "needs-you", screened: false, note: "blocked: needs a human" });
+  });
+
+  it("marks no artifact screened", () => {
+    const [row] = view(graph([pr("pr-9")])).rows;
+    expect(row?.screened).toBe(false);
   });
 });
 
@@ -259,7 +284,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "closed", "id", "kind", "lane", "link", "model", "note", "priority",
-      "round", "since", "stage", "system", "title",
+      "round", "screened", "since", "stage", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
@@ -312,9 +337,11 @@ describe("createBoard", () => {
     expect((await board.view()).rows[0]?.badge).toBe("waiting");
   });
 
-  it("reports no rows and a null listedAt before the first tick lands", async () => {
+  // No listedAt: the header's "listed … ago" was the only thing that read it,
+  // and it is gone.
+  it("reports no rows before the first tick lands", async () => {
     expect(await shell(() => 5).view()).toEqual({
-      generatedAt: 5, listedAt: null, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
+      generatedAt: 5, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
     });
   });
 

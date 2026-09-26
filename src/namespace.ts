@@ -1256,13 +1256,13 @@ export interface BoardRow {
   model: string | null;
   /** Tickets only. */
   chat: Chat | null;
+  /** Stopped by a security check rather than for any other reason — the page draws a shield. */
+  screened: boolean;
   children: BoardRow[];
 }
 
 export interface BoardView {
   generatedAt: number;
-  /** When the tick last listed the graph; null before the first tick lands. */
-  listedAt: number | null;
   rows: BoardRow[];
   /** When the next scheduled tick is due, epoch ms; null when nothing is scheduled. */
   nextTickAt: number | null;

@@ -4,7 +4,7 @@ import type { BoardView, UiServer } from "#namespace.js";
 import { serveBoard } from "#ui/server.js";
 
 const empty: BoardView = {
-  generatedAt: 1, listedAt: null, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
+  generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
 };
 
 /**
