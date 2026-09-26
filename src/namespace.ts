@@ -1258,6 +1258,12 @@ export interface BoardRow {
   chat: Chat | null;
   /** Stopped by a security check rather than for any other reason — the page draws a shield. */
   screened: boolean;
+  /**
+   * Where the page's Retry posts, for a ticket that is blocked or screened
+   * right now; null everywhere else. Built by the server from a checked id,
+   * so the page never puts a URL together itself.
+   */
+  retry: string | null;
   children: BoardRow[];
 }
 
@@ -1276,6 +1282,8 @@ export interface Board {
   observe(e: LandraceEvent): void;
   list(graph: Graph): void;
   view(): Promise<BoardView>;
+  /** Whether the ticket is blocked or screened in what the tick last listed — the check a Retry is posted behind. */
+  retryable(ticket: string): boolean;
 }
 
 export interface UiOptions {
@@ -1286,6 +1294,31 @@ export interface UiOptions {
    * write exists only when something is actually there to run it against.
    */
   tick?: () => boolean;
+  /**
+   * The Retry on a blocked or screened ticket: `allowed` asks the board's own
+   * latest listing whether the ticket is stopped right now — the page is
+   * never taken at its word — and `post` hands it back with a human turn.
+   * Absent, POST /tickets/<id>/retry is 404, as /tick is without a tick.
+   */
+  retry?: RetryPath;
+}
+
+/**
+ * What posting a person's reply on a ticket needs: the snapshot a post hook
+ * is handed, read the way the tick reads it, and the dispatcher every other
+ * write goes through.
+ */
+export interface ReplyDeps {
+  source: Source;
+  pre: PreHook[];
+  dispatcher: Dispatcher;
+  ctx: RuntimeContext;
+}
+
+/** How the page's Retry reaches a ticket: the one check, and the one write. */
+export interface RetryPath {
+  allowed(ticket: string): boolean;
+  post(ticket: string): Promise<void>;
 }
 
 export interface UiServer {

@@ -8,6 +8,8 @@ import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import type { Board, LandraceEvent, Registry, Runtime, Schedule, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
+import { createDispatcher } from "#runner/effects.js";
+import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import {
   boardSink,
   buildRuntime,
@@ -17,6 +19,7 @@ import {
   parseInterval,
   parsePort,
   repoWorkspace,
+  retryFor,
   startUi,
   stepTimeoutMs,
 } from "#cli/start.js";
@@ -408,7 +411,8 @@ describe("boardSink", () => {
         current: {
           observe: () => { throw new Error("display broke"); },
           list: () => {},
-          view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
+          view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
+          retryable: () => false,
         },
       };
       const sink = boardSink((e) => printed.push(e), board);
@@ -430,7 +434,8 @@ describe("boardSink", () => {
       current: {
         observe: (e) => { observed.push(e); },
         list: () => {},
-        view: async () => ({ generatedAt: 0, listedAt: null, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
+        view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
+        retryable: () => false,
       },
     };
     const event: LandraceEvent = { name: "step.finished", ticket: "1" };
@@ -527,6 +532,67 @@ describe("startUi", () => {
         headers: { "x-landrace-action": "tick" },
       });
       expect(res.status).toBe(404);
+    } finally {
+      await ui?.close();
+    }
+  });
+});
+
+/**
+ * The page's Retry, wired to the same reply `landrace_reply` posts — a human
+ * turn, which is what the workflow's handback triggers read — behind the
+ * board's own check that the ticket is stopped right now.
+ */
+describe("the page's Retry", () => {
+  const world = async () => {
+    const gh = createFakeTracker([
+      { number: 19, labels: ["lr:auto", "lr:stage:screened", "lr:blocked", "lr:screened"] },
+      { number: 20, labels: ["lr:auto", "lr:stage:spec", "lr:working"] },
+    ]);
+    const source = gh.registry.source;
+    if (!source) throw new Error("the fake tracker registered no source");
+    const board = createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    board.list(await source.list(gh.ctx));
+    return { gh, board, deps: { source, pre: gh.registry.pre, dispatcher: createDispatcher(gh.registry.post), ctx: gh.ctx } };
+  };
+
+  it("posts exactly one reply on a stopped ticket, and it reads back as a person's turn", async () => {
+    const { gh, board, deps } = await world();
+    const retry = retryFor(deps, board);
+
+    expect(retry?.allowed("19")).toBe(true);
+    await retry?.post("19");
+
+    expect((gh.comments.get(19) ?? []).map((c) => c.body)).toEqual(["Retry requested from the Landrace board."]);
+    expect(gh.entriesOf(19).at(-1)).toMatchObject({ kind: "human", byAgent: false });
+  });
+
+  it("answers from the board, so a ticket that is not stopped is not retried", async () => {
+    const { board, deps } = await world();
+    const retry = retryFor(deps, board);
+    expect(retry?.allowed("20")).toBe(false);
+    expect(retry?.allowed("404")).toBe(false);
+  });
+
+  it("offers no Retry at all when no hook can post a reply", async () => {
+    const { board, deps } = await world();
+    expect(retryFor({ ...deps, dispatcher: createDispatcher([]) }, board)).toBeUndefined();
+  });
+
+  it("is passed through startUi to the page's server, so POST /tickets/<id>/retry reaches it", async () => {
+    const calls: string[] = [];
+    const board = createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    const ui = await startUi({
+      board, ui: true, once: false, port: 0,
+      retry: { allowed: () => true, post: async (ticket) => { calls.push(ticket); } },
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/tickets/19/retry`, {
+        method: "POST",
+        headers: { "x-landrace-action": "retry", origin: `http://127.0.0.1:${ui?.port}` },
+      });
+      expect(res.status).toBe(202);
+      expect(calls).toEqual(["19"]);
     } finally {
       await ui?.close();
     }

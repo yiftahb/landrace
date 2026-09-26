@@ -80,6 +80,44 @@ describe("boardView: a ticket a security check stopped", () => {
   });
 });
 
+/*
+ * Retry is offered on exactly the tickets a human turn would hand back: the
+ * blocked and the screened. The path comes from the server, built from an id
+ * it has checked, so the page never puts a URL together itself.
+ */
+describe("boardView: which rows offer a Retry", () => {
+  const rowFor = (labels: string[], over: Partial<Node> = {}, opts: Partial<Parameters<typeof boardView>[0]> = {}) =>
+    view(graph([ticket("7", over, ["go", ...labels])]), opts).rows[0];
+
+  it.each([
+    ["blocked", ["lr:stage:blocked", "lr:blocked"]],
+    ["screened", ["lr:stage:screened", "lr:blocked", "lr:screened"]],
+  ])("offers it on a %s ticket, as the path to post to", (_, labels) => {
+    expect(rowFor(labels)?.retry).toBe("/tickets/7/retry");
+  });
+
+  it.each([
+    ["waiting on you", ["lr:stage:spec-human-review", "lr:awaiting"]],
+    ["working", ["lr:stage:build", "lr:working"]],
+    ["queued", ["lr:stage:spec"]],
+  ])("offers none on a ticket that is %s", (_, labels) => {
+    expect(rowFor(labels)?.retry).toBeNull();
+  });
+
+  it("offers none on a closed ticket, whatever its labels still say", () => {
+    expect(rowFor(["lr:stage:blocked", "lr:blocked"], { closed: "done" })?.retry).toBeNull();
+  });
+
+  it("offers none while an agent is running on it", () => {
+    const running = new Map<string, Running>([["7", { stage: "build", round: 2, model: null, since: 1 }]]);
+    expect(rowFor(["lr:stage:blocked", "lr:blocked"], {}, { running })?.retry).toBeNull();
+  });
+
+  it("offers none on an artifact", () => {
+    expect(view(graph([pr("pr-9")])).rows[0]?.retry).toBeNull();
+  });
+});
+
 describe("boardView: the tree", () => {
   it("nests a child under its parent and a pull request under its ticket", () => {
     const g = graph([ticket("1"), ticket("2"), pr("pr-9")], [edge("2", "1"), edge("pr-9", "2", "implements")]);
@@ -284,7 +322,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "closed", "id", "kind", "lane", "link", "model", "note", "priority",
-      "round", "screened", "since", "stage", "system", "title",
+      "retry", "round", "screened", "since", "stage", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
@@ -318,6 +356,28 @@ describe("boardView: rows", () => {
 describe("createBoard", () => {
   const shell = (now: () => number, held: (t: string) => Promise<Held | null> = async () => null) =>
     createBoard({ workflow, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace", nest: [...NEST] });
+
+  /*
+   * What the server asks before it posts anything: the board's own latest
+   * listing, not the page's. A ticket handed back since the page last polled
+   * is no longer blocked, and a second reply would be a second handback.
+   */
+  it("answers whether a ticket may be retried from what the tick last listed", () => {
+    const board = shell(() => 0);
+    expect(board.retryable("1")).toBe(false);
+
+    board.list(graph([
+      ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"]),
+      ticket("2", {}, ["go", "lr:stage:screened", "lr:blocked", "lr:screened"]),
+      ticket("3", {}, ["go", "lr:stage:spec", "lr:working"]),
+      ticket("4", { closed: "done" }, ["go", "lr:stage:blocked", "lr:blocked"]),
+      pr("pr-5"),
+    ]));
+    expect(["1", "2", "3", "4", "pr-5", "99"].map((id) => board.retryable(id))).toEqual([true, true, false, false, false, false]);
+
+    board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
+    expect(board.retryable("1")).toBe(false);
+  });
 
   it("opens a running row on step.started and closes it on step.finished", async () => {
     let t = 10;

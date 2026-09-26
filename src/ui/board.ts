@@ -1,5 +1,5 @@
 import { compareWork, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
-import { oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
+import { BLOCKED_NOTE, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
@@ -20,6 +20,16 @@ export function laneOf(row: StatusRow, workflow: Workflow): Lane {
 }
 
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
+
+/**
+ * Whether a human turn would hand this ticket back: it is stopped, blocked or
+ * screened. The status row's own verdict, so the row the page draws and the
+ * check the server makes before posting cannot disagree about a ticket.
+ */
+const stopped = (row: StatusRow): boolean => row.note === BLOCKED_NOTE || row.note === SCREENED_NOTE;
+
+/** The path the page posts a Retry to — built here, from an id already checked, never by the page. */
+const retryPath = (id: string): string | null => (isTicketId(id) ? `/tickets/${id}/retry` : null);
 
 /** Most urgent first — the order a branch's lane cascades in. */
 const URGENCY: readonly Lane[] = ["needs-you", "running", "elsewhere", "waiting", "not-admitted", "discharged"];
@@ -84,7 +94,7 @@ export function boardView(input: {
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, round: null, model: null,
-      chat: null, screened: false, children: [],
+      chat: null, screened: false, retry: null, children: [],
     };
     const s = status.get(node.id);
     if (node.kind !== TICKET_KIND || !s) return base;
@@ -115,12 +125,13 @@ export function boardView(input: {
       // than a wrong clock.
       return { ...ticket, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
     }
+    const retry = stopped(s) ? retryPath(node.id) : null;
     // The status row's own verdict, not the labels read a second time; the
     // note is the page's wording of the same fact.
     if (s.note === SCREENED_NOTE) {
-      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: "blocked by a security check" };
+      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: "blocked by a security check", retry };
     }
-    return { ...ticket, badge: laneOf(s, input.workflow) };
+    return { ...ticket, badge: laneOf(s, input.workflow), retry };
   };
 
   const parent = parentsOf(input.graph, nodes, input.nest);
@@ -212,6 +223,13 @@ export function createBoard(opts: {
     },
     list(next: Graph): void {
       graph = next;
+    },
+    retryable(ticket: string): boolean {
+      // Open tickets only, as the row is drawn: a closed one keeps whatever
+      // labels it had, and handing it back would re-run a finished ticket.
+      const node = graph.nodes.find((n) => n.id === ticket && isOpenTicket(n));
+      const [row] = node ? statusRows(opts.workflow, [node]) : [];
+      return row !== undefined && stopped(row);
     },
     async view(): Promise<BoardView> {
       // Open tickets only: nothing else can be held, and a closed ticket's

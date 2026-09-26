@@ -214,6 +214,13 @@ const CHAT_TARGETS = [
 // element for a key is always one fresh lookup away.
 let openMenuKey = null;
 
+// Per ticket, what the last Retry heard back when it did not go through, and
+// which Retries are still waiting on the server. Module state rather than the
+// DOM's, because every poll rebuilds every menu: a sentence written only into
+// a button would be gone two seconds later.
+const retryNotes = new Map();
+const retrying = new Set();
+
 function menuKeyOf(id) { return id + ":menu"; }
 function triggerKeyOf(id) { return id + ":trigger"; }
 // Escaped: a node id is whatever the source called it, and a quote in one
@@ -271,6 +278,8 @@ function closeMenu(opts) {
   if (openMenuKey === null) return;
   const previous = openMenuKey;
   openMenuKey = null;
+  // A refusal is shown for the menu it was asked from, not for good.
+  retryNotes.delete(previous);
   applyMenuState(previous);
   clearIdleTimer();
   if (opts && opts.returnFocus) {
@@ -298,6 +307,46 @@ function menuItem(tag) {
   const node = el(tag, "flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800");
   node.setAttribute("role", "menuitem");
   return node;
+}
+
+// The Retry on a stopped ticket's menu — offered only when the server put a
+// path in row.retry, which it does for a blocked or screened ticket alone.
+function retryItem(row) {
+  const item = menuItem("button");
+  item.type = "button";
+  item.setAttribute("data-key", row.id + ":retry");
+  // Its own label is what changes, so that is what a screen reader is told.
+  item.setAttribute("aria-live", "polite");
+  const busy = retrying.has(row.id);
+  item.textContent = busy ? "Retrying…" : (retryNotes.get(row.id) || "Retry");
+  item.disabled = busy;
+  item.addEventListener("click", () => retry(row));
+  return item;
+}
+
+// A Retry hands the ticket back, and that re-runs a paid step, so it asks
+// first. It posts to the server's own path for this row — this script never
+// puts a URL together — and the server checks again that the ticket is still
+// stopped. What comes back when it is refused is shown where it was asked.
+function retry(row) {
+  if (retrying.has(row.id)) return;
+  if (!confirm("Retry #" + row.id + "? This hands the ticket back and re-runs a paid step.")) return;
+  retrying.add(row.id);
+  retryNotes.delete(row.id);
+  if (lastView) render(lastView);
+  fetch(row.retry, { method: "POST", headers: { "x-landrace-action": "retry" } })
+    .then((res) => (res.ok ? null : res.text().then((text) => text || "Retry failed", () => "Retry failed")))
+    .then(null, () => "Retry failed: landrace is not responding")
+    .then((problem) => {
+      retrying.delete(row.id);
+      if (problem === null) {
+        closeMenu({ returnFocus: true });
+        schedulePoll(0);
+        return;
+      }
+      retryNotes.set(row.id, problem);
+      if (lastView) render(lastView);
+    });
 }
 
 // The Chat menu's contents never change per badge — only which button opens
@@ -343,6 +392,7 @@ function buildChatMenu(row) {
     );
   });
   menu.append(copy);
+  if (row.retry) menu.append(el("hr", "my-1 border-neutral-100 dark:border-neutral-800"), retryItem(row));
   return menu;
 }
 
