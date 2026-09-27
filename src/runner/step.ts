@@ -216,6 +216,30 @@ export async function runStep(opts: {
     };
   }
 
+  // Derived here, from what this call already names, rather than accepted
+  // from the caller: the step's own declaration is the one thing that may put
+  // a binding on the wire, so no caller can hand one to a step that never
+  // asked for it. Computed before anything else is spent — before the
+  // sandbox is read, before screening runs, before `step.invoked` is even
+  // logged — and its own verdict rather than an outage: `childServerFor`
+  // throws when the binding is not a shape the server's own command line
+  // could carry as meant, and a binding the engine cannot carry is a fact
+  // about this step and this round, not a transient failure worth retrying,
+  // let alone one worth paying a screening call to discover.
+  let childOpt: { child: { parent: string; stage: string; round: number; server?: RunServer } } | Record<string, never> = {};
+  if (mayCreateTickets(step.capabilities)) {
+    try {
+      childOpt = {
+        child: {
+          parent: opts.ticket, stage: stageId, round,
+          ...(opts.childServer ? { server: childServerFor(opts.childServer, { parent: opts.ticket, stage: stageId, round }) } : {}),
+        },
+      };
+    } catch (e) {
+      return { ok: false, kind: "refused", reason: messageOf(e) };
+    }
+  }
+
   const start = await sandboxBefore(opts.sandbox, step.capabilities);
   if (!start.ok) return { ok: false, kind: "refused", reason: start.reason };
   const before = start.before;
@@ -277,28 +301,6 @@ export async function runStep(opts: {
   // read `timeoutMs`, so the run's signal aborts at the limit too.
   const limit = AbortSignal.timeout(timeoutMs);
   const runSignal = AbortSignal.any([signal, limit]);
-
-  // Derived here, from what this call already names, rather than accepted
-  // from the caller: the step's own declaration is the one thing that may put
-  // a binding on the wire, so no caller can hand one to a step that never
-  // asked for it. Computed before the run, and its own verdict rather than an
-  // outage: `childServerFor` throws when the binding is not a shape the
-  // server's own command line could carry as meant, and a binding the engine
-  // cannot carry is a fact about this step and this round, not a transient
-  // failure worth retrying.
-  let childOpt: { child: { parent: string; stage: string; round: number; server?: RunServer } } | Record<string, never> = {};
-  if (mayCreateTickets(step.capabilities)) {
-    try {
-      childOpt = {
-        child: {
-          parent: opts.ticket, stage: stageId, round,
-          ...(opts.childServer ? { server: childServerFor(opts.childServer, { parent: opts.ticket, stage: stageId, round }) } : {}),
-        },
-      };
-    } catch (e) {
-      return { ok: false, kind: "refused", reason: messageOf(e) };
-    }
-  }
 
   let text: string;
   let sessionId: string | null;

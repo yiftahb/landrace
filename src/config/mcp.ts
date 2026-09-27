@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { ARG_SHAPE } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
+import { CHILD_SERVER_NAME } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 import { MIN_SECRET_LENGTH } from "#runner/events.js";
 import type { McpEntry, McpServer, Problem, ResolvedMcp } from "#namespace.js";
@@ -22,9 +23,6 @@ export const mcpServerSchema = z
   .passthrough();
 
 export const mcpConfigSchema = z.object({ mcpServers: z.record(mcpServerSchema) });
-
-/** The name agsync gives the operator server, and the one the executor reserves for a step's create_child server. */
-const OPERATOR_NAME = "landrace";
 
 /**
  * `landrace mcp` in the spellings a real configuration uses: the bin,
@@ -87,8 +85,10 @@ export async function resolveStepServers(dir: string, entries: readonly McpEntry
   // to be wrong, and a missing file must not hide them. A name reaches the
   // agent's argv as `mcp__<name>[__<tool>]` in `--allowedTools`, which the CLI
   // splits on spaces and commas — a server or tool called "x Bash" would allow
-  // Bash — and `landrace` is both the operator server and the name the
-  // executor gives a step's create_child server.
+  // Bash — and `CHILD_SERVER_NAME` ("landrace") is both agsync's name for the
+  // operator server and the name the engine gives a step's create_child
+  // server: one spelling, so a step can never be handed a second server
+  // under the one name its own create_child tool is trusted to answer to.
   const nameOf = (entry: McpEntry): string => (typeof entry === "string" ? entry : entry.name);
   const names = entries.map(nameOf);
   // Two entries for one server could disagree about its tools, and choosing
@@ -106,7 +106,7 @@ export async function resolveStepServers(dir: string, entries: readonly McpEntry
     const badTools = (listed ?? []).filter((tool) => !ARG_SHAPE.test(tool));
     if (repeated.has(name)) continue;
     if (!ARG_SHAPE.test(name)) problems.push(shapeProblem(`a server named ${JSON.stringify(name)}`));
-    else if (name === OPERATOR_NAME) problems.push(operatorProblem(name, "which is"));
+    else if (name === CHILD_SERVER_NAME) problems.push(operatorProblem(name, "which is"));
     else if (listed !== undefined && listed.length === 0) {
       problems.push({
         rule: "mcp",

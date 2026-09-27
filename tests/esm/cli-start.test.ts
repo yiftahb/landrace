@@ -3,7 +3,7 @@ import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { buildRuntime, runStart } from "#cli/start.js";
+import { buildRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 import type { LandraceEvent } from "#namespace.js";
 import { acquire, release } from "#runner/lock.js";
@@ -183,6 +183,18 @@ describe("buildRuntime", () => {
     expect(rt.deps.pre.map((h) => h.id)).toEqual(["fake"]);
     expect(rt.deps.executor.id).toBe("claude");
     expect(rt.deps.screen).toBeUndefined();
+  });
+
+  /**
+   * A `tickets:create` step's ticket server is this fact, and nothing built
+   * `buildRuntime`'s own `deps.childServer` was ever read back: a typo here
+   * would only ever surface, days later, as a step refusing create_child
+   * against a real repository.
+   */
+  it("hands converge how to start its own ticket server, as this process on this workflow directory", async () => {
+    const { dir } = await fixture();
+    const rt = await buildRuntime(dir, {});
+    expect(rt.deps.childServer).toEqual(childServerCommand(dir));
   });
 
   /**

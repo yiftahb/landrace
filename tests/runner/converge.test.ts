@@ -1,5 +1,5 @@
 import { converge } from "#runner/converge.js";
-import { createChild } from "#runner/children.js";
+import { createChild, childServerFor } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
@@ -1197,5 +1197,39 @@ describe("the step timeout budget", () => {
       workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: spy, stepTimeoutMs: 123_000,
     }));
     expect(seen).toEqual([123_000]);
+  });
+});
+
+/**
+ * `deps.childServer` is how `buildRuntime` tells converge to start this
+ * process again as `landrace mcp`; converge's own job is only to forward it
+ * into runStep as its `childServer` option. Nothing else in this file names
+ * it, the same reason `stepTimeoutMs` has its own describe above: every other
+ * converge test builds `deps` with no `childServer` at all and would still
+ * pass if the forwarding line were deleted.
+ */
+describe("the engine's own ticket server", () => {
+  it("hands a tickets:create step's executor the server built for its binding", async () => {
+    const w = world();
+    const seen: unknown[] = [];
+    const spy: Executor = {
+      id: "spy",
+      run: async (_p, o) => { seen.push(o.child); return { text: "free text", sessionId: null }; },
+    };
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = { prompt: "go", capabilities: ["tickets:create"] };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    const binding = { parent: "1", stage: "spec", round: 1 };
+    await converge("1", deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: spy, childServer,
+    }));
+    expect(seen).toEqual([{ ...binding, server: childServerFor(childServer, binding) }]);
   });
 });

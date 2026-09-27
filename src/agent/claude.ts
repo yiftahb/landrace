@@ -186,7 +186,8 @@ export function createClaudeExecutor(opts: {
       if (resume !== undefined) assertArgShape("resume", resume);
       const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
 
-      if (bound && bound.server === undefined) {
+      const server = bound?.server;
+      if (bound && server === undefined) {
         throw new Error("cannot give this step create_child: the engine handed no server to start for it");
       }
 
@@ -213,21 +214,30 @@ export function createClaudeExecutor(opts: {
         args.push("--settings", JSON.stringify({ enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) }));
       }
       const servers: Record<string, unknown> = declared ? { ...mcpServers } : {};
-      if (bound?.server) {
+      if (server) {
+        // An allowlisted server under the engine's own name would either be
+        // silently replaced below — losing whichever of the two the operator
+        // actually meant to run — or, the other way round, let an operator's
+        // own server answer to the name a step trusts for create_child.
+        // `resolveStepServers` (config/mcp.ts) already refuses this at
+        // startup for the shipped executor; this is the backstop for an
+        // executor built directly, as every test here does.
+        if (Object.hasOwn(servers, server.name)) {
+          throw new Error(`cannot give this step create_child: an allowlisted server is already named "${server.name}"`);
+        }
         // The engine's server, as the engine described it: the binding is
         // already argv to a process the agent's CLI starts, not text in its
         // prompt, so nothing the agent says can file a child anywhere else.
-        servers[bound.server.name] = { command: bound.server.command, args: bound.server.args };
+        servers[server.name] = { command: server.command, args: server.args };
       }
-      const engineServer = bound?.server?.name;
       // A server whose entry listed tools allows exactly those; one named bare
       // allows every tool it has — which, for a server that can index or
       // delete, is a lot more than reading.
       const allowed = [
         ...Object.keys(servers)
-          .filter((name) => name !== engineServer)
+          .filter((name) => name !== server?.name)
           .flatMap((name) => mcpTools[name]?.map((tool) => `mcp__${name}__${tool}`) ?? [`mcp__${name}`]),
-        ...(bound?.server ? bound.server.tools.map((tool) => `mcp__${bound.server?.name}__${tool}`) : []),
+        ...(server ? server.tools.map((tool) => `mcp__${server.name}__${tool}`) : []),
       ];
       // Inline JSON rather than a config file: there is no path for the
       // agent's worktree to shadow and nothing to clean up after a crash.

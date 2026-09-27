@@ -676,11 +676,43 @@ describe("the create_child tool", () => {
   });
 
   /*
-   * The same wiring for what `agent.plugins` and `agent.mcp` resolved to: an
-   * option the assembler accepts and never hands on is a control that reads as
-   * configured and never runs. Moved from tests/cli/start.test.ts, which no
-   * longer builds an executor at all — the engine's server is described once,
-   * by `childServerCommand`, and handed to the executor on the run itself.
+   * `resolveStepServers` (config/mcp.ts) already refuses an allowlisted
+   * server named "landrace" for the shipped executor, before a step ever
+   * runs. This is the backstop inside the executor itself: an allowlisted
+   * server under the engine's own name would otherwise be silently replaced
+   * by whichever of the two `servers[name] = …` assigned last, and the loser
+   * could be either the operator's server or the one create_child is trusted
+   * to answer to.
+   */
+  it("refuses rather than silently replace an allowlisted server under the engine's own name", async () => {
+    await expect(argvOf(createClaudeExecutor({ bin, mcpServers: { [SERVER.name]: { command: "decoy" } } }), {
+      capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: SERVER },
+    })).rejects.toThrow(/already named "landrace"/);
+  });
+
+  /*
+   * A server named and shaped nothing like "landrace"/create_child, so this
+   * is not merely re-proving the fixed-name case above: two tools, listed in
+   * the order the engine's own `server.tools` gives them, and nothing else
+   * from this server allowed wholesale.
+   */
+  it("builds mcp__<name>__<tool> from whatever name and tools the engine's server carries, not from a fixed one", async () => {
+    const OTHER = { name: "tickets", command: "/usr/bin/node", args: ["cli.js", "mcp"], tools: ["a", "b"] };
+    const argv = await argvOf(createClaudeExecutor({ bin }), {
+      capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: OTHER },
+    });
+    expect(list(argv, "--allowedTools").sort()).toEqual(["mcp__tickets__a", "mcp__tickets__b"]);
+    expect(argv).not.toContain("mcp__tickets");
+  });
+
+  /*
+   * Moved from tests/cli/start.test.ts, which no longer builds an executor at
+   * all: the engine's server is described once, by `childServerCommand`, and
+   * handed to the executor on the run itself rather than at construction. What
+   * this pins now is that the two sources of a server never collide: the
+   * operator's own plugins and allowlisted servers (construction-time) and the
+   * engine's per-run one (`child.server`) both reach the same argv, neither
+   * one crowding out the other.
    */
   it("hands the step the plugins and servers it was given, beside the engine's server", async () => {
     const executor = createClaudeExecutor({

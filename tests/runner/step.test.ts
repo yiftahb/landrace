@@ -1126,14 +1126,25 @@ describe("the tickets:create backstop", () => {
     ]);
   });
 
-  it("refuses a step with a binding its server's command line could not carry, as a verdict before the run", async () => {
-    const executor: Executor = { id: "x", run: async () => ({ text: OK, sessionId: null }) };
+  it("refuses a step with a binding its server's command line could not carry, before anything is spent", async () => {
+    let executorCalled = false;
+    let screenerCalled = false;
+    const executor: Executor = { id: "x", run: async () => { executorCalled = true; return { text: OK, sessionId: null }; } };
+    const screener: Executor = { id: "screen", run: async () => { screenerCalled = true; return { text: OK, sessionId: null }; } };
     const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    const events: string[] = [];
     const r = await runStep({
       ...base, executor, childServer, ticket: "1", stageId: "-not-a-stage", round: 3,
       step: { ...base.step, capabilities: ["tickets:create"] },
+      screen: { executor: screener, model: "haiku" },
+      log: (name) => { events.push(name); },
     });
     expect(r).toMatchObject({ ok: false, kind: "refused", reason: expect.stringMatching(/stage/) });
+    // Refused before the screening call and before the run — not "the agent
+    // never ran because it was screened out", but "nothing was ever asked".
+    expect(screenerCalled).toBe(false);
+    expect(executorCalled).toBe(false);
+    expect(events).not.toContain("step.invoked");
   });
 });
 
