@@ -754,8 +754,16 @@ export interface LandraceEvent {
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
-/** The engine's logger, which can be told about more secrets after it was made. */
-export type RedactingLogger = Logger & { redact(values: readonly string[]): void };
+/**
+ * The engine's logger, which can be told about more secrets after it was made.
+ * `scrub` applies that same live set to text that leaves the process outside
+ * the logger — a tick row on stdout, a record body on the tracker — so there
+ * is one redaction set, not one per exit.
+ */
+export type RedactingLogger = Logger & {
+  redact(values: readonly string[]): void;
+  scrub(text: string): string;
+};
 
 export type LockKind = "tick" | "conversation" | "execution" | "goto";
 
@@ -846,6 +854,13 @@ export interface ConvergeDeps {
   screen?: Screener;
   ctx: Omit<HookContext, "snapshot">;
   log: Logger;
+  /**
+   * The runtime logger's `scrub`, for a record body composed outside the
+   * logger and posted where anyone reading the ticket sees it: it carries
+   * what an executor registered through `redact` after startup, which the
+   * secrets on `ctx` never named. Applied on top of those, never instead.
+   */
+  scrub?: (text: string) => string;
   maxPasses?: number;
   /**
    * How to start this process as `landrace mcp` on the workflow directory,
@@ -1142,7 +1157,8 @@ export interface Runtime {
    * Only `runStart` runs these, before the first tick.
    */
   preflights: Preflight[];
-  deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
+  /** `scrub` required here: the rows `landrace start` prints go through it too. */
+  deps: Omit<ConvergeDeps, "ctx" | "scrub"> & { ctx: RuntimeContext; scrub: (text: string) => string };
   intervalMs: number;
   concurrency: number;
   /**

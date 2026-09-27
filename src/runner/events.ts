@@ -96,5 +96,6 @@ export function createLogger(opts: {
       if (trimmed.length >= MIN_SECRET_LENGTH && !secrets.includes(trimmed)) secrets.push(trimmed);
     }
   };
+  log.scrub = (text) => redactValue(text, secrets) as string;
   return log;
 }

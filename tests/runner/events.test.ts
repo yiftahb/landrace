@@ -79,3 +79,16 @@ describe("a logger told about more secrets after it was made", () => {
     expect(seen).toEqual([{ name: "step.started", note: "token [redacted] and digit 1" }]);
   });
 });
+
+/*
+ * Text that leaves the process outside the logger — a tick row on stdout, a
+ * record body on the tracker — is scrubbed by the logger's own set, so a value
+ * an executor registered after startup is kept out of it as well as the log.
+ */
+describe("a logger scrubbing text composed outside it", () => {
+  it("applies the configured values and those registered since", () => {
+    const log = createLogger({ sink: () => {}, redactValues: ["ghp_configured_1"] });
+    log.redact(["a-server-token-1234"]);
+    expect(log.scrub("ghp_configured_1 then a-server-token-1234")).toBe("[redacted] then [redacted]");
+  });
+});

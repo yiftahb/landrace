@@ -32,7 +32,7 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * `tracker.record` — tracker config is opaque to the engine and handed to
  * hooks as it stands, so this also pins that the config reaches them.
  */
-const hookSource = (provides?: string[], preflight?: "pass" | "throw"): string => `import { appendFile } from "node:fs/promises";
+const hookSource = (provides?: string[], preflight?: "pass" | "throw", preFails?: string): string => `import { appendFile } from "node:fs/promises";
 
 const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
@@ -57,10 +57,10 @@ export const source = brand("source", {
 
 export const pre = brand("pre", {
   id: "fake",
-${provides === undefined ? "" : `  provides: ${JSON.stringify(provides)},\n`}  run: ({ ticket }: Ctx): Record<string, unknown> => ({
-    ticket: { body: "about " + ticket },
-    entries: [],
-  }),
+${provides === undefined ? "" : `  provides: ${JSON.stringify(provides)},\n`}  run: ({ ticket }: Ctx): Record<string, unknown> => {
+    ${preFails === undefined ? "" : `throw new Error(${JSON.stringify(preFails)});`}
+    return { ticket: { body: "about " + ticket }, entries: [] };
+  },
 });
 
 export const post = brand("post", {
@@ -139,6 +139,8 @@ async function fixture(
     securityKeys?: string;
     /** The `.mcp.json` at the repository root, as agsync would have written it. */
     mcpJson?: unknown;
+    /** A message the pre hook fails with, as an upstream error would quote what it was sent. */
+    preFails?: string;
   } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
@@ -146,7 +148,7 @@ async function fixture(
   const dir = join(root, ".landrace");
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
-  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight));
+  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight, opts.preFails));
   // The project's own coding agent, by the path this repository's workflow
   // loads it from: the engine ships none. A dynamic import with a computed
   // specifier — the loader's own `import(pathToFileURL(path).href)` pattern —
@@ -506,6 +508,35 @@ describe("runStart --once", () => {
     expect(await applied(record)).toEqual([{ ticket: TICKET, type: "tracker.comment" }]);
     // Nothing is left holding the ticket: the next run is free to take it.
     expect(await acquire(TICKET, "tick")).toBe(true);
+  });
+
+  /*
+   * The row printed per ticket is stdout, beside the log and outside it. A
+   * value an executor's setup registered through `redact` — an allowlisted
+   * server's env — was kept out of the log and printed here in the clear,
+   * whenever a failure quoted it.
+   */
+  it("keeps a value the executor registered through redact out of the row it prints", async () => {
+    const { dir } = await fixture({
+      agentKeys: "mcp: [codebase-memory-mcp]",
+      mcpJson: { mcpServers: { "codebase-memory-mcp": { command: "codebase-memory-mcp", env: { MEMORY_TOKEN: "env-secret-value" } } } },
+      preFails: "upstream refused MEMORY_TOKEN=env-secret-value",
+    });
+    const printed: string[] = [];
+    const wrote = console.log;
+    console.log = (line: unknown): void => {
+      printed.push(String(line));
+    };
+
+    try {
+      await runStart(dir, { once: true });
+    } finally {
+      console.log = wrote;
+    }
+
+    const rows = printed.filter((l) => l.startsWith("#"));
+    expect(rows).toEqual([expect.stringMatching(new RegExp(`^#${TICKET} halt after 1 pass\\(es\\): .*\\[redacted\\]`))]);
+    expect(printed.join("\n")).not.toContain("env-secret-value");
   });
 
   /**

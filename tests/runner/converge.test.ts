@@ -816,6 +816,40 @@ describe("converge", () => {
     expect(posted).toBeDefined();
     expect(String(posted?.body ?? "")).not.toContain(bareSecret);
   });
+
+  /*
+   * An executor's setup can find credentials the configuration never named —
+   * an MCP server's env — and registers them through `redact`, which reached
+   * the log alone. The record body is composed outside the logger and posted
+   * to a public, durable comment, so it goes through the logger's set as well
+   * as the secrets on ctx.
+   */
+  it("redacts a value an executor registered through redact out of a malformed record body", async () => {
+    const w = world();
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+    };
+    const serverToken = "mcp-server-token-1234";
+    const log = createLogger({ sink: () => {} });
+    log.redact([serverToken]);
+    // The discriminator's value is quoted in the reason, and the reason is the body.
+    const answering: Executor = { id: "agent", run: async () => ({ text: `\`\`\`json\n{"kind":"${serverToken}"}\n\`\`\``, sessionId: null }) };
+
+    await converge("1", deps(w, { workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: answering, log, scrub: log.scrub }));
+
+    const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"));
+    expect(String(posted?.body ?? "")).toContain("[redacted]");
+    expect(String(posted?.body ?? "")).not.toContain(serverToken);
+  });
 });
 
 /**

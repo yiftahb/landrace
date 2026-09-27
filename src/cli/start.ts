@@ -409,6 +409,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       ...(screener ? { screen: screener } : {}),
       ctx,
       log,
+      scrub: log.scrub,
     },
     intervalMs: parseInterval(loaded.config.tick.interval),
     concurrency: loaded.config.tick.concurrency,
@@ -537,7 +538,9 @@ async function pass(rt: Runtime, board?: Board): Promise<void> {
     source: rt.source, deps: rt.deps, concurrency: rt.concurrency,
     ...(board ? { onList: (graph) => board.list(graph) } : {}),
   });
-  for (const row of rows) console.log(`#${row.ticket} ${row.outcome}`);
+  // Printed beside the log, not through it: an outcome quotes a hook's or an
+  // agent's failure, which can carry what the log itself would redact.
+  for (const row of rows) console.log(`#${row.ticket} ${rt.deps.scrub(row.outcome)}`);
 }
 
 /**
