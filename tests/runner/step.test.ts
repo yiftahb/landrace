@@ -103,7 +103,7 @@ describe("the model a step declares", () => {
    *
    * So what is enforced is nothing, and what is recorded is what was asked
    * for and who was asked. An operator reads that against the executor's own
-   * report of what it put on its command line (tests/agent/claude.test.ts);
+   * report of what it put on its command line (tests/hooks/claude.test.ts);
    * a third-party executor that reports neither is visible by the silence.
    */
   const invocation = async (over: Partial<Parameters<typeof runStep>[0]>): Promise<Record<string, unknown>> => {

@@ -94,13 +94,13 @@ const EXECUTOR = `export const executor = brand("executor", {
 });
 `;
 
-const workflowReading = (path?: string): string => `version: 1
+const workflowReading = (path?: string, budget?: string): string => `version: 1
 name: e2e
 hooks: [hooks/fake.ts, hooks/claude.ts]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
-stages:
+${budget === undefined ? "" : `budget:\n  stepTimeout: ${budget}\n`}stages:
   - id: spec
     entry: true
     terminal: true
@@ -129,6 +129,8 @@ async function fixture(
     screen?: boolean;
     provides?: string[];
     reads?: string;
+    /** `budget.stepTimeout`, written into the generated workflow.yaml. */
+    budget?: string;
     git?: boolean;
     preflight?: "pass" | "throw";
     /** More of `agent:`, written inside its braces. */
@@ -158,7 +160,7 @@ async function fixture(
 export const { claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), ".landrace", "hooks", "claude.ts"))}).href);
 `,
   );
-  await writeFile(join(dir, "workflow.yaml"), workflowReading(opts.reads));
+  await writeFile(join(dir, "workflow.yaml"), workflowReading(opts.reads, opts.budget));
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
@@ -208,6 +210,19 @@ describe("buildRuntime", () => {
     const { dir } = await fixture();
     const rt = await buildRuntime(dir, {});
     expect(rt.deps.childServer).toEqual(childServerCommand(dir));
+  });
+
+  /**
+   * The workflow's own `budget.stepTimeout`, not the engine's 10-minute
+   * default: the shipped workflow happens to name 10m too, so a fixture that
+   * left `deps.stepTimeoutMs` off `buildRuntime`'s returned deps entirely
+   * would still pass every other test here — this is the one case where the
+   * two numbers disagree, and the only thing standing between them.
+   */
+  it("hands converge the workflow's own step timeout, not the engine's default", async () => {
+    const { dir } = await fixture({ budget: "7m" });
+    const rt = await buildRuntime(dir, {});
+    expect(rt.deps.stepTimeoutMs).toBe(420_000);
   });
 
   /**

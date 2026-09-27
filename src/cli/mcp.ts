@@ -85,8 +85,8 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    *
    * Built from the same configuration the loop's own step invocation is, so a
    * turn carries the same plugins and the same allowlisted servers without
-   * this process naming them again — that is the executor factory's own
-   * resolution now, not something resolved and handed in here.
+   * this process ever naming them: that resolution belongs to the executor
+   * factory itself, which this call reaches exactly as `start` does.
    */
   const executor = await executorFor(loaded.config, registry, ectx);
 

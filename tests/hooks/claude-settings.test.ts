@@ -34,6 +34,26 @@ describe("the claude hook's settings", () => {
     expect(() => readClaudeSettings({ adapter: "claude", mcp: ["good", { name: "y", tool: ["t"] }] }))
       .toThrow(/agent\.mcp\[1\]/);
   });
+
+  // The shape checks the zod schema this replaced used to pin directly.
+  it("refuses an empty plugin id", () => {
+    expect(() => readClaudeSettings({ adapter: "claude", plugins: [""] }))
+      .toThrow(/agent\.plugins must be a list of plugin ids/);
+  });
+
+  it("refuses an empty server name", () => {
+    expect(() => readClaudeSettings({ adapter: "claude", mcp: [""] })).toThrow(/agent\.mcp\[0\]/);
+  });
+
+  it("refuses a { tools } entry with no name", () => {
+    expect(() => readClaudeSettings({ adapter: "claude", mcp: [{ tools: ["search_graph"] }] }))
+      .toThrow(/agent\.mcp\[0\]/);
+  });
+
+  it("refuses mcp that is not a list", () => {
+    expect(() => readClaudeSettings({ adapter: "claude", mcp: "codebase-memory-mcp" }))
+      .toThrow(/agent\.mcp must be a list/);
+  });
 });
 
 describe("the claude executor, built from the runtime's context", () => {

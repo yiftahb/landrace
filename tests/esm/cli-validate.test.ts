@@ -20,18 +20,26 @@ import type { Problem } from "#namespace.js";
 describe("landrace validate, against the hooks the workflow loads", () => {
   /*
    * The whole file, every rule, proved against the real thing rather than a
-   * fixture. Two exceptions, both facts about the machine and not the
-   * workflow: whether a token resolves here ("secret"), and whether `agsync
-   * sync` has written this checkout's gitignored `.mcp.json` — which CI never
-   * has. Only the missing file is excused: with the file present, a name it
-   * does not define or the operator server still fails here, and the test in
-   * tests/config/mcp.test.ts asks the same question of the file agsync would
-   * generate, on every machine.
+   * fixture. Two exceptions, both facts about this checkout and not the
+   * workflow: whether a token resolves ("secret"), and whether `agsync sync`
+   * has written this checkout's gitignored `.mcp.json` — which CI never has.
+   *
+   * Only that one missing-file problem is excused, matched by the whole of
+   * its own message rather than a substring: an executor's several problems
+   * are now several `executor` entries (see `startRefusalProblems`,
+   * src/cli/validate.ts), so an unanchored match here could otherwise excuse
+   * a real one bundled beside it. Any other executor problem — a name
+   * `.mcp.json` does not define, the operator server allowed by name — still
+   * fails this test, as does any other rule. tests/hooks/claude-mcp.test.ts
+   * asks the same question of the file agsync would generate, on every
+   * machine.
    */
   it("validates the shipped .landrace workflow clean, on every rule", async () => {
     const r = await runValidate(".landrace");
+    const missingMcpJson =
+      /^executor "claude" could not start: mcp: agent\.mcp names "codebase-memory-mcp", but .*\.mcp\.json does not exist; `agsync sync` generates it$/;
     const machine = (p: Problem): boolean =>
-      p.rule === "secret" || (p.rule === "executor" && /\.mcp\.json does not exist/.test(p.message));
+      p.rule === "secret" || (p.rule === "executor" && missingMcpJson.test(p.message));
     expect(r.problems.filter((p) => !machine(p))).toEqual([]);
   });
 
@@ -93,27 +101,30 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    * business as a broken predicate path is.
    */
   it("reports an executor that cannot start, in the words start refuses with", async () => {
-    const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
-    await mkdir(join(dir, "hooks"), { recursive: true });
-    // A dynamic import with a computed specifier, not a static
-    // `export … from "…claude.ts"`: ts-jest type-checks a literal specifier
-    // under this project's `moduleResolution: NodeNext` and refuses one
-    // ending in `.ts` (TS5097), a rule real Node's type-stripping does not
-    // enforce at all.
-    await writeFile(
-      join(dir, "hooks", "claude.ts"),
-      `import { pathToFileURL } from "node:url";
-export const { claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), ".landrace", "hooks", "claude.ts"))}).href);
-`,
-    );
-    await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: claude, plugin: [p@m] }\n");
-    await writeFile(join(dir, "workflow.yaml"), [
-      "version: 1", "name: t", "hooks: [hooks/claude.ts]", "stages:",
-      "  - id: a", "    entry: true", "    terminal: true", "    triggers:",
-      "      - name: fresh", '        when: { "run.stage": null }', "",
-    ].join("\n"));
+    const dir = await validateDirWithClaudeHook("plugin: [p@m]");
     const r = await runValidate(dir);
     expect(r.problems).toContainEqual({ rule: "executor", message: expect.stringMatching(/executor "claude" could not start: agent\.plugin/) });
+  });
+
+  /**
+   * A factory can refuse for several reasons at once — two unrecognised
+   * `agent.*` keys here — joined by `\n` into the one message it throws.
+   * Left whole, that printed as a single multi-line entry under one
+   * `  executor: ` line (`src/cli/index.ts`) and counted as one problem
+   * rather than two; split, each line is its own `executor` problem, with
+   * the same `executor "claude" could not start: ` prefix `start` throws
+   * with.
+   */
+  it("splits a factory's multi-line refusal into one executor problem per line", async () => {
+    const dir = await validateDirWithClaudeHook("plugin: [p@m], scope: x");
+    const r = await runValidate(dir);
+    const executor = r.problems.filter((p) => p.rule === "executor");
+    expect(executor).toHaveLength(2);
+    expect(executor.every((p) => !p.message.includes("\n"))).toBe(true);
+    expect(executor.map((p) => p.message)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^executor "claude" could not start: agent\.plugin is not a setting the claude executor reads$/),
+      expect.stringMatching(/^executor "claude" could not start: agent\.scope is not a setting the claude executor reads$/),
+    ]));
   });
 
   /**
@@ -175,6 +186,35 @@ export const { claude } = await import(pathToFileURL(${JSON.stringify(join(proce
     await expect(readFile(ran, "utf8")).rejects.toThrow();
   });
 });
+
+/**
+ * A workflow directory with the real claude hook loaded and `agent:` set to
+ * `adapter: claude, ${agentKeys}` — what both "reports an executor that
+ * cannot start" and the multi-line case beside it need: a hook whose
+ * `create()` can actually be reached and made to refuse.
+ */
+async function validateDirWithClaudeHook(agentKeys: string): Promise<string> {
+  const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
+  await mkdir(join(dir, "hooks"), { recursive: true });
+  // A dynamic import with a computed specifier, not a static
+  // `export … from "…claude.ts"`: ts-jest type-checks a literal specifier
+  // under this project's `moduleResolution: NodeNext` and refuses one
+  // ending in `.ts` (TS5097), a rule real Node's type-stripping does not
+  // enforce at all.
+  await writeFile(
+    join(dir, "hooks", "claude.ts"),
+    `import { pathToFileURL } from "node:url";
+export const { claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), ".landrace", "hooks", "claude.ts"))}).href);
+`,
+  );
+  await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude, ${agentKeys} }\n`);
+  await writeFile(join(dir, "workflow.yaml"), [
+    "version: 1", "name: t", "hooks: [hooks/claude.ts]", "stages:",
+    "  - id: a", "    entry: true", "    terminal: true", "    triggers:",
+    "      - name: fresh", '        when: { "run.stage": null }', "",
+  ].join("\n"));
+  return dir;
+}
 
 /** A workflow directory with one hook module in it, written from `module`. */
 async function workflowDir(module: string, opts: { entry?: boolean; reads?: string } = {}): Promise<string> {

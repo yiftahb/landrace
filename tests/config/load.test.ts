@@ -136,12 +136,3 @@ describe("a var that is really a secret", () => {
     expect(varsHoldingSecrets(loaded)).toEqual([]);
   });
 });
-
-/*
- * `agent.plugins` and `agent.mcp` used to be typed here, defaulted and
- * validated by this schema. Task 5 makes `agent:` opaque past `adapter` and
- * `isolation` — a coding agent's model, plugins and servers are its own
- * executor's vocabulary now, read and validated by `readClaudeSettings`
- * (`.landrace/hooks/claude.ts`, pinned in tests/hooks/claude-settings.test.ts)
- * rather than by this schema.
- */

@@ -142,7 +142,9 @@ stages:
 
   it("reports a var nothing in the workflow references", async () => {
     const r = await runValidate(await dirFor("vars: { assignee: $LR_VALIDATE_ASSIGNEE, team: platform }\n"));
-    expect(r.ok).toBe(false);
+    // Not `r.ok`: this fixture's unrelated `executor` problem (see the "passes
+    // a workflow whose var resolves" case above) already makes it false, so
+    // asserting that would pass whether or not `vars` reported anything.
     expect(r.problems).toContainEqual(
       expect.objectContaining({ rule: "vars", message: expect.stringMatching(/"team"/) }),
     );
@@ -218,16 +220,6 @@ describe("landrace next", () => {
 });
 
 /*
- * `agent.mcp`, once validated by the engine's own schema and looked up here
- * against the repository root's `.mcp.json`, is now the claude hook's own
- * setting — read and resolved by `readClaudeSettings`/`resolveStepServers` in
- * `.landrace/hooks/claude.ts`, and reported by `validate` under rule
- * `executor` (tests/hooks/claude-mcp.test.ts covers the resolution itself;
- * tests/esm/cli-validate.test.ts covers `validate` reporting it end to end,
- * through a real hook — this file's own jest pass cannot import one at all).
- */
-
-/*
  * A stage's branch is where its step's worktree is checked out. With
  * `agent.isolation` anything but `worktree` there is no worktree: the agent
  * commits wherever the operator's checkout is, and the branch is a promise
@@ -286,7 +278,9 @@ build
 
   it("reports the stage when there is no worktree for its branch to be checked out in", async () => {
     const r = await runValidate(await repo("none"));
-    expect(r.ok).toBe(false);
+    // Not `r.ok`: the unrelated `executor` problem this fixture always
+    // carries already makes it false, whether or not `branch` reported
+    // anything — the filtered equality below is the actual assertion.
     expect(r.problems.filter(notExecutor)).toEqual([
       { rule: "branch", message: expect.stringMatching(/stage "build"[\s\S]*agent\.isolation[\s\S]*"none"/) },
     ]);

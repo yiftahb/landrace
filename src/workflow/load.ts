@@ -19,11 +19,12 @@ export class WorkflowLoadError extends Error {
 }
 
 // `root + sep` doubles up when root is already the filesystem root ("/" + "/"
-// = "//"), which no absolute path starts with — every path was reported as
-// escaping "/" regardless of shape. Harmless before now: every caller passed
-// a real project directory as root, never "/" itself, until the claude
-// executor started reusing this for an already-absolute cwd (see
-// src/agent/claude.ts's assertCwd).
+// = "//"), which no absolute path starts with — every path would be reported
+// as escaping "/" regardless of shape. Every caller in this codebase today
+// passes a real project directory as root, never "/" itself, but a hook
+// validating an already-absolute path — treating "/" as root and the rest as
+// `relative`, as `.landrace/hooks/claude.ts`'s own `assertCwd` does — needs
+// this to hold too; see tests/workflow/contained-path.test.ts.
 const inside = (p: string, root: string): boolean =>
   p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 

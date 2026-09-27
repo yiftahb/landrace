@@ -286,11 +286,11 @@ export async function runStep(opts: {
    * naming the executor because that is the party whose compliance is in
    * question, and `null` rather than an omission when the step named no model
    * — "the operator's default decides" is a different fact from "haiku", and
-   * a reader should not have to infer it from a missing key. The shipped
-   * executor reports the model it actually put on its command line
-   * (src/agent/claude.ts), which is the only place that is known; an operator
-   * reads the two against each other, and an executor that reports neither is
-   * visible by the silence.
+   * a reader should not have to infer it from a missing key. An executor that
+   * reports the model it actually put on its command line (an `agent.event`
+   * or `step.completed` payload, say — that report is the hook's own to make)
+   * lets an operator read the two against each other; one that reports
+   * neither is visible by the silence.
    */
   log?.("step.invoked", { stage: stageId, round, executor: executor.id, model: step.model ?? null });
 

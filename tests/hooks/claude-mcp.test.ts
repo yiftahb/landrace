@@ -265,7 +265,7 @@ describe("the shipped allowlist, against what agsync generates", () => {
 
   it("resolves every server .landrace/landrace.yaml allows", async () => {
     const { config } = await loadConfig(".landrace");
-    const { mcp } = readClaudeSettings(config.agent as Record<string, unknown>);
+    const { mcp } = readClaudeSettings(config.agent);
     expect(mcp.length).toBeGreaterThan(0);
     const { dir } = await repo(await generated());
     const r = await resolveStepServers(dir, mcp);
@@ -278,7 +278,7 @@ describe("the shipped allowlist, against what agsync generates", () => {
   // manage_adr, not ingest_traces.
   it("names the tools of every server it allows, rather than allowing the whole server", async () => {
     const { config } = await loadConfig(".landrace");
-    const { mcp } = readClaudeSettings(config.agent as Record<string, unknown>);
+    const { mcp } = readClaudeSettings(config.agent);
     for (const entry of mcp) expect(typeof entry).toBe("object");
   });
 

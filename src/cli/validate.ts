@@ -76,10 +76,31 @@ async function coverage(
 }
 
 /**
+ * `executor "<id>" could not start: <reason>`, `executorFor`'s own wrapping —
+ * undone and reapplied per line. A factory can refuse for several reasons at
+ * once (several bad `agent.*` keys, several unresolvable `agent.mcp`
+ * entries), joined by `\n` into the one message it throws; left whole, that
+ * printed as a single multi-line entry (`src/cli/index.ts`'s one-line-per-
+ * problem report ran the lines together under one `  executor: `) and counted
+ * as one problem when it was several. A message this does not recognise —
+ * `unknownExecutor`'s, say, which names no id to prefix with — is returned
+ * as the one problem it already is.
+ */
+const START_REFUSAL = /^executor "([^"]+)" could not start: ([\s\S]*)$/;
+
+function startRefusalProblems(message: string): Problem[] {
+  const m = START_REFUSAL.exec(message);
+  if (!m) return [{ rule: "executor", message }];
+  const id = m[1] ?? "";
+  const reason = m[2] ?? "";
+  return reason.split("\n").map((line) => ({ rule: "executor", message: `executor "${id}" could not start: ${line}` }));
+}
+
+/**
  * The executors the configuration names, built exactly as `start` builds them
- * and reported in the words it refuses with. An executor's setup can read
- * files outside the workflow — `.mcp.json`, for the shipped Claude hook — so
- * a missing one is reported here too, as `start` would refuse over it.
+ * and reported in the words it refuses with. The executor's setup can read
+ * files outside the workflow itself, so a missing one is reported here too,
+ * as `start` would refuse over it.
  */
 async function executorProblems(dir: string, loaded: LoadedConfig, registry: Registry): Promise<Problem[]> {
   const ctx: ExecutorContext = {
@@ -87,11 +108,16 @@ async function executorProblems(dir: string, loaded: LoadedConfig, registry: Reg
     log: () => {}, dir, redact: () => {},
   };
   try {
-    await executorFor(loaded.config, registry, ctx);
+    // Screener before executor, the same order `start` builds them in:
+    // `buildRuntime` resolves its screener before it ever reaches the object
+    // literal that awaits `executorFor` for the step — so a configuration
+    // broken both ways is reported over the same one `start` would actually
+    // meet first.
     await screenerFor(loaded.config, registry, ctx);
+    await executorFor(loaded.config, registry, ctx);
     return [];
   } catch (e) {
-    return [{ rule: "executor", message: messageOf(e) }];
+    return startRefusalProblems(messageOf(e));
   }
 }
 

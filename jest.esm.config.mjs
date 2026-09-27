@@ -10,7 +10,7 @@ import base from "./jest.config.mjs";
  * there.
  *
  * Only these tests move, rather than the whole suite: ESM mode takes
- * `__dirname` and the `jest` global away from `tests/agent/claude.test.ts`,
+ * `__dirname` and the `jest` global away from `tests/hooks/claude.test.ts`,
  * and breaking a working test to reach this one is the wrong trade. Run by
  * `pnpm test`, after the default pass.
  */

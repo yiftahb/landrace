@@ -144,10 +144,10 @@ const built = new WeakMap<ExecutorContext, Map<string, Promise<Executor>>>();
 
 /**
  * The executor `agent.adapter` names, or the screener's own — resolved from
- * the loaded hooks alone. The engine ships none of its own any more: a name
- * nothing answers to is a startup error rather than a loop that runs happily
- * and then fails at its first invocation, hours in and one paid tick at a
- * time, on a ticket that has already been moved.
+ * the loaded hooks alone, the engine having none of its own to fall back on.
+ * A name nothing answers to is a startup error rather than a loop that runs
+ * happily and then fails at its first invocation, hours in and one paid tick
+ * at a time, on a ticket that has already been moved.
  */
 export async function executorFor(
   config: RuntimeConfig,
