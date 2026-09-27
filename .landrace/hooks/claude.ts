@@ -635,6 +635,13 @@ export async function resolveStepServers(dir: string, entries: readonly McpEntry
 }
 
 /**
+ * An Authorization header's shape: one scheme token, then one credential with
+ * no space in it (`Bearer <token>`, `Basic <base64>`). A value of several
+ * words is prose, and its tail is no secret on its own.
+ */
+const AUTH_SCHEME = /^[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+(\S+)$/;
+
+/**
  * The values an allowlisted server's definition carries — every `env` and
  * `headers` value — for the log's redaction set.
  *
@@ -643,17 +650,28 @@ export async function resolveStepServers(dir: string, entries: readonly McpEntry
  * `agent exited …` message. Which of them is a credential is not ours to know,
  * so all of them are redacted, except a value shorter than the logger will
  * redact by: "1" would take every digit out of every line.
+ *
+ * A header shaped `<scheme> <credential>` registers its credential alone as
+ * well: a CLI reporting a failed server prints the token, or the header
+ * re-spaced, as often as it quotes the value whole — and whole was the only
+ * form redacted, so the token itself went through intact.
  */
 export function mcpRedactionValues(servers: Readonly<Record<string, McpServer>>): string[] {
   const values = new Set<string>();
+  const add = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    if (trimmed.length >= MIN_SECRET_LENGTH) values.add(trimmed);
+    return trimmed;
+  };
   for (const server of Object.values(servers)) {
+    for (const value of Object.values(server.env ?? {})) add(value);
     const headers = server["headers"];
-    const carried = [
-      ...Object.values(server.env ?? {}),
-      ...(headers && typeof headers === "object" ? Object.values(headers as Record<string, unknown>) : []),
-    ];
-    for (const value of carried) {
-      if (typeof value === "string" && value.trim().length >= MIN_SECRET_LENGTH) values.add(value.trim());
+    if (!headers || typeof headers !== "object") continue;
+    for (const value of Object.values(headers as Record<string, unknown>)) {
+      const whole = add(value);
+      const credential = whole === undefined ? undefined : AUTH_SCHEME.exec(whole)?.[1];
+      if (credential !== undefined) add(credential);
     }
   }
   return [...values];

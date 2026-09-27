@@ -303,7 +303,26 @@ describe("the values an allowlisted server's definition carries", () => {
     expect(mcpRedactionValues({
       memory: { command: "cbm", env: { TOKEN: "env-secret-value", DEBUG: "1" } },
       remote: { type: "http", url: "https://mcp.example.invalid", headers: { Authorization: "Bearer header-secret" } },
-    }).sort()).toEqual(["Bearer header-secret", "env-secret-value"]);
+    }).sort()).toEqual(["Bearer header-secret", "env-secret-value", "header-secret"]);
+  });
+
+  /*
+   * A CLI that reports a failed server rarely quotes the header whole: it
+   * prints the token, or "Authorization: Bearer <token>" re-spaced, and only
+   * the whole value was redacted — the credential itself went through intact.
+   */
+  it("are redacted after an auth scheme too, since the token is what leaks on its own", () => {
+    expect(mcpRedactionValues({
+      remote: { type: "http", headers: {
+        Authorization: "Bearer a-bearer-token-123",
+        "Proxy-Authorization": "Basic dXNlcjpwYXNzd29yZA==",
+        Short: "Basic abc",
+        Title: "My Own Server",
+      } },
+    }).sort()).toEqual([
+      "Basic abc", "Basic dXNlcjpwYXNzd29yZA==", "Bearer a-bearer-token-123", "My Own Server",
+      "a-bearer-token-123", "dXNlcjpwYXNzd29yZA==",
+    ]);
   });
 
   // A value that short would redact every occurrence of "1" in every log line.
