@@ -1,4 +1,5 @@
-import { createChild } from "#runner/children.js";
+import { CHILD_SERVER_NAME, CHILD_TOOL } from "#conventions.js";
+import { childServerFor, createChild } from "#runner/children.js";
 import { createExternalState } from "#testing/index.js";
 import type { RuntimeContext } from "#namespace.js";
 
@@ -32,5 +33,30 @@ describe("createChild", () => {
 
   it("refuses a binding whose parent is not a ticket id", async () => {
     await expect(createChild(world().operator, { ...binding, parent: "../1" }, { title: "t" }, ctx)).rejects.toThrow(/ticket id/);
+  });
+});
+
+/*
+ * The engine starts its own ticket server and says so in full: which process,
+ * with the binding already on its command line, under which name, offering
+ * which tool. An executor only has to hand it over, so it never learns
+ * landrace's CLI or its tool names.
+ */
+describe("childServerFor", () => {
+  const base = { command: "/usr/bin/node", args: ["cli.js", "mcp", "--workflow", "/w/.landrace"] };
+
+  it("puts the binding on the server's own command line", () => {
+    expect(childServerFor(base, { parent: "12", stage: "breakdown", round: 2 })).toEqual({
+      name: CHILD_SERVER_NAME,
+      command: "/usr/bin/node",
+      args: ["cli.js", "mcp", "--workflow", "/w/.landrace", "--child", "12", "--stage", "breakdown", "--round", "2"],
+      tools: [CHILD_TOOL],
+    });
+  });
+
+  it("refuses a binding its command line could not carry as meant", () => {
+    expect(() => childServerFor(base, { parent: "-x", stage: "s", round: 1 })).toThrow(/parent/);
+    expect(() => childServerFor(base, { parent: "1", stage: "-s", round: 1 })).toThrow(/stage/);
+    expect(() => childServerFor(base, { parent: "1", stage: "s", round: 0 })).toThrow(/round/);
   });
 });

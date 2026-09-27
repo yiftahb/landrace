@@ -15,6 +15,7 @@ import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import {
   boardSink,
   buildRuntime,
+  childServerCommand,
   createInterrupt,
   executorFor,
   screenerFor,
@@ -296,75 +297,15 @@ describe("which executor screens", () => {
 });
 
 /**
- * The loop's executor is the only one that may hand a step create_child, and
- * it starts the server as this very process, pointed at an absolute workflow
- * directory — the agent runs in a worktree, so a relative one would resolve
- * somewhere else entirely.
+ * The loop's ticket server is this very process started again as `landrace
+ * mcp`, pointed at an absolute workflow directory: the agent runs in a
+ * worktree, so a relative one would resolve somewhere else entirely.
  */
-describe("the create_child server the loop's executor starts", () => {
-  const workflow: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true }] };
-  const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" } });
-  const registry: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
-  const binding = { parent: "12", stage: "breakdown", round: 2 };
-
-  const withFakeClaude = async <T>(body: (cwd: string) => Promise<T>): Promise<T> => {
-    const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
-    const cwd = await mkdtemp(join(tmpdir(), "lr-argv-"));
-    await copyFile(join(__dirname, "..", "agent", "fake-agent.mjs"), join(bin, "claude"));
-    await chmod(join(bin, "claude"), 0o755);
-    await writeFile(join(cwd, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
-    const path = process.env.PATH;
-    process.env.PATH = `${bin}:${path ?? ""}`;
-    try {
-      return await body(cwd);
-    } finally {
-      process.env.PATH = path;
-    }
-  };
-
-  it("is this process started again as `landrace mcp` on the absolute workflow directory", async () => {
-    const argv = await withFakeClaude(async (cwd) => {
-      const executor = executorFor(config, workflow, registry, () => {}, { dir: "relative/.landrace" });
-      const r = await executor.run("x", {
-        round: 1, cwd, capabilities: ["tickets:create"], child: binding, signal: new AbortController().signal,
-      });
-      return JSON.parse(r.text) as string[];
-    });
-    const server = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string).mcpServers.landrace;
-    expect(server.command).toBe(process.execPath);
-    expect(server.args).toEqual([
-      ...process.execArgv, process.argv[1],
-      "mcp", "--workflow", resolve("relative/.landrace"), "--child", "12", "--stage", "breakdown", "--round", "2",
-    ]);
-  });
-
-  it("is not offered by an executor built without the directory, which refuses the step instead", async () => {
-    await withFakeClaude(async (cwd) => {
-      const executor = executorFor(config, workflow, registry, () => {});
-      await expect(executor.run("x", {
-        round: 1, cwd, capabilities: ["tickets:create"], child: binding, signal: new AbortController().signal,
-      })).rejects.toThrow(/cannot give this step create_child/);
-    });
-  });
-
-  /*
-   * The same wiring for what `agent.plugins` and `agent.mcp` resolved to: an
-   * option the assembler accepts and never hands on is a control that reads as
-   * configured and never runs.
-   */
-  it("hands the step the plugins and servers it was given, beside its child server", async () => {
-    const tools = { plugins: ["superpowers@claude-plugins-official"], mcpServers: { "codebase-memory-mcp": { command: "cbm" } }, mcpTools: {} };
-    const argv = await withFakeClaude(async (cwd) => {
-      const executor = executorFor(config, workflow, registry, () => {}, { dir: "relative/.landrace", tools });
-      const r = await executor.run("x", {
-        round: 1, cwd, capabilities: ["tickets:create"], child: binding, signal: new AbortController().signal,
-      });
-      return JSON.parse(r.text) as string[];
-    });
-    const servers = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string).mcpServers;
-    expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
-    expect(JSON.parse(argv[argv.indexOf("--settings") + 1] as string)).toEqual({
-      enabledPlugins: { "superpowers@claude-plugins-official": true },
+describe("the ticket server a tickets:create step is handed", () => {
+  it("is this process started again as `landrace mcp` on the absolute workflow directory", () => {
+    expect(childServerCommand("relative/.landrace")).toEqual({
+      command: process.execPath,
+      args: [...process.execArgv, process.argv[1], "mcp", "--workflow", resolve("relative/.landrace")],
     });
   });
 });

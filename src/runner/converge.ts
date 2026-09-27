@@ -351,6 +351,7 @@ async function converging(
           ...(deps.screen ? { screen: deps.screen } : {}),
           ...(sandbox ? { sandbox } : {}),
           ...(deps.stepTimeoutMs === undefined ? {} : { defaultTimeoutMs: deps.stepTimeoutMs }),
+          ...(deps.childServer ? { childServer: deps.childServer } : {}),
           log: deps.log,
         });
         finishedOk = result.ok;

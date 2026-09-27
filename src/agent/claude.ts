@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
-import { CAPABILITIES, isTicketId, mayCreateTickets, mayWriteRepo, unknownCapabilities } from "#conventions.js";
+import { CAPABILITIES, mayCreateTickets, mayWriteRepo, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import type { Executor, Logger, StepTools } from "#namespace.js";
 import { containedPath } from "#workflow/load.js";
@@ -19,14 +19,6 @@ export const ARG_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** The CLI's tools that edit a file or run a command: what a read-only step is denied by name. */
 const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
-
-/**
- * The name the bound create_child server runs under, and the one name an
- * allowlisted server may therefore never have — `resolveStepServers` refuses
- * it at startup: two definitions under one key is one of them silently
- * replacing the other, and the one that loses could be the binding.
- */
-const CHILD_SERVER_NAME = "landrace";
 
 function assertArgShape(kind: string, value: string): void {
   if (!ARG_SHAPE.test(value)) {
@@ -113,12 +105,6 @@ export function createClaudeExecutor(opts: {
   bin?: string;
   log?: Logger;
   /**
-   * How to start `landrace mcp` for a step's create_child tool: the node
-   * binary and the arguments up to and including `--workflow <dir>`. Absent,
-   * a step that may create children is refused rather than run without it.
-   */
-  childServer?: { command: string; args: readonly string[] };
-  /**
    * Plugin ids (`name@marketplace`) enabled for every declared run.
    * `--restricted` ignores the operator's own settings, and with them every
    * plugin enabled there, so a read-only step would otherwise have none.
@@ -140,7 +126,6 @@ export function createClaudeExecutor(opts: {
     timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
     bin = "claude",
     log,
-    childServer,
     plugins = [],
     mcpServers = {},
     mcpTools = {},
@@ -201,13 +186,8 @@ export function createClaudeExecutor(opts: {
       if (resume !== undefined) assertArgShape("resume", resume);
       const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
 
-      if (bound && !childServer) {
-        throw new Error("cannot give this step create_child: this executor was not told how to start the landrace MCP server");
-      }
-      if (bound) {
-        if (!isTicketId(bound.parent)) throw new Error(`refused parent ${JSON.stringify(bound.parent)}: not a ticket id`);
-        assertArgShape("stage", bound.stage);
-        if (!Number.isInteger(bound.round) || bound.round < 1) throw new Error(`refused round ${bound.round}`);
+      if (bound && bound.server === undefined) {
+        throw new Error("cannot give this step create_child: the engine handed no server to start for it");
       }
 
       // json output carries session_id; without it a conversation cannot continue.
@@ -233,23 +213,21 @@ export function createClaudeExecutor(opts: {
         args.push("--settings", JSON.stringify({ enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) }));
       }
       const servers: Record<string, unknown> = declared ? { ...mcpServers } : {};
-      if (bound && childServer) {
-        // The binding is argv to a process the agent's CLI starts, not text
-        // in its prompt: nothing the agent says can file a child anywhere
-        // else.
-        servers[CHILD_SERVER_NAME] = {
-          command: childServer.command,
-          args: [...childServer.args, "--child", bound.parent, "--stage", bound.stage, "--round", String(bound.round)],
-        };
+      if (bound?.server) {
+        // The engine's server, as the engine described it: the binding is
+        // already argv to a process the agent's CLI starts, not text in its
+        // prompt, so nothing the agent says can file a child anywhere else.
+        servers[bound.server.name] = { command: bound.server.command, args: bound.server.args };
       }
+      const engineServer = bound?.server?.name;
       // A server whose entry listed tools allows exactly those; one named bare
       // allows every tool it has — which, for a server that can index or
       // delete, is a lot more than reading.
       const allowed = [
         ...Object.keys(servers)
-          .filter((name) => name !== CHILD_SERVER_NAME)
+          .filter((name) => name !== engineServer)
           .flatMap((name) => mcpTools[name]?.map((tool) => `mcp__${name}__${tool}`) ?? [`mcp__${name}`]),
-        ...(bound ? ["mcp__landrace__landrace_create_child"] : []),
+        ...(bound?.server ? bound.server.tools.map((tool) => `mcp__${bound.server?.name}__${tool}`) : []),
       ];
       // Inline JSON rather than a config file: there is no path for the
       // agent's worktree to shadow and nothing to clean up after a crash.

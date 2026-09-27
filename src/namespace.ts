@@ -543,8 +543,13 @@ export interface Executor {
        * turn cannot create children however it is asked to. An executor that
        * cannot expose a bound create_child tool must refuse a run that carries
        * this, never drop it: the step would report children it had no way to make.
+       *
+       * `server` is the engine's own ticket server for this binding, ready to
+       * start: an executor loads it under `server.name` and allows exactly
+       * `server.tools`. Absent, the engine could not say how to start one, and
+       * the run must be refused.
        */
-      child?: ChildBinding;
+      child?: ChildBinding & { server?: RunServer };
       signal: AbortSignal;
     },
   ): Promise<{ text: string; sessionId: string | null }>;
@@ -623,6 +628,22 @@ export interface ChildBinding {
   parent: string;
   stage: string;
   round: number;
+}
+
+/** How to start a process the engine owns: a binary and its arguments, each its own argv element. */
+export interface ServerCommand {
+  command: string;
+  args: string[];
+}
+
+/**
+ * An MCP server the engine hands an executor to start for one run, described
+ * in full so the executor hands it over without knowing what it is: the
+ * command, the name to load it under, and the only tools a run may call on it.
+ */
+export interface RunServer extends ServerCommand {
+  name: string;
+  tools: string[];
 }
 
 /** What the agent may say about a child it creates, and nothing more. */
@@ -831,6 +852,12 @@ export interface ConvergeDeps {
   ctx: Omit<HookContext, "snapshot">;
   log: Logger;
   maxPasses?: number;
+  /**
+   * How to start this process as `landrace mcp` on the workflow directory,
+   * for a `tickets:create` step's ticket server. Absent, such a step is handed
+   * no server and its executor refuses it.
+   */
+  childServer?: ServerCommand;
 }
 
 export interface ConvergeResult {

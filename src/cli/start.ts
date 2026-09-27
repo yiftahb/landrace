@@ -23,6 +23,7 @@ import type {
   RuntimeContext,
   Schedule,
   Screener,
+  ServerCommand,
   StartOptions,
   StepTools,
   UiServer,
@@ -123,6 +124,18 @@ export function boardSink(
 }
 
 /**
+ * This same process, started again as `landrace mcp`: the node binary, its
+ * own flags (type stripping, --import), the CLI entry, and the workflow
+ * directory made absolute so the agent's cwd cannot move it.
+ */
+export function childServerCommand(dir: string): ServerCommand {
+  return {
+    command: process.execPath,
+    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workflow", resolve(dir)],
+  };
+}
+
+/**
  * The one id the engine still resolves by name.
  *
  * A hook module can register executors of its own, and the engine ships one.
@@ -143,13 +156,6 @@ export function executorFor(
      */
     adapter?: { key: string; id: string };
     /**
-     * The workflow directory, given only for the loop's own step executor: it
-     * is what lets a `tickets:create` step be handed its create_child server.
-     * Conversation turns and the screener never create children, so they are
-     * built without it — and a step that asks is then refused, not run bare.
-     */
-    dir?: string;
-    /**
      * The plugins and MCP servers `stepToolsFor` resolved, for the executors
      * that run steps and conversation turns. Never the screener's: it reads
      * attacker-reachable text for a living and needs no tool to do it.
@@ -157,7 +163,7 @@ export function executorFor(
     tools?: StepTools;
   } = {},
 ): Executor {
-  const { dir, tools } = opts;
+  const { tools } = opts;
   const model = config.agent.model;
   const { key, id } = opts.adapter ?? { key: "agent.adapter", id: config.agent.adapter };
   // A hook's executor is constructed by the hook, so the budget cannot reach
@@ -172,15 +178,6 @@ export function executorFor(
       timeoutMs: stepTimeoutMs(workflow),
       log,
       ...(tools === undefined ? {} : { plugins: tools.plugins, mcpServers: tools.mcpServers, mcpTools: tools.mcpTools }),
-      ...(dir === undefined ? {} : {
-        // This same process, started again as `landrace mcp`: the node binary,
-        // its own flags (type stripping, --import), the CLI entry, and the
-        // workflow directory made absolute so the agent's cwd cannot move it.
-        childServer: {
-          command: process.execPath,
-          args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workflow", resolve(dir)],
-        },
-      }),
     });
   }
   const registered = [...registry.executors.keys()];
@@ -411,8 +408,9 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       artifacts: registry.artifacts,
       dispatcher: createDispatcher(registry.post),
       executor: tools === null
-        ? readOnlyExecutor(executorFor(loaded.config, workflow, registry, log, { dir }))
-        : executorFor(loaded.config, workflow, registry, log, { dir, tools }),
+        ? readOnlyExecutor(executorFor(loaded.config, workflow, registry, log))
+        : executorFor(loaded.config, workflow, registry, log, { tools }),
+      childServer: childServerCommand(dir),
       ...(sandbox === null ? {} : { sandbox }),
       ...(screener ? { screen: screener } : {}),
       ctx,

@@ -49,7 +49,7 @@ const argvOf = async (
   opts: {
     capabilities?: readonly string[];
     model?: string;
-    child?: { parent: string; stage: string; round: number };
+    child?: { parent: string; stage: string; round: number; server?: typeof SERVER };
   },
 ): Promise<string[]> => {
   const cwd = withCfg({ out: "{{ARGV_JSON}}" });
@@ -76,8 +76,19 @@ const list = (argv: string[], name: string): string[] => {
 const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
 const PLUGIN = "superpowers@claude-plugins-official";
 const MEMORY = { command: "codebase-memory-mcp", args: [], env: { MEMORY_HOME: "/var/memory" } };
-const CHILD_SERVER = { command: "/usr/bin/node", args: ["/opt/landrace/cli.js", "mcp", "--workflow", "/repo/.landrace"] };
 const BINDING = { parent: "12", stage: "breakdown", round: 2 };
+/**
+ * The engine's own ticket server for BINDING, described in full: this is
+ * what an executor is handed on `child.server` now — the binding is already
+ * on its command line, so an executor builds `mcp__<name>__<tool>` without
+ * knowing landrace's CLI or its tool's name.
+ */
+const SERVER = {
+  name: "landrace",
+  command: "/usr/bin/node",
+  args: ["cli.js", "mcp", "--workflow", "/w", "--child", "12", "--stage", "breakdown", "--round", "2"],
+  tools: ["landrace_create_child"],
+};
 
 const isAlive = (pid: number): boolean => {
   try {
@@ -555,7 +566,7 @@ describe("plugins and MCP servers", () => {
   });
 
   it("hands a conversation turn the same servers, and never the create_child server it holds no binding for", async () => {
-    const argv = await argvOf(createClaudeExecutor({ bin, ...tools, childServer: CHILD_SERVER }), {
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), {
       capabilities: ["tickets:create", "repo:read"],
     });
     expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers)).toEqual(["codebase-memory-mcp"]);
@@ -563,13 +574,13 @@ describe("plugins and MCP servers", () => {
   });
 
   it("gives a read-only step holding create_child both the allowlisted servers and its bound child server", async () => {
-    const argv = await argvOf(createClaudeExecutor({ bin, ...tools, childServer: CHILD_SERVER }), {
-      capabilities: ["tickets:create", "repo:read"], child: BINDING,
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), {
+      capabilities: ["tickets:create", "repo:read"], child: { ...BINDING, server: SERVER },
     });
     const servers = JSON.parse(flag(argv, "--mcp-config") as string).mcpServers;
     expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
     expect(servers["codebase-memory-mcp"]).toEqual(MEMORY);
-    expect(servers.landrace.args).toEqual([...CHILD_SERVER.args, "--child", "12", "--stage", "breakdown", "--round", "2"]);
+    expect(servers.landrace).toEqual({ command: SERVER.command, args: SERVER.args });
     expect(list(argv, "--allowedTools").sort()).toEqual(["mcp__codebase-memory-mcp", "mcp__landrace__landrace_create_child"]);
     expect(flag(argv, "--permission-mode")).toBe("manual");
   });
@@ -581,8 +592,8 @@ describe("plugins and MCP servers", () => {
    * another setting's value — would be allowed, denied or loaded as config.
    */
   it("ends every variadic list at the next flag or at the end of argv, with everything configured", async () => {
-    const argv = await argvOf(createClaudeExecutor({ bin, ...tools, childServer: CHILD_SERVER }), {
-      capabilities: ["tickets:create", "repo:read"], child: BINDING, model: "haiku",
+    const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), {
+      capabilities: ["tickets:create", "repo:read"], child: { ...BINDING, server: SERVER }, model: "haiku",
     });
     // Read the way the CLI reads them, up to the next flag: exactly what each
     // was meant to hold, and not one element more.
@@ -593,18 +604,14 @@ describe("plugins and MCP servers", () => {
 });
 
 describe("the create_child tool", () => {
-  const server = CHILD_SERVER;
   const binding = BINDING;
 
   it("starts the agent with the bound child server when the step may create tickets", async () => {
-    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), {
-      capabilities: ["tickets:create", "repo:read"], child: binding,
+    const argv = await argvOf(createClaudeExecutor({ bin }), {
+      capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: SERVER },
     });
     const config = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string);
-    expect(config.mcpServers.landrace).toEqual({
-      command: "/usr/bin/node",
-      args: [...server.args, "--child", "12", "--stage", "breakdown", "--round", "2"],
-    });
+    expect(config.mcpServers.landrace).toEqual({ command: SERVER.command, args: SERVER.args });
     expect(Object.keys(config.mcpServers)).toEqual(["landrace"]);
     expect(argv[argv.indexOf("--allowedTools") + 1]).toBe("mcp__landrace__landrace_create_child");
     // Exactly the one tool: the flag is variadic, so whatever follows it up
@@ -622,8 +629,8 @@ describe("the create_child tool", () => {
     // `manual` — lets the one
     // allowlisted tool through; `--restricted` and an explicit deny list keep
     // it from editing or running anything while it does.
-    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), {
-      capabilities: ["tickets:create", "repo:read"], child: binding,
+    const argv = await argvOf(createClaudeExecutor({ bin }), {
+      capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: SERVER },
     });
     expect(argv.slice(0, 7)).toEqual(["-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
     const denied = argv.slice(7, argv.indexOf("--mcp-config"));
@@ -632,8 +639,8 @@ describe("the create_child tool", () => {
   });
 
   it("leaves a writing step holding the tool in acceptEdits, with nothing denied", async () => {
-    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), {
-      capabilities: ["tickets:create", "repo:write"], child: binding,
+    const argv = await argvOf(createClaudeExecutor({ bin }), {
+      capabilities: ["tickets:create", "repo:write"], child: { ...binding, server: SERVER },
     });
     expect(argv.slice(0, 5)).toEqual(["-p", "--output-format", "json", "--permission-mode", "acceptEdits"]);
     expect(argv).not.toContain("--restricted");
@@ -645,20 +652,20 @@ describe("the create_child tool", () => {
       "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted",
       "--disallowedTools", ...WRITE_TOOLS, "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ];
-    const declaring = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["tickets:create", "repo:read"] });
+    const declaring = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["tickets:create", "repo:read"] });
     expect(declaring).toEqual(readOnly);
-    const unbound = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["repo:read"], child: binding });
+    const unbound = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"], child: { ...binding, server: SERVER } });
     expect(unbound).toEqual(readOnly);
   });
 
   it("offers nothing to a step that did not declare it, even with a binding", async () => {
-    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["repo:read"], child: binding });
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"], child: { ...binding, server: SERVER } });
     expect(JSON.parse(flag(argv, "--mcp-config") as string)).toEqual({ mcpServers: {} });
     expect(argv).not.toContain("--allowedTools");
   });
 
   it("offers nothing to a conversation turn, which is handed no binding", async () => {
-    const argv = await argvOf(createClaudeExecutor({ bin, childServer: server }), { capabilities: ["tickets:create"] });
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["tickets:create"] });
     expect(JSON.parse(flag(argv, "--mcp-config") as string)).toEqual({ mcpServers: {} });
     expect(argv).not.toContain("--allowedTools");
   });
@@ -668,15 +675,22 @@ describe("the create_child tool", () => {
       .rejects.toThrow(/cannot give this step create_child/);
   });
 
-  it("refuses a binding that could smuggle an argument", async () => {
-    await expect(argvOf(createClaudeExecutor({ bin, childServer: server }), {
-      capabilities: ["tickets:create"], child: { ...binding, stage: "-x" },
-    })).rejects.toThrow(/refused stage/);
-    await expect(argvOf(createClaudeExecutor({ bin, childServer: server }), {
-      capabilities: ["tickets:create"], child: { ...binding, parent: "--workflow" },
-    })).rejects.toThrow(/refused parent/);
-    await expect(argvOf(createClaudeExecutor({ bin, childServer: server }), {
-      capabilities: ["tickets:create"], child: { ...binding, round: 0 },
-    })).rejects.toThrow(/refused round/);
+  /*
+   * The same wiring for what `agent.plugins` and `agent.mcp` resolved to: an
+   * option the assembler accepts and never hands on is a control that reads as
+   * configured and never runs. Moved from tests/cli/start.test.ts, which no
+   * longer builds an executor at all — the engine's server is described once,
+   * by `childServerCommand`, and handed to the executor on the run itself.
+   */
+  it("hands the step the plugins and servers it was given, beside the engine's server", async () => {
+    const executor = createClaudeExecutor({
+      bin, plugins: ["superpowers@claude-plugins-official"], mcpServers: { "codebase-memory-mcp": { command: "cbm" } }, mcpTools: {},
+    });
+    const argv = await argvOf(executor, { capabilities: ["tickets:create"], child: { parent: "12", stage: "breakdown", round: 2, server: SERVER } });
+    const servers = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string).mcpServers;
+    expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
+    expect(JSON.parse(argv[argv.indexOf("--settings") + 1] as string)).toEqual({
+      enabledPlugins: { "superpowers@claude-plugins-official": true },
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
-import type { Effect, Graph, Logger, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
+import type { Effect, Graph, Logger, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   CAPABILITIES,
   durationMs,
@@ -17,6 +17,7 @@ import { screenPrompt } from "#agent/screen.js";
 import { changedSince, worktreeState } from "#agent/worktree.js";
 import { extractJsonBlock } from "#agent/json-block.js";
 import { messageOf } from "#runner/errors.js";
+import { childServerFor } from "#runner/children.js";
 import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
 
 /**
@@ -190,6 +191,8 @@ export async function runStep(opts: {
   log?: Logger;
   /** For a step that names no `timeout`: the workflow's budget. */
   defaultTimeoutMs?: number;
+  /** How to start the engine's ticket server; see ConvergeDeps.childServer. */
+  childServer?: ServerCommand;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
   const prompt = renderPrompt(step.prompt, snapshot, opts.briefing);
@@ -274,6 +277,29 @@ export async function runStep(opts: {
   // read `timeoutMs`, so the run's signal aborts at the limit too.
   const limit = AbortSignal.timeout(timeoutMs);
   const runSignal = AbortSignal.any([signal, limit]);
+
+  // Derived here, from what this call already names, rather than accepted
+  // from the caller: the step's own declaration is the one thing that may put
+  // a binding on the wire, so no caller can hand one to a step that never
+  // asked for it. Computed before the run, and its own verdict rather than an
+  // outage: `childServerFor` throws when the binding is not a shape the
+  // server's own command line could carry as meant, and a binding the engine
+  // cannot carry is a fact about this step and this round, not a transient
+  // failure worth retrying.
+  let childOpt: { child: { parent: string; stage: string; round: number; server?: RunServer } } | Record<string, never> = {};
+  if (mayCreateTickets(step.capabilities)) {
+    try {
+      childOpt = {
+        child: {
+          parent: opts.ticket, stage: stageId, round,
+          ...(opts.childServer ? { server: childServerFor(opts.childServer, { parent: opts.ticket, stage: stageId, round }) } : {}),
+        },
+      };
+    } catch (e) {
+      return { ok: false, kind: "refused", reason: messageOf(e) };
+    }
+  }
+
   let text: string;
   let sessionId: string | null;
   try {
@@ -290,11 +316,7 @@ export async function runStep(opts: {
       ...(step.model === undefined ? {} : { model: step.model }),
       timeoutMs,
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
-      // Derived here, from what this call already names, rather than accepted
-      // from the caller: the step's own declaration is the one thing that may
-      // put a binding on the wire, so no caller can hand one to a step that
-      // never asked for it.
-      ...(mayCreateTickets(step.capabilities) ? { child: { parent: opts.ticket, stage: stageId, round } } : {}),
+      ...childOpt,
     }));
   } catch (e) {
     // The executor itself failed — a limit, quota, an abort signal from a

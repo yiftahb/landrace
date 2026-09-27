@@ -1,6 +1,7 @@
 import { renderPrompt, runStep } from "#runner/step.js";
 import { neutraliseMarkers } from "#conventions.js";
 import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
+import { childServerFor } from "#runner/children.js";
 import type { Executor } from "#namespace.js";
 import type { Snapshot, Step, StepResult } from "#namespace.js";
 
@@ -1111,12 +1112,28 @@ describe("the tickets:create backstop", () => {
     expect(events).not.toContain("step.unchecked");
   });
 
-  it("hands the executor the binding only when the step declared it", async () => {
+  it("hands the executor the binding, and the server to start for it, only when the step declared it", async () => {
     const seen: unknown[] = [];
     const executor: Executor = { id: "x", run: async (_p, o) => { seen.push(o.child); return { text: OK, sessionId: null }; } };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    await runStep({ ...base, executor, childServer, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: ["tickets:create"] } });
     await runStep({ ...base, executor, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: ["tickets:create"] } });
-    await runStep({ ...base, executor, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: [] } });
-    expect(seen).toEqual([{ parent: "1", stage: "s", round: 3 }, undefined]);
+    await runStep({ ...base, executor, childServer, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: [] } });
+    expect(seen).toEqual([
+      { parent: "1", stage: "s", round: 3, server: childServerFor(childServer, { parent: "1", stage: "s", round: 3 }) },
+      { parent: "1", stage: "s", round: 3 },
+      undefined,
+    ]);
+  });
+
+  it("refuses a step with a binding its server's command line could not carry, as a verdict before the run", async () => {
+    const executor: Executor = { id: "x", run: async () => ({ text: OK, sessionId: null }) };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    const r = await runStep({
+      ...base, executor, childServer, ticket: "1", stageId: "-not-a-stage", round: 3,
+      step: { ...base.step, capabilities: ["tickets:create"] },
+    });
+    expect(r).toMatchObject({ ok: false, kind: "refused", reason: expect.stringMatching(/stage/) });
   });
 });
 
