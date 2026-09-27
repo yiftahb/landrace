@@ -35,8 +35,10 @@ interface McpServer {
 type McpEntry = string | { name: string; tools: string[] };
 interface Problem { rule: string; message: string }
 interface ResolvedMcp { servers: Record<string, McpServer>; tools: Record<string, string[]>; problems: Problem[] }
+/** What a write step's commands may reach: the only hosts on the network, and the paths under HOME they may not read. */
+export interface SandboxSettings { hosts: string[]; deny: string[] }
 /** This hook's settings, read out of the `agent:` block the engine passes on unread. */
-export interface ClaudeSettings { model?: string; plugins: string[]; mcp: McpEntry[] }
+export interface ClaudeSettings { model?: string; plugins: string[]; mcp: McpEntry[]; sandbox: SandboxSettings }
 type HookLog = (event: string, data?: Record<string, unknown>) => void;
 
 /**
@@ -169,6 +171,33 @@ function killGroup(child: ChildProcess): void {
 }
 
 /**
+ * Claude Code's own settings for a run that may write, confining every
+ * command it starts, in the keys a live run on 2.1.283 used.
+ *
+ * `autoAllowBashIfSandboxed` is what gives the step Bash at all: under `-p`,
+ * a command the operator had not pre-approved was refused, which is how #19's
+ * build edited files, committed nothing and reported done.
+ * `failIfUnavailable`: no sandbox, no run, never a quiet fallback to none.
+ * `allowUnsandboxedCommands: false`: no per-command way out of it.
+ * The sandbox confines commands and not the Read tool, so each denied path is
+ * a Read rule too — itself and everything under it, since which of the two it
+ * is cannot be told without reading the operator's home.
+ */
+function sandboxSettings({ hosts, deny }: SandboxSettings): Record<string, unknown> {
+  return {
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: false,
+      network: { allowedDomains: hosts, strictAllowlist: true },
+      filesystem: { denyRead: deny },
+    },
+    permissions: { deny: deny.flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]) },
+  };
+}
+
+/**
  * `claude -p` behind the engine's `Executor` contract: a prompt and the run's
  * options in, `{ text, sessionId }` out. Coarse observability instead of
  * session telemetry is the price of being able to swap the agent for another
@@ -195,6 +224,12 @@ export function createClaudeExecutor(opts: {
   mcpServers?: Readonly<Record<string, McpServer>>;
   /** Per server, the only tools a run may call on it; a server absent here allows every tool it has. */
   mcpTools?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * What a run that may write reaches, as `sandboxSettings` below turns it
+   * into Claude Code's own settings. Absent, `readClaudeSettings`' defaults:
+   * no network, and DEFAULT_DENY.
+   */
+  sandbox?: SandboxSettings;
 } = {}): Executor {
   const {
     model,
@@ -204,6 +239,7 @@ export function createClaudeExecutor(opts: {
     plugins = [],
     mcpServers = {},
     mcpTools = {},
+    sandbox = { hosts: [], deny: [...DEFAULT_DENY] },
   } = opts;
 
   const run: Executor["run"] = async (prompt, { round, resume, cwd, capabilities, model: stepModel, timeoutMs: stepTimeoutMs, child: binding, signal }) => {
@@ -246,7 +282,8 @@ export function createClaudeExecutor(opts: {
     // that, for a read-only step, and `--tools ""` removes every built-in
     // tool for the screener. The same live check refused a write attempted
     // under the read-only step's flags. A step that may write keeps all of
-    // them, and the operator's settings with them.
+    // them, and the operator's settings with them — every command it runs
+    // confined by the sandbox (see `sandboxSettings`).
     const restricted = !mayWrite;
     const denyWrites = declared && !mayWrite;
 
@@ -277,15 +314,17 @@ export function createClaudeExecutor(opts: {
     if (denyWrites) args.push("--disallowedTools", ...WRITE_TOOLS);
     if (chosenModel !== undefined) args.push("--model", chosenModel);
     if (resume !== undefined) args.push("--resume", resume);
-    // Plugins and servers are for steps and turns, never the screener: a
-    // plugin that speaks up at session start would be speaking to the one
-    // agent whose only job is to judge a prompt.
-    if (declared && plugins.length) {
-      // One argv element holding the JSON: `--restricted` ignores the
-      // operator's own settings file, so this is the only way a plugin
-      // enabled there reaches a read-only step at all.
-      args.push("--settings", JSON.stringify({ enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) }));
-    }
+    // One `--settings` element holding the JSON, or none. Plugins are for
+    // steps and turns, never the screener: a plugin that speaks up at session
+    // start would be speaking to the one agent whose only job is to judge a
+    // prompt — and `--restricted` ignores the operator's own settings file,
+    // so this is the only way a plugin enabled there reaches a read-only step
+    // at all. The sandbox is for a run that may write: the only one with Bash.
+    const settings = {
+      ...(declared && plugins.length ? { enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) } : {}),
+      ...(mayWrite ? sandboxSettings(sandbox) : {}),
+    };
+    if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     const servers: Record<string, unknown> = declared ? { ...mcpServers } : {};
     if (server) {
       // An allowlisted server under the engine's own name would either be
@@ -684,7 +723,38 @@ export function mcpRedactionValues(servers: Readonly<Record<string, McpServer>>)
 }
 
 /** The keys of `agent:` this hook reads, beside the engine's own two. */
-const SETTING_KEYS = new Set(["adapter", "isolation", "model", "plugins", "mcp"]);
+const SETTING_KEYS = new Set(["adapter", "isolation", "model", "plugins", "mcp", "sandbox"]);
+/** The keys of `agent.sandbox`. */
+const SANDBOX_KEYS = new Set(["hosts", "deny"]);
+
+/**
+ * What a write step's commands may not read when `agent.sandbox.deny` names
+ * nothing: the forge CLI's token, ssh keys, cloud keys, a package registry's
+ * token. A step with Bash is otherwise one `cat` away from each.
+ */
+const DEFAULT_DENY: readonly string[] = ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"];
+
+/**
+ * A host the sandbox matches by name, optionally with its own leading `*.`.
+ * `https://github.com` or `github.com:443` is a host it never matches, and a
+ * step that cannot push finds that out an hour into a build.
+ */
+const HOST_SHAPE = /^(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$/;
+
+/**
+ * A path under HOME: the one form the sandbox and a `Read(...)` rule read
+ * alike. A rule reads `/x` relative to its settings file, so an absolute path
+ * would deny nothing, silently. Not `~/` itself or a trailing "/", and no
+ * parentheses, which would end the rule early.
+ */
+const DENY_SHAPE = /^~\/[^()]*[^()/]$/;
+
+/** Why `value` is not a list of strings shaped like `shape`: that it is no list, or one line per entry, by index. */
+function listProblems(name: string, value: unknown, shape: RegExp, what: string): string[] {
+  if (!Array.isArray(value)) return [`${name} must be a list`];
+  return value.flatMap((v: unknown, i) =>
+    typeof v === "string" && shape.test(v) ? [] : [`${name}[${i}] is ${JSON.stringify(v)}; it must be ${what}`]);
+}
 
 /**
  * This hook's settings out of the `agent:` block, or every reason they
@@ -695,7 +765,7 @@ export function readClaudeSettings(agent: Record<string, unknown>): ClaudeSettin
   for (const key of Object.keys(agent)) {
     if (!SETTING_KEYS.has(key)) problems.push(`agent.${key} is not a setting the claude executor reads`);
   }
-  const { model, plugins = [], mcp = [] } = agent;
+  const { model, plugins = [], mcp = [], sandbox = {} } = agent;
   if (model !== undefined && (typeof model !== "string" || model === "")) problems.push("agent.model must be a model name");
   const pluginsOk = Array.isArray(plugins) && plugins.every((p) => typeof p === "string" && p !== "");
   if (!pluginsOk) problems.push('agent.plugins must be a list of plugin ids, like "name@marketplace"');
@@ -716,11 +786,31 @@ export function readClaudeSettings(agent: Record<string, unknown>): ClaudeSettin
       if (!entryOk(e)) problems.push(`agent.mcp[${i}] must be a server name, or { name, tools } with only those two keys`);
     });
   }
+  // Each key defaults on its own, and a list that is written replaces its
+  // default: what the step is denied is what the file says.
+  let hosts: unknown = [];
+  let deny: unknown = DEFAULT_DENY;
+  if (typeof sandbox !== "object" || sandbox === null || Array.isArray(sandbox)) {
+    problems.push("agent.sandbox must be { hosts, deny }, with only those two keys");
+  } else {
+    for (const key of Object.keys(sandbox)) {
+      if (!SANDBOX_KEYS.has(key)) problems.push(`agent.sandbox.${key} is not a setting the claude executor reads`);
+    }
+    const block = sandbox as { hosts?: unknown; deny?: unknown };
+    hosts = block.hosts ?? [];
+    deny = block.deny ?? DEFAULT_DENY;
+    problems.push(
+      ...listProblems("agent.sandbox.hosts", hosts, HOST_SHAPE, "a host name like github.com or *.npmjs.org, with no scheme, port or path"),
+      ...listProblems("agent.sandbox.deny", deny, DENY_SHAPE, "a path under your home like ~/.ssh: starting with ~/, not ending in /, with no parentheses"),
+    );
+  }
+
   if (problems.length) throw new Error(problems.join("\n"));
   return {
     ...(typeof model === "string" ? { model } : {}),
     plugins: plugins as string[],
     mcp: mcp as McpEntry[],
+    sandbox: { hosts: [...(hosts as string[])], deny: [...(deny as string[])] },
   };
 }
 
@@ -751,6 +841,7 @@ export const claude: ExecutorFactory = defineExecutor({
       plugins: settings.plugins,
       mcpServers: servers,
       mcpTools: tools,
+      sandbox: settings.sandbox,
     });
     return { run: executor.run };
   },

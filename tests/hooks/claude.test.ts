@@ -751,6 +751,83 @@ describe("the create_child tool", () => {
 });
 
 /*
+ * A run that may write gets Bash, confined by Claude Code's own sandbox: its
+ * commands write only in the worktree, reach only the listed hosts, and read
+ * nothing under the denied paths. The JSON's keys are Claude Code's, as a live
+ * run on 2.1.283 used them; spelled out here so a release that renames one
+ * fails this rather than quietly running a step unconfined.
+ */
+describe("a writing step's sandbox", () => {
+  const CONFINED = {
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: false,
+      network: { allowedDomains: [], strictAllowlist: true },
+      filesystem: { denyRead: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] },
+    },
+    permissions: {
+      deny: [
+        "Read(~/.config/gh)", "Read(~/.config/gh/**)", "Read(~/.ssh)", "Read(~/.ssh/**)",
+        "Read(~/.aws)", "Read(~/.aws/**)", "Read(~/.npmrc)", "Read(~/.npmrc/**)",
+      ],
+    },
+  };
+
+  it("confines a writing step with no network and the default deny list when it was given no sandbox", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read", "repo:write"] });
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual(CONFINED);
+    expect(flag(argv, "--permission-mode")).toBe("acceptEdits");
+  });
+
+  it("puts the configured hosts and paths, and the plugins, in one --settings document", async () => {
+    const argv = await argvOf(
+      createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com", "registry.npmjs.org"], deny: ["~/.ssh"] } }),
+      { capabilities: ["repo:read", "repo:write"] },
+    );
+    expect(argv.filter((a) => a === "--settings")).toHaveLength(1);
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({
+      enabledPlugins: { [PLUGIN]: true },
+      sandbox: {
+        ...CONFINED.sandbox,
+        network: { allowedDomains: ["github.com", "registry.npmjs.org"], strictAllowlist: true },
+        filesystem: { denyRead: ["~/.ssh"] },
+      },
+      permissions: { deny: ["Read(~/.ssh)", "Read(~/.ssh/**)"] },
+    });
+  });
+
+  it("sandboxes a writing step that also holds create_child, beside its bound server", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin }), {
+      capabilities: ["tickets:create", "repo:write"], child: { ...BINDING, server: SERVER },
+    });
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual(CONFINED);
+    expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers)).toEqual(["landrace"]);
+    expect(list(argv, "--allowedTools")).toEqual(["mcp__landrace__landrace_create_child"]);
+  });
+
+  /*
+   * Only a run that may write has Bash to confine. A read-only step and the
+   * screener keep, element for element, the command line they had before this
+   * existed, however the executor's sandbox is configured.
+   */
+  it("hands a read-only step and the screener exactly the argv they had before", async () => {
+    const executor = createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com"], deny: ["~/.ssh"] } });
+    expect(await argvOf(executor, { capabilities: ["repo:read"] })).toEqual([
+      "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted",
+      "--disallowedTools", ...WRITE_TOOLS,
+      "--settings", JSON.stringify({ enabledPlugins: { [PLUGIN]: true } }),
+      "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
+    ]);
+    expect(await argvOf(executor, {})).toEqual([
+      "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--tools", "",
+      "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
+    ]);
+  });
+});
+
+/*
  * The factory (`claude.create(ctx)`, exported by the same hook) is what the
  * engine actually builds at startup — `createClaudeExecutor` above is the
  * unbranded constructor it calls internally. This is the one test in the
@@ -768,7 +845,10 @@ describe("the factory's wiring, end to end", () => {
 
     const ctx: ExecutorContext = {
       config: {
-        agent: { adapter: "claude", model: "opus", plugins: ["p@m"], mcp: [{ name: "memory", tools: ["t"] }] },
+        agent: {
+          adapter: "claude", model: "opus", plugins: ["p@m"], mcp: [{ name: "memory", tools: ["t"] }],
+          sandbox: { hosts: ["github.com"] },
+        },
       } as unknown as ExecutorContext["config"],
       secrets: new Map(),
       signal: new AbortController().signal,
@@ -796,6 +876,14 @@ describe("the factory's wiring, end to end", () => {
         memory: { command: "codebase-memory-mcp", args: [] },
       });
       expect(list(argv, "--allowedTools")).toEqual(["mcp__memory__t"]);
+
+      // The read-only run above got the plugins and nothing of the sandbox; a
+      // write run gets both — the configured hosts, and the deny list the
+      // block left out.
+      const write = JSON.parse(flag(await argvOf(executor, { capabilities: ["repo:read", "repo:write"] }), "--settings") as string);
+      expect(write.enabledPlugins).toEqual({ "p@m": true });
+      expect(write.sandbox.network).toEqual({ allowedDomains: ["github.com"], strictAllowlist: true });
+      expect(write.sandbox.filesystem).toEqual({ denyRead: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] });
     } finally {
       process.env.PATH = savedPath;
     }

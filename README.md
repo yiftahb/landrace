@@ -183,7 +183,7 @@ How agents run and where tickets live. Portable workflows keep none of this.
 |---|---|---|
 | `agent.adapter` | — | Which executor runs steps and conversation turns: an id a hook registers with `defineExecutor`. This repository's is `claude`, from `.landrace/hooks/claude.ts` |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` — how the engine prepares the directory a step runs in |
-| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. The Claude hook reads `model`, `plugins` and `mcp`, and refuses any other key |
+| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. The Claude hook reads `model`, `plugins`, `mcp` and `sandbox`, and refuses any other key |
 | `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` — which a GitHub App token needs (e.g. `myapp`), since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
@@ -201,7 +201,7 @@ A step's `capabilities` decide how the Claude hook starts the agent:
 | Step declares | Permission mode | Also |
 |---|---|---|
 | no `repo:write` (read-only) | `manual` | `--restricted`, and `Bash`, `Edit`, `MultiEdit`, `NotebookEdit`, `Write` denied by name |
-| `repo:write` | `acceptEdits` | — |
+| `repo:write` | `acceptEdits` | Bash and every other tool, with each command it runs inside Claude Code's sandbox — see [A write step's sandbox](#a-write-steps-sandbox) |
 | — (the screener, which declares nothing) | `manual` | `--restricted`, `--tools ""` (no built-in tool at all), and an empty strict MCP config |
 
 Neither read-only steps nor the screener run in plan mode. Checked against the real CLI (2.1.282), plan mode refuses every MCP call — the codebase graph and `create_child` alike — and ignores `--model`, running a different model from the one the step asked for — the screener configured as `security.model: haiku` was screening on sonnet. Manual mode with the write and exec tools denied honours both, and refuses a write attempted under it. The worktree diff after the run stays the backstop either way.
@@ -235,6 +235,32 @@ Three things this does not do:
 - **A plugin's hooks still run.** `--restricted` ignores your settings files but not the hooks an enabled plugin ships, so every plugin in `agent.plugins` runs its hooks under read-only steps too. Enable only plugins you would let run there.
 
 `landrace status` runs no step, so it resolves none of this and works without a `.mcp.json`. The screener never gets plugins, servers or tools: it reads attacker-reachable text and needs nothing to judge it. An allowlisted server's `env` and `headers` travel in the agent's argv, where `ps` can read them for as long as the step runs — keep credentials out of servers you allow. Their values, 8 characters or longer, are redacted from landrace's own log like a declared secret's, since an agent that fails to start a server can echo them into the error the loop logs.
+
+### A write step's sandbox
+
+A step declaring `repo:write` runs Bash. In this repository that is `build` and `fix-review`: each merges `origin/main`, installs, runs the tests, commits, and pushes its own branch. The Claude hook starts every command such a step runs inside Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux):
+
+```yaml
+agent:
+  sandbox:
+    hosts: [github.com, registry.npmjs.org]   # the only network a write step reaches
+    deny:  [~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc]
+```
+
+- **Writes** land only in the step's worktree and in the repository's shared `.git`. They never land in your checkout, your home, `.git/hooks` or `.git/config`.
+- **Network** reaches only `hosts`, as written: a host name, or the sandbox's own `*.example.com` wildcard, with no scheme, port or path. With no `hosts`, a write step has no network at all, and cannot fetch or push.
+- **Reads** are refused under each `deny` path. The sandbox refuses them for commands, and a `Read` rule refuses them for the Read tool, which the sandbox does not cover. A path starts with `~/`.
+  - With no `deny`, the four paths above apply.
+  - A list you write replaces them, so keep the ones you still want.
+- **No way out.** If the sandbox cannot start, the step is refused rather than run unconfined, and no command may ask to run outside it.
+- **Strict keys.** `sandbox` takes `hosts` and `deny` and nothing else. A misspelt key is refused at startup, like every other key the hook reads.
+- **Read-only steps and the screener get none of it.** They have no Bash to confine.
+
+What it does not do:
+
+- **It pushes with your git credentials.** `git push` goes through your own credential helper, and a command in the sandbox can ask that helper for the credential (`git credential fill`) as readily as `git push` can. The tracker's token never reaches the agent; your git credential for the listed hosts does. Use one scoped to what a step may push.
+- **Nothing but the prompt keeps a step to its own branch.** With that credential and the host, `git push` can reach any branch on `origin`. Because the shared `.git` is writable, `git update-ref` can move any local branch. So protect `main` on the forge before you run write steps. On GitHub, that is a branch protection rule on `main` that refuses direct pushes.
+- **Your own Claude settings still load.** A write step does not run `--restricted`, so the sandbox and permission lists in your user settings add to these. A host in your `sandbox.network.allowedDomains`, or a command in your `sandbox.excludedCommands`, applies to the step too.
 
 ### Token permissions
 
