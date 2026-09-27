@@ -3,7 +3,7 @@ import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js
 import { mcpRedactionValues } from "#config/mcp.js";
 import { mayCreateTickets, ticketIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
-import type { ChildBinding, ChildTool, RuntimeContext, Tools } from "#namespace.js";
+import type { ChildBinding, ChildTool, ExecutorContext, RuntimeContext, Tools } from "#namespace.js";
 import { createChildMcpServer, createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
 import { createChild } from "#runner/children.js";
@@ -54,6 +54,9 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     // engine's EventName union.
     log: (event, data) => events(event as EventName, data),
   };
+  // An executor factory's own two members, beyond what every hook gets: see
+  // the same construction in `buildRuntime`.
+  const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact };
 
   // Before anything else the hooks might do, including the very next check
   // below: a permission problem has to stop this process before it proves the
@@ -88,7 +91,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * With the same plugins and servers, and without the directory: a turn is
    * never handed a create_child binding, so it never needs the child server.
    */
-  const executor = executorFor(loaded.config, workflow, registry, events, { tools });
+  const executor = await executorFor(loaded.config, workflow, registry, ectx, { tools });
 
   /*
    * And the screener, resolved exactly as the loop's runtime resolves it. §15 screens every agent
@@ -104,7 +107,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * the frame they will be read in — which is the screening §15 describes and
    * the only kind the screener's own prompt is written to do.
    */
-  const screener = screenerFor(loaded.config, workflow, registry, events);
+  const screener = await screenerFor(loaded.config, workflow, registry, ectx);
   const screen = screener ? { screen: screener } : {};
 
   /*

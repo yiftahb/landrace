@@ -306,4 +306,11 @@ describe("screenPrompt", () => {
       expect(seen.indexOf(closer[0])).toBeGreaterThan(seen.indexOf(malicious) + malicious.length - 1);
     });
   });
+
+  it("names no model on the run when it was given none", async () => {
+    const seen: Array<string | undefined> = [];
+    const spy: Executor = { id: "spy", run: async (_p, o) => { seen.push(o.model); return { text: '```json\n{"verdict":"ok"}\n```', sessionId: null }; } };
+    await screenPrompt("x", { executor: spy, model: undefined, timeoutMs: 60_000, signal: new AbortController().signal });
+    expect(seen).toEqual([undefined]);
+  });
 });

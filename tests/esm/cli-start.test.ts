@@ -324,18 +324,6 @@ ${EXECUTOR}`);
     expect(rt.deps.screen?.model).toBe("fake-small");
   });
 
-  /*
-   * haiku is a claude model. A hook's executor asked for it must refuse, so
-   * defaulting to it would block every ticket as screened at its first step
-   * — hours after a start that looked fine.
-   */
-  it("refuses to start when a hook's executor would screen with no security.model", async () => {
-    const { dir } = await fixture({ agent: "fake", screen: true });
-    await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
-${EXECUTOR}`);
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/security\.model[\s\S]*"fake"/);
-  });
-
   /**
    * The sandbox is resolved at startup, not at the first invoke: a loop
    * started outside a repository would otherwise assemble, poll, and fail at
@@ -392,7 +380,7 @@ ${EXECUTOR}`);
       if (!screen) throw new Error("screening was configured and the runtime built no screener");
       // The model on the run, the way screenPrompt asks for it: it is no
       // longer fixed into the executor, where a hook's never heard it.
-      screener = JSON.parse((await screen.executor.run("x", { round: 0, cwd: worktree, model: screen.model, signal })).text) as string[];
+      screener = JSON.parse((await screen.executor.run("x", { round: 0, cwd: worktree, ...(screen.model === undefined ? {} : { model: screen.model }), signal })).text) as string[];
     } finally {
       process.env.PATH = path;
     }
@@ -403,15 +391,17 @@ ${EXECUTOR}`);
       "mcp__codebase-memory-mcp__search_graph", "mcp__codebase-memory-mcp__trace_path",
     ]);
     expect(step).toContain("--settings");
-    // The screener: no plugin, no server, no tool, and the model
-    // `security.model` names — honoured, because it no longer runs in plan mode.
+    // The screener: no plugin, no server, no tool. `security.model` names
+    // none here, so the run names none either — the same claude executor's
+    // own default (`agent.model`) decides, exactly as an unnamed model does
+    // on any other run.
     const after = (argv: string[], name: string): string | undefined => argv[argv.indexOf(name) + 1];
     expect(JSON.parse(after(screener, "--mcp-config") as string)).toEqual({ mcpServers: {} });
     expect(screener).toContain("--strict-mcp-config");
     expect(after(screener, "--tools")).toBe("");
     expect(screener).not.toContain("--settings");
     expect(after(screener, "--permission-mode")).toBe("manual");
-    expect(after(screener, "--model")).toBe("haiku");
+    expect(after(screener, "--model")).toBe("opus");
   });
 });
 

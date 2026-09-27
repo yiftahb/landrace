@@ -57,7 +57,10 @@ ${candidate}
  */
 export async function screenPrompt(
   prompt: string,
-  opts: { executor: Executor; model: string; timeoutMs: number; signal: AbortSignal; log?: Logger },
+  // `model` is required as a key even though its value may be `undefined`:
+  // forgetting it would silently screen on whatever an executor defaults to,
+  // and naming none is a decision, not an omission.
+  opts: { executor: Executor; model: string | undefined; timeoutMs: number; signal: AbortSignal; log?: Logger },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let text: string;
   try {
@@ -66,7 +69,7 @@ export async function screenPrompt(
     // whole run hostage waiting on it.
     const signal = AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs)]);
     ({ text } = await opts.executor.run(PROMPT(prompt, nonce()), {
-      round: 0, model: opts.model, timeoutMs: opts.timeoutMs, signal,
+      round: 0, ...(opts.model === undefined ? {} : { model: opts.model }), timeoutMs: opts.timeoutMs, signal,
     }));
   } catch (e) {
     // An Executor is anything implementing the interface; nothing stops one

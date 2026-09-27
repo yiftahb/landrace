@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { renderMarker } from "#conventions.js";
-import type { Board, LandraceEvent, Registry, Runtime, Schedule, Source, Workflow } from "#namespace.js";
+import type { Board, ExecutorContext, LandraceEvent, Registry, Runtime, Schedule, Source, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import { createDispatcher } from "#runner/effects.js";
 import { buildSnapshot } from "#runner/snapshot.js";
@@ -213,10 +213,13 @@ describe("the step timeout", () => {
 
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" } });
     const registry: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
+    const ctx: ExecutorContext = {
+      config, secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: ".", redact: () => {},
+    };
     const path = process.env.PATH;
     process.env.PATH = `${bin}:${path ?? ""}`;
     try {
-      const executor = executorFor(config, workflow({ stepTimeout: "1s" }), registry, () => {});
+      const executor = await executorFor(config, workflow({ stepTimeout: "1s" }), registry, ctx);
       await expect(
         executor.run("x", { round: 1, cwd, signal: new AbortController().signal }),
       ).rejects.toThrow(/exceeded 1000ms/);
@@ -227,72 +230,77 @@ describe("the step timeout", () => {
 });
 
 /**
- * Screening is a security control (§15), and it was always run by the engine's
- * own claude executor: a workflow whose hook registers an executor screened
- * with something the operator never configured — silently, since nothing said
- * so — or, with no claude on the machine, not at all.
- *
- * Then it followed `agent.adapter` and nothing else, so screening on anything
- * but the executor that runs the steps meant moving the steps too; and a hook
- * executor never heard `security.model`, which was fixed into the engine's
- * own executor when it was built.
+ * Screening is the engine's (§15), and which executor answers for it is the
+ * operator's: `security.adapter`, else `agent.adapter`. The model is theirs
+ * too, and has no default — a model name is a provider's word, and the
+ * engine names no provider.
  */
 describe("which executor screens", () => {
   const workflow: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true }] };
-  const noop = () => {};
   const empty: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
+  const ctx = (): ExecutorContext => ({
+    config: runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } }),
+    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: ".", redact: () => {},
+  });
+  const plain = (id: string): Registry => ({
+    ...empty, executors: new Map([[id, defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) })]]),
+  });
 
-  const withExecutor = (id: string): Registry => {
-    const executor = defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) });
-    return { ...empty, executors: new Map([[id, executor]]) };
-  };
-
-  it("screens with the hook's executor when agent.adapter names one, asking it for security.model", () => {
-    const registry = withExecutor("fake");
+  it("screens with the executor agent.adapter names, asking it for security.model", async () => {
+    const registry = plain("fake");
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, security: { model: "small" } });
-    expect(screenerFor(config, workflow, registry, noop)).toEqual({ executor: registry.executors.get("fake"), model: "small" });
+    expect(await screenerFor(config, workflow, registry, ctx())).toEqual({ executor: registry.executors.get("fake"), model: "small" });
   });
 
-  it("screens with security.adapter's executor while the steps stay on agent.adapter", () => {
-    const registry = withExecutor("local");
-    const config = runtimeConfigSchema.parse({
-      version: 1, agent: { adapter: "claude" }, security: { adapter: "local", model: "llama" },
-    });
-    expect(screenerFor(config, workflow, registry, noop)).toEqual({ executor: registry.executors.get("local"), model: "llama" });
-    expect(executorFor(config, workflow, registry, noop).id).toBe("claude");
+  it("names no model when security.model names none, so the executor's own default decides", async () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } });
+    expect((await screenerFor(config, workflow, plain("fake"), ctx()))?.model).toBeUndefined();
   });
 
-  it("refuses a security.adapter no executor answers to, naming the key", () => {
-    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, security: { adapter: "gpt-9" } });
-    expect(() => screenerFor(config, workflow, empty, noop)).toThrow(/security\.adapter "gpt-9"/);
+  it("screens with security.adapter's executor while the steps stay on agent.adapter", async () => {
+    const registry: Registry = { ...empty, executors: new Map([...plain("local").executors, ...plain("fake").executors]) };
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, security: { adapter: "local" } });
+    expect((await screenerFor(config, workflow, registry, ctx()))?.executor).toBe(registry.executors.get("local"));
+    expect((await executorFor(config, workflow, registry, ctx())).id).toBe("fake");
   });
 
-  it("still refuses an agent.adapter no executor answers to, naming the key", () => {
-    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" } });
-    expect(() => executorFor(config, workflow, empty, noop)).toThrow(/agent\.adapter "gpt-9"/);
-    expect(() => screenerFor(config, workflow, empty, noop)).toThrow(/agent\.adapter "gpt-9"/);
+  it("refuses an adapter no executor answers to, naming the key and the ids it could have used", async () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, security: { adapter: "gpt-9" } });
+    await expect(screenerFor(config, workflow, plain("fake"), ctx())).rejects.toThrow(/security\.adapter "gpt-9"[\s\S]*"fake"/);
   });
 
-  it("asks the engine's own claude for haiku when security.model names none", () => {
-    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude", model: "opus" } });
-    expect(screenerFor(config, workflow, empty, noop)?.model).toBe("haiku");
-  });
-
-  it("refuses to screen with a hook's executor when security.model names no model for it", () => {
-    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, security: { adapter: "local" } });
-    expect(() => screenerFor(config, workflow, withExecutor("local"), noop)).toThrow(/security\.model[\s\S]*"local"/);
-  });
-
-  // Told apart by where it came from, never by its id: a hook may register
-  // "claude" too, and it is still not the engine's, so haiku is still a guess.
-  it("refuses a hook's executor registered as \"claude\" when security.model names no model", () => {
-    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" } });
-    expect(() => screenerFor(config, workflow, withExecutor("claude"), noop)).toThrow(/security\.model[\s\S]*"claude"/);
-  });
-
-  it("builds no screener when screening is off", () => {
+  it("builds no screener when screening is off", async () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" }, security: { screen: false } });
-    expect(screenerFor(config, workflow, empty, noop)).toBeUndefined();
+    expect(await screenerFor(config, workflow, empty, ctx())).toBeUndefined();
+  });
+
+  /*
+   * A factory builds its executor from the runtime's context: its settings,
+   * its log, and the secrets it must keep out of that log. Built once per
+   * context, so a runtime whose steps and screener name the same executor
+   * reads its settings, and registers its secrets, once.
+   */
+  it("builds a factory's executor once per context, however many roles name it", async () => {
+    let made = 0;
+    const factory = defineExecutor({
+      id: "made",
+      create: async () => { made += 1; return { run: async () => ({ text: "", sessionId: null }) }; },
+    });
+    const registry: Registry = { ...empty, executors: new Map([["made", factory]]) };
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "made" } });
+    const shared = ctx();
+    const step = await executorFor(config, workflow, registry, shared);
+    const screener = await screenerFor(config, workflow, registry, shared);
+    expect(made).toBe(1);
+    expect(screener?.executor).toBe(step);
+    expect(step.id).toBe("made");
+  });
+
+  it("says which executor could not start, and why", async () => {
+    const factory = defineExecutor({ id: "made", create: async () => { throw new Error("agent.mcp names nothing it can find"); } });
+    const registry: Registry = { ...empty, executors: new Map([["made", factory]]) };
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "made" } });
+    await expect(executorFor(config, workflow, registry, ctx())).rejects.toThrow(/executor "made" could not start: agent\.mcp names nothing it can find/);
   });
 });
 

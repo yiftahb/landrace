@@ -11,6 +11,7 @@
 import type {
   ArtifactHook,
   Executor,
+  ExecutorFactory,
   HookKind,
   Operator,
   PostHook,
@@ -58,7 +59,11 @@ export function hookKindOf(value: unknown): HookKind | null {
 export const definePreHook = (hook: PreHook): PreHook => brand("pre", hook);
 export const definePostHook = (hook: PostHook): PostHook => brand("post", hook);
 export const defineArtifactHook = (hook: ArtifactHook): ArtifactHook => brand("artifact", hook);
-export const defineExecutor = (executor: Executor): Executor => brand("executor", executor);
+export function defineExecutor(executor: Executor): Executor;
+export function defineExecutor(factory: ExecutorFactory): ExecutorFactory;
+export function defineExecutor(value: Executor | ExecutorFactory): Executor | ExecutorFactory {
+  return brand("executor", value);
+}
 export const defineSource = (source: Source): Source => brand("source", source);
 export const defineOperator = (operator: Operator): Operator => brand("operator", operator);
 export const definePreflight = (preflight: Preflight): Preflight => brand("preflight", preflight);

@@ -39,9 +39,9 @@ export const runtimeConfigSchema = z.object({
    * provider from the agent it guards is a second opinion rather than the
    * same model reading its own attack. `model` is asked of it on every run.
    *
-   * No default here: `haiku` is right for the engine's own claude executor
-   * and nothing else, so `screenerFor` supplies it there and refuses to
-   * start a hook's executor screening without one.
+   * `model` has no default: a model name is a provider's word, and the
+   * engine names no provider. Absent, the screening run names none and the
+   * executor's own default decides.
    */
   security: z
     .object({ screen: z.boolean().default(true), adapter: z.string().min(1).optional(), model: z.string().min(1).optional() })

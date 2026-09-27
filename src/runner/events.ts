@@ -1,4 +1,4 @@
-import type { EventName, LandraceEvent, Logger } from "#namespace.js";
+import type { EventName, LandraceEvent, RedactingLogger } from "#namespace.js";
 
 /**
  * Printed only under `--debug` (spec §14).
@@ -60,7 +60,7 @@ export function createLogger(opts: {
    */
   redactValues?: string[];
   sink?: (e: LandraceEvent) => void;
-} = {}): Logger {
+} = {}): RedactingLogger {
   // Refused, not skipped: skipping would leave a real secret unredacted, and
   // accepting would shred the log. The value itself is never named in the
   // error, only its position. Trimmed once, here, and that trimmed form is
@@ -80,11 +80,21 @@ export function createLogger(opts: {
   });
   const sink = opts.sink ?? ((e: LandraceEvent) => console.log(JSON.stringify(e)));
 
-  return (name, data = {}) => {
+  const log = ((name, data = {}) => {
     // Agent output is voluminous and carries attacker-influenced text. It is
     // printed only on request, and it is data — never interpreted. The same
     // goes for the per-pass snapshot, which quotes the issue body verbatim.
     if (DEBUG_ONLY.has(name) && !opts.debug) return;
     sink({ name, ...(redactValue(data, secrets) as Record<string, unknown>) });
+  }) as RedactingLogger;
+  // After construction, for what an executor's setup turns up. Skipped rather
+  // than refused below the minimum: a server env of "1" is a setting, not a
+  // secret, and refusing it would stop the process over nothing.
+  log.redact = (values) => {
+    for (const value of values) {
+      const trimmed = value.trim();
+      if (trimmed.length >= MIN_SECRET_LENGTH && !secrets.includes(trimmed)) secrets.push(trimmed);
+    }
   };
+  return log;
 }

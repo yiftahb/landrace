@@ -69,3 +69,13 @@ describe("createLogger", () => {
     expect(loud).toHaveLength(1);
   });
 });
+
+describe("a logger told about more secrets after it was made", () => {
+  it("redacts them from then on, and skips a value too short to redact by rather than refusing", () => {
+    const seen: unknown[] = [];
+    const log = createLogger({ sink: (e) => seen.push(e) });
+    log.redact(["a-server-token-1234", "1"]);
+    log("step.started", { note: "token a-server-token-1234 and digit 1" });
+    expect(seen).toEqual([{ name: "step.started", note: "token [redacted] and digit 1" }]);
+  });
+});

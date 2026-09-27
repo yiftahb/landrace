@@ -8,6 +8,7 @@ import type {
   ArtifactHook,
   Claim,
   Executor,
+  ExecutorFactory,
   HookModule,
   Operator,
   PostHook,
@@ -32,7 +33,7 @@ export function buildRegistry(modules: HookModule[]): Registry {
   const post: PostHook[] = [];
   const artifacts: ArtifactHook[] = [];
   const preflights: Preflight[] = [];
-  const executors = new Map<string, Executor>();
+  const executors = new Map<string, Executor | ExecutorFactory>();
   const preIds = new Map<string, Claim>();
   const postIds = new Map<string, Claim>();
   const executorIds = new Map<string, Claim>();
@@ -104,7 +105,7 @@ export function buildRegistry(modules: HookModule[]): Registry {
           break;
         }
         case "executor": {
-          const hook = value as Executor;
+          const hook = value as Executor | ExecutorFactory;
           claimed(executorIds, "executors", { id: hook.id, from: module.specifier });
           executors.set(hook.id, hook);
           break;

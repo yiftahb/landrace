@@ -12,11 +12,12 @@ import type {
   BuildOptions,
   EventName,
   Executor,
+  ExecutorContext,
   GotoDeps,
   GotoPath,
   LandraceEvent,
-  Logger,
   Problem,
+  RedactingLogger,
   Registry,
   Runtime,
   RuntimeConfig,
@@ -136,6 +137,16 @@ export function childServerCommand(dir: string): ServerCommand {
 }
 
 /**
+ * Per runtime context, the executors already built, so each factory runs
+ * once — a runtime whose steps and screener name the same executor reads its
+ * settings, and registers its secrets, once. Keyed by the context object
+ * itself rather than by anything in it: `executorFor` and `screenerFor` are
+ * called from more than one process (the loop, `landrace mcp`), each with its
+ * own context, and there is no other key that would not conflate them.
+ */
+const built = new WeakMap<ExecutorContext, Map<string, Promise<Executor>>>();
+
+/**
  * The one id the engine still resolves by name.
  *
  * A hook module can register executors of its own, and the engine ships one.
@@ -143,11 +154,11 @@ export function childServerCommand(dir: string): ServerCommand {
  * happily and then fails at its first invocation — hours in, one paid tick at
  * a time, on a ticket that has already been moved.
  */
-export function executorFor(
+export async function executorFor(
   config: RuntimeConfig,
   workflow: Workflow,
   registry: Registry,
-  log: Logger,
+  ctx: ExecutorContext,
   opts: {
     /**
      * The id to resolve instead of `agent.adapter`, and the key it came from,
@@ -162,29 +173,64 @@ export function executorFor(
      */
     tools?: StepTools;
   } = {},
-): Executor {
-  const { tools } = opts;
-  const model = config.agent.model;
+): Promise<Executor> {
   const { key, id } = opts.adapter ?? { key: "agent.adapter", id: config.agent.adapter };
-  // A hook's executor is constructed by the hook, so the budget cannot reach
-  // it: the engine has a number and no way to hand it over. Enforcing one out
-  // here would mean holding a stopwatch over somebody else's subprocess with
-  // no way to kill it — so a hook owns its own timeout, and says so.
-  const fromHook = registry.executors.get(id);
-  if (fromHook) return fromHook;
+  const hook = registry.executors.get(id);
+
+  // Only a factory's build is cached — and it has to be, because `create` is
+  // async and may only be run once (§ its own doc: "the settings, the log,
+  // the secrets" are registered once). A plain hook Executor is already
+  // built, and the engine's own `claude` branch is rebuilt on every call
+  // because it still varies by `tools`: the screener's own call never passes
+  // any, so caching it under the same id as the step's would either hand the
+  // screener the step's tools or leave the step without them, whichever call
+  // happened to land first. Task 5 deletes this branch and `tools` with it,
+  // and the cache becomes the only path.
+  if (hook && "create" in hook) {
+    const cache = built.get(ctx) ?? new Map<string, Promise<Executor>>();
+    built.set(ctx, cache);
+    const cached = cache.get(id);
+    if (cached) return cached;
+    const made = (async () => {
+      try {
+        const { run } = await hook.create(ctx);
+        return { id, run };
+      } catch (e) {
+        throw new Error(`executor "${id}" could not start: ${messageOf(e)}`);
+      }
+    })();
+    cache.set(id, made);
+    return made;
+  }
+  if (hook) return hook;
   if (id === "claude") {
+    // The engine's own claude executor, until Task 5 moves it into a hook.
+    const model = config.agent.model;
+    // A hook's executor is constructed by the hook, so the budget cannot reach
+    // it: the engine has a number and no way to hand it over. Enforcing one
+    // out here would mean holding a stopwatch over somebody else's subprocess
+    // with no way to kill it — so a hook owns its own timeout, and says so.
     return createClaudeExecutor({
       ...(model === undefined ? {} : { model }),
       timeoutMs: stepTimeoutMs(workflow),
-      log,
-      ...(tools === undefined ? {} : { plugins: tools.plugins, mcpServers: tools.mcpServers, mcpTools: tools.mcpTools }),
+      log: ctx.log,
+      ...(opts.tools === undefined ? {} : { plugins: opts.tools.plugins, mcpServers: opts.tools.mcpServers, mcpTools: opts.tools.mcpTools }),
     });
   }
+  throw new Error(unknownExecutor(key, id, registry));
+}
+
+const unknownExecutor = (key: string, id: string, registry: Registry): string => {
   const registered = [...registry.executors.keys()];
-  throw new Error(
-    `${key} "${id}" names no executor: the engine ships "claude", and the ` +
-    `loaded hooks register ${registered.length ? registered.map((id) => `"${id}"`).join(", ") : "none"}`,
-  );
+  return `${key} "${id}" names no executor: the engine ships "claude", and the ` +
+    `loaded hooks register ${registered.length ? registered.map((r) => `"${r}"`).join(", ") : "none"}`;
+};
+
+/** The id a read-only runtime would run steps with, checked but never built: `landrace status` starts no agent. */
+export function registeredExecutor(config: RuntimeConfig, registry: Registry): string {
+  const id = config.agent.adapter;
+  if (!registry.executors.has(id) && id !== "claude") throw new Error(unknownExecutor("agent.adapter", id, registry));
+  return id;
 }
 
 /**
@@ -195,27 +241,17 @@ export function executorFor(
  * claude executor unconditionally, so a workflow whose hook registers an
  * executor screened with something the operator never configured — or, with
  * no claude on the machine, did not screen at all while reporting that it
- * did. Then it followed `agent.adapter` alone, and `security.model` was fixed
- * into the engine's own executor at construction, where a hook's executor
- * never heard it. §15 calls screening a security control, and a security
- * control that silently ignores its configuration is the kind this codebase
- * refuses to ship: the model now travels on every run (`Screener`).
+ * did. §15 calls screening a security control, and a security control that
+ * silently ignores its configuration is the kind this codebase refuses to
+ * ship: the model now travels on every run (`Screener`), and it has no
+ * default — a model name is a provider's word, and the engine names no
+ * provider.
  */
-export function screenerFor(config: RuntimeConfig, workflow: Workflow, registry: Registry, log: Logger): Screener | undefined {
+export async function screenerFor(config: RuntimeConfig, workflow: Workflow, registry: Registry, ctx: ExecutorContext): Promise<Screener | undefined> {
   if (!config.security.screen) return undefined;
   const adapter = config.security.adapter;
-  const executor = executorFor(config, workflow, registry, log, adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } });
-  // haiku is a claude model, and a hook's executor asked for one it cannot
-  // run must refuse: a default here would start cleanly and then block every
-  // ticket as screened at its first step.
-  const fromHook = registry.executors.get(executor.id) === executor;
-  const model = config.security.model ?? (fromHook ? undefined : "haiku");
-  if (model === undefined) {
-    throw new Error(
-      `security.model names no model, and "${executor.id}" is a hook's executor: set security.model to one it can run`,
-    );
-  }
-  return { executor, model };
+  const executor = await executorFor(config, workflow, registry, ctx, adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } });
+  return { executor, model: config.security.model };
 }
 
 /**
@@ -260,15 +296,15 @@ export async function stepToolsFor(config: RuntimeConfig, dir: string): Promise<
 }
 
 /**
- * The step executor of a runtime built only to read. Still resolved through
- * `executorFor`, so `status` refuses an adapter nothing answers to exactly as
- * `start` does; it just never runs — a step run without the tools its
- * configuration hands it is a step run bare, and nothing that reads should be
- * able to start one.
+ * The step executor of a runtime built only to read. Its id is still checked
+ * against the registry through `registeredExecutor`, so `status` refuses an
+ * adapter nothing answers to exactly as `start` does; it just never builds
+ * one — a factory's `create` can read `.mcp.json` and run `git rev-parse`,
+ * and `landrace status` must make neither write nor call while only reading.
  */
-function readOnlyExecutor(executor: Executor): Executor {
+function readOnlyExecutor(id: string): Executor {
   return defineExecutor({
-    id: executor.id,
+    id,
     run: () => Promise.reject(new Error("this runtime was built to read tickets, not to run steps")),
   });
 }
@@ -317,7 +353,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // operator believing the log is clean when it is not. An allowlisted
   // server's env and header values join them — they travel in the agent's
   // argv and can come back in its stderr.
-  const log = createLogger({
+  const log: RedactingLogger = createLogger({
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
     redactValues: [...redactionValues(loaded), ...(tools === null ? [] : mcpRedactionValues(tools.mcpServers))],
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
@@ -359,6 +395,11 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     // engine's EventName union.
     log: (event, data) => log(event as EventName, data),
   };
+  // An executor factory's own two members, beyond what every hook gets: where
+  // its repository is, and a way to keep what its setup turns up out of every
+  // log line from here on — an MCP server's env, say, which the configuration
+  // never named and `redactionValues` above never saw.
+  const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact };
 
   /*
    * §11.8, the one rule that cannot be answered until the hooks are loaded —
@@ -389,7 +430,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // in this function is: a loop started outside a repository would otherwise
   // assemble, run, and fail at its first paid step.
   const sandbox = await sandboxFor(loaded.config, dir);
-  const screener = screenerFor(loaded.config, workflow, registry, log);
+  const screener = opts.readOnly ? undefined : await screenerFor(loaded.config, workflow, registry, ectx);
 
   return {
     source: registry.source,
@@ -408,8 +449,8 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       artifacts: registry.artifacts,
       dispatcher: createDispatcher(registry.post),
       executor: tools === null
-        ? readOnlyExecutor(executorFor(loaded.config, workflow, registry, log))
-        : executorFor(loaded.config, workflow, registry, log, { tools }),
+        ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
+        : await executorFor(loaded.config, workflow, registry, ectx, { tools }),
       childServer: childServerCommand(dir),
       ...(sandbox === null ? {} : { sandbox }),
       ...(screener ? { screen: screener } : {}),

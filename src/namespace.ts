@@ -472,12 +472,11 @@ export interface ArtifactHook extends PostHook {
 /**
  * What screens a prompt before an agent sees it: the executor
  * `security.adapter` (or else `agent.adapter`) names, and the model
- * `security.model` asks it for — on every run, where the Executor contract
- * makes a named model binding.
+ * `security.model` names, or none — the executor's own default then decides.
  */
 export interface Screener {
   executor: Executor;
-  model: string;
+  model: string | undefined;
 }
 
 /**
@@ -560,6 +559,32 @@ export interface Executor {
  * or without — a ticket to build a snapshot for.
  */
 export type RuntimeContext = Omit<HookContext, "ticket" | "snapshot">;
+
+/**
+ * What an executor factory is built with: the context every hook gets, plus
+ * the two things only an executor needs. `dir` is the workflow directory the
+ * runtime was built from, which is where a factory finds its repository.
+ * `redact` keeps values out of every log line from now on — an executor's
+ * setup can hold credentials the configuration never named, such as an MCP
+ * server's env, and the log must not print them. A value shorter than the
+ * logger will redact by is skipped, never refused: it would match everywhere.
+ */
+export type ExecutorContext = RuntimeContext & {
+  dir: string;
+  redact(values: readonly string[]): void;
+};
+
+/**
+ * An executor a hook builds from the runtime's context rather than at import.
+ * `id` is readable before anything is built, so the loader's duplicate rule
+ * and the adapter lookup still work at load. `create` runs once per runtime,
+ * at startup, so a setting it cannot use stops the process before the first
+ * paid step rather than at it.
+ */
+export interface ExecutorFactory {
+  id: string;
+  create(ctx: ExecutorContext): Promise<Pick<Executor, "run">>;
+}
 
 /**
  * The engine's *when* for a permission problem, tracker-agnostic by
@@ -715,7 +740,7 @@ export interface Registry {
   source: Source | null;
   /** Optional. With none loaded, the MCP create and update tools say so rather than crashing or silently doing nothing. */
   operator: Operator | null;
-  executors: Map<string, Executor>;
+  executors: Map<string, Executor | ExecutorFactory>;
 }
 
 /** One imported module: what the workflow called it, and what it exported. */
@@ -761,6 +786,9 @@ export interface LandraceEvent {
 }
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
+
+/** The engine's logger, which can be told about more secrets after it was made. */
+export type RedactingLogger = Logger & { redact(values: readonly string[]): void };
 
 export type LockKind = "tick" | "conversation" | "execution" | "goto";
 
