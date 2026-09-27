@@ -125,10 +125,10 @@ export async function sandboxBefore(
  * What the agent did to the worktree it was given that it never declared it
  * could, or null if it behaved.
  *
- * Asked of the file system, not of the flags we passed. An executor is free to
- * ignore `capabilities` — one registered by a hook module never saw our CLI
- * flags in the first place — so this is the half of the capability that the
- * engine actually enforces rather than delegating to the agent.
+ * Asked of the file system, not of any flags. An executor is free to ignore
+ * `capabilities` — the flags that honour them are its own, never the
+ * engine's — so this is the half of the capability that the engine actually
+ * enforces rather than delegating to the agent.
  */
 export async function sandboxTrespass(
   sandbox: { path: string } | undefined,
@@ -297,8 +297,9 @@ export async function runStep(opts: {
   // Every run gets a limit. The step's own, when it names one (checked at
   // load, so `durationMs` answers), else the workflow's, else the engine's.
   const timeoutMs = (step.timeout === undefined ? null : durationMs(step.timeout)) ?? fallbackMs;
-  // And the engine enforces it: an executor registered by a hook may never
-  // read `timeoutMs`, so the run's signal aborts at the limit too.
+  // And signals it: an executor may never read `timeoutMs`, so the run's
+  // signal aborts at the limit too. Nothing races the run itself — one that
+  // honours neither holds its ticket until it returns.
   const limit = AbortSignal.timeout(timeoutMs);
   const runSignal = AbortSignal.any([signal, limit]);
 

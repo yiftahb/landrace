@@ -164,9 +164,10 @@ function killGroup(child: ChildProcess): void {
 }
 
 /**
- * The agent contract is four arguments wide on purpose: prompt in,
- * {text, sessionId} out. Coarse observability instead of session telemetry is
- * the price of being able to swap the agent for a different one.
+ * `claude -p` behind the engine's `Executor` contract: a prompt and the run's
+ * options in, `{ text, sessionId }` out. Coarse observability instead of
+ * session telemetry is the price of being able to swap the agent for another
+ * hook.
  */
 export function createClaudeExecutor(opts: {
   model?: string;

@@ -449,6 +449,17 @@ export interface Screener {
 /**
  * The execution plane. Not a hook: invoking an agent produces new information,
  * and an effect hook that produced information would need tracker credentials.
+ *
+ * What every executor owes the engine, beside what each option below asks:
+ * - never hand a step or a turn the operator's own `landrace` MCP server: its
+ *   tools create, update and move tickets, and a step holding them could move
+ *   its own;
+ * - run in `cwd` when given: the engine's read-only check inspects that
+ *   directory, and a run anywhere else defeats it;
+ * - never pass the engine's process environment through to the agent: a
+ *   secret can come from the shell the engine was started in, and the agent
+ *   must not hold tracker credentials;
+ * - stop when `signal` aborts.
  */
 export interface Executor {
   id: string;
@@ -457,6 +468,7 @@ export interface Executor {
     opts: {
       round: number;
       resume?: string;
+      /** Where to run — a step's worktree, when steps are isolated. See the contract above. */
       cwd?: string;
       /**
        * The model the *step* asked for — or, on the screener's run,
@@ -486,9 +498,9 @@ export interface Executor {
        * How long this run may take, in milliseconds. Always present: the
        * step's own `timeout`, else the workflow's `budget.stepTimeout`, else
        * the engine's default, and the screening run gets the workflow's. The
-       * engine also aborts `signal` when it passes, so a run ends at the limit
-       * whether or not the executor reads this. An executor must stop at it
-       * all the same: the abort only tells it to.
+       * engine also aborts `signal` when it passes, and that is all it does:
+       * it does not stop waiting for the run. An executor that honours neither
+       * this nor `signal` holds its ticket until the process dies.
        */
       timeoutMs?: number;
       /**
