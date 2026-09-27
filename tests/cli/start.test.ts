@@ -192,8 +192,8 @@ describe("the step timeout", () => {
     version: 1,
     name: "t",
     stages: [{ id: "a", entry: true }],
-    ...(budget === undefined ? {} : { budget }),
-  } as Workflow);
+    ...(budget === undefined ? {} : { budget: budget as NonNullable<Workflow["budget"]> }),
+  });
 
   /**
    * The wiring itself, asked of a real subprocess rather than of a field.

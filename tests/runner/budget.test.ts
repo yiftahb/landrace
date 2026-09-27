@@ -6,8 +6,8 @@ describe("the step timeout", () => {
     version: 1,
     name: "t",
     stages: [{ id: "a", entry: true }],
-    ...(budget === undefined ? {} : { budget }),
-  } as Workflow);
+    ...(budget === undefined ? {} : { budget: budget as NonNullable<Workflow["budget"]> }),
+  });
 
   it("reads the workflow's own budget", () => {
     expect(stepTimeoutMs(workflow({ stepTimeout: "10m" }))).toBe(600_000);

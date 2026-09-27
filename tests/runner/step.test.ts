@@ -277,6 +277,35 @@ describe("runStep", () => {
     expect(r).toEqual({ ok: false, kind: "unavailable", reason: "the agent ran past its 50ms limit" });
   });
 
+  /*
+   * The other half of the same attribution, and the case `!signal.aborted`
+   * exists for: the run's own limit can genuinely have elapsed (`limit.aborted`
+   * is honestly true) at the very moment the caller also cancels for its own
+   * reason — an MCP client disconnecting the instant a two-hour build's budget
+   * also runs out, say. Reporting "ran past its limit" there would not be
+   * false, but it would bury the caller's own reason under a coincidence, so
+   * the caller wins whenever its own signal is part of why this rejected.
+   */
+  it("attributes the abort to the caller even when the run's own limit had also genuinely elapsed", async () => {
+    const controller = new AbortController();
+    const stoppedByCaller: Executor = {
+      id: "caller-stop",
+      run: (_p, o) => new Promise((_, reject) => {
+        o.signal.addEventListener("abort", () => {
+          // The caller's own cancellation, arriving the instant the run's
+          // internal limit fires too — not staged from outside, so this is
+          // never a race against runStep's own awaits (see the test above).
+          controller.abort();
+          reject(new Error("stopped by the caller"));
+        });
+      }),
+    };
+    const r = await run("", {
+      step: { prompt: "go" }, executor: stoppedByCaller, defaultTimeoutMs: 20, signal: controller.signal,
+    });
+    expect(r).toEqual({ ok: false, kind: "unavailable", reason: "stopped by the caller" });
+  });
+
   it("reports an agent failure as a rejected step rather than throwing", async () => {
     const boom: Executor = { id: "b", run: async () => { throw new Error("no quota"); } };
     const r = await run("", { executor: boom });

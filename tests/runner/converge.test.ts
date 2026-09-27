@@ -1166,3 +1166,36 @@ describe("a stage that creates children", () => {
     expect(r.calls).toEqual([]);
   });
 });
+
+/**
+ * `deps.stepTimeoutMs` is the workflow's own `budget.stepTimeout`, resolved
+ * once by `buildRuntime` — converge's own job is only to forward it as
+ * `runStep`'s `defaultTimeoutMs`, for a step that names no `timeout` of its
+ * own. Nothing else in this file names it, so a caller wiring it up wrong
+ * (or a future refactor dropping the spread) would ship silently: every
+ * other converge test builds `deps` with no `stepTimeoutMs` at all and would
+ * still pass.
+ */
+describe("the step timeout budget", () => {
+  it("forwards deps.stepTimeoutMs to the executor's run as timeoutMs, when the step names no timeout", async () => {
+    const w = world();
+    const seen: Array<number | undefined> = [];
+    const spy: Executor = {
+      id: "spy",
+      run: async (_p, o) => { seen.push(o.timeoutMs); return { text: "free text", sessionId: null }; },
+    };
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = { prompt: "go" };
+    await converge("1", deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: spy, stepTimeoutMs: 123_000,
+    }));
+    expect(seen).toEqual([123_000]);
+  });
+});
