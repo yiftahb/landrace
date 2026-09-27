@@ -23,6 +23,7 @@ import type { z } from "zod";
 import type { runtimeConfigSchema } from "#config/schema.js";
 import type { stepFrontMatterSchema } from "#workflow/schema.js";
 import type { HOOK_KINDS } from "#hooks/contracts.js";
+import type { CHAT_TARGET_KEYS } from "#ui/chat.js";
 
 /* ------------------------------------------------------------------ core -- */
 
@@ -1329,8 +1330,11 @@ export interface BoardSystem {
  */
 export interface Chat {
   prompt: string;
-  links: { claude: string; claudeCli: string; cursor: string; codex: string };
+  links: Record<ChatTarget, string>;
 }
+
+/** A key `Chat.links` is indexed by — one of the board's own deep-link targets. */
+export type ChatTarget = (typeof CHAT_TARGET_KEYS)[number];
 
 /**
  * One node on the triage page's tree. An allowlist, not a pass-through:

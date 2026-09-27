@@ -336,10 +336,10 @@ async function converging(
 
       // The engine's own record that an agent is in the room, bracketing the
       // one call that runs it. Not left to the executor: `step.completed`
-      // comes from the claude executor alone, so a hook-registered executor
-      // never emits it, and anything watching for "running" would wait on it
-      // for ever. The finally is the point — a throw or an abort must not
-      // leave a step looking as if it is still going.
+      // is an executor's own event, which one registered by a hook need never
+      // emit, so anything watching for "running" would wait on it for ever.
+      // The finally is the point — a throw or an abort must not leave a step
+      // looking as if it is still going.
       deps.log("step.started", { ticket, stage: stage.id, round, model: step.model ?? null });
       let finishedOk = false;
       let result: StepResult;

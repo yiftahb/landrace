@@ -206,15 +206,15 @@ export function registeredExecutor(config: RuntimeConfig, registry: Registry): s
  * The screener, or none when `security.screen` is off.
  *
  * Resolved through `executorFor`'s own lookup, so a name nothing answers to
- * fails at startup here as it does for the steps. It used to construct a
- * claude executor unconditionally, so a workflow whose hook registers an
- * executor screened with something the operator never configured — or, with
- * no claude on the machine, did not screen at all while reporting that it
- * did. §15 calls screening a security control, and a security control that
- * silently ignores its configuration is the kind this codebase refuses to
- * ship: the model now travels on every run (`Screener`), and it has no
- * default — a model name is a provider's word, and the engine names no
- * provider.
+ * fails at startup here as it does for the steps. It used to construct the
+ * engine's own executor unconditionally, so a workflow whose hook registers
+ * an executor screened with something the operator never configured — or,
+ * with no coding agent on the machine, did not screen at all while reporting
+ * that it did. §15 calls screening a security control, and a security
+ * control that silently ignores its configuration is the kind this codebase
+ * refuses to ship: the model now travels on every run (`Screener`), and it
+ * has no default — a model name is a provider's word, and the engine names
+ * no provider.
  */
 export async function screenerFor(config: RuntimeConfig, registry: Registry, ctx: ExecutorContext): Promise<Screener | undefined> {
   if (!config.security.screen) return undefined;

@@ -97,6 +97,25 @@ describe("every kind the loader classifies has a way to be registered", () => {
   });
 });
 
+/**
+ * The same rule for coding agents, since the executor became a hook: the
+ * engine hands a prompt, a directory, capabilities, a model and a limit to
+ * whichever executor the configuration names, and knows no agent by name.
+ *
+ * Two deliberate exceptions, each for a reason that is not an integration:
+ * the board's links into the person's own apps (a label on a deep link, like
+ * systems.ts), and the project instructions file CLAUDE.md, which comments
+ * cite by name.
+ */
+const AGENT_DISPLAY = [join("src", "ui", "chat.ts"), join("src", "ui", "page.ts")];
+
+describe("no coding agent is named inside the engine", () => {
+  it("has no mention of claude anywhere under src, bar the board's links and CLAUDE.md", () => {
+    const named = linesMatching(/claude(?!\.md)/i).filter((line) => !AGENT_DISPLAY.some((file) => line.startsWith(`${file}:`)));
+    expect(named).toEqual([]);
+  });
+});
+
 describe("the one display-only file that may name a vendor", () => {
   const source = readFileSync(DISPLAY_ONLY, "utf8");
 
