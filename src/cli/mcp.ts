@@ -9,6 +9,7 @@ import { createChild } from "#runner/children.js";
 import { createLogger } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
+import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { executorFor, sandboxFor, screenerFor } from "#cli/start.js";
 
@@ -35,10 +36,23 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   // executor's own setup turns up — an allowlisted server's env and header
   // values, say — is not known yet; it joins the redaction set later,
   // through `ectx.redact`, once the executor factory that found it has run.
+  //
+  // Telemetry from `.env` and the shell alone: an MCP client starts this with
+  // whatever arguments it was configured with, and nothing more.
+  const otel = telemetrySettings(loaded.telemetry);
+  if (otel?.exporter === "console") {
+    throw new Error("OTEL_LOGS_EXPORTER=console would write into the MCP protocol on stdout; use otlp, or turn telemetry off");
+  }
+  const telemetry = otel ? await createOtelSink(otel) : undefined;
   const events = createLogger({
     redactValues: redactionValues(loaded),
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
+    ...(telemetry ? { exporter: telemetry.sink } : {}),
   });
+  events.redact(Object.values(otel?.headers ?? {}));
+  // This server runs until its client closes stdin, with no `finally` of its
+  // own to flush from; the event loop draining is the one moment it has.
+  if (telemetry) process.once("beforeExit", () => void telemetry.shutdown());
 
   const ctx: RuntimeContext = {
     config: loaded.config,

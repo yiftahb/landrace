@@ -539,6 +539,32 @@ describe("runStart --once", () => {
     expect(printed.join("\n")).not.toContain("env-secret-value");
   });
 
+  /*
+   * Telemetry from the command line to the collector: `--telemetry` and
+   * `--otel` reach the settings, every event reaches the exporter, and the
+   * batch — whose 5s delay this run never waits out — is flushed on the way
+   * out. The console exporter stands in for a collector: it writes each
+   * record with console.dir.
+   */
+  it("exports every event as a log record and flushes them before it returns", async () => {
+    const { dir } = await fixture();
+    const records: { body?: unknown; resource?: { attributes?: Record<string, unknown> } }[] = [];
+    const [log, dir_] = [console.log, console.dir];
+    console.log = (): void => {};
+    console.dir = (record: unknown): void => {
+      records.push(record as (typeof records)[number]);
+    };
+
+    try {
+      await runStart(dir, { once: true, otel: ["OTEL_LOGS_EXPORTER=console", "OTEL_SERVICE_NAME=lr-e2e", "LANDRACE_ENABLE_TELEMETRY=1"] });
+    } finally {
+      [console.log, console.dir] = [log, dir_];
+    }
+
+    expect(records.map((r) => r.body)).toEqual(expect.arrayContaining(["tick.started", "effect.applied", "tick.finished"]));
+    expect(records[0]?.resource?.attributes?.["service.name"]).toBe("lr-e2e");
+  });
+
   /**
    * `--once` is refused too, not only the daemon loop: a failing preflight
    * must stop the process before the one tick `--once` would otherwise run,

@@ -1188,6 +1188,8 @@ export interface Runtime {
    * each ticket unwind through the lock it holds.
    */
   stop: AbortController;
+  /** Present when telemetry is on. `runStart` shuts it down on the way out, flushing what is queued. */
+  telemetry?: { shutdown(): Promise<void> };
 }
 
 /**
@@ -1216,10 +1218,17 @@ export interface StartOptions {
   /** Serve the triage page. Default true; `--no-ui` turns it off. */
   ui?: boolean;
   uiPort?: number;
+  /** See BuildOptions.otel. */
+  otel?: readonly string[];
 }
 
 export interface BuildOptions {
   debug?: boolean;
+  /**
+   * `--otel KEY=VALUE`, and `--telemetry` as `LANDRACE_ENABLE_TELEMETRY=1`:
+   * telemetry settings that win over `.env` and the shell.
+   */
+  otel?: readonly string[];
   /** Where events go. `landrace status` sends them to stderr, because stdout is its report. */
   sink?: (event: LandraceEvent) => void;
   /**

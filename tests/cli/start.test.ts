@@ -27,6 +27,13 @@ import {
   startUi,
 } from "#cli/start.js";
 
+// Counts the SDK being loaded, and otherwise is the SDK.
+let mockSdkLoads = 0;
+jest.mock("@opentelemetry/sdk-logs", () => {
+  mockSdkLoads += 1;
+  return jest.requireActual("@opentelemetry/sdk-logs");
+});
+
 const TOKEN = "ghp_a_token_long_enough_to_redact";
 const exec = promisify(execFile);
 
@@ -146,6 +153,28 @@ describe("buildRuntime", () => {
     await expect(buildRuntime(dir, {})).rejects.toThrow(/leaked[\s\S]*secret/);
   });
 
+  it("refuses an --otel key it does not read", async () => {
+    await expect(buildRuntime(await fixture(), { otel: ["OTEL_TRACES_EXPORTER=otlp"] })).rejects.toThrow(/--otel OTEL_TRACES_EXPORTER/);
+  });
+
+  it("refuses grpc from .env rather than downgrading it", async () => {
+    const dir = await fixture();
+    await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\nLANDRACE_ENABLE_TELEMETRY=1\nOTEL_EXPORTER_OTLP_PROTOCOL=grpc\n`);
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/grpc is not supported/);
+  });
+
+  // In order: the second proves the counter sees a load, so the first's zero
+  // means the SDK was never loaded rather than that the mock missed it.
+  it("never loads the OpenTelemetry SDK with telemetry off", async () => {
+    await expect(buildRuntime(await fixture(), {})).rejects.toThrow(/source/);
+    expect(mockSdkLoads).toBe(0);
+  });
+
+  it("loads it once telemetry is on", async () => {
+    await expect(buildRuntime(await fixture(), { otel: ["LANDRACE_ENABLE_TELEMETRY=1", "OTEL_LOGS_EXPORTER=console"] }))
+      .rejects.toThrow(/source/);
+    expect(mockSdkLoads).toBe(1);
+  });
 });
 
 /**

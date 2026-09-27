@@ -29,6 +29,7 @@ import type {
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
 import { createLogger } from "#runner/events.js";
+import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { held } from "#runner/lock.js";
 import { runPreflights } from "#runner/preflight.js";
 import { snapshotProvides } from "#runner/snapshot.js";
@@ -306,11 +307,19 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // setup turns up — an allowlisted server's env and header values, say — is
   // not known this early; it joins the redaction set later, through
   // `ectx.redact`, once the executor factory that found it has actually run.
+  //
+  // Telemetry is built first so it sees the first event. Not for `landrace
+  // status`, which must make no call beyond the ones reading requires.
+  const otel = opts.readOnly ? null : telemetrySettings(loaded.telemetry, opts.otel);
+  const telemetry = otel ? await createOtelSink(otel) : undefined;
   const log: RedactingLogger = createLogger({
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
     redactValues: redactionValues(loaded),
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
+    ...(telemetry ? { exporter: telemetry.sink } : {}),
   });
+  // An OTLP header is usually a credential, and no `secrets:` entry names it.
+  log.redact(Object.values(otel?.headers ?? {}));
 
   // With `vars` already substituted in: the graph the daemon runs is the
   // graph `landrace validate` checked, filled in from the same map.
@@ -414,6 +423,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     intervalMs: parseInterval(loaded.config.tick.interval),
     concurrency: loaded.config.tick.concurrency,
     stop,
+    ...(telemetry ? { telemetry } : {}),
   };
 }
 
@@ -601,6 +611,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const print = (e: LandraceEvent): void => console.log(JSON.stringify(e));
   const rt = await buildRuntime(dir, {
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+    ...(opts.otel === undefined ? {} : { otel: opts.otel }),
     sink: boardSink(print, boardRef),
   });
 
@@ -643,5 +654,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   } finally {
     off();
     await ui?.close();
+    // --once, a normal stop and the first Ctrl-C all come through here; the
+    // batch would otherwise lose up to its whole export interval of records.
+    await rt.telemetry?.shutdown();
   }
 }
