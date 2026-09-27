@@ -1,9 +1,10 @@
-import { compareWork, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
+import { compareWork, GOTO_TRIGGER, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
+import { gotoTargetsOf } from "#core/index.js";
 import { BLOCKED_NOTE, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
-  Board, BoardRow, BoardView, Graph, Held, LandraceEvent, Lane, Node, Running, StatusRow, Workflow,
+  Board, BoardRow, BoardView, Graph, Held, LandraceEvent, Lane, Node, Running, Stage, StatusRow, Workflow,
 } from "#namespace.js";
 
 /**
@@ -22,14 +23,34 @@ export function laneOf(row: StatusRow, workflow: Workflow): Lane {
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 
 /**
- * Whether a human turn would hand this ticket back: it is stopped, blocked or
- * screened. The status row's own verdict, so the row the page draws and the
- * check the server makes before posting cannot disagree about a ticket.
+ * Whether this row offers a Retry: the ticket is blocked or screened right
+ * now. A Retry is a goto with no step named — the step whose failure put
+ * the ticket there — and this is only the board's own offer; `sendTo`
+ * re-reads the ticket and is the one authority on whether a given send is
+ * actually taken.
  */
 const stopped = (row: StatusRow): boolean => row.note === BLOCKED_NOTE || row.note === SCREENED_NOTE;
 
 /** The path the page posts a Retry to — built here, from an id already checked, never by the page. */
 const retryPath = (id: string): string | null => (isTicketId(id) ? `/tickets/${id}/retry` : null);
+
+/**
+ * Where the page posts a "Go to step…" — one path per step the ticket's
+ * stage may send it to, built here from an id already checked and a stage
+ * the workflow names, never by the page.
+ *
+ * Offered whether or not the stage runs a step: the board only has labels,
+ * not records, so it cannot tell a judge whose round is settled from one
+ * whose step is still owed the way `sendTo` can — restricting this to a
+ * stepless stage would hide "Go to step…" from exactly the settled judge a
+ * person needs it for, and from the ticket a crash stranded between a
+ * target's entry comment and its status label. `sendTo` stays the one
+ * authority: it re-reads the ticket and refuses an owed step in a sentence.
+ */
+const gotoPaths = (id: string, stage: Stage | undefined): BoardRow["goto"] =>
+  stage !== undefined && isTicketId(id)
+    ? gotoTargetsOf(stage).map((g) => ({ stage: g.stage, path: `/tickets/${id}/goto/${encodeURIComponent(g.stage)}` }))
+    : [];
 
 /** Most urgent first — the order a branch's lane cascades in. */
 const URGENCY: readonly Lane[] = ["needs-you", "running", "elsewhere", "waiting", "not-admitted", "discharged"];
@@ -78,6 +99,12 @@ export function boardView(input: {
   nextTickAt: number | null;
   folder: string;
   workspace: string;
+  /**
+   * Which stage a goto last sent each ticket to, per the tick's own events —
+   * the same source `running` is read from, never re-derived from labels.
+   * Read only to word the note while that ticket's agent is running now.
+   */
+  sent?: ReadonlyMap<string, string>;
 }): BoardView {
   // Duplicate ids are a graph the engine halts on elsewhere; here the page
   // only has to stay drawable, so a repeat is skipped rather than drawn twice.
@@ -94,7 +121,7 @@ export function boardView(input: {
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, round: null, model: null,
-      chat: null, screened: false, retry: null, children: [],
+      chat: null, screened: false, retry: null, goto: [], children: [],
     };
     const s = status.get(node.id);
     if (node.kind !== TICKET_KIND || !s) return base;
@@ -112,7 +139,11 @@ export function boardView(input: {
     if (node.closed !== null) return { ...ticket, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped" };
     const running = input.running.get(node.id);
     if (running) {
-      return { ...ticket, badge: "running", stage: running.stage, note: "agent running",
+      // A goto's target is only worth naming while the agent it sent is
+      // still the one running — once the ticket moves on, "sent back to
+      // spec" would be talking about a stage the ticket has already left.
+      const note = input.sent?.get(node.id) === running.stage ? `agent running — sent back to ${running.stage}` : "agent running";
+      return { ...ticket, badge: "running", stage: running.stage, note,
         since: running.since, round: running.round, model: running.model };
     }
     const lock = input.elsewhere.get(node.id);
@@ -126,12 +157,13 @@ export function boardView(input: {
       return { ...ticket, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
     }
     const retry = stopped(s) ? retryPath(node.id) : null;
+    const goto = gotoPaths(node.id, input.workflow.stages.find((x) => x.id === s.stage));
     // The status row's own verdict, not the labels read a second time; the
     // note is the page's wording of the same fact.
     if (s.note === SCREENED_NOTE) {
-      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry };
+      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry, goto };
     }
-    return { ...ticket, badge: laneOf(s, input.workflow), retry };
+    return { ...ticket, badge: laneOf(s, input.workflow), retry, goto };
   };
 
   const parent = parentsOf(input.graph, nodes, input.nest);
@@ -206,10 +238,17 @@ export function createBoard(opts: {
   const nest = new Set(opts.nest);
   let graph: Graph = { nodes: [], relationships: [] };
   const running = new Map<string, Running>();
+  const sent = new Map<string, string>();
 
   return {
     observe(e: LandraceEvent): void {
       if (typeof e.ticket !== "string") return;
+      // The tick's own record of a transition: a goto's is logged under the
+      // trigger name no workflow may use, so the board can say so.
+      if (e.name === "ticket.evaluated" && e.decision === "transition") {
+        if (e.why === GOTO_TRIGGER && typeof e.to === "string") sent.set(e.ticket, e.to);
+        else sent.delete(e.ticket);
+      }
       if (e.name === "step.started") {
         running.set(e.ticket, {
           stage: String(e.stage ?? ""),
@@ -223,15 +262,13 @@ export function createBoard(opts: {
     },
     list(next: Graph): void {
       graph = next;
-    },
-    retryRefusal(node: Node): string | null {
-      // The labels are the tracker's, and they say blocked until the handback's
-      // own step writes its entry — a step this process may be running now.
-      if (running.has(node.id)) return `#${node.id}'s agent is running right now, so there is nothing to retry`;
-      // Open tickets only, as the row is drawn: a closed one keeps whatever
-      // labels it had, and handing it back would re-run a finished ticket.
-      const [row] = isOpenTicket(node) ? statusRows(opts.workflow, [node]) : [];
-      return row !== undefined && stopped(row) ? null : `#${node.id} is not blocked or screened right now, so there is nothing to retry`;
+      // A ticket that has left the graph — closed and eventually not
+      // relisted, or never eligible again — never fires another
+      // ticket.evaluated for `sent` to clear; without this it would sit
+      // there forever, on the very ids `sent` no longer has an opinion worth
+      // keeping about.
+      const ids = new Set(next.nodes.map((n) => n.id));
+      for (const id of sent.keys()) if (!ids.has(id)) sent.delete(id);
     },
     async view(): Promise<BoardView> {
       // Open tickets only: nothing else can be held, and a closed ticket's
@@ -242,7 +279,7 @@ export function createBoard(opts: {
         if (h) elsewhere.set(n.id, h);
       }));
       return boardView({
-        workflow: opts.workflow, graph, nest, running, elsewhere, now: now(), pid,
+        workflow: opts.workflow, graph, nest, running, elsewhere, now: now(), pid, sent,
         nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },

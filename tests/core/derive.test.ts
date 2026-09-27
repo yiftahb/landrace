@@ -259,3 +259,176 @@ describe("assess uses deriveRun's per-stage failedStages, not the stage lastOutp
     expect(assess(snapshot, specStage)).toBe("failed");
   });
 });
+
+describe("run.goto, derived from records and consumed by entering a stage", () => {
+  const going = (stage: string, to: string): Entry => ({ stage, kind: "goto", round: 0, goto: to, at: at(), byAgent: true });
+
+  it("is the latest goto written since the ticket last entered a stage", () => {
+    expect(deriveRun([entered("spec", 1), going("blocked", "spec"), going("blocked", "build")], "blocked").goto).toBe("build");
+  });
+
+  it("is consumed by the next entry record, whichever stage that enters", () => {
+    expect(deriveRun([going("blocked", "build"), entered("build", 2)], "build").goto).toBeNull();
+  });
+
+  it("rides on a judge's own output record", () => {
+    expect(deriveRun([entered("triage", 1), { ...out("triage", 1), goto: "spec" }], "triage").goto).toBe("spec");
+  });
+
+  it("is ignored when a person wrote it", () => {
+    expect(deriveRun([{ ...going("blocked", "build"), byAgent: false }], "blocked").goto).toBeNull();
+  });
+
+  /*
+   * GitHub stamps comments to the second. A goto and the entry that consumes
+   * it can share one, and the tracker lists comments in the order they were
+   * made — which the sort keeps, being stable.
+   */
+  it("orders a goto and an entry that share a second by the order they were listed in", () => {
+    const same = "2026-02-01T00:00:00.000Z";
+    const g = { ...going("blocked", "build"), at: same };
+    const e = { ...entered("build", 2), at: same };
+    expect(deriveRun([g, e], "build").goto).toBeNull();
+    // The entry comes first here, so it is the goto — written at "blocked" —
+    // that survives, and it answers only while the ticket is still there.
+    expect(deriveRun([e, g], "blocked").goto).toBe("build");
+  });
+
+  it("is null when nothing asked", () => {
+    expect(deriveRun([entered("spec", 1)], "spec").goto).toBeNull();
+  });
+
+  /*
+   * A decline leaves a goto unconsumed, and a trigger can then carry the
+   * ticket on to a stage — `blocked`, a terminal `done` — that writes no
+   * entry record of its own. Read back there, the goto must not still
+   * answer: it was written at "triage", not at the stage the ticket now
+   * sits in, and nothing has consumed it in between.
+   */
+  it("is null once the position has moved on from the stage that wrote it, with no entry record in between", () => {
+    const entries = [entered("triage", 1), { ...out("triage", 1), goto: "spec" }];
+    expect(deriveRun(entries, "blocked").goto).toBeNull();
+  });
+});
+
+describe("run.previousStage, from the current stage's own entry record", () => {
+  const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
+
+  it("is the stage that record says the ticket left", () => {
+    expect(deriveRun([from("spec", 1, "x"), from("triage", 1, "spec-human-review")], "triage").previousStage)
+      .toBe("spec-human-review");
+  });
+
+  it("is null at a stage that records no entry, rather than an older stage's answer", () => {
+    expect(deriveRun([from("build", 1, "triage")], "blocked").previousStage).toBeNull();
+  });
+
+  it("is null for an entry record written before entry records named where they came from", () => {
+    expect(deriveRun([entered("triage", 1)], "triage").previousStage).toBeNull();
+  });
+});
+
+/*
+ * What Retry re-runs and what the judge is told failed: the failure that put
+ * the ticket where it is, never an older one the ticket has since been sent
+ * around. `failedStages` alone kept a spec that failed before a person sent
+ * the ticket on to build, and Retry — reading it — paid for a spec round
+ * after the reviews ran out, which nobody had asked for.
+ */
+describe("run.failedStage, the failure that put the ticket where it is", () => {
+  const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
+  const going = (stage: string, to: string): Entry => ({ stage, kind: "goto", round: 0, goto: to, at: at(), byAgent: true });
+
+  it("is the step that failed, at the halt it failed into", () => {
+    const entries = [entered("spec", 1), out("spec", 1), entered("build", 1), malformed("build", 1)];
+    expect(deriveRun(entries, "blocked").failedStage).toBe("build");
+  });
+
+  /*
+   * A reply at a halt goes through the judge and, unless it asks for a goto,
+   * comes home. That round trip left from here and settled; it did not put
+   * the ticket here. Read as "the stage it last left", Retry answered
+   * "nothing has failed" to the ordinary conversation at a halt.
+   */
+  it("looks past a settled round trip from here — a question at the halt the judge sent home", () => {
+    const failed = [entered("build", 1), malformed("build", 1)];
+    const question = (round: number) => [human(), from("triage", round, "blocked"), out("triage", round, { intent: "question" })];
+    expect(deriveRun([...failed, ...question(1)], "blocked").failedStage).toBe("build");
+    expect(deriveRun([...failed, ...question(1), ...question(2)], "blocked").failedStage).toBe("build");
+  });
+
+  it("stops at a round trip from here that failed — a goto from the halt whose step failed again", () => {
+    const entries = [
+      entered("spec", 1), malformed("spec", 1),
+      going("blocked", "build"), from("build", 1, "blocked"), malformed("build", 1),
+    ];
+    expect(deriveRun(entries, "blocked").failedStage).toBe("build");
+  });
+
+  /*
+   * The round-trip skip is scoped to the current visit. A judge's earlier
+   * visit also sent the ticket on *from triage* — goto-spec after a failed
+   * build — and at the judge's next visit, read as a round trip, that move
+   * was walked past and the judge at spec-human-review was told "build".
+   */
+  describe("a move an earlier visit to this stage made is not a round trip from this one", () => {
+    const failedBuildThenGotoSpec = (spec: Entry[]) => [
+      entered("build", 1), malformed("build", 1),
+      human(), from("triage", 1, "blocked"), { ...out("triage", 1, { intent: "goto-spec" }), goto: "spec" },
+      from("spec", 2, "triage"), ...spec,
+    ];
+
+    it("is null at the judge reading a reply to the spec that goto produced", () => {
+      const entries = [...failedBuildThenGotoSpec([out("spec", 2, { kind: "spec" })]), human(), from("triage", 2, "spec-human-review")];
+      expect(deriveRun(entries, "triage").failedStage).toBeNull();
+    });
+
+    it("is null at the judge reading answers to the questions that goto produced", () => {
+      const entries = [...failedBuildThenGotoSpec([out("spec", 2, { kind: "questions" })]), human(), from("triage", 2, "spec-questions")];
+      expect(deriveRun(entries, "triage").failedStage).toBeNull();
+    });
+
+    it("is the spec the goto re-ran when it failed, at the judge reading the reply to that halt", () => {
+      const failedAgain = [...failedBuildThenGotoSpec([malformed("spec", 2)]), human()];
+      expect(deriveRun(failedAgain, "blocked").failedStage).toBe("spec");
+      expect(deriveRun([...failedAgain, from("triage", 2, "blocked")], "triage").failedStage).toBe("spec");
+    });
+  });
+
+  it("is null once the ticket was sent on past an older failure and came back for another reason", () => {
+    // The walk stops at the last review round: entered from another stage,
+    // and not failed. The build before it was a round trip from the halt,
+    // but the reviews came in between.
+    // Built in the order they happen: `at()` stamps each as it is made.
+    const entries = [
+      entered("spec", 1), malformed("spec", 1), entered("spec", 2), malformed("spec", 2),
+      going("blocked", "build"), from("build", 1, "blocked"), out("build", 1, { kind: "done" }),
+    ];
+    for (const round of [1, 2, 3, 4]) {
+      entries.push(from("code-review", round, round === 1 ? "publish" : "fix-review"), out("code-review", round));
+    }
+    const run = deriveRun(entries, "blocked");
+    // Still failed — nothing has run spec since — but not what put it here.
+    expect(run.failedStages).toContain("spec");
+    expect(run.failedStage).toBeNull();
+  });
+
+  it("looks past the judge's own entry, at the judge reading a reply to a halt", () => {
+    const entries = [entered("build", 1), malformed("build", 1), human(), from("triage", 1, "blocked")];
+    expect(deriveRun(entries, "triage").failedStage).toBe("build");
+  });
+
+  it("is null at the judge reading a reply to a spec that did not fail", () => {
+    const entries = [entered("spec", 1), out("spec", 1), human(), from("triage", 1, "spec-human-review")];
+    expect(deriveRun(entries, "triage").failedStage).toBeNull();
+  });
+
+  it("is the judge itself when the judge is what failed", () => {
+    const entries = [entered("spec", 1), out("spec", 1), human(), from("triage", 1, "spec-human-review"), malformed("triage", 1)];
+    expect(deriveRun(entries, "blocked").failedStage).toBe("triage");
+  });
+
+  it("is null when no stage has been entered at all", () => {
+    expect(deriveRun([], null).failedStage).toBeNull();
+  });
+});

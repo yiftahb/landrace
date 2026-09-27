@@ -62,20 +62,6 @@ describe("the shipped workflow is a single flow", () => {
     const text = await readFile(".landrace/workflow.yaml", "utf8");
     expect(text).not.toMatch(/rel\.child-of|node\.origin/);
   });
-
-  it("goes from an approved spec straight to build, and comes back to it only when a build is handed back", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
-    const build = workflow.stages.find((s) => s.id === "build");
-    expect(build?.triggers?.map((t) => t.when)).toEqual([
-      { "run.stage": "triage", "run.lastOutputValid": null, "run.outputs.triage.intent": "approve" },
-      ...["blocked", "screened"].map((from) => ({
-        "run.stage": from,
-        "run.lastEvent.actor": "human",
-        "run.failedStages": { $in: ["build"] },
-        "run.counters.build": { $lt: 3 },
-      })),
-    ]);
-  });
 });
 
 /*
@@ -103,7 +89,7 @@ describe("the shipped workflow splits every failure between blocked and screened
       // A person has spoken — triage requires it — and every loop has run once.
       lastEvent: { actor: "agent", at: null },
       lastHuman: { stage: "-", kind: "human", round: 0, at: "2026-01-01T00:00:00.000Z", byAgent: false },
-      unblockedAt: 0,
+      unblockedAt: 0, goto: null, previousStage: null,
     },
   } as unknown as Snapshot);
 
@@ -118,35 +104,6 @@ describe("the shipped workflow splits every failure between blocked and screened
     }
   });
 
-  /*
-   * A reply at a halt goes somewhere, whatever the budgets say — until every
-   * budget it could spend is spent. A build whose three rounds were all
-   * refused used to have no route at all: the build handback needs budget
-   * left and the spec handback excluded a failed build, so a spec text that
-   * tripped the screener could be retried until the budget ran out and then
-   * never revised.
-   */
-  it.each(["blocked", "screened"])("hands a reply at %s to exactly one stage while a budget is left", async (halt) => {
-    const { workflow } = await loadWorkflow(".landrace");
-    const at = (failedStages: string[], build: number, spec: number): Snapshot => {
-      const s = failedAt(halt, halt === "screened");
-      const run = s.run as object;
-      return { ...s, run: { ...run, stage: halt, failedStages, counters: { spec, build },
-        lastEvent: { actor: "human", at: null } } } as unknown as Snapshot;
-    };
-    const to = (failedStages: string[], build: number, spec = 1): string => {
-      const d = decide(workflow, at(failedStages, build, spec));
-      return d.action === "transition" ? d.to?.id ?? "?" : d.action;
-    };
-
-    expect(to(["build"], 1)).toBe("build");
-    expect(to(["build"], 3)).toBe("spec");
-    expect(to(["code-review", "build"], 3)).toBe("spec");
-    expect(to(["spec"], 1)).toBe("spec");
-    expect(to([], 3)).toBe("spec");
-    expect(to(["build"], 3, 3)).not.toBe("spec");
-  });
-
   it("marks a screened ticket blocked too, and says why beside it", async () => {
     const { workflow } = await loadWorkflow(".landrace");
     const screened = workflow.stages.find((s) => s.id === "screened");
@@ -154,16 +111,220 @@ describe("the shipped workflow splits every failure between blocked and screened
       expect.objectContaining({ type: "tracker.label", add: ["lr:blocked", "lr:screened"] }),
     );
   });
+});
 
-  it("takes lr:screened off again wherever a halt is handed back to", async () => {
+const HOMES = ["spec-questions", "spec-human-review", "pr-human-review", "blocked", "screened"] as const;
+
+const snapshotAt = (stage: string, run: object, rel = { total: 1, merged: 0, openThreads: 0 }): Snapshot => ({
+  node: { id: "7", kind: "ticket", title: "t", link: "", closed: null, priority: null, origin: null,
+    state: { labels: ["lr:auto", `lr:stage:${stage}`], assignees: [] } },
+  rel: { implements: { in: {
+    total: rel.total, not: { merged: rel.total - rel.merged }, sum: { openThreads: rel.openThreads }, stage: {},
+  }, out: { total: 0, stage: {} } } },
+  run: {
+    stage, counters: { spec: 1, triage: 1, build: 1, "code-review": 1 }, outputs: { spec: { kind: "spec" } },
+    lastOutputValid: null, lastRefused: null, failedStages: [], rounds: {},
+    lastEvent: { actor: "agent", at: null },
+    lastHuman: { stage: "-", kind: "human", round: 0, at: "2026-01-01T00:00:00.000Z", byAgent: false },
+    unblockedAt: 0, goto: null, previousStage: null, ...run,
+  },
+} as unknown as Snapshot);
+
+const destination = async (s: Snapshot): Promise<string> => {
+  const { workflow } = await loadWorkflow(".landrace");
+  const d = decide(workflow, s);
+  return d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`;
+};
+
+describe("the shipped workflow reads every reply with one judge, and sends each answer somewhere", () => {
+  it.each(HOMES)("takes a reply at %s to triage, and not once triage's budget is spent", async (home) => {
+    const at = (triage: number) => snapshotAt(home, { lastEvent: { actor: "human", at: null }, counters: { spec: 1, build: 1, triage } });
+    expect(await destination(at(19))).toBe("triage");
+    expect(await destination(at(20))).toMatch(/^wait/);
+  });
+
+  it("leaves a reply at pr-human-review to done once the pull request merged, and to fix-review while a thread is open", async () => {
+    const replied = { lastEvent: { actor: "human", at: null } };
+    expect(await destination(snapshotAt("pr-human-review", replied, { total: 1, merged: 1, openThreads: 0 }))).toBe("done");
+    expect(await destination(snapshotAt("pr-human-review", replied, { total: 1, merged: 0, openThreads: 1 }))).toBe("fix-review");
+  });
+
+  const judged = (home: string, intent: string, over: object = {}) => snapshotAt("triage", {
+    previousStage: home, outputs: { spec: { kind: "spec" }, triage: { intent } },
+    rounds: { triage: { entered: 1, output: 1 } }, ...over,
+  });
+
+  it.each([
+    ["spec-questions", "revise", "spec"],
+    ["spec-questions", "approve", "spec-questions"],
+    ["spec-questions", "question", "spec-questions"],
+    ["spec-questions", "unclear", "spec-questions"],
+    ["spec-human-review", "approve", "build"],
+    ["spec-human-review", "revise", "spec"],
+    ["spec-human-review", "question", "spec-human-review"],
+    ["spec-human-review", "unclear", "spec-human-review"],
+    ...["pr-human-review", "blocked", "screened"].flatMap((home) =>
+      ["approve", "revise", "question", "unclear"].map((intent) => [home, intent, home])),
+  ])("from %s, %s goes to %s", async (home, intent, to) => {
+    expect(await destination(judged(home, intent))).toBe(to);
+  });
+
+  it.each(HOMES)("from %s, a goto answer is taken while its step has rounds left", async (home) => {
+    expect(await destination(judged(home, "goto-spec", { goto: "spec" }))).toBe("spec");
+    expect(await destination(judged(home, "goto-build", { goto: "build" }))).toBe("build");
+  });
+
+  it.each(HOMES)("from %s, a goto past its step's rounds comes home, never left at triage", async (home) => {
+    expect(await destination(judged(home, "goto-build", { goto: "build", counters: { spec: 1, triage: 1, build: 3 } }))).toBe(home);
+  });
+
+  it.each(["spec-questions", "spec-human-review"])("from %s, a revision past the spec's rounds comes home", async (home) => {
+    expect(await destination(judged(home, "revise", { counters: { spec: 3, triage: 1, build: 1 } }))).toBe(home);
+  });
+
+  it("lets every stage where it is your turn send the ticket back to spec and build, three rounds each", async () => {
     const { workflow } = await loadWorkflow(".landrace");
-    const targets = workflow.stages.filter((s) =>
-      (s.triggers ?? []).some((t) => t.when["run.stage"] === "screened" || t.when["run.stage"] === "blocked"));
-    expect(targets.map((s) => s.id).sort()).toEqual(["build", "spec"]);
-    for (const stage of targets) {
-      const removed = (stage.on_enter ?? []).flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
+    const capped = [
+      { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
+      { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
+    ];
+    for (const id of ["spec-questions", "spec-human-review", "pr-human-review", "triage"]) {
+      expect(workflow.stages.find((s) => s.id === id)?.goto).toEqual(capped);
+    }
+    expect(workflow.stages.filter((s) => s.goto).map((s) => s.id).sort()).toEqual([...HOMES, "triage"].sort());
+  });
+
+  /*
+   * Retry is a goto to the step whose failure put the ticket there, and any step can fail:
+   * a halt listing only spec and build left a broken review with no retry at
+   * all. Each target is capped by its own rounds — fix-review by code-review's
+   * too, the loop the two share — and offered only where it could run: a
+   * review needs a pull request, and the judge a message to read. A goto
+   * that landed on a stage whose precondition fails would halt there, and
+   * nothing could send the ticket on.
+   */
+  it("lets a halt send the ticket back to every step, within that step's rounds and only where it can run", async () => {
+    const { workflow } = await loadWorkflow(".landrace");
+    const every = [
+      { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
+      { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
+      { stage: "code-review", when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } } },
+      { stage: "fix-review", when: {
+        "run.counters.code-review": { $lt: 4 }, "run.counters.fix-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 },
+      } },
+      { stage: "triage", when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } } },
+    ];
+    for (const id of ["blocked", "screened"]) {
+      expect(workflow.stages.find((s) => s.id === id)?.goto).toEqual(every);
+    }
+    expect(every.map((g) => g.stage).sort()).toEqual(workflow.stages.filter((s) => s.step).map((s) => s.id).sort());
+  });
+
+  it.each(["blocked", "screened"])("from %s, a goto to a review or the judge is taken within its rounds, and declined past them", async (halt) => {
+    const at = (goto: string, counters: object = {}) =>
+      snapshotAt(halt, { goto, counters: { spec: 1, triage: 1, build: 1, "code-review": 1, ...counters } });
+    expect(await destination(at("code-review"))).toBe("code-review");
+    expect(await destination(at("fix-review"))).toBe("fix-review");
+    expect(await destination(at("triage"))).toBe("triage");
+    expect(await destination(at("code-review", { "code-review": 4 }))).toMatch(/^wait: .*only while/);
+    expect(await destination(at("fix-review", { "code-review": 4 }))).toMatch(/^wait: .*only while/);
+    // A failed fix round advances only its own counter, so code-review's
+    // alone would let Retry run it for ever.
+    expect(await destination(at("fix-review", { "fix-review": 4 }))).toMatch(/^wait: .*only while.*run\.counters\.fix-review/);
+    expect(await destination(at("triage", { triage: 20 }))).toMatch(/^wait: .*only while/);
+  });
+
+  it.each(["blocked", "screened"])("from %s, declines a review with no pull request and the judge with no message", async (halt) => {
+    const noPull = { total: 0, merged: 0, openThreads: 0 };
+    expect(await destination(snapshotAt(halt, { goto: "code-review" }, noPull)))
+      .toMatch(/^wait: .*"code-review" only while.*rel\.implements\.in\.total/);
+    expect(await destination(snapshotAt(halt, { goto: "fix-review" }, noPull)))
+      .toMatch(/^wait: .*"fix-review" only while.*rel\.implements\.in\.total/);
+    expect(await destination(snapshotAt(halt, { goto: "triage", lastHuman: null })))
+      .toMatch(/^wait: .*"triage" only while.*run\.lastHuman/);
+  });
+
+  /*
+   * Every target but triage. It is sent to only from a halt, and its answers
+   * go home to that halt or on to spec or build, each of which sets the
+   * labels right.
+   */
+  it("takes lr:blocked and lr:screened off wherever a ticket can be sent back to", async () => {
+    const { workflow } = await loadWorkflow(".landrace");
+    const targets = new Set(workflow.stages.flatMap((s) => (s.goto ?? []).map((g) => (typeof g === "string" ? g : g.stage))));
+    targets.delete("triage");
+    expect([...targets].sort()).toEqual(["build", "code-review", "fix-review", "spec"]);
+    for (const id of targets) {
+      const removed = (workflow.stages.find((s) => s.id === id)?.on_enter ?? [])
+        .flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
       expect(removed).toEqual(expect.arrayContaining(["lr:blocked", "lr:screened"]));
     }
+  });
+
+  it("builds only from an approved spec, or when a person sends it back", async () => {
+    const { workflow } = await loadWorkflow(".landrace");
+    expect(workflow.stages.find((s) => s.id === "build")?.triggers?.map((t) => t.when)).toEqual([{
+      "run.stage": "triage", "run.lastOutputValid": null,
+      "run.previousStage": "spec-human-review", "run.outputs.triage.intent": "approve",
+    }]);
+  });
+});
+
+/*
+ * One judge serves every stage where it is a person's turn, so it is told
+ * which one the reply was made at — and, at a halt, which step failed: "try
+ * again" means that step, and only the judge's two goto answers can reach it.
+ */
+describe("the shipped judge is told where the reply was made, and which step failed", () => {
+  // The failure that put the ticket at the halt, not every stage still
+  // failed: spec failed before a person sent the ticket on to build, and a
+  // judge told "spec" would send "try again" there.
+  it("renders the halt and the failed step into triage's prompt", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const snapshot = {
+      run: {
+        previousStage: "blocked", failedStages: ["spec", "build"], failedStage: "build",
+        lastHuman: { data: { body: "try again" } },
+      },
+    } as unknown as Snapshot;
+    const rendered = renderPrompt(steps.get("steps/triage.md")?.prompt ?? "", snapshot);
+
+    expect(rendered).toContain("The ticket was waiting at: blocked");
+    expect(rendered).toMatch(/The step that failed, if any: build$/m);
+    expect(rendered).toContain("try again");
+    expect(rendered).not.toMatch(/\{run\./);
+  });
+
+  /*
+   * `landrace_resolve` posts a fixed "Carry on — this is answered." as the
+   * person's turn. On main that went straight back to spec; now the judge
+   * reads it, and at spec-questions anything but `revise` sends it home to
+   * spec-questions — where resolving again loops. The answers are in the
+   * conversation above it, so the judge has to be told that is `revise`.
+   */
+  it("tells the judge at spec-questions that 'answered, carry on' is revise", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const snapshot = {
+      run: { previousStage: "spec-questions", failedStage: null, lastHuman: { data: { body: "Carry on — this is answered." } } },
+    } as unknown as Snapshot;
+    const rendered = renderPrompt(steps.get("steps/triage.md")?.prompt ?? "", snapshot);
+
+    expect(rendered).toContain("The ticket was waiting at: spec-questions");
+    const place = rendered.split("\n").find((line) => line.startsWith("- `spec-questions`")) ?? "";
+    expect(place).toMatch(/answered/);
+    expect(place).toMatch(/carry on/i);
+    expect(place).toMatch(/conversation above/);
+  });
+
+  it("says plainly that nothing failed, rather than showing the judge a placeholder", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const snapshot = {
+      run: { previousStage: "spec-human-review", failedStages: [], failedStage: null, lastHuman: { data: { body: "ship it" } } },
+    } as unknown as Snapshot;
+    const rendered = renderPrompt(steps.get("steps/triage.md")?.prompt ?? "", snapshot);
+
+    expect(rendered).toMatch(/The step that failed, if any: none$/m);
+    expect(rendered).not.toMatch(/\{run\./);
   });
 });
 

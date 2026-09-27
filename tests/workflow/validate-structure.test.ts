@@ -1,5 +1,5 @@
 import { validateStructure } from "#workflow/validate.js";
-import type { Step, Workflow } from "#namespace.js";
+import type { Stage, Step, Workflow } from "#namespace.js";
 
 const wf = (stages: Workflow["stages"]): Workflow => ({ version: 1, name: "t", stages });
 const rules = (w: Workflow) => validateStructure(w).map((p) => p.rule);
@@ -234,5 +234,80 @@ describe("structural validation", () => {
     }]]);
     const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
     expect(validateStructure(w, steps).map((p) => p.rule)).toContain("operator");
+  });
+});
+
+describe("goto", () => {
+  const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
+  const w = (goto: Stage["goto"], b: Partial<Stage> = {}): Workflow => wf([
+    { id: "a", entry: true, step: "a.md", on_enter: [enter], triggers: [{ when: { "run.stage": null } }] },
+    { id: "b", goto, triggers: [{ when: { "run.stage": "a" } }], ...b },
+    { id: "c", terminal: true, triggers: [{ when: { "run.stage": "b" } }] },
+  ]);
+  const said = (wk: Workflow, steps?: Map<string, Step>) =>
+    validateStructure(wk, steps).filter((p) => p.rule === "goto").map((p) => p.message);
+
+  it("accepts a stage sending tickets to one that records its entry, bare or capped", () => {
+    expect(said(w(["a"]))).toEqual([]);
+    expect(said(w([{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }]))).toEqual([]);
+  });
+
+  it("refuses a target that is not a stage, naming both", () => {
+    expect(said(w(["zz"]))).toEqual([expect.stringMatching(/"b".*"zz".*not in the workflow/)]);
+  });
+
+  it("refuses a target named twice", () => {
+    expect(said(w(["a", { stage: "a" }]))).toEqual([expect.stringMatching(/"a" twice/)]);
+  });
+
+  /*
+   * The target's entry record is what consumes a goto. A target that writes
+   * none leaves the goto pending on arrival — and a pending goto its new
+   * stage does not list halts the ticket there.
+   */
+  it("refuses a target whose entry writes no record", () => {
+    expect(said(w(["c"]))).toEqual([expect.stringMatching(/"c".*records no "enter"/)]);
+  });
+
+  it("refuses a route that sends tickets somewhere its stage does not list", () => {
+    const steps = new Map<string, Step>([["j.md", {
+      prompt: "",
+      output: {
+        discriminator: "i", shapes: { back: {} },
+        routes: [{ when: { i: "back" }, goto: "c", effect: { type: "tracker.comment", marker: "i:{round}" } }],
+      },
+    }]]);
+    expect(said(w(["a"], { step: "j.md", on_enter: [enter] }), steps)).toEqual([expect.stringMatching(/route.*"c".*"b"/)]);
+  });
+
+  it("checks a goto's `when` against the operator allowlist", () => {
+    expect(rules(w([{ stage: "a", when: { x: { $where: "1" } } }]))).toContain("operator");
+  });
+
+  it("refuses a goto or a from written into an effect, which only the engine writes", () => {
+    for (const field of ["goto", "from"]) {
+      expect(rules(w(["a"], { on_enter: [{ type: "tracker.label", [field]: "a" }] }))).toContain("reserved-field");
+    }
+  });
+
+  // The route-effect half: a judge's route writes its record through its
+  // effect, and a goto there would carry a target past the check that the
+  // route's own `goto` gets — the stage's list.
+  it("refuses a goto or a from written into a step route's effect", () => {
+    for (const field of ["goto", "from"]) {
+      const steps = new Map<string, Step>([["j.md", {
+        prompt: "",
+        output: {
+          discriminator: "i", shapes: { back: {} },
+          routes: [{ when: { i: "back" }, effect: { type: "tracker.comment", marker: "i:{round}", [field]: "a" } }],
+        },
+      }]]);
+      expect(validateStructure(w(["a"], { step: "j.md", on_enter: [enter] }), steps).map((p) => p.rule))
+        .toContain("reserved-field");
+    }
+  });
+
+  it("refuses a trigger named like a goto transition", () => {
+    expect(rules(w(["a"], { triggers: [{ name: "goto", when: { "run.stage": "a" } }] }))).toContain("trigger-name");
   });
 });

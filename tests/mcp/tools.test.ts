@@ -4,7 +4,9 @@ import { join } from "node:path";
 
 import { createTools } from "#mcp/tools.js";
 import { renderMarker } from "#conventions.js";
-import type { Registry, Step, Workflow } from "#namespace.js";
+import type { Registry, Source, Step, Workflow } from "#namespace.js";
+import { acquire, release } from "#runner/lock.js";
+import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
 
 // Its own lock root: these tests must not race the default one a developer's
@@ -147,6 +149,51 @@ describe("mcp tools", () => {
 
   it("surfaces a missing ticket as an error rather than empty state", async () => {
     await expect(world().tools.status("99")).rejects.toThrow(/#99 is not an issue/);
+  });
+});
+
+describe("landrace_goto", () => {
+  const workflow: Workflow = { version: 1, name: "t", stages: [
+    { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
+      triggers: [{ when: { "run.stage": null } }] },
+    { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+  ] };
+
+  it("sends a ticket back, as a record the next tick reads", async () => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
+    expect(await tools.goto("4", "spec")).toEqual({ ticket: "4", to: "spec", posted: true });
+
+    // The title's claim, checked: the next tick would read this same snapshot.
+    const snapshot = await buildSnapshot({
+      ticket: "4", source: tracker.registry.source as Source,
+      hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "4" },
+    });
+    expect(snapshot.run?.goto).toBe("spec");
+  });
+
+  it("refuses with the reason, as an error the client shows", async () => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
+    await expect(tools.goto("4", "build")).rejects.toThrow(/"blocked" sends a ticket only to "spec", not to "build"/);
+  });
+
+  // The same lock the conversation takes, where this process was told the
+  // locks live — the loop's, so a goto waits on the tick that would take it.
+  it("takes the ticket's lock where this process's locks live, and says so when it is held", async () => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot, waitMs: 50 } });
+    await acquire("4", "tick", { root: lockRoot, holder: "tick:9" });
+    try {
+      await expect(tools.goto("4", "spec")).rejects.toThrow("#4 is busy; try again in a moment");
+    } finally {
+      await release("4", { root: lockRoot });
+    }
+  });
+
+  it("says it cannot, rather than guessing, when it was not given the workflow", async () => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked"] }]);
+    await expect(createTools(tracker.registry, tracker.ctx).goto("4", "spec")).rejects.toThrow(/workflow/);
   });
 });
 

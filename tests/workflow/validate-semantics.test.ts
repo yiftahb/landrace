@@ -559,13 +559,16 @@ describe("every declared output shape has somewhere to go next", () => {
   it("catches the two triage shapes that stranded a real ticket", async () => {
     const { workflow, steps } = await loadWorkflow(".landrace");
     // The shipped workflow as it was: `question` and `unclear` declared, routed
-    // to a comment, and led away from by nothing.
+    // to a comment, and led away from by nothing — every trigger out of triage
+    // that does not demand an answer by name taken out, which leaves only the
+    // ones that read `approve` or `revise`.
     const stranded: Workflow = {
       ...workflow,
-      stages: workflow.stages.map((stage) =>
-        stage.id === "spec-questions"
-          ? { ...stage, triggers: (stage.triggers ?? []).filter((t) => t.when["run.stage"] !== "triage") }
-          : stage),
+      stages: workflow.stages.map((stage) => ({
+        ...stage,
+        triggers: (stage.triggers ?? []).filter((t) =>
+          t.when["run.stage"] !== "triage" || typeof t.when["run.outputs.triage.intent"] === "string"),
+      })),
     };
     const found = validateSemantics(stranded, steps).filter((p) => p.rule === "shape-edge");
     expect(found.map((p) => p.message).join(" ")).toMatch(/"question"/);
@@ -630,5 +633,51 @@ describe("children", () => {
 
   it("passes the pair", () => {
     expect(children(validate(wf([enter, close]), stepsWith(breakdownStep)))).toEqual([]);
+  });
+});
+
+describe("goto edges", () => {
+  const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
+  const loop = (goto: NonNullable<Workflow["stages"][number]["goto"]>): Workflow => ({
+    version: 1, name: "t", stages: [
+      { id: "a", entry: true, on_enter: [enter], triggers: [{ when: { "run.stage": null } }] },
+      { id: "b", goto, triggers: [{ when: { "run.stage": "a" } }] },
+    ],
+  });
+
+  it("counts a goto as an edge a cycle can run along, bounded only by its `when`", () => {
+    expect(rules(loop(["a"]))).toContain("cycle-bound");
+    expect(rules(loop([{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }]))).not.toContain("cycle-bound");
+  });
+
+  // A `when` is a bound only when it bounds a counter: a goto that may run
+  // for as long as some unrelated field holds loops for as long as it does.
+  it("does not take a goto's `when` for a bound unless it bounds a counter", () => {
+    expect(rules(loop([{ stage: "a", when: { x: 1 } }]))).toContain("cycle-bound");
+  });
+
+  it("counts a goto as a way out of a stage", () => {
+    expect(rules(loop([{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }]))).not.toContain("dead-end");
+  });
+
+  it("counts a route's goto as the edge its shape leads along", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "",
+      output: {
+        discriminator: "i", shapes: { back: {} },
+        routes: [{ when: { i: "back" }, goto: "a", effect: { type: "tracker.comment", marker: "i:{round}" } }],
+      },
+    }]]);
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, step: "s.md", on_enter: [enter], goto: [{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }],
+        triggers: [{ when: { "run.stage": null } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "a", "run.outputs.a.i": "never" } }] },
+    ] };
+    expect(rules(w, steps)).not.toContain("shape-edge");
+  });
+
+  it("checks the paths a goto's `when` reads, like any trigger's", () => {
+    const problems = validateSemantics(loop([{ stage: "a", when: { "run.nope": 1 } }]), noSteps, ["run.stage", "run.counters.*"]);
+    expect(problems.map((p) => p.message)).toContainEqual(expect.stringMatching(/"b" reads run\.nope/));
   });
 });

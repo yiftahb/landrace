@@ -56,7 +56,15 @@ export function renderPrompt(
   // this one recognises is a name they all do.
   return fillTemplate(template, (path) => {
     const value = resolve(scope, path);
-    return value === undefined || value === null ? undefined : String(value);
+    if (value === undefined) return undefined;
+    // A path that is there and null is an answer — nothing failed, no stage
+    // before this one — and left as a bare `{run.failedStage}` it read to the
+    // judge as a hole in its prompt. Only a path that is not there at all
+    // stays visible.
+    if (value === null) return "none";
+    // String() runs a list together — "code-review,build" — and a model
+    // reading which steps failed has to be able to tell the items apart.
+    return Array.isArray(value) ? value.join(", ") : String(value);
   });
 }
 
@@ -457,6 +465,11 @@ export async function runStep(opts: {
   const expanded = expandEffectFields(route.effect, vars) as Effect;
   const destination: Effect = { body, stage: stageId, round, ...expanded };
 
+  // Where the answer sends the ticket, on the record that settles this round
+  // — never a record of its own, which could land without the other and
+  // leave either a judge that re-runs or a goto nobody asked for.
+  const sent = route.goto === undefined ? {} : { goto: route.goto };
+
   /*
    * The output value's rule, applied to the other half of what a step
    * produces, and only where that half lands on the tracker.
@@ -493,7 +506,7 @@ export async function runStep(opts: {
   if (destination.type === RECORD_EFFECT) {
     return {
       ok: true,
-      effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session }],
+      effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session, ...sent }],
       sessionId,
     };
   }
@@ -508,6 +521,7 @@ export async function runStep(opts: {
     body: `Recorded the output of "${stageId}", round ${round}.`,
     output: value,
     ...session,
+    ...sent,
   };
 
   // The destination first, and the order is the recovery property. Recorded

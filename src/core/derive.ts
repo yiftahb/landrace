@@ -172,6 +172,78 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     .filter((e) => e.kind === "unblocked" && e.stage === stage)
     .reduce((max, e) => Math.max(max, e.round), 0);
 
+  /*
+   * A goto is pending from when it is written until the ticket next enters a
+   * stage. Position in the ordered list, not timestamps: a tracker can stamp
+   * comments to the second, a goto and the entry that consumes it can share
+   * one, and the stable sort above keeps the order the tracker listed them in.
+   *
+   * It is also scoped to the stage that wrote it. A decline leaves it
+   * unconsumed, and a trigger can then carry the ticket on to a stage that
+   * writes no entry record of its own — `blocked`, a terminal `done`. Read
+   * back there, a goto whose reason and cap belonged to the stage it was
+   * declined at would be judged again against a stage nobody sent it from:
+   * taken past the cap it was declined under, halted for a target the new
+   * stage never lists, or left decorating a wait with a stale reason. So it
+   * answers only while `stage` — the position passed in, i.e. the ticket's
+   * own current one — is the stage the record naming it was written at;
+   * anywhere else it reads as already consumed.
+   */
+  let goto: string | null = null;
+  let gotoStage: string | null = null;
+  for (const e of ordered) {
+    if (e.kind === ENTRY_KIND) {
+      goto = null;
+      gotoStage = null;
+    } else if (e.byAgent && e.goto !== undefined) {
+      goto = e.goto;
+      gotoStage = e.stage;
+    }
+  }
+  if (gotoStage !== stage) goto = null;
+
+  /*
+   * Only the current stage's own entry record answers "where did it come
+   * from". A stage that writes none — every stage where it is a person's
+   * turn — would otherwise read the `from` of whatever step ran before it,
+   * which names the wrong stage with complete confidence.
+   */
+  const lastEntry = [...ordered].reverse().find((e) => e.kind === ENTRY_KIND);
+  const previousStage = lastEntry !== undefined && lastEntry.stage === stage ? lastEntry.from ?? null : null;
+
+  /*
+   * The failure that put the ticket here, which is the step it last left.
+   * `failedStages` alone answered "what has failed and not run since", and
+   * that outlives being routed around: spec fails, a person sends the ticket
+   * on to build, the reviews run out and it halts again — spec is still
+   * listed, and Retry, reading the list, paid for a spec round nobody asked
+   * for. Only the latest stage the ticket was in before this one can have
+   * put it here; anything older it has since left behind.
+   *
+   * Two kinds of entry are walked past. The current stage's own, so the judge
+   * reading a reply to a halt — entered from `blocked` — is still told what
+   * failed before it. And a round trip from here that settled: a question at
+   * a halt goes through the judge and comes home, and read as "the stage it
+   * last left", that made Retry answer "nothing has failed" to the ordinary
+   * conversation at a halt. A round trip whose stage failed is not walked
+   * past — a goto from the halt whose step failed again is what put it here.
+   *
+   * Round trips from the *current visit* only: those newer than this stage's
+   * own latest entry. An earlier visit also sent the ticket on from here — a
+   * judge's goto-spec after a failed build — and walked past as a round trip,
+   * that move let the judge's next visit, at spec-human-review, be told the
+   * build had failed. A stage that records no entry — a halt — leaves no
+   * visit to scope by, so every settled trip from it is walked past; one from
+   * an earlier visit is reached only when the ticket came back with no other
+   * stage's entry in between, since any such entry ends the walk first.
+   */
+  const ownEntry = ordered.findLastIndex((e) => e.kind === ENTRY_KIND && e.stage === stage);
+  const leftLast = ordered.findLast((e, i) =>
+    e.kind === ENTRY_KIND &&
+    e.stage !== stage &&
+    !(stage !== null && i > ownEntry && e.from === stage && !failedStages.includes(e.stage)));
+  const failedStage = leftLast !== undefined && failedStages.includes(leftLast.stage) ? leftLast.stage : null;
+
   return {
     stage,
     counters,
@@ -180,7 +252,10 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     lastHuman,
     lastOutputValid,
     lastRefused,
+    goto,
+    previousStage,
     failedStages,
+    failedStage,
     rounds,
     unblockedAt,
   };

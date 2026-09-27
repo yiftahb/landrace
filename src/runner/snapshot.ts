@@ -41,7 +41,8 @@ export const ENGINE_PROVIDES: readonly string[] = [
   "run.lastHuman", "run.lastHuman.*",
   "run.lastOutputValid",
   "run.lastRefused",
-  "run.failedStages",
+  "run.goto", "run.previousStage",
+  "run.failedStages", "run.failedStage",
   "run.unblockedAt",
   // The source's reading of the ticket, put in before any pre hook runs.
   "node", "node.id", "node.kind", "node.title", "node.link", "node.closed", "node.priority", "node.origin",

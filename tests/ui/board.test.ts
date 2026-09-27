@@ -6,7 +6,8 @@ const workflow: Workflow = {
   version: 1, name: "t",
   eligible: [{ when: { "node.state.labels": { $in: ["go"] } }, else: "no go label" }],
   stages: [
-    { id: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    { id: "spec", entry: true, step: "steps/spec.md", goto: ["spec"], triggers: [{ when: { "run.stage": null } }] },
+    { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
     { id: "done", terminal: true, triggers: [{ when: { "run.stage": "spec" } }] },
   ],
 };
@@ -115,6 +116,37 @@ describe("boardView: which rows offer a Retry", () => {
 
   it("offers none on an artifact", () => {
     expect(view(graph([pr("pr-9")])).rows[0]?.retry).toBeNull();
+  });
+});
+
+/*
+ * "Go to step…" is offered wherever a person's turn might be: the board holds
+ * labels, not records, so it cannot tell a judge whose round is settled from
+ * one whose step is still owed — `sendTo` is the authority on that, and
+ * refuses an owed step in a sentence. A stage that runs a step still lists
+ * its own goto targets, so long as nothing is running now.
+ */
+describe("boardView: where a row may send its ticket back to", () => {
+  const rowFor = (labels: string[], over: Partial<Node> = {}, opts: Partial<Parameters<typeof boardView>[0]> = {}) =>
+    view(graph([ticket("7", over, ["go", ...labels])]), opts).rows[0];
+
+  it("offers the targets its stage lists, as paths the server built", () => {
+    expect(rowFor(["lr:stage:blocked", "lr:blocked"])?.goto).toEqual([{ stage: "spec", path: "/tickets/7/goto/spec" }]);
+  });
+
+  it("offers a stepped stage's targets too, while nothing is running on it", () => {
+    expect(rowFor(["lr:stage:spec"])?.goto).toEqual([{ stage: "spec", path: "/tickets/7/goto/spec" }]);
+  });
+
+  it("offers none on a closed ticket, or while its agent runs", () => {
+    expect(rowFor(["lr:stage:blocked"], { closed: "done" })?.goto).toEqual([]);
+    const running = new Map<string, Running>([["7", { stage: "spec", round: 2, model: null, since: 1 }]]);
+    expect(rowFor(["lr:stage:blocked"], {}, { running })?.goto).toEqual([]);
+  });
+
+  it("offers none on a row held elsewhere", () => {
+    const other: Held = { ticket: "7", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
+    expect(rowFor(["lr:stage:blocked"], {}, { elsewhere: new Map([["7", other]]) })?.goto).toEqual([]);
   });
 });
 
@@ -321,7 +353,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "closed", "id", "kind", "lane", "link", "model", "note", "priority",
+      "badge", "chat", "children", "closed", "goto", "id", "kind", "lane", "link", "model", "note", "priority",
       "retry", "round", "screened", "since", "stage", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
@@ -358,31 +390,37 @@ describe("createBoard", () => {
     createBoard({ workflow, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace", nest: [...NEST] });
 
   /*
-   * What the server asks before it posts anything, of a node read just now —
-   * never of the tick's listing, which is as old as the tick. A handback's
-   * own step can finish inside one tick, and a Retry accepted off the stale
-   * row was posted as the reviewer's reply wherever the ticket had gone.
+   * The note says a person sent the ticket back, for as long as it is at the
+   * step it was sent to — taken from the tick's own events, the way
+   * `running` is.
    */
-  it("says why a freshly read ticket may not be retried, or nothing when it may", () => {
+  it("says a running ticket was sent back, until it moves on", () => {
     const board = shell(() => 0);
-    const nodes = [
-      ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"]),
-      ticket("2", {}, ["go", "lr:stage:screened", "lr:blocked", "lr:screened"]),
-      ticket("3", {}, ["go", "lr:stage:spec", "lr:working"]),
-      ticket("4", { closed: "done" }, ["go", "lr:stage:blocked", "lr:blocked"]),
-      pr("pr-5"),
-    ];
-    expect(nodes.map((n) => board.retryRefusal(n) === null)).toEqual([true, true, false, false, false]);
-    expect(board.retryRefusal(nodes[2] as Node)).toMatch(/#3 is not blocked or screened/);
+    board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
+    board.observe({ name: "ticket.evaluated", ticket: "1", decision: "transition", to: "spec", why: "goto" });
+    board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 2 });
+    return board.view().then((v) => {
+      expect(v.rows[0]?.note).toBe("agent running — sent back to spec");
+      board.observe({ name: "ticket.evaluated", ticket: "1", decision: "transition", to: "done", why: "the spec was published" });
+      return board.view();
+    }).then((v) => expect(v.rows[0]?.note).toBe("agent running"));
   });
 
-  it("refuses a Retry while the ticket's agent is running, whatever its labels still say", () => {
+  /*
+   * `sent` never clears on its own the way `running` does (no event says
+   * "nobody will ever goto this again"), so a ticket that leaves the graph —
+   * closed, or simply not relisted — has to be the thing that prunes it, or
+   * a stale "sent back to X" could resurface if the same id is ever listed
+   * again with no fresh goto behind it.
+   */
+  it("prunes sent for a ticket once it leaves the graph, so a stale note cannot resurface", async () => {
     const board = shell(() => 0);
-    const blocked = ticket("1", {}, ["go", "lr:stage:blocked", "lr:blocked"]);
-    board.observe({ name: "step.started", ticket: "1", stage: "build", round: 2 });
-    expect(board.retryRefusal(blocked)).toMatch(/running/);
-    board.observe({ name: "step.finished", ticket: "1" });
-    expect(board.retryRefusal(blocked)).toBeNull();
+    board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
+    board.observe({ name: "ticket.evaluated", ticket: "1", decision: "transition", to: "spec", why: "goto" });
+    board.list(graph([])); // ticket 1 is gone from this listing
+    board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])])); // and back, with no new goto
+    board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 3 });
+    expect((await board.view()).rows[0]?.note).toBe("agent running");
   });
 
   it("opens a running row on step.started and closes it on step.finished", async () => {

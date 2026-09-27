@@ -40,6 +40,24 @@ describe("renderPrompt", () => {
   it("leaves an unknown path visible rather than printing undefined", () => {
     expect(renderPrompt("{ticket.nope}", snapshot)).toBe("{ticket.nope}");
   });
+
+  // String() ran a list together as "code-review,build", and a judge told
+  // which steps failed has to be able to read them apart.
+  it("writes a list out with its items apart, and an empty one as nothing", () => {
+    const s = { run: { failedStages: ["code-review", "build"], none: [] } } as unknown as Snapshot;
+    expect(renderPrompt("failed: {run.failedStages}.", s)).toBe("failed: code-review, build.");
+    expect(renderPrompt("failed: {run.none}.", s)).toBe("failed: .");
+  });
+
+  // A field the engine derives as null — nothing failed, no stage before
+  // this one — is an answer, and the judge was shown "{run.failedStage}"
+  // for it. A path that is not there at all is still left visible.
+  it("writes a path that is there but null as none, and still leaves a missing one visible", () => {
+    const s = { run: { failedStage: null, lastHuman: null } } as unknown as Snapshot;
+    expect(renderPrompt("failed: {run.failedStage}.", s)).toBe("failed: none.");
+    expect(renderPrompt("{run.lastHuman.data.body}", s)).toBe("{run.lastHuman.data.body}");
+    expect(renderPrompt("{run.previousStage}", s)).toBe("{run.previousStage}");
+  });
 });
 
 describe("the model a step declares", () => {
@@ -1054,5 +1072,39 @@ describe("the tickets:create backstop", () => {
     await runStep({ ...base, executor, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: ["tickets:create"] } });
     await runStep({ ...base, executor, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: [] } });
     expect(seen).toEqual([{ parent: "1", stage: "s", round: 3 }, undefined]);
+  });
+});
+
+describe("a route that sends the ticket somewhere", () => {
+  const judge: Step = {
+    prompt: "judge",
+    output: {
+      discriminator: "intent",
+      shapes: { "goto-build": {}, question: {}, publish: {} },
+      routes: [
+        { when: { intent: "goto-build" }, goto: "build", effect: { type: "tracker.comment", marker: "intent:{round}" } },
+        { when: { intent: "question" }, effect: { type: "tracker.comment", marker: "intent:{round}" } },
+        { when: { intent: "publish" }, goto: "build", effect: { type: "artifact.publish", artifact: "spec" } },
+      ],
+    },
+  };
+  const answer = (intent: string) => run(`\`\`\`json\n{"intent":"${intent}"}\n\`\`\``, { step: judge, stageId: "triage" });
+
+  it("records the goto on the step's own output record, so the two land as one write", async () => {
+    const r = (await answer("goto-build")) as Ok;
+    expect(r.effects).toEqual([
+      expect.objectContaining({ kind: "output", stage: "triage", goto: "build", output: { intent: "goto-build" } }),
+    ]);
+  });
+
+  it("records it on the output record when the content goes off the tracker, too", async () => {
+    const r = (await answer("publish")) as Ok;
+    expect(r.effects[0]).not.toHaveProperty("goto");
+    expect(r.effects[1]).toMatchObject({ kind: "output", goto: "build" });
+  });
+
+  it("records none for an answer whose route sends nowhere", async () => {
+    const r = (await answer("question")) as Ok;
+    expect(r.effects[0]).not.toHaveProperty("goto");
   });
 });

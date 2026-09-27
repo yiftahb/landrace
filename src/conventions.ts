@@ -205,6 +205,22 @@ export function durationMs(text: string): number | null {
 }
 
 /**
+ * The kind of the record a person's explicit goto is written under — the
+ * board's Retry and "Go to step…", and `landrace_goto`. A judge's goto rides
+ * on its own output record instead, because that record is what settles the
+ * judge's round; a second record would be a second write that can fail apart
+ * from the first.
+ */
+export const GOTO_KIND = "goto";
+
+/**
+ * The trigger name a goto transition is logged under. A workflow's own
+ * trigger may not use it (`landrace validate`), so the board can tell from
+ * an event alone that a ticket was sent back.
+ */
+export const GOTO_TRIGGER = "goto";
+
+/**
  * The effect type that leaves a durable record on the tracker.
  *
  * Tracker-agnostic in the same way the marker format is — a Jira hook handles
@@ -466,6 +482,36 @@ export const renderMarker = (m: Marker): string => {
 };
 
 /**
+ * The marker a record effect is stamped with, for every tracker.
+ *
+ * Built here rather than in each hook because the fields are the engine's:
+ * which of them a hook copied was, until now, each hook's own choice, and the
+ * in-memory tracker had quietly stopped copying the session. `goto` and
+ * `from` are routed on — a hook that dropped either would send tickets
+ * nowhere, or send a judge's answers to no stage at all.
+ */
+export function recordMarker(effect: Effect): Marker {
+  const text = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
+  const session = text(effect.session);
+  const goto = text(effect.goto);
+  const from = text(effect.from);
+  return {
+    stage: String(effect.stage ?? "-"),
+    kind: String(effect.kind),
+    round: Number(effect.round ?? 0),
+    ...(effect.marker ? { marker: String(effect.marker) } : {}),
+    // The step's own value, already cut to its declared shape by the runner.
+    // It rides inside the marker, not in the body: the body is prose, and
+    // prose is escaped on the way out precisely so it cannot carry control
+    // state.
+    ...(effect.output === undefined ? {} : { output: effect.output }),
+    ...(session === undefined ? {} : { session }),
+    ...(goto === undefined ? {} : { goto }),
+    ...(from === undefined ? {} : { from }),
+  };
+}
+
+/**
  * The marker at the very end of a body, if there is one.
  *
  * Read backwards from the end rather than forwards over every match: a body
@@ -701,6 +747,19 @@ const sessionOf = (m: Marker): { session?: string } =>
   typeof m.session === "string" && m.session !== "" ? { session: m.session } : {};
 
 /**
+ * A stage id a marker names in `goto` or `from`, if it names a usable one.
+ * The marker is ours (authorship was checked), but it is still JSON parsed
+ * back out of a comment, and a reserved key is not a name.
+ */
+const stageRefsOf = (m: Marker): { goto?: string; from?: string } => {
+  const ref = (v: unknown): string | undefined =>
+    typeof v === "string" && v !== "" && !isReservedId(v) ? v : undefined;
+  const goto = ref(m.goto);
+  const from = ref(m.from);
+  return { ...(goto === undefined ? {} : { goto }), ...(from === undefined ? {} : { from }) };
+};
+
+/**
  * Turn a tracker's records into the engine's own. Vocabulary, not integration:
  * the marker format lives here, so every hook that records progress as text in
  * a comment reads it back the same way, and core never learns the format at
@@ -735,6 +794,7 @@ export function entriesFromComments(comments: TrackerComment[], botLogin: string
           round: marker.round,
           data: payloadOf(marker),
           ...sessionOf(marker),
+          ...stageRefsOf(marker),
           at: c.created_at,
           byAgent: true,
         }

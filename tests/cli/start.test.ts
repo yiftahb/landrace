@@ -6,9 +6,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
-import type { Board, LandraceEvent, Registry, Runtime, Schedule, Workflow } from "#namespace.js";
+import { renderMarker } from "#conventions.js";
+import type { Board, LandraceEvent, Registry, Runtime, Schedule, Source, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import { createDispatcher } from "#runner/effects.js";
+import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import {
   boardSink,
@@ -16,11 +18,11 @@ import {
   createInterrupt,
   executorFor,
   screenerFor,
+  gotoFor,
   loop,
   parseInterval,
   parsePort,
   repoWorkspace,
-  retryFor,
   startUi,
   stepTimeoutMs,
 } from "#cli/start.js";
@@ -446,7 +448,6 @@ describe("boardSink", () => {
           observe: () => { throw new Error("display broke"); },
           list: () => {},
           view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
-          retryRefusal: () => "not blocked",
         },
       };
       const sink = boardSink((e) => printed.push(e), board);
@@ -469,7 +470,6 @@ describe("boardSink", () => {
         observe: (e) => { observed.push(e); },
         list: () => {},
         view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
-        retryRefusal: () => "not blocked",
       },
     };
     const event: LandraceEvent = { name: "step.finished", ticket: "1" };
@@ -570,85 +570,63 @@ describe("startUi", () => {
       await ui?.close();
     }
   });
-});
 
-/**
- * The page's Retry, wired to the same reply `landrace_reply` posts — a human
- * turn, which is what the workflow's handback triggers read — behind the
- * board's own check that the ticket is stopped right now.
- */
-describe("the page's Retry", () => {
-  const world = async () => {
-    const gh = createFakeTracker([
-      { number: 19, labels: ["lr:auto", "lr:stage:screened", "lr:blocked", "lr:screened"] },
-      { number: 20, labels: ["lr:auto", "lr:stage:spec", "lr:working"] },
-    ]);
-    const source = gh.registry.source;
-    if (!source) throw new Error("the fake tracker registered no source");
-    const board = createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
-    board.list(await source.list(gh.ctx));
-    return { gh, board, deps: { source, pre: gh.registry.pre, dispatcher: createDispatcher(gh.registry.post), ctx: gh.ctx } };
-  };
-
-  it("posts exactly one reply on a stopped ticket, and it reads back as a person's turn", async () => {
-    const { gh, board, deps } = await world();
-    const retry = retryFor(deps, board);
-
-    expect(await retry?.refusal("19")).toBeNull();
-    await retry?.post("19");
-
-    expect((gh.comments.get(19) ?? []).map((c) => c.body)).toEqual(["Retry requested from the Landrace board."]);
-    expect(gh.entriesOf(19).at(-1)).toMatchObject({ kind: "human", byAgent: false });
-  });
-
-  it("refuses a ticket that is not stopped, in a sentence naming it", async () => {
-    const { board, deps } = await world();
-    expect(await retryFor(deps, board)?.refusal("20")).toMatch(/#20 is not blocked or screened/);
-  });
-
-  /*
-   * The listing is as old as the last tick, and a handback's own step can
-   * finish inside one: a Retry accepted off it was posted as the reviewer's
-   * reply at spec-human-review, and a paid round ran on "Retry requested".
+  /**
+   * The wiring itself: startUi is the one place a caller's `goto` reaches
+   * serveBoard, so this is what stands between `gotoFor` and a working POST
+   * /tickets/<id>/goto/<stage> — proven with a real request rather than a
+   * spy on serveBoard. Deleting `opts.goto` from `startUi`'s call to
+   * `serveBoard` would leave every other test in this file green while
+   * Retry and "Go to step…" quietly 404; this is what catches that.
    */
-  it("asks the tracker now, not the tick's listing", async () => {
-    const { gh, board, deps } = await world();
-    const issue = gh.issues.get(19);
-    if (!issue) throw new Error("no #19");
-    issue.labels = ["lr:auto", "lr:stage:spec-human-review", "lr:awaiting"];
-    expect(await retryFor(deps, board)?.refusal("19")).toMatch(/#19 is not blocked or screened/);
-    expect(gh.comments.get(19) ?? []).toEqual([]);
-  });
-
-  it("refuses a second Retry while the first reply is still waiting to be read", async () => {
-    const { board, deps } = await world();
-    const retry = retryFor(deps, board);
-    await retry?.post("19");
-    expect(await retry?.refusal("19")).toMatch(/already waiting/);
-  });
-
-  it("offers no Retry at all when no hook can post a reply", async () => {
-    const { board, deps } = await world();
-    expect(retryFor({ ...deps, dispatcher: createDispatcher([]) }, board)).toBeUndefined();
-  });
-
-  it("is passed through startUi to the page's server, so POST /tickets/<id>/retry reaches it", async () => {
-    const calls: string[] = [];
-    const board = createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+  it("passes goto through to serveBoard, so POST /tickets/<id>/goto/<stage> reaches it", async () => {
+    const calls: Array<[string, string | null]> = [];
     const ui = await startUi({
-      board, ui: true, once: false, port: 0,
-      retry: { refusal: async () => null, post: async (ticket) => { calls.push(ticket); } },
+      board: board(), ui: true, once: false, port: 0,
+      goto: { send: async (t, s) => { calls.push([t, s]); return { to: "spec" }; } },
     });
     try {
-      const res = await fetch(`http://127.0.0.1:${ui?.port}/tickets/19/retry`, {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/tickets/19/goto/spec`, {
         method: "POST",
-        headers: { "x-landrace-action": "retry", origin: `http://127.0.0.1:${ui?.port}` },
+        headers: { "x-landrace-action": "goto", origin: `http://127.0.0.1:${ui?.port}` },
       });
       expect(res.status).toBe(202);
-      expect(calls).toEqual(["19"]);
+      expect(calls).toEqual([["19", "spec"]]);
     } finally {
       await ui?.close();
     }
+  });
+});
+
+const WF: Workflow = { version: 1, name: "t", stages: [
+  { id: "spec", entry: true, step: "steps/spec.md",
+    on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
+    triggers: [{ when: { "run.stage": null } }] },
+  { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+] };
+
+describe("the page's Retry and Go to step", () => {
+  it("is absent when no hook can write a record", () => {
+    const tracker = createFakeTracker([]);
+    expect(gotoFor({ source: tracker.registry.source as Source, pre: [], dispatcher: createDispatcher([]), ctx: tracker.ctx, workflow: WF })).toBeUndefined();
+  });
+
+  it("sends a stopped ticket back to the stage that failed", async () => {
+    const tracker = createFakeTracker([{ number: 19, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
+    tracker.say(19, `entered${renderMarker({ stage: "spec", kind: "enter", round: 1 })}`);
+    tracker.say(19, `broken${renderMarker({ stage: "spec", kind: "malformed", round: 1 })}`);
+    const source = tracker.registry.source as Source;
+    const path = gotoFor({
+      source, pre: tracker.registry.pre,
+      dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: WF,
+      lock: { root: await mkdtemp(join(tmpdir(), "lr-start-goto-")) },
+    });
+    expect(await path?.send("19", null)).toEqual({ to: "spec" });
+
+    // A record the next tick actually reads, not just an answer this call
+    // happened to return.
+    const snapshot = await buildSnapshot({ ticket: "19", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "19" } });
+    expect(snapshot.run?.goto).toBe("spec");
   });
 });
 

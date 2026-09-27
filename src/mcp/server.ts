@@ -94,6 +94,15 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   );
 
   server.tool(
+    "landrace_goto",
+    "Send a ticket back to an earlier step — spec or build, say — from a stage where it is your turn. " +
+      "The workflow says which steps each stage may send a ticket to, and how many rounds each may run; " +
+      "anything else is refused with the reason. The step re-runs on the next tick.",
+    { ticket, stage: z.string().min(1).max(64) },
+    guard(({ ticket: n, stage }) => tools.goto(n, stage)),
+  );
+
+  server.tool(
     "landrace_ask",
     "Answer a step's open questions, or ask it something. Resumes the step's own session, so " +
       "it still has its draft, and records both halves on the ticket. Returns its reply and " +
@@ -105,9 +114,10 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
 
   server.tool(
     "landrace_resolve",
-    "Hand the ticket back to the orchestrator: it picks the step up again on its next tick, " +
-      "with everything said here on the record. Use it once the conversation has answered the " +
-      "question — or to move on even though the step still has questions.",
+    "Hand the ticket back to the orchestrator: `why` (by default, that the questions are answered) " +
+      "is posted as your reply, with everything said here on the record, and the workflow's next " +
+      "step reads it on the next tick. Use it once the conversation has answered the question — " +
+      "or to move on even though the step still has questions.",
     { ticket, why: z.string().optional() },
     guard(({ ticket: n, why }) => tools.resolve(n, why)),
   );

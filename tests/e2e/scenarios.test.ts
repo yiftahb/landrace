@@ -6,6 +6,7 @@ import { definePostHook } from "#hooks/contracts.js";
 import { createChild } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
+import { sendTo } from "#runner/goto.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { tick } from "#runner/tick.js";
 import { createExternalState, createHarness } from "#testing/index.js";
@@ -14,7 +15,12 @@ import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
-import type { Effect, ExternalState, Harness, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
+import type { Effect, ExternalState, GotoDeps, Harness, HookContext, PostHook, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
+
+// Its own lock root for every goto here: these tests must not race the
+// default one a developer's own loop might be holding.
+let lockRoot: string;
+beforeAll(async () => { lockRoot = await mkdtemp(join(tmpdir(), "lr-e2e-goto-")); });
 
 /** The real GitHub hooks as the harness takes them: the registry, with its source proved present. */
 const hooksOf = (gh: ReturnType<typeof createFakeTracker>) => {
@@ -462,7 +468,8 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
   spec: (round) => round === 1
     ? '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```'
     : '# Export CSV\n\nOne file, comma separated.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
-  triage: '```json\n{"intent":"approve"}\n```',
+  // The first reply answers the spec's questions, the second approves the spec.
+  triage: (round) => (round === 1 ? '```json\n{"intent":"revise"}\n```' : '```json\n{"intent":"approve"}\n```'),
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
@@ -528,14 +535,14 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     const reviewed = await run.converge();
 
     expect(asked.trail).toEqual(["spec", "spec-questions"]);
-    expect(specced.trail).toEqual(["spec", "spec-human-review"]);
+    expect(specced.trail).toEqual(["triage", "spec", "spec-human-review"]);
     expect(run.trail()).toEqual([
-      "spec", "spec-questions", "spec", "spec-human-review", "triage", "build", "publish",
+      "spec", "spec-questions", "triage", "spec", "spec-human-review", "triage", "build", "publish",
       "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
       "code-review", "blocked",
     ]);
     expect(run.counts()).toEqual({
-      spec: 2, triage: 1, build: 1, "code-review": 4, "fix-review": 3,
+      spec: 2, triage: 2, build: 1, "code-review": 4, "fix-review": 3,
     });
 
     // The budget, not the cap: the workflow decided this, not the engine.
@@ -654,7 +661,7 @@ describe("a human reply to a ticket blocked by a rejected output", () => {
     const { workflow, steps } = await loadWorkflow(".landrace");
     const writes: string[] = [];
     const run = createHarness({
-      workflow, steps, ...hooksOf(gh), answers,
+      workflow, steps, ...hooksOf(gh), answers: { triage: '```json\n{"intent":"goto-spec"}\n```', ...answers },
       log: (name, data = {}) => { if (name === "effect.applied") writes.push(String(data.type)); },
     });
     const rejected = await run.converge();
@@ -670,10 +677,11 @@ describe("a human reply to a ticket blocked by a rejected output", () => {
     const handback = await run.converge();
 
     expect(handback.result.settled).not.toBe("cap");
-    // The ping-pong wrote a status and a label on every one of thirty passes.
+    // The ping-pong wrote a status and a label on every one of thirty passes;
+    // a judged handback writes nine.
     expect(writes.length - before).toBeLessThan(10);
     // Taken back once and worked on, rather than bounced between the two.
-    expect(handback.trail).toEqual(["blocked", "spec"]);
+    expect(handback.trail).toEqual(["blocked", "triage", "spec"]);
   });
 
   it("re-runs the stage the human handed back, rather than nothing at all", async () => {
@@ -715,11 +723,15 @@ describe("a step refused by a security check", () => {
   const OK = '```json\n{"verdict":"ok","reason":"fine"}\n```';
   const NO = '```json\n{"verdict":"suspicious","reason":"asks for an external URL"}\n```';
   const QUESTIONS = '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```';
+  const judged = (intent: string) => `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``;
 
   const at = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen: Record<string, ScriptedAnswer>) => {
     const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
     const { workflow, steps } = await loadWorkflow(".landrace");
-    const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, screen });
+    // The judge is screened like every step, so it gets a verdict too.
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, screen: { triage: OK, ...screen },
+    });
     // Two ticks: a rejection is recorded and the call halts on it; the next
     // tick reads it back and routes it. A person replies after that.
     const tick = async () => { await run.converge(); await run.converge(); };
@@ -740,92 +752,322 @@ describe("a step refused by a security check", () => {
     expect(state.comments("1").join("\n")).toMatch(/Step refused by a security check[\s\S]*asks for an external URL/);
   });
 
-  it("goes back to build on a human reply — not to spec — and sheds lr:screened", async () => {
-    const { state, run, tick } = await at(["lr:stage:build"], ANSWERS, {
-      build: (round) => (round === 1 ? NO : OK),
-      "code-review": OK,
+  it("goes back to build when a reply asks for it — not to spec — and sheds lr:screened", async () => {
+    const { state, run, tick } = await at(["lr:stage:build"], { ...ANSWERS, triage: judged("goto-build") }, {
+      build: (round) => (round === 1 ? NO : OK), "code-review": OK,
     });
     await tick();
-
     state.say("1", "the link was only there for reference; try again");
     await run.converge();
 
-    expect(run.trail().slice(0, 4)).toEqual(["build", "screened", "build", "publish"]);
+    expect(run.trail().slice(0, 5)).toEqual(["build", "screened", "triage", "build", "publish"]);
     expect(run.trail()).not.toContain("spec");
     expect(run.counts().build).toBe(1);
     expect(state.ticket("1").labels).not.toContain("lr:screened");
     expect(state.ticket("1").labels).not.toContain("lr:blocked");
   });
 
-  /*
-   * The handback is a loop, and its bound is the workflow's own
-   * `run.counters.build: { $lt: 3 }` — three attempts, a refused one counting
-   * like any other rejected round. Past that a reply sends the ticket back to
-   * spec, the one text that can change what the screener is shown.
-   */
-  it("hands a refused build back to spec once the build's budget is spent", async () => {
-    const { state, run, tick } = await at(["lr:stage:build"], ANSWERS, { build: NO, spec: OK });
+  it("stops sending a refused build back once its rounds are spent, and sends it to spec when asked", async () => {
+    const { state, run, tick } = await at(
+      ["lr:stage:build"],
+      { ...ANSWERS, spec: QUESTIONS, triage: (round) => judged(round <= 3 ? "goto-build" : "goto-spec") },
+      { build: NO, spec: OK },
+    );
     await tick();
-
-    for (let i = 1; i <= 2; i++) {
+    for (let i = 1; i <= 3; i++) {
       state.say("1", `try again ${i}`);
       await tick();
     }
+    // Three build rounds, all refused; the third reply's goto was past the cap and came home.
     expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
+    expect(state.stage("1")).toBe("screened");
     expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:screened", "lr:screened"]));
 
     state.say("1", "revise the spec instead");
     await tick();
-    expect(run.trail().slice(-3)).toEqual(["screened", "spec", "spec-questions"]);
+    expect(run.trail().slice(-3)).toEqual(["triage", "spec", "spec-questions"]);
     expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
     expect(state.ticket("1").labels).not.toContain("lr:screened");
   });
 
-  it("hands a refused spec back to spec, the stage that was refused", async () => {
-    const { state, run, tick } = await at([], { spec: QUESTIONS }, { spec: (round) => (round === 1 ? NO : OK) });
-
+  it("sends a refused spec back to spec when a reply asks for it", async () => {
+    const { state, run, tick } = await at([], { spec: QUESTIONS, triage: judged("goto-spec") }, { spec: (round) => (round === 1 ? NO : OK) });
     await tick();
     expect(run.trail()).toEqual(["spec", "screened"]);
     state.say("1", "go ahead");
     await run.converge();
-    expect(run.trail()).toEqual(["spec", "screened", "spec", "spec-questions"]);
+    expect(run.trail()).toEqual(["spec", "screened", "triage", "spec", "spec-questions"]);
   });
 
-  it("still sends a broken contract to blocked, never screened, and a reply there back to spec", async () => {
-    const { state, run, tick } = await at([], { spec: (round) => (round === 1 ? "no json at all" : QUESTIONS) }, { spec: OK });
-
+  it("still sends a broken contract to blocked, never screened", async () => {
+    const { state, run, tick } = await at([], {
+      spec: (round) => (round === 1 ? "no json at all" : QUESTIONS), triage: judged("goto-spec"),
+    }, { spec: OK });
     await tick();
     expect(run.trail()).toEqual(["spec", "blocked"]);
     expect(state.ticket("1").labels).toContain("lr:blocked");
     expect(state.ticket("1").labels).not.toContain("lr:screened");
-
     state.say("1", "sorry, try again");
     await run.converge();
-    expect(run.trail()).toEqual(["spec", "blocked", "spec", "spec-questions"]);
+    expect(run.trail()).toEqual(["spec", "blocked", "triage", "spec", "spec-questions"]);
   });
 
-  it("sends a build that broke its contract to blocked, and a reply there back to build", async () => {
+  it("sends a build that broke its contract back to build when a reply asks for it", async () => {
     const done = '```json\n{"kind":"done"}\n```';
-    const { state, run, tick } = await at(["lr:stage:build"], { ...ANSWERS, build: (round) => (round === 1 ? "no json" : done) }, {
-      build: OK, "code-review": OK,
-    });
-
+    const { state, run, tick } = await at(
+      ["lr:stage:build"],
+      { ...ANSWERS, build: (round) => (round === 1 ? "no json" : done), triage: judged("goto-build") },
+      { build: OK, "code-review": OK },
+    );
     await tick();
     expect(run.trail()).toEqual(["build", "blocked"]);
     state.say("1", "try again");
     await run.converge();
-
-    expect(run.trail().slice(0, 4)).toEqual(["build", "blocked", "build", "publish"]);
+    expect(run.trail().slice(0, 5)).toEqual(["build", "blocked", "triage", "build", "publish"]);
     expect(run.trail()).not.toContain("spec");
   });
 });
 
 /**
- * §10: `triage --question--> spec-questions`, and `unclear` "waits and asks
- * rather than guessing". Both shapes were declared, routed to a comment, and
- * led nowhere: the ticket sat at `triage` wearing `lr:awaiting` and the
- * human's next reply did nothing at all, because decide() excludes the current
- * stage's own triggers and nothing else claimed a human turn from `triage`.
+ * A post hook standing in for wherever the shipped `spec` step's `kind:
+ * "spec"` answer actually publishes to — a page, a wiki, a Pages branch — over
+ * the in-memory tracker, which speaks the conventions and publishes no
+ * documents of its own. Keeps each ticket's published body and reads it back
+ * as satisfied; nothing else about it is real. Shared by every world here
+ * that lets a real spec round settle without an integration behind it, so
+ * there is one definition of the stand-in rather than one per describe block.
+ */
+function specPageHook(pages: Map<string, string> = new Map<string, string>()): PostHook {
+  return definePostHook({
+    id: "spec-page",
+    handles: ["artifact.publish"],
+    satisfied: (snapshot, effect) => pages.get(String((snapshot.node as { id: string }).id)) === effect.body,
+    apply: async (effect, { ticket }) => { pages.set(ticket, String(effect.body)); },
+  });
+}
+
+/**
+ * Spec §8: going back to a step, by a reply the judge reads and by the
+ * command, over the in-memory tracker and the shipped workflow.
+ */
+describe("sending a ticket back to a step", () => {
+  const judged = (intent: string) => `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``;
+  const SPEC = '# Export\n\nJSON, not CSV.\n\n```json\n{"kind":"spec","title":"Export"}\n```';
+  const ctx = {
+    config: {} as HookContext["config"], secrets: new Map<string, string>(),
+    signal: new AbortController().signal, log: () => {},
+  } as unknown as RuntimeContext;
+
+  // The shipped spec step always routes a "spec" answer through
+  // `artifact.publish` (spec.md), never a bare tracker.comment — so any test
+  // that lets a real spec round settle over the in-memory tracker needs
+  // something to publish it to, or converge halts on "no post hook handles
+  // artifact.publish" before the round's own output record is ever written.
+  const world = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen?: Record<string, ScriptedAnswer>) => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
+    const specPage = specPageHook();
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post, specPage], answers,
+      ...(screen === undefined ? {} : { screen }),
+    });
+    const deps: GotoDeps = {
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post, specPage]), ctx, workflow,
+      lock: { root: lockRoot },
+    };
+    const record = (effect: Effect) => state.post.apply(effect, { ...ctx, ticket: "1" } as HookContext);
+    return { state, run, deps, record };
+  };
+
+  // A ticket seeded at build carries build's own entry record, as one that
+  // got there does: Retry names the failure by the stage the ticket last
+  // entered, and a seed with none would have failed nowhere.
+  const BUILD_ENTERED: Effect = { type: "tracker.comment", kind: "enter", stage: "build", round: 1, marker: "enter:build:1" };
+
+  it("takes 'go back to spec' at pr-human-review through the judge to a second spec round, and back through review", async () => {
+    const { state, run, record } = await world(["lr:stage:pr-human-review", "lr:awaiting"], {
+      ...ANSWERS, spec: SPEC, triage: (round) => judged(round === 1 ? "goto-spec" : "approve"),
+    });
+    state.openPull("1", { branch: "landrace/1" });
+    await record({ type: "tracker.comment", kind: "output", stage: "spec", round: 1, marker: "output:spec:1", output: { kind: "spec" } });
+
+    state.say("1", "the export has to be JSON — redo the spec");
+    const back = await run.converge();
+    // The trail's first entry is the ticket's own starting position — a real
+    // label, not a fresh ticket's null one — so it is the departure point of
+    // the first transition, exactly as it is for any ticket seeded already in
+    // flight (see "a ticket in review whose only pull request merges" above).
+    expect(back.trail).toEqual(["pr-human-review", "triage", "spec", "spec-human-review"]);
+    expect(back.calls.find((c) => c.stage === "spec")?.round).toBe(2);
+    // Consumed by spec's entry record: nothing re-runs on the next tick.
+    expect((await run.converge()).calls).toEqual([]);
+
+    state.say("1", "looks right");
+    const again = await run.converge();
+    expect(again.trail.slice(0, 4)).toEqual(["triage", "build", "publish", "code-review"]);
+    expect(state.stage("1")).toBe("pr-human-review");
+  });
+
+  it("brings a question asked at a halt back to the halt", async () => {
+    const { state, run } = await world(["lr:stage:blocked", "lr:blocked"], { triage: judged("question") });
+    state.say("1", "why did it stop?");
+    const r = await run.converge();
+    // Same reason as above: "blocked" leads because it is the ticket's own
+    // starting position, pushed as the first transition's departure point.
+    expect(r.trail).toEqual(["blocked", "triage", "blocked"]);
+    expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+  });
+
+  it("re-runs a refused build when the board's Retry sends it back", async () => {
+    const OK = '```json\n{"verdict":"ok"}\n```';
+    const NO = '```json\n{"verdict":"suspicious","reason":"x"}\n```';
+    const { state, run, deps, record } = await world(["lr:stage:build"], ANSWERS, {
+      build: (round) => (round === 1 ? NO : OK), "code-review": OK,
+    });
+    await record(BUILD_ENTERED);
+    await run.converge();
+    await run.converge();
+    expect(state.stage("1")).toBe("screened");
+
+    expect(await sendTo(deps, "1", null)).toEqual({ to: "build" });
+    const r = await run.converge();
+    expect(r.trail.slice(0, 2)).toEqual(["build", "publish"]);
+    expect(run.counts().build).toBe(1);
+  });
+
+  it("stops a goto loop at the cap, saying why, and still goes where the cap allows", async () => {
+    const NO = '```json\n{"verdict":"suspicious","reason":"x"}\n```';
+    const OK = '```json\n{"verdict":"ok"}\n```';
+    // "spec" is screened too: once the cap sends this ticket there for real,
+    // its own round has to actually run rather than being screened out for
+    // want of a scripted verdict.
+    const { state, run, deps, record } = await world(["lr:stage:build"], ANSWERS, { build: NO, spec: OK });
+    await record(BUILD_ENTERED);
+    const tick = async () => { await run.converge(); await run.converge(); };
+    await tick();
+    for (let i = 0; i < 2; i++) {
+      expect(await sendTo(deps, "1", null)).toEqual({ to: "build" });
+      await tick();
+    }
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toHaveLength(3);
+    expect(await sendTo(deps, "1", null)).toEqual({ refused: expect.stringMatching(/run\.counters\.build/) });
+    expect(await sendTo(deps, "1", "spec")).toEqual({ to: "spec" });
+
+    // "still goes where the cap allows" has to mean the ticket actually
+    // moves, not merely that sendTo said yes: a goto grant that decide()
+    // never acted on would leave the ticket sitting at screened for good.
+    const arrived = await run.converge();
+    expect(arrived.trail).toEqual(["spec", "spec-questions"]);
+    expect(state.stage("1")).toBe("spec-questions");
+  });
+
+  /*
+   * The window the workflow accepts rather than closes. triage's approve →
+   * build reads `run.previousStage`, which is read off triage's own entry
+   * record; a crash after build's entry comment and before its status label
+   * leaves build's entry the latest, so at triage previousStage reads null and
+   * no trigger fires again. One "Go to step… build" is the recovery: triage
+   * lists build, a settled triage accepts a goto, and build's entry record —
+   * already there — reconciles at the same round rather than being posted twice.
+   */
+  it("recovers a crash between build's entry comment and its status label with one Go to step", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:spec-human-review", "lr:awaiting"] }] });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const answers = { ...ANSWERS, triage: judged("approve") };
+    const harness = (over: Partial<Parameters<typeof createHarness>[0]> = {}) =>
+      createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, ...over });
+    await state.post.apply(
+      { type: "tracker.comment", kind: "output", stage: "spec", round: 1, marker: "output:spec:1", output: { kind: "spec" } },
+      { ...ctx, ticket: "1" } as HookContext,
+    );
+    const buildEntries = () => state.entriesOf("1").filter((e) => e.kind === "enter" && e.stage === "build");
+
+    state.say("1", "looks right");
+    const crashed = await harness({ interrupt: (e) => e.type === "tracker.status" && e.value === "build" }).converge();
+    expect(crashed.result.settled).toBe("halt");
+    expect(buildEntries().map((e) => e.round)).toEqual([1]);
+    expect(state.stage("1")).toBe("triage");
+
+    const run = harness();
+    const waiting = await run.converge();
+    expect(waiting.calls).toEqual([]);
+    expect(state.stage("1")).toBe("triage");
+
+    const deps: GotoDeps = {
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow, lock: { root: lockRoot },
+    };
+    expect(await sendTo(deps, "1", "build")).toEqual({ to: "build" });
+    const recovered = await run.converge();
+
+    expect(recovered.trail.slice(0, 2)).toEqual(["build", "publish"]);
+    expect(recovered.calls[0]).toMatchObject({ stage: "build", round: 1 });
+    expect(buildEntries().map((e) => e.round)).toEqual([1]);
+  });
+});
+
+/*
+ * Retry is a goto to the step whose failure put the ticket there, and a review can fail like
+ * any other step. With the halts listing only spec and build, a review that
+ * broke its contract could be retried only by rewriting the spec or rebuilding
+ * the work, neither of which was what failed. And a review with no pull
+ * request to read is not offered at all: sent there, the ticket would halt on
+ * the stage's precondition, where no goto can reach it.
+ */
+describe("a halted ticket sent back to a review, from the board", () => {
+  const ctx = { config: {}, secrets: new Map<string, string>(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+  const depsOf = (state: ExternalState, workflow: GotoDeps["workflow"]): GotoDeps =>
+    ({ source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, workflow, lock: { root: lockRoot } });
+
+  it("goes back to code-review — not to spec or build — and sheds lr:blocked", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:code-review"] }] });
+    state.openPull("1", { branch: "landrace/1" });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post],
+      answers: { "code-review": (round) => (round === 1 ? "no json" : '```json\n{"kind":"reviewed"}\n```') },
+    });
+    const deps = depsOf(state, workflow);
+    // Its own entry record, as a ticket that reached code-review carries.
+    await state.post.apply(
+      { type: "tracker.comment", kind: "enter", stage: "code-review", round: 1, marker: "enter:code-review:1" },
+      { ...ctx, ticket: "1" } as HookContext,
+    );
+
+    // Two converges: the rejection is recorded, then read back and routed.
+    await run.converge();
+    await run.converge();
+    expect(run.trail()).toEqual(["code-review", "blocked"]);
+
+    expect(await sendTo(deps, "1", null)).toEqual({ to: "code-review" });
+    const retried = await run.converge();
+
+    expect(retried.trail).toEqual(["code-review", "pr-human-review"]);
+    expect(retried.calls.map(({ stage, round }) => ({ stage, round }))).toEqual([{ stage: "code-review", round: 2 }]);
+    expect(state.ticket("1").labels).not.toContain("lr:blocked");
+  });
+
+  it("refuses to send a ticket with no pull request to a review, and writes nothing", async () => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }] });
+    const { workflow } = await loadWorkflow(".landrace");
+    const deps = depsOf(state, workflow);
+    const before = state.comments("1").length;
+
+    for (const to of ["code-review", "fix-review"]) {
+      expect(await sendTo(deps, "1", to)).toEqual({ refused: expect.stringMatching(/rel\.implements\.in\.total/) });
+    }
+    expect(state.comments("1").length).toBe(before);
+    expect(state.stage("1")).toBe("blocked");
+  });
+});
+
+/**
+ * A `question`, and an `unclear` that "waits and asks rather than guessing",
+ * come home to where the reply was made — here `spec-human-review` — so the
+ * person's next reply is read again. Both shapes were once declared, routed
+ * to a comment, and led nowhere: the ticket sat at `triage` wearing
+ * `lr:awaiting` and the human's next reply did nothing at all, because
+ * decide() excludes the current stage's own triggers and nothing else
+ * claimed a human turn from `triage`.
  */
 describe("a reviewer's reply that triage cannot read as approve or revise", () => {
   const upTo = async (intent: string) => {
@@ -835,7 +1077,7 @@ describe("a reviewer's reply that triage cannot read as approve or revise", () =
       workflow, steps, ...hooksOf(gh),
       answers: {
         spec: '# Export CSV\n\nOne file.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
-        triage: `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``,
+        triage: (round) => (round === 1 ? `\`\`\`json\n{"intent":"${intent}"}\n\`\`\`` : '```json\n{"intent":"revise"}\n```'),
       },
     });
     await run.converge();
@@ -844,9 +1086,10 @@ describe("a reviewer's reply that triage cannot read as approve or revise", () =
     return { gh, run, triaged };
   };
 
-  it.each(["question", "unclear"])("moves the ticket somewhere a human turn can reach, on %s", async (intent) => {
+  it.each(["question", "unclear"])("brings the ticket back to where the reply was made, on %s, and a later reply moves it on", async (intent) => {
     const { gh, run, triaged } = await upTo(intent);
     expect(triaged.trail.at(-1)).not.toBe("triage");
+    expect(triaged.trail).toEqual(["triage", "spec-human-review"]);
 
     gh.sayAs("a-person", 1, "no tabs, commas only", new Date(Date.UTC(2026, 1, 2)).toISOString());
     const answered = await run.converge();
@@ -911,13 +1154,7 @@ const CHILDREN = "tests/fixtures/children";
 
 const splitWorld = () => {
   const state = createExternalState({ tickets: [{ id: "1", title: "Payments revamp", body: "big", labels: ["lr:auto"] }] });
-  const pages = new Map<string, string>();
-  const specPage = definePostHook({
-    id: "spec-page",
-    handles: ["artifact.publish"],
-    satisfied: (snapshot, effect) => pages.get(String((snapshot.node as { id: string }).id)) === effect.body,
-    apply: async (effect, { ticket }) => { pages.set(ticket, String(effect.body)); },
-  });
+  const specPage = specPageHook();
   const ctx = { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
   const hooks = { source: state.source, pre: [state.pre], post: [state.post, specPage] };
   return { state, ctx, hooks };
@@ -926,6 +1163,9 @@ const splitWorld = () => {
 const SPLIT_ANSWERS: Record<string, ScriptedAnswer> = {
   ...ANSWERS,
   spec: '# Spec\n\n```json\n{"kind":"spec","title":"Payments"}\n```',
+  // The spec asks nothing here, so every reply triage reads is made at
+  // spec-human-review, and each one approves.
+  triage: '```json\n{"intent":"approve"}\n```',
   breakdown: '```json\n{"kind":"children"}\n```',
 };
 

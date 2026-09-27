@@ -1,6 +1,7 @@
 import {
   CAPABILITIES,
   ENTRY_KIND,
+  GOTO_TRIGGER,
   isReservedId,
   mayCreateTickets,
   NODES_CLOSE_EFFECT,
@@ -8,6 +9,7 @@ import {
   RECORD_EFFECT,
   unknownCapabilities,
 } from "#conventions.js";
+import { gotoTargetsOf } from "#core/goto.js";
 import { identityOf } from "#core/locate.js";
 import { assertAllowedOperators, pathsIn } from "#core/predicate.js";
 import type { Condition, Problem, Stage, Step, Workflow } from "#namespace.js";
@@ -120,6 +122,52 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     }
   }
 
+  /*
+   * A goto names a stage the way a trigger does, and is consumed by the
+   * entry record its target writes on arrival. A target that writes none
+   * leaves the goto pending when the ticket lands, and a pending goto its
+   * new stage does not list halts it there — so that is refused here, with
+   * an unknown target and one named twice.
+   */
+  const stageById = new Map(w.stages.map((s) => [s.id, s]));
+  for (const stage of w.stages) {
+    const named = new Set<string>();
+    for (const g of gotoTargetsOf(stage)) {
+      if (named.has(g.stage)) problems.push({ rule: "goto", message: `stage "${stage.id}" names "${g.stage}" twice in goto` });
+      named.add(g.stage);
+      const target = stageById.get(g.stage);
+      if (!target) {
+        problems.push({ rule: "goto", message: `stage "${stage.id}" sends tickets to "${g.stage}", which is not in the workflow` });
+      } else if (!recordsItsEntry(target)) {
+        problems.push({
+          rule: "goto",
+          message: `stage "${stage.id}" sends tickets to "${g.stage}", which records no "${ENTRY_KIND}" naming {round}: ` +
+            "its entry record is what consumes a goto, so the ticket would arrive with the goto still pending",
+        });
+      }
+      if (g.when === null) continue;
+      try {
+        assertAllowedOperators(g.when);
+      } catch (e) {
+        problems.push({ rule: "operator", message: `stage "${stage.id}", goto "${g.stage}": ${messageOf(e)}` });
+      }
+    }
+  }
+
+  // The name the engine logs a goto transition under. A trigger of the same
+  // name would read, in the event stream and on the board, as a person
+  // sending the ticket back.
+  for (const stage of w.stages) {
+    for (const t of stage.triggers ?? []) {
+      if (t.name === GOTO_TRIGGER) {
+        problems.push({
+          rule: "trigger-name",
+          message: `stage "${stage.id}" names a trigger "${GOTO_TRIGGER}", the name a goto transition is logged under`,
+        });
+      }
+    }
+  }
+
   for (const stage of w.stages) {
     for (const condition of [stage.identity, stage.requires, ...(stage.triggers ?? []).map((t) => t.when)]) {
       if (!condition) continue;
@@ -164,6 +212,29 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
         assertAllowedOperators(route.when);
       } catch (e) {
         problems.push({ rule: "operator", message: `step ${stage.step}, route: ${messageOf(e)}` });
+      }
+      if (route.goto !== undefined && !gotoTargetsOf(stage).some((g) => g.stage === route.goto)) {
+        problems.push({
+          rule: "goto",
+          message: `step ${stage.step}'s route for ${JSON.stringify(route.when)} sends tickets to "${route.goto}", ` +
+            `which stage "${stage.id}" does not list in goto, so every such answer would halt the ticket`,
+        });
+      }
+    }
+  }
+
+  // `goto` and `from` are the engine's to write on a record: a route's goto is
+  // checked against its stage's list above, and an effect field of either
+  // name would carry one past that check — or overwrite, on an entry record,
+  // the stage the ticket came from.
+  for (const stage of w.stages) {
+    const step = stage.step ? steps.get(stage.step) : undefined;
+    const effects = [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).map((r) => r.effect)];
+    for (const effect of effects) {
+      for (const field of ["goto", "from"]) {
+        if (field in effect) {
+          problems.push({ rule: "reserved-field", message: `stage "${stage.id}" has an effect with a "${field}" field, which only the engine writes` });
+        }
       }
     }
   }
@@ -293,6 +364,7 @@ function possibleEdges(w: Workflow): Array<[string, string]> {
         for (const candidate of ids) if (candidate !== stage.id) out.push([candidate, stage.id]);
       }
     }
+    for (const g of gotoTargetsOf(stage)) out.push([stage.id, g.stage]);
   }
   return out;
 }
@@ -404,6 +476,11 @@ function unboundedAdjacencyOf(w: Workflow): Map<string, string[]> {
       if (typeof from === "string" && !boundsACounter(t.when)) {
         adjacency.set(from, [...(adjacency.get(from) ?? []), stage.id]);
       }
+    }
+    // A goto is an edge like a trigger's, and its cap is its `when`.
+    for (const g of gotoTargetsOf(stage)) {
+      if (g.when !== null && boundsACounter(g.when)) continue;
+      adjacency.set(stage.id, [...(adjacency.get(stage.id) ?? []), g.stage]);
     }
   }
   return adjacency;
@@ -772,7 +849,9 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
         const demanded = t.when[path];
         return demanded === undefined || demanded === shape || typeof demanded === "object";
       });
-      if (claimed) continue;
+      // A route that names a goto is its own edge: the answer sends the ticket there.
+      const sent = output.routes.some((r) => r.when[output.discriminator] === shape && r.goto !== undefined);
+      if (claimed || sent) continue;
       problems.push({
         rule: "shape-edge",
         message:
@@ -808,7 +887,10 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     };
 
     for (const stage of w.stages) {
-      const conditions = [stage.identity, stage.requires, ...(stage.triggers ?? []).map((t) => t.when)];
+      const conditions = [
+        stage.identity, stage.requires, ...(stage.triggers ?? []).map((t) => t.when),
+        ...gotoTargetsOf(stage).map((g) => g.when ?? undefined),
+      ];
       for (const c of conditions) uncovered(c, `stage "${stage.id}"`);
     }
 

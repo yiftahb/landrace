@@ -172,3 +172,24 @@ describe("reconcile", () => {
     expect(reconcile(snap, effects, () => false)).toEqual(effects);
   });
 });
+
+describe("where an entry record says the ticket came from", () => {
+  const triage: Stage = {
+    id: "triage",
+    on_enter: [
+      { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" },
+      { type: "tracker.status", value: "triage" },
+    ],
+  };
+  const leaving: Stage = { id: "spec-human-review" };
+
+  it("stamps the stage being left on the entry record, and on nothing else", () => {
+    const planned = planEffects({ action: "transition", stage: leaving, to: triage, round: 2 }, {}, "1");
+    expect(planned[0]).toMatchObject({ kind: "enter", from: "spec-human-review" });
+    expect(planned[1]).not.toHaveProperty("from");
+  });
+
+  it("stamps nothing on a fresh ticket's first entry, which left no stage", () => {
+    expect(planEffects({ action: "transition", to: triage, round: 1 }, {}, "1")[0]).not.toHaveProperty("from");
+  });
+});

@@ -17,9 +17,10 @@ eligible:
     else: "no lr:auto label"
 
 # One key, because one key is read. The spec and review caps are the `$lt`
-# comparisons in the triggers below, where the validator can see them (§11.4)
-# and where editing one actually changes what happens — `spec: 3` here was a
-# number an operator could edit to no effect at all.
+# comparisons in the triggers below and in each `goto` entry's `when`, where
+# the validator can see them (§11.4) and where editing one actually changes
+# what happens — `spec: 3` here was a number an operator could edit to no
+# effect at all.
 budget:
   # The default for a step that names no `timeout` of its own — triage, the
   # one quick classifier. Every step that does real work says 120m.
@@ -35,11 +36,17 @@ budget:
 #
 # 2. The `enter` record comes first, before the status that moves the position.
 #    It is what tells the engine the stage owes another round — a crash between
-#    the two effects must leave the ticket at the *previous* stage, whose
-#    trigger simply fires again and replans the identical entry record (the
-#    round is derived, so it does not move). Written after the status instead,
-#    a crash would land the ticket on a stage that still reads as complete from
-#    its last round, and that round would be silently skipped.
+#    the two effects must leave the ticket at the *previous* stage. Written
+#    after the status instead, a crash would land the ticket on a stage that
+#    still reads as complete from its last round, and that round would be
+#    silently skipped. From the previous stage, a trigger that reads only what
+#    the crash left unchanged fires again and replans the identical entry
+#    record (the round is derived, so it does not move). One that reads
+#    `run.previousStage` does not: that is read off the current stage's own
+#    entry record, and the target's is now the latest, so a crash on triage's
+#    way to spec or build leaves it waiting at triage. One "Go to step…" to
+#    that target recovers it — triage lists both, and the entry record already
+#    there reconciles at the same round.
 #
 # And one rule for triggers: every trigger leaving a stage that runs a step
 # reads `"run.lastOutputValid": null` — that stage's latest round did not
@@ -49,6 +56,16 @@ budget:
 # finished a round", a failed second spec also read the first one's
 # `kind: questions` — two triggers, an ambiguity halt, and the ticket left
 # wearing lr:working at a stage nothing would ever run again.
+#
+# And one for a person's turn. Wherever it is theirs, a reply goes to
+# `triage`, which reads it into one closed set of answers; `triage` sends the
+# ticket on, or back to where the reply was made when the answer changes
+# nothing there — `run.previousStage`, which the engine reads off triage's
+# own entry record. The same stages list, under `goto`, the steps a person may
+# send the ticket back to: by a `goto-*` answer, the page's Retry and "Go to
+# step…", or `landrace_goto`. A goto outranks every trigger; each target's
+# round cap rides on its entry in the list, where the engine checks it before
+# it goes, and a goto past its cap is declined and the reply comes home.
 # Pull requests are graph nodes: rel.implements.in.* counts every PR tied to the ticket — "all merged" is total > 0 and not.merged: 0, never a single PR's flag.
 stages:
   # ── spec phase ───────────────────────────────────────────────────────────
@@ -58,104 +75,104 @@ stages:
     triggers:
       - name: fresh ticket
         when: { "run.stage": null }
-      # run.lastEvent.actor, not lastEvent.actor: the spec lists lastEvent.* as
-      # a conventional top-level path, but deriveRun puts it inside run and no
-      # hook provides a top-level one, so the bare path matched nothing and
-      # every human handback below was dead.
-      #
-      # run.outputs.* is the same correction for the same reason, and it was
-      # dead the same way: outputs live at run.outputs, so `outputs.spec.kind`
-      # read nothing at all. One path to one fact, and it is the derived one —
-      # a second, aliased spelling is how a predicate silently stops matching.
-      - name: human answered the questions
-        when:
-          "run.stage": spec-questions
-          "run.lastEvent.actor": human
-          "run.counters.spec": { $lt: 3 }
-      - name: reviewer's reply read as a change request
+      # run.outputs.* and run.lastEvent.*, never the bare spellings: outputs and
+      # lastEvent live inside `run`, and a path that reads nothing matches
+      # nothing — which is how every human handback here was once dead.
+      - name: your reply asked for changes
         when:
           "run.stage": triage
           "run.lastOutputValid": null
+          "run.previousStage": { $in: [spec-questions, spec-human-review] }
           "run.outputs.triage.intent": revise
-          "run.counters.spec": { $lt: 3 }
-      # A halt goes back to the stage that failed. Anything but a failed
-      # build comes here — a failed spec, triage or review, and a review
-      # budget spent with no stage failed at all — and a failed build goes
-      # back to build, below. `$nin` and `$in` on the one list are exact
-      # complements, so exactly one of the two can take any reply.
-      #
-      # Until the build's own three rounds are spent: then a failed build
-      # comes here too. A build refused three times over the same spec text
-      # otherwise had no route at all, and the spec that tripped the screener
-      # could never be revised. `$lt` and `$gte` on the one counter are exact
-      # complements too.
-      - name: a halt was handed back
-        when:
-          "run.stage": blocked
-          "run.lastEvent.actor": human
-          "run.failedStages": { $nin: [build] }
-          "run.counters.spec": { $lt: 3 }
-      - name: a security refusal was handed back
-        when:
-          "run.stage": screened
-          "run.lastEvent.actor": human
-          "run.failedStages": { $nin: [build] }
-          "run.counters.spec": { $lt: 3 }
-      - name: a build out of rounds was handed back
-        when:
-          "run.stage": blocked
-          "run.lastEvent.actor": human
-          "run.failedStages": { $in: [build] }
-          "run.counters.build": { $gte: 3 }
-          "run.counters.spec": { $lt: 3 }
-      - name: a build refused out of rounds was handed back
-        when:
-          "run.stage": screened
-          "run.lastEvent.actor": human
-          "run.failedStages": { $in: [build] }
-          "run.counters.build": { $gte: 3 }
           "run.counters.spec": { $lt: 3 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
       - { type: tracker.status, value: spec }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
-  # Where the conversation rests while it is the human's turn. §10 routes
-  # `triage --question--> spec-questions`, and `unclear` here too: the enum
-  # exists so the model can abstain instead of guessing, and an abstention has
-  # to land somewhere a human turn can reach or it is worse than a guess — the
-  # ticket sat at `triage` wearing `lr:awaiting` and the next reply did
-  # nothing, because decide() never evaluates the current stage's own
-  # triggers. The triage step's own comment — its reason, in its own words —
-  # is already on the ticket by the time this is entered, so "waits and asks"
-  # is the asking; this is the waiting.
+  # Where the conversation rests while it is the person's turn — here and at
+  # every stage below that lists `goto`. The list is written once, here, and
+  # the rest repeat it by reference: which steps a person may send the ticket
+  # back to, and how many rounds each may run in all, a goto-driven one
+  # counting like any other. The two halts list more, and say why.
   - id: spec-questions
+    goto: &goto
+      - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
+      - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
     triggers:
       - name: the agent has blocking questions
         when: { "run.stage": spec, "run.lastOutputValid": null, "run.outputs.spec.kind": questions }
-      - name: the reviewer's reply was a question
-        when: { "run.stage": triage, "run.lastOutputValid": null, "run.outputs.triage.intent": question }
-      - name: the reviewer's reply could not be read either way
-        when: { "run.stage": triage, "run.lastOutputValid": null, "run.outputs.triage.intent": unclear }
+      # Every answer that does not send the ticket on comes back here: a
+      # question, an unclear reply, an approval (there is nothing here to
+      # approve), and a goto its cap declined.
+      - name: your reply changed nothing here
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": spec-questions
+          "run.outputs.triage.intent": { $ne: revise }
+      - name: your answers need a round the spec has no more of
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": spec-questions
+          "run.outputs.triage.intent": revise
+          "run.counters.spec": { $gte: 3 }
     on_enter:
       - { type: tracker.status, value: spec-questions }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
   - id: spec-human-review
+    goto: *goto
     requires: { "run.outputs.spec.kind": spec }
     triggers:
       - name: the spec was published
         when: { "run.stage": spec, "run.lastOutputValid": null, "run.outputs.spec.kind": spec }
+      - name: your reply changed nothing here
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": spec-human-review
+          "run.outputs.triage.intent": { $nin: [approve, revise] }
+      - name: your changes need a round the spec has no more of
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": spec-human-review
+          "run.outputs.triage.intent": revise
+          "run.counters.spec": { $gte: 3 }
     on_enter:
       - { type: tracker.status, value: spec-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
+  # The judge. A reply wherever it is the person's turn comes here, and one
+  # judge serves all five: the stage the reply was made at rides on triage's
+  # entry record, and each routes the answers that change nothing back home.
+  # Its own budget bounds the conversation — past it a reply stays on the
+  # ticket and nothing runs; the page's "Go to step…" still works.
   - id: triage
     step: steps/triage.md
+    goto: *goto
     requires: { "run.lastHuman": { $ne: null } }
     triggers:
-      - name: you replied
-        when: { "run.stage": spec-human-review, "run.lastEvent.actor": human }
+      - name: you answered the spec's questions
+        when: { "run.stage": spec-questions, "run.lastEvent.actor": human, "run.counters.triage": { $lt: 20 } }
+      - name: you replied to the spec
+        when: { "run.stage": spec-human-review, "run.lastEvent.actor": human, "run.counters.triage": { $lt: 20 } }
+      # Not once the pull request merged, and not while a thread is open:
+      # merging and saying thanks is `done`, and a reopened thread is
+      # `fix-review`. Both are triggers of their own, and two matching halts.
+      - name: you replied about the pull request
+        when:
+          "run.stage": pr-human-review
+          "run.lastEvent.actor": human
+          "rel.implements.in.not.merged": { $gt: 0 }
+          "rel.implements.in.sum.openThreads": 0
+          "run.counters.triage": { $lt: 20 }
+      - name: you replied to a halt
+        when: { "run.stage": blocked, "run.lastEvent.actor": human, "run.counters.triage": { $lt: 20 } }
+      - name: you replied to a security refusal
+        when: { "run.stage": screened, "run.lastEvent.actor": human, "run.counters.triage": { $lt: 20 } }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reading your reply, round {round}." }
       - { type: tracker.status, value: triage }
@@ -168,27 +185,19 @@ stages:
   # not — and what a step commits there is what outlives the worktree. The
   # engine names no branch of its own; a workflow wanting two per ticket names
   # two.
+  #
+  # Reached from an approved spec, and otherwise only by a person sending
+  # the ticket back — a `goto-build` answer, Retry, or "Go to step…".
   - id: build
     step: steps/build.md
     branch: "landrace/{ticket}"
     triggers:
-      - name: the spec was approved
-        when: { "run.stage": triage, "run.lastOutputValid": null, "run.outputs.triage.intent": approve }
-      # A build that failed is handed back to build, not to spec: the spec was
-      # approved and did nothing wrong. Three attempts, a refused or broken
-      # one counting like any other.
-      - name: a failed build was handed back
+      - name: you approved the spec
         when:
-          "run.stage": blocked
-          "run.lastEvent.actor": human
-          "run.failedStages": { $in: [build] }
-          "run.counters.build": { $lt: 3 }
-      - name: a refused build was handed back
-        when:
-          "run.stage": screened
-          "run.lastEvent.actor": human
-          "run.failedStages": { $in: [build] }
-          "run.counters.build": { $lt: 3 }
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": spec-human-review
+          "run.outputs.triage.intent": approve
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
       - { type: tracker.status, value: build }
@@ -227,7 +236,7 @@ stages:
       - { type: branch.push, branch: "landrace/{ticket}" }
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
       - { type: tracker.status, value: code-review }
-      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
   - id: fix-review
     step: steps/fix-review.md
@@ -247,9 +256,10 @@ stages:
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
       - { type: tracker.status, value: fix-review }
-      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
   - id: pr-human-review
+    goto: *goto
     triggers:
       - name: no threads are open
         when:
@@ -257,6 +267,11 @@ stages:
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.sum.openThreads": 0
+      # Nothing a reply says approves or merges a pull request — that is done
+      # on the pull request — so every answer that does not send the ticket
+      # back comes home.
+      - name: your reply changed nothing here
+        when: { "run.stage": triage, "run.lastOutputValid": null, "run.previousStage": pr-human-review }
     on_enter:
       - { type: tracker.status, value: pr-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
@@ -274,7 +289,40 @@ stages:
       - { type: tracker.status, value: done }
       - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
 
+  # The halts list every step, where the stages waiting on a person list two.
+  # Retry is a goto to the step whose failure put the ticket here, and any
+  # step can fail. A review or a fix that broke its contract or was refused
+  # would otherwise be retried only by a rewritten spec or a rebuild, neither
+  # of which is what failed. A judge that failed is read again by any new
+  # reply, which enters triage anyway. Retry re-judges the message it failed
+  # on, but as one made here at the halt, not where it was first written: it
+  # comes back here unless it asks for a goto.
+  #
+  # Each target runs only within its rounds. Its own counter first: a failed
+  # fix round advances fix-review's and not code-review's, so code-review's
+  # alone would let Retry run it for ever. fix-review is held to
+  # code-review's as well, the loop the two share. And each is offered only
+  # where it can run — a review needs a pull request, the judge a message to
+  # read — because a goto that landed on a stage whose `requires` fails would
+  # halt there, and no goto is taken from a stage whose precondition does
+  # not hold.
+  #
+  # Each target takes lr:blocked and lr:screened off as it is entered, bar
+  # triage, whose answers come back here or go on to spec or build. Written
+  # once, here, and repeated on `screened`.
   - id: blocked
+    goto: &halt
+      - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
+      - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
+      - stage: code-review
+        when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } }
+      - stage: fix-review
+        when:
+          "run.counters.code-review": { $lt: 4 }
+          "run.counters.fix-review": { $lt: 4 }
+          "rel.implements.in.total": { $gt: 0 }
+      - stage: triage
+        when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } }
     triggers:
       # The open-thread count is part of the condition, not decoration: the
       # last review round can finish with nothing left open, and then
@@ -291,6 +339,11 @@ stages:
       # `screened` below split every failure between them, one each.
       - name: a step broke its output contract
         when: { "run.lastOutputValid": false, "run.lastRefused": false }
+      # A halt is left by sending the ticket back to a step — a `goto-*`
+      # answer, Retry, or "Go to step…" — and by nothing else, so every
+      # other answer comes home.
+      - name: your reply changed nothing here
+        when: { "run.stage": triage, "run.lastOutputValid": null, "run.previousStage": blocked }
     on_enter:
       - { type: tracker.status, value: blocked }
       - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }
@@ -301,9 +354,15 @@ stages:
   # hearing yes — with `lr:screened` beside it to say it was not the agent's
   # answer that failed but the prompt, or what the agent did.
   - id: screened
+    goto: *halt
     triggers:
       - name: a security check refused a step
         when: { "run.lastOutputValid": false, "run.lastRefused": true }
+      # A halt is left by sending the ticket back to a step — a `goto-*`
+      # answer, Retry, or "Go to step…" — and by nothing else, so every
+      # other answer comes home.
+      - name: your reply changed nothing here
+        when: { "run.stage": triage, "run.lastOutputValid": null, "run.previousStage": screened }
     on_enter:
       - { type: tracker.status, value: screened }
       - { type: tracker.label, add: ["lr:blocked", "lr:screened"], remove: ["lr:working", "lr:awaiting"] }

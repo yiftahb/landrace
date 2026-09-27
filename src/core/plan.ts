@@ -1,4 +1,4 @@
-import { branchNameProblem, NODES_CLOSE_EFFECT } from "#conventions.js";
+import { branchNameProblem, ENTRY_KIND, NODES_CLOSE_EFFECT } from "#conventions.js";
 import { planNodesClose } from "#core/children.js";
 import type { Decision, Effect, Snapshot, Stage } from "#namespace.js";
 
@@ -99,6 +99,11 @@ export function planEffects(d: Decision, s: Snapshot, ticket: string | null): Ef
       // overruling the workflow about where a record belongs.
       ...(effect.stage === undefined ? { stage } : {}),
       ...(effect.round === undefined ? { round } : {}),
+      // Where the ticket came from, on the record that says it entered —
+      // what `run.previousStage` reads back, so one judge can serve several
+      // waiting stages and send each answer home. The engine's to write:
+      // `landrace validate` refuses a `from` in the workflow file.
+      ...(effect.kind === ENTRY_KIND && d.stage !== undefined ? { from: d.stage.id } : {}),
     };
   });
 }

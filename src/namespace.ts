@@ -82,6 +82,14 @@ export interface Entry {
    * something the step said.
    */
   session?: string;
+  /**
+   * Where a goto record asks the ticket to go: a stage id, written by
+   * Landrace alone — beside a judge's output, or on the record the board's
+   * "Go to step…" or `landrace_goto` writes. `run.goto` reads it.
+   */
+  goto?: string;
+  /** On an entry record, the stage the ticket left to enter this one. `run.previousStage` reads it. */
+  from?: string;
   /** ISO 8601. Ordering is by this field, not array position. */
   at: string;
   /** True when we wrote it. False means a person did. */
@@ -135,8 +143,30 @@ export interface Run {
    * whichever kind it was.
    */
   lastRefused: boolean | null;
+  /**
+   * Where a goto record written since the ticket last entered a stage asks
+   * it to go; null when there is none. Entering any stage writes an entry
+   * record, and that is what consumes it — nothing is ever cleared.
+   */
+  goto: string | null;
+  /**
+   * The stage the ticket left to enter the current one, read off the current
+   * stage's own entry record. Null when the current stage records no entry,
+   * or was entered as a fresh ticket: an older stage's answer would be a
+   * wrong one, not an approximate one.
+   */
+  previousStage: string | null;
   /** Every stage with a rejected round, independent of which stage `lastOutputValid` answers for. */
   failedStages: string[];
+  /**
+   * The failure that put the ticket where it is: the stage of the latest
+   * entry record of any stage but the current one — walking past a settled
+   * round trip from the current visit, such as a question the judge sent home —
+   * when that stage is still in `failedStages`; otherwise null. What Retry
+   * re-runs and what the judge is told failed — never an older failure the
+   * ticket has since been sent around, which `failedStages` still lists.
+   */
+  failedStage: string | null;
   unblockedAt: number;
 }
 
@@ -146,6 +176,15 @@ export type Condition = { [path: string]: unknown };
 export interface Trigger {
   name?: string;
   when: Condition;
+}
+
+/** An entry in a stage's `goto`: a stage it may always send a ticket to, or one it may while `when` holds. */
+export type GotoEntry = string | { stage: string; when?: Condition | undefined };
+
+/** A `goto` entry as the engine reads it. `when` null means always. */
+export interface GotoTarget {
+  stage: string;
+  when: Condition | null;
 }
 
 export interface Effect {
@@ -168,6 +207,15 @@ export interface Stage {
   requires?: Condition;
   triggers?: Trigger[];
   on_enter?: Effect[];
+  /**
+   * The stages a person may send a ticket at this stage back to — by a judge
+   * step's route, the board's "Go to step…" or `landrace_goto`. A bare id
+   * always; `{ stage, when }` only while `when` holds, which is where a
+   * loop's round cap goes, since a goto takes no trigger. A goto to a stage
+   * not listed here halts; one whose `when` does not hold is declined, and
+   * the stage's triggers decide.
+   */
+  goto?: GotoEntry[] | undefined;
 }
 
 export interface EligibilityRule {
@@ -227,6 +275,14 @@ export interface Marker {
    * cannot meet — the step's value is the agent's, and this is ours.
    */
   session?: string;
+  /**
+   * Where a goto record asks the ticket to go: a stage id, written by
+   * Landrace alone — beside a judge's output, or on the record the board's
+   * "Go to step…" or `landrace_goto` writes. `run.goto` reads it.
+   */
+  goto?: string;
+  /** On an entry record, the stage the ticket left to enter this one. `run.previousStage` reads it. */
+  from?: string;
   [key: string]: unknown;
 }
 
@@ -684,7 +740,7 @@ export interface LandraceEvent {
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
-export type LockKind = "tick" | "conversation" | "execution";
+export type LockKind = "tick" | "conversation" | "execution" | "goto";
 
 export interface Held {
   ticket: string;
@@ -995,6 +1051,7 @@ export interface Tools {
     },
   ): Promise<unknown>;
   reply(ticket: string, message: string): Promise<unknown>;
+  goto(ticket: string, stage: string): Promise<unknown>;
   ask(ticket: string, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
   resolve(ticket: string, why?: string | undefined): Promise<unknown>;
 }
@@ -1286,9 +1343,19 @@ export interface BoardRow {
   /**
    * Where the page's Retry posts, for a ticket that is blocked or screened
    * right now; null everywhere else. Built by the server from a checked id,
-   * so the page never puts a URL together itself.
+   * so the page never puts a URL together itself. A Retry is now a goto with
+   * no step named — the stage that last failed.
    */
   retry: string | null;
+  /**
+   * The steps this ticket's stage may send it back to, each with the path
+   * the page posts to — built by the server. Empty unless the ticket is
+   * open, its agent is not running, and its stage lists a goto target; the
+   * server's `sendTo` stays the one authority on whether a given send is
+   * actually accepted (a stage's step still owed, a cap not holding, and so
+   * on), so an entry here is an offer, not a promise.
+   */
+  goto: Array<{ stage: string; path: string }>;
   children: BoardRow[];
 }
 
@@ -1307,12 +1374,6 @@ export interface Board {
   observe(e: LandraceEvent): void;
   list(graph: Graph): void;
   view(): Promise<BoardView>;
-  /**
-   * Why a Retry may not be posted on this node, read just now, or null when it
-   * may: it must be an open ticket, blocked or screened, whose agent is not
-   * running in this process.
-   */
-  retryRefusal(node: Node): string | null;
 }
 
 export interface UiOptions {
@@ -1324,12 +1385,11 @@ export interface UiOptions {
    */
   tick?: () => boolean;
   /**
-   * The Retry on a blocked or screened ticket: `refusal` reads the ticket
-   * afresh and says why it may not be retried — the page is never taken at
-   * its word — and `post` hands it back with a human turn.
-   * Absent, POST /tickets/<id>/retry is 404, as /tick is without a tick.
+   * The page's Retry and "Go to step…": both send the ticket back through
+   * `sendTo`, read afresh when the request arrives — the page is never taken
+   * at its word. Absent, both routes are 404, as /tick is without a tick.
    */
-  retry?: RetryPath;
+  goto?: GotoPath;
 }
 
 /**
@@ -1344,11 +1404,22 @@ export interface ReplyDeps {
   ctx: RuntimeContext;
 }
 
-/** How the page's Retry reaches a ticket: the one check, and the one write. */
-export interface RetryPath {
-  /** A sentence saying why this ticket may not be retried right now, or null. */
-  refusal(ticket: string): Promise<string | null>;
-  post(ticket: string): Promise<void>;
+/** What sending a ticket back to a step answers: the step it was sent to, or a sentence saying why not. */
+export type GotoResult = { refused: string } | { to: string };
+
+/**
+ * A reply's needs, the workflow, which is what says where a stage may send a
+ * ticket, and where the per-ticket locks live — the tick's own, by default,
+ * since a goto has to be serialised against the tick that would take it.
+ */
+export interface GotoDeps extends ReplyDeps {
+  workflow: Workflow;
+  lock?: LockOptions;
+}
+
+/** How the page's writes reach a ticket. `target` null is a Retry: `run.failedStage`, the failure that put the ticket where it is. */
+export interface GotoPath {
+  send(ticket: string, target: string | null): Promise<GotoResult>;
 }
 
 export interface UiServer {
