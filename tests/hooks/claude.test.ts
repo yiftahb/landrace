@@ -1,7 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClaudeExecutor } from "#landrace/hooks/claude.js";
+import { claude, createClaudeExecutor } from "#landrace/hooks/claude.js";
+import type { Executor, ExecutorContext } from "#namespace.js";
+import { gitRepo, removeRepos } from "#tests/support/repo.js";
+
+afterAll(removeRepos);
 
 // File-relative, not cwd-relative: `jest --rootDir .. agent/claude.test.ts`
 // run from tests/ previously broke a process.cwd()-based path with ENOENT.
@@ -45,7 +50,10 @@ const run = (
 
 /** The argv a run was started with, element by element — an inline JSON config is one element. */
 const argvOf = async (
-  executor: ReturnType<typeof createClaudeExecutor>,
+  // `Pick<Executor, "run">`, not `ReturnType<typeof createClaudeExecutor>`:
+  // the factory's own `create(ctx)` (tested below) returns the same shape
+  // without an `id`, and this only ever calls `.run`.
+  executor: Pick<Executor, "run">,
   opts: {
     capabilities?: readonly string[];
     model?: string;
@@ -259,7 +267,11 @@ describe("claude executor", () => {
     it("still rejects cleanly (does not crash the process) when the caller aborts", async () => {
       const dir = withCfg({ hang: true });
       const controller = new AbortController();
-      const p = createClaudeExecutor({ bin }).run(bigPrompt, { round: 1, cwd: dir, signal: controller.signal, timeoutMs: 5_000 });
+      // Well above jest's own default test timeout (5s): a broken abort must
+      // fail this test by timing out, not by coincidentally hitting this
+      // fallback at the same 5s mark the assertion below has no message check
+      // to catch it with.
+      const p = createClaudeExecutor({ bin }).run(bigPrompt, { round: 1, cwd: dir, signal: controller.signal, timeoutMs: 60_000 });
       setTimeout(() => controller.abort(), 30);
       await expect(p).rejects.toThrow();
     });
@@ -407,15 +419,26 @@ describe("claude executor", () => {
     await expect(run("x", {}, { cwd: dir, resume: "sid-1; rm -rf /" })).rejects.toThrow(/refused resume/);
   });
 
-  it("refuses a relative cwd", async () => {
-    await expect(run("x", {}, { cwd: "relative/path" })).rejects.toThrow(/must be an absolute path/);
-  });
-
-  it("refuses a cwd that climbs out of where it lexically appears to be", async () => {
-    // `containedPath` (src/workflow/load.ts) already rejects a ".." segment
-    // for exactly this reason; reusing it here means an absolute path is not
-    // treated as automatically safe just because it passed isAbsolute().
-    await expect(run("x", {}, { cwd: "/tmp/lr56/../../etc" })).rejects.toThrow(/refused cwd/);
+  /*
+   * The engine's own `containedPath` (src/workflow/load.ts) refuses each of
+   * these shapes for `root: "/"` — that root can never be lexically escaped,
+   * so its whole contribution here was these shape rules plus "does not
+   * exist" underneath them. This hook reimplements the same rules directly
+   * (see `assertCwd` in .landrace/hooks/claude.ts) rather than importing the
+   * engine's file, so an absolute path is not treated as automatically safe
+   * just because it passed `isAbsolute()`.
+   */
+  it.each<[string, string, RegExp]>([
+    ["a relative path", "relative/path", /must be an absolute path/],
+    ["a \"..\" segment", "/tmp/lr56/../../etc", /contains a "\.\." segment/],
+    ["a backslash", "/tmp/lr56\\x", /contains a backslash/],
+    ["percent-encoding", "/tmp/lr56%2e%2e", /is percent-encoded/],
+    ["a path that does not exist", "/nonexistent-lr-cwd-does-not-exist", /does not exist/],
+    ["the bare root", "/", /is empty/],
+    ["a doubled leading slash", "//tmp", /is absolute/],
+    ["a scheme- or drive-like first segment", "/foo:bar/x", /is a URL or a drive path, not a relative path/],
+  ])("refuses a cwd with %s", async (_, cwd, reason) => {
+    await expect(run("x", {}, { cwd })).rejects.toThrow(reason);
   });
 
   // --- a step's declared capabilities, translated into what the CLI enforces.
@@ -676,13 +699,13 @@ describe("the create_child tool", () => {
   });
 
   /*
-   * `resolveStepServers` (config/mcp.ts) already refuses an allowlisted
-   * server named "landrace" for the shipped executor, before a step ever
-   * runs. This is the backstop inside the executor itself: an allowlisted
-   * server under the engine's own name would otherwise be silently replaced
-   * by whichever of the two `servers[name] = …` assigned last, and the loser
-   * could be either the operator's server or the one create_child is trusted
-   * to answer to.
+   * `resolveStepServers` (this same file, `.landrace/hooks/claude.ts`) already
+   * refuses an allowlisted server named "landrace" for the shipped executor,
+   * before a step ever runs. This is the backstop inside the executor itself:
+   * an allowlisted server under the engine's own name would otherwise be
+   * silently replaced by whichever of the two `servers[name] = …` assigned
+   * last, and the loser could be either the operator's server or the one
+   * create_child is trusted to answer to.
    */
   it("refuses rather than silently replace an allowlisted server under the engine's own name", async () => {
     await expect(argvOf(createClaudeExecutor({ bin, mcpServers: { [SERVER.name]: { command: "decoy" } } }), {
@@ -724,5 +747,57 @@ describe("the create_child tool", () => {
     expect(JSON.parse(argv[argv.indexOf("--settings") + 1] as string)).toEqual({
       enabledPlugins: { "superpowers@claude-plugins-official": true },
     });
+  });
+});
+
+/*
+ * The factory (`claude.create(ctx)`, exported by the same hook) is what the
+ * engine actually builds at startup — `createClaudeExecutor` above is the
+ * unbranded constructor it calls internally. This is the one test in the
+ * file that goes through the factory, so a wiring mistake in `create()`
+ * itself (settings read wrong, resolved servers dropped, the log or model
+ * not threaded through) has something to fail it, not just the constructor
+ * it delegates to.
+ */
+describe("the factory's wiring, end to end", () => {
+  it("carries the model, plugins and an allowlisted server's tools through a real run's argv", async () => {
+    const root = await gitRepo();
+    const dir = join(root, ".landrace");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { memory: { command: "codebase-memory-mcp", args: [] } } }));
+
+    const ctx: ExecutorContext = {
+      config: {
+        agent: { adapter: "claude", model: "opus", plugins: ["p@m"], mcp: [{ name: "memory", tools: ["t"] }] },
+      } as unknown as ExecutorContext["config"],
+      secrets: new Map(),
+      signal: new AbortController().signal,
+      log: () => {},
+      dir,
+      redact: () => {},
+    };
+    const executor = await claude.create(ctx);
+
+    // The factory always spawns the real "claude" binary; put the fake agent
+    // on PATH under that name so this run exercises a real spawn end to end,
+    // not just argv-building against a `bin` this test chose.
+    const binDir = mkdtempSync(join(tmpdir(), "fake-claude-bin-"));
+    dirs.push(binDir);
+    const claudeBin = join(binDir, "claude");
+    copyFileSync(bin, claudeBin);
+    chmodSync(claudeBin, 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${savedPath ?? ""}`;
+    try {
+      const argv = await argvOf(executor, { capabilities: ["repo:read"] });
+      expect(flag(argv, "--model")).toBe("opus");
+      expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ enabledPlugins: { "p@m": true } });
+      expect(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers).toEqual({
+        memory: { command: "codebase-memory-mcp", args: [] },
+      });
+      expect(list(argv, "--allowedTools")).toEqual(["mcp__memory__t"]);
+    } finally {
+      process.env.PATH = savedPath;
+    }
   });
 });

@@ -27,6 +27,13 @@ describe("the claude hook's settings", () => {
     expect(() => readClaudeSettings({ adapter: "claude", model: 3, plugins: "p@m", mcp: [{ name: "y", tool: ["t"] }] }))
       .toThrow(/agent\.model[\s\S]*agent\.plugins[\s\S]*agent\.mcp/);
   });
+
+  // Named by index, the way the zod path this replaces did — a single "some
+  // entry is wrong" line sends an operator counting server names by hand.
+  it("refuses a single bad mcp entry, naming which index", () => {
+    expect(() => readClaudeSettings({ adapter: "claude", mcp: ["good", { name: "y", tool: ["t"] }] }))
+      .toThrow(/agent\.mcp\[1\]/);
+  });
 });
 
 describe("the claude executor, built from the runtime's context", () => {

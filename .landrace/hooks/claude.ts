@@ -11,7 +11,7 @@
  */
 import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   CAPABILITIES,
@@ -66,27 +66,52 @@ function assertArgShape(kind: string, value: string): void {
   }
 }
 
+/**
+ * An absolute path is not automatically a safe one: `/tmp/x/../../etc` is
+ * absolute and still resolves somewhere the caller never wrote down.
+ *
+ * Checked against the path with its leading "/" removed, mirroring what the
+ * engine's own `containedPath("/", cwd.slice(1))` (src/workflow/load.ts)
+ * actually did: root "/" can never be escaped by anything lexical, so every
+ * shape `containedPath` refused here came from its `shapeProblem` step alone
+ * — empty, absolute (a second leading "/", e.g. "//tmp"), a scheme or drive
+ * like first segment ("/c:/x"), a backslash, percent-encoding, or a ".."
+ * segment — plus a plain "does not exist" from the realpath underneath it.
+ * Reproduced directly rather than importing the engine's file, which is a
+ * copied hook's whole reason for existing.
+ */
 async function assertCwd(cwd: string): Promise<string> {
   const refuse = (why: string): never => { throw new Error(`refused cwd ${JSON.stringify(cwd)}: ${why}`); };
   if (!isAbsolute(cwd)) refuse("must be an absolute path");
-  if (cwd.includes("\\")) refuse("contains a backslash");
-  if (cwd.includes("%")) refuse("is percent-encoded");
-  const dotted = cwd.split("/").find((seg) => /^\.{2,}$/.test(seg));
+  const relative = cwd.slice(1);
+  if (relative.trim() === "") refuse("is empty");
+  if (isAbsolute(relative) || relative.startsWith("/")) refuse("is absolute");
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(relative)) refuse("is a URL or a drive path, not a relative path");
+  if (relative.includes("\\")) refuse("contains a backslash");
+  if (relative.includes("%")) refuse("is percent-encoded");
+  const dotted = relative.split("/").find((seg) => /^\.{2,}$/.test(seg));
   if (dotted !== undefined) refuse(`contains a "${dotted}" segment`);
   try {
-    return await realpath(cwd);
+    return await realpath(resolve(cwd));
   } catch (e) {
     return refuse((e as NodeJS.ErrnoException).code === "ENOENT" ? "does not exist" : `cannot be resolved: ${messageOf(e)}`);
   }
 }
 
-/** The repository root a step's `.mcp.json` lookup and its cwd are both relative to. */
+/**
+ * The repository root a step's `.mcp.json` lookup and its cwd are both
+ * relative to. git's own stderr rides along rather than a generic guess: a
+ * checkout git refuses for "dubious ownership", or a missing git binary
+ * entirely, would otherwise both be misreported as "not inside a git
+ * repository" — a fix that isn't there to make, since neither one is that.
+ */
 async function repositoryRoot(dir: string): Promise<string> {
   try {
     const { stdout } = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: dir });
     return stdout.trim();
-  } catch {
-    throw new Error(`${dir} is not inside a git repository`);
+  } catch (e) {
+    const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
+    throw new Error(`${dir} is not inside a git repository: ${stderr || messageOf(e)}`);
   }
 }
 
@@ -263,7 +288,7 @@ export function createClaudeExecutor(opts: {
       // own server answer to the name a step trusts for create_child.
       // `resolveStepServers` (below) already refuses this at startup for
       // the shipped executor; this is the backstop for an executor built
-      // directly, as every test here does.
+      // directly, as `tests/hooks/claude.test.ts` does throughout.
       if (Object.hasOwn(servers, server.name)) {
         throw new Error(`cannot give this step create_child: an allowlisted server is already named "${server.name}"`);
       }
@@ -370,8 +395,8 @@ export function createClaudeExecutor(opts: {
           // at the boundary, not after building a string large enough to
           // throw `RangeError: Invalid string length` from inside this
           // handler — which, like the EPIPE above, would crash the process
-          // rather than reject the promise, and the 4-minute timeout never
-          // gets a chance to fire because this throws long before then.
+          // rather than reject the promise, and the timeout never gets a
+          // chance to fire because this throws long before then.
           killGroup(child);
           finish(() => reject(new Error(`agent produced more than ${MAX_OUTPUT_BYTES} bytes of ${label}`)));
           return true;
@@ -657,8 +682,16 @@ export function readClaudeSettings(agent: Record<string, unknown>): ClaudeSettin
       typeof (e as { name?: unknown }).name === "string" && (e as { name: string }).name !== "" &&
       Array.isArray((e as { tools?: unknown }).tools) &&
       (e as { tools: unknown[] }).tools.every((t) => typeof t === "string" && t !== ""));
-  const mcpOk = Array.isArray(mcp) && mcp.every(entryOk);
-  if (!mcpOk) problems.push("agent.mcp must be a list of server names, or { name, tools } with only those two keys");
+  // Named by index, the way the zod path this replaces did (`agent.mcp.1: …`,
+  // via `issue.path.join(".")`) — a single "some entry is wrong" line sends an
+  // operator counting server names by hand to find which one.
+  if (!Array.isArray(mcp)) {
+    problems.push("agent.mcp must be a list of server names, or { name, tools } with only those two keys");
+  } else {
+    mcp.forEach((e, i) => {
+      if (!entryOk(e)) problems.push(`agent.mcp[${i}] must be a server name, or { name, tools } with only those two keys`);
+    });
+  }
   if (problems.length) throw new Error(problems.join("\n"));
   return {
     ...(typeof model === "string" ? { model } : {}),

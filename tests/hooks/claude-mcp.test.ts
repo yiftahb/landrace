@@ -176,6 +176,46 @@ describe("the MCP servers a step may use", () => {
   });
 
   /*
+   * `mcpConfigProblem`'s own field checks, hand-written because a copied hook
+   * has no zod: each one named by field, the way the zod path it replaces
+   * named a schema issue.
+   */
+  it("reports a server entry that is not an object", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": "not-an-object" } });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/mcpServers\.codebase-memory-mcp: expected an object/) }]);
+  });
+
+  it("reports a server whose command is not a string", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": { command: 5 } } });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/mcpServers\.codebase-memory-mcp\.command: expected a string/) }]);
+  });
+
+  it("reports a server whose args is not a list of strings", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": { command: "x", args: ["ok", 5] } } });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/mcpServers\.codebase-memory-mcp\.args: expected a list of strings/) }]);
+  });
+
+  it("reports a server whose env is not an object of strings", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": { command: "x", env: { A: 1 } } } });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/mcpServers\.codebase-memory-mcp\.env: expected an object of strings/) }]);
+  });
+
+  // The shape check only ever names command/args/env — a remote server has
+  // none of them, and passes straight through, exactly as `.passthrough()`
+  // let it through the zod schema this replaces.
+  it("accepts a remote HTTP server carrying only url and headers, with no command", async () => {
+    const remote = { type: "http", url: "https://mcp.example.invalid", headers: { Authorization: "Bearer x" } };
+    const { dir } = await repo({ mcpServers: { remote } });
+    const { problems, servers } = await resolveStepServers(dir, ["remote"]);
+    expect(problems).toEqual([]);
+    expect(servers).toEqual({ remote });
+  });
+
+  /*
    * A name reaches the agent's argv as `mcp__<name>` in `--allowedTools`,
    * which the CLI splits on spaces and commas: a server called "x Bash" would
    * allow Bash. Refused here, on the name alone and before any file is read,
@@ -188,9 +228,18 @@ describe("the MCP servers a step may use", () => {
     expect(servers).toEqual({});
   });
 
-  it("refuses when there is no repository to find the file in", async () => {
-    const { problems } = await resolveStepServers(join(await plainDir(), ".landrace"), ["codebase-memory-mcp"]);
+  it("refuses when there is no repository to find the file in, carrying git's own reason", async () => {
+    // The directory has to actually exist: a `cwd` that does not is its own
+    // failure (Node reports it as the same "spawn git ENOENT" a missing git
+    // binary would give), and conflating the two is exactly the bug this
+    // test's stronger assertion below exists to catch.
+    const dir = join(await plainDir(), ".landrace");
+    await mkdir(dir, { recursive: true });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
     expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/agent\.mcp[\s\S]*repository/) }]);
+    // Not a generic guess: git's own stderr rides along, so "dubious
+    // ownership" or a missing git binary is never misreported as this.
+    expect(problems[0]?.message).toMatch(/not a git repository/);
   });
 });
 
