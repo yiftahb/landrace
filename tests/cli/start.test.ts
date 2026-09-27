@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { renderMarker } from "#conventions.js";
-import type { Board, ExecutorContext, LandraceEvent, Registry, Runtime, Schedule, Source, Workflow } from "#namespace.js";
+import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Runtime, Schedule, Source, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import { createDispatcher } from "#runner/effects.js";
 import { buildSnapshot } from "#runner/snapshot.js";
@@ -219,6 +219,24 @@ describe("which executor screens", () => {
     const registry: Registry = { ...empty, executors: new Map([["made", factory]]) };
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "made" } });
     await expect(executorFor(config, registry, ctx())).rejects.toThrow(/executor "made" could not start: agent\.mcp names nothing it can find/);
+  });
+
+  /*
+   * A hook is JavaScript by the time it runs, and the type says nothing then.
+   * Without this, a factory that forgot to return its executor started the
+   * loop, and the first paid tick met "run is not a function" on a ticket it
+   * had already moved.
+   */
+  it.each([
+    ["an object with no run", {}],
+    ["nothing", undefined],
+    ["a run that is not a function", { run: "claude -p" }],
+  ])("refuses at startup a factory that resolves %s", async (_, made) => {
+    const factory = defineExecutor({ id: "made", create: async () => made as unknown as Pick<Executor, "run"> });
+    const registry: Registry = { ...empty, executors: new Map([["made", factory]]) };
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "made" } });
+    await expect(executorFor(config, registry, ctx()))
+      .rejects.toThrow('executor "made" could not start: its factory returned no run function');
   });
 });
 

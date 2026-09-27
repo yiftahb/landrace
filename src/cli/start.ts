@@ -176,8 +176,13 @@ export async function executorFor(
     if (cached) return cached;
     const made = (async () => {
       try {
-        const { run } = await hook.create(ctx);
-        return { id, run };
+        // Typed, but a hook is JavaScript by the time it runs: a factory that
+        // returned nothing used to start the loop, and the first paid step
+        // met "run is not a function" on a ticket it had already moved.
+        const made: unknown = await hook.create(ctx);
+        const run = (made as { run?: unknown } | null | undefined)?.run;
+        if (typeof run !== "function") throw new Error("its factory returned no run function");
+        return { id, run: run as Executor["run"] };
       } catch (e) {
         throw new Error(`executor "${id}" could not start: ${messageOf(e)}`);
       }
