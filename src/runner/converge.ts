@@ -40,8 +40,10 @@ function malformedBody(reason: string, scrub: (text: string) => string, kind: st
 
 /**
  * How a record body is scrubbed: the runtime logger's live set when converge
- * was handed it, then every secret value on `ctx`. Both, because neither holds
- * the other. `ctx.secrets` is every declared secret, where the log redacts the
+ * was handed it, and every secret value on `ctx`, in one pass over both — two
+ * passes let a logger value that is part of a declared secret split it before
+ * the second pass could match it whole. Both sets, because neither holds the
+ * other. `ctx.secrets` is every declared secret, where the log redacts the
  * ones `log.redact` names plus what an executor registered through `redact`
  * after startup — an MCP server's env, which no secret names. Values shorter
  * than `MIN_SECRET_LENGTH` are skipped rather than rejected: `createLogger`
@@ -56,9 +58,8 @@ function scrubberFor(deps: ConvergeDeps): (text: string) => string {
   // whitespace (a quoted .env line) pass the length check and then never
   // match its own bare form anywhere it actually appeared in posted text.
   const values = [...deps.ctx.secrets.values()].map((v) => v.trim()).filter((v) => v.length >= MIN_SECRET_LENGTH);
-  const secrets = (text: string): string => redactValue(text, values) as string;
   const { scrub } = deps;
-  return scrub === undefined ? secrets : (text) => secrets(scrub(text));
+  return scrub === undefined ? (text) => redactValue(text, values) as string : (text) => scrub(text, values);
 }
 
 /**

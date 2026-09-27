@@ -108,6 +108,17 @@ describe("an import failure says what to do about it", () => {
       'cannot import hook module "hooks/claude.ts": The requested module \'landrace/hooks\' does not provide an export named ' +
       "'defineExecutor'; the landrace this hook was loaded against may be older than the hook expects: rebuild or update it",
     );
+    const bare = new SyntaxError("The requested module 'landrace' does not provide an export named 'createLogger'");
+    expect(importFailure("hooks/x.ts", bare).message).toMatch(/may be older than the hook expects/);
+  });
+
+  // A hook's own sibling module lacking an export is the hook's bug: blaming
+  // the landrace build sends the operator to rebuild something that is fine.
+  it("says nothing about landrace when the module lacking the export is the hook's own", () => {
+    const sibling = new SyntaxError("The requested module './client.ts' does not provide an export named 'request'");
+    expect(importFailure("hooks/github.ts", sibling).message).toBe(
+      'cannot import hook module "hooks/github.ts": The requested module \'./client.ts\' does not provide an export named \'request\'',
+    );
   });
 
   // A hook module is arbitrary code; nothing stops it rejecting with a

@@ -91,4 +91,24 @@ describe("a logger scrubbing text composed outside it", () => {
     log.redact(["a-server-token-1234"]);
     expect(log.scrub("ghp_configured_1 then a-server-token-1234")).toBe("[redacted] then [redacted]");
   });
+
+  /*
+   * In list order, a shorter value registered first split a longer one that
+   * contains it, and the longer one never matched whole: its tail printed.
+   */
+  it("redacts a longer value whole when a shorter one it contains was registered first", () => {
+    const seen: unknown[] = [];
+    const log = createLogger({ sink: (e) => seen.push(e), redactValues: ["https://hooks.example.com"] });
+    log.redact(["https://hooks.example.com/services/SECRETTAIL42"]);
+    log("step.started", { note: "posting to https://hooks.example.com/services/SECRETTAIL42" });
+    expect(seen).toEqual([{ name: "step.started", note: "posting to [redacted]" }]);
+    expect(log.scrub("https://hooks.example.com/services/SECRETTAIL42")).toBe("[redacted]");
+  });
+
+  it("scrubs with extra values in the same pass, longest first", () => {
+    const log = createLogger({ sink: () => {} });
+    log.redact(["https://hooks.example.com"]);
+    expect(log.scrub("at https://hooks.example.com/services/SECRETTAIL42", ["https://hooks.example.com/services/SECRETTAIL42"]))
+      .toBe("at [redacted]");
+  });
 });

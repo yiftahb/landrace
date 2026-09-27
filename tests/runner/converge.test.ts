@@ -850,6 +850,43 @@ describe("converge", () => {
     expect(String(posted?.body ?? "")).toContain("[redacted]");
     expect(String(posted?.body ?? "")).not.toContain(serverToken);
   });
+
+  /*
+   * Two sets redacted one after the other: the logger's value, a prefix of a
+   * declared secret, split the secret first, and the second pass never saw it
+   * whole — the tail went out in a public comment. One pass, longest first.
+   */
+  it("redacts a declared secret whole when the logger's set holds a prefix of it", async () => {
+    const w = world();
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+    };
+    const webhook = "https://hooks.example.com/services/T0/B0/SECRETTAIL42";
+    const log = createLogger({ sink: () => {} });
+    log.redact(["https://hooks.example.com"]);
+    const answering: Executor = { id: "agent", run: async () => ({ text: `\`\`\`json\n{"kind":"${webhook}"}\n\`\`\``, sessionId: null }) };
+
+    await converge("1", deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: answering, log, scrub: log.scrub,
+      ctx: {
+        ticket: "1", config: {} as HookContext["config"], secrets: new Map([["webhook", webhook]]),
+        signal: new AbortController().signal, log: () => {},
+      },
+    }));
+
+    const body = String(w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"))?.body ?? "");
+    expect(body).toContain('"[redacted]" is not a declared output shape');
+    expect(body).not.toContain("SECRETTAIL42");
+  });
 });
 
 /**

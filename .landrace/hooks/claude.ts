@@ -39,6 +39,11 @@ interface ResolvedMcp { servers: Record<string, McpServer>; tools: Record<string
 export interface ClaudeSettings { model?: string; plugins: string[]; mcp: McpEntry[] }
 type HookLog = (event: string, data?: Record<string, unknown>) => void;
 
+/**
+ * This executor's id: what it registers under and what `agent.adapter` names
+ * when `agent:` is its block to read — one constant, so the two cannot drift.
+ */
+const ID = "claude";
 /** A thrown value's message, whatever was thrown. */
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 /** The shortest value worth redacting: shorter matches everywhere. The engine's logger skips these too. */
@@ -464,7 +469,7 @@ export function createClaudeExecutor(opts: {
 
   // Unbranded: only the exported `claude` factory below is the hook the
   // loader classifies. This is a plain constructor a test can call directly.
-  return { id: "claude", run };
+  return { id: ID, run };
 }
 
 /**
@@ -726,7 +731,7 @@ export function readClaudeSettings(agent: Record<string, unknown>): ClaudeSettin
  * the agent's argv and can come back in its stderr.
  */
 export const claude: ExecutorFactory = defineExecutor({
-  id: "claude",
+  id: ID,
   async create(ctx) {
     // `agent:` belongs to the step agent. When that is another executor, this
     // one was built only to screen (`security.adapter: claude`), and the block
@@ -734,7 +739,7 @@ export const claude: ExecutorFactory = defineExecutor({
     // own keys at startup, or screened on its model name. The screener's model
     // arrives on each run from `security.model`, and it gets no plugin and no
     // server whatever the block says.
-    if (ctx.config.agent.adapter !== "claude") return { run: createClaudeExecutor({ log: ctx.log }).run };
+    if (ctx.config.agent.adapter !== ID) return { run: createClaudeExecutor({ log: ctx.log }).run };
 
     const settings = readClaudeSettings(ctx.config.agent as Record<string, unknown>);
     const { servers, tools, problems } = await resolveStepServers(ctx.dir, settings.mcp);
