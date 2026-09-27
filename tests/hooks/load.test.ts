@@ -96,6 +96,20 @@ describe("an import failure says what to do about it", () => {
     expect(message).toBe('cannot import hook module "hooks/github.ts": boom');
   });
 
+  /*
+   * A hook written against a newer landrace than the one loading it — in this
+   * repository, a dist/ not rebuilt since a pull — fails on its first import
+   * line, and Node names only the export it could not find.
+   * `tests/hooks/strip-types.test.ts` pins that this is what Node raises.
+   */
+  it("says the landrace may be older than the hook when an import it names is missing", () => {
+    const missing = new SyntaxError("The requested module 'landrace/hooks' does not provide an export named 'defineExecutor'");
+    expect(importFailure("hooks/claude.ts", missing).message).toBe(
+      'cannot import hook module "hooks/claude.ts": The requested module \'landrace/hooks\' does not provide an export named ' +
+      "'defineExecutor'; the landrace this hook was loaded against may be older than the hook expects: rebuild or update it",
+    );
+  });
+
   // A hook module is arbitrary code; nothing stops it rejecting with a
   // non-Error, and reading `.message` off one throws from inside the very
   // catch whose job is to report the failure.

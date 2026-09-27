@@ -60,4 +60,16 @@ describe("node imports a hook module written in TypeScript", () => {
     await expect(nodeImport(join(dir, "hook.unreadable")))
       .resolves.toEqual({ ok: false, code: "ERR_UNKNOWN_FILE_EXTENSION" });
   });
+
+  /*
+   * What `importFailure` reads as a hook newer than the landrace it imports:
+   * a SyntaxError with no code, naming the export that is not there.
+   */
+  it("reports an import of an export that is not there as a SyntaxError naming it", async () => {
+    await writeFile(join(dir, "contracts.mjs"), "export const defineHook = 1;\n");
+    await writeFile(join(dir, "newer.mjs"), "import { defineExecutor } from \"./contracts.mjs\";\nexport const value = defineExecutor;\n");
+    const result = await nodeImport(join(dir, "newer.mjs"));
+    expect(result.ok).toBe(false);
+    expect(result.code).toMatch(/^SyntaxError: .*does not provide an export named 'defineExecutor'/);
+  });
 });
