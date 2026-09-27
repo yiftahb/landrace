@@ -1,12 +1,12 @@
 import type { LogRecord } from "@opentelemetry/api-logs";
 import type { LogRecordExporter } from "@opentelemetry/sdk-logs";
-import type { LandraceEvent } from "#namespace.js";
+import type { LandraceEvent, OtelSink, TelemetrySettings } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 
 /**
- * Every setting telemetry reads, by the names Claude Code uses for the same
- * thing, plus our own switch. `loadConfig` picks exactly these out of the
- * merged `.env`-over-shell map, and `--otel` accepts exactly these.
+ * Every setting telemetry reads: the standard OTel names, plus our own
+ * switch. `loadConfig` picks exactly these out of the merged `.env`-over-shell
+ * map, and `--otel` accepts exactly these.
  */
 export const TELEMETRY_KEYS = [
   "LANDRACE_ENABLE_TELEMETRY",
@@ -18,23 +18,6 @@ export const TELEMETRY_KEYS = [
   "OTEL_RESOURCE_ATTRIBUTES",
   "OTEL_LOGS_EXPORT_INTERVAL",
 ] as const;
-
-export interface TelemetrySettings {
-  exporter: "otlp" | "console";
-  protocol: "http/protobuf" | "http/json";
-  /** The collector's base URL; `/v1/logs` is appended to it. */
-  endpoint: string;
-  headers: Record<string, string>;
-  /** `OTEL_RESOURCE_ATTRIBUTES`, with `service.name` always set. */
-  resource: Record<string, string>;
-  intervalMs: number;
-}
-
-export interface OtelSink {
-  sink(e: LandraceEvent): void;
-  /** Flushes what is queued. Never rejects: it runs in a `finally`. */
-  shutdown(): Promise<void>;
-}
 
 const oneOf = <T extends string>(key: string, value: string, allowed: readonly T[]): T => {
   if ((allowed as readonly string[]).includes(value)) return value as T;

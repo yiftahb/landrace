@@ -772,6 +772,25 @@ export interface LandraceEvent {
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
+/** What `telemetrySettings` resolves `LANDRACE_ENABLE_TELEMETRY` and the `OTEL_*` settings to. */
+export interface TelemetrySettings {
+  exporter: "otlp" | "console";
+  protocol: "http/protobuf" | "http/json";
+  /** The collector's base URL; `/v1/logs` is appended to it. */
+  endpoint: string;
+  headers: Record<string, string>;
+  /** `OTEL_RESOURCE_ATTRIBUTES`, with `service.name` always set. */
+  resource: Record<string, string>;
+  intervalMs: number;
+}
+
+/** A logger's `exporter`, shipping each event to a collector as an OTel log record. */
+export interface OtelSink {
+  sink(e: LandraceEvent): void;
+  /** Flushes what is queued. Never rejects: it runs in a `finally`. */
+  shutdown(): Promise<void>;
+}
+
 /**
  * The engine's logger, which can be told about more secrets after it was made.
  * `scrub` applies that same live set to text that leaves the process outside
