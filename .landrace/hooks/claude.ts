@@ -228,6 +228,10 @@ export function createClaudeExecutor(opts: {
    * What a run that may write reaches, as `sandboxSettings` below turns it
    * into Claude Code's own settings. Absent, `readClaudeSettings`' defaults:
    * no network, and DEFAULT_DENY.
+   *
+   * Not re-validated here: `readClaudeSettings` is the one path that shapes
+   * an operator's YAML into this, and the factory below is the only caller
+   * the engine ever reaches this constructor through.
    */
   sandbox?: SandboxSettings;
 } = {}): Executor {
@@ -746,8 +750,16 @@ const HOST_SHAPE = /^(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$/;
  * alike. A rule reads `/x` relative to its settings file, so an absolute path
  * would deny nothing, silently. Not `~/` itself or a trailing "/", and no
  * parentheses, which would end the rule early.
+ *
+ * No leading or trailing whitespace, and no control character (a newline or
+ * tab, anywhere in the path, not only at an edge) — YAML lets either past a
+ * hand-edited file unnoticed, and a path that gains one names something that
+ * does not exist and denies nothing, which a *written* deny list then does in
+ * place of the defaults it replaced. An inner space is still fine: it is how
+ * a real macOS path reads (`~/Library/Application Support/x`).
  */
-const DENY_SHAPE = /^~\/[^()]*[^()/]$/;
+// eslint-disable-next-line no-control-regex -- excluding control chars is the point, not a leftover
+const DENY_SHAPE = /^~\/[^\s()\x00-\x1F\x7F](?:[^()\x00-\x1F\x7F]*[^\s()/\x00-\x1F\x7F])?$/;
 
 /** Why `value` is not a list of strings shaped like `shape`: that it is no list, or one line per entry, by index. */
 function listProblems(name: string, value: unknown, shape: RegExp, what: string): string[] {
@@ -797,8 +809,10 @@ export function readClaudeSettings(agent: Record<string, unknown>): ClaudeSettin
       if (!SANDBOX_KEYS.has(key)) problems.push(`agent.sandbox.${key} is not a setting the claude executor reads`);
     }
     const block = sandbox as { hosts?: unknown; deny?: unknown };
-    hosts = block.hosts ?? [];
-    deny = block.deny ?? DEFAULT_DENY;
+    // Not `??`: a bare "hosts:" in YAML parses as null, not absent, and every
+    // other key here refuses null rather than reading it as its default.
+    hosts = block.hosts === undefined ? [] : block.hosts;
+    deny = block.deny === undefined ? DEFAULT_DENY : block.deny;
     problems.push(
       ...listProblems("agent.sandbox.hosts", hosts, HOST_SHAPE, "a host name like github.com or *.npmjs.org, with no scheme, port or path"),
       ...listProblems("agent.sandbox.deny", deny, DENY_SHAPE, "a path under your home like ~/.ssh: starting with ~/, not ending in /, with no parentheses"),

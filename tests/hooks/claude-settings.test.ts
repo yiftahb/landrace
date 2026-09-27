@@ -107,14 +107,22 @@ describe("the claude hook's sandbox settings", () => {
     expect(() => sandboxOf({ deny: "~/.ssh" })).toThrow(/agent\.sandbox\.deny must be a list/);
   });
 
-  it.each(["https://github.com", "github.com:443", "github.com/org", "git hub.com", ""])(
+  // YAML's `hosts:` with no value parses as null, not "absent" — `?? []` would
+  // have let it through as the empty-list default, silently accepting a key
+  // that names nothing rather than reporting the typo it usually is.
+  it("refuses hosts or deny given as null, rather than treating it as absent", () => {
+    expect(() => sandboxOf({ hosts: null })).toThrow(/agent\.sandbox\.hosts must be a list/);
+    expect(() => sandboxOf({ deny: null })).toThrow(/agent\.sandbox\.deny must be a list/);
+  });
+
+  it.each(["https://github.com", "github.com:443", "github.com/org", "git hub.com", "github.com\n", ""])(
     "refuses the host %j, which the sandbox would never match, naming its index",
     (host) => {
       expect(() => sandboxOf({ hosts: ["github.com", host] })).toThrow(/agent\.sandbox\.hosts\[1\]/);
     },
   );
 
-  it.each(["/Users/me/.ssh", ".ssh", "~/.ssh/", "~/", "~/a)b", ""])(
+  it.each(["/Users/me/.ssh", ".ssh", "~/.ssh/", "~/", "~/a)b", "~/.ssh ", "~/.ssh\n", "~/a\nb", ""])(
     "refuses the deny path %j, which no Read rule would read as meant, naming its index",
     (path) => {
       expect(() => sandboxOf({ deny: ["~/.ssh", path] })).toThrow(/agent\.sandbox\.deny\[1\]/);
