@@ -329,6 +329,12 @@ export interface LoadedConfig {
    */
   vars: Map<string, string>;
   /**
+   * `LANDRACE_ENABLE_TELEMETRY` and the `OTEL_*` settings telemetry reads,
+   * `.env` over the shell exactly as a secret resolves. `--otel` goes over
+   * both, in `telemetrySettings`.
+   */
+  telemetry: Map<string, string>;
+  /**
    * Variable names that resolved to nothing usable: no such environment
    * variable, or one set to an empty value. Both are reported rather than
    * substituted, because a workflow filled in with "$LANDRACE_ASSIGNEE" or
