@@ -152,7 +152,7 @@ src/core/            the decision engine — pure, and enforced: no I/O, no cloc
                      no randomness. Time arrives as `snapshot.now`
 src/workflow/        load and validate workflow definitions
 src/hooks/           the define* contracts, and the loader that imports yours
-src/agent/           executors, prompt screening, the worktree sandbox
+src/agent/           prompt screening, the worktree sandbox
 src/runner/          tick, converge, step, lock, effect dispatch, events
 src/config/          landrace.yaml + .env
 src/mcp/             operator tools over stdio
@@ -181,24 +181,22 @@ How agents run and where tickets live. Portable workflows keep none of this.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent.adapter` | — | Which coding agent to invoke (`claude`) |
-| `agent.model` | — | Default model; a step may override it |
-| `agent.isolation` | `worktree` | `none`, `worktree`, or `container` |
-| `agent.plugins` | `[]` | Plugin ids (`name@marketplace`) enabled for every step and conversation turn, e.g. `superpowers@claude-plugins-official` |
-| `agent.mcp` | `[]` | MCP servers a step may use, looked up by name in the repository root's `.mcp.json`: a bare name allows **every** tool on the server, `{ name, tools: [...] }` only those. Never `landrace` — see below |
+| `agent.adapter` | — | Which executor runs steps and conversation turns: an id a hook registers with `defineExecutor`. This repository's is `claude`, from `.landrace/hooks/claude.ts` |
+| `agent.isolation` | `worktree` | `none`, `worktree`, or `container` — how the engine prepares the directory a step runs in |
+| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. The Claude hook reads `model`, `plugins` and `mcp`, and refuses any other key |
 | `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` — which a GitHub App token needs (e.g. `myapp`), since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
 | `security.screen` | `true` | Screen each prompt for injection before invoking an agent |
-| `security.adapter` | `agent.adapter` | Which executor screens: `claude`, or an id a hook registers with `defineExecutor`. It gets no tools, which it must enforce or refuse the run |
-| `security.model` | `haiku` on `claude` | Model the screener is asked for on every run. Required when a hook's executor screens: haiku is a claude model, so there is no default to fall back on, and landrace refuses to start without one |
+| `security.adapter` | `agent.adapter` | Which executor screens: an id a hook registers with `defineExecutor`, `claude` in this repository. It gets no tools, which it must enforce or refuse the run |
+| `security.model` | — | The model the screening run asks for. No default: absent, the screening executor's own default decides |
 | `log.redact` | `[]` | Secret names whose values must never be logged |
 | `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
 | `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |
 
 ### What a step's agent is handed
 
-A step's `capabilities` decide how the engine's `claude` executor starts the agent:
+A step's `capabilities` decide how the Claude hook starts the agent:
 
 | Step declares | Permission mode | Also |
 |---|---|---|
@@ -232,7 +230,7 @@ Servers are resolved once, at startup, from the **repository root's** `.mcp.json
 
 Three things this does not do:
 
-- **A hook-registered executor gets none of it.** `agent.plugins` and `agent.mcp` are handed to the engine's own `claude` executor; an `agent.adapter` a hook registers builds its own agent and never sees them.
+- **A different executor gets none of it.** `agent.plugins` and `agent.mcp` are settings the Claude hook reads; an `agent.adapter` naming a different hook gets the same `agent:` block passed on unread, these two keys included, and owes them no meaning of its own.
 - **A definition's relative paths are not rebased.** A server is resolved from the root's `.mcp.json` but started by the agent's CLI in the step's working directory — its worktree — so a relative `command` or argument in that definition resolves there, against committed files only. Use absolute paths or commands on `PATH`.
 - **A plugin's hooks still run.** `--restricted` ignores your settings files but not the hooks an enabled plugin ships, so every plugin in `agent.plugins` runs its hooks under read-only steps too. Enable only plugins you would let run there.
 
@@ -398,6 +396,32 @@ A pre hook declares the snapshot paths it fills, and a source declares which rel
 Hook modules are imported at runtime with no build step, so they need a Node that strips types: 22.18 or newer does it unflagged, and an older 22.x needs `--experimental-strip-types`.
 
 Conditions are MongoDB-style documents over snapshot paths, evaluated with a **closed operator allowlist** — `$eq $ne $in $nin $lt $lte $gt $gte $exists $all $size $and $or $not`. `$where` and `$regex` are rejected at load, because a workflow file is a repo file a pull request can edit.
+
+### Executors: the coding agent is a hook
+
+Landrace ships no coding agent. `defineExecutor` registers one, either as `{ id, run }` directly or as `{ id, create(ctx) }` — a factory the runtime calls once at startup, with `ctx` the same `RuntimeContext` every hook gets plus `dir` (the workflow directory, for finding the repository) and `redact` (secrets a run's own setup discovers, such as an MCP server's `env`, that the configuration never named). A factory that cannot start — a bad `agent.*` key, a server `.mcp.json` does not define — throws, and `landrace validate` reports it under the `executor` rule, one problem per line.
+
+**The engine hands every run:**
+- the rendered prompt;
+- the directory to run in;
+- the step's capabilities;
+- its model;
+- a time limit, which the engine also enforces by aborting;
+- the session to resume;
+- for a `tickets:create` step, the engine's own ticket server, ready to start.
+
+It gets back the agent's text and a session id. Beyond `agent.adapter` and `agent.isolation`, the rest of the `agent:` block is opaque to the engine and passed on to the executor unread — a second agent is a hook file, never a change to `src/`.
+
+**An executor must, or else refuse the run:**
+- enforce every declared capability;
+- give a run that declares none no tools at all (that is the screener's run);
+- never hand a step or a turn the operator's own `landrace` MCP server;
+- honour a named model;
+- stop at the limit and on abort.
+
+The engine checks a read-only step's worktree afterwards whatever the executor claims — a backstop, not a licence to skip the rest.
+
+`.landrace/hooks/claude.ts` is the worked example, built with `defineExecutor({ id, create(ctx) })` so it can read its own settings out of `agent:` and register its secrets for redaction before the first step runs. A project on another agent copies the shape, not the file.
 
 ### `.landrace/steps/*.md` — the work
 
