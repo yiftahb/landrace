@@ -1,4 +1,4 @@
-import { chmod, copyFile, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
@@ -146,87 +146,6 @@ describe("buildRuntime", () => {
     await expect(buildRuntime(dir, {})).rejects.toThrow(/leaked[\s\S]*secret/);
   });
 
-  /*
-   * `agent.mcp` is resolved against the repository root's `.mcp.json` before
-   * anything else is loaded — and before any hook module is imported — so a
-   * server that cannot be handed to a step is a refusal to start, in a
-   * sentence, rather than a step that finds its tools missing hours in.
-   */
-  describe("agent.mcp", () => {
-    const withServers = async (mcpJson: unknown | null, names: string): Promise<string> => {
-      const dir = await fixture({ git: true, agentKeys: `mcp: [${names}]` });
-      if (mcpJson !== null) await writeFile(join(dir, "..", ".mcp.json"), JSON.stringify(mcpJson));
-      return dir;
-    };
-
-    it("refuses to start when there is no .mcp.json at the repository root, naming the command that writes one", async () => {
-      await expect(buildRuntime(await withServers(null, "codebase-memory-mcp"), {}))
-        .rejects.toThrow(/mcp: agent\.mcp names "codebase-memory-mcp", but .*\.mcp\.json does not exist; `agsync sync` generates it/);
-    });
-
-    it("refuses to start on a name .mcp.json does not define, listing the ones it does", async () => {
-      await expect(buildRuntime(await withServers({ mcpServers: { "codebase-memory-mcp": { command: "cbm" } } }, "memory"), {}))
-        .rejects.toThrow(/"memory"[\s\S]*defines codebase-memory-mcp/);
-    });
-
-    it("refuses to start when the operator server is allowed by name", async () => {
-      await expect(buildRuntime(await withServers({ mcpServers: { landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } }, "landrace"), {}))
-        .rejects.toThrow(/operator tools must never reach a step agent/);
-    });
-
-    it("refuses to start when the operator server is allowed under another name", async () => {
-      await expect(buildRuntime(await withServers({ mcpServers: { tickets: { command: "node", args: ["dist/cli.js", "mcp"] } } }, "tickets"), {}))
-        .rejects.toThrow(/"tickets"[\s\S]*operator tools must never reach a step agent/);
-    });
-
-    // And the refusal comes first: this fixture has no source hook either,
-    // and it is the server that is reported, not the hook.
-    it("gets past the check when every name resolves", async () => {
-      await expect(buildRuntime(await withServers({ mcpServers: { "codebase-memory-mcp": { command: "cbm" } } }, "codebase-memory-mcp"), {}))
-        .rejects.toThrow(/no source hook/);
-    });
-  });
-});
-
-describe("the step timeout", () => {
-  const workflow = (budget?: Record<string, unknown>): Workflow => ({
-    version: 1,
-    name: "t",
-    stages: [{ id: "a", entry: true }],
-    ...(budget === undefined ? {} : { budget: budget as NonNullable<Workflow["budget"]> }),
-  });
-
-  /**
-   * The wiring itself, asked of a real subprocess rather than of a field.
-   * `budget.stepTimeout` was 10m in the shipped workflow and the executor's
-   * own default was 10m, so the two agreed by coincidence and nothing would
-   * have noticed either one moving.
-   */
-  it("is what the agent is actually given, not a default that happens to match", async () => {
-    const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
-    const cwd = await mkdtemp(join(tmpdir(), "lr-hang-"));
-    // The same double the executor's own tests use, under the name the engine
-    // spawns, reached the way a real `claude` is reached: through PATH.
-    await copyFile(join(__dirname, "..", "agent", "fake-agent.mjs"), join(bin, "claude"));
-    await chmod(join(bin, "claude"), 0o755);
-    await writeFile(join(cwd, "fake.json"), JSON.stringify({ hang: true }));
-
-    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" } });
-    const registry: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
-    const ctx: ExecutorContext = {
-      config, secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: ".", redact: () => {},
-    };
-    const path = process.env.PATH;
-    process.env.PATH = `${bin}:${path ?? ""}`;
-    try {
-      const executor = await executorFor(config, workflow({ stepTimeout: "1s" }), registry, ctx);
-      await expect(
-        executor.run("x", { round: 1, cwd, signal: new AbortController().signal }),
-      ).rejects.toThrow(/exceeded 1000ms/);
-    } finally {
-      process.env.PATH = path;
-    }
-  }, 8_000);
 });
 
 /**
@@ -236,7 +155,6 @@ describe("the step timeout", () => {
  * engine names no provider.
  */
 describe("which executor screens", () => {
-  const workflow: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true }] };
   const empty: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
   const ctx = (): ExecutorContext => ({
     config: runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } }),
@@ -249,29 +167,29 @@ describe("which executor screens", () => {
   it("screens with the executor agent.adapter names, asking it for security.model", async () => {
     const registry = plain("fake");
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, security: { model: "small" } });
-    expect(await screenerFor(config, workflow, registry, ctx())).toEqual({ executor: registry.executors.get("fake"), model: "small" });
+    expect(await screenerFor(config, registry, ctx())).toEqual({ executor: registry.executors.get("fake"), model: "small" });
   });
 
   it("names no model when security.model names none, so the executor's own default decides", async () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } });
-    expect((await screenerFor(config, workflow, plain("fake"), ctx()))?.model).toBeUndefined();
+    expect((await screenerFor(config, plain("fake"), ctx()))?.model).toBeUndefined();
   });
 
   it("screens with security.adapter's executor while the steps stay on agent.adapter", async () => {
     const registry: Registry = { ...empty, executors: new Map([...plain("local").executors, ...plain("fake").executors]) };
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, security: { adapter: "local" } });
-    expect((await screenerFor(config, workflow, registry, ctx()))?.executor).toBe(registry.executors.get("local"));
-    expect((await executorFor(config, workflow, registry, ctx())).id).toBe("fake");
+    expect((await screenerFor(config, registry, ctx()))?.executor).toBe(registry.executors.get("local"));
+    expect((await executorFor(config, registry, ctx())).id).toBe("fake");
   });
 
   it("refuses an adapter no executor answers to, naming the key and the ids it could have used", async () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, security: { adapter: "gpt-9" } });
-    await expect(screenerFor(config, workflow, plain("fake"), ctx())).rejects.toThrow(/security\.adapter "gpt-9"[\s\S]*"fake"/);
+    await expect(screenerFor(config, plain("fake"), ctx())).rejects.toThrow(/security\.adapter "gpt-9"[\s\S]*"fake"/);
   });
 
   it("builds no screener when screening is off", async () => {
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "gpt-9" }, security: { screen: false } });
-    expect(await screenerFor(config, workflow, empty, ctx())).toBeUndefined();
+    expect(await screenerFor(config, empty, ctx())).toBeUndefined();
   });
 
   /*
@@ -289,8 +207,8 @@ describe("which executor screens", () => {
     const registry: Registry = { ...empty, executors: new Map([["made", factory]]) };
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "made" } });
     const shared = ctx();
-    const step = await executorFor(config, workflow, registry, shared);
-    const screener = await screenerFor(config, workflow, registry, shared);
+    const step = await executorFor(config, registry, shared);
+    const screener = await screenerFor(config, registry, shared);
     expect(made).toBe(1);
     expect(screener?.executor).toBe(step);
     expect(step.id).toBe("made");
@@ -300,7 +218,7 @@ describe("which executor screens", () => {
     const factory = defineExecutor({ id: "made", create: async () => { throw new Error("agent.mcp names nothing it can find"); } });
     const registry: Registry = { ...empty, executors: new Map([["made", factory]]) };
     const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "made" } });
-    await expect(executorFor(config, workflow, registry, ctx())).rejects.toThrow(/executor "made" could not start: agent\.mcp names nothing it can find/);
+    await expect(executorFor(config, registry, ctx())).rejects.toThrow(/executor "made" could not start: agent\.mcp names nothing it can find/);
   });
 });
 

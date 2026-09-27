@@ -2,7 +2,6 @@ import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, varsHoldingSecrets } from "#config/load.js";
-import { runtimeConfigSchema } from "#config/schema.js";
 
 const CONFIG = `version: 1
 agent: { adapter: claude, model: opus }
@@ -139,52 +138,10 @@ describe("a var that is really a secret", () => {
 });
 
 /*
- * What every declared step is handed beyond its own tools. Both default to
- * nothing: a plugin or a server a step never asked for is one more thing
- * reading the repository, and the operator names each of them on purpose.
+ * `agent.plugins` and `agent.mcp` used to be typed here, defaulted and
+ * validated by this schema. Task 5 makes `agent:` opaque past `adapter` and
+ * `isolation` — a coding agent's model, plugins and servers are its own
+ * executor's vocabulary now, read and validated by `readClaudeSettings`
+ * (`.landrace/hooks/claude.ts`, pinned in tests/hooks/claude-settings.test.ts)
+ * rather than by this schema.
  */
-describe("agent.plugins and agent.mcp", () => {
-  const parse = (agent: Record<string, unknown>) =>
-    runtimeConfigSchema.safeParse({ version: 1, agent: { adapter: "claude", ...agent } });
-
-  it("default to empty lists", () => {
-    const r = parse({});
-    expect(r.success && r.data.agent.plugins).toEqual([]);
-    expect(r.success && r.data.agent.mcp).toEqual([]);
-  });
-
-  it("read as written in landrace.yaml", async () => {
-    const dir = join(await mkdtemp(join(tmpdir(), "landrace-cfg-")), ".landrace");
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "landrace.yaml"), `version: 1
-agent:
-  adapter: claude
-  plugins: [superpowers@claude-plugins-official]
-  mcp: [codebase-memory-mcp]
-`);
-    const { config } = await loadConfig(dir);
-    expect(config.agent.plugins).toEqual(["superpowers@claude-plugins-official"]);
-    expect(config.agent.mcp).toEqual(["codebase-memory-mcp"]);
-  });
-
-  /*
-   * A bare name allows every tool the server has; an entry with `tools` allows
-   * only those. Strict, so a misspelt `tool:` is refused rather than read as
-   * "every tool".
-   */
-  it("take a server either by bare name or with the tools a step may use", () => {
-    const r = parse({ mcp: ["other", { name: "codebase-memory-mcp", tools: ["search_graph", "trace_path"] }] });
-    expect(r.success && r.data.agent.mcp).toEqual(["other", { name: "codebase-memory-mcp", tools: ["search_graph", "trace_path"] }]);
-    expect(parse({ mcp: [{ name: "codebase-memory-mcp", tool: ["search_graph"] }] }).success).toBe(false);
-    expect(parse({ mcp: [{ tools: ["search_graph"] }] }).success).toBe(false);
-    expect(parse({ mcp: [{ name: "codebase-memory-mcp", tools: "search_graph" }] }).success).toBe(false);
-  });
-
-  it("refuse anything but a list of names", () => {
-    expect(parse({ mcp: "codebase-memory-mcp" }).success).toBe(false);
-    expect(parse({ plugins: "superpowers@claude-plugins-official" }).success).toBe(false);
-    expect(parse({ mcp: [""] }).success).toBe(false);
-    expect(parse({ plugins: [""] }).success).toBe(false);
-    expect(parse({ mcp: [3] }).success).toBe(false);
-  });
-});

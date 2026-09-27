@@ -11,6 +11,7 @@ name: landrace
 # because the engine has no GitHub in it to change.
 hooks:
   - hooks/github.ts
+  - hooks/claude.ts
 
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }

@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { loadConfig } from "#config/load.js";
-import { mcpRedactionValues, resolveStepServers } from "#landrace/hooks/claude.js";
+import { mcpRedactionValues, readClaudeSettings, resolveStepServers } from "#landrace/hooks/claude.js";
 import { gitRepo, plainDir, removeRepos } from "#tests/support/repo.js";
 
 afterAll(removeRepos);
@@ -265,11 +265,12 @@ describe("the shipped allowlist, against what agsync generates", () => {
 
   it("resolves every server .landrace/landrace.yaml allows", async () => {
     const { config } = await loadConfig(".landrace");
-    expect(config.agent.mcp.length).toBeGreaterThan(0);
+    const { mcp } = readClaudeSettings(config.agent as Record<string, unknown>);
+    expect(mcp.length).toBeGreaterThan(0);
     const { dir } = await repo(await generated());
-    const r = await resolveStepServers(dir, config.agent.mcp);
+    const r = await resolveStepServers(dir, mcp);
     expect(r.problems).toEqual([]);
-    expect(Object.keys(r.servers)).toEqual(config.agent.mcp.map((e) => (typeof e === "string" ? e : e.name)));
+    expect(Object.keys(r.servers)).toEqual(mcp.map((e) => (typeof e === "string" ? e : e.name)));
   });
 
   // This repository's own steps get the codebase graph's reading tools and
@@ -277,7 +278,8 @@ describe("the shipped allowlist, against what agsync generates", () => {
   // manage_adr, not ingest_traces.
   it("names the tools of every server it allows, rather than allowing the whole server", async () => {
     const { config } = await loadConfig(".landrace");
-    for (const entry of config.agent.mcp) expect(typeof entry).toBe("object");
+    const { mcp } = readClaudeSettings(config.agent as Record<string, unknown>);
+    for (const entry of mcp) expect(typeof entry).toBe("object");
   });
 
   it("recognises the operator server agsync defines, under any name", async () => {

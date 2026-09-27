@@ -96,7 +96,7 @@ const EXECUTOR = `export const executor = brand("executor", {
 
 const workflowReading = (path?: string): string => `version: 1
 name: e2e
-hooks: [hooks/fake.ts]
+hooks: [hooks/fake.ts, hooks/claude.ts]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
@@ -145,6 +145,19 @@ async function fixture(
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
   await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight));
+  // The project's own coding agent, by the path this repository's workflow
+  // loads it from: the engine ships none. A dynamic import with a computed
+  // specifier — the loader's own `import(pathToFileURL(path).href)` pattern —
+  // rather than a static `export … from "…claude.ts"`: ts-jest type-checks a
+  // literal specifier under this project's `moduleResolution: NodeNext` and
+  // refuses one ending in `.ts` (TS5097), a rule real Node's type-stripping
+  // does not enforce at all.
+  await writeFile(
+    join(dir, "hooks", "claude.ts"),
+    `import { pathToFileURL } from "node:url";
+export const { claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), ".landrace", "hooks", "claude.ts"))}).href);
+`,
+  );
   await writeFile(join(dir, "workflow.yaml"), workflowReading(opts.reads));
   await writeFile(
     join(dir, "landrace.yaml"),
@@ -344,6 +357,18 @@ ${EXECUTOR}`);
     await expect(buildRuntime(dir, {})).rejects.toThrow(/gpt-9[\s\S]*claude/);
   });
 
+  /**
+   * `agent:` is opaque past `adapter` and `isolation`: everything else is the
+   * executor's own vocabulary, and the claude hook refuses a key it does not
+   * read rather than silently ignoring it. Reached only once the hook's
+   * `create` actually runs, which is why this is `buildRuntime` and not a unit
+   * test of `readClaudeSettings` — the wiring is what could still be wrong.
+   */
+  it("refuses to start when the claude hook cannot use its settings, naming the executor and the key", async () => {
+    const { dir } = await fixture({ agentKeys: "plugin: [p@m]" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/executor "claude" could not start: agent\.plugin is not a setting/);
+  });
+
   /*
    * `agent.plugins` and `agent.mcp`, end to end through the runtime a loop
    * actually runs: resolved from the repository root once, and handed to the
@@ -355,6 +380,7 @@ ${EXECUTOR}`);
     const memory = { command: "codebase-memory-mcp", args: [], env: {} };
     const { dir } = await fixture({
       screen: true,
+      securityKeys: "model: haiku",
       agentKeys: "plugins: [superpowers@claude-plugins-official], mcp: [{ name: codebase-memory-mcp, tools: [search_graph, trace_path] }]",
       mcpJson: { mcpServers: { "codebase-memory-mcp": memory, landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });
@@ -391,17 +417,17 @@ ${EXECUTOR}`);
       "mcp__codebase-memory-mcp__search_graph", "mcp__codebase-memory-mcp__trace_path",
     ]);
     expect(step).toContain("--settings");
-    // The screener: no plugin, no server, no tool. `security.model` names
-    // none here, so the run names none either — the same claude executor's
-    // own default (`agent.model`) decides, exactly as an unnamed model does
-    // on any other run.
+    // The screener: no plugin, no server, no tool, and the model
+    // `security.model` names — never `agent.model`, which is the step's own
+    // "opus" and would otherwise be indistinguishable from the screener
+    // quietly inheriting the executor's default.
     const after = (argv: string[], name: string): string | undefined => argv[argv.indexOf(name) + 1];
     expect(JSON.parse(after(screener, "--mcp-config") as string)).toEqual({ mcpServers: {} });
     expect(screener).toContain("--strict-mcp-config");
     expect(after(screener, "--tools")).toBe("");
     expect(screener).not.toContain("--settings");
     expect(after(screener, "--permission-mode")).toBe("manual");
-    expect(after(screener, "--model")).toBe("opus");
+    expect(after(screener, "--model")).toBe("haiku");
   });
 });
 

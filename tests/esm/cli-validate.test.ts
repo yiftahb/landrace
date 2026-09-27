@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runValidate } from "#cli/validate.js";
@@ -31,7 +31,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
   it("validates the shipped .landrace workflow clean, on every rule", async () => {
     const r = await runValidate(".landrace");
     const machine = (p: Problem): boolean =>
-      p.rule === "secret" || (p.rule === "mcp" && /\.mcp\.json does not exist/.test(p.message));
+      p.rule === "secret" || (p.rule === "executor" && /\.mcp\.json does not exist/.test(p.message));
     expect(r.problems.filter((p) => !machine(p))).toEqual([]);
   });
 
@@ -83,6 +83,37 @@ describe("landrace validate, against the hooks the workflow loads", () => {
     // And with it loaded, nothing: the same rule, the same workflow.
     expect(validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined)
       .filter((p) => p.rule === "path-coverage")).toEqual([]);
+  });
+
+  /**
+   * `landrace validate` builds the same executors `start` would, in the same
+   * words it refuses with, under rule `executor` — an executor's own setup
+   * can read files outside the workflow (`.mcp.json`, for the shipped claude
+   * hook), so a configuration mistake there is exactly as much `validate`'s
+   * business as a broken predicate path is.
+   */
+  it("reports an executor that cannot start, in the words start refuses with", async () => {
+    const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
+    await mkdir(join(dir, "hooks"), { recursive: true });
+    // A dynamic import with a computed specifier, not a static
+    // `export … from "…claude.ts"`: ts-jest type-checks a literal specifier
+    // under this project's `moduleResolution: NodeNext` and refuses one
+    // ending in `.ts` (TS5097), a rule real Node's type-stripping does not
+    // enforce at all.
+    await writeFile(
+      join(dir, "hooks", "claude.ts"),
+      `import { pathToFileURL } from "node:url";
+export const { claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), ".landrace", "hooks", "claude.ts"))}).href);
+`,
+    );
+    await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: claude, plugin: [p@m] }\n");
+    await writeFile(join(dir, "workflow.yaml"), [
+      "version: 1", "name: t", "hooks: [hooks/claude.ts]", "stages:",
+      "  - id: a", "    entry: true", "    terminal: true", "    triggers:",
+      "      - name: fresh", '        when: { "run.stage": null }', "",
+    ].join("\n"));
+    const r = await runValidate(dir);
+    expect(r.problems).toContainEqual({ rule: "executor", message: expect.stringMatching(/executor "claude" could not start: agent\.plugin/) });
   });
 
   /**

@@ -21,7 +21,6 @@
 
 import type { z } from "zod";
 import type { runtimeConfigSchema } from "#config/schema.js";
-import type { mcpConfigSchema, mcpServerSchema } from "#config/mcp.js";
 import type { stepFrontMatterSchema } from "#workflow/schema.js";
 import type { HOOK_KINDS } from "#hooks/contracts.js";
 
@@ -335,39 +334,6 @@ export interface LoadedConfig {
    * with "" is one that quietly matches no ticket at all.
    */
   missingVars: string[];
-}
-
-/** One MCP server as the repository root's `.mcp.json` defines it, passed on whole. */
-export type McpServer = z.infer<typeof mcpServerSchema>;
-
-/** `.mcp.json`, parsed. */
-export type McpConfig = z.infer<typeof mcpConfigSchema>;
-
-/**
- * The servers `agent.mcp` names, looked up in the repository root's
- * `.mcp.json` — or why they could not be. Problems rather than a throw, so
- * `landrace validate` reports what `landrace start` refuses, in its words.
- */
-export interface ResolvedMcp {
-  servers: Record<string, McpServer>;
-  /** The tools a server's entry listed, by server name; a server named bare has none here and allows every tool. */
-  tools: Record<string, string[]>;
-  problems: Problem[];
-}
-
-/** One `agent.mcp` entry: a server's bare name, or its name and the only tools a step may call on it. */
-export type McpEntry = RuntimeConfig["agent"]["mcp"][number];
-
-/**
- * What a declared run is handed beyond its own tools, resolved once at
- * startup: the plugins `agent.plugins` enables and the servers `agent.mcp`
- * allows, by definition — never a path the agent's worktree could shadow.
- */
-export interface StepTools {
-  plugins: readonly string[];
-  mcpServers: Readonly<Record<string, McpServer>>;
-  /** Per server, the only tools a step may call; a server absent here allows every tool it has. */
-  mcpTools: Readonly<Record<string, readonly string[]>>;
 }
 
 /* -------------------------------------------------------------- workflow -- */

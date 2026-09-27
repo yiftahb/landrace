@@ -1,7 +1,7 @@
 import { runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
 import { loadWorkflow } from "#workflow/load.js";
-import { copyFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -117,8 +117,12 @@ stages:
 
   it("passes a workflow whose var resolves, having substituted a literal into it", async () => {
     const r = await runValidate(await dirFor("vars: { assignee: $LR_VALIDATE_ASSIGNEE }\n"));
-    expect(r.problems).toEqual([]);
-    expect(r.ok).toBe(true);
+    // This fixture names no hooks, so `agent.adapter: claude` never resolves
+    // in this jest pass (the loader's dynamic import is unreachable under
+    // CommonJS, which is why every fixture in this file names none) — the one
+    // `executor` problem that follows from that is filtered out, and with it
+    // `r.ok`, since neither is what this describe is about.
+    expect(r.problems.filter((p) => p.rule !== "executor")).toEqual([]);
   });
 
   /*
@@ -214,52 +218,14 @@ describe("landrace next", () => {
 });
 
 /*
- * `agent.mcp`, reported by `validate` in the same words `start` refuses with:
- * a daemon that refuses what the CLI passed is the two disagreeing about
- * what is fatal, and the operator finds out one start at a time.
+ * `agent.mcp`, once validated by the engine's own schema and looked up here
+ * against the repository root's `.mcp.json`, is now the claude hook's own
+ * setting — read and resolved by `readClaudeSettings`/`resolveStepServers` in
+ * `.landrace/hooks/claude.ts`, and reported by `validate` under rule
+ * `executor` (tests/hooks/claude-mcp.test.ts covers the resolution itself;
+ * tests/esm/cli-validate.test.ts covers `validate` reporting it end to end,
+ * through a real hook — this file's own jest pass cannot import one at all).
  */
-describe("landrace validate and the servers a step may use", () => {
-  const exec = promisify(execFile);
-
-  const repo = async (names: string, mcpJson?: unknown): Promise<string> => {
-    const root = await mkdtemp(join(tmpdir(), "landrace-validate-mcp-"));
-    await exec("git", ["init", "-q"], { cwd: root });
-    await writeFile(join(root, ".gitignore"), ".env\n");
-    const dir = join(root, ".landrace");
-    await mkdir(join(dir, "steps"), { recursive: true });
-    await copyFile("tests/fixtures/minimal/workflow.yaml", join(dir, "workflow.yaml"));
-    await copyFile("tests/fixtures/minimal/steps/spec.md", join(dir, "steps", "spec.md"));
-    await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude, mcp: [${names}] }\n`);
-    if (mcpJson !== undefined) await writeFile(join(root, ".mcp.json"), JSON.stringify(mcpJson));
-    return dir;
-  };
-
-  it("is clean when every allowed server resolves", async () => {
-    const r = await runValidate(await repo("codebase-memory-mcp", { mcpServers: { "codebase-memory-mcp": { command: "cbm" } } }));
-    expect(r.problems).toEqual([]);
-  });
-
-  it("reports a missing .mcp.json, and says what generates it", async () => {
-    const r = await runValidate(await repo("codebase-memory-mcp"));
-    expect(r.ok).toBe(false);
-    expect(r.problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/does not exist; `agsync sync` generates it/) }]);
-  });
-
-  // The one `start` used to refuse in the executor and `validate` passed.
-  it("reports a server name the agent's argv could not carry whole", async () => {
-    const r = await runValidate(await repo('"my server"', { mcpServers: { "my server": { command: "cbm" } } }));
-    expect(r.problems).toEqual([{ rule: "mcp", message: expect.stringContaining('"my server"') }]);
-  });
-
-  it("reports the operator server, by name and by command", async () => {
-    const r = await runValidate(await repo("landrace, tickets", { mcpServers: {
-      landrace: { command: "node", args: ["dist/cli.js", "mcp"] },
-      tickets: { command: "landrace", args: ["mcp"] },
-    } }));
-    expect(r.problems.map((p) => p.rule)).toEqual(["mcp", "mcp"]);
-    expect(r.problems.map((p) => p.message).join("\n")).toMatch(/"landrace"[\s\S]*"tickets"/);
-  });
-});
 
 /*
  * A stage's branch is where its step's worktree is checked out. With
@@ -305,14 +271,23 @@ build
     return dir;
   };
 
+  // This fixture names no hooks, and this jest pass cannot import one even if
+  // it did (the loader's dynamic `import()` is unreachable under CommonJS —
+  // see tests/esm/cli-start.test.ts's own header comment). So `agent.adapter:
+  // claude` never resolves here, and every case below carries that one
+  // unrelated `executor` problem alongside whatever `branch` reports — which
+  // is not what this describe is about, so it is filtered out rather than
+  // asserted on.
+  const notExecutor = (p: { rule: string }): boolean => p.rule !== "executor";
+
   it("is clean with worktree isolation", async () => {
-    expect((await runValidate(await repo("worktree"))).problems).toEqual([]);
+    expect((await runValidate(await repo("worktree"))).problems.filter(notExecutor)).toEqual([]);
   });
 
   it("reports the stage when there is no worktree for its branch to be checked out in", async () => {
     const r = await runValidate(await repo("none"));
     expect(r.ok).toBe(false);
-    expect(r.problems).toEqual([
+    expect(r.problems.filter(notExecutor)).toEqual([
       { rule: "branch", message: expect.stringMatching(/stage "build"[\s\S]*agent\.isolation[\s\S]*"none"/) },
     ]);
   });

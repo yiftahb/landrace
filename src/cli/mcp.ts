@@ -1,6 +1,5 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
-import { mcpRedactionValues } from "#config/mcp.js";
 import { mayCreateTickets, ticketIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import type { ChildBinding, ChildTool, ExecutorContext, RuntimeContext, Tools } from "#namespace.js";
@@ -11,7 +10,7 @@ import { createLogger } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { loadWorkflow } from "#workflow/load.js";
-import { executorFor, sandboxFor, screenerFor, stepToolsFor } from "#cli/start.js";
+import { executorFor, sandboxFor, screenerFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -26,22 +25,18 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   // runs the same workflow under the same configuration.
   assertConfigUsable(dir, loaded);
 
-  // A turn resumes a step's own session, so it holds what the step holds —
-  // resolved here exactly as the loop resolves it, and refused for the same
-  // reasons, before any hook module is imported.
-  const tools = await stepToolsFor(loaded.config, dir);
-
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
   const { workflow, steps } = await loadWorkflow(dir, loaded.vars);
   const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
 
   // stdout carries the MCP protocol, so anything we have to say goes to
-  // stderr — which is what the client that spawned us shows.
+  // stderr — which is what the client that spawned us shows. What an
+  // executor's own setup turns up — an allowlisted server's env and header
+  // values, say — is not known yet; it joins the redaction set later,
+  // through `ectx.redact`, once the executor factory that found it has run.
   const events = createLogger({
-    // With the allowlisted servers' env and header values, as the loop's own
-    // logger has them: a turn's agent carries the same servers.
-    redactValues: [...redactionValues(loaded), ...mcpRedactionValues(tools.mcpServers)],
+    redactValues: redactionValues(loaded),
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
   });
 
@@ -88,10 +83,12 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * — the same $TMPDIR path the loop takes — because the entire mechanism is
    * two processes finding the same file.
    *
-   * With the same plugins and servers, and without the directory: a turn is
-   * never handed a create_child binding, so it never needs the child server.
+   * Built from the same configuration the loop's own step invocation is, so a
+   * turn carries the same plugins and the same allowlisted servers without
+   * this process naming them again — that is the executor factory's own
+   * resolution now, not something resolved and handed in here.
    */
-  const executor = await executorFor(loaded.config, workflow, registry, ectx, { tools });
+  const executor = await executorFor(loaded.config, registry, ectx);
 
   /*
    * And the screener, resolved exactly as the loop's runtime resolves it. §15 screens every agent
@@ -107,7 +104,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * the frame they will be read in — which is the screening §15 describes and
    * the only kind the screener's own prompt is written to do.
    */
-  const screener = await screenerFor(loaded.config, workflow, registry, ectx);
+  const screener = await screenerFor(loaded.config, registry, ectx);
   const screen = screener ? { screen: screener } : {};
 
   /*
