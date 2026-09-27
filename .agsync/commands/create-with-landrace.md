@@ -1,0 +1,51 @@
+---
+description: File an idea from this conversation as a Landrace ticket, through the orchestrator rather than the tracker
+argument-hint: "[what to file] [no-start]"
+---
+
+File a ticket through Landrace's own `landrace_create_ticket` MCP tool: $ARGUMENTS
+
+Never create the issue with `gh` or a tracker API directly. The tool goes
+through the project's operator hook, which creates, labels and links the
+ticket the way the orchestrator reads it back. An issue filed around it can
+lack the labels the workflow routes on.
+
+## What to file
+
+The arguments name the idea. When they are empty or brief, the idea is the
+one this conversation has been working on: take what was agreed, not
+everything that was said.
+
+## The body
+
+The body is the ticket's whole brief. The `spec` step reads it cold, with
+none of this conversation, and writes the spec from it. Write it for that
+reader:
+
+- **Goal**: one or two sentences saying what changes for the person using it.
+- **Why**: the problem, with the concrete case that exposed it (a ticket
+  number, an error, a failed run).
+- **Decided**: every choice already made, one line each, with the reason. The
+  spec step must not reopen these.
+- **Open**: questions not yet settled, for the spec step to raise.
+- **Out of scope**: anything discussed and deliberately left out.
+- **Depends on**: work that must land first, if any.
+
+Name files, stages, hooks and settings exactly as they appear in the
+repository. Do not paste secrets, tokens, local paths under a home
+directory, or anything the person did not mean to publish. Anyone who can
+read the tracker can read the ticket.
+
+## Starting it
+
+The tool starts the orchestrator on the ticket by default. Pass
+`start: false` when the arguments say `no-start`, when the person said not
+to start it, or when **Depends on** names work that has not merged. A
+ticket started before its dependency lands is built against code that
+cannot support it. Say which of these applied.
+
+## Afterwards
+
+Report the ticket's id and link from the tool's answer, and whether it was
+started. If the tool refuses, show its message and stop. Do not retry
+through another route.
