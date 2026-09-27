@@ -14,10 +14,17 @@ afterAll(removeRepos);
  * `plugin:` for `plugins:` would otherwise run every step without its skills.
  */
 describe("the claude hook's settings", () => {
-  it("reads model, plugins and mcp beside the engine's own two keys", () => {
-    expect(readClaudeSettings({ adapter: "claude", isolation: "worktree", model: "opus", plugins: ["p@m"], mcp: ["x", { name: "y", tools: ["t"] }] }))
-      .toEqual({ model: "opus", plugins: ["p@m"], mcp: ["x", { name: "y", tools: ["t"] }] });
-    expect(readClaudeSettings({ adapter: "claude" })).toEqual({ plugins: [], mcp: [] });
+  it("reads model, plugins, mcp and sandbox beside the engine's own two keys", () => {
+    expect(readClaudeSettings({
+      adapter: "claude", isolation: "worktree", model: "opus", plugins: ["p@m"], mcp: ["x", { name: "y", tools: ["t"] }],
+      sandbox: { hosts: ["github.com"], deny: ["~/.kube"] },
+    })).toEqual({
+      model: "opus", plugins: ["p@m"], mcp: ["x", { name: "y", tools: ["t"] }],
+      sandbox: { hosts: ["github.com"], deny: ["~/.kube"] },
+    });
+    expect(readClaudeSettings({ adapter: "claude" })).toEqual({
+      plugins: [], mcp: [], sandbox: { hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] },
+    });
   });
 
   it("refuses a key it does not read, naming it", () => {
@@ -54,6 +61,77 @@ describe("the claude hook's settings", () => {
   it("refuses mcp that is not a list", () => {
     expect(() => readClaudeSettings({ adapter: "claude", mcp: "codebase-memory-mcp" }))
       .toThrow(/agent\.mcp must be a list/);
+  });
+});
+
+/*
+ * `agent.sandbox`: what a write step's commands may reach. Strict like every
+ * other key the hook reads, and shape-checked, because the two mistakes an
+ * operator is likely to make both fail silently otherwise: a host written as a
+ * URL is one the sandbox never matches, and a deny path written absolute is a
+ * `Read(...)` rule relative to the settings file, which denies nothing.
+ */
+describe("the claude hook's sandbox settings", () => {
+  const sandboxOf = (sandbox: unknown) => readClaudeSettings({ adapter: "claude", sandbox }).sandbox;
+
+  it("gives a write step no network and the four credential paths when there is no sandbox block", () => {
+    expect(readClaudeSettings({ adapter: "claude" }).sandbox)
+      .toEqual({ hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] });
+  });
+
+  it("reads hosts and deny as written, the sandbox's own wildcard and a path with a space included", () => {
+    expect(sandboxOf({ hosts: ["github.com", "*.npmjs.org"], deny: ["~/.kube", "~/Library/Application Support/x"] }))
+      .toEqual({ hosts: ["github.com", "*.npmjs.org"], deny: ["~/.kube", "~/Library/Application Support/x"] });
+  });
+
+  it("defaults each key on its own", () => {
+    expect(sandboxOf({ hosts: ["github.com"] })).toEqual({ hosts: ["github.com"], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] });
+    expect(sandboxOf({ deny: ["~/.kube"] })).toEqual({ hosts: [], deny: ["~/.kube"] });
+  });
+
+  // Replaces, never merges: the list is what the step is denied, as written.
+  it("lets a written deny list replace the defaults, even an empty one", () => {
+    expect(sandboxOf({ deny: [] })).toEqual({ hosts: [], deny: [] });
+  });
+
+  it("refuses a key it does not read, naming it", () => {
+    expect(() => sandboxOf({ host: ["github.com"] })).toThrow(/agent\.sandbox\.host is not a setting the claude executor reads/);
+  });
+
+  it("refuses a sandbox that is not a block", () => {
+    expect(() => sandboxOf(["github.com"])).toThrow(/agent\.sandbox must be \{ hosts, deny \}/);
+  });
+
+  it("refuses hosts or deny that is not a list", () => {
+    expect(() => sandboxOf({ hosts: "github.com" })).toThrow(/agent\.sandbox\.hosts must be a list/);
+    expect(() => sandboxOf({ deny: "~/.ssh" })).toThrow(/agent\.sandbox\.deny must be a list/);
+  });
+
+  // YAML's `hosts:` with no value parses as null, not "absent" — `?? []` would
+  // have let it through as the empty-list default, silently accepting a key
+  // that names nothing rather than reporting the typo it usually is.
+  it("refuses hosts or deny given as null, rather than treating it as absent", () => {
+    expect(() => sandboxOf({ hosts: null })).toThrow(/agent\.sandbox\.hosts must be a list/);
+    expect(() => sandboxOf({ deny: null })).toThrow(/agent\.sandbox\.deny must be a list/);
+  });
+
+  it.each(["https://github.com", "github.com:443", "github.com/org", "git hub.com", "github.com\n", ""])(
+    "refuses the host %j, which the sandbox would never match, naming its index",
+    (host) => {
+      expect(() => sandboxOf({ hosts: ["github.com", host] })).toThrow(/agent\.sandbox\.hosts\[1\]/);
+    },
+  );
+
+  it.each(["/Users/me/.ssh", ".ssh", "~/.ssh/", "~/", "~/a)b", "~/.ssh ", "~/.ssh\n", "~/a\nb", ""])(
+    "refuses the deny path %j, which no Read rule would read as meant, naming its index",
+    (path) => {
+      expect(() => sandboxOf({ deny: ["~/.ssh", path] })).toThrow(/agent\.sandbox\.deny\[1\]/);
+    },
+  );
+
+  it("names every problem at once", () => {
+    expect(() => sandboxOf({ hosts: ["https://x"], deny: ["/abs"], extra: 1 }))
+      .toThrow(/agent\.sandbox\.extra[\s\S]*agent\.sandbox\.hosts\[0\][\s\S]*agent\.sandbox\.deny\[0\]/);
   });
 });
 
@@ -145,6 +223,11 @@ describe("the claude hook as the screener beside another step agent", () => {
 
   it("reads no .mcp.json, so a missing one is fine", async () => {
     const executor = await factory.create(ctxFor(await gitRepo(), { adapter: "other", mcp: ["memory"] }));
+    expect(typeof executor.run).toBe("function");
+  });
+
+  it("does not read another agent's sandbox block either", async () => {
+    const executor = await factory.create(ctxFor(await gitRepo(), { adapter: "other", sandbox: "their own vocabulary" }));
     expect(typeof executor.run).toBe("function");
   });
 });

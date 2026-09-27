@@ -183,7 +183,7 @@ How agents run and where tickets live. Portable workflows keep none of this.
 |---|---|---|
 | `agent.adapter` | — | Which executor runs steps and conversation turns: an id a hook registers with `defineExecutor`. This repository's is `claude`, from `.landrace/hooks/claude.ts` |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` — how the engine prepares the directory a step runs in |
-| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. The Claude hook reads `model`, `plugins` and `mcp`, and refuses any other key |
+| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. The Claude hook reads `model`, `plugins`, `mcp` and `sandbox`, and refuses any other key |
 | `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` — which a GitHub App token needs (e.g. `myapp`), since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
@@ -201,7 +201,7 @@ A step's `capabilities` decide how the Claude hook starts the agent:
 | Step declares | Permission mode | Also |
 |---|---|---|
 | no `repo:write` (read-only) | `manual` | `--restricted`, and `Bash`, `Edit`, `MultiEdit`, `NotebookEdit`, `Write` denied by name |
-| `repo:write` | `acceptEdits` | — |
+| `repo:write` | `acceptEdits` | Bash and every other tool, with each command it runs inside Claude Code's sandbox — see [A write step's sandbox](#a-write-steps-sandbox) |
 | — (the screener, which declares nothing) | `manual` | `--restricted`, `--tools ""` (no built-in tool at all), and an empty strict MCP config |
 
 Neither read-only steps nor the screener run in plan mode. Checked against the real CLI (2.1.282), plan mode refuses every MCP call — the codebase graph and `create_child` alike — and ignores `--model`, running a different model from the one the step asked for — the screener configured as `security.model: haiku` was screening on sonnet. Manual mode with the write and exec tools denied honours both, and refuses a write attempted under it. The worktree diff after the run stays the backstop either way.
@@ -235,6 +235,32 @@ Three things this does not do:
 - **A plugin's hooks still run.** `--restricted` ignores your settings files but not the hooks an enabled plugin ships, so every plugin in `agent.plugins` runs its hooks under read-only steps too. Enable only plugins you would let run there.
 
 `landrace status` runs no step, so it resolves none of this and works without a `.mcp.json`. The screener never gets plugins, servers or tools: it reads attacker-reachable text and needs nothing to judge it. An allowlisted server's `env` and `headers` travel in the agent's argv, where `ps` can read them for as long as the step runs — keep credentials out of servers you allow. Their values, 8 characters or longer, are redacted from landrace's own log like a declared secret's, since an agent that fails to start a server can echo them into the error the loop logs.
+
+### A write step's sandbox
+
+A step declaring `repo:write` runs Bash. In this repository that is `build` and `fix-review`: each merges `origin/main`, installs, runs the tests, commits, and pushes its own branch. The Claude hook starts every command such a step runs inside Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux):
+
+```yaml
+agent:
+  sandbox:
+    hosts: [github.com, registry.npmjs.org]   # the only network a write step reaches
+    deny:  [~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc]
+```
+
+- **Writes** land only in the step's worktree and in the repository's shared `.git`. They never land in your checkout, your home, `.git/hooks` or `.git/config`.
+- **Network** governs commands, not every tool. The sandbox's allowlist confines what Bash (and anything else it runs) can reach, to `hosts` as written: a host name, or the sandbox's own `*.example.com` wildcard, with no scheme, port or path. With no `hosts`, a write step's commands have no network at all, and cannot fetch or push. In-process tools such as WebFetch and WebSearch do not go through the sandbox at all — they follow Claude Code's own permission rules instead, which deny them outright under `-p` unless your settings allow them.
+- **Reads** are refused under each `deny` path. The sandbox refuses them for commands, and a `Read` rule refuses them for the Read tool, which the sandbox does not cover. A path starts with `~/`.
+  - With no `deny`, the four paths above apply.
+  - A list you write replaces them, so keep the ones you still want.
+- **No way out.** If the sandbox cannot start, the step is refused rather than run unconfined, and no command may ask to run outside it.
+- **Strict keys.** `sandbox` takes `hosts` and `deny` and nothing else. A misspelt key is refused at startup, like every other key the hook reads.
+- **Read-only steps and the screener get none of it.** They have no Bash to confine.
+
+What it does not do:
+
+- **It pushes with your git credentials.** `git push` goes through your own credential helper, and a command in the sandbox can ask that helper for the credential (`git credential fill`) as readily as `git push` can. The tracker's token never reaches the agent; your git credential for the listed hosts does. Use one scoped to what a step may push.
+- **Nothing but the prompt keeps a step to its own branch.** With that credential and the host, `git push` can reach any branch on `origin`. Because the shared `.git` is writable, `git update-ref` can move any local branch. So protect `main` on the forge before you run write steps. On GitHub, that is a branch protection rule on `main` that refuses direct pushes.
+- **Your own user settings still load — but only those.** A write step does not run `--restricted`, so it loads your own user-level Claude settings beside these. The worktree's own `.claude/settings.json` and `.claude/settings.local.json` do not: a step could commit one to the ticket branch, and its hooks run outside the sandbox entirely, on the very next write step that checks that branch out — so a write run passes `--setting-sources user` to keep to your user settings alone. A path in your own `sandbox.filesystem.allowRead` still takes precedence over a `denyRead` this hook set, a command in your `sandbox.excludedCommands` still runs outside the sandbox entirely, and a host in your `sandbox.network.allowedDomains`, or any other sandbox key this hook does not set, still applies to the step too.
 
 ### Token permissions
 
@@ -332,6 +358,8 @@ A person can also send a ticket back to an earlier step. `spec-questions`, `spec
 
 The two halts, `blocked` and `screened`, list more: `code-review` and `fix-review` while the ticket has a pull request — `code-review` capped at four rounds, `fix-review` capped on its own counter at four as well — and `triage` while a person has written on the ticket, capped at twenty. That is because a halt's Retry is a goto to the step whose failure put the ticket there, and any stepped stage can fail, not only `spec` or `build`.
 
+`build` lists one target: itself, while it has run fewer than three rounds. `publish` pushes before it moves the ticket, so a push that fails — nothing was committed — leaves the ticket at `build` with its round settled, and publish retries the push on every tick. "Go to step… build" runs another round instead.
+
 A `goto-spec` or `goto-build` answer, "Go to step…", or `landrace_goto` names its target outright; the page's Retry names none — it is a goto to the step whose failure put the ticket where it is, read off `run.failedStage`, and refuses, saying so, if there is none. That is the stage the ticket last entered before this one — walking past a settled round trip from the current visit, such as a question at a halt the judge sent home — and only while it is still failed: a spec that failed before a person sent the ticket on to build is not what halted it after the reviews ran out, and Retry does not reach back to it. Whichever way it is asked, it writes a goto record as Landrace. The engine takes it before any trigger. A target the stage does not list halts the ticket. One whose `when` does not hold is declined — the reply comes home — and the command refuses it up front with the reason, reading the ticket afresh: not found or closed, one the workflow's `eligible` rules skip (with the rule's own `else`), unplaceable or ambiguous, a precondition that fails, a step still owed, an unlisted target, or one past its cap. It reads and writes under the ticket's lock, the one a tick converges under, so no tick moves the ticket in between; while a tick holds that lock for more than a moment, the command refuses, saying the ticket is busy. A stepped stage whose round is already settled — `triage` once it has answered, say — still accepts a goto: that is also how a person recovers a ticket a crash stranded between a target's entry comment and its status label. A goto is consumed by the entry record its target writes on arrival, so a target must record its entry; `landrace validate` checks that, and that a judge's route only sends where its stage lists.
 
 A stage that runs a step may name the **branch** that step works on — a template over `{ticket}`, `{stage}` and `{round}`, and nothing else:
@@ -351,7 +379,7 @@ Publishing is two effects, each naming its branch, which the shipped workflow pu
 | `branch.push` | pushes the branch to `origin`, fast-forward only — never forced | the checkout's branch head equals `origin`'s as last fetched or pushed, or the checkout has no such branch |
 | `pull.open` | opens a pull request from the branch into the default branch, `Closes #<ticket>` | the ticket already has an open or merged pull request from that branch |
 
-`code-review` pushes again on entry, so a fix round's commits are on the pull request before the reviewer reads it. The GitHub hook pushes from the repository its own file is in:
+A write step pushes its own branch: the shipped `build` and `fix-review` prompts end with `git push origin HEAD`, run inside the sandbox (see [A write step's sandbox](#a-write-steps-sandbox)). `branch.push` stays on `publish`, and on `code-review`'s entry, as the safety net. It is satisfied when the agent already pushed, and otherwise pushes what the agent committed and left unpushed, so a fix round's commits are on the pull request before the reviewer reads it. The GitHub hook pushes from the repository its own file is in:
 
 - `origin` must have exactly one push URL (`git remote get-url --push --all origin`); `git push` would otherwise push to every one of them, so any other count is refused.
 - The token goes to git only when that URL is exactly `https://github.com/<tracker.repo>`, with or without `.git` or a trailing `/` — matched as a string, not parsed, so no URL git and landrace could read differently gets it — and then through git's environment (`GIT_CONFIG_*`, as an `extraheader` scoped to that exact URL, not to github.com), never on a command line, where any process could read it. `git@github.com:<owner>/<repo>.git` and `ssh://git@github.com/<owner>/<repo>.git` are pushed with your own ssh credentials and no token, as is any origin not on GitHub. A GitHub origin naming another repository is refused, and so is any other URL mentioning github.com — one with credentials, a port, percent-encoding, a query — since it might not be the repository it looks like.
@@ -556,7 +584,7 @@ session to have happened already, not the deep link itself.
 
 ## Security
 
-- The agent never holds tracker credentials. It writes files; Landrace performs every external write.
+- The agent never holds the tracker's token. A write step pushes its own branch with your git credentials, from inside the sandbox, and Landrace performs every other external write — pull requests, comments, labels. Protect `main` on the forge before you run write steps: nothing but the prompt keeps an agent to its own branch.
 - Predicate operators are allowlisted structurally, before a condition reaches the evaluator.
 - Everything a step writes is escaped before posting, so an agent cannot emit Landrace's own control tokens.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.

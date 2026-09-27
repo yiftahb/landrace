@@ -189,9 +189,17 @@ stages:
   #
   # Reached from an approved spec, and otherwise only by a person sending
   # the ticket back — a `goto-build` answer, Retry, or "Go to step…".
+  #
+  # And from itself. publish pushes before it moves the position, so a push
+  # that fails — nothing was committed — leaves the ticket here, its round
+  # settled and publish retrying the push on every tick. "Go to step… build"
+  # runs another round instead, within build's three. publish itself lists
+  # nothing: a ticket reaches it only once the push and the pull request
+  # have both landed, and code-review takes it from there.
   - id: build
     step: steps/build.md
     branch: "landrace/{ticket}"
+    goto: [{ stage: build, when: { "run.counters.build": { $lt: 3 } } }]
     triggers:
       - name: you approved the spec
         when:
@@ -204,10 +212,13 @@ stages:
       - { type: tracker.status, value: build }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
-  # Publishing is the orchestrator's, not an agent's, so there is no step. The
-  # push and the pull request come before the status that moves the position:
-  # a crash between them leaves the ticket at build, whose trigger fires again
-  # and replans both — each dropped as satisfied if it had already landed.
+  # The build agent pushes its own branch; the pull request is the
+  # orchestrator's, so there is no step. `branch.push` stays as the safety
+  # net: satisfied when the agent pushed, and pushing what it committed and
+  # left unpushed. The push and the pull request come before the status that
+  # moves the position: a crash between them leaves the ticket at build,
+  # whose trigger fires again and replans both — each dropped as satisfied
+  # if it had already landed.
   - id: publish
     triggers:
       - name: the build is done
@@ -232,8 +243,8 @@ stages:
           "run.counters.code-review": { $lt: 4 }
     on_enter:
       # Pushed first: a fix round's commits have to be on the pull request
-      # before the reviewer reads it. On the first entry it is already
-      # satisfied — publish pushed the same head — and reconciles away.
+      # before the reviewer reads it. The fixer pushes its own; this pushes
+      # any it left unpushed, and otherwise reconciles away as satisfied.
       - { type: branch.push, branch: "landrace/{ticket}" }
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
       - { type: tracker.status, value: code-review }
