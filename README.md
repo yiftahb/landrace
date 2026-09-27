@@ -293,7 +293,7 @@ Off by default. When on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*
 | `OTEL_LOGS_EXPORTER` | `otlp` or `console` | `otlp` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` or `http/json`; `grpc` is refused | `http/protobuf` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | collector base URL; `/v1/logs` is appended | `http://localhost:4318` |
-| `OTEL_EXPORTER_OTLP_HEADERS` | `k=v,k=v`, e.g. auth; values join the redaction set | none |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `k=v,k=v`, e.g. auth, values percent-decoded | none |
 | `OTEL_SERVICE_NAME` | `service.name` | `landrace` |
 | `OTEL_RESOURCE_ATTRIBUTES` | `k=v,k=v`, extra resource attributes | none |
 | `OTEL_LOGS_EXPORT_INTERVAL` | batch delay, in milliseconds | `5000` |

@@ -49,7 +49,6 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
     ...(telemetry ? { exporter: telemetry.sink } : {}),
   });
-  events.redact(Object.values(otel?.headers ?? {}));
   // This server runs until its client closes stdin, with no `finally` of its
   // own to flush from; the event loop draining is the one moment it has.
   if (telemetry) process.once("beforeExit", () => void telemetry.shutdown());

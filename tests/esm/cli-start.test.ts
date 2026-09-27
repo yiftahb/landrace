@@ -565,6 +565,26 @@ describe("runStart --once", () => {
     expect(records[0]?.resource?.attributes?.["service.name"]).toBe("lr-e2e");
   });
 
+  // A header value is not a secret by virtue of being a header: redacting
+  // every one would strike "production" out of every event and comment.
+  it("leaves an ordinary word that happens to be a header value in the log", async () => {
+    const seen: LandraceEvent[] = [];
+    const { dir } = await fixture();
+    const rt = await buildRuntime(dir, {
+      sink: (e) => seen.push(e),
+      otel: ["LANDRACE_ENABLE_TELEMETRY=1", "OTEL_LOGS_EXPORTER=console", "OTEL_EXPORTER_OTLP_HEADERS=x-scope-orgid=production"],
+    });
+    const dir_ = console.dir;
+    console.dir = (): void => {};
+    try {
+      rt.deps.log("step.started", { note: "deploying to production" });
+      await rt.telemetry?.shutdown();
+    } finally {
+      console.dir = dir_;
+    }
+    expect(seen).toEqual([{ name: "step.started", note: "deploying to production" }]);
+  });
+
   /**
    * `--once` is refused too, not only the daemon loop: a failing preflight
    * must stop the process before the one tick `--once` would otherwise run,

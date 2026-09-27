@@ -318,8 +318,6 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
     ...(telemetry ? { exporter: telemetry.sink } : {}),
   });
-  // An OTLP header is usually a credential, and no `secrets:` entry names it.
-  log.redact(Object.values(otel?.headers ?? {}));
 
   // With `vars` already substituted in: the graph the daemon runs is the
   // graph `landrace validate` checked, filled in from the same map.

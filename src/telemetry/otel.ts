@@ -161,9 +161,25 @@ export async function createOtelSink(settings: TelemetrySettings, exporter?: Log
   };
 }
 
+/**
+ * The exporter reads these from process.env as it is built and sends them
+ * under whatever headers it is handed, so a shell's token — exported for some
+ * other tool under this standard name — would ride along to the collector `.env` or
+ * `--otel` chose instead. `settings.headers` already holds the shell's value
+ * when nothing overrode it.
+ */
+const SDK_HEADER_VARS = ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS"] as const;
+
 async function otlp(settings: TelemetrySettings): Promise<LogRecordExporter> {
   const { OTLPLogExporter } = settings.protocol === "http/json"
     ? await import("@opentelemetry/exporter-logs-otlp-http")
     : await import("@opentelemetry/exporter-logs-otlp-proto");
-  return new OTLPLogExporter({ url: `${settings.endpoint.replace(/\/+$/, "")}/v1/logs`, headers: settings.headers });
+  // Out of its reach for the construction, the only time it reads them.
+  const shell = SDK_HEADER_VARS.map((key) => [key, process.env[key]] as const);
+  for (const key of SDK_HEADER_VARS) delete process.env[key];
+  try {
+    return new OTLPLogExporter({ url: `${settings.endpoint.replace(/\/+$/, "")}/v1/logs`, headers: settings.headers });
+  } finally {
+    for (const [key, value] of shell) if (value !== undefined) process.env[key] = value;
+  }
 }

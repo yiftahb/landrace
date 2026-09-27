@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,6 +6,26 @@ import { InMemoryLogRecordExporter } from "@opentelemetry/sdk-logs";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { loadConfig } from "#config/load.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
+
+// The OTLP exporter, as what it was built with and what the environment held
+// while it was: it reads its header variables from process.env right then.
+const mockBuilt: { shellHeaders: string | undefined; config: unknown }[] = [];
+jest.mock("@opentelemetry/exporter-logs-otlp-proto", () => ({
+  OTLPLogExporter: class {
+    constructor(config: unknown) {
+      mockBuilt.push({ shellHeaders: process.env.OTEL_EXPORTER_OTLP_HEADERS, config });
+    }
+    export(_records: unknown, done: (r: { code: number }) => void): void {
+      done({ code: 0 });
+    }
+    shutdown(): Promise<void> {
+      return Promise.resolve();
+    }
+    forceFlush(): Promise<void> {
+      return Promise.resolve();
+    }
+  },
+}));
 
 const on = (entries: Record<string, string> = {}): Map<string, string> =>
   new Map(Object.entries({ LANDRACE_ENABLE_TELEMETRY: "1", ...entries }));
@@ -107,6 +128,19 @@ describe("telemetrySettings", () => {
   });
 });
 
+// The SDK's packages name @opentelemetry/api as a peer; a package manager
+// that does not install peers leaves telemetry crashing the moment it is on.
+it("declares every peer the OpenTelemetry packages it depends on need", () => {
+  const read = (path: string): Record<string, Record<string, string> | undefined> =>
+    JSON.parse(readFileSync(path, "utf8")) as Record<string, Record<string, string> | undefined>;
+  const ours = read("package.json").dependencies ?? {};
+  const peers = Object.keys(ours)
+    .filter((name) => name.startsWith("@opentelemetry/"))
+    .flatMap((name) => Object.keys(read(`node_modules/${name}/package.json`).peerDependencies ?? {}));
+  expect(peers.length).toBeGreaterThan(0);
+  expect(peers.filter((peer) => !(peer in ours))).toEqual([]);
+});
+
 describe("createOtelSink", () => {
   // InMemoryLogRecordExporter forgets everything on its own shutdown, which
   // the provider's shutdown calls last — so it is kept from doing that here.
@@ -147,6 +181,29 @@ describe("createOtelSink", () => {
     expect(exporter.getFinishedLogRecords()).toHaveLength(0);
     await otel.shutdown();
     expect(exporter.getFinishedLogRecords()).toHaveLength(1);
+  });
+
+  /*
+   * The exporter merges OTEL_EXPORTER_OTLP_HEADERS from the shell under the
+   * headers it is handed, so a Claude Code user's shell token would ride
+   * along to whichever collector .env or --otel pointed landrace at.
+   */
+  it("builds the OTLP exporter out of reach of the shell's headers, and puts them back", async () => {
+    process.env.OTEL_EXPORTER_OTLP_HEADERS = "authorization=shell-token";
+    try {
+      const otel = await createOtelSink(telemetrySettings(on({
+        OTEL_EXPORTER_OTLP_ENDPOINT: "https://api.example.com/",
+        OTEL_EXPORTER_OTLP_HEADERS: "x-honeycomb-team=file-key",
+      }))!);
+      await otel.shutdown();
+      expect(mockBuilt).toEqual([{
+        shellHeaders: undefined,
+        config: { url: "https://api.example.com/v1/logs", headers: { "x-honeycomb-team": "file-key" } },
+      }]);
+      expect(process.env.OTEL_EXPORTER_OTLP_HEADERS).toBe("authorization=shell-token");
+    } finally {
+      delete process.env.OTEL_EXPORTER_OTLP_HEADERS;
+    }
   });
 
   it("reports a flush that failed rather than throwing it into the caller's finally", async () => {
