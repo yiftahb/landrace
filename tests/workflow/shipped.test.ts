@@ -184,7 +184,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(judged(home, "revise", { counters: { spec: 3, triage: 1, build: 1 } }))).toBe(home);
   });
 
-  it("lets every stage where it is your turn send the ticket back to spec and build, three rounds each", async () => {
+  it("lets every stage where it is your turn, and build itself, send the ticket back to spec and build, three rounds each", async () => {
     const { workflow } = await loadWorkflow(".landrace");
     const capped = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
@@ -397,6 +397,26 @@ describe("the shipped write steps merge, test, commit and push their own branch"
     expect(prompt).toMatch(/never push any other branch, never force-push, and never touch `main`/i);
     // The sentence #19's build obeyed: it was told it had no way to push.
     expect(prompt).not.toMatch(/cannot push|orchestrator pushes/i);
+    // A rejected push (a person's commit, or the forge's "Update branch")
+    // still has to end in a push, never a force-push.
+    expect(prompt).toMatch(/push is rejected/i);
+    expect(prompt).toContain("git branch --show-current");
+    expect(prompt).toMatch(/git merge origin\//);
+    // Commits and fetches also write the repo's shared git directory
+    // (README, "A write step's sandbox"), not only the worktree.
+    expect(prompt).toContain("only inside this worktree and the repository's git directory");
+  });
+
+  it("fix-review sends a pushback to the round's own comment, not a reply the agent has no way to post", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/fix-review.md")?.prompt ?? "";
+    // The old instruction asked for something the agent cannot do: it has no
+    // tracker or forge access, so it cannot reply on a review thread.
+    expect(prompt).not.toMatch(/or reply saying why the finding is wrong/i);
+    expect(prompt).toMatch(/final summary/i);
+    expect(prompt).toMatch(/cannot reply on the thread/i);
+    // Fix 3 must not loosen the existing rule against resolving threads.
+    expect(prompt).toMatch(/do not resolve any thread/i);
   });
 
   it("sandboxes this repository's write steps to GitHub and the npm registry, away from its credentials", async () => {

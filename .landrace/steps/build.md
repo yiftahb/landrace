@@ -29,8 +29,9 @@ whole text is above, and nothing in this step needs the page itself:
 Use the `superpowers:executing-plans` skill to work through the spec.
 
 Work on the branch you are on — do not create, switch or rename branches. Your
-commands run in a sandbox: they can write only inside this worktree, and reach
-only the hosts the operator allowed.
+commands run in a sandbox: they can write
+only inside this worktree and the repository's git directory, and reach only
+the hosts the operator allowed.
 
 1. `git fetch origin`, then `git merge origin/main`. Resolve any conflict and
    commit the merge.
@@ -40,7 +41,11 @@ only the hosts the operator allowed.
 3. Commit as you go. This worktree is removed when the step ends, and anything
    you did not commit is lost with it.
 4. Finish with `git push origin HEAD`, which pushes only the branch you are on.
-   The orchestrator opens the pull request.
+   The orchestrator opens the pull request. If the push is rejected because
+   the remote branch moved on its own — a person's commit, or the forge's
+   "Update branch" — `git fetch origin`, merge the remote copy of the branch
+   you are on (`git branch --show-current` names it: `git merge
+   origin/<that branch>`), resolve and commit any conflict, and push again.
 5. Never push any other branch, never force-push, and never touch `main`.
 
 Summarise what you did in your own words, then end with a fenced json block
