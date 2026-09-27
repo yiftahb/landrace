@@ -781,6 +781,22 @@ describe("a writing step's sandbox", () => {
     expect(flag(argv, "--permission-mode")).toBe("acceptEdits");
   });
 
+  /*
+   * `--restricted` already keeps a read-only step off every settings file;
+   * a write run is not `--restricted`, so without this flag its own
+   * worktree's `.claude/settings.json`/`.claude/settings.local.json` would
+   * load too — a step could commit one, and its hooks run outside the OS
+   * sandbox entirely, live-checked on 2.1.283 against a plain `acceptEdits`
+   * run with no `--setting-sources`.
+   */
+  it("limits a write run's settings to the operator's own, never the worktree's", async () => {
+    const writing = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read", "repo:write"] });
+    expect(writing.filter((a) => a === "--setting-sources")).toHaveLength(1);
+    expect(flag(writing, "--setting-sources")).toBe("user");
+    const readOnly = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
+    expect(readOnly).not.toContain("--setting-sources");
+  });
+
   it("puts the configured hosts and paths, and the plugins, in one --settings document", async () => {
     const argv = await argvOf(
       createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com", "registry.npmjs.org"], deny: ["~/.ssh"] } }),

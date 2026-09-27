@@ -308,6 +308,14 @@ export function createClaudeExecutor(opts: {
     // json output carries session_id; without it a conversation cannot continue.
     const args = ["-p", "--output-format", "json", "--permission-mode", mode];
     if (restricted) args.push("--restricted");
+    // A write run is not `--restricted`, so without this its own worktree's
+    // `.claude/settings.json`/`.claude/settings.local.json` would load beside
+    // the operator's — live on 2.1.283, a committed settings file's
+    // SessionStart hook ran under plain `acceptEdits`, outside the sandbox
+    // entirely (full HOME, network, the forge token), the moment a later
+    // write step touched that branch. This keeps a write run to the
+    // operator's own user settings only, same as the plugins and sandbox above.
+    if (mayWrite) args.push("--setting-sources", "user");
     // A run that declares nothing is the screener's, and it reads
     // attacker-reachable text for a living: no built-in tool at all, not
     // even Read. Variadic, and the empty list must not swallow what follows
