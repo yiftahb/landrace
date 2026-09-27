@@ -709,6 +709,14 @@ export function readClaudeSettings(agent: Record<string, unknown>): ClaudeSettin
 export const claude: ExecutorFactory = defineExecutor({
   id: "claude",
   async create(ctx) {
+    // `agent:` belongs to the step agent. When that is another executor, this
+    // one was built only to screen (`security.adapter: claude`), and the block
+    // is in the other agent's vocabulary: reading it here refused that agent's
+    // own keys at startup, or screened on its model name. The screener's model
+    // arrives on each run from `security.model`, and it gets no plugin and no
+    // server whatever the block says.
+    if (ctx.config.agent.adapter !== "claude") return { run: createClaudeExecutor({ log: ctx.log }).run };
+
     const settings = readClaudeSettings(ctx.config.agent as Record<string, unknown>);
     const { servers, tools, problems } = await resolveStepServers(ctx.dir, settings.mcp);
     if (problems.length) throw new Error(problems.map((p) => `${p.rule}: ${p.message}`).join("\n"));

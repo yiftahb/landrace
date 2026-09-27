@@ -1,7 +1,8 @@
 import { claude, readClaudeSettings } from "#landrace/hooks/claude.js";
-import type { ExecutorContext, ExecutorFactory } from "#namespace.js";
+import type { Executor, ExecutorContext, ExecutorFactory } from "#namespace.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 afterAll(removeRepos);
@@ -94,5 +95,56 @@ describe("the claude executor, built from the runtime's context", () => {
     await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { tickets: { command: "node", args: ["dist/cli.js", "mcp"] } } }));
     await expect(factory.create(ctxFor(dir, { adapter: "claude", mcp: ["tickets"] })))
       .rejects.toThrow(/"tickets"[\s\S]*operator tools must never reach a step agent/);
+  });
+});
+
+/*
+ * `security.adapter: claude` beside another step agent: `agent:` is that
+ * agent's block, in its vocabulary. Read as this hook's own, it refused the
+ * other agent's keys at startup, or screened on the other agent's model name.
+ */
+describe("the claude hook as the screener beside another step agent", () => {
+  const ctxFor = (dir: string, agent: Record<string, unknown>): ExecutorContext => ({
+    config: { agent } as unknown as ExecutorContext["config"],
+    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir,
+    redact: () => {},
+  });
+  const factory = claude as ExecutorFactory;
+  const temps: string[] = [];
+  afterAll(() => Promise.all(temps.map((d) => rm(d, { recursive: true, force: true }))));
+
+  /** The screener's argv, from a run through the fake agent installed as `claude` on PATH. */
+  const screenArgv = async (executor: Pick<Executor, "run">, model?: string): Promise<string[]> => {
+    const bin = await mkdtemp(join(tmpdir(), "fake-claude-bin-"));
+    const cwd = await mkdtemp(join(tmpdir(), "fake-agent-"));
+    temps.push(bin, cwd);
+    await copyFile(join(__dirname, "..", "agent", "fake-agent.mjs"), join(bin, "claude"));
+    await chmod(join(bin, "claude"), 0o755);
+    await writeFile(join(cwd, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    try {
+      const r = await executor.run("p", { round: 0, cwd, signal: new AbortController().signal, ...(model === undefined ? {} : { model }) });
+      return JSON.parse(r.text) as string[];
+    } finally {
+      process.env.PATH = path;
+    }
+  };
+
+  it("starts on another agent's keys", async () => {
+    const executor = await factory.create(ctxFor(await gitRepo(), { adapter: "other", effort: "high", model: "gpt-5" }));
+    expect(typeof executor.run).toBe("function");
+  });
+
+  it("screens on the run's model, never on the other agent's", async () => {
+    const executor = await factory.create(ctxFor(await gitRepo(), { adapter: "other", model: "gpt-5" }));
+    expect(await screenArgv(executor)).not.toContain("--model");
+    const argv = await screenArgv(executor, "haiku");
+    expect(argv[argv.indexOf("--model") + 1]).toBe("haiku");
+  });
+
+  it("reads no .mcp.json, so a missing one is fine", async () => {
+    const executor = await factory.create(ctxFor(await gitRepo(), { adapter: "other", mcp: ["memory"] }));
+    expect(typeof executor.run).toBe("function");
   });
 });

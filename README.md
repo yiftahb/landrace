@@ -412,6 +412,8 @@ Landrace ships no coding agent. `defineExecutor` registers one, either as `{ id,
 
 It gets back the agent's text and a session id. Beyond `agent.adapter` and `agent.isolation`, the rest of the `agent:` block is opaque to the engine and passed on to the executor unread — a second agent is a hook file, never a change to `src/`.
 
+A hook reads `agent:` only when `agent.adapter` names it, because `agent:` belongs to the step agent. An executor that `security.adapter` alone names is there to screen: the block is in another agent's vocabulary, and the screener's model arrives on each run from `security.model`.
+
 **An executor must, or else refuse the run:**
 - enforce every declared capability;
 - give a run that declares none no tools at all (that is the screener's run);
