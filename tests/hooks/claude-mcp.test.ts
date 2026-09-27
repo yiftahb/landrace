@@ -3,8 +3,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { loadConfig } from "#config/load.js";
-import { mcpRedactionValues, resolveStepServers } from "#config/mcp.js";
-import type { McpConfig } from "#namespace.js";
+import { mcpRedactionValues, readClaudeSettings, resolveStepServers } from "#landrace/hooks/claude.js";
 import { gitRepo, plainDir, removeRepos } from "#tests/support/repo.js";
 
 afterAll(removeRepos);
@@ -177,6 +176,46 @@ describe("the MCP servers a step may use", () => {
   });
 
   /*
+   * `mcpConfigProblem`'s own field checks, hand-written because a copied hook
+   * has no zod: each one named by field, the way the zod path it replaces
+   * named a schema issue.
+   */
+  it("reports a server entry that is not an object", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": "not-an-object" } });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/mcpServers\.codebase-memory-mcp: expected an object/) }]);
+  });
+
+  it("reports a server whose command is not a string", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": { command: 5 } } });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/mcpServers\.codebase-memory-mcp\.command: expected a string/) }]);
+  });
+
+  it("reports a server whose args is not a list of strings", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": { command: "x", args: ["ok", 5] } } });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/mcpServers\.codebase-memory-mcp\.args: expected a list of strings/) }]);
+  });
+
+  it("reports a server whose env is not an object of strings", async () => {
+    const { dir } = await repo({ mcpServers: { "codebase-memory-mcp": { command: "x", env: { A: 1 } } } });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/mcpServers\.codebase-memory-mcp\.env: expected an object of strings/) }]);
+  });
+
+  // The shape check only ever names command/args/env — a remote server has
+  // none of them, and passes straight through, exactly as `.passthrough()`
+  // let it through the zod schema this replaces.
+  it("accepts a remote HTTP server carrying only url and headers, with no command", async () => {
+    const remote = { type: "http", url: "https://mcp.example.invalid", headers: { Authorization: "Bearer x" } };
+    const { dir } = await repo({ mcpServers: { remote } });
+    const { problems, servers } = await resolveStepServers(dir, ["remote"]);
+    expect(problems).toEqual([]);
+    expect(servers).toEqual({ remote });
+  });
+
+  /*
    * A name reaches the agent's argv as `mcp__<name>` in `--allowedTools`,
    * which the CLI splits on spaces and commas: a server called "x Bash" would
    * allow Bash. Refused here, on the name alone and before any file is read,
@@ -189,9 +228,18 @@ describe("the MCP servers a step may use", () => {
     expect(servers).toEqual({});
   });
 
-  it("refuses when there is no repository to find the file in", async () => {
-    const { problems } = await resolveStepServers(join(await plainDir(), ".landrace"), ["codebase-memory-mcp"]);
+  it("refuses when there is no repository to find the file in, carrying git's own reason", async () => {
+    // The directory has to actually exist: a `cwd` that does not is its own
+    // failure (Node reports it as the same "spawn git ENOENT" a missing git
+    // binary would give), and conflating the two is exactly the bug this
+    // test's stronger assertion below exists to catch.
+    const dir = join(await plainDir(), ".landrace");
+    await mkdir(dir, { recursive: true });
+    const { problems } = await resolveStepServers(dir, ["codebase-memory-mcp"]);
     expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/agent\.mcp[\s\S]*repository/) }]);
+    // Not a generic guess: git's own stderr rides along, so "dubious
+    // ownership" or a missing git binary is never misreported as this.
+    expect(problems[0]?.message).toMatch(/not a git repository/);
   });
 });
 
@@ -203,9 +251,9 @@ describe("the MCP servers a step may use", () => {
  * check recognises, whatever it is renamed to.
  */
 describe("the shipped allowlist, against what agsync generates", () => {
-  const generated = async (): Promise<McpConfig> => {
+  const generated = async (): Promise<{ mcpServers: Record<string, unknown> }> => {
     const sources = (await readdir(".agsync/mcp")).filter((f) => f.endsWith(".yaml"));
-    const mcpServers: McpConfig["mcpServers"] = {};
+    const mcpServers: Record<string, unknown> = {};
     for (const file of sources) {
       const { name, command, args } = parse(await readFile(join(".agsync/mcp", file), "utf8")) as {
         name: string; command: string; args?: string[];
@@ -217,11 +265,12 @@ describe("the shipped allowlist, against what agsync generates", () => {
 
   it("resolves every server .landrace/landrace.yaml allows", async () => {
     const { config } = await loadConfig(".landrace");
-    expect(config.agent.mcp.length).toBeGreaterThan(0);
+    const { mcp } = readClaudeSettings(config.agent);
+    expect(mcp.length).toBeGreaterThan(0);
     const { dir } = await repo(await generated());
-    const r = await resolveStepServers(dir, config.agent.mcp);
+    const r = await resolveStepServers(dir, mcp);
     expect(r.problems).toEqual([]);
-    expect(Object.keys(r.servers)).toEqual(config.agent.mcp.map((e) => (typeof e === "string" ? e : e.name)));
+    expect(Object.keys(r.servers)).toEqual(mcp.map((e) => (typeof e === "string" ? e : e.name)));
   });
 
   // This repository's own steps get the codebase graph's reading tools and
@@ -229,7 +278,8 @@ describe("the shipped allowlist, against what agsync generates", () => {
   // manage_adr, not ingest_traces.
   it("names the tools of every server it allows, rather than allowing the whole server", async () => {
     const { config } = await loadConfig(".landrace");
-    for (const entry of config.agent.mcp) expect(typeof entry).toBe("object");
+    const { mcp } = readClaudeSettings(config.agent);
+    for (const entry of mcp) expect(typeof entry).toBe("object");
   });
 
   it("recognises the operator server agsync defines, under any name", async () => {
@@ -253,7 +303,26 @@ describe("the values an allowlisted server's definition carries", () => {
     expect(mcpRedactionValues({
       memory: { command: "cbm", env: { TOKEN: "env-secret-value", DEBUG: "1" } },
       remote: { type: "http", url: "https://mcp.example.invalid", headers: { Authorization: "Bearer header-secret" } },
-    }).sort()).toEqual(["Bearer header-secret", "env-secret-value"]);
+    }).sort()).toEqual(["Bearer header-secret", "env-secret-value", "header-secret"]);
+  });
+
+  /*
+   * A CLI that reports a failed server rarely quotes the header whole: it
+   * prints the token, or "Authorization: Bearer <token>" re-spaced, and only
+   * the whole value was redacted — the credential itself went through intact.
+   */
+  it("are redacted after an auth scheme too, since the token is what leaks on its own", () => {
+    expect(mcpRedactionValues({
+      remote: { type: "http", headers: {
+        Authorization: "Bearer a-bearer-token-123",
+        "Proxy-Authorization": "Basic dXNlcjpwYXNzd29yZA==",
+        Short: "Basic abc",
+        Title: "My Own Server",
+      } },
+    }).sort()).toEqual([
+      "Basic abc", "Basic dXNlcjpwYXNzd29yZA==", "Bearer a-bearer-token-123", "My Own Server",
+      "a-bearer-token-123", "dXNlcjpwYXNzd29yZA==",
+    ]);
   });
 
   // A value that short would redact every occurrence of "1" in every log line.

@@ -2,14 +2,14 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { executorFor, screenerFor } from "#cli/start.js";
 import { configProblems, loadConfig } from "#config/load.js";
-import { resolveStepServers } from "#config/mcp.js";
 import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
-import type { Problem } from "#namespace.js";
+import type { ExecutorContext, LoadedConfig, Problem, Registry } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,16 +62,62 @@ async function coverage(
   dir: string,
   workflow: Awaited<ReturnType<typeof loadWorkflow>>["workflow"],
   steps: Awaited<ReturnType<typeof loadWorkflow>>["steps"],
-): Promise<Problem[]> {
+): Promise<{ problems: Problem[]; registry: Registry | null }> {
   try {
     const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
-    return validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined);
+    return { problems: validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined), registry };
   } catch (e) {
     // One exception: a node too old to read a TypeScript file is not a broken
     // workflow, and the CLI answers it by re-running itself with the flag —
     // which it can only do if the error reaches it.
     if ((e as { code?: unknown } | null)?.code === "ERR_UNKNOWN_FILE_EXTENSION") throw e;
-    return [{ rule: "hooks", message: messageOf(e) }];
+    return { problems: [{ rule: "hooks", message: messageOf(e) }], registry: null };
+  }
+}
+
+/**
+ * `executor "<id>" could not start: <reason>`, `executorFor`'s own wrapping —
+ * undone and reapplied per line. A factory can refuse for several reasons at
+ * once (several bad `agent.*` keys, several unresolvable `agent.mcp`
+ * entries), joined by `\n` into the one message it throws; left whole, that
+ * printed as a single multi-line entry (`src/cli/index.ts`'s one-line-per-
+ * problem report ran the lines together under one `  executor: `) and counted
+ * as one problem when it was several. A message this does not recognise —
+ * `unknownExecutor`'s, say, which names no id to prefix with — is returned
+ * as the one problem it already is.
+ */
+const START_REFUSAL = /^executor "([^"]+)" could not start: ([\s\S]*)$/;
+
+function startRefusalProblems(message: string): Problem[] {
+  const m = START_REFUSAL.exec(message);
+  if (!m) return [{ rule: "executor", message }];
+  const id = m[1] ?? "";
+  const reason = m[2] ?? "";
+  return reason.split("\n").map((line) => ({ rule: "executor", message: `executor "${id}" could not start: ${line}` }));
+}
+
+/**
+ * The executors the configuration names, built exactly as `start` builds them
+ * and reported in the words it refuses with. The executor's setup can read
+ * files outside the workflow itself, so a missing one is reported here too,
+ * as `start` would refuse over it.
+ */
+async function executorProblems(dir: string, loaded: LoadedConfig, registry: Registry): Promise<Problem[]> {
+  const ctx: ExecutorContext = {
+    config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal,
+    log: () => {}, dir, redact: () => {},
+  };
+  try {
+    // Screener before executor, the same order `start` builds them in:
+    // `buildRuntime` resolves its screener before it ever reaches the object
+    // literal that awaits `executorFor` for the step — so a configuration
+    // broken both ways is reported over the same one `start` would actually
+    // meet first.
+    await screenerFor(loaded.config, registry, ctx);
+    await executorFor(loaded.config, registry, ctx);
+    return [];
+  } catch (e) {
+    return startRefusalProblems(messageOf(e));
   }
 }
 
@@ -89,16 +135,6 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    */
   const loaded = await loadConfig(dir).catch(() => null);
   if (loaded) problems.push(...configProblems(dir, loaded));
-
-  /*
-   * The servers `agent.mcp` allows, looked up exactly as `start` looks them up
-   * and reported in the same words it refuses with. A missing `.mcp.json` is
-   * reported too, although it is a fact about this checkout rather than the
-   * workflow — agsync generates it and it is gitignored — because the one
-   * place skipping it would help is the one command whose "valid" an operator
-   * reads as "start will run".
-   */
-  if (loaded) problems.push(...(await resolveStepServers(dir, loaded.config.agent.mcp)).problems);
 
   /*
    * A var that did not resolve stops here, and the early return is the point.
@@ -132,10 +168,24 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    * surprise nobody asked for.
    */
   const graph: Problem[] = validate(workflow, steps);
-  problems.push(...(graph.length === 0 ? await coverage(dir, workflow, steps) : graph));
+  let registry: Registry | null = null;
+  if (graph.length === 0) {
+    const result = await coverage(dir, workflow, steps);
+    problems.push(...result.problems);
+    registry = result.registry;
+  } else {
+    problems.push(...graph);
+  }
   // What `start` refuses about the workflow against its runtime, said here
   // too: validate passing what start will refuse is the two disagreeing.
   if (loaded) problems.push(...branchIsolationProblems(workflow, loaded.config.agent.isolation));
+
+  // The executors the configuration names, built exactly as `start` builds
+  // them: an executor's own setup can read files outside the workflow, so a
+  // configuration mistake there is `validate`'s business too. Only once the
+  // hooks are known to have loaded — a workflow already found unsound, or
+  // whose hooks would not import, has no registry to build one against.
+  if (loaded && registry) problems.push(...(await executorProblems(dir, loaded, registry)));
 
   problems.push(...(await exposedEnv(dir)));
   return { ok: problems.length === 0, problems };

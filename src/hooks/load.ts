@@ -8,6 +8,7 @@ import type {
   ArtifactHook,
   Claim,
   Executor,
+  ExecutorFactory,
   HookModule,
   Operator,
   PostHook,
@@ -32,7 +33,7 @@ export function buildRegistry(modules: HookModule[]): Registry {
   const post: PostHook[] = [];
   const artifacts: ArtifactHook[] = [];
   const preflights: Preflight[] = [];
-  const executors = new Map<string, Executor>();
+  const executors = new Map<string, Executor | ExecutorFactory>();
   const preIds = new Map<string, Claim>();
   const postIds = new Map<string, Claim>();
   const executorIds = new Map<string, Claim>();
@@ -104,7 +105,7 @@ export function buildRegistry(modules: HookModule[]): Registry {
           break;
         }
         case "executor": {
-          const hook = value as Executor;
+          const hook = value as Executor | ExecutorFactory;
           claimed(executorIds, "executors", { id: hook.id, from: module.specifier });
           executors.set(hook.id, hook);
           break;
@@ -154,7 +155,19 @@ export function importFailure(specifier: string, error: unknown): Error {
       { code: "ERR_UNKNOWN_FILE_EXTENSION" },
     );
   }
-  return new Error(`cannot import hook module "${specifier}": ${messageOf(error)}`);
+  const reason = messageOf(error);
+  // A hook written against a newer landrace than the one loading it — in this
+  // repository, a dist/ not rebuilt since a pull — fails on its first import
+  // line, and Node names only the export it could not find, which reads as a
+  // bug in the hook rather than a build to run. Only when the module Node
+  // quotes is landrace's own: a sibling of the hook lacking an export is the
+  // hook's bug, and a rebuild would fix nothing.
+  const stale = (error as { name?: unknown } | null)?.name === "SyntaxError" &&
+    /^The requested module 'landrace(?:\/hooks)?' does not provide an export named /.test(reason);
+  return new Error(
+    `cannot import hook module "${specifier}": ${reason}` +
+    (stale ? "; the landrace this hook was loaded against may be older than the hook expects: rebuild or update it" : ""),
+  );
 }
 
 /**

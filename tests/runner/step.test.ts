@@ -1,5 +1,7 @@
 import { renderPrompt, runStep } from "#runner/step.js";
 import { neutraliseMarkers } from "#conventions.js";
+import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
+import { childServerFor } from "#runner/children.js";
 import type { Executor } from "#namespace.js";
 import type { Snapshot, Step, StepResult } from "#namespace.js";
 
@@ -101,7 +103,7 @@ describe("the model a step declares", () => {
    *
    * So what is enforced is nothing, and what is recorded is what was asked
    * for and who was asked. An operator reads that against the executor's own
-   * report of what it put on its command line (tests/agent/claude.test.ts);
+   * report of what it put on its command line (tests/hooks/claude.test.ts);
    * a third-party executor that reports neither is visible by the silence.
    */
   const invocation = async (over: Partial<Parameters<typeof runStep>[0]>): Promise<Record<string, unknown>> => {
@@ -253,12 +255,56 @@ describe("runStep", () => {
     expect(models).toEqual(["haiku"]);
   });
 
-  it("hands the executor the step's own timeout, and none when the step names none", async () => {
+  it("hands the executor the step's own timeout, else the workflow's, else the engine's", async () => {
     const seen: Array<number | undefined> = [];
     const spy: Executor = { id: "t", run: async (_p, o) => { seen.push(o.timeoutMs); return { text: "free text", sessionId: null }; } };
-    await run("free text", { step: { prompt: "go", timeout: "120m" }, executor: spy });
+    await run("free text", { step: { prompt: "go", timeout: "120m" }, executor: spy, defaultTimeoutMs: 600_000 });
+    await run("free text", { step: { prompt: "go" }, executor: spy, defaultTimeoutMs: 600_000 });
     await run("free text", { step: { prompt: "go" }, executor: spy });
-    expect(seen).toEqual([7_200_000, undefined]);
+    expect(seen).toEqual([7_200_000, 600_000, DEFAULT_STEP_TIMEOUT_MS]);
+  });
+
+  /*
+   * The limit is the operator's cap on what one run may spend, so it cannot
+   * rest on the executor alone: one registered by a hook may never read
+   * `timeoutMs` at all.
+   */
+  it("ends a run whose executor ignores its limit, and says why", async () => {
+    const deaf: Executor = {
+      id: "deaf",
+      run: (_p, o) => new Promise((_, reject) => o.signal.addEventListener("abort", () => reject(new Error("aborted")))),
+    };
+    const r = await run("", { step: { prompt: "go" }, executor: deaf, defaultTimeoutMs: 50 });
+    expect(r).toEqual({ ok: false, kind: "unavailable", reason: "the agent ran past its 50ms limit" });
+  });
+
+  /*
+   * The other half of the same attribution, and the case `!signal.aborted`
+   * exists for: the run's own limit can genuinely have elapsed (`limit.aborted`
+   * is honestly true) at the very moment the caller also cancels for its own
+   * reason — an MCP client disconnecting the instant a two-hour build's budget
+   * also runs out, say. Reporting "ran past its limit" there would not be
+   * false, but it would bury the caller's own reason under a coincidence, so
+   * the caller wins whenever its own signal is part of why this rejected.
+   */
+  it("attributes the abort to the caller even when the run's own limit had also genuinely elapsed", async () => {
+    const controller = new AbortController();
+    const stoppedByCaller: Executor = {
+      id: "caller-stop",
+      run: (_p, o) => new Promise((_, reject) => {
+        o.signal.addEventListener("abort", () => {
+          // The caller's own cancellation, arriving the instant the run's
+          // internal limit fires too — not staged from outside, so this is
+          // never a race against runStep's own awaits (see the test above).
+          controller.abort();
+          reject(new Error("stopped by the caller"));
+        });
+      }),
+    };
+    const r = await run("", {
+      step: { prompt: "go" }, executor: stoppedByCaller, defaultTimeoutMs: 20, signal: controller.signal,
+    });
+    expect(r).toEqual({ ok: false, kind: "unavailable", reason: "stopped by the caller" });
   });
 
   it("reports an agent failure as a rejected step rather than throwing", async () => {
@@ -1066,12 +1112,39 @@ describe("the tickets:create backstop", () => {
     expect(events).not.toContain("step.unchecked");
   });
 
-  it("hands the executor the binding only when the step declared it", async () => {
+  it("hands the executor the binding, and the server to start for it, only when the step declared it", async () => {
     const seen: unknown[] = [];
     const executor: Executor = { id: "x", run: async (_p, o) => { seen.push(o.child); return { text: OK, sessionId: null }; } };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    await runStep({ ...base, executor, childServer, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: ["tickets:create"] } });
     await runStep({ ...base, executor, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: ["tickets:create"] } });
-    await runStep({ ...base, executor, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: [] } });
-    expect(seen).toEqual([{ parent: "1", stage: "s", round: 3 }, undefined]);
+    await runStep({ ...base, executor, childServer, ticket: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: [] } });
+    expect(seen).toEqual([
+      { parent: "1", stage: "s", round: 3, server: childServerFor(childServer, { parent: "1", stage: "s", round: 3 }) },
+      { parent: "1", stage: "s", round: 3 },
+      undefined,
+    ]);
+  });
+
+  it("refuses a step with a binding its server's command line could not carry, before anything is spent", async () => {
+    let executorCalled = false;
+    let screenerCalled = false;
+    const executor: Executor = { id: "x", run: async () => { executorCalled = true; return { text: OK, sessionId: null }; } };
+    const screener: Executor = { id: "screen", run: async () => { screenerCalled = true; return { text: OK, sessionId: null }; } };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    const events: string[] = [];
+    const r = await runStep({
+      ...base, executor, childServer, ticket: "1", stageId: "-not-a-stage", round: 3,
+      step: { ...base.step, capabilities: ["tickets:create"] },
+      screen: { executor: screener, model: "haiku" },
+      log: (name) => { events.push(name); },
+    });
+    expect(r).toMatchObject({ ok: false, kind: "refused", reason: expect.stringMatching(/stage/) });
+    // Refused before the screening call and before the run — not "the agent
+    // never ran because it was screened out", but "nothing was ever asked".
+    expect(screenerCalled).toBe(false);
+    expect(executorCalled).toBe(false);
+    expect(events).not.toContain("step.invoked");
   });
 });
 

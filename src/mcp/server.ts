@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ChildTool, Tools } from "#namespace.js";
-import { ticketIdProblem } from "#conventions.js";
+import { CHILD_TOOL, ticketIdProblem } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 
 const text = (value: unknown) => ({
@@ -136,7 +136,7 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
 export function createChildMcpServer(tool: ChildTool, version = "0.0.0"): McpServer {
   const server = new McpServer({ name: "landrace", version });
   server.tool(
-    "landrace_create_child",
+    CHILD_TOOL,
     "Create one sub-ticket of the ticket you are working on. Call once per sub-ticket. " +
       "Each is worked through the workflow on its own, starting at implementation.",
     {

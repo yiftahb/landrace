@@ -1,6 +1,9 @@
 import type { Chat } from "#namespace.js";
 import { ticketIdProblem } from "#conventions.js";
 
+// The targets the board links into; the keys `row.chat.links` is indexed by.
+export const CHAT_TARGET_KEYS = ["claude", "claudeCli", "cursor", "codex"] as const;
+
 /**
  * The Chat menu's prompt and deep links — the only place any of them is
  * built. `boardView` calls this once per row and the page's own script never

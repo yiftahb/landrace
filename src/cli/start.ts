@@ -1,31 +1,30 @@
 import { basename, resolve } from "node:path";
-import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
-import { mcpRedactionValues, resolveStepServers } from "#config/mcp.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
 import { durationMs, RECORD_EFFECT } from "#conventions.js";
+import { stepTimeoutMs } from "#runner/budget.js";
 import type {
   Board,
   BuildOptions,
   EventName,
   Executor,
+  ExecutorContext,
   GotoDeps,
   GotoPath,
   LandraceEvent,
-  Logger,
   Problem,
+  RedactingLogger,
   Registry,
   Runtime,
   RuntimeConfig,
   RuntimeContext,
   Schedule,
   Screener,
+  ServerCommand,
   StartOptions,
-  StepTools,
   UiServer,
-  Workflow,
 } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
@@ -122,42 +121,38 @@ export function boardSink(
 }
 
 /**
- * How long one step may run, taken from the workflow that owns the process
- * rather than from a default that happens to match it.
- *
- * `budget.stepTimeout` is 10m in the shipped workflow and `createClaudeExecutor`'s
- * own default was 10m, so the two agreed by coincidence: editing the operator's
- * number changed nothing, and the file was decoration. A value that cannot be
- * read throws rather than falling back — `stepTimeout: 600` looks like it says
- * something, and quietly meaning ten minutes instead is how a cap nobody
- * applied goes on reading as applied.
+ * This same process, started again as `landrace mcp`: the node binary, its
+ * own flags (type stripping, --import), the CLI entry, and the workflow
+ * directory made absolute so the agent's cwd cannot move it.
  */
-export function stepTimeoutMs(workflow: Workflow): number {
-  const declared = workflow.budget?.["stepTimeout"];
-  if (declared === undefined) return DEFAULT_STEP_TIMEOUT_MS;
-  if (typeof declared !== "string") {
-    throw new Error(`budget.stepTimeout must be a duration like "10m", got ${JSON.stringify(declared)}`);
-  }
-  try {
-    return parseInterval(declared);
-  } catch {
-    throw new Error(`budget.stepTimeout must look like "60s", "2m" or "1h", got "${declared}"`);
-  }
+export function childServerCommand(dir: string): ServerCommand {
+  return {
+    command: process.execPath,
+    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workflow", resolve(dir)],
+  };
 }
 
 /**
- * The one id the engine still resolves by name.
- *
- * A hook module can register executors of its own, and the engine ships one.
- * A name nothing answers to is a startup error rather than a loop that runs
- * happily and then fails at its first invocation — hours in, one paid tick at
- * a time, on a ticket that has already been moved.
+ * Per runtime context, the executors already built, so each factory runs
+ * once — a runtime whose steps and screener name the same executor reads its
+ * settings, and registers its secrets, once. Keyed by the context object
+ * itself rather than by anything in it: `executorFor` and `screenerFor` are
+ * called from more than one process (the loop, `landrace mcp`), each with its
+ * own context, and there is no other key that would not conflate them.
  */
-export function executorFor(
+const built = new WeakMap<ExecutorContext, Map<string, Promise<Executor>>>();
+
+/**
+ * The executor `agent.adapter` names, or the screener's own — resolved from
+ * the loaded hooks alone, the engine having none of its own to fall back on.
+ * A name nothing answers to is a startup error rather than a loop that runs
+ * happily and then fails at its first invocation, hours in and one paid tick
+ * at a time, on a ticket that has already been moved.
+ */
+export async function executorFor(
   config: RuntimeConfig,
-  workflow: Workflow,
   registry: Registry,
-  log: Logger,
+  ctx: ExecutorContext,
   opts: {
     /**
      * The id to resolve instead of `agent.adapter`, and the key it came from,
@@ -165,83 +160,72 @@ export function executorFor(
      * screener's: `security.adapter`, see `screenerFor`.
      */
     adapter?: { key: string; id: string };
-    /**
-     * The workflow directory, given only for the loop's own step executor: it
-     * is what lets a `tickets:create` step be handed its create_child server.
-     * Conversation turns and the screener never create children, so they are
-     * built without it — and a step that asks is then refused, not run bare.
-     */
-    dir?: string;
-    /**
-     * The plugins and MCP servers `stepToolsFor` resolved, for the executors
-     * that run steps and conversation turns. Never the screener's: it reads
-     * attacker-reachable text for a living and needs no tool to do it.
-     */
-    tools?: StepTools;
   } = {},
-): Executor {
-  const { dir, tools } = opts;
-  const model = config.agent.model;
+): Promise<Executor> {
   const { key, id } = opts.adapter ?? { key: "agent.adapter", id: config.agent.adapter };
-  // A hook's executor is constructed by the hook, so the budget cannot reach
-  // it: the engine has a number and no way to hand it over. Enforcing one out
-  // here would mean holding a stopwatch over somebody else's subprocess with
-  // no way to kill it — so a hook owns its own timeout, and says so.
-  const fromHook = registry.executors.get(id);
-  if (fromHook) return fromHook;
-  if (id === "claude") {
-    return createClaudeExecutor({
-      ...(model === undefined ? {} : { model }),
-      timeoutMs: stepTimeoutMs(workflow),
-      log,
-      ...(tools === undefined ? {} : { plugins: tools.plugins, mcpServers: tools.mcpServers, mcpTools: tools.mcpTools }),
-      ...(dir === undefined ? {} : {
-        // This same process, started again as `landrace mcp`: the node binary,
-        // its own flags (type stripping, --import), the CLI entry, and the
-        // workflow directory made absolute so the agent's cwd cannot move it.
-        childServer: {
-          command: process.execPath,
-          args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workflow", resolve(dir)],
-        },
-      }),
-    });
+  const hook = registry.executors.get(id);
+
+  // Only a factory's build is cached — and it has to be, because `create` is
+  // async and may only be run once: the settings, the log and the secrets it
+  // registers are registered once. A plain hook Executor is already built, so
+  // returning it needs no cache of its own.
+  if (hook && "create" in hook) {
+    const cache = built.get(ctx) ?? new Map<string, Promise<Executor>>();
+    built.set(ctx, cache);
+    const cached = cache.get(id);
+    if (cached) return cached;
+    const made = (async () => {
+      try {
+        // Typed, but a hook is JavaScript by the time it runs: a factory that
+        // returned nothing used to start the loop, and the first paid step
+        // met "run is not a function" on a ticket it had already moved.
+        const made: unknown = await hook.create(ctx);
+        const run = (made as { run?: unknown } | null | undefined)?.run;
+        if (typeof run !== "function") throw new Error("its factory returned no run function");
+        return { id, run: run as Executor["run"] };
+      } catch (e) {
+        throw new Error(`executor "${id}" could not start: ${messageOf(e)}`);
+      }
+    })();
+    cache.set(id, made);
+    return made;
   }
+  if (hook) return hook;
+  throw new Error(unknownExecutor(key, id, registry));
+}
+
+const unknownExecutor = (key: string, id: string, registry: Registry): string => {
   const registered = [...registry.executors.keys()];
-  throw new Error(
-    `${key} "${id}" names no executor: the engine ships "claude", and the ` +
-    `loaded hooks register ${registered.length ? registered.map((id) => `"${id}"`).join(", ") : "none"}`,
-  );
+  return `${key} "${id}" names no executor: the loaded hooks register ` +
+    (registered.length ? registered.map((r) => `"${r}"`).join(", ") : "none");
+};
+
+/** The id a read-only runtime would run steps with, checked but never built: `landrace status` starts no agent. */
+export function registeredExecutor(config: RuntimeConfig, registry: Registry): string {
+  const id = config.agent.adapter;
+  if (!registry.executors.has(id)) throw new Error(unknownExecutor("agent.adapter", id, registry));
+  return id;
 }
 
 /**
  * The screener, or none when `security.screen` is off.
  *
  * Resolved through `executorFor`'s own lookup, so a name nothing answers to
- * fails at startup here as it does for the steps. It used to construct a
- * claude executor unconditionally, so a workflow whose hook registers an
- * executor screened with something the operator never configured — or, with
- * no claude on the machine, did not screen at all while reporting that it
- * did. Then it followed `agent.adapter` alone, and `security.model` was fixed
- * into the engine's own executor at construction, where a hook's executor
- * never heard it. §15 calls screening a security control, and a security
+ * fails at startup here as it does for the steps. It used to construct the
+ * engine's own executor unconditionally, so a workflow whose hook registers
+ * an executor screened with something the operator never configured — or,
+ * with no coding agent on the machine, did not screen at all while reporting
+ * that it did. §15 calls screening a security control, and a security
  * control that silently ignores its configuration is the kind this codebase
- * refuses to ship: the model now travels on every run (`Screener`).
+ * refuses to ship: the model now travels on every run (`Screener`), and it
+ * has no default — a model name is a provider's word, and the engine names
+ * no provider.
  */
-export function screenerFor(config: RuntimeConfig, workflow: Workflow, registry: Registry, log: Logger): Screener | undefined {
+export async function screenerFor(config: RuntimeConfig, registry: Registry, ctx: ExecutorContext): Promise<Screener | undefined> {
   if (!config.security.screen) return undefined;
   const adapter = config.security.adapter;
-  const executor = executorFor(config, workflow, registry, log, adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } });
-  // haiku is a claude model, and a hook's executor asked for one it cannot
-  // run must refuse: a default here would start cleanly and then block every
-  // ticket as screened at its first step.
-  const fromHook = registry.executors.get(executor.id) === executor;
-  const model = config.security.model ?? (fromHook ? undefined : "haiku");
-  if (model === undefined) {
-    throw new Error(
-      `security.model names no model, and "${executor.id}" is a hook's executor: set security.model to one it can run`,
-    );
-  }
-  return { executor, model };
+  const executor = await executorFor(config, registry, ctx, adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } });
+  return { executor, model: config.security.model };
 }
 
 /**
@@ -270,31 +254,15 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<{ 
 }
 
 /**
- * What every declared step and conversation turn is handed beyond its own
- * tools, resolved once, before the first request goes out.
- *
- * Shared with the MCP plane for the reason `sandboxFor` is: a turn is an agent
- * invocation on a step's own session, and a turn holding servers the step did
- * not — or missing the ones it did — would be a different agent answering. A
- * server that cannot be handed over is a refusal to start, worded in
- * config/mcp.ts so `landrace validate` says the same sentence.
+ * The step executor of a runtime built only to read. Its id is still checked
+ * against the registry through `registeredExecutor`, so `status` refuses an
+ * adapter nothing answers to exactly as `start` does; it just never builds
+ * one — a factory's `create` can read `.mcp.json` and run `git rev-parse`,
+ * and `landrace status` must make neither write nor call while only reading.
  */
-export async function stepToolsFor(config: RuntimeConfig, dir: string): Promise<StepTools> {
-  const { servers, tools, problems } = await resolveStepServers(dir, config.agent.mcp);
-  if (problems.length) throw new Error(problems.map((p) => `${p.rule}: ${p.message}`).join("\n"));
-  return { plugins: config.agent.plugins, mcpServers: servers, mcpTools: tools };
-}
-
-/**
- * The step executor of a runtime built only to read. Still resolved through
- * `executorFor`, so `status` refuses an adapter nothing answers to exactly as
- * `start` does; it just never runs — a step run without the tools its
- * configuration hands it is a step run bare, and nothing that reads should be
- * able to start one.
- */
-function readOnlyExecutor(executor: Executor): Executor {
+function readOnlyExecutor(id: string): Executor {
   return defineExecutor({
-    id: executor.id,
+    id,
     run: () => Promise.reject(new Error("this runtime was built to read tickets, not to run steps")),
   });
 }
@@ -320,8 +288,9 @@ export async function repoWorkspace(dir: string): Promise<{ folder: string; work
  *
  * Everything that can be known before the first request goes out is checked
  * here — secrets resolve, the redaction list means something, the workflow is
- * sound, the hooks load, the agent exists — because the alternative is finding
- * out one ticket at a time against a live repository.
+ * sound, the hooks load, the executor the configuration names can start —
+ * because the alternative is finding out one ticket at a time against a live
+ * repository.
  */
 export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Runtime> {
   const loaded = await loadConfig(dir);
@@ -331,21 +300,15 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // a configuration the CLI rejects.
   assertConfigUsable(dir, loaded);
 
-  // Before the workflow is read and before any hook module is imported: a
-  // server that cannot be handed to a step is a configuration fact, and the
-  // hooks' top-level code has no business running under one. Not for
-  // `landrace status`, which runs no step: a clone nobody has run `agsync
-  // sync` in is exactly where someone asks what landrace makes of it.
-  const tools = opts.readOnly ? null : await stepToolsFor(loaded.config, dir);
-
   // Before anything else can log: redactionValues throws on a name no secret
   // defines and on a value too short to redact by, and both of those are the
-  // operator believing the log is clean when it is not. An allowlisted
-  // server's env and header values join them — they travel in the agent's
-  // argv and can come back in its stderr.
-  const log = createLogger({
+  // operator believing the log is clean when it is not. What an executor's own
+  // setup turns up — an allowlisted server's env and header values, say — is
+  // not known this early; it joins the redaction set later, through
+  // `ectx.redact`, once the executor factory that found it has actually run.
+  const log: RedactingLogger = createLogger({
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
-    redactValues: [...redactionValues(loaded), ...(tools === null ? [] : mcpRedactionValues(tools.mcpServers))],
+    redactValues: redactionValues(loaded),
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
   });
 
@@ -385,6 +348,11 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     // engine's EventName union.
     log: (event, data) => log(event as EventName, data),
   };
+  // An executor factory's own two members, beyond what every hook gets: where
+  // its repository is, and a way to keep what its setup turns up out of every
+  // log line from here on — an MCP server's env, say, which the configuration
+  // never named and `redactionValues` above never saw.
+  const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact };
 
   /*
    * §11.8, the one rule that cannot be answered until the hooks are loaded —
@@ -415,7 +383,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // in this function is: a loop started outside a repository would otherwise
   // assemble, run, and fail at its first paid step.
   const sandbox = await sandboxFor(loaded.config, dir);
-  const screener = screenerFor(loaded.config, workflow, registry, log);
+  const screener = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx);
 
   return {
     source: registry.source,
@@ -428,17 +396,20 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     deps: {
       workflow,
       steps,
+      stepTimeoutMs: stepTimeoutMs(workflow),
       source: registry.source,
       pre: registry.pre,
       artifacts: registry.artifacts,
       dispatcher: createDispatcher(registry.post),
-      executor: tools === null
-        ? readOnlyExecutor(executorFor(loaded.config, workflow, registry, log, { dir }))
-        : executorFor(loaded.config, workflow, registry, log, { dir, tools }),
+      executor: opts.readOnly
+        ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
+        : await executorFor(loaded.config, registry, ectx),
+      childServer: childServerCommand(dir),
       ...(sandbox === null ? {} : { sandbox }),
       ...(screener ? { screen: screener } : {}),
       ctx,
       log,
+      scrub: log.scrub,
     },
     intervalMs: parseInterval(loaded.config.tick.interval),
     concurrency: loaded.config.tick.concurrency,
@@ -567,7 +538,9 @@ async function pass(rt: Runtime, board?: Board): Promise<void> {
     source: rt.source, deps: rt.deps, concurrency: rt.concurrency,
     ...(board ? { onList: (graph) => board.list(graph) } : {}),
   });
-  for (const row of rows) console.log(`#${row.ticket} ${row.outcome}`);
+  // Printed beside the log, not through it: an outcome quotes a hook's or an
+  // agent's failure, which can carry what the log itself would redact.
+  for (const row of rows) console.log(`#${row.ticket} ${rt.deps.scrub(row.outcome)}`);
 }
 
 /**

@@ -21,9 +21,9 @@
 
 import type { z } from "zod";
 import type { runtimeConfigSchema } from "#config/schema.js";
-import type { mcpConfigSchema, mcpServerSchema } from "#config/mcp.js";
 import type { stepFrontMatterSchema } from "#workflow/schema.js";
 import type { HOOK_KINDS } from "#hooks/contracts.js";
+import type { CHAT_TARGET_KEYS } from "#ui/chat.js";
 
 /* ------------------------------------------------------------------ core -- */
 
@@ -337,39 +337,6 @@ export interface LoadedConfig {
   missingVars: string[];
 }
 
-/** One MCP server as the repository root's `.mcp.json` defines it, passed on whole. */
-export type McpServer = z.infer<typeof mcpServerSchema>;
-
-/** `.mcp.json`, parsed. */
-export type McpConfig = z.infer<typeof mcpConfigSchema>;
-
-/**
- * The servers `agent.mcp` names, looked up in the repository root's
- * `.mcp.json` — or why they could not be. Problems rather than a throw, so
- * `landrace validate` reports what `landrace start` refuses, in its words.
- */
-export interface ResolvedMcp {
-  servers: Record<string, McpServer>;
-  /** The tools a server's entry listed, by server name; a server named bare has none here and allows every tool. */
-  tools: Record<string, string[]>;
-  problems: Problem[];
-}
-
-/** One `agent.mcp` entry: a server's bare name, or its name and the only tools a step may call on it. */
-export type McpEntry = RuntimeConfig["agent"]["mcp"][number];
-
-/**
- * What a declared run is handed beyond its own tools, resolved once at
- * startup: the plugins `agent.plugins` enables and the servers `agent.mcp`
- * allows, by definition — never a path the agent's worktree could shadow.
- */
-export interface StepTools {
-  plugins: readonly string[];
-  mcpServers: Readonly<Record<string, McpServer>>;
-  /** Per server, the only tools a step may call; a server absent here allows every tool it has. */
-  mcpTools: Readonly<Record<string, readonly string[]>>;
-}
-
 /* -------------------------------------------------------------- workflow -- */
 
 export type StepFrontMatter = z.infer<typeof stepFrontMatterSchema>;
@@ -472,17 +439,27 @@ export interface ArtifactHook extends PostHook {
 /**
  * What screens a prompt before an agent sees it: the executor
  * `security.adapter` (or else `agent.adapter`) names, and the model
- * `security.model` asks it for — on every run, where the Executor contract
- * makes a named model binding.
+ * `security.model` names, or none — the executor's own default then decides.
  */
 export interface Screener {
   executor: Executor;
-  model: string;
+  model: string | undefined;
 }
 
 /**
  * The execution plane. Not a hook: invoking an agent produces new information,
  * and an effect hook that produced information would need tracker credentials.
+ *
+ * What every executor owes the engine, beside what each option below asks:
+ * - never hand a step or a turn the operator's own `landrace` MCP server: its
+ *   tools create, update and move tickets, and a step holding them could move
+ *   its own;
+ * - run in `cwd` when given: the engine's read-only check inspects that
+ *   directory, and a run anywhere else defeats it;
+ * - never pass the engine's process environment through to the agent: a
+ *   secret can come from the shell the engine was started in, and the agent
+ *   must not hold tracker credentials;
+ * - stop when `signal` aborts.
  */
 export interface Executor {
   id: string;
@@ -491,6 +468,7 @@ export interface Executor {
     opts: {
       round: number;
       resume?: string;
+      /** Where to run — a step's worktree, when steps are isolated. See the contract above. */
       cwd?: string;
       /**
        * The model the *step* asked for — or, on the screener's run,
@@ -517,11 +495,12 @@ export interface Executor {
        */
       model?: string;
       /**
-       * How long this run may take, in milliseconds, when the step named its
-       * own `timeout`: it wins over whatever the executor was built with, as
-       * the step's model does. An executor that cannot stop a run at this
-       * limit must refuse it — the limit is the operator's cap on what one
-       * run may spend.
+       * How long this run may take, in milliseconds. Always present: the
+       * step's own `timeout`, else the workflow's `budget.stepTimeout`, else
+       * the engine's default, and the screening run gets the workflow's. The
+       * engine also aborts `signal` when it passes, and that is all it does:
+       * it does not stop waiting for the run. An executor that honours neither
+       * this nor `signal` holds its ticket until the process dies.
        */
       timeoutMs?: number;
       /**
@@ -542,8 +521,13 @@ export interface Executor {
        * turn cannot create children however it is asked to. An executor that
        * cannot expose a bound create_child tool must refuse a run that carries
        * this, never drop it: the step would report children it had no way to make.
+       *
+       * `server` is the engine's own ticket server for this binding, ready to
+       * start: an executor loads it under `server.name` and allows exactly
+       * `server.tools`. Absent, the engine could not say how to start one, and
+       * the run must be refused.
        */
-      child?: ChildBinding;
+      child?: ChildBinding & { server?: RunServer };
       signal: AbortSignal;
     },
   ): Promise<{ text: string; sessionId: string | null }>;
@@ -554,6 +538,32 @@ export interface Executor {
  * or without — a ticket to build a snapshot for.
  */
 export type RuntimeContext = Omit<HookContext, "ticket" | "snapshot">;
+
+/**
+ * What an executor factory is built with: the context every hook gets, plus
+ * the two things only an executor needs. `dir` is the workflow directory the
+ * runtime was built from, which is where a factory finds its repository.
+ * `redact` keeps values out of every log line from now on — an executor's
+ * setup can hold credentials the configuration never named, such as an MCP
+ * server's env, and the log must not print them. A value shorter than the
+ * logger will redact by is skipped, never refused: it would match everywhere.
+ */
+export type ExecutorContext = RuntimeContext & {
+  dir: string;
+  redact(values: readonly string[]): void;
+};
+
+/**
+ * An executor a hook builds from the runtime's context rather than at import.
+ * `id` is readable before anything is built, so the loader's duplicate rule
+ * and the adapter lookup still work at load. `create` runs once per runtime,
+ * at startup, so a setting it cannot use stops the process before the first
+ * paid step rather than at it.
+ */
+export interface ExecutorFactory {
+  id: string;
+  create(ctx: ExecutorContext): Promise<Pick<Executor, "run">>;
+}
 
 /**
  * The engine's *when* for a permission problem, tracker-agnostic by
@@ -622,6 +632,22 @@ export interface ChildBinding {
   parent: string;
   stage: string;
   round: number;
+}
+
+/** How to start a process the engine owns: a binary and its arguments, each its own argv element. */
+export interface ServerCommand {
+  command: string;
+  args: string[];
+}
+
+/**
+ * An MCP server the engine hands an executor to start for one run, described
+ * in full so the executor hands it over without knowing what it is: the
+ * command, the name to load it under, and the only tools a run may call on it.
+ */
+export interface RunServer extends ServerCommand {
+  name: string;
+  tools: string[];
 }
 
 /** What the agent may say about a child it creates, and nothing more. */
@@ -693,7 +719,7 @@ export interface Registry {
   source: Source | null;
   /** Optional. With none loaded, the MCP create and update tools say so rather than crashing or silently doing nothing. */
   operator: Operator | null;
-  executors: Map<string, Executor>;
+  executors: Map<string, Executor | ExecutorFactory>;
 }
 
 /** One imported module: what the workflow called it, and what it exported. */
@@ -739,6 +765,19 @@ export interface LandraceEvent {
 }
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
+
+/**
+ * The engine's logger, which can be told about more secrets after it was made.
+ * `scrub` applies that same live set to text that leaves the process outside
+ * the logger — a tick row on stdout, a record body on the tracker — so there
+ * is one redaction set, not one per exit. `extra` joins the set for that one
+ * call, in the same pass: redacting a second set after the first lets a value
+ * in one split a longer value in the other before it can match whole.
+ */
+export type RedactingLogger = Logger & {
+  redact(values: readonly string[]): void;
+  scrub(text: string, extra?: readonly string[]): string;
+};
 
 export type LockKind = "tick" | "conversation" | "execution" | "goto";
 
@@ -811,6 +850,12 @@ export interface ConvergeDeps {
    */
   sandbox?: { root: string };
   steps: Map<string, Step>;
+  /**
+   * The workflow's `budget.stepTimeout`, for a step that names no `timeout` of
+   * its own. Absent, the engine's own default applies: every run is given a
+   * limit.
+   */
+  stepTimeoutMs?: number;
   pre: PreHook[];
   /**
    * Asked for a briefing when — and only when — a step is about to be
@@ -823,7 +868,21 @@ export interface ConvergeDeps {
   screen?: Screener;
   ctx: Omit<HookContext, "snapshot">;
   log: Logger;
+  /**
+   * The runtime logger's `scrub`, for a record body composed outside the
+   * logger and posted where anyone reading the ticket sees it: it carries
+   * what an executor registered through `redact` after startup, which the
+   * secrets on `ctx` never named. Converge hands it those secrets as `extra`,
+   * so both sets are redacted in one pass — never one instead of the other.
+   */
+  scrub?: (text: string, extra?: readonly string[]) => string;
   maxPasses?: number;
+  /**
+   * How to start this process as `landrace mcp` on the workflow directory,
+   * for a `tickets:create` step's ticket server. Absent, such a step is handed
+   * no server and its executor refuses it.
+   */
+  childServer?: ServerCommand;
 }
 
 export interface ConvergeResult {
@@ -1113,7 +1172,8 @@ export interface Runtime {
    * Only `runStart` runs these, before the first tick.
    */
   preflights: Preflight[];
-  deps: Omit<ConvergeDeps, "ctx"> & { ctx: RuntimeContext };
+  /** `scrub` required here: the rows `landrace start` prints go through it too. */
+  deps: Omit<ConvergeDeps, "ctx" | "scrub"> & { ctx: RuntimeContext; scrub: (text: string, extra?: readonly string[]) => string };
   intervalMs: number;
   concurrency: number;
   /**
@@ -1301,8 +1361,11 @@ export interface BoardSystem {
  */
 export interface Chat {
   prompt: string;
-  links: { claude: string; claudeCli: string; cursor: string; codex: string };
+  links: Record<ChatTarget, string>;
 }
+
+/** A key `Chat.links` is indexed by — one of the board's own deep-link targets. */
+export type ChatTarget = (typeof CHAT_TARGET_KEYS)[number];
 
 /**
  * One node on the triage page's tree. An allowlist, not a pass-through:

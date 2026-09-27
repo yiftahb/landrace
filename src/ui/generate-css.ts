@@ -9,7 +9,7 @@ const run = promisify(execFile);
 // callers (`pnpm css` and `pnpm test`) run from the repository root, and
 // `import.meta.url` does not survive ts-jest's default (non-ESM) pass, which
 // mis-detects this project's "hybrid" NodeNext module kind as CommonJS and
-// rejects it with TS1343 (see the identical note on tests/agent/claude.test.ts).
+// rejects it with TS1343 (see the identical note on the executor hook's tests).
 const ROOT = process.cwd();
 // Named `resolve`, not `require`: ts-jest's default pass mis-detects this
 // project's "hybrid" NodeNext module kind as CommonJS and, on that path,

@@ -152,6 +152,19 @@ async function fixture(opts: {
     join(dir, "hooks", "fake.ts"),
     hookSource(opts.verdict ?? "suspicious", JSON.stringify(invocations), opts.preflight),
   );
+  // The project's own coding agent, by the path this repository's workflow
+  // loads it from: the engine ships none. A dynamic import with a computed
+  // specifier — the loader's own `import(pathToFileURL(path).href)` pattern —
+  // rather than a static `export … from "…claude.ts"`: ts-jest type-checks a
+  // literal specifier under this project's `moduleResolution: NodeNext` and
+  // refuses one ending in `.ts` (TS5097), a rule real Node's type-stripping
+  // does not enforce at all.
+  await writeFile(
+    join(dir, "hooks", "claude.ts"),
+    `import { pathToFileURL } from "node:url";
+export const { claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), ".landrace", "hooks", "claude.ts"))}).href);
+`,
+  );
   // What the step declared, which is what a turn on its session is held to.
   await writeFile(
     join(dir, "steps", "spec.md"),
@@ -167,7 +180,7 @@ Write the spec.
     join(dir, "workflow.yaml"),
     `version: 1
 name: mcp
-hooks: [hooks/fake.ts]
+hooks: [hooks/fake.ts, hooks/claude.ts]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
@@ -374,9 +387,13 @@ describe("buildMcpTools and the servers a turn is handed", () => {
   });
 
   it("refuses to assemble when a server the steps are allowed is the operator's own", async () => {
+    // The claude hook's own settings hold `agent.mcp` now, and the `fake`
+    // executor this file's fixture builds reads none of them — only the
+    // claude hook's `create` actually resolves the servers `agent.mcp` names.
     const { dir } = await fixture({
       screen: false,
       isolation: "worktree",
+      adapter: "claude",
       agentKeys: "mcp: [tickets]",
       mcpJson: { mcpServers: { tickets: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });

@@ -2,28 +2,20 @@ import { z } from "zod";
 
 export const runtimeConfigSchema = z.object({
   version: z.literal(1),
-  /** Typed, because the engine still picks an executor out of the registry by this id. */
-  agent: z.object({
-    adapter: z.string().min(1),
-    model: z.string().optional(),
-    isolation: z.enum(["none", "worktree", "container"]).default("worktree"),
-    /**
-     * Plugin ids (`name@marketplace`) enabled for every step and conversation
-     * turn. A read-only step runs `--restricted`, which ignores the operator's
-     * own settings — and every plugin enabled there with them.
-     */
-    plugins: z.array(z.string().min(1)).default([]),
-    /**
-     * MCP servers a step may use, each looked up by name in the repository
-     * root's `.mcp.json` at startup — names, not definitions, so the file
-     * agsync generates stays the one place a server is described. A bare name
-     * allows every tool the server has; `{ name, tools }` allows only those.
-     * Strict, so a misspelt `tool:` is refused rather than read as "every tool".
-     */
-    mcp: z
-      .array(z.union([z.string().min(1), z.object({ name: z.string().min(1), tools: z.array(z.string().min(1)) }).strict()]))
-      .default([]),
-  }),
+  /**
+   * Two keys the engine reads, and everything else passed on unread to the
+   * executor `adapter` names, as `tracker:` is to the tracker hooks. `adapter`
+   * picks the executor; `isolation` is how the engine prepares the directory
+   * it runs in. A coding agent's own settings — its model, its plugins, its
+   * servers — are that executor's vocabulary, and it refuses a key it does
+   * not read.
+   */
+  agent: z
+    .object({
+      adapter: z.string().min(1),
+      isolation: z.enum(["none", "worktree", "container"]).default("worktree"),
+    })
+    .passthrough(),
   /**
    * Opaque on purpose. Whatever a tracker needs — a repository, a project key,
    * a board id, the account it posts as — is the hook's vocabulary, and the
@@ -39,9 +31,9 @@ export const runtimeConfigSchema = z.object({
    * provider from the agent it guards is a second opinion rather than the
    * same model reading its own attack. `model` is asked of it on every run.
    *
-   * No default here: `haiku` is right for the engine's own claude executor
-   * and nothing else, so `screenerFor` supplies it there and refuses to
-   * start a hook's executor screening without one.
+   * `model` has no default: a model name is a provider's word, and the
+   * engine names no provider. Absent, the screening run names none and the
+   * executor's own default decides.
    */
   security: z
     .object({ screen: z.boolean().default(true), adapter: z.string().min(1).optional(), model: z.string().min(1).optional() })

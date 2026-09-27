@@ -12,6 +12,7 @@ import { createTools } from "#mcp/tools.js";
 import { createDispatcher } from "#runner/effects.js";
 import { acquire, held, release } from "#runner/lock.js";
 import { runStep } from "#runner/step.js";
+import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
 import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { gitRepo, removeRepos, worktreesOf } from "#tests/support/repo.js";
 
@@ -695,6 +696,16 @@ describe("a conversation turn is held to what its step declared", () => {
     };
     await world(seeded(), spy, {}, undefined, spec({ capabilities: ["repo:read"], timeout: "120m" })).ask("1", "carry on");
     expect(seen?.timeoutMs).toBe(7_200_000);
+  });
+
+  it("hands the executor the workflow's budget when the step names no timeout", async () => {
+    let seen: { timeoutMs?: number } | undefined;
+    const spy: Executor = {
+      id: "spy",
+      run: async (_p, o) => { seen = o; return { text: "Understood.", sessionId: null }; },
+    };
+    await world(seeded(), spy, {}, undefined, spec({ capabilities: ["repo:read"] })).ask("1", "carry on");
+    expect(seen?.timeoutMs).toBe(DEFAULT_STEP_TIMEOUT_MS);
   });
 
   /*

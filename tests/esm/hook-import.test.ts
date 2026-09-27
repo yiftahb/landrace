@@ -15,7 +15,7 @@ import type { HookContext } from "#namespace.js";
  *
  * The default pass is left alone rather than switched over, because ESM mode
  * takes `__dirname` and the `jest` global away from
- * `tests/agent/claude.test.ts`, and breaking a working test to reach this one
+ * `tests/hooks/claude.test.ts`, and breaking a working test to reach this one
  * is the wrong trade.
  */
 describe("hook modules are imported from disk and classified by their brand", () => {

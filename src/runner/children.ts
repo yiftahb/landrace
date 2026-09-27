@@ -1,5 +1,5 @@
-import { LABELS, neutraliseMarkers, recordBodyProblem, ticketIdProblem } from "#conventions.js";
-import type { ChildBinding, NewChild, Node, Operator, RuntimeContext } from "#namespace.js";
+import { CHILD_SERVER_NAME, CHILD_TOOL, isTicketId, LABELS, neutraliseMarkers, recordBodyProblem, ticketIdProblem } from "#conventions.js";
+import type { ChildBinding, NewChild, Node, Operator, RunServer, RuntimeContext, ServerCommand } from "#namespace.js";
 
 /** Ten is already more urgency levels than any tracker we have met distinguishes. */
 const MAX_PRIORITY = 9;
@@ -51,4 +51,26 @@ export async function createChild(
     },
     ctx,
   );
+}
+
+/** A value `landrace mcp --stage` reads as a stage id and never as a flag. */
+const ARG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * The engine's ticket server for one binding. The binding goes on the
+ * server's own command line, never into the agent's prompt: nothing the agent
+ * says can file a child anywhere else. Each value is checked against the
+ * shape the command line can carry as meant, because a value starting with
+ * "-" is read as a flag whatever position it has.
+ */
+export function childServerFor(base: ServerCommand, binding: ChildBinding): RunServer {
+  if (!isTicketId(binding.parent)) throw new Error(`refused parent ${JSON.stringify(binding.parent)}: not a ticket id`);
+  if (!ARG.test(binding.stage)) throw new Error(`refused stage ${JSON.stringify(binding.stage)}: not a shape the server's command line can carry`);
+  if (!Number.isInteger(binding.round) || binding.round < 1) throw new Error(`refused round ${binding.round}`);
+  return {
+    name: CHILD_SERVER_NAME,
+    command: base.command,
+    args: [...base.args, "--child", binding.parent, "--stage", binding.stage, "--round", String(binding.round)],
+    tools: [CHILD_TOOL],
+  };
 }

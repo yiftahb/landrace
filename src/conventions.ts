@@ -375,6 +375,15 @@ export const MAX_SUBGRAPH_NODES = 200;
  */
 export const CAPABILITIES = ["repo:read", "repo:write", "tickets:create"] as const;
 
+/**
+ * The name the engine's own ticket server runs under when a `tickets:create`
+ * step is handed it, and the one tool it offers. Vocabulary rather than an
+ * executor's knowledge: the engine names both in the server it hands over, so
+ * an executor builds `mcp__<name>__<tool>` without knowing either.
+ */
+export const CHILD_SERVER_NAME = "landrace";
+export const CHILD_TOOL = "landrace_create_child";
+
 /** The declared names nothing in the engine knows how to enforce. */
 export const unknownCapabilities = (declared: readonly string[] | undefined): string[] =>
   (declared ?? []).filter((c) => !(CAPABILITIES as readonly string[]).includes(c));

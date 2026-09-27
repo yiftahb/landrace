@@ -23,14 +23,14 @@ const DEFAULT_MAX_PASSES = 30;
  */
 const MAX_MALFORMED_BODY = 4000;
 
-function malformedBody(reason: string, redactValues: string[], kind: string = MALFORMED_KIND): string {
+function malformedBody(reason: string, scrub: (text: string) => string, kind: string = MALFORMED_KIND): string {
   // `reason` is not our own text: it can carry the screening executor's own
   // error output verbatim ("agent exited N: <up to 400 chars of stderr>"),
   // and stderr can contain a secret the same way any subprocess output can.
   // This comment is public and durable, and redaction until now was
   // log-sink only — a body composed here goes straight to the tracker,
   // bypassing the logger's own redaction entirely.
-  const redacted = redactValue(reason, redactValues) as string;
+  const redacted = scrub(reason);
   // Headed as what it was: a person opening a ticket stopped by a security
   // check has a different job from one reading an agent's unreadable answer.
   const heading = kind === REFUSED_KIND ? "Step refused by a security check" : "Step output rejected";
@@ -39,21 +39,27 @@ function malformedBody(reason: string, redactValues: string[], kind: string = MA
 }
 
 /**
- * The same secret *values* `createLogger` redacts with — `ctx.secrets` is
- * the resolved name -> value map every hook already receives, so this reuses
- * it rather than threading a second, separately-constructed list through
- * `ConvergeDeps`. Values shorter than `MIN_SECRET_LENGTH` are skipped rather
- * than rejected: `createLogger` throws on one at construction time, but this
- * is an independent consumer of the same raw map, not the list's owner, and
- * a value that short would redact everywhere in this text too.
+ * How a record body is scrubbed: the runtime logger's live set when converge
+ * was handed it, and every secret value on `ctx`, in one pass over both — two
+ * passes let a logger value that is part of a declared secret split it before
+ * the second pass could match it whole. Both sets, because neither holds the
+ * other. `ctx.secrets` is every declared secret, where the log redacts the
+ * ones `log.redact` names plus what an executor registered through `redact`
+ * after startup — an MCP server's env, which no secret names. Values shorter
+ * than `MIN_SECRET_LENGTH` are skipped rather than rejected: `createLogger`
+ * throws on one at construction time, but this is an independent consumer of
+ * the same raw map, not the list's owner, and a value that short would redact
+ * everywhere in this text too.
  */
-function redactValuesFrom(secrets: ReadonlyMap<string, string>): string[] {
+function scrubberFor(deps: ConvergeDeps): (text: string) => string {
   // Trimmed once, and that trimmed form is what is both measured *and*
   // returned for actual redaction — checking the trimmed length while
   // filtering the untrimmed value let a secret sourced with surrounding
   // whitespace (a quoted .env line) pass the length check and then never
   // match its own bare form anywhere it actually appeared in posted text.
-  return [...secrets.values()].map((v) => v.trim()).filter((v) => v.length >= MIN_SECRET_LENGTH);
+  const values = [...deps.ctx.secrets.values()].map((v) => v.trim()).filter((v) => v.length >= MIN_SECRET_LENGTH);
+  const { scrub } = deps;
+  return scrub === undefined ? (text) => redactValue(text, values) as string : (text) => scrub(text, values);
 }
 
 /**
@@ -99,7 +105,7 @@ async function converging(
   enterSandbox: ((on?: WorktreeBranch) => Promise<string>) | null,
 ): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
-  const redactValues = redactValuesFrom(deps.ctx.secrets);
+  const scrub = scrubberFor(deps);
 
   // A termination bound, exactly like the `pass` counter above it — not a
   // ledger, and the honest reason it does not violate "state is derived,
@@ -216,7 +222,7 @@ async function converging(
         // and an operator watching the ticket deserves the same trace.
         if (stage) {
           const posted = await tryApply(
-            [malformedEffect(stage.id, round, reason, redactValues)],
+            [malformedEffect(stage.id, round, reason, scrub)],
             ticket, snapshot, deps,
           );
           if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
@@ -280,7 +286,7 @@ async function converging(
         // The malformed path posts a durable record; a stage stuck here is
         // just as much a reason an operator needs to see something on the
         // ticket, not just a line in a log they may never open.
-        const posted = await tryApply([malformedEffect(stage.id, round, reason, redactValues)], ticket, snapshot, deps);
+        const posted = await tryApply([malformedEffect(stage.id, round, reason, scrub)], ticket, snapshot, deps);
         if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
         return { passes: pass, settled: "halt", why: reason };
       }
@@ -336,10 +342,10 @@ async function converging(
 
       // The engine's own record that an agent is in the room, bracketing the
       // one call that runs it. Not left to the executor: `step.completed`
-      // comes from the claude executor alone, so a hook-registered executor
-      // never emits it, and anything watching for "running" would wait on it
-      // for ever. The finally is the point — a throw or an abort must not
-      // leave a step looking as if it is still going.
+      // is an executor's own event, which an executor need never emit, so
+      // anything watching for "running" would wait on it for ever.
+      // The finally is the point — a throw or an abort must not leave a step
+      // looking as if it is still going.
       deps.log("step.started", { ticket, stage: stage.id, round, model: step.model ?? null });
       let finishedOk = false;
       let result: StepResult;
@@ -350,6 +356,8 @@ async function converging(
           readGraph: () => deps.source.read(ticket, deps.ctx),
           ...(deps.screen ? { screen: deps.screen } : {}),
           ...(sandbox ? { sandbox } : {}),
+          ...(deps.stepTimeoutMs === undefined ? {} : { defaultTimeoutMs: deps.stepTimeoutMs }),
+          ...(deps.childServer ? { childServer: deps.childServer } : {}),
           log: deps.log,
         });
         finishedOk = result.ok;
@@ -389,7 +397,7 @@ async function converging(
         // rather than as an agent that could not follow a format — routes on
         // run.lastRefused, which is read back from this kind.
         const posted = await tryApply(
-          [malformedEffect(stage.id, round, result.reason, redactValues, result.kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)],
+          [malformedEffect(stage.id, round, result.reason, scrub, result.kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)],
           ticket, snapshot, deps,
         );
         if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
@@ -467,12 +475,12 @@ async function converging(
 
 /** The durable record of a rejected round; `kind` says whether it was a broken contract or a refusal. */
 function malformedEffect(
-  stage: string, round: number, reason: string, redactValues: string[], kind: string = MALFORMED_KIND,
+  stage: string, round: number, reason: string, scrub: (text: string) => string, kind: string = MALFORMED_KIND,
 ): Effect {
   return {
     type: RECORD_EFFECT, kind, stage, round,
     marker: `${kind}:${stage}:${round}`,
-    body: malformedBody(reason, redactValues, kind),
+    body: malformedBody(reason, scrub, kind),
   };
 }
 

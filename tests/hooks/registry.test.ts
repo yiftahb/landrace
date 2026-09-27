@@ -176,6 +176,15 @@ describe("ambiguity halts, naming both sides", () => {
     ).toThrow(/two executors[\s\S]*"claude"/);
   });
 
+  it("files an executor factory under its id, and halts on a second one under the same id", () => {
+    const factory = defineExecutor({ id: "made", create: async () => ({ run: async () => ({ text: "", sessionId: null }) }) });
+    const registry = buildRegistry([{ specifier: "a.ts", exports: { factory } }]);
+    expect(registry.executors.get("made")).toBe(factory);
+    const twin = defineExecutor({ id: "made", run: async () => ({ text: "", sessionId: null }) });
+    expect(() => buildRegistry([{ specifier: "a.ts", exports: { factory } }, { specifier: "b.ts", exports: { twin } }]))
+      .toThrow(/two executors share the id "made": "a.ts" and "b.ts"/);
+  });
+
   it("refuses two preflights under one id", () => {
     expect(() =>
       buildRegistry([module_("hooks/a.ts", { p: preflight("same") }), module_("hooks/b.ts", { p: preflight("same") })]),

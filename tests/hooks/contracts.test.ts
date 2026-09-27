@@ -60,4 +60,10 @@ describe("a define* helper brands what it returns", () => {
     expect(hookKindOf("pre")).toBeNull();
     expect(hookKindOf(() => {})).toBeNull();
   });
+
+  it("brands an executor factory as an executor, keeping its id readable before anything is built", () => {
+    const factory = defineExecutor({ id: "made", create: async () => ({ run: async () => ({ text: "", sessionId: null }) }) });
+    expect(hookKindOf(factory)).toBe("executor");
+    expect(factory.id).toBe("made");
+  });
 });

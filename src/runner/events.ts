@@ -1,4 +1,4 @@
-import type { EventName, LandraceEvent, Logger } from "#namespace.js";
+import type { EventName, LandraceEvent, RedactingLogger } from "#namespace.js";
 
 /**
  * Printed only under `--debug` (spec §14).
@@ -26,7 +26,14 @@ export const MIN_SECRET_LENGTH = 8;
  * comment body built from an executor's error message, say, which reaches a
  * public, durable record the log's own redaction never touches.
  */
-export function redactValue(value: unknown, secrets: string[]): unknown {
+export function redactValue(value: unknown, secrets: readonly string[]): unknown {
+  // Longest first. In list order, a shorter value that is part of a longer one
+  // — a server's base URL registered before a webhook secret under it — split
+  // the longer one before it could match whole, and its tail printed.
+  return redactOrdered(value, [...secrets].sort((a, b) => b.length - a.length));
+}
+
+function redactOrdered(value: unknown, secrets: readonly string[]): unknown {
   if (typeof value === "string") {
     return secrets.reduce((acc, s) => acc.split(s).join("[redacted]"), value);
   }
@@ -34,15 +41,15 @@ export function redactValue(value: unknown, secrets: string[]): unknown {
   // logged as a value serialised to {} — and a token inside its message never
   // reached the redactor either.
   if (value instanceof Error) {
-    return redactValue(
+    return redactOrdered(
       { name: value.name, message: value.message, ...(value.stack === undefined ? {} : { stack: value.stack }) },
       secrets,
     );
   }
-  if (Array.isArray(value)) return value.map((v) => redactValue(v, secrets));
+  if (Array.isArray(value)) return value.map((v) => redactOrdered(v, secrets));
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactValue(v, secrets)]),
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactOrdered(v, secrets)]),
     );
   }
   return value;
@@ -60,7 +67,7 @@ export function createLogger(opts: {
    */
   redactValues?: string[];
   sink?: (e: LandraceEvent) => void;
-} = {}): Logger {
+} = {}): RedactingLogger {
   // Refused, not skipped: skipping would leave a real secret unredacted, and
   // accepting would shred the log. The value itself is never named in the
   // error, only its position. Trimmed once, here, and that trimmed form is
@@ -80,11 +87,22 @@ export function createLogger(opts: {
   });
   const sink = opts.sink ?? ((e: LandraceEvent) => console.log(JSON.stringify(e)));
 
-  return (name, data = {}) => {
+  const log = ((name, data = {}) => {
     // Agent output is voluminous and carries attacker-influenced text. It is
     // printed only on request, and it is data — never interpreted. The same
     // goes for the per-pass snapshot, which quotes the issue body verbatim.
     if (DEBUG_ONLY.has(name) && !opts.debug) return;
     sink({ name, ...(redactValue(data, secrets) as Record<string, unknown>) });
+  }) as RedactingLogger;
+  // After construction, for what an executor's setup turns up. Skipped rather
+  // than refused below the minimum: a server env of "1" is a setting, not a
+  // secret, and refusing it would stop the process over nothing.
+  log.redact = (values) => {
+    for (const value of values) {
+      const trimmed = value.trim();
+      if (trimmed.length >= MIN_SECRET_LENGTH && !secrets.includes(trimmed)) secrets.push(trimmed);
+    }
   };
+  log.scrub = (text, extra = []) => redactValue(text, [...secrets, ...extra]) as string;
+  return log;
 }

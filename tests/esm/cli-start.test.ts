@@ -3,7 +3,7 @@ import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { buildRuntime, runStart } from "#cli/start.js";
+import { buildRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 import type { LandraceEvent } from "#namespace.js";
 import { acquire, release } from "#runner/lock.js";
@@ -32,7 +32,7 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * `tracker.record` — tracker config is opaque to the engine and handed to
  * hooks as it stands, so this also pins that the config reaches them.
  */
-const hookSource = (provides?: string[], preflight?: "pass" | "throw"): string => `import { appendFile } from "node:fs/promises";
+const hookSource = (provides?: string[], preflight?: "pass" | "throw", preFails?: string): string => `import { appendFile } from "node:fs/promises";
 
 const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
@@ -57,10 +57,10 @@ export const source = brand("source", {
 
 export const pre = brand("pre", {
   id: "fake",
-${provides === undefined ? "" : `  provides: ${JSON.stringify(provides)},\n`}  run: ({ ticket }: Ctx): Record<string, unknown> => ({
-    ticket: { body: "about " + ticket },
-    entries: [],
-  }),
+${provides === undefined ? "" : `  provides: ${JSON.stringify(provides)},\n`}  run: ({ ticket }: Ctx): Record<string, unknown> => {
+    ${preFails === undefined ? "" : `throw new Error(${JSON.stringify(preFails)});`}
+    return { ticket: { body: "about " + ticket }, entries: [] };
+  },
 });
 
 export const post = brand("post", {
@@ -94,13 +94,13 @@ const EXECUTOR = `export const executor = brand("executor", {
 });
 `;
 
-const workflowReading = (path?: string): string => `version: 1
+const workflowReading = (path?: string, budget?: string): string => `version: 1
 name: e2e
-hooks: [hooks/fake.ts]
+hooks: [hooks/fake.ts, hooks/claude.ts]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
-stages:
+${budget === undefined ? "" : `budget:\n  stepTimeout: ${budget}\n`}stages:
   - id: spec
     entry: true
     terminal: true
@@ -129,6 +129,8 @@ async function fixture(
     screen?: boolean;
     provides?: string[];
     reads?: string;
+    /** `budget.stepTimeout`, written into the generated workflow.yaml. */
+    budget?: string;
     git?: boolean;
     preflight?: "pass" | "throw";
     /** More of `agent:`, written inside its braces. */
@@ -137,6 +139,8 @@ async function fixture(
     securityKeys?: string;
     /** The `.mcp.json` at the repository root, as agsync would have written it. */
     mcpJson?: unknown;
+    /** A message the pre hook fails with, as an upstream error would quote what it was sent. */
+    preFails?: string;
   } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
@@ -144,8 +148,21 @@ async function fixture(
   const dir = join(root, ".landrace");
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
-  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight));
-  await writeFile(join(dir, "workflow.yaml"), workflowReading(opts.reads));
+  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight, opts.preFails));
+  // The project's own coding agent, by the path this repository's workflow
+  // loads it from: the engine ships none. A dynamic import with a computed
+  // specifier — the loader's own `import(pathToFileURL(path).href)` pattern —
+  // rather than a static `export … from "…claude.ts"`: ts-jest type-checks a
+  // literal specifier under this project's `moduleResolution: NodeNext` and
+  // refuses one ending in `.ts` (TS5097), a rule real Node's type-stripping
+  // does not enforce at all.
+  await writeFile(
+    join(dir, "hooks", "claude.ts"),
+    `import { pathToFileURL } from "node:url";
+export const { claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), ".landrace", "hooks", "claude.ts"))}).href);
+`,
+  );
+  await writeFile(join(dir, "workflow.yaml"), workflowReading(opts.reads, opts.budget));
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
@@ -183,6 +200,31 @@ describe("buildRuntime", () => {
     expect(rt.deps.pre.map((h) => h.id)).toEqual(["fake"]);
     expect(rt.deps.executor.id).toBe("claude");
     expect(rt.deps.screen).toBeUndefined();
+  });
+
+  /**
+   * A `tickets:create` step's ticket server is this fact, and nothing built
+   * `buildRuntime`'s own `deps.childServer` was ever read back: a typo here
+   * would only ever surface, days later, as a step refusing create_child
+   * against a real repository.
+   */
+  it("hands converge how to start its own ticket server, as this process on this workflow directory", async () => {
+    const { dir } = await fixture();
+    const rt = await buildRuntime(dir, {});
+    expect(rt.deps.childServer).toEqual(childServerCommand(dir));
+  });
+
+  /**
+   * The workflow's own `budget.stepTimeout`, not the engine's 10-minute
+   * default: the shipped workflow happens to name 10m too, so a fixture that
+   * left `deps.stepTimeoutMs` off `buildRuntime`'s returned deps entirely
+   * would still pass every other test here — this is the one case where the
+   * two numbers disagree, and the only thing standing between them.
+   */
+  it("hands converge the workflow's own step timeout, not the engine's default", async () => {
+    const { dir } = await fixture({ budget: "7m" });
+    const rt = await buildRuntime(dir, {});
+    expect(rt.deps.stepTimeoutMs).toBe(420_000);
   });
 
   /**
@@ -312,18 +354,6 @@ ${EXECUTOR}`);
     expect(rt.deps.screen?.model).toBe("fake-small");
   });
 
-  /*
-   * haiku is a claude model. A hook's executor asked for it must refuse, so
-   * defaulting to it would block every ticket as screened at its first step
-   * — hours after a start that looked fine.
-   */
-  it("refuses to start when a hook's executor would screen with no security.model", async () => {
-    const { dir } = await fixture({ agent: "fake", screen: true });
-    await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
-${EXECUTOR}`);
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/security\.model[\s\S]*"fake"/);
-  });
-
   /**
    * The sandbox is resolved at startup, not at the first invoke: a loop
    * started outside a repository would otherwise assemble, poll, and fail at
@@ -344,6 +374,18 @@ ${EXECUTOR}`);
     await expect(buildRuntime(dir, {})).rejects.toThrow(/gpt-9[\s\S]*claude/);
   });
 
+  /**
+   * `agent:` is opaque past `adapter` and `isolation`: everything else is the
+   * executor's own vocabulary, and the claude hook refuses a key it does not
+   * read rather than silently ignoring it. Reached only once the hook's
+   * `create` actually runs, which is why this is `buildRuntime` and not a unit
+   * test of `readClaudeSettings` — the wiring is what could still be wrong.
+   */
+  it("refuses to start when the claude hook cannot use its settings, naming the executor and the key", async () => {
+    const { dir } = await fixture({ agentKeys: "plugin: [p@m]" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/executor "claude" could not start: agent\.plugin is not a setting/);
+  });
+
   /*
    * `agent.plugins` and `agent.mcp`, end to end through the runtime a loop
    * actually runs: resolved from the repository root once, and handed to the
@@ -355,6 +397,7 @@ ${EXECUTOR}`);
     const memory = { command: "codebase-memory-mcp", args: [], env: {} };
     const { dir } = await fixture({
       screen: true,
+      securityKeys: "model: haiku",
       agentKeys: "plugins: [superpowers@claude-plugins-official], mcp: [{ name: codebase-memory-mcp, tools: [search_graph, trace_path] }]",
       mcpJson: { mcpServers: { "codebase-memory-mcp": memory, landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });
@@ -380,7 +423,7 @@ ${EXECUTOR}`);
       if (!screen) throw new Error("screening was configured and the runtime built no screener");
       // The model on the run, the way screenPrompt asks for it: it is no
       // longer fixed into the executor, where a hook's never heard it.
-      screener = JSON.parse((await screen.executor.run("x", { round: 0, cwd: worktree, model: screen.model, signal })).text) as string[];
+      screener = JSON.parse((await screen.executor.run("x", { round: 0, cwd: worktree, ...(screen.model === undefined ? {} : { model: screen.model }), signal })).text) as string[];
     } finally {
       process.env.PATH = path;
     }
@@ -392,7 +435,9 @@ ${EXECUTOR}`);
     ]);
     expect(step).toContain("--settings");
     // The screener: no plugin, no server, no tool, and the model
-    // `security.model` names — honoured, because it no longer runs in plan mode.
+    // `security.model` names — never `agent.model`, which is the step's own
+    // "opus" and would otherwise be indistinguishable from the screener
+    // quietly inheriting the executor's default.
     const after = (argv: string[], name: string): string | undefined => argv[argv.indexOf(name) + 1];
     expect(JSON.parse(after(screener, "--mcp-config") as string)).toEqual({ mcpServers: {} });
     expect(screener).toContain("--strict-mcp-config");
@@ -463,6 +508,35 @@ describe("runStart --once", () => {
     expect(await applied(record)).toEqual([{ ticket: TICKET, type: "tracker.comment" }]);
     // Nothing is left holding the ticket: the next run is free to take it.
     expect(await acquire(TICKET, "tick")).toBe(true);
+  });
+
+  /*
+   * The row printed per ticket is stdout, beside the log and outside it. A
+   * value an executor's setup registered through `redact` — an allowlisted
+   * server's env — was kept out of the log and printed here in the clear,
+   * whenever a failure quoted it.
+   */
+  it("keeps a value the executor registered through redact out of the row it prints", async () => {
+    const { dir } = await fixture({
+      agentKeys: "mcp: [codebase-memory-mcp]",
+      mcpJson: { mcpServers: { "codebase-memory-mcp": { command: "codebase-memory-mcp", env: { MEMORY_TOKEN: "env-secret-value" } } } },
+      preFails: "upstream refused MEMORY_TOKEN=env-secret-value",
+    });
+    const printed: string[] = [];
+    const wrote = console.log;
+    console.log = (line: unknown): void => {
+      printed.push(String(line));
+    };
+
+    try {
+      await runStart(dir, { once: true });
+    } finally {
+      console.log = wrote;
+    }
+
+    const rows = printed.filter((l) => l.startsWith("#"));
+    expect(rows).toEqual([expect.stringMatching(new RegExp(`^#${TICKET} halt after 1 pass\\(es\\): .*\\[redacted\\]`))]);
+    expect(printed.join("\n")).not.toContain("env-secret-value");
   });
 
   /**

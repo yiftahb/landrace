@@ -20,10 +20,12 @@ import type {
   Snapshot,
   Stage,
   Step,
+  Workflow,
 } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { sandboxBefore, sandboxTrespass } from "#runner/step.js";
+import { stepTimeoutMs } from "#runner/budget.js";
 
 /**
  * What a turn asks for beyond an answer: one bit, and the engine routes on it.
@@ -142,10 +144,16 @@ export function createConversation(deps: ConversationDeps): Conversation {
    * can say the limits of is a turn nobody is holding to them, and this
    * process has already proved it can run one.
    */
-  const stepBehind = (ticket: string, stage: string): { declared: Stage; step: Step } => {
-    const declared = deps.workflow?.stages.find((s) => s.id === stage);
+  const stepBehind = (ticket: string, stage: string): { workflow: Workflow; declared: Stage; step: Step } => {
+    // Narrowed here rather than read off `deps.workflow` again below: `declared`
+    // and `step` can only be truthy when `deps.workflow` is, but nothing
+    // downstream of a second `deps.workflow?.` can see that for itself — a
+    // local the throw actually guards is what lets `stepTimeoutMs` take it
+    // without an assertion.
+    const workflow = deps.workflow;
+    const declared = workflow?.stages.find((s) => s.id === stage);
     const step = declared?.step === undefined ? undefined : deps.steps?.get(declared.step);
-    if (!declared || !step) {
+    if (!workflow || !declared || !step) {
       throw new Error(
         `cannot ask: #${ticket}'s conversation belongs to stage "${stage}", and this process cannot see what ` +
         "that step declared — a turn that is not held to the step's own capabilities is a way around them",
@@ -161,7 +169,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
         `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}`,
       );
     }
-    return { declared, step };
+    return { workflow, declared, step };
   };
 
   return {
@@ -195,7 +203,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
           // Before anything is screened, posted or paid for: what the step
           // declared is the frame this whole turn runs inside, and a turn
           // that cannot be held to it must not start.
-          const { declared, step } = stepBehind(ticket, stage);
+          const { workflow, declared, step } = stepBehind(ticket, stage);
           const root = deps.sandbox?.root;
           // Where the step worked, which is where its session continues: the
           // stage's branch when it names one — converge's own rule, so a turn
@@ -205,6 +213,14 @@ export function createConversation(deps: ConversationDeps): Conversation {
           if (!branch.ok) throw new Error(`cannot ask: ${branch.reason}`);
 
           const turn = TURN(message);
+
+          // The step's own limit, else the workflow's: a turn is held to
+          // what the step is held to, and every run is given one.
+          const fallbackMs = stepTimeoutMs(workflow);
+          const turnTimeoutMs = (step.timeout === undefined ? null : durationMs(step.timeout)) ?? fallbackMs;
+          const turnLimit = AbortSignal.timeout(turnTimeoutMs);
+          const callerSignal = opts?.signal ?? deps.ctx.signal;
+          const turnSignal = AbortSignal.any([callerSignal, turnLimit]);
 
           /*
            * §15: every agent invocation is screened before it runs, and this
@@ -226,7 +242,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
             const verdict = await screenPrompt(turn, {
               executor: deps.screen.executor,
               model: deps.screen.model,
-              signal: opts?.signal ?? deps.ctx.signal,
+              // Screening is quick, so it gets the workflow's budget, not a
+              // two-hour build's.
+              timeoutMs: fallbackMs,
+              signal: callerSignal,
               log: deps.ctx.log,
             });
             if (!verdict.ok) throw new Error(`screening blocked this turn: ${verdict.reason}`);
@@ -266,32 +285,47 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // would otherwise read back as control state we wrote.
             await say(ticket, snapshot, neutraliseMarkers(message));
 
-            const turnTimeout = step.timeout === undefined ? null : durationMs(step.timeout);
-            const { text, sessionId } = await deps.executor.run(turn, {
-              round,
-              resume: session,
-              // The step's own declaration, both halves of it. A turn is an
-              // agent invocation on the same session, and one that were less
-              // constrained than the step it continues would let a person ask
-              // through conversation for exactly what the workflow forbade —
-              // and bill a `model: haiku` step at the operator's default.
-              // Always present, never undefined: a step that declares no
-              // capabilities is the most restricted there is, and an executor
-              // reading `undefined` falls back to its own operator-wide
-              // default instead.
-              capabilities: step.capabilities ?? [],
-              ...(step.model === undefined ? {} : { model: step.model }),
-              // And its time limit: a turn on a two-hour build's session, held
-              // to the operator's default, is killed long before the build
-              // would have been. Checked at load, so null means none named.
-              ...(turnTimeout === null ? {} : { timeoutMs: turnTimeout }),
-              ...(sandbox ? { cwd: sandbox.path } : {}),
-              // The caller's own signal when there is one: an MCP client that
-              // disconnects mid-turn aborts the request, which kills the agent
-              // and unwinds through the lock's release rather than holding that
-              // ticket for the rest of the run.
-              signal: opts?.signal ?? deps.ctx.signal,
-            });
+            let text: string;
+            let sessionId: string | null;
+            try {
+              ({ text, sessionId } = await deps.executor.run(turn, {
+                round,
+                resume: session,
+                // The step's own declaration, both halves of it. A turn is an
+                // agent invocation on the same session, and one that were less
+                // constrained than the step it continues would let a person ask
+                // through conversation for exactly what the workflow forbade —
+                // and bill a `model: haiku` step at the operator's default.
+                // Always present, never undefined: a step that declares no
+                // capabilities is the most restricted there is, and an executor
+                // reading `undefined` falls back to its own operator-wide
+                // default instead.
+                capabilities: step.capabilities ?? [],
+                ...(step.model === undefined ? {} : { model: step.model }),
+                // And its time limit: a turn on a two-hour build's session, held
+                // to the operator's default, is killed long before the build
+                // would have been. Every run gets one — the step's own, else
+                // the workflow's — and the engine enforces it the same way
+                // runStep does: the signal aborts too, so an executor that
+                // never reads timeoutMs still stops.
+                timeoutMs: turnTimeoutMs,
+                ...(sandbox ? { cwd: sandbox.path } : {}),
+                // The caller's own signal when there is one, joined with the
+                // limit above: an MCP client that disconnects mid-turn aborts
+                // the request, which kills the agent and unwinds through the
+                // lock's release rather than holding that ticket for the rest
+                // of the run.
+                signal: turnSignal,
+              }));
+            } catch (e) {
+              // Said as the limit, not as whatever the executor said when the
+              // abort reached it — the same reason runStep does this: "aborted"
+              // reads like a disconnect, and this was the cap.
+              if (turnLimit.aborted && !callerSignal.aborted) {
+                throw new Error(`the agent ran past its ${turnTimeoutMs}ms limit`);
+              }
+              throw e;
+            }
 
             // Asked of the file system, not of the flags we passed — the same
             // check, for the same reason, as the one after a step. A refused

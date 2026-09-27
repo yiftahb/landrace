@@ -22,6 +22,8 @@ export type {
   Effect,
   Entry,
   Executor,
+  ExecutorContext,
+  ExecutorFactory,
   Graph,
   HookContext,
   HookKind,

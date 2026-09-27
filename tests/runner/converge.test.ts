@@ -1,5 +1,5 @@
 import { converge } from "#runner/converge.js";
-import { createChild } from "#runner/children.js";
+import { createChild, childServerFor } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
@@ -816,6 +816,77 @@ describe("converge", () => {
     expect(posted).toBeDefined();
     expect(String(posted?.body ?? "")).not.toContain(bareSecret);
   });
+
+  /*
+   * An executor's setup can find credentials the configuration never named —
+   * an MCP server's env — and registers them through `redact`, which reached
+   * the log alone. The record body is composed outside the logger and posted
+   * to a public, durable comment, so it goes through the logger's set as well
+   * as the secrets on ctx.
+   */
+  it("redacts a value an executor registered through redact out of a malformed record body", async () => {
+    const w = world();
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+    };
+    const serverToken = "mcp-server-token-1234";
+    const log = createLogger({ sink: () => {} });
+    log.redact([serverToken]);
+    // The discriminator's value is quoted in the reason, and the reason is the body.
+    const answering: Executor = { id: "agent", run: async () => ({ text: `\`\`\`json\n{"kind":"${serverToken}"}\n\`\`\``, sessionId: null }) };
+
+    await converge("1", deps(w, { workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: answering, log, scrub: log.scrub }));
+
+    const posted = w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"));
+    expect(String(posted?.body ?? "")).toContain("[redacted]");
+    expect(String(posted?.body ?? "")).not.toContain(serverToken);
+  });
+
+  /*
+   * Two sets redacted one after the other: the logger's value, a prefix of a
+   * declared secret, split the secret first, and the second pass never saw it
+   * whole — the tail went out in a public comment. One pass, longest first.
+   */
+  it("redacts a declared secret whole when the logger's set holds a prefix of it", async () => {
+    const w = world();
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = {
+      prompt: "go",
+      output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+    };
+    const webhook = "https://hooks.example.com/services/T0/B0/SECRETTAIL42";
+    const log = createLogger({ sink: () => {} });
+    log.redact(["https://hooks.example.com"]);
+    const answering: Executor = { id: "agent", run: async () => ({ text: `\`\`\`json\n{"kind":"${webhook}"}\n\`\`\``, sessionId: null }) };
+
+    await converge("1", deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: answering, log, scrub: log.scrub,
+      ctx: {
+        ticket: "1", config: {} as HookContext["config"], secrets: new Map([["webhook", webhook]]),
+        signal: new AbortController().signal, log: () => {},
+      },
+    }));
+
+    const body = String(w.entries.find((e) => String(e.marker ?? "").startsWith("malformed:"))?.body ?? "");
+    expect(body).toContain('"[redacted]" is not a declared output shape');
+    expect(body).not.toContain("SECRETTAIL42");
+  });
 });
 
 /**
@@ -1164,5 +1235,72 @@ describe("a stage that creates children", () => {
     // The halt fires before the step is ever invoked: the round never got
     // past its own re-plan.
     expect(r.calls).toEqual([]);
+  });
+});
+
+/**
+ * `deps.stepTimeoutMs` is the workflow's own `budget.stepTimeout`, resolved
+ * once by `buildRuntime` — converge's own job is only to forward it as
+ * `runStep`'s `defaultTimeoutMs`, for a step that names no `timeout` of its
+ * own. Nothing else in this file names it, so a caller wiring it up wrong
+ * (or a future refactor dropping the spread) would ship silently: every
+ * other converge test builds `deps` with no `stepTimeoutMs` at all and would
+ * still pass.
+ */
+describe("the step timeout budget", () => {
+  it("forwards deps.stepTimeoutMs to the executor's run as timeoutMs, when the step names no timeout", async () => {
+    const w = world();
+    const seen: Array<number | undefined> = [];
+    const spy: Executor = {
+      id: "spy",
+      run: async (_p, o) => { seen.push(o.timeoutMs); return { text: "free text", sessionId: null }; },
+    };
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = { prompt: "go" };
+    await converge("1", deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: spy, stepTimeoutMs: 123_000,
+    }));
+    expect(seen).toEqual([123_000]);
+  });
+});
+
+/**
+ * `deps.childServer` is how `buildRuntime` tells converge to start this
+ * process again as `landrace mcp`; converge's own job is only to forward it
+ * into runStep as its `childServer` option. Nothing else in this file names
+ * it, the same reason `stepTimeoutMs` has its own describe above: every other
+ * converge test builds `deps` with no `childServer` at all and would still
+ * pass if the forwarding line were deleted.
+ */
+describe("the engine's own ticket server", () => {
+  it("hands a tickets:create step's executor the server built for its binding", async () => {
+    const w = world();
+    const seen: unknown[] = [];
+    const spy: Executor = {
+      id: "spy",
+      run: async (_p, o) => { seen.push(o.child); return { text: "free text", sessionId: null }; },
+    };
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{
+        id: "spec", step: "spec", entry: true,
+        triggers: [{ when: { "run.stage": null } }],
+        on_enter: [{ type: "tracker.status", value: "spec" }],
+      }],
+    };
+    const step: Step = { prompt: "go", capabilities: ["tickets:create"] };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    const binding = { parent: "1", stage: "spec", round: 1 };
+    await converge("1", deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: spy, childServer,
+    }));
+    expect(seen).toEqual([{ ...binding, server: childServerFor(childServer, binding) }]);
   });
 });

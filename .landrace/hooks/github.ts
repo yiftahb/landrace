@@ -235,7 +235,7 @@ export function gitIn(dir: string): Git {
  *
  * `import.meta.dirname` is the obvious spelling and cannot be written here:
  * ts-jest's default pass compiles this file as CommonJS and refuses
- * `import.meta` outright (TS1343; see tests/agent/claude.test.ts). The file
+ * `import.meta` outright (TS1343; see tests/hooks/claude.test.ts). The file
  * name V8 records for this very frame is the same fact, in either module
  * system — a path under jest, a file: URL under node.
  */

@@ -1,5 +1,5 @@
 import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
-import type { Effect, Graph, Logger, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
+import type { Effect, Graph, Logger, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   CAPABILITIES,
   durationMs,
@@ -17,6 +17,8 @@ import { screenPrompt } from "#agent/screen.js";
 import { changedSince, worktreeState } from "#agent/worktree.js";
 import { extractJsonBlock } from "#agent/json-block.js";
 import { messageOf } from "#runner/errors.js";
+import { childServerFor } from "#runner/children.js";
+import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
 
 /**
  * `part in obj` walks the prototype chain, so a path like `toString` or
@@ -123,10 +125,10 @@ export async function sandboxBefore(
  * What the agent did to the worktree it was given that it never declared it
  * could, or null if it behaved.
  *
- * Asked of the file system, not of the flags we passed. An executor is free to
- * ignore `capabilities` — one registered by a hook module never saw our CLI
- * flags in the first place — so this is the half of the capability that the
- * engine actually enforces rather than delegating to the agent.
+ * Asked of the file system, not of any flags. An executor is free to ignore
+ * `capabilities` — the flags that honour them are its own, never the
+ * engine's — so this is the half of the capability that the engine actually
+ * enforces rather than delegating to the agent.
  */
 export async function sandboxTrespass(
   sandbox: { path: string } | undefined,
@@ -187,9 +189,17 @@ export async function runStep(opts: {
    */
   readGraph?: () => Promise<Graph>;
   log?: Logger;
+  /** For a step that names no `timeout`: the workflow's budget. */
+  defaultTimeoutMs?: number;
+  /** How to start the engine's ticket server; see ConvergeDeps.childServer. */
+  childServer?: ServerCommand;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
   const prompt = renderPrompt(step.prompt, snapshot, opts.briefing);
+
+  // The workflow's own budget (or the engine's, absent one), read once so the
+  // screener and the step itself are held to the same fallback.
+  const fallbackMs = opts.defaultTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
 
   // Before screening and before spending anything: a capability nothing
   // enforces is not a smaller problem than a violation. It is the operator
@@ -206,6 +216,30 @@ export async function runStep(opts: {
     };
   }
 
+  // Derived here, from what this call already names, rather than accepted
+  // from the caller: the step's own declaration is the one thing that may put
+  // a binding on the wire, so no caller can hand one to a step that never
+  // asked for it. Computed before anything else is spent — before the
+  // sandbox is read, before screening runs, before `step.invoked` is even
+  // logged — and its own verdict rather than an outage: `childServerFor`
+  // throws when the binding is not a shape the server's own command line
+  // could carry as meant, and a binding the engine cannot carry is a fact
+  // about this step and this round, not a transient failure worth retrying,
+  // let alone one worth paying a screening call to discover.
+  let childOpt: { child: { parent: string; stage: string; round: number; server?: RunServer } } | Record<string, never> = {};
+  if (mayCreateTickets(step.capabilities)) {
+    try {
+      childOpt = {
+        child: {
+          parent: opts.ticket, stage: stageId, round,
+          ...(opts.childServer ? { server: childServerFor(opts.childServer, { parent: opts.ticket, stage: stageId, round }) } : {}),
+        },
+      };
+    } catch (e) {
+      return { ok: false, kind: "refused", reason: messageOf(e) };
+    }
+  }
+
   const start = await sandboxBefore(opts.sandbox, step.capabilities);
   if (!start.ok) return { ok: false, kind: "refused", reason: start.reason };
   const before = start.before;
@@ -220,6 +254,9 @@ export async function runStep(opts: {
     const verdict = await screenPrompt(prompt, {
       executor: opts.screen.executor,
       model: opts.screen.model,
+      // Screening is quick, so it gets the workflow's budget, not a
+      // two-hour build's.
+      timeoutMs: fallbackMs,
       signal,
       ...(log ? { log } : {}),
     });
@@ -249,22 +286,29 @@ export async function runStep(opts: {
    * naming the executor because that is the party whose compliance is in
    * question, and `null` rather than an omission when the step named no model
    * — "the operator's default decides" is a different fact from "haiku", and
-   * a reader should not have to infer it from a missing key. The shipped
-   * executor reports the model it actually put on its command line
-   * (src/agent/claude.ts), which is the only place that is known; an operator
-   * reads the two against each other, and an executor that reports neither is
-   * visible by the silence.
+   * a reader should not have to infer it from a missing key. An executor that
+   * reports the model it actually put on its command line (an `agent.event`
+   * or `step.completed` payload, say — that report is the hook's own to make)
+   * lets an operator read the two against each other; one that reports
+   * neither is visible by the silence.
    */
   log?.("step.invoked", { stage: stageId, round, executor: executor.id, model: step.model ?? null });
 
-  // Checked at load (schema.ts), so null here only means the step named none.
-  const stepTimeout = step.timeout === undefined ? null : durationMs(step.timeout);
+  // Every run gets a limit. The step's own, when it names one (checked at
+  // load, so `durationMs` answers), else the workflow's, else the engine's.
+  const timeoutMs = (step.timeout === undefined ? null : durationMs(step.timeout)) ?? fallbackMs;
+  // And signals it: an executor may never read `timeoutMs`, so the run's
+  // signal aborts at the limit too. Nothing races the run itself — one that
+  // honours neither holds its ticket until it returns.
+  const limit = AbortSignal.timeout(timeoutMs);
+  const runSignal = AbortSignal.any([signal, limit]);
+
   let text: string;
   let sessionId: string | null;
   try {
     ({ text, sessionId } = await executor.run(prompt, {
       round,
-      signal,
+      signal: runSignal,
       // Always present, never undefined: a step that declares no capabilities
       // is the most restricted one there is, and an executor reading
       // `undefined` would fall back to its own operator-wide default instead.
@@ -273,22 +317,21 @@ export async function runStep(opts: {
       // decides", and `model: undefined` is a different claim under
       // exactOptionalPropertyTypes than no key at all.
       ...(step.model === undefined ? {} : { model: step.model }),
-      ...(stepTimeout === null ? {} : { timeoutMs: stepTimeout }),
+      timeoutMs,
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
-      // Derived here, from what this call already names, rather than accepted
-      // from the caller: the step's own declaration is the one thing that may
-      // put a binding on the wire, so no caller can hand one to a step that
-      // never asked for it.
-      ...(mayCreateTickets(step.capabilities) ? { child: { parent: opts.ticket, stage: stageId, round } } : {}),
+      ...childOpt,
     }));
   } catch (e) {
-    // The executor itself failed — timeout, quota, an abort signal from a
+    // The executor itself failed — a limit, quota, an abort signal from a
     // Ctrl-C. Nothing was produced, so this is the "never ran" case, not a
-    // rejected contract. `messageOf`, not `(e as Error).message`: an outage
-    // is precisely when a library is likely to reject with something that
-    // is not an Error, and that access would throw from inside this catch,
-    // escaping runStep entirely instead of describing the failure.
-    return { ok: false, kind: "unavailable", reason: messageOf(e) };
+    // rejected contract. Said as the limit, not as whatever the executor said
+    // when the abort reached it: "aborted" reads like a Ctrl-C, and this was
+    // the cap. `messageOf`, not `(e as Error).message`, for anything else: an
+    // outage is precisely when a library is likely to reject with something
+    // that is not an Error, and that access would throw from inside this
+    // catch, escaping runStep entirely instead of describing the failure.
+    const reason = limit.aborted && !signal.aborted ? `the agent ran past its ${timeoutMs}ms limit` : messageOf(e);
+    return { ok: false, kind: "unavailable", reason };
   }
 
   // A verdict, not an outage: durable and terminal, like a screening refusal.
