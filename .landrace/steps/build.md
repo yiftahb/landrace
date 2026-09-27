@@ -26,14 +26,22 @@ For a person reviewing this work, the same spec is published as a page; its
 whole text is above, and nothing in this step needs the page itself:
 {artifacts.spec.url}
 
-Use the `superpowers:executing-plans` skill. Work through the spec and commit
-as you go. Run the test suite and the lint checks
-before you finish — a reviewer's round spent on something you could have caught
-yourself is a wasted round.
+Use the `superpowers:executing-plans` skill to work through the spec.
 
-Commit locally only, on the branch you are on — do not create, switch or rename
-branches. You have no credentials and cannot push; the orchestrator pushes your
-branch and opens the pull request.
+Work on the branch you are on — do not create, switch or rename branches. Your
+commands run in a sandbox: they can write only inside this worktree, and reach
+only the hosts the operator allowed.
+
+1. `git fetch origin`, then `git merge origin/main`. Resolve any conflict and
+   commit the merge.
+2. Install dependencies as needed (`pnpm install`), and run the test suite and
+   the lint checks before you finish — a reviewer's round spent on something
+   you could have caught yourself is a wasted round.
+3. Commit as you go. This worktree is removed when the step ends, and anything
+   you did not commit is lost with it.
+4. Finish with `git push origin HEAD`, which pushes only the branch you are on.
+   The orchestrator opens the pull request.
+5. Never push any other branch, never force-push, and never touch `main`.
 
 Summarise what you did in your own words, then end with a fenced json block
 whose only field is `kind`, set to `done`.

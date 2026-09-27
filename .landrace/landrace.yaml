@@ -26,6 +26,14 @@ agent:
         - index_status
         - list_projects
         - index_repository
+  # A write step (build, fix-review) runs Bash inside Claude Code's sandbox:
+  # it writes only in its worktree and the repository's .git, and reaches only
+  # these hosts — github.com to fetch and push, the npm registry to install —
+  # and never reads under these paths, where credentials live. A deny list
+  # here replaces the hook's defaults, so it names all four.
+  sandbox:
+    hosts: [github.com, registry.npmjs.org]
+    deny: [~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc]
 
 # Opaque to the engine, handed to the hooks as it stands. `repo` is here
 # because hooks/github.ts reads it, not because landrace knows what a repo is.

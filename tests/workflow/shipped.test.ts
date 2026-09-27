@@ -3,6 +3,8 @@ import { decide } from "#core/decide.js";
 import type { Snapshot } from "#namespace.js";
 import { renderPrompt } from "#runner/step.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { loadConfig } from "#config/load.js";
+import { readClaudeSettings } from "#landrace/hooks/claude.js";
 
 /**
  * `tests/esm/cli-validate.test.ts` already proves the shipped workflow
@@ -191,7 +193,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     for (const id of ["spec-questions", "spec-human-review", "pr-human-review", "triage"]) {
       expect(workflow.stages.find((s) => s.id === id)?.goto).toEqual(capped);
     }
-    expect(workflow.stages.filter((s) => s.goto).map((s) => s.id).sort()).toEqual([...HOMES, "triage"].sort());
+    expect(workflow.stages.filter((s) => s.goto).map((s) => s.id).sort()).toEqual([...HOMES, "triage", "build"].sort());
   });
 
   /*
@@ -371,5 +373,62 @@ describe("the shipped steps are handed the approved spec as text", () => {
     });
     expect(rendered).toContain("No spec has been published for this ticket.");
     expect(rendered).not.toMatch(/\{brief\./);
+  });
+});
+
+/*
+ * Ticket #19: the build agent was told it could not push and could run no
+ * command, so it edited files, committed nothing and reported done; publish
+ * failed "nothing was committed", and the worktree went with the edits. A
+ * write step now does its own git work, inside the sandbox, and a person can
+ * send a build whose push failed back to build.
+ */
+describe("the shipped write steps merge, test, commit and push their own branch", () => {
+  it.each(["build", "fix-review"])("%s tells the agent to merge origin/main, test, commit and push only its branch", async (id) => {
+    const { steps } = await loadWorkflow(".landrace");
+    const step = steps.get(`steps/${id}.md`);
+    expect(step?.capabilities).toEqual(["repo:read", "repo:write"]);
+    const prompt = step?.prompt ?? "";
+    expect(prompt).toContain("`git fetch origin`");
+    expect(prompt).toContain("`git merge origin/main`");
+    expect(prompt).toContain("`pnpm install`");
+    expect(prompt).toMatch(/commit as you go/i);
+    expect(prompt).toContain("`git push origin HEAD`");
+    expect(prompt).toMatch(/never push any other branch, never force-push, and never touch `main`/i);
+    // The sentence #19's build obeyed: it was told it had no way to push.
+    expect(prompt).not.toMatch(/cannot push|orchestrator pushes/i);
+  });
+
+  it("sandboxes this repository's write steps to GitHub and the npm registry, away from its credentials", async () => {
+    const { config } = await loadConfig(".landrace");
+    expect(readClaudeSettings(config.agent).sandbox).toEqual({
+      hosts: ["github.com", "registry.npmjs.org"],
+      deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"],
+    });
+  });
+
+  /*
+   * publish pushes before it moves the position, so a push that fails leaves
+   * the ticket labelled build, its round settled and publish's trigger firing
+   * every tick. The goto has to be build's own: a stage sends a ticket only
+   * where it lists, and the ticket is never at publish.
+   */
+  const builtAndUnpushed = (rounds: number) => snapshotAt("build", {
+    goto: "build",
+    counters: { spec: 1, triage: 1, build: rounds },
+    outputs: { spec: { kind: "spec" }, triage: { intent: "approve" }, build: { kind: "done" } },
+    rounds: { build: { entered: rounds, output: rounds } },
+  }, { total: 0, merged: 0, openThreads: 0 });
+
+  it("lets a person send a settled build back to build, within build's three rounds", async () => {
+    const { workflow } = await loadWorkflow(".landrace");
+    expect(workflow.stages.find((s) => s.id === "build")?.goto).toEqual([
+      { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
+    ]);
+    expect(await destination(builtAndUnpushed(2))).toBe("build");
+  });
+
+  it("declines it past build's rounds, and publish's own trigger stands", async () => {
+    expect(await destination(builtAndUnpushed(3))).toBe("publish");
   });
 });

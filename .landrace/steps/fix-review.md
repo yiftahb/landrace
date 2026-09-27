@@ -42,8 +42,18 @@ outcomes.
 **Do not resolve any thread.** The reviewer who raised it closes it on their
 next pass, and you resolving your own critic is how a review becomes theatre.
 
-Commit locally, on the branch you are on — do not create, switch or rename
-branches. The orchestrator pushes your commits to the pull request before the
-reviewer's next round.
+Work on the branch you are on — do not create, switch or rename branches. Your
+commands run in a sandbox: they can write only inside this worktree, and reach
+only the hosts the operator allowed.
+
+1. `git fetch origin`, then `git merge origin/main`. Resolve any conflict and
+   commit the merge.
+2. Install dependencies as needed (`pnpm install`), and run the test suite and
+   the lint checks before you finish.
+3. Commit as you go. This worktree is removed when the step ends, and anything
+   you did not commit is lost with it.
+4. Finish with `git push origin HEAD`, which puts your commits on the pull
+   request before the reviewer's next round.
+5. Never push any other branch, never force-push, and never touch `main`.
 
 End with a fenced json block whose only field is `kind`, set to `addressed`.
