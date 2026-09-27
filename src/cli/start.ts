@@ -1,11 +1,12 @@
 import { basename, resolve } from "node:path";
-import { createClaudeExecutor, DEFAULT_STEP_TIMEOUT_MS } from "#agent/claude.js";
+import { createClaudeExecutor } from "#agent/claude.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { mcpRedactionValues, resolveStepServers } from "#config/mcp.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
 import { durationMs, RECORD_EFFECT } from "#conventions.js";
+import { stepTimeoutMs } from "#runner/budget.js";
 import type {
   Board,
   BuildOptions,
@@ -119,30 +120,6 @@ export function boardSink(
       console.error(`landrace: triage page failed to record an event: ${messageOf(boardError)}`);
     }
   };
-}
-
-/**
- * How long one step may run, taken from the workflow that owns the process
- * rather than from a default that happens to match it.
- *
- * `budget.stepTimeout` is 10m in the shipped workflow and `createClaudeExecutor`'s
- * own default was 10m, so the two agreed by coincidence: editing the operator's
- * number changed nothing, and the file was decoration. A value that cannot be
- * read throws rather than falling back — `stepTimeout: 600` looks like it says
- * something, and quietly meaning ten minutes instead is how a cap nobody
- * applied goes on reading as applied.
- */
-export function stepTimeoutMs(workflow: Workflow): number {
-  const declared = workflow.budget?.["stepTimeout"];
-  if (declared === undefined) return DEFAULT_STEP_TIMEOUT_MS;
-  if (typeof declared !== "string") {
-    throw new Error(`budget.stepTimeout must be a duration like "10m", got ${JSON.stringify(declared)}`);
-  }
-  try {
-    return parseInterval(declared);
-  } catch {
-    throw new Error(`budget.stepTimeout must look like "60s", "2m" or "1h", got "${declared}"`);
-  }
 }
 
 /**
@@ -428,6 +405,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     deps: {
       workflow,
       steps,
+      stepTimeoutMs: stepTimeoutMs(workflow),
       source: registry.source,
       pre: registry.pre,
       artifacts: registry.artifacts,

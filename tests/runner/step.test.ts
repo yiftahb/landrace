@@ -1,5 +1,6 @@
 import { renderPrompt, runStep } from "#runner/step.js";
 import { neutraliseMarkers } from "#conventions.js";
+import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
 import type { Executor } from "#namespace.js";
 import type { Snapshot, Step, StepResult } from "#namespace.js";
 
@@ -253,12 +254,27 @@ describe("runStep", () => {
     expect(models).toEqual(["haiku"]);
   });
 
-  it("hands the executor the step's own timeout, and none when the step names none", async () => {
+  it("hands the executor the step's own timeout, else the workflow's, else the engine's", async () => {
     const seen: Array<number | undefined> = [];
     const spy: Executor = { id: "t", run: async (_p, o) => { seen.push(o.timeoutMs); return { text: "free text", sessionId: null }; } };
-    await run("free text", { step: { prompt: "go", timeout: "120m" }, executor: spy });
+    await run("free text", { step: { prompt: "go", timeout: "120m" }, executor: spy, defaultTimeoutMs: 600_000 });
+    await run("free text", { step: { prompt: "go" }, executor: spy, defaultTimeoutMs: 600_000 });
     await run("free text", { step: { prompt: "go" }, executor: spy });
-    expect(seen).toEqual([7_200_000, undefined]);
+    expect(seen).toEqual([7_200_000, 600_000, DEFAULT_STEP_TIMEOUT_MS]);
+  });
+
+  /*
+   * The limit is the operator's cap on what one run may spend, so it cannot
+   * rest on the executor alone: one registered by a hook may never read
+   * `timeoutMs` at all.
+   */
+  it("ends a run whose executor ignores its limit, and says why", async () => {
+    const deaf: Executor = {
+      id: "deaf",
+      run: (_p, o) => new Promise((_, reject) => o.signal.addEventListener("abort", () => reject(new Error("aborted")))),
+    };
+    const r = await run("", { step: { prompt: "go" }, executor: deaf, defaultTimeoutMs: 50 });
+    expect(r).toEqual({ ok: false, kind: "unavailable", reason: "the agent ran past its 50ms limit" });
   });
 
   it("reports an agent failure as a rejected step rather than throwing", async () => {

@@ -5,6 +5,7 @@ import { defineExecutor } from "#hooks/contracts.js";
 import type { Executor, Logger, StepTools } from "#namespace.js";
 import { containedPath } from "#workflow/load.js";
 import { messageOf } from "#runner/errors.js";
+import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
 
 /**
  * A value that begins with "-" lands in a flag slot no matter which argv
@@ -79,13 +80,6 @@ function childEnv(): NodeJS.ProcessEnv {
   }
   return env;
 }
-
-/**
- * The fallback when a workflow's `budget.stepTimeout` names none. Exported so
- * `stepTimeoutMs` falls back to *this* number rather than declaring a second
- * one beside it: two defaults that agree today are two defaults that drift.
- */
-export const DEFAULT_STEP_TIMEOUT_MS = 10 * 60_000;
 
 /** 8MB is ample for a real result; a flooding child gets killed, not indulged. */
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;

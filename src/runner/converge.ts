@@ -350,6 +350,7 @@ async function converging(
           readGraph: () => deps.source.read(ticket, deps.ctx),
           ...(deps.screen ? { screen: deps.screen } : {}),
           ...(sandbox ? { sandbox } : {}),
+          ...(deps.stepTimeoutMs === undefined ? {} : { defaultTimeoutMs: deps.stepTimeoutMs }),
           log: deps.log,
         });
         finishedOk = result.ok;

@@ -57,11 +57,17 @@ ${candidate}
  */
 export async function screenPrompt(
   prompt: string,
-  opts: { executor: Executor; model: string; signal: AbortSignal; log?: Logger },
+  opts: { executor: Executor; model: string; timeoutMs: number; signal: AbortSignal; log?: Logger },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let text: string;
   try {
-    ({ text } = await opts.executor.run(PROMPT(prompt, nonce()), { round: 0, model: opts.model, signal: opts.signal }));
+    // Every run gets a limit, this one included — the screener is an agent
+    // invocation like any other, and one that hung would hold the step's
+    // whole run hostage waiting on it.
+    const signal = AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs)]);
+    ({ text } = await opts.executor.run(PROMPT(prompt, nonce()), {
+      round: 0, model: opts.model, timeoutMs: opts.timeoutMs, signal,
+    }));
   } catch (e) {
     // An Executor is anything implementing the interface; nothing stops one
     // from rejecting with a non-Error. This module exists so its caller

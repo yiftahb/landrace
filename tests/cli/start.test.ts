@@ -24,7 +24,6 @@ import {
   parsePort,
   repoWorkspace,
   startUi,
-  stepTimeoutMs,
 } from "#cli/start.js";
 
 const TOKEN = "ghp_a_token_long_enough_to_redact";
@@ -194,30 +193,7 @@ describe("the step timeout", () => {
     name: "t",
     stages: [{ id: "a", entry: true }],
     ...(budget === undefined ? {} : { budget }),
-  });
-
-  it("reads the workflow's own budget", () => {
-    expect(stepTimeoutMs(workflow({ stepTimeout: "10m" }))).toBe(600_000);
-    expect(stepTimeoutMs(workflow({ stepTimeout: "90s" }))).toBe(90_000);
-  });
-
-  it("falls back to one number when the workflow names none", () => {
-    // Not zero and not infinity: a workflow with no budget still has to bound
-    // a step, or a hung agent holds its ticket's lock until the process dies.
-    expect(stepTimeoutMs(workflow())).toBeGreaterThan(0);
-    expect(stepTimeoutMs(workflow({}))).toBe(stepTimeoutMs(workflow()));
-  });
-
-  /**
-   * A typo must not read as "no budget" and silently fall back. `stepTimeout:
-   * 600` looks like it says something and does not — and the operator only
-   * finds out when a step they thought was capped at ten minutes is not.
-   */
-  it("refuses a budget it cannot read, naming the field", () => {
-    for (const bad of ["600", "ten minutes", "", "2 m", 600, null, ["10m"]]) {
-      expect(() => stepTimeoutMs(workflow({ stepTimeout: bad }))).toThrow(/stepTimeout/);
-    }
-  });
+  } as Workflow);
 
   /**
    * The wiring itself, asked of a real subprocess rather than of a field.

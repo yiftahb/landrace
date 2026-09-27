@@ -517,11 +517,12 @@ export interface Executor {
        */
       model?: string;
       /**
-       * How long this run may take, in milliseconds, when the step named its
-       * own `timeout`: it wins over whatever the executor was built with, as
-       * the step's model does. An executor that cannot stop a run at this
-       * limit must refuse it — the limit is the operator's cap on what one
-       * run may spend.
+       * How long this run may take, in milliseconds. Always present: the
+       * step's own `timeout`, else the workflow's `budget.stepTimeout`, else
+       * the engine's default, and the screening run gets the workflow's. The
+       * engine also aborts `signal` when it passes, so a run ends at the limit
+       * whether or not the executor reads this. An executor must stop at it
+       * all the same: the abort only tells it to.
        */
       timeoutMs?: number;
       /**
@@ -811,6 +812,12 @@ export interface ConvergeDeps {
    */
   sandbox?: { root: string };
   steps: Map<string, Step>;
+  /**
+   * The workflow's `budget.stepTimeout`, for a step that names no `timeout` of
+   * its own. Absent, the engine's own default applies: every run is given a
+   * limit.
+   */
+  stepTimeoutMs?: number;
   pre: PreHook[];
   /**
    * Asked for a briefing when — and only when — a step is about to be
