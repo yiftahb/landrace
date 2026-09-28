@@ -42,3 +42,10 @@ Choices:
 - Write without `x-landrace-action`, or with foreign Origin → 403.
 - Executor without `onActivity` → "no live activity for this agent".
 - Secret value never appears in an activity file.
+
+Screenshots
+<img width="420" height="603" alt="Screenshot 2026-09-28 at 14 00 57" src="https://github.com/user-attachments/assets/9a2e892d-3ee1-484e-a3ca-b1c7629ec4e3" />
+<img width="420" height="605" alt="Screenshot 2026-09-28 at 14 00 41" src="https://github.com/user-attachments/assets/b918ecc9-2082-4db6-84ae-8ef8661209b6" />
+
+
+
