@@ -1,6 +1,6 @@
-import type { Graph, Held, Node, Relationship, Running, Workflow } from "#namespace.js";
+import type { Entry, Graph, Held, Node, Relationship, Running, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
-import { boardView, createBoard, laneOf } from "#ui/board.js";
+import { boardView, conversationOf, createBoard, laneOf } from "#ui/board.js";
 
 const workflow: Workflow = {
   version: 1, name: "t",
@@ -147,6 +147,51 @@ describe("boardView: where a row may send its ticket back to", () => {
   it("offers none on a row held elsewhere", () => {
     const other: Held = { ticket: "7", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
     expect(rowFor(["lr:stage:blocked"], {}, { elsewhere: new Map([["7", other]]) })?.goto).toEqual([]);
+  });
+});
+
+/*
+ * Every ticket opens a panel, whatever it is doing; nothing else does. The
+ * paths come from the server, built from an id it has checked, so the page
+ * never puts a URL together itself.
+ */
+describe("boardView: a ticket's panel", () => {
+  const PATHS = {
+    activity: "/tickets/7/activity", conversation: "/tickets/7/conversation",
+    reply: "/tickets/7/reply", ask: "/tickets/7/ask", resolve: "/tickets/7/resolve",
+  };
+
+  it("names its panel's paths on every ticket — waiting, running, needing you or closed", () => {
+    const running = new Map<string, Running>([["8", { stage: "spec", round: 1, model: null, since: 1 }]]);
+    const rows = view(graph([
+      ticket("7"), ticket("8"), ticket("9", {}, ["go", "lr:stage:blocked", "lr:blocked"]), ticket("10", { closed: "done" }),
+    ]), { running }).rows;
+    expect(rows.map((r) => r.panel?.reply)).toEqual(["/tickets/7/reply", "/tickets/8/reply", "/tickets/9/reply", "/tickets/10/reply"]);
+    expect(rows[0]?.panel).toEqual(PATHS);
+  });
+
+  it("gives an artifact none, and a ticket whose id is not one none", () => {
+    expect(view(graph([pr("pr-9")])).rows[0]?.panel).toBeNull();
+    expect(view(graph([ticket("../7")])).rows[0]?.panel).toBeNull();
+  });
+});
+
+describe("conversationOf", () => {
+  const entry = (over: Partial<Entry>): Entry => ({ stage: "-", kind: "human", round: 0, at: "2026-01-01T00:00:01Z", byAgent: false, ...over });
+
+  it("reads the ticket's records oldest first, ours as landrace's and a person's as theirs", () => {
+    expect(conversationOf([
+      entry({ at: "2026-01-01T00:00:02Z", byAgent: false, data: { author: "yiftahb" }, text: "B2B only" }),
+      entry({ at: "2026-01-01T00:00:01Z", byAgent: true, stage: "spec", kind: "output", round: 1, text: "Questions" }),
+    ])).toEqual([
+      { at: "2026-01-01T00:00:01Z", by: "landrace", byAgent: true, stage: "spec", kind: "output", round: 1, text: "Questions" },
+      { at: "2026-01-01T00:00:02Z", by: "yiftahb", byAgent: false, stage: "-", kind: "human", round: 0, text: "B2B only" },
+    ]);
+  });
+
+  it("leaves out a record with nothing to read, and names a person the source did not", () => {
+    const lines = conversationOf([entry({ text: "" }), entry({}), entry({ text: "hi", data: { author: 7 } })]);
+    expect(lines.map((l) => [l.by, l.text])).toEqual([["someone", "hi"]]);
   });
 });
 
@@ -361,8 +406,8 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "closed", "createdAt", "goto", "id", "kind", "lane", "link", "model", "note", "priority",
-      "retry", "round", "screened", "since", "stage", "system", "title",
+      "badge", "chat", "children", "closed", "createdAt", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
+      "priority", "retry", "round", "screened", "since", "stage", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });

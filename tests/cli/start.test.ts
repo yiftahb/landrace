@@ -9,6 +9,7 @@ import { defineExecutor } from "#hooks/contracts.js";
 import { renderMarker } from "#conventions.js";
 import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Runtime, Schedule, Source, WakeResult, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
+import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
@@ -21,6 +22,7 @@ import {
   screenerFor,
   gotoFor,
   loop,
+  panelFor,
   parseInterval,
   parsePort,
   repoWorkspace,
@@ -507,6 +509,30 @@ describe("startUi", () => {
     }
   });
 
+  /** The same wiring for the ticket panel: deleting `opts.panel` from startUi would 404 every panel route. */
+  it("passes the panel through to serveBoard, so POST /tickets/<id>/reply reaches it", async () => {
+    const replies: Array<[string, string]> = [];
+    const panel = {
+      activity: async () => ({ stage: null, round: null, lines: [], total: 0 }),
+      conversation: async () => [],
+      reply: async (t: string, m: string) => { replies.push([t, m]); },
+      ask: async () => ({ reply: "", resolved: false }),
+      resolve: async () => ({ alreadyResolved: false }),
+    };
+    const ui = await startUi({ board: board(), ui: true, once: false, port: 0, panel });
+    try {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/tickets/19/reply`, {
+        method: "POST",
+        headers: { "x-landrace-action": "reply", origin: `http://127.0.0.1:${ui?.port}` },
+        body: "B2B only",
+      });
+      expect(res.status).toBe(200);
+      expect(replies).toEqual([["19", "B2B only"]]);
+    } finally {
+      await ui?.close();
+    }
+  });
+
   it("without refresh, POST /refresh is 404 even though the page is served", async () => {
     const ui = await startUi({ board: board(), ui: true, once: false, port: 0 });
     try {
@@ -550,6 +576,64 @@ describe("the page's Retry and Go to step", () => {
     // happened to return.
     const snapshot = await buildSnapshot({ ticket: "19", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "19" } });
     expect(snapshot.run?.goto).toBe("spec");
+  });
+});
+
+/*
+ * The ticket panel, assembled the way `landrace mcp` assembles a
+ * conversation: the tick's own source, pre hooks and dispatcher, so what the
+ * page writes is what the next tick re-derives.
+ */
+describe("the ticket panel", () => {
+  const SPEC: Workflow = { version: 1, name: "t", stages: [{ id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] }] };
+
+  const panelWorld = async (run: Executor["run"] = async () => ({ text: "Understood.\n```json\n{ \"blocking\": false }\n```", sessionId: "sid-2" })) => {
+    const tracker = createFakeTracker([{ number: 12, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] }]);
+    tracker.say(12, `Which markets?${renderMarker({ stage: "spec", kind: "output", round: 1, session: "sid-1" })}`);
+    const root = await mkdtemp(join(tmpdir(), "lr-start-panel-"));
+    const activity = createActivityLog(root, (t) => t);
+    const panel = panelFor({
+      source: tracker.registry.source as Source, pre: tracker.registry.pre,
+      dispatcher: createDispatcher(tracker.registry.post),
+      ctx: { ...tracker.ctx, secrets: new Map([["githubToken", TOKEN]]) },
+      executor: defineExecutor({ id: "fake", run }),
+      workflow: SPEC, steps: new Map([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
+      lock: { root }, activity,
+    });
+    return { tracker, panel };
+  };
+
+  it("reads the ticket's conversation, marker off, oldest first", async () => {
+    const { panel } = await panelWorld();
+    expect(await panel.conversation("12")).toMatchObject([{ by: "landrace", byAgent: true, stage: "spec", round: 1, text: "Which markets?" }]);
+  });
+
+  it("posts a reply as a person's turn", async () => {
+    const { panel } = await panelWorld();
+    await panel.reply("12", "B2B only");
+    expect((await panel.conversation("12")).at(-1)).toMatchObject({ byAgent: false, text: "B2B only" });
+  });
+
+  it("asks the step, answering inline, with the turn's activity where the page reads it", async () => {
+    const { panel } = await panelWorld(async (_p, o) => {
+      o.onActivity?.({ kind: "tool", text: "Read spec.md", at: 3 });
+      return { text: "Understood.\n```json\n{ \"blocking\": false }\n```", sessionId: "sid-2" };
+    });
+    expect(await panel.ask("12", "EU only")).toEqual({ reply: "Understood.", resolved: true });
+    expect(await panel.activity("12", 0)).toMatchObject({ stage: "spec", round: 1, lines: [{ kind: "tool", text: "Read spec.md" }] });
+  });
+
+  it("hands the ticket back, once", async () => {
+    const { panel } = await panelWorld();
+    expect(await panel.resolve("12")).toEqual({ alreadyResolved: false });
+    expect(await panel.resolve("12")).toEqual({ alreadyResolved: true });
+  });
+
+  it("says why a write failed with every secret taken out", async () => {
+    const { panel } = await panelWorld(async () => { throw new Error(`agent exited 1: bad token ${TOKEN}`); });
+    const failed = await panel.ask("12", "EU only").then(() => null, (e: Error) => e.message);
+    expect(failed).toMatch(/agent exited 1/);
+    expect(failed).not.toContain(TOKEN);
   });
 });
 

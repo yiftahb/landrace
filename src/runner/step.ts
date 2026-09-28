@@ -1,5 +1,5 @@
 import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
-import type { Effect, Graph, Logger, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
+import type { AgentActivity, Effect, Graph, Logger, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   CAPABILITIES,
   durationMs,
@@ -193,6 +193,8 @@ export async function runStep(opts: {
   defaultTimeoutMs?: number;
   /** How to start the engine's ticket server; see ConvergeDeps.childServer. */
   childServer?: ServerCommand;
+  /** Where the agent's tool calls and messages go as they happen — the ticket panel's live lines. */
+  onActivity?: (e: AgentActivity) => void;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
   const prompt = renderPrompt(step.prompt, snapshot, opts.briefing);
@@ -320,6 +322,7 @@ export async function runStep(opts: {
       timeoutMs,
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
       ...childOpt,
+      ...(opts.onActivity ? { onActivity: opts.onActivity } : {}),
     }));
   } catch (e) {
     // The executor itself failed — a limit, quota, an abort signal from a

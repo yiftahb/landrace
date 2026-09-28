@@ -197,6 +197,18 @@ function sandboxSettings({ hosts, deny }: SandboxSettings): Record<string, unkno
   };
 }
 
+/** Per tool, the argument worth a glance — the file it read, the command it ran — in the names the CLI's own tools use. */
+const TOOL_ARGS = ["file_path", "notebook_path", "path", "command", "pattern", "url", "query", "description"];
+
+/** One tool call as the ticket panel shows it: its name and that argument, relative to where the agent runs. */
+function toolLine(name: string, input: unknown, cwd: string): string {
+  const args = input !== null && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const key = TOOL_ARGS.find((k) => typeof args[k] === "string" && args[k] !== "");
+  if (key === undefined) return name;
+  const arg = args[key] as string;
+  return `${name} ${arg.startsWith(`${cwd}/`) ? arg.slice(cwd.length + 1) : arg}`;
+}
+
 /**
  * `claude -p` behind the engine's `Executor` contract: a prompt and the run's
  * options in, `{ text, sessionId }` out. Coarse observability instead of
@@ -246,7 +258,7 @@ export function createClaudeExecutor(opts: {
     sandbox = { hosts: [], deny: [...DEFAULT_DENY] },
   } = opts;
 
-  const run: Executor["run"] = async (prompt, { round, resume, cwd, capabilities, model: stepModel, timeoutMs: stepTimeoutMs, child: binding, signal }) => {
+  const run: Executor["run"] = async (prompt, { round, resume, cwd, capabilities, model: stepModel, timeoutMs: stepTimeoutMs, child: binding, onActivity, signal }) => {
     if (signal.aborted) {
       // Nothing checked this before `spawn` in the first cut, so a run
       // cancelled before it started launched the (paid) agent anyway.
@@ -305,8 +317,11 @@ export function createClaudeExecutor(opts: {
       throw new Error("cannot give this step create_child: the engine handed no server to start for it");
     }
 
-    // json output carries session_id; without it a conversation cannot continue.
-    const args = ["-p", "--output-format", "json", "--permission-mode", mode];
+    // stream-json ends on the result event, which carries session_id —
+    // without it a conversation cannot continue — and prints every tool call
+    // and message before it as a line of its own, which is what the ticket
+    // panel shows. Under -p the CLI refuses stream-json without --verbose.
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", mode];
     if (restricted) args.push("--restricted");
     // A write run is not `--restricted`, so without this its own worktree's
     // `.claude/settings.json`/`.claude/settings.local.json` would load beside
@@ -404,10 +419,49 @@ export function createClaudeExecutor(opts: {
         return reject(new Error(`could not start "${bin}": ${messageOf(e)}`));
       }
 
-      let out = "";
+      // stdout is read a line at a time and never kept whole: stream-json
+      // prints every tool's result too, and a long build's would otherwise
+      // sit in memory until it ended. What is kept is the line still being
+      // written, the first bytes for an error, and the result event.
+      let pending = "";
+      let head = "";
+      let result: { is_error?: boolean; result?: unknown; session_id?: unknown } | null = null;
       let err = "";
       let settled = false;
       const started = Date.now();
+      const where = resolvedCwd ?? process.cwd();
+
+      const onLine = (line: string): void => {
+        if (!line.trim()) return;
+        let event: unknown;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          log?.("agent.event", { round, raw: line });
+          return;
+        }
+        if (event === null || typeof event !== "object") return;
+        const e = event as { type?: unknown; message?: { content?: unknown } };
+        // Parsed, so a secret in it is a string the log's redactor sees
+        // whole — not split across two chunks, nor escaped inside a JSON
+        // line. A tool's result is never logged: it is the files the agent
+        // read and the output of what it ran, and agent.event reaches
+        // telemetry even without --debug.
+        if (e.type !== "user") log?.("agent.event", { round, event });
+        if (e.type === "result") {
+          result = e as typeof result;
+          return;
+        }
+        const content = e.message?.content;
+        if (e.type !== "assistant" || !onActivity || !Array.isArray(content)) return;
+        for (const part of content as Array<Record<string, unknown> | null>) {
+          if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) {
+            onActivity({ kind: "message", text: part.text, at: Date.now() });
+          } else if (part?.type === "tool_use" && typeof part.name === "string") {
+            onActivity({ kind: "tool", text: toolLine(part.name, part.input, where), at: Date.now() });
+          }
+        }
+      };
 
       const finish = (fn: () => void) => {
         if (settled) return;
@@ -462,9 +516,29 @@ export function createClaudeExecutor(opts: {
         return false;
       };
 
-      child.stdout.on("data", (d: Buffer) => {
-        if (capture(d, () => out, (v) => (out = v), "output")) return;
-        log?.("agent.event", { round, raw: d.toString() });
+      // Decoded as a stream, so a character split across two chunks is not
+      // two broken halves.
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (text: string) => {
+        if (head.length < 200) head += text.slice(0, 200 - head.length);
+        const lines = (pending + text).split("\n");
+        pending = lines.pop() ?? "";
+        // The cap is on the one line still being written: a runaway that
+        // never ends a line is killed here rather than grown without bound.
+        if (pending.length > MAX_OUTPUT_BYTES) {
+          killGroup(child);
+          finish(() => reject(new Error(`agent produced more than ${MAX_OUTPUT_BYTES} bytes of output`)));
+          return;
+        }
+        // A throw from a data handler would take the whole process down,
+        // not this run: what reports activity must never be able to.
+        for (const line of lines) {
+          try {
+            onLine(line);
+          } catch {
+            // Display only.
+          }
+        }
       });
       child.stderr.on("data", (d: Buffer) => {
         capture(d, () => err, (v) => (err = v), "stderr");
@@ -479,11 +553,15 @@ export function createClaudeExecutor(opts: {
           if (code !== 0) {
             return reject(new Error(`agent exited ${code}: ${err.trim().slice(0, 400)}`));
           }
-          let parsed: { is_error?: boolean; result?: unknown; session_id?: unknown };
+          // The result is the last line, with or without a newline after it.
           try {
-            parsed = JSON.parse(out) as typeof parsed;
+            onLine(pending);
           } catch {
-            return reject(new Error(`agent did not return json: ${out.slice(0, 200)}`));
+            // Display only; the result is read below either way.
+          }
+          const parsed = result;
+          if (parsed === null) {
+            return reject(new Error(`agent did not return json with a result: ${head}`));
           }
           if (parsed.is_error) {
             return reject(new Error(`agent reported an error: ${String(parsed.result ?? "")}`));

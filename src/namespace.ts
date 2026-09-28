@@ -100,6 +100,12 @@ export interface Entry {
   at: string;
   /** True when we wrote it. False means a person did. */
   byAgent: boolean;
+  /**
+   * What a person reads on the ticket — ours with the marker taken off.
+   * Display only, for the ticket panel's conversation: it is not among the
+   * paths the snapshot provides, and nothing routes on it.
+   */
+  text?: string;
 }
 
 /** Open by design: hooks contribute whatever they contribute. */
@@ -459,6 +465,50 @@ export interface Screener {
 }
 
 /**
+ * One line of what an agent is doing while it runs — a tool it called, or
+ * something it said — for the ticket panel. Display only: nothing routes on
+ * it, and the engine keeps only the last round of it per stage.
+ */
+export interface AgentActivity {
+  kind: "tool" | "message";
+  text: string;
+  /** Epoch ms. */
+  at: number;
+}
+
+/** One line of an activity file: the line, and the round of the run it belongs to. */
+export type ActivityRecord = AgentActivity & { round: number };
+
+/**
+ * What the panel reads of a ticket's activity: the stage and round of the
+ * run it last recorded, and that run's lines from `after` on. `total` is how
+ * many lines the run has, so the next read can ask for only what is new.
+ */
+export interface ActivityPage {
+  stage: string | null;
+  round: number | null;
+  lines: AgentActivity[];
+  total: number;
+}
+
+/**
+ * Where agent activity is kept, on disk rather than in memory: a turn asked
+ * through `landrace mcp` runs in another process, and the page must show it too.
+ */
+export interface ActivityLog {
+  /**
+   * A step is about to run: its stage's lines start afresh, even at the
+   * round they already hold — a step that never finished is run again at
+   * the same round, and its dead attempt's lines are not this run's. Never
+   * throws.
+   */
+  begin(ticket: string, stage: string, round: number): void;
+  /** Never throws: a display must never be able to stop the work it displays. */
+  record(ticket: string, stage: string, round: number, e: AgentActivity): void;
+  read(ticket: string, after: number): Promise<ActivityPage>;
+}
+
+/**
  * The execution plane. Not a hook: invoking an agent produces new information,
  * and an effect hook that produced information would need tracker credentials.
  *
@@ -540,6 +590,13 @@ export interface Executor {
        * the run must be refused.
        */
       child?: ChildBinding & { server?: RunServer };
+      /**
+       * Told each tool call and each thing the agent says as it happens, for
+       * the ticket panel. Optional to honour: an executor that never calls it
+       * runs exactly as before, and the panel says it has no live activity.
+       * The engine's callback never throws.
+       */
+      onActivity?: (e: AgentActivity) => void;
       signal: AbortSignal;
     },
   ): Promise<{ text: string; sessionId: string | null }>;
@@ -915,6 +972,8 @@ export interface ConvergeDeps {
    * no server and its executor refuses it.
    */
   childServer?: ServerCommand;
+  /** Where a step's activity is kept for the ticket panel. Absent, none is. */
+  activity?: ActivityLog;
 }
 
 export interface ConvergeResult {
@@ -1174,6 +1233,8 @@ export interface ToolOptions {
   workflow?: Workflow;
   steps?: Map<string, Step>;
   sandbox?: { root: string };
+  /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
+  activity?: ActivityLog;
   /**
    * Told after each write a person makes through the tools succeeds, so a
    * running loop picks it up now rather than on its next scheduled tick.
@@ -1352,6 +1413,11 @@ export interface ConversationDeps {
    */
   screen?: Screener;
   lock?: LockOptions;
+  /**
+   * Where a turn's activity is kept, filed under the stage and round it
+   * joined — the panel's progress on an Ask. Absent, none is.
+   */
+  activity?: ActivityLog;
 }
 
 export interface Conversation {
@@ -1473,7 +1539,45 @@ export interface BoardRow {
    * on), so an entry here is an offer, not a promise.
    */
   goto: Array<{ stage: string; path: string }>;
+  /**
+   * Where the ticket panel reads and writes, built by the server from a
+   * checked id like `retry`. Null on an artifact: only a ticket opens a panel.
+   */
+  panel: PanelPaths | null;
   children: BoardRow[];
+}
+
+/** The ticket panel's routes for one ticket. */
+export interface PanelPaths {
+  activity: string;
+  conversation: string;
+  reply: string;
+  ask: string;
+  resolve: string;
+}
+
+/** One record of a ticket's conversation, as the panel shows it: plain text, oldest first. */
+export interface ConversationLine {
+  at: string;
+  /** "landrace" for our own records, the author the source named for a person's. */
+  by: string;
+  byAgent: boolean;
+  kind: string;
+  stage: string;
+  round: number;
+  text: string;
+}
+
+/**
+ * What the ticket panel reads and writes. The top of the panel reads the
+ * BoardRow already in /board.json; everything here is the bottom half.
+ */
+export interface TicketPanel {
+  activity(ticket: string, after: number): Promise<ActivityPage>;
+  conversation(ticket: string): Promise<ConversationLine[]>;
+  reply(ticket: string, message: string): Promise<void>;
+  ask(ticket: string, message: string): Promise<{ reply: string; resolved: boolean }>;
+  resolve(ticket: string): Promise<{ alreadyResolved: boolean }>;
 }
 
 export interface BoardView {
@@ -1515,6 +1619,11 @@ export interface UiOptions {
    * read, so it is guarded exactly like the other three.
    */
   refresh?: () => Promise<void>;
+  /**
+   * The ticket panel's reads and its three writes — Reply, Ask, Resolve.
+   * Absent, every panel route is 404.
+   */
+  panel?: TicketPanel;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { runInNewContext } from "node:vm";
+import { runInNewContext, Script } from "node:vm";
 import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 /**
@@ -7,7 +7,8 @@ import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
  * real in a bare context rather than asserted on as text.
  */
 const fnSource = (name: string): string => {
-  const start = APP_JS.indexOf(`\nfunction ${name}(`);
+  const plain = APP_JS.indexOf(`\nfunction ${name}(`);
+  const start = plain >= 0 ? plain : APP_JS.indexOf(`\nasync function ${name}(`);
   if (start < 0) throw new Error(`APP_JS has no top-level function ${name}`);
   const line = APP_JS.slice(start, APP_JS.indexOf("\n", start + 1) + 1);
   // A one-liner ends on its own line; anything else at the first column-0 brace.
@@ -1139,7 +1140,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, and the two document-level close listeners — no more, no less", () => {
+  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners and the ticket panel's — no more, no less", () => {
     // Pins the count deliberately: the tick button, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
     // button (each wired once, outside anything a render rebuilds), the
@@ -1151,9 +1152,11 @@ describe("the page", () => {
     // writeItem, shared by Retry and every Go to step… target, and built
     // only where the server offered one), and one document listener each for
     // outside-click and Escape (both defined once, so re-rendering never
-    // multiplies them).
+    // multiplies them). And the ticket panel's: a ticket row's title button
+    // and the row itself (each defined once, in ticketRowFor), ✕, ⤢, Reply,
+    // Ask the step, Resolve, and the window's hashchange.
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(13);
+    expect(listeners).toHaveLength(21);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -1279,5 +1282,356 @@ describe("the page", () => {
 
   it("has no inline event handlers anywhere in the markup", () => {
     expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
+  });
+});
+
+/*
+ * The ticket panel: a row opens it, the URL names it, and its bottom half
+ * follows what the ticket is doing — live lines while an agent runs, a
+ * composer while it waits on a person, the conversation otherwise.
+ */
+describe("the ticket panel's markup", () => {
+  const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
+
+  it("starts closed, and takes the full width below sm", () => {
+    expect(aside).toMatch(/\shidden[\s>]/);
+    expect(aside).toMatch(/ w-full /);
+    expect(aside).toMatch(/sm:w-\[28rem\]/);
+  });
+
+  it("names its close and full-width buttons for a screen reader", () => {
+    expect(PAGE_HTML).toMatch(/<button id="panel-close" type="button" aria-label="Close"[^>]*>✕<\/button>/);
+    expect(PAGE_HTML).toMatch(/<button id="panel-wide" type="button" aria-label="Full width" aria-pressed="false"[^>]*>⤢<\/button>/);
+  });
+
+  it("has a labelled message box and Reply, Ask the step and Resolve, outside anything a poll redraws", () => {
+    expect(PAGE_HTML).toMatch(/<textarea id="panel-message"[^>]*aria-label="Message"/);
+    for (const [id, label] of [["panel-reply", "Reply"], ["panel-ask", "Ask the step"], ["panel-resolve", "Resolve"]]) {
+      expect(PAGE_HTML).toMatch(new RegExp(`<button id="${id}" type="button"[^>]*>${label}</button>`));
+    }
+    // Not a <form>: the CSP's form-action 'none' would refuse a submit, and
+    // Enter in a field must never try one.
+    expect(PAGE_HTML).not.toMatch(/<form/);
+  });
+
+  it("pushes the board left while open, rather than covering it", () => {
+    expect(APP_JS).toContain('document.body.classList.toggle("sm:pr-[28rem]", open && !panelWide)');
+  });
+
+  it("polls every 1.5s", () => {
+    expect(APP_JS).toContain("const PANEL_POLL_MS = 1500;");
+  });
+
+  // The script is a template literal: a `\d` or a stray `${` in it is a
+  // page that never runs, and nothing else here reads the whole of it.
+  it("leaves a page script that parses, whole", () => {
+    expect(() => new Script(APP_JS)).not.toThrow();
+  });
+});
+
+describe("the ticket panel's address", () => {
+  const ticketOfHash = (hash: string): unknown => runInNewContext(`${fnSource("ticketOfHash")} ticketOfHash(HASH)`, { HASH: hash });
+
+  it("reads #ticket=<id>, so a reload reopens the panel it was on", () => {
+    expect(ticketOfHash("#ticket=12")).toBe("12");
+    expect(ticketOfHash("#ticket=PROJ-7")).toBe("PROJ-7");
+  });
+
+  it("reads nothing from any other hash, or a malformed one", () => {
+    expect(ticketOfHash("")).toBeNull();
+    expect(ticketOfHash("#tickets")).toBeNull();
+    expect(ticketOfHash("#ticket=")).toBeNull();
+    expect(ticketOfHash("#ticket=%E0")).toBeNull();
+  });
+
+  it("finds a ticket anywhere in the tree", () => {
+    const rows = [{ id: "1", children: [{ id: "2", children: [{ id: "3", children: [] }] }] }];
+    const find = (id: string): unknown => runInNewContext(`${fnSource("findRow")} findRow(ROWS, ID)`, { ROWS: rows, ID: id });
+    expect(find("3")).toEqual({ id: "3", children: [] });
+    expect(find("9")).toBeNull();
+  });
+
+  it("opens on a row click by pushing the hash, so Back closes it", () => {
+    expect(fnSource("openPanel")).toContain('location.hash = "ticket=" + encodeURIComponent(id)');
+    expect(APP_JS).toContain('window.addEventListener("hashchange", () => showPanel(ticketOfHash(location.hash)));');
+  });
+
+  it("opens only from a ticket row with panel paths, and never from its links, toggle or menu", () => {
+    const src = fnSource("ticketRowFor");
+    expect(src).toMatch(/if \(row\.panel\)/);
+    expect(src).toContain('closest("a, button, [role=menu]")');
+    expect(fnSource("artifactRowFor")).not.toContain("openPanel");
+  });
+});
+
+describe("the Escape key and the panel", () => {
+  const run = (opts: { menuOpen: boolean; panelId: string | null }) => {
+    const seen = { menus: 0, panels: 0 };
+    runInNewContext(`${fnSource("isTypingTarget")}${fnSource("onKeydown")}onKeydown({ key: "Escape" })`, {
+      openMenuKey: opts.menuOpen ? "19:menu" : null, panelId: opts.panelId,
+      closeMenu: () => { seen.menus++; }, closePanel: () => { seen.panels++; },
+      resetIdleTimer: () => {}, toggleAll: { click: () => {} }, document: { activeElement: null },
+    });
+    return seen;
+  };
+
+  it("closes an open row menu first, and leaves the panel open", () => {
+    expect(run({ menuOpen: true, panelId: "12" })).toEqual({ menus: 1, panels: 0 });
+  });
+
+  it("closes the panel when no menu is open", () => {
+    expect(run({ menuOpen: false, panelId: "12" })).toEqual({ menus: 0, panels: 1 });
+  });
+});
+
+describe("the ticket panel's live lines", () => {
+  const lines = [{ kind: "tool", text: "Read a.ts", at: 1 }, { kind: "message", text: "Looks fine", at: 2 }];
+
+  it("says which bottom a ticket gets from its badge", () => {
+    const modeOf = (badge: string | null): unknown => runInNewContext(`${fnSource("modeOf")} modeOf(ROW)`, { ROW: { badge } });
+    expect(modeOf("running")).toBe("running");
+    expect(modeOf("needs-you")).toBe("needs-you");
+    expect(modeOf("elsewhere")).toBe("elsewhere");
+    expect(["waiting", "discharged", "not-admitted", null].map(modeOf)).toEqual(["other", "other", "other", "other"]);
+  });
+
+  // An Ask through `landrace mcp` holds the ticket from another process —
+  // the reason activity is kept on disk at all — so it is read live too.
+  it("keeps reading while an agent runs here or in another process, and not otherwise", () => {
+    const live = (mode: string): unknown => runInNewContext(`${fnSource("readsLive")} readsLive(MODE)`, { MODE: mode });
+    expect(["running", "elsewhere", "needs-you", "other"].map(live)).toEqual([true, true, false, false]);
+  });
+
+  it("reads a new run from its start at once, not a poll later", async () => {
+    const asked: number[] = [];
+    const line = { kind: "tool", text: "Read new.ts", at: 9 };
+    const context: Record<string, unknown> = {
+      panelId: "12", activity: { stage: "build", round: 1, lines: [{ kind: "tool", text: "Read old.ts", at: 1 }] },
+      currentRow: () => ({ id: "12", panel: { activity: "/tickets/12/activity" } }),
+      renderPanel: () => {},
+      fetch: (url: string) => {
+        const after = Number(url.split("after=")[1]);
+        asked.push(after);
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ stage: "build", round: 2, lines: [line].slice(after), total: 1 }) });
+      },
+    };
+    await runInNewContext(`${fnSource("mergeActivity")}${fnSource("readActivity")} readActivity()`, context);
+    expect(asked).toEqual([1, 0]);
+    expect(context.activity).toEqual({ stage: "build", round: 2, lines: [line] });
+  });
+
+  it("shows only the run the row is on now, never an earlier stage's or round's", () => {
+    const live = (held: object, row: object): unknown => runInNewContext(`${fnSource("liveLines")} liveLines(HELD, ROW)`, { HELD: held, ROW: row });
+    expect(live({ stage: "build", round: 2, lines }, { stage: "build", round: 2 })).toEqual(lines);
+    expect(live({ stage: "build", round: 1, lines }, { stage: "build", round: 2 })).toEqual([]);
+    expect(live({ stage: "spec", round: 2, lines }, { stage: "build", round: 2 })).toEqual([]);
+  });
+
+  describe("reading on from where it was", () => {
+    const merge = (held: object, page: object, after: number): unknown =>
+      runInNewContext(`${fnSource("mergeActivity")} mergeActivity(HELD, PAGE, AFTER)`, { HELD: held, PAGE: page, AFTER: after });
+    const [first, second] = lines;
+
+    it("adds what is new to the run it holds", () => {
+      expect(merge({ stage: "build", round: 2, lines: [first] }, { stage: "build", round: 2, lines: [second], total: 2 }, 1))
+        .toEqual({ stage: "build", round: 2, lines });
+    });
+
+    it("takes a run whole when it held nothing", () => {
+      expect(merge({ stage: null, round: null, lines: [] }, { stage: "build", round: 2, lines, total: 2 }, 0))
+        .toEqual({ stage: "build", round: 2, lines });
+    });
+
+    it("lets go of a run that is no longer the one written, so the next read takes the new one from its start", () => {
+      expect(merge({ stage: "build", round: 1, lines: [first] }, { stage: "build", round: 2, lines: [], total: 1 }, 1))
+        .toEqual({ stage: null, round: null, lines: [] });
+      expect(merge({ stage: "build", round: 2, lines: [first, second] }, { stage: "build", round: 2, lines: [], total: 1 }, 2))
+        .toEqual({ stage: null, round: null, lines: [] });
+    });
+  });
+
+  it("counts as an Ask's progress only what was said since it was asked", () => {
+    const progress = runInNewContext(`${fnSource("progressLines")} progressLines(LINES, 2000)`, {
+      LINES: [{ kind: "tool", text: "old", at: 500 }, { kind: "tool", text: "new", at: 1800 }, { kind: "tool", text: "newer", at: 2600 }],
+    }) as Array<{ text: string }>;
+    expect(progress.map((l) => l.text)).toEqual(["new", "newer"]);
+  });
+});
+
+describe("the ticket panel's bottom half", () => {
+  const LINES = [{ kind: "tool", text: "Read a.ts", at: 1 }];
+  const CONVERSATION = [
+    { at: "2026-01-01T00:00:00Z", by: "landrace", byAgent: true, kind: "output", stage: "spec", round: 1, text: "Which markets?" },
+    { at: "2026-01-01T00:01:00Z", by: "yiftahb", byAgent: false, kind: "human", stage: "-", round: 0, text: "EU only" },
+  ];
+  const state = (over: object = {}) => ({
+    activity: { stage: "build", round: 2, lines: LINES }, conversation: { lines: CONVERSATION, error: "" },
+    asking: null, answer: null, ...over,
+  });
+  const bottom = (row: object, mode: string, st: object): string[] =>
+    (runInNewContext(`
+      ${["el", "ago", "agoLabel", "liveLines", "progressLines", "activityItem", "conversationItem", "panelNote", "panelBottomOf"].map(fnSource).join("")}
+      panelBottomOf(ROW, MODE, STATE, Date.parse("2026-01-01T00:05:00Z"))`,
+    { document: fakeDocument, ROW: row, MODE: mode, STATE: st }) as FakeElement[]).map((e) => e.textContent);
+
+  it("shows a running step's lines", () => {
+    expect(bottom({ stage: "build", round: 2 }, "running", state()).join("\n")).toContain("Read a.ts");
+  });
+
+  it("says so when the agent reports nothing — an executor without onActivity", () => {
+    expect(bottom({ stage: "build", round: 2 }, "running", state({ activity: { stage: null, round: null, lines: [] } })))
+      .toEqual(["no live activity for this agent"]);
+    expect(bottom({ stage: "build", round: 3 }, "running", state())).toEqual(["no live activity for this agent"]);
+  });
+
+  it("shows the conversation so far, who said it and the stage it was said in", () => {
+    const text = bottom({ stage: "spec" }, "other", state()).join("\n");
+    expect(text).toMatch(/landrace[\s\S]*spec r1[\s\S]*Which markets\?/);
+    expect(text).toMatch(/yiftahb[\s\S]*EU only/);
+  });
+
+  it("says it is still reading the conversation, or that it could not", () => {
+    expect(bottom({}, "other", state({ conversation: { lines: null, error: "" } }))).toEqual(["Reading the conversation…"]);
+    expect(bottom({}, "other", state({ conversation: { lines: null, error: "could not read the conversation" } })))
+      .toEqual(["could not read the conversation"]);
+  });
+
+  it("shows what another process's agent has done since the conversation's last word", () => {
+    const st = state({ activity: { stage: "spec", round: 1, lines: [
+      { kind: "tool", text: "Read step-era.ts", at: Date.parse("2026-01-01T00:00:30Z") },
+      { kind: "tool", text: "Read ask-era.ts", at: Date.parse("2026-01-01T00:02:00Z") },
+    ] } });
+    const text = bottom({}, "elsewhere", st).join("\n");
+    expect(text).toMatch(/EU only[\s\S]*Another process holds this ticket[\s\S]*Read ask-era\.ts/);
+    expect(text).not.toContain("Read step-era.ts");
+    expect(bottom({}, "elsewhere", state({ activity: { stage: null, round: null, lines: [] } })).join("\n"))
+      .toMatch(/Another process holds this ticket; its agent has reported nothing yet/);
+  });
+
+  it("shows an Ask's progress under the conversation while it runs, then the step's answer", () => {
+    const asking = bottom({}, "needs-you", state({ asking: { since: 0 } })).join("\n");
+    expect(asking).toMatch(/EU only[\s\S]*Asking the step…[\s\S]*Read a\.ts/);
+    const answered = bottom({}, "needs-you", state({ answer: { reply: "EU it is.", resolved: true } })).join("\n");
+    expect(answered).toMatch(/EU it is\.[\s\S]*has what it needs/);
+  });
+});
+
+// A poll every 1.5s that redrew the same text wiped any selection in it —
+// copying the step's question lost it within seconds.
+describe("redrawing the ticket panel", () => {
+  const draws = (texts: string[][]) => {
+    let replaced = 0;
+    const target = { dataset: {} as Record<string, string>, replaceChildren: () => { replaced++; } };
+    for (const t of texts) {
+      runInNewContext(`${fnSource("replaceIfChanged")} replaceIfChanged(TARGET, NODES)`, {
+        TARGET: target, NODES: t.map((text) => ({ textContent: text })),
+      });
+    }
+    return replaced;
+  };
+
+  it("leaves what is on screen alone while its text is the same", () => {
+    expect(draws([["Which markets?", "EU only"], ["Which markets?", "EU only"]])).toBe(1);
+  });
+
+  it("redraws once the text changes", () => {
+    expect(draws([["Which markets?"], ["Which markets?", "EU only"], ["Which markets?"]])).toBe(3);
+  });
+});
+
+describe("the ticket panel's writes", () => {
+  class Box { value = ""; }
+  const ROW = { id: "12", panel: { reply: "/tickets/12/reply", ask: "/tickets/12/ask", resolve: "/tickets/12/resolve" } };
+  const OK: Record<string, string> = { ask: '{"reply":"EU it is.","resolved":true}', resolve: '{"alreadyResolved":false}', reply: "posted" };
+
+  const write = async (kind: string, world: {
+    text?: string; confirm?: boolean; response?: { ok: boolean; text: string } | "down";
+    /** The person closes the panel while the post is in flight. */
+    closes?: boolean;
+  } = {}) => {
+    const seen = { confirms: [] as string[], posts: [] as Array<[string, unknown]>, notes: [] as string[], conversations: 0, polls: [] as number[] };
+    const box = new Box();
+    box.value = world.text ?? "EU only";
+    const context: Record<string, unknown> = {
+      KIND: kind, messageBox: box, panelId: "12", panelHeld: "12", panelBusy: false, asking: null, askAnswer: null, seen,
+      currentRow: () => ROW,
+      confirm: (t: string) => { seen.confirms.push(t); return world.confirm ?? true; },
+      fetch: (url: string, init: unknown) => {
+        seen.posts.push([url, init]);
+        if (world.closes) context.panelId = null;
+        const answer = world.response ?? { ok: true, text: OK[kind] ?? "" };
+        return answer === "down" ? Promise.reject(new TypeError("fetch failed")) : Promise.resolve({ ok: answer.ok, text: () => Promise.resolve(answer.text) });
+      },
+      setPanelNote: (t: string) => { seen.notes.push(t); },
+      syncComposer: () => {}, renderPanel: () => {}, pollPanel: () => {},
+      loadConversation: () => { seen.conversations++; },
+      schedulePoll: (ms: number) => { seen.polls.push(ms); },
+    };
+    runInNewContext(`${fnSource("parseJson")}${fnSource("panelWrite")} panelWrite(KIND)`, context);
+    await new Promise((r) => setTimeout(r, 0));
+    return { seen, box, context };
+  };
+
+  it("posts a reply with the page's own header, then reads the conversation again", async () => {
+    const { seen, box } = await write("reply");
+    expect(seen.confirms).toEqual([]);
+    expect(seen.posts).toEqual([["/tickets/12/reply", {
+      method: "POST", headers: { "x-landrace-action": "reply", "content-type": "text/plain;charset=UTF-8" }, body: "EU only",
+    }]]);
+    expect(box.value).toBe("");
+    expect(seen.conversations).toBe(1);
+  });
+
+  it("asks before an Ask, since it runs a paid turn, and posts nothing when told no", async () => {
+    const { seen } = await write("ask", { confirm: false });
+    expect(seen.confirms[0]).toMatch(/#12[\s\S]*paid/);
+    expect(seen.posts).toEqual([]);
+  });
+
+  it("answers an Ask inline, from what the server said", async () => {
+    const { seen, context } = await write("ask");
+    expect(seen.posts[0]?.[0]).toBe("/tickets/12/ask");
+    expect(context.askAnswer).toEqual({ reply: "EU it is.", resolved: true });
+    expect(seen.polls).toEqual([0]);
+  });
+
+  // Escape or Back during a minutes-long Ask is the natural thing to do; the
+  // answer still belongs to the ticket, and reopening it shows it rather
+  // than "Asking the step…" for good — an invitation to pay for a second.
+  it("keeps an Ask's answer for its ticket when the panel was closed while it ran", async () => {
+    const { seen, box, context } = await write("ask", { closes: true });
+    expect(context.askAnswer).toEqual({ reply: "EU it is.", resolved: true });
+    expect(context.panelBusy).toBe(false);
+    expect(context.asking).toBeNull();
+    expect(seen.notes.at(-1)).toBe("");
+    expect(box.value).toBe("");
+  });
+
+  it("says a refused Ask's reason for its ticket even when the panel was closed", async () => {
+    const { seen } = await write("ask", { closes: true, response: { ok: false, text: "screening blocked this turn" } });
+    expect(seen.notes.at(-1)).toBe("screening blocked this turn");
+  });
+
+  it("resolves without a message and without asking", async () => {
+    const { seen } = await write("resolve", { text: "" });
+    expect(seen.confirms).toEqual([]);
+    expect(seen.posts[0]?.[0]).toBe("/tickets/12/resolve");
+    expect(seen.notes.at(-1)).toMatch(/Handed back/);
+  });
+
+  it("sends nothing for an empty reply or question", async () => {
+    expect((await write("reply", { text: "  " })).seen.posts).toEqual([]);
+    expect((await write("ask", { text: "" })).seen.posts).toEqual([]);
+  });
+
+  it("keeps the words and says what the server said when it refuses", async () => {
+    const { seen, box } = await write("ask", { response: { ok: false, text: "cannot ask: #12 has no session to join yet" } });
+    expect(seen.notes.at(-1)).toBe("cannot ask: #12 has no session to join yet");
+    expect(box.value).toBe("EU only");
+  });
+
+  it("says landrace is not responding when the post never lands", async () => {
+    const { seen } = await write("reply", { response: "down" });
+    expect(seen.notes.at(-1)).toMatch(/not responding/);
   });
 });

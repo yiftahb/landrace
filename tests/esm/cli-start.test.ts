@@ -6,7 +6,9 @@ import { promisify } from "node:util";
 import { buildRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 import type { LandraceEvent } from "#namespace.js";
+import { createActivityLog } from "#runner/activity.js";
 import { acquire, release } from "#runner/lock.js";
+import { sandboxRoot } from "#sandbox.js";
 import { tick } from "#runner/tick.js";
 import { touchWake, wakePath } from "#wake.js";
 
@@ -244,6 +246,24 @@ describe("buildRuntime", () => {
 
     expect(JSON.stringify(seen)).not.toContain(TOKEN);
     expect(seen.filter((e) => JSON.stringify(e).includes("[redacted]"))).toHaveLength(2);
+  });
+
+  /*
+   * The ticket panel's live lines: where the page reads them, and never with
+   * a secret in them, whatever the agent put on its own command line.
+   */
+  it("hands converge an activity log under this repository's root that keeps the secret off disk", async () => {
+    const { dir } = await fixture();
+    const rt = await buildRuntime(dir, {});
+    rt.deps.activity?.record(TICKET, "spec", 1, { kind: "tool", text: `Bash curl -H "Authorization: Bearer ${TOKEN}"`, at: 1 });
+    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(TICKET, 0);
+    expect(page).toMatchObject({ stage: "spec", round: 1, total: 1 });
+    expect(JSON.stringify(page)).not.toContain(TOKEN);
+  });
+
+  it("keeps no activity for a runtime built only to read", async () => {
+    const { dir } = await fixture();
+    expect((await buildRuntime(dir, { readOnly: true })).deps.activity).toBeUndefined();
   });
 
   /**

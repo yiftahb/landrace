@@ -5,12 +5,14 @@ import { loadHooks } from "#hooks/load.js";
 import type { ChildBinding, ChildTool, ExecutorContext, RuntimeContext, Tools } from "#namespace.js";
 import { createChildMcpServer, createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
+import { createActivityLog } from "#runner/activity.js";
 import { createChild } from "#runner/children.js";
-import { createLogger } from "#runner/events.js";
+import { createLogger, scrubberOf } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
 import { executorFor, sandboxFor, screenerFor } from "#cli/start.js";
 
@@ -143,6 +145,9 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     workflow,
     steps,
     ...(sandbox === null ? {} : { sandbox }),
+    // A turn asked here runs in this process, and the loop's page reads its
+    // progress from the same directory the loop's own steps write to.
+    activity: createActivityLog(sandboxRoot(dir), scrubberOf(ctx.secrets, events.scrub)),
     // This process is not the loop, so a person's write reaches it through
     // the file `landrace start` watches. Here only: the child server an agent
     // is handed gets no wake, so an agent cannot drive the loop.

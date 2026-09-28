@@ -1040,6 +1040,26 @@ describe("step.started and step.finished", () => {
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
   });
 
+  it("files what the agent reports under the ticket, stage and round it ran for", async () => {
+    const w = world();
+    const recorded: unknown[][] = [];
+    const executor: Executor = {
+      id: "ok",
+      run: async (_p, o) => {
+        o.onActivity?.({ kind: "tool", text: "Read spec.md", at: 5 });
+        return { text: '```json\n{"kind":"spec"}\n```', sessionId: null };
+      },
+    };
+    const activity = {
+      begin: (...args: unknown[]) => { recorded.push(["begin", ...args]); },
+      record: (...args: unknown[]) => { recorded.push(["record", ...args]); },
+      read: async () => ({ stage: null, round: null, lines: [], total: 0 }),
+    };
+    await converge("7", deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, activity }));
+    // Begun first, so a dead attempt at the same round is not read as this one.
+    expect(recorded).toEqual([["begin", "7", "spec", 1], ["record", "7", "spec", 1, { kind: "tool", text: "Read spec.md", at: 5 }]]);
+  });
+
   it("says the step did not succeed when the executor throws", async () => {
     // runStep catches an executor's throw and returns {ok:false}, so this
     // pins the `ok` field — not the finally. The next test pins the finally.

@@ -806,6 +806,7 @@ export function entriesFromComments(comments: TrackerComment[], botLogin: string
           ...stageRefsOf(marker),
           at: c.created_at,
           byAgent: true,
+          text: stripMarker(c.body ?? ""),
         }
       : {
           stage: "-",
@@ -814,6 +815,7 @@ export function entriesFromComments(comments: TrackerComment[], botLogin: string
           data: { body: c.body, author: author ?? "?", id: c.id },
           at: c.created_at,
           byAgent: false,
+          text: c.body ?? "",
         };
   });
 }

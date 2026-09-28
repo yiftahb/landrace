@@ -2,10 +2,10 @@ import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
 import { MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
-  ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot, StepResult, WorktreeBranch,
+  AgentActivity, ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot, StepResult, WorktreeBranch,
 } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
-import { MIN_SECRET_LENGTH, redactValue } from "#runner/events.js";
+import { scrubberOf } from "#runner/events.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
 import { runStep } from "#runner/step.js";
@@ -38,29 +38,8 @@ function malformedBody(reason: string, scrub: (text: string) => string, kind: st
   return full.length > MAX_MALFORMED_BODY ? `${full.slice(0, MAX_MALFORMED_BODY)}\n\n…[truncated]` : full;
 }
 
-/**
- * How a record body is scrubbed: the runtime logger's live set when converge
- * was handed it, and every secret value on `ctx`, in one pass over both — two
- * passes let a logger value that is part of a declared secret split it before
- * the second pass could match it whole. Both sets, because neither holds the
- * other. `ctx.secrets` is every declared secret, where the log redacts the
- * ones `log.redact` names plus what an executor registered through `redact`
- * after startup — an MCP server's env, which no secret names. Values shorter
- * than `MIN_SECRET_LENGTH` are skipped rather than rejected: `createLogger`
- * throws on one at construction time, but this is an independent consumer of
- * the same raw map, not the list's owner, and a value that short would redact
- * everywhere in this text too.
- */
-function scrubberFor(deps: ConvergeDeps): (text: string) => string {
-  // Trimmed once, and that trimmed form is what is both measured *and*
-  // returned for actual redaction — checking the trimmed length while
-  // filtering the untrimmed value let a secret sourced with surrounding
-  // whitespace (a quoted .env line) pass the length check and then never
-  // match its own bare form anywhere it actually appeared in posted text.
-  const values = [...deps.ctx.secrets.values()].map((v) => v.trim()).filter((v) => v.length >= MIN_SECRET_LENGTH);
-  const { scrub } = deps;
-  return scrub === undefined ? (text) => redactValue(text, values) as string : (text) => scrub(text, values);
-}
+/** How a record body is scrubbed — see `scrubberOf`. */
+const scrubberFor = (deps: ConvergeDeps): ((text: string) => string) => scrubberOf(deps.ctx.secrets, deps.scrub);
 
 /**
  * Act on one ticket until the next move depends on something outside the loop.
@@ -347,6 +326,9 @@ async function converging(
       // The finally is the point — a throw or an abort must not leave a step
       // looking as if it is still going.
       deps.log("step.started", { ticket, stage: stage.id, round, model: step.model ?? null });
+      // The panel's lines for this run start here: a step that never
+      // finished is run again at the same round, and its lines are not these.
+      deps.activity?.begin(ticket, stage.id, round);
       let finishedOk = false;
       let result: StepResult;
       try {
@@ -358,6 +340,7 @@ async function converging(
           ...(sandbox ? { sandbox } : {}),
           ...(deps.stepTimeoutMs === undefined ? {} : { defaultTimeoutMs: deps.stepTimeoutMs }),
           ...(deps.childServer ? { childServer: deps.childServer } : {}),
+          ...(deps.activity ? { onActivity: (e: AgentActivity) => deps.activity?.record(ticket, stage.id, round, e) } : {}),
           log: deps.log,
         });
         finishedOk = result.ok;

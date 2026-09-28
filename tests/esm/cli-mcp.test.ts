@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { buildMcpTools } from "#cli/mcp.js";
+import { createActivityLog } from "#runner/activity.js";
+import { sandboxRoot } from "#sandbox.js";
 import { release } from "#runner/lock.js";
 import { wakePath } from "#wake.js";
 
@@ -91,7 +93,10 @@ export const post = brand("post", {
   },
 });
 
-interface RunOpts { cwd?: string; capabilities?: readonly string[]; model?: string }
+interface RunOpts {
+  cwd?: string; capabilities?: readonly string[]; model?: string;
+  onActivity?: (e: { kind: string; text: string; at: number }) => void;
+}
 
 export const executor = brand("executor", {
   id: "fake",
@@ -103,6 +108,7 @@ export const executor = brand("executor", {
       ${invocations},
       JSON.stringify({ cwd: opts.cwd ?? null, capabilities: opts.capabilities ?? null, model: opts.model ?? null }) + "\\n",
     );
+    opts.onActivity?.({ kind: "tool", text: "Read spec.md", at: 1 });
     return {
       text: '\\u0060\\u0060\\u0060json\\n{"verdict":"${verdict}","reason":"exfiltration"}\\n\\u0060\\u0060\\u0060',
       sessionId: "sid-2",
@@ -318,6 +324,16 @@ describe("buildMcpTools", () => {
    * from this process, so an option left unpassed here is a wake that never
    * happens while every tool still answers.
    */
+  // A turn asked here runs in this process, not the loop's, and the page the
+  // loop serves has to show it: the activity goes where the loop reads it.
+  it("files a turn's activity where the loop's page reads it", async () => {
+    const { dir } = await fixture({ screen: false });
+    const tools = await buildMcpTools(dir);
+    await tools.ask(TICKET, "carry on");
+    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(TICKET, 0);
+    expect(page).toMatchObject({ stage: "spec", round: 1, lines: [{ kind: "tool", text: "Read spec.md" }] });
+  });
+
   it("touches this repository's wake file once a write succeeds", async () => {
     const { dir } = await fixture({ screen: false });
     const tools = await buildMcpTools(dir);
