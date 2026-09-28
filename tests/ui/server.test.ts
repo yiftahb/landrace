@@ -357,6 +357,90 @@ describe("POST /tick", () => {
 });
 
 /**
+ * The page's fourth write, and the one that spends no agent at all — only a
+ * tracker read, which is still worth guarding the same way: it is still a
+ * request only the page's own script should be able to trigger.
+ */
+describe("POST /refresh", () => {
+  let server: UiServer;
+  afterEach(async () => { await server?.close(); });
+
+  const HEADER = { "x-landrace-action": "refresh" };
+
+  it("404s when serveBoard was not given a refresh callback", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty });
+    const res = await get(server.port, "/refresh", { method: "POST", headers: HEADER });
+    expect(res.status).toBe(404);
+  });
+
+  it("405s GET /refresh, and never calls refresh", async () => {
+    const refresh = jest.fn(async () => {});
+    server = await serveBoard({ port: 0, view: async () => empty, refresh });
+    const res = await get(server.port, "/refresh", { headers: HEADER });
+    expect(res.status).toBe(405);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("403s a POST with no custom header, and never calls refresh", async () => {
+    const refresh = jest.fn(async () => {});
+    server = await serveBoard({ port: 0, view: async () => empty, refresh });
+    const res = await get(server.port, "/refresh", { method: "POST" });
+    expect(res.status).toBe(403);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("403s a foreign Origin even with the header, and never calls refresh", async () => {
+    const refresh = jest.fn(async () => {});
+    server = await serveBoard({ port: 0, view: async () => empty, refresh });
+    const res = await get(server.port, "/refresh", {
+      method: "POST", headers: { ...HEADER, origin: "http://evil.example" },
+    });
+    expect(res.status).toBe(403);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("403s the tick header on /refresh: each write names itself", async () => {
+    const refresh = jest.fn(async () => {});
+    server = await serveBoard({ port: 0, view: async () => empty, refresh });
+    const res = await get(server.port, "/refresh", { method: "POST", headers: { "x-landrace-action": "tick" } });
+    expect(res.status).toBe(403);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("200s and calls refresh once, with the server's own Origin", async () => {
+    const refresh = jest.fn(async () => {});
+    server = await serveBoard({ port: 0, view: async () => empty, refresh });
+    const res = await get(server.port, "/refresh", {
+      method: "POST", headers: { ...HEADER, origin: `http://127.0.0.1:${server.port}` },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("refreshed");
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("502s with a one-line reason when refresh throws, without echoing its message", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty, refresh: async () => { throw new Error("tracker down: token ghp_x"); } });
+    const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await get(server.port, "/refresh", { method: "POST", headers: HEADER });
+      expect(res.status).toBe(502);
+      expect(res.body).not.toContain("ghp_");
+      expect(res.body.split("\n")).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("sends the CSP and no-store headers, and no Access-Control-Allow-*, on a refresh response", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty, refresh: async () => {} });
+    const res = await get(server.port, "/refresh", { method: "POST", headers: HEADER });
+    expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(Object.keys(res.headers).some((h) => h.toLowerCase().startsWith("access-control-allow"))).toBe(false);
+  });
+});
+
+/**
  * The page's second and third writes, and the ones that spend money: a Retry
  * or a "Go to step…" sends a ticket back through `sendTo`, which is what
  * hands it back and re-runs a paid step. So both carry every guard POST

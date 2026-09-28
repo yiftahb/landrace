@@ -578,7 +578,7 @@ its badge and the note "blocked by a security check"; the refusal's own reason
 is in the ticket's comments, which the page does not read. `landrace status`
 says "blocked: security check refused a step" for the same ticket.
 
-The page has three writes, and all of them can start paid agent runs, so all
+The page has four writes, and three of them can start paid agent runs, so all
 are guarded beyond the Host check. The tick button starts a tick, or, while
 one is running, says "queued" and runs one once every tick in flight has
 ended — which, with an agent step in flight, can be long after the next
@@ -593,14 +593,18 @@ open ticket whose agent is not running and whose stage lists a goto, send it
 back to a step its stage names. Each asks first, and each writes the same
 goto record `landrace_goto` does, after reading the ticket afresh: a ticket
 that has moved on, a step its stage does not list, or one past its cap is
-refused in a sentence the menu shows. Each write requires its own custom
-`x-landrace-action` header (`tick`, `retry`, `goto`), which a cross-site
-`<form>` cannot set, and a cross-origin `fetch` that does set one triggers a
-CORS preflight this server never answers with permission. Each also refuses
-any `Origin` other than the page's own, and any request the browser marks
-`Sec-Fetch-Site` as not same-origin. None of the guards is optional: together
-they are what stops another website the user has open from starting paid
-work just because their browser can still reach 127.0.0.1.
+refused in a sentence the menu shows. The icon-only Refresh button, right of
+Collapse all / Expand all, starts no agent at all — it re-reads the tracker and
+reloads the board from it, one list and nothing more — but it still spends
+that read, so it is guarded the same way as the other three rather than left
+as a plain GET. Each write requires its own custom `x-landrace-action` header
+(`tick`, `retry`, `goto`, `refresh`), which a cross-site `<form>` cannot set,
+and a cross-origin `fetch` that does set one triggers a CORS preflight this
+server never answers with permission. Each also refuses any `Origin` other
+than the page's own, and any request the browser marks `Sec-Fetch-Site` as
+not same-origin. None of the guards is optional: together they are what stops
+another website the user has open from starting paid work just because their
+browser can still reach 127.0.0.1.
 
 The page follows the OS light/dark preference (or whatever you last toggled,
 top right) with no flash on load. Every row has one menu, opened by its "⋯"

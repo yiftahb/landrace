@@ -72,7 +72,10 @@ export function parsePort(text: string): number {
  * expected it would otherwise have to notice it is missing.
  */
 export async function startUi(
-  opts: { board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined },
+  opts: {
+    board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined;
+    refresh?: (() => Promise<void>) | undefined;
+  },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
   try {
@@ -81,6 +84,7 @@ export async function startUi(
       view: () => opts.board.view(),
       ...(opts.tick === undefined ? {} : { tick: opts.tick }),
       ...(opts.goto === undefined ? {} : { goto: opts.goto }),
+      ...(opts.refresh === undefined ? {} : { refresh: opts.refresh }),
     });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
@@ -664,6 +668,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
     tick: schedule.wake,
     goto: gotoFor({ source: rt.source, pre: rt.deps.pre, dispatcher: rt.deps.dispatcher, ctx: rt.deps.ctx, workflow: rt.deps.workflow }),
+    // Re-read the tracker and reload the board from it: one list, no
+    // converge, no step, no agent — the page's Refresh button.
+    refresh: async () => { board.list(await rt.source.list(rt.deps.ctx)); },
   });
   if (ui) console.error(`landrace: triage page at ${ui.url}`);
 

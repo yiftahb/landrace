@@ -1508,6 +1508,13 @@ export interface UiOptions {
    * at its word. Absent, both routes are 404, as /tick is without a tick.
    */
   goto?: GotoPath;
+  /**
+   * The page's fourth write, POST /refresh: re-read the tracker and reload
+   * the board from it, with no converge, no step and no agent. Absent, the
+   * route is 404, as /tick is without a tick. It still spends a tracker
+   * read, so it is guarded exactly like the other three.
+   */
+  refresh?: () => Promise<void>;
 }
 
 /**

@@ -486,6 +486,39 @@ describe("startUi", () => {
       await ui?.close();
     }
   });
+
+  /**
+   * The wiring itself: startUi is the one place a caller's `refresh` reaches
+   * serveBoard, so this is what stands between it and a working POST
+   * /refresh — proven with a real request rather than a spy on serveBoard.
+   */
+  it("passes refresh through to serveBoard, so POST /refresh reaches it", async () => {
+    const refresh = jest.fn(async () => {});
+    const ui = await startUi({ board: board(), ui: true, once: false, port: 0, refresh });
+    try {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/refresh`, {
+        method: "POST",
+        headers: { "x-landrace-action": "refresh", origin: `http://127.0.0.1:${ui?.port}` },
+      });
+      expect(res.status).toBe(200);
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      await ui?.close();
+    }
+  });
+
+  it("without refresh, POST /refresh is 404 even though the page is served", async () => {
+    const ui = await startUi({ board: board(), ui: true, once: false, port: 0 });
+    try {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/refresh`, {
+        method: "POST",
+        headers: { "x-landrace-action": "refresh" },
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      await ui?.close();
+    }
+  });
 });
 
 const WF: Workflow = { version: 1, name: "t", stages: [

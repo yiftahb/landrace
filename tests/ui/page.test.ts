@@ -99,7 +99,6 @@ describe("the filter row", () => {
   // already all open, or already all shut.
   it("has one Collapse all / Expand all button, reading Collapse all over a tree that starts open", () => {
     const filters = /<div id="filters"[\s\S]*?\n<\/div>\n/.exec(PAGE_HTML)?.[0] ?? "";
-    expect(filters.match(/<button /g)).toHaveLength(1);
     expect(filters).toMatch(/<button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all \(c\)" class="[^"]*">Collapse all<\/button>/);
     expect(PAGE_HTML).not.toMatch(/id="(collapse|expand)-all"/);
   });
@@ -113,6 +112,68 @@ describe("the filter row", () => {
     expect(status).toMatch(/empty:hidden/);
     expect(status).not.toMatch(/\shidden[\s>]/);
     expect(APP_JS).not.toContain('getElementById("no-match").hidden');
+  });
+
+  describe("the Refresh button, immediately right of Collapse all / Expand all", () => {
+    it("sits right after toggle-all, with nothing but whitespace between them", () => {
+      const toggleAt = PAGE_HTML.indexOf('<button id="toggle-all"');
+      const refreshAt = PAGE_HTML.indexOf('<button id="refresh"');
+      expect(toggleAt).toBeGreaterThan(-1);
+      expect(refreshAt).toBeGreaterThan(toggleAt);
+      const toggleCloseAt = PAGE_HTML.indexOf("</button>", toggleAt) + "</button>".length;
+      expect(PAGE_HTML.slice(toggleCloseAt, refreshAt).trim()).toBe("");
+    });
+
+    it("is icon-only, named for a screen reader, and titled with what it does", () => {
+      const button = /<button id="refresh"[\s\S]*?<\/button>/.exec(PAGE_HTML)?.[0] ?? "";
+      expect(button).toMatch(/aria-label="Refresh"/);
+      expect(button).toMatch(/title="Re-read the tracker"/);
+      expect(button).toMatch(/type="button"/);
+      // No text label: the icon alone, drawn inline — the page's CSP loads no images.
+      expect(button.replace(/<[^>]+>/g, "").trim()).toBe("");
+      expect(button).toContain("<svg");
+      expect(button).not.toContain("<img");
+    });
+
+    it("shares the icon-button styling family the theme toggle already uses", () => {
+      const button = /<button id="refresh"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
+      const themeToggle = /<button id="theme-toggle"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
+      expect(button).toBe(themeToggle);
+    });
+  });
+});
+
+describe("the Refresh button's behaviour", () => {
+  it("posts /refresh with the required custom header", () => {
+    expect(APP_JS).toContain('fetch("/refresh"');
+    expect(APP_JS).toContain('"x-landrace-action": "refresh"');
+    expect(APP_JS).toMatch(/method:\s*"POST"/);
+  });
+
+  it("wires its click listener in script, never as an inline handler", () => {
+    expect(APP_JS).toContain('getElementById("refresh")');
+    expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
+  });
+
+  describe("what it says once the server answers", () => {
+    const answer = (status: number) => {
+      const seen = { button: [] as Array<[string, string, boolean]>, restores: 0, polls: 0 };
+      runInNewContext(`${fnSource("refreshAnswered")} refreshAnswered(STATUS);`, {
+        STATUS: status, REFRESH_LABEL: "Refresh", REFRESH_TITLE: "Re-read the tracker",
+        setRefreshButton: (label: string, title: string, disabled: boolean) => seen.button.push([label, title, disabled]),
+        restoreRefreshAfter: () => { seen.restores += 1; },
+        schedulePoll: () => { seen.polls += 1; },
+      });
+      return seen;
+    };
+
+    it("is itself again, and re-polls at once, on success", () => {
+      expect(answer(200)).toEqual({ button: [["Refresh", "Re-read the tracker", false]], restores: 0, polls: 1 });
+    });
+
+    it("says failed, briefly, on anything else", () => {
+      expect(answer(502)).toEqual({ button: [["failed", "failed", true]], restores: 1, polls: 0 });
+    });
   });
 });
 
@@ -1038,20 +1099,21 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, and the two document-level close listeners — no more, no less", () => {
-    // Pins the count deliberately: the tick button and theme toggle, the
-    // search box and the one Collapse all / Expand all button (each wired once, outside
-    // anything a render rebuilds), the collapsible lanes' summary clicks
-    // (defined once, in a loop over the two), the expand/collapse toggle
-    // (defined once, in toggleFor, not once per row), and for the row's ⋯
-    // menu one toggle-button listener, one close-on-choose listener (defined
-    // once inside the per-target loop), one Copy-prompt listener, one write
-    // listener (defined once, in writeItem, shared by Retry and every Go to
-    // step… target, and built only where the server offered one), and one
-    // document listener each for outside-click and Escape (both defined
-    // once, so re-rendering never multiplies them).
+  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, and the two document-level close listeners — no more, no less", () => {
+    // Pins the count deliberately: the tick button, the refresh button and
+    // the theme toggle, the search box and the one Collapse all / Expand all
+    // button (each wired once, outside anything a render rebuilds), the
+    // collapsible lanes' summary clicks (defined once, in a loop over the
+    // two), the expand/collapse toggle (defined once, in toggleFor, not once
+    // per row), and for the row's ⋯ menu one toggle-button listener, one
+    // close-on-choose listener (defined once inside the per-target loop),
+    // one Copy-prompt listener, one write listener (defined once, in
+    // writeItem, shared by Retry and every Go to step… target, and built
+    // only where the server offered one), and one document listener each for
+    // outside-click and Escape (both defined once, so re-rendering never
+    // multiplies them).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(12);
+    expect(listeners).toHaveLength(13);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {

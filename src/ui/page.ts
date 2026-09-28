@@ -70,7 +70,12 @@ export const PAGE_HTML = `<!doctype html>
 <main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
 <input id="search" type="search" placeholder="Search tickets…" aria-label="Search tickets" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
+<div class="flex items-center gap-2">
 <button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all (c)" class="${BUTTON}">Collapse all</button>
+<button id="refresh" type="button" aria-label="Refresh" title="Re-read the tracker" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><polyline points="21 3 21 9 15 9"></polyline></svg>
+</button>
+</div>
 </div>
 <p id="no-match" role="status" aria-live="polite" class="mb-4 px-1 text-sm italic text-neutral-400 empty:hidden dark:text-neutral-500"></p>
 ${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
@@ -1075,6 +1080,47 @@ tickButton.addEventListener("click", () => {
   fetch("/tick", { method: "POST", headers: { "x-landrace-action": "tick" } })
     .then((res) => res.text().then((said) => tickAnswered(res.status, said)))
     .catch(() => tickAnswered(0, ""));
+});
+
+// Re-read the tracker, with no step and no agent — the icon-only twin of the
+// tick button, right down to the brief-failure-then-restore shape. Its label
+// lives in aria-label and title rather than in visible text, since the
+// button itself carries no text to change.
+const refreshButton = document.getElementById("refresh");
+const REFRESH_LABEL = "Refresh";
+const REFRESH_TITLE = "Re-read the tracker";
+let refreshRestoreTimer = null;
+
+function setRefreshButton(label, title, disabled) {
+  refreshButton.setAttribute("aria-label", label);
+  refreshButton.title = title;
+  refreshButton.disabled = disabled;
+}
+
+function restoreRefreshAfter(ms) {
+  if (refreshRestoreTimer !== null) clearTimeout(refreshRestoreTimer);
+  refreshRestoreTimer = setTimeout(() => setRefreshButton(REFRESH_LABEL, REFRESH_TITLE, false), ms);
+}
+
+// The status alone decides, the way tickAnswered's failure branch does: the
+// server's own sentence is for the log the 502 mentions, not for a button
+// with no room to show it.
+function refreshAnswered(status) {
+  if (status === 200) {
+    setRefreshButton(REFRESH_LABEL, REFRESH_TITLE, false);
+    schedulePoll(0);
+  } else {
+    setRefreshButton("failed", "failed", true);
+    restoreRefreshAfter(3000);
+  }
+}
+
+refreshButton.addEventListener("click", () => {
+  if (refreshRestoreTimer !== null) clearTimeout(refreshRestoreTimer);
+  setRefreshButton("Refreshing…", "Refreshing…", true);
+  fetch("/refresh", { method: "POST", headers: { "x-landrace-action": "refresh" } })
+    .then((res) => refreshAnswered(res.status))
+    .catch(() => refreshAnswered(0));
 });
 
 pollOnce().then(() => schedulePoll(POLL_MS));

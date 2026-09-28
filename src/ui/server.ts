@@ -77,10 +77,12 @@ function foreignWrite(req: IncomingMessage, action: string, port: number): strin
 
 /**
  * The triage page, on loopback only. Every route is a GET except the page's
- * three writes: POST /tick, present only when the caller hands us a schedule
- * to wake, and POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>,
- * present only when it hands us a way to send a ticket back, and which wake
- * that schedule too once they have.
+ * four writes: POST /tick, present only when the caller hands us a schedule
+ * to wake; POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>, present
+ * only when it hands us a way to send a ticket back, and which wake that
+ * schedule too once they have; and POST /refresh, present only when it hands
+ * us a way to re-read the tracker, which starts no agent but still spends a
+ * tracker read and so is guarded the same way.
  */
 export function serveBoard(opts: UiOptions): Promise<UiServer> {
   let port: number;
@@ -118,6 +120,36 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
       const woke = opts.tick();
       if (woke === "stopped") send(res, 503, "text/plain; charset=utf-8", "landrace is stopping");
       else send(res, 202, "text/plain; charset=utf-8", `tick ${woke}`);
+      return;
+    }
+
+    // The page's fourth write: re-read the tracker and reload the board from
+    // it. No converge, no step, no agent — but still a tracker read the page
+    // itself pays for, so it is guarded exactly like the other three rather
+    // than left open as a plain GET would be.
+    if (path === "/refresh") {
+      if (!opts.refresh) {
+        send(res, 404, "text/plain; charset=utf-8", "not found");
+        return;
+      }
+      if (req.method !== "POST") {
+        send(res, 405, "text/plain; charset=utf-8", "method not allowed");
+        return;
+      }
+      const foreign = foreignWrite(req, "refresh", port);
+      if (foreign) {
+        send(res, 403, "text/plain; charset=utf-8", foreign);
+        return;
+      }
+      opts.refresh().then(
+        () => send(res, 200, "text/plain; charset=utf-8", "refreshed"),
+        (e: unknown) => {
+          // Logged in full for the operator; the page gets a fixed sentence,
+          // because a tracker's error can quote the ticket it refused.
+          console.error(`landrace: refresh failed: ${oneLine(messageOf(e))}`);
+          send(res, 502, "text/plain; charset=utf-8", "could not refresh; the landrace log says why");
+        },
+      );
       return;
     }
 
