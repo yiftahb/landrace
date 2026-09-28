@@ -1,6 +1,6 @@
 import { GOTO_KIND, RECORD_EFFECT } from "#conventions.js";
 import { assess, checkEligible, compile, gotoDeclined, gotoNotListed, locate } from "#core/index.js";
-import type { GotoDeps, GotoResult, Node } from "#namespace.js";
+import type { GotoDeps, GotoResult, Node, Snapshot, Stage, Workflow } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
 
@@ -58,19 +58,24 @@ export async function sendTo(deps: GotoDeps, ticket: string, target: string | nu
   }
 }
 
-async function sendAt(deps: GotoDeps, ticket: string, target: string | null): Promise<GotoResult> {
-  const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+/**
+ * The stage a person may send this ticket on from, or why there is none —
+ * everything `sendTo` asks before it looks at the target. Shared with a
+ * pairing, which enters a stage by the same rule a goto does: a pairing
+ * started on a goto target, and a hand-in finished again after a refusal.
+ */
+export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, ticket: string): { from: Stage } | { refused: string } {
   const node = snapshot.node as Node | undefined;
   if (!node) return { refused: `#${ticket} was not found` };
   if (node.closed !== null) return { refused: `#${ticket} is closed, so there is nothing to send back` };
   // decide() turns an ineligible ticket away before it reads anything else,
   // so a goto written on one would sit unread for as long as it stays so.
-  const eligibility = checkEligible(deps.workflow, snapshot);
+  const eligibility = checkEligible(workflow, snapshot);
   if (!eligibility.eligible) return { refused: `#${ticket} is not worked by this workflow: ${eligibility.reason}` };
   const unplaceable = positionProblem(snapshot);
   if (unplaceable) return { refused: `#${ticket} cannot be placed: ${unplaceable}` };
 
-  const where = locate(deps.workflow, snapshot);
+  const where = locate(workflow, snapshot);
   if (where.kind === "ambiguous") {
     return { refused: `#${ticket} matches more than one stage of this workflow: ${where.ids.join(", ")}` };
   }
@@ -92,6 +97,14 @@ async function sendAt(deps: GotoDeps, ticket: string, target: string | null): Pr
   if (from.requires && !compile(from.requires)(snapshot)) {
     return { refused: `#${ticket} is halted at "${from.id}": its precondition does not hold` };
   }
+  return { from };
+}
+
+async function sendAt(deps: GotoDeps, ticket: string, target: string | null): Promise<GotoResult> {
+  const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+  const origin = gotoOrigin(deps.workflow, snapshot, ticket);
+  if ("refused" in origin) return origin;
+  const { from } = origin;
 
   if (from.step && assess(snapshot, from) === "pending") {
     return { refused: `#${ticket} is at "${from.id}", whose step is still to run; wait for its answer` };

@@ -179,6 +179,10 @@ async function converging(
       subState: decision.subState ?? null,
       decision: decision.action,
       why: decision.why ?? decision.trigger ?? null,
+      // Who holds the stage's step, when a person is pairing on it: the
+      // board learns of a pairing from this, re-derived every tick, and
+      // needs no label or lock of its own to show it.
+      paired: decision.paired ?? null,
     });
 
     if (decision.action === "skip") {
@@ -456,8 +460,11 @@ async function converging(
   return { passes: maxPasses, settled: "cap" };
 }
 
-/** The durable record of a rejected round; `kind` says whether it was a broken contract or a refusal. */
-function malformedEffect(
+/**
+ * The durable record of a rejected round; `kind` says whether it was a broken
+ * contract or a refusal. Exported for a pairing's hand-in, rejected the same way.
+ */
+export function malformedEffect(
   stage: string, round: number, reason: string, scrub: (text: string) => string, kind: string = MALFORMED_KIND,
 ): Effect {
   return {

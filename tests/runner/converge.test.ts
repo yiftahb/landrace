@@ -1325,3 +1325,31 @@ describe("the engine's own ticket server", () => {
     expect(seen).toEqual([{ ...binding, server: childServerFor(childServer, binding) }]);
   });
 });
+
+/*
+ * A person pairing on a stage holds its step: the tick waits, pays for
+ * nothing, and says so on the event the board reads it from.
+ */
+describe("a stage a person is pairing on", () => {
+  it("is not invoked, and the evaluation names the pairing", async () => {
+    const w = world();
+    w.labels.add("lr:stage:spec");
+    w.entries.push({ stage: "spec", kind: "pair", round: 1, at: new Date(0).toISOString(), byAgent: true });
+    const events: LandraceEvent[] = [];
+    let ran = 0;
+    const stepWorkflow: Workflow = {
+      version: 1, name: "t",
+      stages: [{ id: "spec", step: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] }],
+    };
+    const r = await converge("1", deps(w, {
+      workflow: stepWorkflow, steps: new Map([["spec", { prompt: "go" }]]),
+      executor: { id: "x", run: async () => { ran++; return { text: "", sessionId: null }; } },
+      log: createLogger({ sink: (e) => events.push(e) }),
+    }));
+    expect(ran).toBe(0);
+    expect(r).toMatchObject({ settled: "wait", why: expect.stringMatching(/pairing on "spec"/) });
+    expect(events.find((e) => e.name === "ticket.evaluated")).toMatchObject({
+      decision: "wait", paired: { stage: "spec", round: 1, n: 1 },
+    });
+  });
+});

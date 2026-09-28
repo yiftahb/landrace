@@ -1,4 +1,4 @@
-import { renderPrompt, runStep } from "#runner/step.js";
+import { renderPrompt, runStep, settleOutput } from "#runner/step.js";
 import { neutraliseMarkers } from "#conventions.js";
 import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
 import { childServerFor } from "#runner/children.js";
@@ -1250,5 +1250,34 @@ describe("a route that sends the ticket somewhere", () => {
   it("records none for an answer whose route sends nowhere", async () => {
     const r = (await answer("question")) as Ok;
     expect(r.effects[0]).not.toHaveProperty("goto");
+  });
+});
+
+/*
+ * The output half of a step, shared with a pairing's hand-in: the same
+ * contract, the same record, and one field more — who produced it.
+ */
+describe("settling an answer handed in from a pairing", () => {
+  const settle = (text: string) =>
+    settleOutput({ step, ticket: "1", stageId: "spec", round: 2, text, sessionId: "sid-fork", by: "pair" });
+
+  it("stamps the output record as the pair's when the content stays on the tracker", () => {
+    const r = settle('```json\n{"kind":"questions"}\n```') as Ok;
+    expect(r.effects).toEqual([expect.objectContaining({ kind: "output", by: "pair", session: "sid-fork" })]);
+  });
+
+  it("stamps the record, not the published content, when the content goes elsewhere", () => {
+    const r = settle('# Spec\n\n```json\n{"kind":"spec"}\n```') as Ok;
+    expect(r.effects[0]).not.toHaveProperty("by");
+    expect(r.effects[1]).toMatchObject({ kind: "output", by: "pair" });
+  });
+
+  it("holds a hand-in to the step's contract like any answer", () => {
+    expect(settle("no block at all")).toMatchObject({ ok: false, kind: "contract" });
+  });
+
+  it("stamps nothing on the agent's own step, so its records read exactly as before", async () => {
+    const r = (await run('```json\n{"kind":"questions"}\n```')) as Ok;
+    expect(r.effects[0]).not.toHaveProperty("by");
   });
 });

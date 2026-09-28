@@ -1,6 +1,7 @@
 import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
 import type { AgentActivity, Effect, Graph, Logger, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
+  AGENT_BY,
   CAPABILITIES,
   durationMs,
   isReservedId,
@@ -375,6 +376,32 @@ export async function runStep(opts: {
     }
   }
 
+  return settleOutput({ step, ticket: opts.ticket, stageId, round, text, sessionId, by: AGENT_BY });
+}
+
+/**
+ * What an agent's answer amounts to: the step's output contract applied to
+ * the text, and the effects that record it — or the reason it is refused.
+ *
+ * The output half of `runStep`, apart from the run, because a pairing's
+ * hand-in is the same answer to the same step by another route: a person
+ * worked the round with the agent, and the closing turn's text is held to
+ * exactly this contract. `by` is who produced it, stamped on the output
+ * record beside the session — "agent" is left off, so the agent's records
+ * read exactly as they did before anybody could pair.
+ */
+export function settleOutput(opts: {
+  step: Step;
+  ticket: string;
+  stageId: string;
+  round: number;
+  text: string;
+  sessionId: string | null;
+  by: string;
+}): StepResult {
+  const { step, stageId, round, text, sessionId } = opts;
+  const by = opts.by === AGENT_BY ? {} : { by: opts.by };
+
   // A step with no declared output contributes no effects; the workflow routes
   // it by trigger instead.
   if (!step.output) return { ok: true, effects: [], sessionId };
@@ -558,7 +585,7 @@ export async function runStep(opts: {
   if (destination.type === RECORD_EFFECT) {
     return {
       ok: true,
-      effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session, ...sent }],
+      effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session, ...sent, ...by }],
       sessionId,
     };
   }
@@ -574,6 +601,7 @@ export async function runStep(opts: {
     output: value,
     ...session,
     ...sent,
+    ...by,
   };
 
   // The destination first, and the order is the recovery property. Recorded
