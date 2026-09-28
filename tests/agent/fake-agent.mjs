@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Stands in for `claude`, emitting the same json envelope under
-// --output-format json.
+// Stands in for `claude`, emitting what --output-format stream-json prints:
+// the events a test scripts, one per line, then the same result envelope.
 //
 // Scripted via a `fake.json` file in the child's cwd rather than environment
 // variables: the executor under test builds an explicit, minimal env for the
@@ -58,6 +58,13 @@ if (cfg.flood) {
     // Lets a test prove a value from the parent's environment did NOT reach
     // this child, by asking the child itself to echo it back.
     .replace(/\{\{ENV:([A-Za-z0-9_]+)\}\}/g, (_, name) => process.env[name] ?? "");
+  // What `--output-format stream-json --verbose` prints before its result:
+  // one JSON event per line, as the agent works.
+  // `{{CWD}}` is where this agent runs, as a real one would name a file in it.
+  for (const event of cfg.events ?? []) {
+    const line = typeof event === "string" ? event : JSON.stringify(event).replaceAll("{{CWD}}", process.cwd());
+    process.stdout.write(`${line}\n`);
+  }
   process.stdout.write(
     cfg.raw ??
       JSON.stringify({

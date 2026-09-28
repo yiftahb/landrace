@@ -140,9 +140,50 @@ describe("claude executor", () => {
     expect(r.sessionId).toBe("sid-1");
   });
 
-  it("asks for json output, because that is what carries the session id", async () => {
+  // stream-json still ends on the result event that carries the session id,
+  // and prints each tool call and message as a line of its own before it —
+  // which is what the ticket panel shows. The CLI refuses stream-json under
+  // -p without --verbose.
+  it("asks for stream-json with --verbose: the session id at the end, the agent's work as it happens", async () => {
     const dir = withCfg({ out: "{{ARGV}}" });
-    expect((await run("x", {}, { cwd: dir })).text).toContain("--output-format json");
+    expect((await run("x", {}, { cwd: dir })).text).toContain("--output-format stream-json --verbose");
+  });
+
+  describe("what the agent is doing, as it happens", () => {
+    const assistant = (...content: object[]) => ({ type: "assistant", message: { role: "assistant", content } });
+
+    it("reports each tool call and each thing it says, then answers with the result", async () => {
+      const dir = withCfg({
+        out: "done",
+        events: [
+          { type: "system", subtype: "init", session_id: "sid-1" },
+          assistant({ type: "text", text: "Looking at the parser." }),
+          { type: "user", message: { role: "user", content: [{ type: "tool_result", content: "file text" }] } },
+          assistant({ type: "tool_use", name: "Read", input: { file_path: join("{{CWD}}", "src", "a.ts") } }),
+          assistant({ type: "tool_use", name: "Bash", input: { command: "pnpm test" } }, { type: "tool_use", name: "mcp__memory__search", input: {} }),
+        ],
+      });
+      const seen: Array<{ kind: string; text: string; at: number }> = [];
+      const r = await run("x", {}, { cwd: dir, onActivity: (e: { kind: string; text: string; at: number }) => seen.push(e) });
+      expect(r).toEqual({ text: "done", sessionId: "sid-1" });
+      expect(seen.map(({ kind, text }) => ({ kind, text }))).toEqual([
+        { kind: "message", text: "Looking at the parser." },
+        { kind: "tool", text: `Read ${join("src", "a.ts")}` },
+        { kind: "tool", text: "Bash pnpm test" },
+        { kind: "tool", text: "mcp__memory__search" },
+      ]);
+      expect(seen.every((e) => typeof e.at === "number")).toBe(true);
+    });
+
+    it("answers as before with nobody listening, and skips a line that is not an event", async () => {
+      const dir = withCfg({ out: "done", events: ["not an event", assistant({ type: "text", text: "hi" })] });
+      expect(await run("x", {}, { cwd: dir })).toEqual({ text: "done", sessionId: "sid-1" });
+    });
+
+    it("treats a stream that never reaches its result as a failure", async () => {
+      const dir = withCfg({ events: [assistant({ type: "text", text: "hi" })], raw: "" });
+      await expect(run("x", {}, { cwd: dir })).rejects.toThrow(/did not return json/);
+    });
   });
 
   it("passes --resume so a conversation continues", async () => {
@@ -176,7 +217,7 @@ describe("claude executor", () => {
       {},
     );
     expect(argv).toEqual([
-      "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--tools", "",
+      "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted", "--tools", "",
       "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ]);
   });
@@ -457,8 +498,8 @@ describe("claude executor", () => {
    */
   it("gives a read-only step manual mode with the write and exec tools denied", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
-    expect(argv.slice(0, 7)).toEqual(["-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
-    expect(argv.slice(7, 12).sort()).toEqual([...WRITE_TOOLS]);
+    expect(argv.slice(0, 8)).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
+    expect(argv.slice(8, 13).sort()).toEqual([...WRITE_TOOLS]);
     expect(argv).not.toContain("plan");
   });
 
@@ -655,8 +696,8 @@ describe("the create_child tool", () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), {
       capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: SERVER },
     });
-    expect(argv.slice(0, 7)).toEqual(["-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
-    const denied = argv.slice(7, argv.indexOf("--mcp-config"));
+    expect(argv.slice(0, 8)).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
+    const denied = argv.slice(8, argv.indexOf("--mcp-config"));
     expect([...denied].sort()).toEqual(["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"]);
     expect(argv).not.toContain("plan");
   });
@@ -665,14 +706,14 @@ describe("the create_child tool", () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), {
       capabilities: ["tickets:create", "repo:write"], child: { ...binding, server: SERVER },
     });
-    expect(argv.slice(0, 5)).toEqual(["-p", "--output-format", "json", "--permission-mode", "acceptEdits"]);
+    expect(argv.slice(0, 6)).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"]);
     expect(argv).not.toContain("--restricted");
     expect(argv).not.toContain("--disallowedTools");
   });
 
   it("keeps a read-only step without the binding on exactly the flags any read-only step gets", async () => {
     const readOnly = [
-      "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted",
+      "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
       "--disallowedTools", ...WRITE_TOOLS, "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ];
     const declaring = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["tickets:create", "repo:read"] });
@@ -831,13 +872,13 @@ describe("a writing step's sandbox", () => {
   it("hands a read-only step and the screener exactly the argv they had before", async () => {
     const executor = createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com"], deny: ["~/.ssh"] } });
     expect(await argvOf(executor, { capabilities: ["repo:read"] })).toEqual([
-      "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted",
+      "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
       "--disallowedTools", ...WRITE_TOOLS,
       "--settings", JSON.stringify({ enabledPlugins: { [PLUGIN]: true } }),
       "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ]);
     expect(await argvOf(executor, {})).toEqual([
-      "-p", "--output-format", "json", "--permission-mode", "manual", "--restricted", "--tools", "",
+      "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted", "--tools", "",
       "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ]);
   });
