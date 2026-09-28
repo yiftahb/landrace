@@ -437,10 +437,17 @@ export function createClaudeExecutor(opts: {
         try {
           event = JSON.parse(line);
         } catch {
+          log?.("agent.event", { round, raw: line });
           return;
         }
         if (event === null || typeof event !== "object") return;
         const e = event as { type?: unknown; message?: { content?: unknown } };
+        // Parsed, so a secret in it is a string the log's redactor sees
+        // whole — not split across two chunks, nor escaped inside a JSON
+        // line. A tool's result is never logged: it is the files the agent
+        // read and the output of what it ran, and agent.event reaches
+        // telemetry even without --debug.
+        if (e.type !== "user") log?.("agent.event", { round, event });
         if (e.type === "result") {
           result = e as typeof result;
           return;
@@ -532,7 +539,6 @@ export function createClaudeExecutor(opts: {
             // Display only.
           }
         }
-        log?.("agent.event", { round, raw: text });
       });
       child.stderr.on("data", (d: Buffer) => {
         capture(d, () => err, (v) => (err = v), "stderr");

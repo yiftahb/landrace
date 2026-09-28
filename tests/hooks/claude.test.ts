@@ -180,6 +180,27 @@ describe("claude executor", () => {
       expect(await run("x", {}, { cwd: dir })).toEqual({ text: "done", sessionId: "sid-1" });
     });
 
+    // stream-json carries every tool's result — the files the agent read,
+    // the output of what it ran — and agent.event reaches telemetry even
+    // without --debug. Logged parsed, a secret inside an event is a string
+    // the redactor sees whole, not one split across two chunks or escaped
+    // inside a JSON line; and a tool's result is not logged at all.
+    it("logs each event parsed, and never a tool's result", async () => {
+      const dir = withCfg({
+        out: "done",
+        events: [
+          assistant({ type: "tool_use", name: "Read", input: { file_path: ".env" } }),
+          { type: "user", message: { role: "user", content: [{ type: "tool_result", content: "TOKEN=ghp_from_the_file" }] } },
+          "a warning the CLI printed",
+        ],
+      });
+      const logged: Array<[string, Record<string, unknown>]> = [];
+      await run("x", { log: (event: string, data?: Record<string, unknown>) => logged.push([event, data ?? {}]) }, { cwd: dir });
+      const events = logged.filter(([name]) => name === "agent.event").map(([, data]) => data);
+      expect(JSON.stringify(events)).not.toContain("ghp_from_the_file");
+      expect(events.map((d) => (d.event as { type?: string } | undefined)?.type ?? d.raw)).toEqual(["assistant", "a warning the CLI printed", "result"]);
+    });
+
     it("treats a stream that never reaches its result as a failure", async () => {
       const dir = withCfg({ events: [assistant({ type: "text", text: "hi" })], raw: "" });
       await expect(run("x", {}, { cwd: dir })).rejects.toThrow(/did not return json/);
