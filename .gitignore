@@ -5,6 +5,9 @@ dist/
 .env
 .landrace/.env
 .superpowers/
+# A write step runs pnpm inside the OS sandbox, which cannot write the global
+# store, so pnpm keeps one in the worktree: 142 MB a commit must never carry.
+.pnpm-store/
 
 # agsync:begin
 .mcp.json
