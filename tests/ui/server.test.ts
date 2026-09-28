@@ -1,6 +1,6 @@
 import * as http from "node:http";
 import { request } from "node:http";
-import type { BoardView, GotoResult, UiServer } from "#namespace.js";
+import type { BoardView, GotoResult, UiServer, WakeResult } from "#namespace.js";
 import { serveBoard } from "#ui/server.js";
 
 const empty: BoardView = {
@@ -170,13 +170,14 @@ describe("POST /tick", () => {
   afterEach(async () => { await server?.close(); });
 
   const HEADER = { "x-landrace-action": "tick" };
+  const started = (): WakeResult => "started";
 
   /**
    * Every attack case must also leave the callback uncalled — a refusal that
    * still started a paid agent run would be no refusal at all.
    */
   it("refuses a POST with no custom header — what a cross-site <form> POST looks like — and never calls tick", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", {
       method: "POST",
@@ -195,7 +196,7 @@ describe("POST /tick", () => {
   it.each(["text/plain", "multipart/form-data; boundary=x"])(
     "refuses a POST with no custom header and content-type %s, and never calls tick",
     async (contentType) => {
-      const tick = jest.fn(() => true);
+      const tick = jest.fn(started);
       server = await serveBoard({ port: 0, view: async () => empty, tick });
       const res = await get(server.port, "/tick", {
         method: "POST",
@@ -213,7 +214,7 @@ describe("POST /tick", () => {
    * before the Origin is ever read.
    */
   it("refuses a POST with Origin: null and no custom header, and never calls tick", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", {
       method: "POST",
@@ -224,7 +225,7 @@ describe("POST /tick", () => {
   });
 
   it("refuses a POST with the header but an Origin on a different 127.0.0.1 port, and never calls tick", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", {
       method: "POST",
@@ -235,7 +236,7 @@ describe("POST /tick", () => {
   });
 
   it("refuses a POST with the header but a foreign Origin, and never calls tick", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", {
       method: "POST",
@@ -246,7 +247,7 @@ describe("POST /tick", () => {
   });
 
   it("refuses a POST the browser says came from another site, and never calls tick", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", {
       method: "POST",
@@ -257,7 +258,7 @@ describe("POST /tick", () => {
   });
 
   it("refuses the retry's header: each write names itself", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", { method: "POST", headers: { "x-landrace-action": "retry" } });
     expect(res.status).toBe(403);
@@ -265,7 +266,7 @@ describe("POST /tick", () => {
   });
 
   it("refuses a POST to a foreign Host with 421 before anything else, and never calls tick", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", {
       method: "POST",
@@ -277,7 +278,7 @@ describe("POST /tick", () => {
   });
 
   it("refuses GET /tick with 405, and never calls tick", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", { headers: HEADER });
     expect(res.status).toBe(405);
@@ -285,7 +286,7 @@ describe("POST /tick", () => {
   });
 
   it("refuses an OPTIONS preflight: not 2xx, no access-control-allow-* header, and never calls tick", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", { method: "OPTIONS", headers: HEADER });
     expect(res.status < 200 || res.status >= 300).toBe(true);
@@ -294,7 +295,7 @@ describe("POST /tick", () => {
   });
 
   it("202s and calls tick once, with the header and the server's own Origin", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", {
       method: "POST",
@@ -305,7 +306,7 @@ describe("POST /tick", () => {
   });
 
   it("accepts a localhost Origin too", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn(started);
     server = await serveBoard({ port: 0, view: async () => empty, tick });
     const res = await get(server.port, "/tick", {
       method: "POST",
@@ -314,16 +315,29 @@ describe("POST /tick", () => {
     expect(res.status).toBe(202);
   });
 
-  it("409s when tick() reports one is already running", async () => {
-    const tick = jest.fn(() => false);
-    server = await serveBoard({ port: 0, view: async () => empty, tick });
+  it("says the tick started when the schedule ran one", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty, tick: started });
     const res = await get(server.port, "/tick", { method: "POST", headers: HEADER });
-    expect(res.status).toBe(409);
-    expect(res.body).toMatch(/already running/);
+    expect(res.status).toBe(202);
+    expect(res.body).toBe("tick started");
+  });
+
+  it("202s 'tick queued' when a tick is already running, rather than dropping the ask", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty, tick: (): WakeResult => "queued" });
+    const res = await get(server.port, "/tick", { method: "POST", headers: HEADER });
+    expect(res.status).toBe(202);
+    expect(res.body).toBe("tick queued");
+  });
+
+  it("503s when the schedule has stopped", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty, tick: (): WakeResult => "stopped" });
+    const res = await get(server.port, "/tick", { method: "POST", headers: HEADER });
+    expect(res.status).toBe(503);
+    expect(res.body).toBe("landrace is stopping");
   });
 
   it("never sends an Access-Control-Allow-* header on a successful tick either", async () => {
-    server = await serveBoard({ port: 0, view: async () => empty, tick: () => true });
+    server = await serveBoard({ port: 0, view: async () => empty, tick: started });
     const res = await get(server.port, "/tick", { method: "POST", headers: HEADER });
     expect(Object.keys(res.headers).some((h) => h.toLowerCase().startsWith("access-control-allow"))).toBe(false);
   });
@@ -335,7 +349,7 @@ describe("POST /tick", () => {
   });
 
   it("still sends the CSP and no-store headers on a tick response", async () => {
-    server = await serveBoard({ port: 0, view: async () => empty, tick: () => true });
+    server = await serveBoard({ port: 0, view: async () => empty, tick: started });
     const res = await get(server.port, "/tick", { method: "POST", headers: HEADER });
     expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -401,6 +415,40 @@ describe("the page's writes to a ticket: POST /tickets/<id>/retry and /tickets/<
     } finally {
       spy.mockRestore();
     }
+  });
+
+  /**
+   * A person who sent a ticket back is waiting on it: the pass that picks it
+   * up runs now rather than when the countdown next comes round.
+   */
+  it.each([["retry", "/tickets/19/retry"], ["goto", "/tickets/19/goto/spec"]])(
+    "wakes the schedule once after a %s is sent",
+    async (action, path) => {
+      const g = going();
+      const tick = jest.fn((): WakeResult => "started");
+      server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto, tick });
+      const res = await get(server.port, path, { method: "POST", headers: ours(action) });
+      expect(res.status).toBe(202);
+      expect(tick).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not wake the schedule when the goto is refused or the write throws", async () => {
+    const tick = jest.fn((): WakeResult => "started");
+    const refused = going(async () => ({ refused: "#19: not now" }));
+    server = await serveBoard({ port: 0, view: async () => empty, goto: refused.goto, tick });
+    expect((await get(server.port, "/tickets/19/goto/done", { method: "POST", headers: ours("goto") })).status).toBe(409);
+    await server.close();
+
+    const throwing = going(async () => { throw new Error("tracker down"); });
+    server = await serveBoard({ port: 0, view: async () => empty, goto: throwing.goto, tick });
+    const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect((await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours("retry") })).status).toBe(502);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(tick).not.toHaveBeenCalled();
   });
 
   it("refuses a request with no custom header — what a cross-site <form> sends — and sends nothing", async () => {

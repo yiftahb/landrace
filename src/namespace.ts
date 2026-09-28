@@ -1197,12 +1197,16 @@ export interface Schedule {
   /** When the next scheduled tick will fire, epoch ms; null when stopped. */
   nextAt(): number | null;
   /**
-   * Run a tick now and restart the countdown from now. Returns false, running nothing, if a tick
-   * started by trigger() is still in flight — at most one manual tick at a time. Scheduled ticks are
-   * unaffected and may still overlap, as today.
+   * A person acted: run a tick now and restart the countdown from now. With any tick of this
+   * schedule's still in flight it runs nothing and queues one follow-up for when they have all
+   * settled, however many wakes arrive meanwhile. After stop(), nothing. A wake never runs beside
+   * another tick; scheduled ticks are unaffected and may still overlap, as before.
    */
-  trigger(): boolean;
+  wake(): WakeResult;
 }
+
+/** What a wake did: ran a tick now, queued one behind the tick in flight, or nothing, the schedule having stopped. */
+export type WakeResult = "started" | "queued" | "stopped";
 
 export interface StartOptions {
   once?: boolean;
@@ -1443,10 +1447,11 @@ export interface UiOptions {
   port: number;
   view: () => Promise<BoardView>;
   /**
-   * The schedule's own `trigger`. Absent, POST /tick is 404: the page's only
-   * write exists only when something is actually there to run it against.
+   * The schedule's own `wake`, for "Tick now" and after a Retry or goto has
+   * written. Absent, POST /tick is 404: the page's tick exists only when
+   * something is actually there to run it against.
    */
-  tick?: () => boolean;
+  tick?: () => WakeResult;
   /**
    * The page's Retry and "Go to step…": both send the ticket back through
    * `sendTo`, read afresh when the request arrives — the page is never taken

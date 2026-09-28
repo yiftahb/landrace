@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { renderMarker } from "#conventions.js";
-import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Runtime, Schedule, Source, Workflow } from "#namespace.js";
+import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Runtime, Schedule, Source, WakeResult, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import { createDispatcher } from "#runner/effects.js";
 import { buildSnapshot } from "#runner/snapshot.js";
@@ -399,13 +399,13 @@ describe("startUi", () => {
 
   /**
    * The wiring itself: startUi is the one place a caller's `tick` reaches
-   * serveBoard, so this is what stands between the schedule's own trigger and
+   * serveBoard, so this is what stands between the schedule's own wake and
    * a working POST /tick — proven with a real request rather than a spy on
    * serveBoard, since a mocked call site is exactly the kind of "looks right"
    * this codebase's testing rule warns against.
    */
   it("passes tick through to serveBoard, so POST /tick reaches it", async () => {
-    const tick = jest.fn(() => true);
+    const tick = jest.fn((): WakeResult => "started");
     const ui = await startUi({ board: board(), ui: true, once: false, port: 0, tick });
     try {
       const res = await fetch(`http://127.0.0.1:${ui?.port}/tick`, {
@@ -497,7 +497,7 @@ describe("the page's Retry and Go to step", () => {
  * off `rt` is `rt.stop.signal`, so a full Runtime would only pad these tests
  * with fields they never touch.
  *
- * The types already stop `nextAt`/`trigger` being swapped at the call site in
+ * The types already stop `nextAt`/`wake` being swapped at the call site in
  * `runStart`, but nothing short of running `loop` itself catches it forgetting
  * to start the schedule, a schedule left running past stop, or an in-flight
  * tick being abandoned rather than waited out — and that last one is the lock
@@ -511,7 +511,7 @@ describe("loop", () => {
       start: jest.fn(),
       stop: jest.fn(),
       nextAt: () => null,
-      trigger: jest.fn(() => true),
+      wake: jest.fn((): WakeResult => "started"),
     };
     const stop = new AbortController();
     stop.abort(); // already stopping before loop even starts waiting
@@ -520,7 +520,7 @@ describe("loop", () => {
 
     expect(schedule.start).toHaveBeenCalledTimes(1);
     expect(schedule.stop).toHaveBeenCalledTimes(1);
-    expect(schedule.trigger).not.toHaveBeenCalled();
+    expect(schedule.wake).not.toHaveBeenCalled();
   });
 
   it("does not resolve until a tick already in flight finishes, even after the schedule is stopped", async () => {
@@ -529,7 +529,7 @@ describe("loop", () => {
       start: () => order.push("start"),
       stop: () => order.push("stop"),
       nextAt: () => null,
-      trigger: () => true,
+      wake: () => "started",
     };
     const stop = new AbortController();
     const inFlight = new Set<Promise<void>>();

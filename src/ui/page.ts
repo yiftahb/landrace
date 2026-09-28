@@ -967,27 +967,28 @@ function restoreAfter(ms) {
   restoreTimer = setTimeout(() => setTickButton(TICK_LABEL, false), ms);
 }
 
+// Both 202s mean the ask was taken. A queued one runs as soon as the tick in
+// flight ends, so the button says so for a moment rather than looking as if
+// nothing happened.
+function tickAnswered(status, said) {
+  if (status === 202 && said === "tick queued") {
+    setTickButton("queued", true);
+    restoreAfter(3000);
+  } else if (status === 202) {
+    setTickButton(TICK_LABEL, false);
+    schedulePoll(0);
+  } else {
+    setTickButton("failed", true);
+    restoreAfter(3000);
+  }
+}
+
 tickButton.addEventListener("click", () => {
   if (restoreTimer !== null) clearTimeout(restoreTimer);
   setTickButton("starting…", true);
-  fetch("/tick", { method: "POST", headers: { "x-landrace-action": "tick" } }).then(
-    (res) => {
-      if (res.status === 202) {
-        setTickButton(TICK_LABEL, false);
-        schedulePoll(0);
-      } else if (res.status === 409) {
-        setTickButton("tick running", true);
-        restoreAfter(3000);
-      } else {
-        setTickButton("failed", true);
-        restoreAfter(3000);
-      }
-    },
-    () => {
-      setTickButton("failed", true);
-      restoreAfter(3000);
-    },
-  );
+  fetch("/tick", { method: "POST", headers: { "x-landrace-action": "tick" } })
+    .then((res) => res.text().then((said) => tickAnswered(res.status, said)))
+    .catch(() => tickAnswered(0, ""));
 });
 
 pollOnce().then(() => schedulePoll(POLL_MS));
