@@ -135,6 +135,11 @@ describe("the filter row", () => {
       expect(button).not.toContain("<img");
     });
 
+    it("looks disabled while disabled: dimmed, with a not-allowed cursor", () => {
+      const button = /<button id="refresh"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
+      expect(button.split(" ")).toEqual(expect.arrayContaining(["disabled:opacity-50", "disabled:cursor-not-allowed"]));
+    });
+
     it("shares the icon-button styling family the theme toggle already uses", () => {
       const button = /<button id="refresh"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
       const themeToggle = /<button id="theme-toggle"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
@@ -157,10 +162,10 @@ describe("the Refresh button's behaviour", () => {
 
   describe("what it says once the server answers", () => {
     const answer = (status: number) => {
-      const seen = { button: [] as Array<[string, string, boolean]>, restores: 0, polls: 0 };
+      const seen = { button: [] as Array<[string, string, boolean, boolean]>, restores: 0, polls: 0 };
       runInNewContext(`${fnSource("refreshAnswered")} refreshAnswered(STATUS);`, {
         STATUS: status, REFRESH_LABEL: "Refresh", REFRESH_TITLE: "Re-read the tracker",
-        setRefreshButton: (label: string, title: string, disabled: boolean) => seen.button.push([label, title, disabled]),
+        setRefreshButton: (label: string, title: string, disabled: boolean, busy: boolean) => seen.button.push([label, title, disabled, busy]),
         restoreRefreshAfter: () => { seen.restores += 1; },
         schedulePoll: () => { seen.polls += 1; },
       });
@@ -168,11 +173,46 @@ describe("the Refresh button's behaviour", () => {
     };
 
     it("is itself again, and re-polls at once, on success", () => {
-      expect(answer(200)).toEqual({ button: [["Refresh", "Re-read the tracker", false]], restores: 0, polls: 1 });
+      expect(answer(200)).toEqual({ button: [["Refresh", "Re-read the tracker", false, false]], restores: 0, polls: 1 });
     });
 
     it("says failed, briefly, on anything else", () => {
-      expect(answer(502)).toEqual({ button: [["failed", "failed", true]], restores: 1, polls: 0 });
+      expect(answer(502)).toEqual({ button: [["failed", "failed", true, false]], restores: 1, polls: 0 });
+    });
+  });
+
+  // A refresh is a tracker round trip — seconds on a slow link — and a still
+  // button reads as a click that never landed.
+  describe("while a refresh is in flight", () => {
+    const toggles = () => {
+      const on = new Set<string>();
+      return { on, classList: { toggle: (c: string, force: boolean) => { if (force) on.add(c); else on.delete(c); } } };
+    };
+    const draw = (busy: boolean) => {
+      const svg = toggles();
+      const button = { ...toggles(), attrs: new Map<string, string>(), title: "", disabled: false,
+        setAttribute(k: string, v: string) { this.attrs.set(k, v); }, querySelector: () => svg };
+      runInNewContext(`${fnSource("setRefreshButton")} setRefreshButton("L", "T", BUSY, BUSY);`, { refreshButton: button, BUSY: busy });
+      return { button, svg };
+    };
+
+    it("spins the icon, pulses the button, and disables it", () => {
+      const { button, svg } = draw(true);
+      expect(button.disabled).toBe(true);
+      expect(svg.on.has("animate-spin")).toBe(true);
+      expect(button.on.has("animate-pulse")).toBe(true);
+      expect(button.attrs.get("aria-busy")).toBe("true");
+    });
+
+    it("stops both once it is not", () => {
+      const { button, svg } = draw(false);
+      expect(svg.on.has("animate-spin")).toBe(false);
+      expect(button.on.has("animate-pulse")).toBe(false);
+      expect(button.attrs.get("aria-busy")).toBe("false");
+    });
+
+    it("is what a click starts", () => {
+      expect(APP_JS).toContain('setRefreshButton("Refreshing…", "Refreshing…", true, true);');
     });
   });
 });
