@@ -1529,7 +1529,45 @@ export interface BoardRow {
    * on), so an entry here is an offer, not a promise.
    */
   goto: Array<{ stage: string; path: string }>;
+  /**
+   * Where the ticket panel reads and writes, built by the server from a
+   * checked id like `retry`. Null on an artifact: only a ticket opens a panel.
+   */
+  panel: PanelPaths | null;
   children: BoardRow[];
+}
+
+/** The ticket panel's routes for one ticket. */
+export interface PanelPaths {
+  activity: string;
+  conversation: string;
+  reply: string;
+  ask: string;
+  resolve: string;
+}
+
+/** One record of a ticket's conversation, as the panel shows it: plain text, oldest first. */
+export interface ConversationLine {
+  at: string;
+  /** "landrace" for our own records, the author the source named for a person's. */
+  by: string;
+  byAgent: boolean;
+  kind: string;
+  stage: string;
+  round: number;
+  text: string;
+}
+
+/**
+ * What the ticket panel reads and writes. The top of the panel reads the
+ * BoardRow already in /board.json; everything here is the bottom half.
+ */
+export interface TicketPanel {
+  activity(ticket: string, after: number): Promise<ActivityPage>;
+  conversation(ticket: string): Promise<ConversationLine[]>;
+  reply(ticket: string, message: string): Promise<void>;
+  ask(ticket: string, message: string): Promise<{ reply: string; resolved: boolean }>;
+  resolve(ticket: string): Promise<{ alreadyResolved: boolean }>;
 }
 
 export interface BoardView {
@@ -1571,6 +1609,11 @@ export interface UiOptions {
    * read, so it is guarded exactly like the other three.
    */
   refresh?: () => Promise<void>;
+  /**
+   * The ticket panel's reads and its three writes — Reply, Ask, Resolve.
+   * Absent, every panel route is 404.
+   */
+  panel?: TicketPanel;
 }
 
 /**

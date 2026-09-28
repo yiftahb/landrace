@@ -4,7 +4,8 @@ import { BLOCKED_NOTE, oneLine, SCREENED_NOTE, statusRows } from "#runner/status
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
-  Board, BoardRow, BoardView, Graph, Held, LandraceEvent, Lane, Node, Running, Stage, StatusRow, Workflow,
+  Board, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, PanelPaths, Running, Stage,
+  StatusRow, Workflow,
 } from "#namespace.js";
 
 /**
@@ -51,6 +52,34 @@ const gotoPaths = (id: string, stage: Stage | undefined): BoardRow["goto"] =>
   stage !== undefined && isTicketId(id)
     ? gotoTargetsOf(stage).map((g) => ({ stage: g.stage, path: `/tickets/${id}/goto/${encodeURIComponent(g.stage)}` }))
     : [];
+
+/** Where a ticket's panel reads and writes — built here, from an id already checked, never by the page. */
+const panelPaths = (id: string): PanelPaths | null =>
+  isTicketId(id)
+    ? {
+        activity: `/tickets/${id}/activity`, conversation: `/tickets/${id}/conversation`,
+        reply: `/tickets/${id}/reply`, ask: `/tickets/${id}/ask`, resolve: `/tickets/${id}/resolve`,
+      }
+    : null;
+
+/**
+ * A ticket's records as the panel's conversation: oldest first, only what
+ * has something to read, ours as landrace's and a person's as whoever the
+ * source says wrote it. Plain text — the page never renders it as markup.
+ */
+export function conversationOf(entries: readonly Entry[]): ConversationLine[] {
+  return entries
+    .filter((e) => typeof e.text === "string" && e.text.trim() !== "")
+    .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+    .map((e) => {
+      const author = (e.data as { author?: unknown } | undefined)?.author;
+      return {
+        at: e.at,
+        by: e.byAgent ? "landrace" : typeof author === "string" && author !== "" ? author : "someone",
+        byAgent: e.byAgent, stage: e.stage, kind: e.kind, round: e.round, text: e.text ?? "",
+      };
+    });
+}
 
 /** Most urgent first — the order a branch's lane cascades in. */
 const URGENCY: readonly Lane[] = ["needs-you", "running", "elsewhere", "waiting", "not-admitted", "discharged"];
@@ -121,7 +150,7 @@ export function boardView(input: {
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, round: null, model: null,
-      chat: null, screened: false, retry: null, goto: [], children: [],
+      chat: null, screened: false, retry: null, goto: [], panel: null, children: [],
     };
     const s = status.get(node.id);
     if (node.kind !== TICKET_KIND || !s) return base;
@@ -131,7 +160,10 @@ export function boardView(input: {
     // link the browser is about to open.
     // An id chatFor refuses costs that row its Chat menu, not the page: one
     // throw here blanked every row of the board.
-    const ticket: BoardRow = { ...base, stage: s.stage, note: oneLine(s.note), chat: isTicketId(node.id) ? chatFor(node.id, input.workspace) : null };
+    const ticket: BoardRow = {
+      ...base, stage: s.stage, note: oneLine(s.note), panel: panelPaths(node.id),
+      chat: isTicketId(node.id) ? chatFor(node.id, input.workspace) : null,
+    };
     // A closed ticket is out of the loop whatever its labels still say or a
     // stale event claims: it never asks for you, and never opens a parent —
     // and its note says it is closed, not "blocked: needs a human" from a
