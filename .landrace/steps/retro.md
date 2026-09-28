@@ -102,6 +102,10 @@ prompt that grows by a paragraph every ticket soon says nothing.
 Several tests pin a step prompt's exact wording: a lesson that breaks one is
 reworded until it passes, or dropped. Never edit a test to make a lesson pass.
 Done when all pass.
+Expected in this sandbox, and not failures: the tests that start a local
+server are skipped (jest says so first), and `landrace validate` reports the
+`githubToken` secret and `.mcp.json` missing, since neither is ever in a
+worktree. Anything else that fails is real.
 
 **Step 7 — Commit once and push.** Make every change in one commit, with the
 message `retro: lessons from #{node.id}`. If there is nothing to learn, make no

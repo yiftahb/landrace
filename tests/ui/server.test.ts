@@ -2,6 +2,7 @@ import * as http from "node:http";
 import { request } from "node:http";
 import type { BoardView, GotoResult, UiServer, WakeResult } from "#namespace.js";
 import { serveBoard } from "#ui/server.js";
+import { describeLoopback } from "#tests/support/loopback.js";
 
 const empty: BoardView = {
   generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
@@ -39,7 +40,7 @@ function get(port: number, path: string, opts: {
   });
 }
 
-describe("serveBoard", () => {
+describeLoopback("serveBoard", () => {
   let server: UiServer;
   afterEach(async () => { await server?.close(); });
 
@@ -165,7 +166,7 @@ describe("serveBoard", () => {
   });
 });
 
-describe("POST /tick", () => {
+describeLoopback("POST /tick", () => {
   let server: UiServer;
   afterEach(async () => { await server?.close(); });
 
@@ -361,7 +362,7 @@ describe("POST /tick", () => {
  * tracker read, which is still worth guarding the same way: it is still a
  * request only the page's own script should be able to trigger.
  */
-describe("POST /refresh", () => {
+describeLoopback("POST /refresh", () => {
   let server: UiServer;
   afterEach(async () => { await server?.close(); });
 
@@ -449,7 +450,7 @@ describe("POST /refresh", () => {
  * asked believed. A Retry is a goto with no step named: the stage that last
  * failed.
  */
-describe("the page's writes to a ticket: POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>", () => {
+describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>", () => {
   let server: UiServer;
   afterEach(async () => { await server?.close(); });
 

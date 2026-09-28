@@ -13,6 +13,7 @@ import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
+import { describeLoopback } from "#tests/support/loopback.js";
 import {
   boardSink,
   buildRuntime,
@@ -399,7 +400,8 @@ describe("repoWorkspace", () => {
   });
 });
 
-describe("startUi", () => {
+// Starts a real server on 127.0.0.1: skipped only where a sandbox forbids that.
+describeLoopback("startUi", () => {
   const board = () =>
     createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
 

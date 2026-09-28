@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
@@ -42,7 +43,31 @@ const paths = {
   ...Object.fromEntries(Object.entries(imports).map(([specifier, target]) => [specifier, [target]])),
 };
 
-export default {
+/*
+ * Whether this process may bind 127.0.0.1. A write step's OS sandbox forbids
+ * it, deliberately: with loopback open an agent could reach the board's write
+ * routes and every local service. There the tests that start a server are
+ * skipped (tests/support/loopback.ts) and this says so once, rather than 71
+ * EPERMs an agent then has to explain away. Everywhere else they run.
+ */
+const canBindLoopback = () => new Promise((resolve) => {
+  const probe = createServer();
+  probe.once("error", () => resolve(false));
+  probe.listen(0, "127.0.0.1", () => probe.close(() => resolve(true)));
+});
+
+// A function, not a value: jest loads this file with require(), which cannot
+// wait on a top-level await, and the probe has to finish before any test runs.
+export default async () => {
+  // jest calls this more than once in one process; say it the first time.
+  if (process.env.LANDRACE_NO_LOOPBACK !== "1" && !(await canBindLoopback())) {
+    process.env.LANDRACE_NO_LOOPBACK = "1";
+    console.warn("landrace: 127.0.0.1 cannot be bound here (a sandbox), so the tests that start a local server are skipped.");
+  }
+  return jestConfig;
+};
+
+const jestConfig = {
   preset: "ts-jest/presets/default-esm",
   testEnvironment: "node",
   extensionsToTreatAsEsm: [".ts"],

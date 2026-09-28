@@ -74,6 +74,10 @@ commit is lost with it.
 (`pnpm install`), and run the test suite and the lint checks. A reviewer's round spent on something you could have
 caught yourself is a wasted round. Done when
 all pass; fix and rerun until they do.
+Expected in this sandbox, and not failures: the tests that start a local
+server are skipped (jest says so first), and `landrace validate` reports the
+`githubToken` secret and `.mcp.json` missing, since neither is ever in a
+worktree. Anything else that fails is real.
 
 **Step 6 — Push the branch.** Finish with `git push origin HEAD`, which pushes only the branch you are on;
 the orchestrator opens the pull request.

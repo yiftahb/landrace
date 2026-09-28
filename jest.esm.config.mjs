@@ -14,10 +14,11 @@ import base from "./jest.config.mjs";
  * and breaking a working test to reach this one is the wrong trade. Run by
  * `pnpm test`, after the default pass.
  */
-export default {
-  ...base,
+// The default config is a function (it probes loopback first), so this one is too.
+export default async () => ({
+  ...(await base()),
   testMatch: ["<rootDir>/tests/esm/**/*.test.ts"],
   // The default pass's ignore list is what sends these here; keeping it would
   // send them nowhere.
   testPathIgnorePatterns: ["/node_modules/"],
-};
+});

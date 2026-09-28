@@ -433,6 +433,17 @@ describe("the shipped prompts follow a numbered procedure", () => {
  * its briefing and answers with a list; pull.review puts that list on the
  * pull request, where the open-thread count routes the ticket.
  */
+// The 71 "listen EPERM" failures every sandboxed build reported, and the two
+// validate problems no worktree can avoid: expected, and said so, so an agent
+// neither chases them nor waves a real failure through beside them.
+it.each(["build", "fix-review", "retro"])("%s says which sandbox skips and validate problems are expected", async (id) => {
+  const { steps } = await loadWorkflow(".landrace");
+  const prose = (steps.get(`steps/${id}.md`)?.prompt ?? "").replace(/\s+/g, " ");
+  expect(prose).toMatch(/tests that start a local server are skipped/);
+  expect(prose).toMatch(/`githubToken` secret and `\.mcp\.json` missing/);
+  expect(prose).toMatch(/Anything else that fails is real/);
+});
+
 describe("build is shown what the person asked for", () => {
   it("fences the last message a person wrote as their request, never an instruction", async () => {
     const { steps } = await loadWorkflow(".landrace");

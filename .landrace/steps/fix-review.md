@@ -68,6 +68,10 @@ step ends, and anything you did not commit is lost with it.
 **Step 5 — Verify: install, tests, lint.** Install dependencies as needed
 (`pnpm install`), and run the test suite and the lint checks. Done when
 all pass; fix and rerun until they do.
+Expected in this sandbox, and not failures: the tests that start a local
+server are skipped (jest says so first), and `landrace validate` reports the
+`githubToken` secret and `.mcp.json` missing, since neither is ever in a
+worktree. Anything else that fails is real.
 
 **Step 6 — Push the branch.** Finish with `git push origin HEAD`, which puts your commits on the pull
 request before the reviewer's next round.
