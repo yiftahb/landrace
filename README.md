@@ -112,6 +112,7 @@ interface Node {
   priority: number | null;
   origin: Origin | null;
   state: { [key: string]: Json };   // whatever the source wants a predicate to read
+  createdAt?: number;        // epoch ms, for the board's "opened 3h ago" only — no workflow can route on it
 }
 
 interface Relationship { from: string; to: string; type: string }
@@ -155,6 +156,7 @@ src/hooks/           the define* contracts, and the loader that imports yours
 src/agent/           prompt screening, the worktree sandbox
 src/runner/          tick, converge, step, lock, effect dispatch, events
 src/config/          landrace.yaml + .env
+src/telemetry/       OpenTelemetry export of events, loaded only when it is on
 src/mcp/             operator tools over stdio
 src/cli/             validate, next, mcp, start, status
 src/testing/         the harness, for testing a workflow of your own
@@ -281,6 +283,27 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 Referenced by name from `landrace.yaml`, resolved at load, and handed to hooks as values — a hook never reads `process.env` itself, which is what makes it testable and what lets redaction know every value to suppress. A `.env` here takes precedence over your shell, because a project's own file should be what runs.
 
 `validate` fails if this file exists and git does not ignore it.
+
+### Telemetry — OpenTelemetry
+
+Off by default. When on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to a collector as an OTel **log record**, the way Claude Code exports its own events. The body and the `event.name` attribute are the event's name; every other field becomes an attribute prefixed `landrace.` (`landrace.ticket`, and the agent's output in `landrace.raw`), JSON-encoded if it is not a string, number or boolean. `*.failed`, `*.denied`, `*.blocked` and `lock.stolen` are `WARN`, everything else `INFO`. Records carry the same redaction stdout does. Traces and metrics are not exported.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `LANDRACE_ENABLE_TELEMETRY` | `1` turns export on | off |
+| `OTEL_LOGS_EXPORTER` | `otlp` or `console` | `otlp` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` or `http/json`; `grpc` is refused | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | collector base URL; `/v1/logs` is appended | `http://localhost:4318` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `k=v,k=v`, e.g. auth, values percent-decoded | none |
+| `OTEL_SERVICE_NAME` | `service.name` | `landrace` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `k=v,k=v`, extra resource attributes | none |
+| `OTEL_LOGS_EXPORT_INTERVAL` | batch delay, in milliseconds | `5000` |
+
+Set them in `.landrace/.env` or your shell (`.env` wins, as for secrets), or on the command line, which wins over both: `landrace start --telemetry` sets `LANDRACE_ENABLE_TELEMETRY=1`, and `--otel KEY=VALUE`, repeatable, sets any key in the table — any other key is a startup error. `landrace mcp` reads `.env` and the shell only, and refuses `OTEL_LOGS_EXPORTER=console`, which would write into its protocol on stdout. `landrace status` never exports.
+
+`landrace start` flushes the batch on `--once`, a normal stop and the first Ctrl-C; the second Ctrl-C exits without waiting. An export that fails says so once on stderr, and again only after one has succeeded. None of these settings reach the agent subprocess: `OTEL_EXPORTER_OTLP_HEADERS` is usually a credential.
+
+To see it work, run a collector with the `debug` exporter on `:4318`, then `landrace start --once --telemetry`.
 
 ### `vars` — one workflow, several instances
 
@@ -515,7 +538,7 @@ anchored edges alone for `cycle-bound`.
 ## CLI
 
 ```bash
-landrace start [-w <dir>] [--once] [--ui-port <port>] [--no-ui]
+landrace start [-w <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui] [--telemetry] [--otel KEY=VALUE]...
                                          # watch the tracker; serves the triage page on 127.0.0.1:4545
 landrace status [-w <dir>]               # one line per ticket: where it is, and why one was skipped or stopped
 landrace validate [dir]                  # prove a workflow sound
@@ -533,6 +556,11 @@ reclaim.
 candidate ticket, with its sub-tickets and pull requests nested beneath it, in
 lanes: needs you, agent running now, held by another process (your MCP
 conversation, another instance), waiting, and collapsed not-admitted and done.
+Done holds what the source lists as closed; the shipped GitHub hook lists a
+ticket Landrace moved (it carries an `lr:stage:*` label) for 30 days after it
+closes. Each pull request and document shows what it is, its state (a pull
+request's glyph is green while open, purple once merged, red once closed) and
+how long ago it was opened, when the source says.
 A branch sits in the lane of its most urgent ticket, so a sub-ticket that needs
 you lifts its whole branch into "Needs you", opened down to it. A search box
 filters by title or id, and Collapse all / Expand all set every branch at once.

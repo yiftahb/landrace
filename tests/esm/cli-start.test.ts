@@ -540,6 +540,52 @@ describe("runStart --once", () => {
     expect(printed.join("\n")).not.toContain("env-secret-value");
   });
 
+  /*
+   * Telemetry from the command line to the collector: `--telemetry` and
+   * `--otel` reach the settings, every event reaches the exporter, and the
+   * batch — whose 5s delay this run never waits out — is flushed on the way
+   * out. The console exporter stands in for a collector: it writes each
+   * record with console.dir.
+   */
+  it("exports every event as a log record and flushes them before it returns", async () => {
+    const { dir } = await fixture();
+    const records: { body?: unknown; resource?: { attributes?: Record<string, unknown> } }[] = [];
+    const [log, dir_] = [console.log, console.dir];
+    console.log = (): void => {};
+    console.dir = (record: unknown): void => {
+      records.push(record as (typeof records)[number]);
+    };
+
+    try {
+      await runStart(dir, { once: true, otel: ["OTEL_LOGS_EXPORTER=console", "OTEL_SERVICE_NAME=lr-e2e", "LANDRACE_ENABLE_TELEMETRY=1"] });
+    } finally {
+      [console.log, console.dir] = [log, dir_];
+    }
+
+    expect(records.map((r) => r.body)).toEqual(expect.arrayContaining(["tick.started", "effect.applied", "tick.finished"]));
+    expect(records[0]?.resource?.attributes?.["service.name"]).toBe("lr-e2e");
+  });
+
+  // A header value is not a secret by virtue of being a header: redacting
+  // every one would strike "production" out of every event and comment.
+  it("leaves an ordinary word that happens to be a header value in the log", async () => {
+    const seen: LandraceEvent[] = [];
+    const { dir } = await fixture();
+    const rt = await buildRuntime(dir, {
+      sink: (e) => seen.push(e),
+      otel: ["LANDRACE_ENABLE_TELEMETRY=1", "OTEL_LOGS_EXPORTER=console", "OTEL_EXPORTER_OTLP_HEADERS=x-scope-orgid=production"],
+    });
+    const dir_ = console.dir;
+    console.dir = (): void => {};
+    try {
+      rt.deps.log("step.started", { note: "deploying to production" });
+      await rt.telemetry?.shutdown();
+    } finally {
+      console.dir = dir_;
+    }
+    expect(seen).toEqual([{ name: "step.started", note: "deploying to production" }]);
+  });
+
   /**
    * `--once` is refused too, not only the daemon loop: a failing preflight
    * must stop the process before the one tick `--once` would otherwise run,

@@ -43,6 +43,12 @@ export interface Node {
   priority: number | null;
   origin: Origin | null;
   state: { [k: string]: Json };
+  /**
+   * When the tracker says it was opened, epoch ms; absent where the source
+   * cannot tell cheaply. Display only: it is not among the paths the snapshot
+   * provides, so a workflow that routes on it fails validation.
+   */
+  createdAt?: number;
 }
 
 export interface Relationship { from: string; to: string; type: string }
@@ -328,6 +334,12 @@ export interface LoadedConfig {
    * prints — though a var is emphatically not a secret: nothing redacts it.
    */
   vars: Map<string, string>;
+  /**
+   * `LANDRACE_ENABLE_TELEMETRY` and the `OTEL_*` settings telemetry reads,
+   * `.env` over the shell exactly as a secret resolves. `--otel` goes over
+   * both, in `telemetrySettings`.
+   */
+  telemetry: Map<string, string>;
   /**
    * Variable names that resolved to nothing usable: no such environment
    * variable, or one set to an empty value. Both are reported rather than
@@ -767,6 +779,25 @@ export interface LandraceEvent {
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
+/** What `telemetrySettings` resolves `LANDRACE_ENABLE_TELEMETRY` and the `OTEL_*` settings to. */
+export interface TelemetrySettings {
+  exporter: "otlp" | "console";
+  protocol: "http/protobuf" | "http/json";
+  /** The collector's base URL; `/v1/logs` is appended to it. */
+  endpoint: string;
+  headers: Record<string, string>;
+  /** `OTEL_RESOURCE_ATTRIBUTES`, with `service.name` always set. */
+  resource: Record<string, string>;
+  intervalMs: number;
+}
+
+/** A logger's `exporter`, shipping each event to a collector as an OTel log record. */
+export interface OtelSink {
+  sink(e: LandraceEvent): void;
+  /** Flushes what is queued. Never rejects: it runs in a `finally`. */
+  shutdown(): Promise<void>;
+}
+
 /**
  * The engine's logger, which can be told about more secrets after it was made.
  * `scrub` applies that same live set to text that leaves the process outside
@@ -1190,6 +1221,8 @@ export interface Runtime {
    * each ticket unwind through the lock it holds.
    */
   stop: AbortController;
+  /** Present when telemetry is on. `runStart` shuts it down on the way out, flushing what is queued. */
+  telemetry?: { shutdown(): Promise<void> };
 }
 
 /**
@@ -1222,10 +1255,17 @@ export interface StartOptions {
   /** Serve the triage page. Default true; `--no-ui` turns it off. */
   ui?: boolean;
   uiPort?: number;
+  /** See BuildOptions.otel. */
+  otel?: readonly string[];
 }
 
 export interface BuildOptions {
   debug?: boolean;
+  /**
+   * `--otel KEY=VALUE`, and `--telemetry` as `LANDRACE_ENABLE_TELEMETRY=1`:
+   * telemetry settings that win over `.env` and the shell.
+   */
+  otel?: readonly string[];
   /** Where events go. `landrace status` sends them to stderr, because stdout is its report. */
   sink?: (event: LandraceEvent) => void;
   /**
@@ -1409,6 +1449,8 @@ export interface BoardRow {
   note: string;
   /** When the current state began, if this process knows. Epoch ms. */
   since: number | null;
+  /** When the source says the node was opened, epoch ms, or null where it gave none. */
+  createdAt: number | null;
   round: number | null;
   model: string | null;
   /** Tickets only. */

@@ -134,6 +134,8 @@ export interface IssueNode {
   author: { login: string } | null;
   /** Who last edited the body, or null if nobody has since it was opened. */
   editor: { login: string } | null;
+  /** ISO 8601. Optional because a reading without it draws no age, never NaN. */
+  createdAt?: string;
 }
 
 /**
@@ -142,7 +144,7 @@ export interface IssueNode {
  * too: a parent counting its children by stage reads their labels.
  */
 export const ISSUE_FIELDS = `
-  number title url state stateReason
+  number title url state stateReason createdAt
   labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
   body author { login } editor { login }`;
@@ -157,7 +159,7 @@ export const ISSUE_FIELDS = `
  * reading is the one kept.
  */
 const SUB_ISSUE_FIELDS = `
-  number title url state stateReason
+  number title url state stateReason createdAt
   labels(first: 20) { nodes { name } }
   assignees(first: 5) { nodes { login } }
   body author { login } editor { login }`;
@@ -1369,7 +1371,7 @@ const MAX_ISSUE_PAGES = 10;
  * a fix round moves. No thread in it — see THREADS_QUERY — and no body.
  */
 const PULL_FIELDS = `
-  number title url state merged headRefName headRefOid isCrossRepository
+  number title url state merged headRefName headRefOid isCrossRepository createdAt
   closingIssuesReferences(first: 20) { nodes { number } }`;
 
 /**
@@ -1382,6 +1384,25 @@ query LandraceIssues($owner: String!, $name: String!, $cursor: String) {
     issues(states: OPEN, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: CREATED_AT, direction: ASC }) {
       pageInfo { hasNextPage endCursor }
       nodes { ${ISSUE_FIELDS} parent { number } subIssues(first: 50) { nodes { ${SUB_ISSUE_FIELDS} } } }
+    }
+  }
+}`;
+
+// ponytail: a constant, not a setting — tracker config if another window is ever wanted.
+/** How far back the board's Done lane reaches. Display only: tick works open tickets alone. */
+const DONE_WINDOW_MS = 30 * 86_400_000;
+
+/**
+ * Closed issues, most recently updated first, so the list stops at the first
+ * issue last touched before the window: none can have closed after it last
+ * changed, so nothing past it closed inside the window either.
+ */
+const CLOSED_QUERY = `
+query LandraceClosed($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(states: CLOSED, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ${ISSUE_FIELDS} closedAt updatedAt parent { number } }
     }
   }
 }`;
@@ -1461,6 +1482,8 @@ interface PullNode {
   /** From a fork, whose head branch is named in somebody else's repository — and so could be named anything. */
   isCrossRepository: boolean;
   closingIssuesReferences: { nodes: Array<{ number: number }> };
+  /** ISO 8601. Optional for the same reason as IssueNode's. */
+  createdAt?: string;
 }
 
 interface ListedIssue extends IssueNode {
@@ -1471,6 +1494,18 @@ interface ListedIssue extends IssueNode {
 interface IssuesResponse {
   repository: {
     issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: ListedIssue[] };
+  } | null;
+}
+
+interface ClosedIssue extends IssueNode {
+  closedAt: string | null;
+  updatedAt: string | null;
+  parent: { number: number } | null;
+}
+
+interface ClosedResponse {
+  repository: {
+    issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: ClosedIssue[] };
   } | null;
 }
 
@@ -1559,7 +1594,14 @@ export function nodeOfIssue(issue: IssueNode, bot: string): Node {
     // abstains on those — so an unassigned ticket would be worked by every
     // instance instead of none.
     state: { labels, assignees: issue.assignees.nodes.map((a) => a?.login ?? "").filter(Boolean) },
+    ...createdAtOf(issue.createdAt),
   };
+}
+
+/** The board's "opened 3h ago": absent, not NaN, when GitHub gave no parseable time. */
+function createdAtOf(at: string | undefined): { createdAt?: number } {
+  const ms = at === undefined ? NaN : Date.parse(at);
+  return Number.isNaN(ms) ? {} : { createdAt: ms };
 }
 
 function pullNodeOf(pull: PullNode, openThreads?: number): Node {
@@ -1581,6 +1623,7 @@ function pullNodeOf(pull: PullNode, openThreads?: number): Node {
       ...(pull.isCrossRepository ? {} : { branch: pull.headRefName }),
       ...(openThreads === undefined ? {} : { openThreads }),
     },
+    ...createdAtOf(pull.createdAt),
   };
 }
 
@@ -1705,6 +1748,30 @@ async function listGraph(gh: Client, repo: string, link: SpecLink, ctx: RuntimeC
         if (!nodes.has(child)) keep(sub);
         parentOf.set(child, id);
       }
+    }
+    if (!issues.pageInfo.hasNextPage) break;
+    cursor = issues.pageInfo.endCursor;
+  }
+
+  // The board's Done lane: tickets Landrace moved — an lr:stage:* label says it
+  // did — that closed inside the window. A closed issue nobody routed is not
+  // Landrace's to show. Bounded like the rest, but past the bound it stops
+  // quietly rather than failing the tick: this is for the page, not the loop.
+  const since = Date.now() - DONE_WINDOW_MS;
+  cursor = null;
+  closed: for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
+    const data: ClosedResponse = await gh.graphql<ClosedResponse>(CLOSED_QUERY, { owner, name, cursor });
+    if (!data.repository) throw unseen(repo);
+    const { issues } = data.repository;
+    for (const issue of issues.nodes) {
+      if (issue.updatedAt !== null && Date.parse(issue.updatedAt) < since) break closed;
+      if (issue.closedAt === null || Date.parse(issue.closedAt) < since) continue;
+      if (!issue.labels.nodes.some((l) => l.name.startsWith(STAGE_LABEL_PREFIX))) continue;
+      const id = String(issue.number);
+      // A closed sub-issue is already here under its open parent, read lighter; this reading is the full one.
+      nodes.delete(id);
+      keep(issue);
+      if (issue.parent) parentOf.set(id, String(issue.parent.number));
     }
     if (!issues.pageInfo.hasNextPage) break;
     cursor = issues.pageInfo.endCursor;
@@ -2390,5 +2457,5 @@ export const githubPreflight = definePreflight({ id: "github", check });
 
 /** Every GraphQL document this hook sends, so a test can cost each against GitHub's node limit. */
 export const GRAPHQL_QUERIES = {
-  ISSUE_QUERY, ISSUES_QUERY, PULLS_QUERY, TICKET_QUERY, THREADS_QUERY, BRIEF_QUERY, PREFLIGHT_PR_QUERY,
+  ISSUE_QUERY, ISSUES_QUERY, CLOSED_QUERY, PULLS_QUERY, TICKET_QUERY, THREADS_QUERY, BRIEF_QUERY, PREFLIGHT_PR_QUERY,
 };

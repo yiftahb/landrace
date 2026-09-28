@@ -120,7 +120,7 @@ export function boardView(input: {
       id: node.id, kind: node.kind, title: oneLine(node.title), link,
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
-      note: "", since: null, round: null, model: null,
+      note: "", since: null, createdAt: node.createdAt ?? null, round: null, model: null,
       chat: null, screened: false, retry: null, goto: [], children: [],
     };
     const s = status.get(node.id);

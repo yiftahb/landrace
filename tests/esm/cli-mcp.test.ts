@@ -269,6 +269,15 @@ describe("buildMcpTools and the startup preflight", () => {
   });
 });
 
+// stdout is the MCP protocol here, and the console exporter writes to it.
+describe("buildMcpTools and telemetry", () => {
+  it("refuses the console exporter, which would corrupt the protocol", async () => {
+    const { dir } = await fixture({ screen: false });
+    await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\nLANDRACE_ENABLE_TELEMETRY=1\nOTEL_LOGS_EXPORTER=console\n`);
+    await expect(buildMcpTools(dir)).rejects.toThrow(/console would write into the MCP protocol/);
+  });
+});
+
 describe("buildMcpTools", () => {
   /**
    * §15 says every agent invocation is screened before it runs, and a

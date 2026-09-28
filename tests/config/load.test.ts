@@ -45,6 +45,21 @@ describe("loadConfig", () => {
     expect(JSON.stringify(config)).not.toContain("ghp_x");
   });
 
+  it("exposes the telemetry settings, .env over the shell, and nothing else from the environment", async () => {
+    process.env.OTEL_SERVICE_NAME = "from-shell";
+    process.env.OTEL_LOGS_EXPORTER = "console";
+    try {
+      const { telemetry } = await loadConfig(await fixture("GITHUB_TOKEN=ghp_x\nOTEL_SERVICE_NAME=from-file\n"));
+      expect(telemetry.get("OTEL_SERVICE_NAME")).toBe("from-file");
+      expect(telemetry.get("OTEL_LOGS_EXPORTER")).toBe("console");
+      expect(telemetry.has("GITHUB_TOKEN")).toBe(false);
+      expect(telemetry.has("PATH")).toBe(false);
+    } finally {
+      delete process.env.OTEL_SERVICE_NAME;
+      delete process.env.OTEL_LOGS_EXPORTER;
+    }
+  });
+
   // The gitignore guard itself (runValidate's ".env exists but is not
   // gitignored" check) is exercised against real git repositories in
   // tests/cli/gitignore.test.ts — gitignore semantics (negation, nesting)

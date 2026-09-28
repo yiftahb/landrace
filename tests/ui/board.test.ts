@@ -150,6 +150,14 @@ describe("boardView: where a row may send its ticket back to", () => {
   });
 });
 
+describe("boardView: when a row's node was created", () => {
+  it("carries the source's creation time onto the row, and null where the source gave none", () => {
+    const rows = flatten(view(graph([ticket("1"), pr("pr-2", { createdAt: 42 })], [edge("pr-2", "1", "implements")])).rows);
+    expect(rows.find((r) => r.id === "pr-2")?.createdAt).toBe(42);
+    expect(rows.find((r) => r.id === "1")?.createdAt).toBeNull();
+  });
+});
+
 describe("boardView: the tree", () => {
   it("nests a child under its parent and a pull request under its ticket", () => {
     const g = graph([ticket("1"), ticket("2"), pr("pr-9")], [edge("2", "1"), edge("pr-9", "2", "implements")]);
@@ -353,7 +361,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "closed", "goto", "id", "kind", "lane", "link", "model", "note", "priority",
+      "badge", "chat", "children", "closed", "createdAt", "goto", "id", "kind", "lane", "link", "model", "note", "priority",
       "retry", "round", "screened", "since", "stage", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
