@@ -133,21 +133,31 @@ stages:
       - { type: tracker.status, value: spec-questions }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
+  # A spec a person wrote with the agent — handed in from a pairing, `by:
+  # pair` on its record — never waits here: they reviewed it as they wrote
+  # it, and build takes it. Every trigger in here that leaves spec reads
+  # `run.lastOutputBy: agent`, the negation of build's.
   - id: spec-human-review
     goto: *goto
-    requires: { "run.outputs.spec.kind": spec }
+    requires: { "run.outputs.spec.kind": spec, "run.lastOutputBy": agent }
     triggers:
       # Every spec but an amendment: one written before any pull request, or
       # redone from scratch (goto-spec, "Go to step… spec") after one. An
       # amendment — the change a person asked for on the pull request — goes
       # straight to build instead; the two triggers are each other's negation.
       - name: the spec was published
-        when: { "run.stage": spec, "run.lastOutputValid": null, "run.outputs.spec.kind": spec, "rel.implements.in.total": 0 }
+        when:
+          "run.stage": spec
+          "run.lastOutputValid": null
+          "run.outputs.spec.kind": spec
+          "run.lastOutputBy": agent
+          "rel.implements.in.total": 0
       - name: the spec was redone after the pull request
         when:
           "run.stage": spec
           "run.lastOutputValid": null
           "run.outputs.spec.kind": spec
+          "run.lastOutputBy": agent
           "rel.implements.in.total": { $gt: 0 }
           "run.outputs.triage.intent": { $ne: revise }
       - name: your reply changed nothing here
@@ -236,8 +246,16 @@ stages:
           "run.stage": spec
           "run.lastOutputValid": null
           "run.outputs.spec.kind": spec
+          "run.lastOutputBy": agent
           "rel.implements.in.total": { $gt: 0 }
           "run.outputs.triage.intent": revise
+      # Handed in from a pairing: the person approved it by writing it.
+      - name: you wrote the spec together
+        when:
+          "run.stage": spec
+          "run.lastOutputValid": null
+          "run.outputs.spec.kind": spec
+          "run.lastOutputBy": pair
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
       - { type: tracker.status, value: build }
