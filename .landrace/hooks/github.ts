@@ -953,6 +953,17 @@ function pusher(git: Git, token: string, repo: string): (branch: string, ticket:
     }
     const withToken = remote?.https === true;
 
+    // Nothing to publish either when origin already has everything the
+    // branch has: a person's push, or the forge's "Update branch", moved it on
+    // and a fetch brought the news. A fast-forward-only push of it would be
+    // refused, on every tick, over commits that are already there.
+    const theirs = `refs/remotes/origin/${branch}`;
+    if ((await git(["for-each-ref", "--format=%(objectname)", theirs], {}, { signal })).trim() !== "") {
+      const contained = await git(["merge-base", "--is-ancestor", `refs/heads/${branch}`, theirs], {}, { signal })
+        .then(() => true, () => false);
+      if (contained) return;
+    }
+
     // Nothing to publish: the branch is origin's default branch, or behind
     // it. Asked of refs this checkout already has — origin/HEAD, as the clone
     // or `git remote set-head` left it — and skipped when it has none;
@@ -1968,6 +1979,15 @@ const BRIEF_COMMENTS = 60;
 const BRIEF_HISTORY_THREADS = 40;
 
 /**
+ * And what each of its two halves may spend. The engine cuts a hook's whole
+ * briefing at 32 KB from the end, which on a long history would drop the
+ * newest comments and every review thread first — the opposite of what the
+ * retro needs. Two halves this size, and the short `threads` beside them
+ * when the review has settled, stay inside it.
+ */
+const BRIEF_HISTORY_HALF_CHARS = 14_000;
+
+/**
  * The open threads as prose, asked for only when a step is about to run.
  *
  * This is the one place thread text is fetched at all, and it is deliberately
@@ -2110,11 +2130,24 @@ function openThreads(open: PullNode[], read: Map<number, BriefThread[]>): string
   return sections.join("\n\n") + tail;
 }
 
-/** The newest `keep` of a list, oldest first, and the line saying how many earlier ones were left out. */
-function newest<T>(all: T[], keep: number, what: string): { kept: T[]; left: string } {
-  const dropped = Math.max(0, all.length - keep);
+/**
+ * The newest of a list, rendered, oldest first: at most `keep` of them and
+ * no more text than one half of the history may spend — and the line saying
+ * how many earlier ones were left out.
+ */
+function newest<T>(all: T[], keep: number, what: string, render: (item: T) => string): { kept: Array<{ item: T; text: string }>; left: string } {
+  const kept: Array<{ item: T; text: string }> = [];
+  let spent = 0;
+  for (let i = all.length - 1; i >= 0 && kept.length < keep; i--) {
+    const item = all[i] as T;
+    const text = render(item);
+    if (spent + text.length > BRIEF_HISTORY_HALF_CHARS) break;
+    spent += text.length;
+    kept.push({ item, text });
+  }
+  const dropped = all.length - kept.length;
   return {
-    kept: all.slice(dropped),
+    kept: kept.reverse(),
     left: dropped === 0 ? "" : `(${dropped} earlier ${what} are not listed here.)\n\n`,
   };
 }
@@ -2134,35 +2167,36 @@ function historyOf(comments: SnapshotComment[], pulls: PullNode[], read: Map<num
   const ours = (login: string | undefined): boolean => typeof login === "string" && sameLogin(login, bot);
   const text = (body: string | null | undefined): string => cut((body ?? "").trim(), BRIEF_BODY_CHARS);
 
-  const said = newest(comments, BRIEF_COMMENTS, "comments");
+  const said = newest(comments, BRIEF_COMMENTS, "comments", (c) => {
+    const marker = wroteIt(c, bot) ? parseMarker(c.body ?? "") : null;
+    return marker
+      ? `Landrace [${marker.marker ?? marker.kind}]: ${text(stripMarker(c.body ?? ""))}`
+      : `@${c.user?.login ?? "ghost"}: ${text(c.body)}`;
+  });
   const conversation = said.kept.length === 0
     ? "No comments on the ticket."
-    : said.left + said.kept.map((c) => {
-      const marker = wroteIt(c, bot) ? parseMarker(c.body ?? "") : null;
-      return marker
-        ? `Landrace [${marker.marker ?? marker.kind}]: ${text(stripMarker(c.body ?? ""))}`
-        : `@${c.user?.login ?? "ghost"}: ${text(c.body)}`;
-    }).join("\n\n");
+    : said.left + said.kept.map((k) => k.text).join("\n\n");
 
   const ordered = [...pulls].sort((a, b) => a.number - b.number);
   const raised = newest(
     ordered.flatMap((pull) => (read.get(pull.number) ?? []).map((thread) => ({ pull: pull.number, thread }))),
     BRIEF_HISTORY_THREADS,
     "threads",
+    ({ thread }) => {
+      const opening = thread.comments.nodes[0];
+      const last = thread.lastReply.nodes[0];
+      const by = ours(opening?.author?.login) ? "Landrace's reviewer" : `@${opening?.author?.login ?? "ghost"}`;
+      const reply = thread.comments.totalCount > 1 && last
+        ? `\nLast reply, from ${ours(last.author?.login) ? "Landrace" : `@${last.author?.login ?? "ghost"}`}: ${text(last.body)}`
+        : "";
+      return `${where(thread)}raised by ${by} — ${thread.isResolved ? "resolved" : "open"}\n${text(opening?.body)}${reply}`;
+    },
   );
   let n = 0;
   const reviews = ordered.length === 0
     ? "No pull request was opened on this ticket."
     : raised.left + ordered.map((pull) => {
-      const listed = raised.kept.filter((r) => r.pull === pull.number).map(({ thread }) => {
-        const opening = thread.comments.nodes[0];
-        const last = thread.lastReply.nodes[0];
-        const by = ours(opening?.author?.login) ? "Landrace's reviewer" : `@${opening?.author?.login ?? "ghost"}`;
-        const reply = thread.comments.totalCount > 1 && last
-          ? `\nLast reply, from ${ours(last.author?.login) ? "Landrace" : `@${last.author?.login ?? "ghost"}`}: ${text(last.body)}`
-          : "";
-        return `${++n}. ${where(thread)}raised by ${by} — ${thread.isResolved ? "resolved" : "open"}\n${text(opening?.body)}${reply}`;
-      });
+      const listed = raised.kept.filter((r) => r.item.pull === pull.number).map((r) => `${++n}. ${r.text}`);
       return `### PR #${pull.number} (${pull.state.toLowerCase()})\n\n${listed.length === 0 ? "Nothing listed." : listed.join("\n\n")}`;
     }).join("\n\n");
 

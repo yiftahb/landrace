@@ -279,7 +279,9 @@ stages:
   #
   # A thread reopened after that goes through fix-review and code-review again,
   # so the retro runs again, on the whole history, until its three rounds are
-  # spent. A counter for a stage that never ran reads as 0.
+  # spent. A counter for a stage that never ran reads as 0. Not once the pull
+  # request merged: lessons committed after that land on a branch nothing
+  # will merge again.
   - id: retro
     step: steps/retro.md
     branch: "landrace/{ticket}"
@@ -290,6 +292,7 @@ stages:
           "run.stage": code-review
           "run.lastOutputValid": null
           "rel.implements.in.sum.openThreads": 0
+          "rel.implements.in.not.merged": { $gt: 0 }
           "run.counters.retro": { $lt: 3 }
           $or:
             - { "run.counters.spec": { $gt: 1 } }
@@ -316,6 +319,7 @@ stages:
                 - { "run.counters.build": { $lt: 2 } }
                 - { "run.counters.fix-review": { $lt: 1 } }
             - { "run.counters.retro": { $gte: 3 } }
+            - { "rel.implements.in.not.merged": 0 }
       - name: the retro is done
         when: { "run.stage": retro, "run.lastOutputValid": null }
       # Nothing a reply says approves or merges a pull request — that is done
@@ -376,7 +380,10 @@ stages:
           "run.counters.fix-review": { $lt: 4 }
           "rel.implements.in.total": { $gt: 0 }
       - stage: retro
-        when: { "run.counters.retro": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 } }
+        when:
+          "run.counters.retro": { $lt: 3 }
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": { $gt: 0 }
       - stage: triage
         when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } }
     triggers:

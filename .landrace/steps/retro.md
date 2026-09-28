@@ -57,7 +57,10 @@ rather than invent a rule.
 avoided the mistake:
 
 * A lesson about one stage goes in `.landrace/steps/<stage>.md` — the spec,
-  build, code-review, fix-review, triage or this retro's own prompt.
+  build, code-review, fix-review, triage or this retro's own prompt. Edit only
+  the prompt below the file's closing `---`: the front matter above it —
+  capabilities, model, timeout, output and routes — is configuration, as out
+  of reach as the workflow.
 * A lesson about the codebase as a whole goes in `.agsync/instructions.md`,
   then run `agsync sync` and commit what it regenerates. Never edit
   `CLAUDE.md` or `AGENTS.md` directly; they are generated from that file. If
@@ -65,7 +68,8 @@ avoided the mistake:
 * A technique goes in a skill under `.agsync/skills/`.
 
 Never touch `.landrace/workflow.yaml`, `.landrace/hooks/`, `src/`, tests, or any
-other code. Routing, hooks and product code are out of your reach on purpose.
+other code, beyond resolving a conflict the merge below raises. Routing, hooks
+and product code are out of your reach on purpose.
 
 **Edit, don't append.** Tighten or replace the sentence that let the mistake
 through rather than adding a paragraph beside it. A prompt that grows by a
@@ -73,7 +77,9 @@ paragraph every ticket soon says nothing.
 
 **Later rounds.** Run `git log --grep '^retro:'` on this branch and read the
 lessons already committed from this ticket. Do not repeat one; refine it only
-if the new history shows it was wrong or too narrow.
+if the new history shows it was wrong or too narrow. A lesson a person rejected
+— a thread asking to drop it, or a commit reverting it — stays rejected: do not
+bring it back in any form.
 
 ## Git
 
@@ -84,14 +90,18 @@ repository's git directory, and reach only the hosts the operator allowed.
 1. `git fetch origin`, then `git merge origin/main`. Resolve any conflict and
    commit the merge.
 2. Make every change in one commit, with the message
-   `retro: lessons from #{node.id}`. If there is nothing to learn, commit
-   nothing.
-3. Finish with `git push origin HEAD`. If the push is rejected because the
+   `retro: lessons from #{node.id}`. If there is nothing to learn, make no
+   commit of your own.
+3. Install dependencies as needed (`pnpm install`), and run the test suite and
+   the lint checks before you push. Several tests pin a step prompt's exact
+   wording: a lesson that breaks one is reworded until it passes, or dropped.
+   Never edit a test to make a lesson pass.
+4. Finish with `git push origin HEAD`. If the push is rejected because the
    remote branch moved on its own — a person's commit, or the forge's "Update
    branch" — `git fetch origin`, merge the remote copy of the branch you are on
    (`git branch --show-current` names it: `git merge origin/<that branch>`),
    resolve and commit any conflict, and push again.
-4. Never push any other branch, never force-push, and never touch `main`.
+5. Never push any other branch, never force-push, and never touch `main`.
 
 ## Your answer
 

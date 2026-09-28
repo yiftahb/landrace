@@ -4,6 +4,7 @@ import { deriveRel } from "#core/rel.js";
 import { hasPullFrom, MAX_SUBGRAPH_NODES, renderMarker } from "#conventions.js";
 import { staleClosure } from "#core/children.js";
 import { githubHooks } from "#landrace/hooks/github.js";
+import { buildBriefing } from "#runner/artifacts.js";
 import { createDispatcher } from "#runner/effects.js";
 import { graphProblem } from "#runner/graph.js";
 import type { Condition, Graph, HookContext, Node, RuntimeContext, Snapshot, Source } from "#namespace.js";
@@ -678,6 +679,29 @@ describe("the ticket's history reaches the prompt, labelled by who said it", () 
     expect(text).toMatch(/^finding 5$/m);
     expect(text).toMatch(/^finding 44$/m);
     expect(text).toMatch(/5 earlier threads are not listed/);
+  });
+
+  /*
+   * The engine cuts a hook's briefing at 32 KB from the end, which on a long
+   * history would drop the newest comments and every review thread — the
+   * evidence the retro runs for. So the hook stays inside it, newest first.
+   */
+  it("keeps the newest of a long history, both halves of it, inside what the engine will carry", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ number: 50, head: "landrace/1", threads: Array.from({ length: 40 }, (_, i) => ({
+      isResolved: true, body: `${"t".repeat(980)} finding ${i}`, replies: [{ author: "a-person", body: "r".repeat(1_000) }],
+    })) });
+    const snapshot = withComments(...Array.from({ length: 60 }, (_, i) => said("a-person", `${"c".repeat(990)} remark ${i}`)));
+
+    const briefed = await buildBriefing([sourceOf(gh)], { ...gh.ctx, ticket: "1", snapshot } as HookContext, "{brief.github.history}");
+    const text = briefed.github?.history ?? "";
+
+    expect(text).not.toContain("[truncated]");
+    expect(text).toMatch(/remark 59$/m);
+    expect(text).toMatch(/\d+ earlier comments are not listed/);
+    expect(text).toContain("## Review threads");
+    expect(text).toMatch(/finding 39$/m);
+    expect(text).toMatch(/\d+ earlier threads are not listed/);
   });
 
   it("says so plainly when nothing was said and nothing was opened", async () => {
