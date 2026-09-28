@@ -38,7 +38,7 @@ interface ResolvedMcp { servers: Record<string, McpServer>; tools: Record<string
 /** What a write step's commands may reach: the only hosts on the network, and the paths under HOME they may not read. */
 export interface SandboxSettings { hosts: string[]; deny: string[] }
 /** This hook's settings, read out of the `agent:` block the engine passes on unread. */
-export interface ClaudeSettings { model?: string; plugins: string[]; mcp: McpEntry[]; sandbox: SandboxSettings }
+export interface ClaudeSettings { model?: string; effort?: string; plugins: string[]; mcp: McpEntry[]; sandbox: SandboxSettings }
 type HookLog = (event: string, data?: Record<string, unknown>) => void;
 
 /**
@@ -63,6 +63,11 @@ const exec = promisify(execFile);
  * shape it is actually allowed to have, not merely isolated.
  */
 export const ARG_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** The levels `claude --effort` takes. Any other value is refused, never dropped: a step that asked for one must get it. */
+const EFFORTS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+const effortProblem = (what: string, value: unknown): string =>
+  `${what} ${JSON.stringify(value)}: the claude executor takes only ${EFFORTS.join(", ")}`;
 
 /** The CLI's tools that edit a file or run a command: what a read-only step is denied by name. */
 const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
@@ -217,6 +222,8 @@ function toolLine(name: string, input: unknown, cwd: string): string {
  */
 export function createClaudeExecutor(opts: {
   model?: string;
+  /** The operator's effort for every step and turn; the screener never gets one. One of EFFORTS. */
+  effort?: string;
   timeoutMs?: number;
   bin?: string;
   log?: HookLog;
@@ -249,6 +256,7 @@ export function createClaudeExecutor(opts: {
 } = {}): Executor {
   const {
     model,
+    effort,
     timeoutMs = FALLBACK_TIMEOUT_MS,
     bin = "claude",
     log,
@@ -258,7 +266,7 @@ export function createClaudeExecutor(opts: {
     sandbox = { hosts: [], deny: [...DEFAULT_DENY] },
   } = opts;
 
-  const run: Executor["run"] = async (prompt, { round, resume, cwd, capabilities, model: stepModel, timeoutMs: stepTimeoutMs, child: binding, onActivity, signal }) => {
+  const run: Executor["run"] = async (prompt, { round, resume, cwd, capabilities, model: stepModel, effort: stepEffort, timeoutMs: stepTimeoutMs, child: binding, onActivity, signal }) => {
     if (signal.aborted) {
       // Nothing checked this before `spawn` in the first cut, so a run
       // cancelled before it started launched the (paid) agent anyway.
@@ -307,8 +315,12 @@ export function createClaudeExecutor(opts: {
     // none — checked here rather than at construction alone, because a
     // per-run value comes out of a repo file a contributor's PR can edit.
     const chosenModel = stepModel ?? model;
+    // Effort the same way, for steps and turns only: the screener is built
+    // from the same `agent:` block, and `agent.effort` is not its setting.
+    const chosenEffort = declared ? stepEffort ?? effort : undefined;
 
     if (chosenModel !== undefined) assertArgShape("model", chosenModel);
+    if (chosenEffort !== undefined && !EFFORTS.includes(chosenEffort)) throw new Error(effortProblem("refused effort", chosenEffort));
     if (resume !== undefined) assertArgShape("resume", resume);
     const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
 
@@ -340,6 +352,7 @@ export function createClaudeExecutor(opts: {
     // Variadic like `--allowedTools`: the next flag ends it.
     if (denyWrites) args.push("--disallowedTools", ...WRITE_TOOLS);
     if (chosenModel !== undefined) args.push("--model", chosenModel);
+    if (chosenEffort !== undefined) args.push("--effort", chosenEffort);
     if (resume !== undefined) args.push("--resume", resume);
     // One `--settings` element holding the JSON, or none. Plugins are for
     // steps and turns, never the screener: a plugin that speaks up at session
@@ -584,7 +597,7 @@ export function createClaudeExecutor(opts: {
           // got. `null`, not an omission, for a run neither the step nor
           // the operator named a model for: the CLI's own default decided,
           // which is a fact rather than a missing one.
-          log?.("step.completed", { round, ms: Date.now() - started, model: chosenModel ?? null });
+          log?.("step.completed", { round, ms: Date.now() - started, model: chosenModel ?? null, effort: chosenEffort ?? null });
           // Untrusted from here on: this text was produced by the agent,
           // not by us, and the caller will parse it for control markers —
           // it inherits no trust from having passed through this executor.
@@ -813,7 +826,7 @@ export function mcpRedactionValues(servers: Readonly<Record<string, McpServer>>)
 }
 
 /** The keys of `agent:` this hook reads, beside the engine's own two. */
-const SETTING_KEYS = new Set(["adapter", "isolation", "model", "plugins", "mcp", "sandbox"]);
+const SETTING_KEYS = new Set(["adapter", "isolation", "model", "effort", "plugins", "mcp", "sandbox"]);
 /** The keys of `agent.sandbox`. */
 const SANDBOX_KEYS = new Set(["hosts", "deny"]);
 
@@ -863,8 +876,9 @@ export function readClaudeSettings(agent: Record<string, unknown>): ClaudeSettin
   for (const key of Object.keys(agent)) {
     if (!SETTING_KEYS.has(key)) problems.push(`agent.${key} is not a setting the claude executor reads`);
   }
-  const { model, plugins = [], mcp = [], sandbox = {} } = agent;
+  const { model, effort, plugins = [], mcp = [], sandbox = {} } = agent;
   if (model !== undefined && (typeof model !== "string" || model === "")) problems.push("agent.model must be a model name");
+  if (effort !== undefined && !EFFORTS.includes(effort as string)) problems.push(effortProblem("agent.effort is", effort));
   const pluginsOk = Array.isArray(plugins) && plugins.every((p) => typeof p === "string" && p !== "");
   if (!pluginsOk) problems.push('agent.plugins must be a list of plugin ids, like "name@marketplace"');
   const entryOk = (e: unknown): boolean =>
@@ -908,6 +922,7 @@ export function readClaudeSettings(agent: Record<string, unknown>): ClaudeSettin
   if (problems.length) throw new Error(problems.join("\n"));
   return {
     ...(typeof model === "string" ? { model } : {}),
+    ...(typeof effort === "string" ? { effort } : {}),
     plugins: plugins as string[],
     mcp: mcp as McpEntry[],
     sandbox: { hosts: [...(hosts as string[])], deny: [...(deny as string[])] },
@@ -937,6 +952,7 @@ export const claude: ExecutorFactory = defineExecutor({
     ctx.redact(mcpRedactionValues(servers));
     const executor: Executor = createClaudeExecutor({
       ...(settings.model === undefined ? {} : { model: settings.model }),
+      ...(settings.effort === undefined ? {} : { effort: settings.effort }),
       log: ctx.log,
       plugins: settings.plugins,
       mcpServers: servers,

@@ -126,6 +126,39 @@ describe("the model a step declares", () => {
   });
 });
 
+/* Effort is `model`'s twin: the step's value wins, absent is the operator's, recorded either way. */
+describe("the effort a step declares", () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const watcher: Executor = {
+    id: "watch",
+    run: async (_prompt, opts) => {
+      seen.push(opts as unknown as Record<string, unknown>);
+      return { text: '```json\n{"kind":"spec"}\n```', sessionId: null };
+    },
+  };
+  beforeEach(() => { seen.length = 0; });
+
+  it("reaches the executor", async () => {
+    await run("", { step: { ...step, effort: "low" }, executor: watcher });
+    expect(seen[0]).toMatchObject({ effort: "low" });
+  });
+
+  it("is absent when the step names none, so the operator's own default still decides", async () => {
+    await run("", { executor: watcher });
+    expect(seen[0]).not.toHaveProperty("effort");
+  });
+
+  it("is on step.invoked, as null when the step named none", async () => {
+    const invoked = async (s: Step): Promise<Record<string, unknown>> => {
+      const events: Array<{ name: string; data: Record<string, unknown> }> = [];
+      await run("", { step: s, executor: watcher, log: (name, data = {}) => events.push({ name, data }) });
+      return events.find((e) => e.name === "step.invoked")?.data ?? {};
+    };
+    expect(await invoked({ ...step, effort: "low" })).toMatchObject({ effort: "low" });
+    expect(await invoked(step)).toMatchObject({ effort: null });
+  });
+});
+
 describe("runStep", () => {
   it("routes an output shape to the effect the step declared", async () => {
     const r = await run('done\n```json\n{"kind":"spec"}\n```');

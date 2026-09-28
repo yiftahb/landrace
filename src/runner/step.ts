@@ -294,7 +294,9 @@ export async function runStep(opts: {
    * lets an operator read the two against each other; one that reports
    * neither is visible by the silence.
    */
-  log?.("step.invoked", { stage: stageId, round, executor: executor.id, model: step.model ?? null });
+  log?.("step.invoked", {
+    stage: stageId, round, executor: executor.id, model: step.model ?? null, effort: step.effort ?? null,
+  });
 
   // Every run gets a limit. The step's own, when it names one (checked at
   // load, so `durationMs` answers), else the workflow's, else the engine's.
@@ -319,6 +321,7 @@ export async function runStep(opts: {
       // decides", and `model: undefined` is a different claim under
       // exactOptionalPropertyTypes than no key at all.
       ...(step.model === undefined ? {} : { model: step.model }),
+      ...(step.effort === undefined ? {} : { effort: step.effort }),
       timeoutMs,
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
       ...childOpt,

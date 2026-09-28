@@ -64,6 +64,12 @@ export const stepFrontMatterSchema = z.object({
    */
   model: z.string().min(1).optional(),
   /**
+   * How hard this step's agent should think, beside its model and read the
+   * same way: the step's value wins over the operator's `agent.effort`. Opaque
+   * here — the level names are the provider's, and its executor checks them.
+   */
+  effort: z.string().min(1).optional(),
+  /**
    * How long this step's agent may run before it is killed, overriding
    * `budget.stepTimeout`: a build can need two hours where a classifier needs
    * two minutes, and one number for both is too short for one or too loose
