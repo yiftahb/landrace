@@ -1,6 +1,7 @@
 ---
 capabilities: [repo:read]
 model: opus
+effort: xhigh
 timeout: 120m
 output:
   discriminator: kind
