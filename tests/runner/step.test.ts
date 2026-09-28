@@ -136,6 +136,19 @@ describe("runStep", () => {
     ]);
   });
 
+  it("hands the executor the run's activity callback, and what the agent reports reaches it", async () => {
+    const seen: unknown[] = [];
+    const reporting: Executor = {
+      id: "f",
+      run: async (_p, o) => {
+        o.onActivity?.({ kind: "tool", text: "Read a.ts", at: 1 });
+        return { text: '```json\n{"kind":"questions"}\n```', sessionId: null };
+      },
+    };
+    await run("", { executor: reporting, onActivity: (e) => seen.push(e) });
+    expect(seen).toEqual([{ kind: "tool", text: "Read a.ts", at: 1 }]);
+  });
+
   it("expands {round} in an effect's fields", async () => {
     const r = await run('```json\n{"kind":"questions"}\n```');
     expect((r as Ok).effects[0]?.marker).toBe("questions:2");

@@ -459,6 +459,40 @@ export interface Screener {
 }
 
 /**
+ * One line of what an agent is doing while it runs — a tool it called, or
+ * something it said — for the ticket panel. Display only: nothing routes on
+ * it, and the engine keeps only the last round of it per stage.
+ */
+export interface AgentActivity {
+  kind: "tool" | "message";
+  text: string;
+  /** Epoch ms. */
+  at: number;
+}
+
+/**
+ * What the panel reads of a ticket's activity: the stage and round of the
+ * run it last recorded, and that run's lines from `after` on. `total` is how
+ * many lines the run has, so the next read can ask for only what is new.
+ */
+export interface ActivityPage {
+  stage: string | null;
+  round: number | null;
+  lines: AgentActivity[];
+  total: number;
+}
+
+/**
+ * Where agent activity is kept, on disk rather than in memory: a turn asked
+ * through `landrace mcp` runs in another process, and the page must show it too.
+ */
+export interface ActivityLog {
+  /** Never throws: a display must never be able to stop the work it displays. */
+  record(ticket: string, stage: string, round: number, e: AgentActivity): void;
+  read(ticket: string, after: number): Promise<ActivityPage>;
+}
+
+/**
  * The execution plane. Not a hook: invoking an agent produces new information,
  * and an effect hook that produced information would need tracker credentials.
  *
@@ -540,6 +574,13 @@ export interface Executor {
        * the run must be refused.
        */
       child?: ChildBinding & { server?: RunServer };
+      /**
+       * Told each tool call and each thing the agent says as it happens, for
+       * the ticket panel. Optional to honour: an executor that never calls it
+       * runs exactly as before, and the panel says it has no live activity.
+       * The engine's callback never throws.
+       */
+      onActivity?: (e: AgentActivity) => void;
       signal: AbortSignal;
     },
   ): Promise<{ text: string; sessionId: string | null }>;
@@ -915,6 +956,8 @@ export interface ConvergeDeps {
    * no server and its executor refuses it.
    */
   childServer?: ServerCommand;
+  /** Where a step's activity is kept for the ticket panel. Absent, none is. */
+  activity?: ActivityLog;
 }
 
 export interface ConvergeResult {

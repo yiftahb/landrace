@@ -34,6 +34,33 @@ export function redactValue(value: unknown, secrets: readonly string[]): unknown
   return redactOrdered(value, [...secrets].sort((a, b) => b.length - a.length));
 }
 
+/**
+ * How text written outside the logger is scrubbed — a record body, a line of
+ * agent activity: the runtime logger's live set when there is one, and every
+ * secret value in `secrets`, in one pass over both — two passes let a logger
+ * value that is part of a declared secret split it before the second pass
+ * could match it whole. Both sets, because neither holds the other.
+ * `secrets` is every declared secret, where the log redacts the ones
+ * `log.redact` names plus what an executor registered through `redact` after
+ * startup — an MCP server's env, which no secret names. Values shorter than
+ * `MIN_SECRET_LENGTH` are skipped rather than rejected: `createLogger` throws
+ * on one at construction time, but this is an independent consumer of the
+ * same raw map, not the list's owner, and a value that short would redact
+ * everywhere in this text too.
+ */
+export function scrubberOf(
+  secrets: ReadonlyMap<string, string>,
+  scrub?: (text: string, extra?: readonly string[]) => string,
+): (text: string) => string {
+  // Trimmed once, and that trimmed form is what is both measured *and*
+  // returned for actual redaction — checking the trimmed length while
+  // filtering the untrimmed value let a secret sourced with surrounding
+  // whitespace (a quoted .env line) pass the length check and then never
+  // match its own bare form anywhere it actually appeared in posted text.
+  const values = [...secrets.values()].map((v) => v.trim()).filter((v) => v.length >= MIN_SECRET_LENGTH);
+  return scrub === undefined ? (text) => redactValue(text, values) as string : (text) => scrub(text, values);
+}
+
 function redactOrdered(value: unknown, secrets: readonly string[]): unknown {
   if (typeof value === "string") {
     return secrets.reduce((acc, s) => acc.split(s).join("[redacted]"), value);
