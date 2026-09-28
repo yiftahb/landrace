@@ -14,7 +14,7 @@ import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
-import { executorFor, sandboxFor, screenerFor } from "#cli/start.js";
+import { childServerCommand, executorFor, sandboxFor, screenerFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -152,6 +152,8 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     // the file `landrace start` watches. Here only: the child server an agent
     // is handed gets no wake, so an agent cannot drive the loop.
     wake: () => touchWake(wakePath(dir)),
+    // This same server, for a pairing's session to reach Landrace by.
+    server: childServerCommand(dir),
   });
 }
 

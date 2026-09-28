@@ -270,6 +270,19 @@ describe("which executor screens", () => {
     await expect(executorFor(config, registry, ctx()))
       .rejects.toThrow('executor "made" could not start: its factory returned no run function');
   });
+
+  // Pairing is offered only where the executor can hand a session over, so a
+  // factory's `handoff` has to survive being built — and one it did not
+  // return must not appear from nowhere.
+  it("carries a factory's handoff, and adds none it did not build", async () => {
+    const handoff: NonNullable<Executor["handoff"]> = async (o) => ({ argv: ["agent"], cwd: o.cwd });
+    const run: Executor["run"] = async () => ({ text: "", sessionId: null });
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "made" } });
+    const withIt: Registry = { ...empty, executors: new Map([["made", defineExecutor({ id: "made", create: async () => ({ run, handoff }) })]]) };
+    const without: Registry = { ...empty, executors: new Map([["made", defineExecutor({ id: "made", create: async () => ({ run }) })]]) };
+    expect((await executorFor(config, withIt, ctx())).handoff).toBe(handoff);
+    expect(await executorFor(config, without, ctx())).not.toHaveProperty("handoff");
+  });
 });
 
 /**
@@ -520,6 +533,10 @@ describeLoopback("startUi", () => {
       reply: async (t: string, m: string) => { replies.push([t, m]); },
       ask: async () => ({ reply: "", resolved: false }),
       resolve: async () => ({ alreadyResolved: false }),
+      pairing: async () => ({ open: null, offers: [] }),
+      pair: async () => { throw new Error("not paired here"); },
+      finish: async () => { throw new Error("not paired here"); },
+      release: async () => { throw new Error("not paired here"); },
     };
     const ui = await startUi({ board: board(), ui: true, once: false, port: 0, panel });
     try {

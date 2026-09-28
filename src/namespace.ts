@@ -1271,6 +1271,11 @@ export interface Tools {
   goto(ticket: string, stage: string): Promise<unknown>;
   ask(ticket: string, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
   resolve(ticket: string, why?: string | undefined): Promise<unknown>;
+  /** What may be paired on now, and the pairing open, if any. */
+  pairing(ticket: string): Promise<unknown>;
+  pair(ticket: string, stage: string): Promise<unknown>;
+  finish(ticket: string, note?: string | undefined): Promise<unknown>;
+  release(ticket: string): Promise<unknown>;
 }
 
 /** The one tool a step that may create children is handed, already bound. */
@@ -1302,6 +1307,12 @@ export interface ToolOptions {
   sandbox?: { root: string };
   /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
   activity?: ActivityLog;
+  /**
+   * How to start `landrace mcp` on this workflow: a pairing hands it to the
+   * person's session, and a hand-in on a `tickets:create` step binds its
+   * ticket server from it. Absent, a pairing's session gets no server.
+   */
+  server?: ServerCommand;
   /**
    * Told after each write a person makes through the tools succeeds, so a
    * running loop picks it up now rather than on its next scheduled tick.
@@ -1624,6 +1635,11 @@ export interface PanelPaths {
   reply: string;
   ask: string;
   resolve: string;
+  /** The Pairing section's read, and its three writes. */
+  pairing: string;
+  pair: string;
+  finish: string;
+  release: string;
 }
 
 /** One record of a ticket's conversation, as the panel shows it: plain text, oldest first. */
@@ -1648,6 +1664,10 @@ export interface TicketPanel {
   reply(ticket: string, message: string): Promise<void>;
   ask(ticket: string, message: string): Promise<{ reply: string; resolved: boolean }>;
   resolve(ticket: string): Promise<{ alreadyResolved: boolean }>;
+  pairing(ticket: string): Promise<PairingView>;
+  pair(ticket: string, stage: string): Promise<PairStarted>;
+  finish(ticket: string, note: string): Promise<PairFinished>;
+  release(ticket: string): Promise<{ stage: string; round: number }>;
 }
 
 export interface BoardView {

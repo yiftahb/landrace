@@ -9,12 +9,13 @@ import {
   stageFromLabels,
   isOpenTicket,
 } from "#conventions.js";
-import type { Node, ReplyDeps, Snapshot, Source } from "#namespace.js";
+import type { Node, PairDeps, ReplyDeps, Snapshot, Source } from "#namespace.js";
 import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
 import { sendTo } from "#runner/goto.js";
+import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 
 /**
@@ -250,5 +251,48 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       wakeLoop();
       return resolved;
     },
+
+    async pairing(ticket) {
+      return pairingView(pairDeps(), ticket);
+    },
+
+    async pair(ticket, stage) {
+      const started = await startPair(pairDeps(), ticket, stage);
+      wakeLoop();
+      return started;
+    },
+
+    async finish(ticket, note) {
+      // Woken whichever way it ends: a refused hand-in has written the
+      // rejected round, and the loop is what halts the ticket on it.
+      try {
+        return await finishPair(pairDeps(), ticket, note);
+      } finally {
+        wakeLoop();
+      }
+    },
+
+    async release(ticket) {
+      const released = await releasePair(pairDeps(), ticket);
+      wakeLoop();
+      return released;
+    },
   };
+
+  /**
+   * Pairing's needs, from what this process was handed. The workflow says
+   * which steps may be paired on and what each declared, so without it a
+   * pairing is refused rather than guessed at.
+   */
+  function pairDeps(): PairDeps {
+    if (!opts.workflow || !opts.steps) throw new Error("cannot pair: this process was not given the workflow");
+    return {
+      source: source(), pre: registry.pre, dispatcher, ctx,
+      workflow: opts.workflow, steps: opts.steps, executor: opts.executor ?? null, artifacts: registry.artifacts,
+      ...(opts.screen ? { screen: opts.screen } : {}),
+      ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
+      ...(opts.lock ? { lock: opts.lock } : {}),
+      ...(opts.server ? { server: opts.server, childServer: opts.server } : {}),
+    };
+  }
 }

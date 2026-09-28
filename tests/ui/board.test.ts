@@ -159,6 +159,7 @@ describe("boardView: a ticket's panel", () => {
   const PATHS = {
     activity: "/tickets/7/activity", conversation: "/tickets/7/conversation",
     reply: "/tickets/7/reply", ask: "/tickets/7/ask", resolve: "/tickets/7/resolve",
+    pairing: "/tickets/7/pairing", pair: "/tickets/7/pair", finish: "/tickets/7/finish", release: "/tickets/7/release",
   };
 
   it("names its panel's paths on every ticket — waiting, running, needing you or closed", () => {
@@ -474,6 +475,23 @@ describe("createBoard", () => {
     board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])])); // and back, with no new goto
     board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 3 });
     expect((await board.view()).rows[0]?.note).toBe("agent running");
+  });
+
+  /*
+   * A pairing is learned from the evaluations the board already observes —
+   * re-derived every tick, with no label or lock of its own — and held
+   * elsewhere for as long as the latest one says so.
+   */
+  it("holds a paired ticket elsewhere, saying where and since when, until an evaluation stops naming it", async () => {
+    const board = shell(() => 5_000);
+    board.list(graph([ticket("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
+    const at = "1970-01-01T00:00:02.000Z";
+    board.observe({ name: "ticket.evaluated", ticket: "1", decision: "wait", stage: "spec", paired: { stage: "spec", round: 2, n: 1, at } });
+    expect((await board.view()).rows[0]).toMatchObject({
+      badge: "elsewhere", lane: "elsewhere", stage: "spec", round: 2, note: "Pairing — spec, round 2", since: 2_000,
+    });
+    board.observe({ name: "ticket.evaluated", ticket: "1", decision: "invoke", stage: "spec", paired: null });
+    expect((await board.view()).rows[0]?.note).not.toMatch(/Pairing/);
   });
 
   it("opens a running row on step.started and closes it on step.finished", async () => {

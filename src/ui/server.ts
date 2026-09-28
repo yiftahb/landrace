@@ -76,7 +76,7 @@ function foreignWrite(req: IncomingMessage, action: string, port: number): strin
 }
 
 /** The ticket panel's routes: one ticket, named in the path, and what is asked of it. */
-const PANEL_PATH = /^\/tickets\/([^/]+)\/(activity|conversation|reply|ask|resolve)$/;
+const PANEL_PATH = /^\/tickets\/([^/]+)\/(activity|conversation|reply|ask|resolve|pairing|pair|finish|release)$/;
 
 /** Far past what a record carries (conventions' own cap is 32 KiB): the post's own check words the limit. */
 const MAX_BODY_BYTES = 256 * 1024;
@@ -97,13 +97,13 @@ function bodyOf(req: IncomingMessage): Promise<string | null> {
 }
 
 /**
- * The ticket panel: two reads and three writes on one ticket. Its activity
- * is a local file read, open like /board.json. Its conversation spends a
- * tracker read, so like /refresh it is asked only from the page's own script
- * — a cross-site `<img>` would otherwise make the operator's token pay for
- * one. Reply, Ask and Resolve each carry their own name in the header, like
- * every other write here; Ask and Resolve hand the ticket back to the loop,
- * so they wake it.
+ * The ticket panel: three reads and six writes on one ticket. Its activity
+ * is a local file read, open like /board.json. Its conversation and its
+ * Pairing section each spend a tracker read, so like /refresh they are asked
+ * only from the page's own script — a cross-site `<img>` would otherwise make
+ * the operator's token pay for one. Reply, Ask, Resolve, and a pairing's
+ * Pair, Finish and Release each carry their own name in the header, like
+ * every other write here; all but Reply move the ticket, so they wake the loop.
  */
 function servePanel(
   opts: UiOptions, req: IncomingMessage, res: ServerResponse, port: number, id: string, what: string,
@@ -111,7 +111,7 @@ function servePanel(
   const text = "text/plain; charset=utf-8";
   const panel = opts.panel;
   if (!panel) return send(res, 404, text, "not found");
-  const reading = what === "activity" || what === "conversation";
+  const reading = what === "activity" || what === "conversation" || what === "pairing";
   if (req.method !== (reading ? "GET" : "POST")) return send(res, 405, text, "method not allowed");
   if (what !== "activity") {
     const foreign = foreignWrite(req, what, port);
@@ -135,19 +135,24 @@ function servePanel(
     panel.activity(ticket, Number(after)).then(json, () => send(res, 500, text, "the activity could not be read"));
     return;
   }
-  if (what === "conversation") {
-    panel.conversation(ticket).then(json, (e: unknown) => {
+  if (what === "conversation" || what === "pairing") {
+    (what === "conversation" ? panel.conversation(ticket) : panel.pairing(ticket)).then(json, (e: unknown) => {
       // Logged in full for the operator; the page gets a fixed sentence,
       // because a tracker's error can quote the ticket it refused.
-      console.error(`landrace: reading #${ticket}'s conversation failed: ${oneLine(messageOf(e))}`);
-      send(res, 502, text, "could not read the conversation; the landrace log says why");
+      console.error(`landrace: reading #${ticket}'s ${what} failed: ${oneLine(messageOf(e))}`);
+      send(res, 502, text, `could not read the ${what}; the landrace log says why`);
     });
     return;
   }
 
   bodyOf(req).then(async (body) => {
     if (body === null) return send(res, 413, text, "that is far longer than a comment can be");
-    if (what !== "resolve" && body.trim() === "") return send(res, 400, text, "write something first");
+    // A Resolve, a Finish's note and a Release may all be empty; the rest say something.
+    const needsText = what === "reply" || what === "ask" || what === "pair";
+    if (needsText && body.trim() === "") return send(res, 400, text, what === "pair" ? "name a step to pair on" : "write something first");
+    // A hand-in that is refused has still written the rejected round, which
+    // the loop is what halts the ticket on — so it wakes either way.
+    const wakesAnyway = what === "finish";
     try {
       if (what === "reply") {
         await panel.reply(ticket, body);
@@ -155,12 +160,17 @@ function servePanel(
         // own next pass, as it would one typed into the tracker.
         return send(res, 200, text, "posted");
       }
-      const answer = what === "ask" ? await panel.ask(ticket, body) : await panel.resolve(ticket);
+      const answer = what === "ask" ? await panel.ask(ticket, body)
+        : what === "pair" ? await panel.pair(ticket, body.trim())
+        : what === "finish" ? await panel.finish(ticket, body)
+        : what === "release" ? await panel.release(ticket)
+        : await panel.resolve(ticket);
       // The ticket is back in the loop's hands: the pass that picks it up
       // runs now, not when the countdown comes round.
       opts.tick?.();
       return json(answer);
     } catch (e) {
+      if (wakesAnyway) opts.tick?.();
       // Said, not hidden: the person waiting on a paid turn needs "no
       // session to join yet" or "screening blocked this turn", and the
       // panel wiring has already scrubbed secrets out of it. One line,
