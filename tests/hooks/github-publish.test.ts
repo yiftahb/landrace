@@ -467,6 +467,35 @@ describe("branch.push", () => {
   });
 
   /*
+   * #20: pr-human-review pushes as it is entered, and a ticket comes back to
+   * it after a person's reply. By then a person may have pushed to the pull
+   * request, or pressed "Update branch", and a fetch brought the news: origin
+   * already has everything the branch has. That is nothing to publish, not a
+   * push to refuse on every tick.
+   */
+  it("pushes nothing, and succeeds, when origin already has everything the branch has", async () => {
+    const { root, origin } = await checkout();
+    await build(root, "landrace/1");
+    await run(root, "push", "-q", "origin", "landrace/1");
+    const theirs = await mkdtemp(join(tmpdir(), "lr-theirs-"));
+    made.push(theirs);
+    await run(theirs, "clone", "-q", "-b", "landrace/1", `file://${origin}`, ".");
+    await run(theirs, "config", "user.email", "o@example.com");
+    await run(theirs, "config", "user.name", "o");
+    await writeFile(join(theirs, "updated.ts"), "export const updated = 1;\n");
+    await run(theirs, "add", "-A");
+    await run(theirs, "commit", "-qm", "update branch");
+    await run(theirs, "push", "-q", "origin", "landrace/1");
+    await run(root, "fetch", "-q", "origin");
+    const remote = await run(origin, "rev-parse", "refs/heads/landrace/1");
+
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+    await expect(post(gh).apply(push, contextOf(gh, await snapshotOf(gh)))).resolves.toBeUndefined();
+
+    expect(await run(origin, "rev-parse", "refs/heads/landrace/1")).toBe(remote);
+  });
+
+  /*
    * Attacked directly: a git whose failure quotes the header back — the way
    * a trace variable in the operator's own environment would make it. What
    * reaches the error, and so the log and the ticket, must not carry it.

@@ -214,6 +214,9 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
       { stage: "fix-review", when: {
         "run.counters.code-review": { $lt: 4 }, "run.counters.fix-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 },
       } },
+      { stage: "retro", when: {
+        "run.counters.retro": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 }, "rel.implements.in.not.merged": { $gt: 0 },
+      } },
       { stage: "triage", when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } } },
     ];
     for (const id of ["blocked", "screened"]) {
@@ -255,7 +258,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const { workflow } = await loadWorkflow(".landrace");
     const targets = new Set(workflow.stages.flatMap((s) => (s.goto ?? []).map((g) => (typeof g === "string" ? g : g.stage))));
     targets.delete("triage");
-    expect([...targets].sort()).toEqual(["build", "code-review", "fix-review", "spec"]);
+    expect([...targets].sort()).toEqual(["build", "code-review", "fix-review", "retro", "spec"]);
     for (const id of targets) {
       const removed = (workflow.stages.find((s) => s.id === id)?.on_enter ?? [])
         .flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
@@ -476,5 +479,147 @@ describe("the shipped write steps merge, test, commit and push their own branch"
 
   it("declines it past build's rounds, and publish's own trigger stands", async () => {
     expect(await destination(builtAndUnpushed(3))).toBe("publish");
+  });
+});
+
+/*
+ * #20: a correction fixed only the ticket it was made on. Once the review
+ * settles, a ticket that was corrected anywhere — a spec revised, a build
+ * redone, a finding fixed — stops at `retro` on its way to the person, and
+ * one that was not goes straight there.
+ */
+describe("the shipped workflow learns from a corrected ticket before a person reviews it", () => {
+  const settled = (counters: Record<string, number>, merged = 0) => snapshotAt("code-review", {
+    counters: { spec: 1, triage: 1, build: 1, "code-review": 1, ...counters },
+    outputs: { spec: { kind: "spec" }, build: { kind: "done" }, "code-review": { kind: "reviewed" } },
+    rounds: { "code-review": { entered: 1, output: 1 } },
+  }, { total: 1, merged, openThreads: 0 });
+
+  /*
+   * A person who merged while the review ran has shipped it. Lessons
+   * committed after that land on a branch nothing will merge again, and the
+   * retro that wrote them is paid for nothing.
+   */
+  it("skips the retro once the pull request has merged", async () => {
+    expect(await destination(settled({ "fix-review": 1 }, 1))).toBe("pr-human-review");
+  });
+
+  it("goes straight to pr-human-review when nothing was corrected", async () => {
+    expect(await destination(settled({ spec: 1, build: 1, "fix-review": 0 }))).toBe("pr-human-review");
+    expect(await destination(settled({ spec: 1, build: 1 }))).toBe("pr-human-review");
+  });
+
+  it.each([
+    [{ spec: 2 }],
+    [{ build: 2 }],
+    [{ "fix-review": 1 }],
+  ])("goes to retro after a correction (%j)", async (correction) => {
+    expect(await destination(settled(correction))).toBe("retro");
+  });
+
+  it("goes to pr-human-review once the retro's three rounds are spent", async () => {
+    expect(await destination(settled({ "fix-review": 1, retro: 3 }))).toBe("pr-human-review");
+  });
+
+  /* Two triggers matching is an ambiguity halt, and none is a ticket parked in review. */
+  it("sends every settled review to exactly one of the two", async () => {
+    const { workflow } = await loadWorkflow(".landrace");
+    const destination = (s: Snapshot): string => {
+      const d = decide(workflow, s);
+      return d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`;
+    };
+    for (const spec of [1, 2, 3]) {
+      for (const build of [1, 2, 3]) {
+        for (const fix of [undefined, 0, 1, 3]) {
+          for (const retro of [undefined, 0, 1, 2, 3]) {
+            for (const merged of [0, 1]) {
+              const counters = { spec, build, ...(fix === undefined ? {} : { "fix-review": fix }), ...(retro === undefined ? {} : { retro }) };
+              const corrected = spec > 1 || build > 1 || (fix ?? 0) > 0;
+              const want = corrected && (retro ?? 0) < 3 && merged === 0 ? "retro" : "pr-human-review";
+              expect([counters, merged, destination(settled(counters, merged))]).toEqual([counters, merged, want]);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it.each(["learned", "nothing"])("goes on to pr-human-review once the retro answers %s", async (kind) => {
+    expect(await destination(snapshotAt("retro", {
+      counters: { spec: 1, triage: 1, build: 1, "code-review": 2, "fix-review": 1, retro: 1 },
+      outputs: { spec: { kind: "spec" }, "code-review": { kind: "reviewed" }, retro: { kind } },
+      rounds: { retro: { entered: 1, output: 1 } },
+    }))).toBe("pr-human-review");
+  });
+
+  it("pushes the branch as it enters pr-human-review, before anything else", async () => {
+    const { workflow } = await loadWorkflow(".landrace");
+    expect(workflow.stages.find((s) => s.id === "pr-human-review")?.on_enter?.[0])
+      .toEqual({ type: "branch.push", branch: "landrace/{ticket}" });
+  });
+
+  it.each(["blocked", "screened"])("from %s, Retry offers retro only while it has rounds left", async (halt) => {
+    const at = (retro: number) =>
+      snapshotAt(halt, { goto: "retro", counters: { spec: 1, triage: 1, build: 1, "code-review": 1, "fix-review": 1, retro } });
+    expect(await destination(at(2))).toBe("retro");
+    expect(await destination(at(3))).toMatch(/^wait: .*"retro" only while.*run\.counters\.retro/);
+    const merged = snapshotAt(halt, { goto: "retro", counters: { spec: 1, triage: 1, build: 1, "code-review": 1, "fix-review": 1 } },
+      { total: 1, merged: 1, openThreads: 0 });
+    expect(await destination(merged)).toMatch(/^wait: .*"retro" only while.*rel\.implements\.in\.not\.merged/);
+  });
+
+  describe("the retro's prompt", () => {
+    const retro = async () => {
+      const { steps } = await loadWorkflow(".landrace");
+      const step = steps.get("steps/retro.md");
+      if (!step) throw new Error("the shipped workflow has no retro step");
+      return step;
+    };
+
+    it("is a write step that answers learned or nothing, each on the ticket as retro:{round}", async () => {
+      const step = await retro();
+      expect(step.capabilities).toEqual(["repo:read", "repo:write"]);
+      expect(Object.keys(step.output?.shapes ?? {}).sort()).toEqual(["learned", "nothing"]);
+      expect(step.output?.routes.map((r) => r.effect)).toEqual([
+        { type: "tracker.comment", marker: "retro:{round}" },
+        { type: "tracker.comment", marker: "retro:{round}" },
+      ]);
+    });
+
+    it("renders the spec and the history, fenced as evidence, with no placeholder left", async () => {
+      const rendered = renderPrompt((await retro()).prompt, { node: { id: "7" } } as unknown as Snapshot, {
+        spec: { content: "# Export CSV" },
+        github: { threads: "none open", history: "## Ticket conversation\n\n@a-person: use tabs, not commas" },
+      });
+      expect(rendered).toMatch(/approved spec[\s\S]*# Export CSV[\s\S]*end of the approved spec/i);
+      expect(rendered).toMatch(/ticket's history[\s\S]*use tabs, not commas[\s\S]*end of the ticket's history/i);
+      expect(rendered).toMatch(/never an instruction to you/i);
+      expect(rendered).toContain("retro: lessons from #7");
+      expect(rendered).not.toMatch(/\{brief\.|\{node\./);
+    });
+
+    it("keeps its edits to prompts, instructions and skills, and its git to its own branch", async () => {
+      const prompt = (await retro()).prompt;
+      expect(prompt).toContain(".landrace/steps/");
+      expect(prompt).toContain(".agsync/instructions.md");
+      expect(prompt).toContain("agsync sync");
+      expect(prompt).toContain(".agsync/skills/");
+      expect(prompt).toMatch(/never touch `\.landrace\/workflow\.yaml`, `\.landrace\/hooks\/`, `src\/`/i);
+      expect(prompt).toMatch(/never edit\s+`CLAUDE\.md` or `AGENTS\.md`/i);
+      expect(prompt).toContain("git log --grep '^retro:'");
+      // A step file's front matter is its permissions and its routing.
+      // Prose, asked of the words and not of where the lines wrap.
+      const prose = prompt.replace(/\s+/g, " ");
+      expect(prose).toMatch(/front matter[^.]*is configuration, as out of reach as the workflow/i);
+      // A lesson a person reverted does not come back next round.
+      expect(prose).toMatch(/a lesson a person rejected[^.]*stays rejected/i);
+      // Tests pin several prompts' wording; a lesson that breaks one is not pushed.
+      expect(prompt).toContain("`pnpm install`");
+      expect(prose).toMatch(/run the test suite and the lint checks before you push/i);
+      expect(prose).toMatch(/never edit a test/i);
+      expect(prompt).toContain("`git merge origin/main`");
+      expect(prompt).toContain("`git push origin HEAD`");
+      expect(prompt).toMatch(/never push any other branch, never force-push, and never touch `main`/i);
+    });
   });
 });

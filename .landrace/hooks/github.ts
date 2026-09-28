@@ -61,6 +61,7 @@ import {
   sameLogin,
   STAGE_LABEL_PREFIX,
   STATUS_EFFECT,
+  stripMarker,
   TICKET_KIND,
   type ArtifactHook,
   type Closed,
@@ -951,6 +952,17 @@ function pusher(git: Git, token: string, repo: string): (branch: string, ticket:
       );
     }
     const withToken = remote?.https === true;
+
+    // Nothing to publish either when origin already has everything the
+    // branch has: a person's push, or the forge's "Update branch", moved it on
+    // and a fetch brought the news. A fast-forward-only push of it would be
+    // refused, on every tick, over commits that are already there.
+    const theirs = `refs/remotes/origin/${branch}`;
+    if ((await git(["for-each-ref", "--format=%(objectname)", theirs], {}, { signal })).trim() !== "") {
+      const contained = await git(["merge-base", "--is-ancestor", `refs/heads/${branch}`, theirs], {}, { signal })
+        .then(() => true, () => false);
+      if (contained) return;
+    }
 
     // Nothing to publish: the branch is origin's default branch, or behind
     // it. Asked of refs this checkout already has — origin/HEAD, as the clone
@@ -1960,6 +1972,22 @@ const BRIEF_THREADS = 20;
 const BRIEF_BODY_CHARS = 1000;
 
 /**
+ * The history's bounds: the newest of each kept, since the latest correction
+ * is the one a retro most needs to see, with the older ones counted aloud.
+ */
+const BRIEF_COMMENTS = 60;
+const BRIEF_HISTORY_THREADS = 40;
+
+/**
+ * And what each of its two halves may spend. The engine cuts a hook's whole
+ * briefing at 32 KB from the end, which on a long history would drop the
+ * newest comments and every review thread first — the opposite of what the
+ * retro needs. Two halves this size, and the short `threads` beside them
+ * when the review has settled, stay inside it.
+ */
+const BRIEF_HISTORY_HALF_CHARS = 14_000;
+
+/**
  * The open threads as prose, asked for only when a step is about to run.
  *
  * This is the one place thread text is fetched at all, and it is deliberately
@@ -1970,7 +1998,9 @@ const BRIEF_BODY_CHARS = 1000;
  * `comments(first: 1)` is the finding itself — the thread's opening comment.
  * The replies under it are the argument about the finding, including the
  * fixer's own from last round, and a fixer re-reading its own reply is how a
- * round loops without moving.
+ * round loops without moving. So the open list shows the opening comment
+ * alone; `lastReply` is the history's, which shows how the argument ended,
+ * and `totalCount` says whether there was one at all.
  */
 const BRIEF_QUERY = `
 query LandraceBrief($owner: String!, $name: String!, $number: Int!, $cursor: String) {
@@ -1982,18 +2012,26 @@ query LandraceBrief($owner: String!, $name: String!, $number: Int!, $cursor: Str
           isResolved
           path
           line
-          comments(first: 1) { nodes { body } }
+          comments(first: 1) { totalCount nodes { body author { login } } }
+          lastReply: comments(last: 1) { nodes { body author { login } } }
         }
       }
     }
   }
 }`;
 
+/** `author` is null for a deleted account, which GitHub shows as "ghost". */
+interface BriefComment {
+  body: string | null;
+  author: { login: string } | null;
+}
+
 interface BriefThread {
   isResolved: boolean;
   path: string | null;
   line: number | null;
-  comments: { nodes: Array<{ body: string | null }> };
+  comments: { totalCount: number; nodes: BriefComment[] };
+  lastReply: { nodes: BriefComment[] };
 }
 
 interface BriefResponse {
@@ -2011,8 +2049,7 @@ const where = (thread: BriefThread): string =>
   thread.path === null ? "" : `${thread.path}${thread.line === null ? "" : `:${thread.line}`} — `;
 
 /**
- * The open review threads across every open pull request on the ticket,
- * rendered for a prompt under one `## PR #N` heading each.
+ * Every review thread on one pull request, resolved or not, every page.
  *
  * Paged the same way the count is, and for the same reason pointed the other
  * way: asking for the first twenty *threads* on a pull request whose first
@@ -2020,38 +2057,61 @@ const where = (thread: BriefThread): string =>
  * findings were open — and a step told to address nothing answers "addressed",
  * which spends a round and moves the ticket on with the findings still there.
  */
-async function briefThreads(gh: Client, repo: string, ticket: string): Promise<Record<string, string>> {
+async function threadsOn(gh: Client, repo: string, number: number): Promise<BriefThread[]> {
   const [owner = "", name = ""] = repo.split("/");
-  const open = (await pullsOf(gh, repo, ticket)).pulls.filter((p) => p.state === "OPEN");
-  if (open.length === 0) {
-    return { threads: "There is no pull request open on this ticket, so there is nothing to address." };
+  const all: BriefThread[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_THREAD_PAGES; page++) {
+    const data: BriefResponse = await gh.graphql<BriefResponse>(BRIEF_QUERY, { owner, name, number, cursor });
+    // Same failures the count tells apart, and for the same reason: an
+    // empty briefing and an unreadable one look identical to the agent.
+    if (!data.repository) throw unseen(repo);
+    const threads = data.repository.pullRequest?.reviewThreads;
+    if (!threads) throw new Error(`pull request #${number} answered with no review threads at all`);
+    all.push(...threads.nodes);
+    if (!threads.pageInfo.hasNextPage) break;
+    cursor = threads.pageInfo.endCursor;
   }
+  return all;
+}
+
+/**
+ * The source's briefing: `threads`, what is left to address, and `history`,
+ * how the ticket got here. One call makes both, because both are the same
+ * pages of the same threads read two ways, and a step naming either pays for
+ * the read once.
+ */
+async function briefTicket(gh: Client, repo: string, ticket: string, snapshot: Snapshot): Promise<Record<string, string>> {
+  const pulls = (await pullsOf(gh, repo, ticket)).pulls;
+  const read = new Map<number, BriefThread[]>();
+  for (const pull of pulls) read.set(pull.number, await threadsOn(gh, repo, pull.number));
+  return {
+    threads: openThreads(pulls.filter((p) => p.state === "OPEN"), read),
+    history: historyOf(commentsOf(snapshot), pulls, read, await gh.botLogin()),
+  };
+}
+
+/**
+ * The open review threads across every open pull request on the ticket,
+ * rendered for a prompt under one `## PR #N` heading each.
+ */
+function openThreads(open: PullNode[], read: Map<number, BriefThread[]>): string {
+  if (open.length === 0) return "There is no pull request open on this ticket, so there is nothing to address.";
 
   let listed = 0;
   let more = 0;
   const sections: string[] = [];
 
   for (const pull of open) {
-    let cursor: string | null = null;
     const shown: BriefThread[] = [];
-    for (let page = 0; page < MAX_THREAD_PAGES; page++) {
-      const data: BriefResponse = await gh.graphql<BriefResponse>(BRIEF_QUERY, { owner, name, number: pull.number, cursor });
-      // Same failures the count tells apart, and for the same reason: an
-      // empty briefing and an unreadable one look identical to the agent.
-      if (!data.repository) throw unseen(repo);
-      const threads = data.repository.pullRequest?.reviewThreads;
-      if (!threads) throw new Error(`pull request #${pull.number} answered with no review threads at all`);
-      for (const thread of threads.nodes) {
-        if (thread.isResolved) continue;
-        if (listed < BRIEF_THREADS) {
-          shown.push(thread);
-          listed++;
-        } else {
-          more++;
-        }
+    for (const thread of read.get(pull.number) ?? []) {
+      if (thread.isResolved) continue;
+      if (listed < BRIEF_THREADS) {
+        shown.push(thread);
+        listed++;
+      } else {
+        more++;
       }
-      if (!threads.pageInfo.hasNextPage) break;
-      cursor = threads.pageInfo.endCursor;
     }
     if (shown.length > 0) {
       sections.push(`## PR #${pull.number}\n\n${shown.map((thread, i) =>
@@ -2059,9 +2119,7 @@ async function briefThreads(gh: Client, repo: string, ticket: string): Promise<R
     }
   }
 
-  if (listed === 0) {
-    return { threads: "No review thread on the ticket's pull requests is open. Nothing here needs addressing." };
-  }
+  if (listed === 0) return "No review thread on the ticket's pull requests is open. Nothing here needs addressing.";
 
   // Said out loud rather than left implicit: an agent shown twenty of fifty
   // findings and told nothing would report the pull request addressed.
@@ -2069,7 +2127,80 @@ async function briefThreads(gh: Client, repo: string, ticket: string): Promise<R
     ? ""
     : `\n\n(${more} more open threads are not listed here. Address what is above; the rest come back next round.)`;
 
-  return { threads: sections.join("\n\n") + tail };
+  return sections.join("\n\n") + tail;
+}
+
+/**
+ * The newest of a list, rendered, oldest first: at most `keep` of them and
+ * no more text than one half of the history may spend — and the line saying
+ * how many earlier ones were left out.
+ */
+function newest<T>(all: T[], keep: number, what: string, render: (item: T) => string): { kept: Array<{ item: T; text: string }>; left: string } {
+  const kept: Array<{ item: T; text: string }> = [];
+  let spent = 0;
+  for (let i = all.length - 1; i >= 0 && kept.length < keep; i--) {
+    const item = all[i] as T;
+    const text = render(item);
+    if (spent + text.length > BRIEF_HISTORY_HALF_CHARS) break;
+    spent += text.length;
+    kept.push({ item, text });
+  }
+  const dropped = all.length - kept.length;
+  return {
+    kept: kept.reverse(),
+    left: dropped === 0 ? "" : `(${dropped} earlier ${what} are not listed here.)\n\n`,
+  };
+}
+
+/**
+ * The ticket's whole history, for the retro: every comment on it in order,
+ * then every review thread on every pull request tied to it — resolved or
+ * not, merged or not, because a correction that was argued and settled is
+ * exactly what a retro learns from.
+ *
+ * A comment is Landrace's by the test `entriesFromComments` applies — our
+ * login *and* our marker — so a person's reply the board posted as the bot
+ * reads as that person's turn, not as a record. Each body is cut here, and
+ * the engine bounds the whole on the way in.
+ */
+function historyOf(comments: SnapshotComment[], pulls: PullNode[], read: Map<number, BriefThread[]>, bot: string): string {
+  const ours = (login: string | undefined): boolean => typeof login === "string" && sameLogin(login, bot);
+  const text = (body: string | null | undefined): string => cut((body ?? "").trim(), BRIEF_BODY_CHARS);
+
+  const said = newest(comments, BRIEF_COMMENTS, "comments", (c) => {
+    const marker = wroteIt(c, bot) ? parseMarker(c.body ?? "") : null;
+    return marker
+      ? `Landrace [${marker.marker ?? marker.kind}]: ${text(stripMarker(c.body ?? ""))}`
+      : `@${c.user?.login ?? "ghost"}: ${text(c.body)}`;
+  });
+  const conversation = said.kept.length === 0
+    ? "No comments on the ticket."
+    : said.left + said.kept.map((k) => k.text).join("\n\n");
+
+  const ordered = [...pulls].sort((a, b) => a.number - b.number);
+  const raised = newest(
+    ordered.flatMap((pull) => (read.get(pull.number) ?? []).map((thread) => ({ pull: pull.number, thread }))),
+    BRIEF_HISTORY_THREADS,
+    "threads",
+    ({ thread }) => {
+      const opening = thread.comments.nodes[0];
+      const last = thread.lastReply.nodes[0];
+      const by = ours(opening?.author?.login) ? "Landrace's reviewer" : `@${opening?.author?.login ?? "ghost"}`;
+      const reply = thread.comments.totalCount > 1 && last
+        ? `\nLast reply, from ${ours(last.author?.login) ? "Landrace" : `@${last.author?.login ?? "ghost"}`}: ${text(last.body)}`
+        : "";
+      return `${where(thread)}raised by ${by} — ${thread.isResolved ? "resolved" : "open"}\n${text(opening?.body)}${reply}`;
+    },
+  );
+  let n = 0;
+  const reviews = ordered.length === 0
+    ? "No pull request was opened on this ticket."
+    : raised.left + ordered.map((pull) => {
+      const listed = raised.kept.filter((r) => r.item.pull === pull.number).map((r) => `${++n}. ${r.text}`);
+      return `### PR #${pull.number} (${pull.state.toLowerCase()})\n\n${listed.length === 0 ? "Nothing listed." : listed.join("\n\n")}`;
+    }).join("\n\n");
+
+  return `## Ticket conversation\n\n${conversation}\n\n## Review threads\n\n${reviews}`;
 }
 
 /* ── the startup preflight ───────────────────────────────────────────────── */
@@ -2291,8 +2422,9 @@ export function githubHooks(opts: GitHubOptions): {
       list: (ctx) => listGraph(gh, opts.repo, link, ctx),
       read: (id, ctx) => readGraph(gh, opts.repo, link, id, ctx),
       // The text half, fetched per invocation rather than per pass: what
-      // `fix-review` is told to address, which the graph will not carry.
-      brief: ({ ticket }) => briefThreads(gh, opts.repo, ticket),
+      // `fix-review` is told to address and what `retro` learns from, which
+      // the graph will not carry.
+      brief: ({ ticket, snapshot }) => briefTicket(gh, opts.repo, ticket, snapshot),
     }),
 
     operator: defineOperator({

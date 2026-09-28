@@ -1,9 +1,10 @@
 import { createFakeTracker, noBranches, type FakeIssue, type FakeThread, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
-import { hasPullFrom, MAX_SUBGRAPH_NODES } from "#conventions.js";
+import { hasPullFrom, MAX_SUBGRAPH_NODES, renderMarker } from "#conventions.js";
 import { staleClosure } from "#core/children.js";
 import { githubHooks } from "#landrace/hooks/github.js";
+import { buildBriefing } from "#runner/artifacts.js";
 import { createDispatcher } from "#runner/effects.js";
 import { graphProblem } from "#runner/graph.js";
 import type { Condition, Graph, HookContext, Node, RuntimeContext, Snapshot, Source } from "#namespace.js";
@@ -597,6 +598,117 @@ describe("the open threads reach the prompt, and only the prompt", () => {
     if (!brief) throw new Error("the github source briefs nothing");
     await expect(Promise.resolve(brief({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext)))
       .rejects.toThrow(/answered with nothing at all/);
+  });
+
+  /* `history` rides along on the same call now; the open list must not notice. */
+  it("briefs the open threads exactly as before, beside the history", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ number: 51, head: "landrace/1", threads: [
+      { isResolved: true, body: "settled", author: "a-person", replies: [{ author: "someone", body: "ok" }] },
+      { isResolved: false, body: "this leaks a file handle", path: "src/x.ts", line: 12, replies: [{ author: "a-person", body: "no" }] },
+    ] });
+    expect((await briefOf(gh, "1")).threads).toBe("## PR #51\n\n1. src/x.ts:12 — this leaks a file handle");
+  });
+});
+
+/**
+ * The whole of a ticket, for the retro: what was said on it and every thread
+ * raised on its pull requests, settled or not, merged or not. The open list
+ * above is what is left to do; this is how the ticket got here.
+ */
+describe("the ticket's history reaches the prompt, labelled by who said it", () => {
+  const said = (login: string, body: string) => ({ body, user: { login } });
+  const withComments = (...comments: Array<{ body: string; user: { login: string } }>): Snapshot => ({ ticket: { comments } });
+
+  it("labels a person's comment, a Landrace record, a resolved reviewer thread and a person's open thread on a merged pull request", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ number: 50, head: "landrace/1", merged: true, threads: [
+      {
+        isResolved: true, body: "this leaks a file handle", path: "src/x.ts", line: 12,
+        replies: [{ author: "a-person", body: "not sure" }, { author: gh.bot, body: "fixed, resolving" }],
+      },
+      { isResolved: false, body: "rename this", path: "src/y.ts", line: 3, author: "a-person" },
+    ] });
+    const snapshot = withComments(
+      said("a-person", "please make it CSV"),
+      said(gh.bot, `Writing the spec, round 1.${renderMarker({ stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1" })}`),
+    );
+
+    const text = (await briefOf(gh, "1", snapshot)).history ?? "";
+
+    expect(text).toMatch(/^## Ticket conversation\n/);
+    expect(text).toContain("@a-person: please make it CSV");
+    expect(text).toContain("Landrace [enter:spec:1]: Writing the spec, round 1.");
+    expect(text).not.toContain("<!--");
+    expect(text).toMatch(/## Review threads\n\n### PR #50 \(merged\)/);
+    expect(text).toContain("src/x.ts:12 — raised by Landrace's reviewer — resolved\nthis leaks a file handle\nLast reply, from Landrace: fixed, resolving");
+    expect(text).not.toContain("not sure");
+    expect(text).toContain("src/y.ts:3 — raised by @a-person — open\nrename this");
+    // One comment in the thread is no reply at all, and is not shown twice.
+    expect(text).not.toMatch(/rename this\nLast reply/);
+  });
+
+  it("gives every pull request on the ticket its own heading, with its state", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ number: 50, head: "landrace/1", state: "CLOSED", threads: [] });
+    gh.openPull({ number: 51, head: "feature/y", closes: [1], threads: [{ isResolved: false, body: "open one" }] });
+    const text = (await briefOf(gh, "1")).history ?? "";
+    expect(text).toMatch(/### PR #50 \(closed\)[\s\S]*### PR #51 \(open\)[\s\S]*open one/);
+  });
+
+  it("keeps the newest comments and threads past its cap, cuts long bodies, and says how many it left out", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({
+      head: "landrace/1",
+      threads: Array.from({ length: 45 }, (_, i) => ({ isResolved: true, body: `finding ${i}` })),
+    });
+    const snapshot = withComments(
+      ...Array.from({ length: 64 }, (_, i) => said("a-person", `remark ${i}`)),
+      said("a-person", "z".repeat(5_000)),
+    );
+
+    const text = (await briefOf(gh, "1", snapshot)).history ?? "";
+
+    expect(text).not.toMatch(/remark 4$/m);
+    expect(text).toMatch(/remark 5$/m);
+    expect(text).toMatch(/remark 63$/m);
+    expect(text).toMatch(/5 earlier comments are not listed/);
+    expect(text).toContain(`${"z".repeat(1_000)}…`);
+    expect(text).not.toContain("z".repeat(1_001));
+    expect(text).not.toMatch(/^finding 4$/m);
+    expect(text).toMatch(/^finding 5$/m);
+    expect(text).toMatch(/^finding 44$/m);
+    expect(text).toMatch(/5 earlier threads are not listed/);
+  });
+
+  /*
+   * The engine cuts a hook's briefing at 32 KB from the end, which on a long
+   * history would drop the newest comments and every review thread — the
+   * evidence the retro runs for. So the hook stays inside it, newest first.
+   */
+  it("keeps the newest of a long history, both halves of it, inside what the engine will carry", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ number: 50, head: "landrace/1", threads: Array.from({ length: 40 }, (_, i) => ({
+      isResolved: true, body: `${"t".repeat(980)} finding ${i}`, replies: [{ author: "a-person", body: "r".repeat(1_000) }],
+    })) });
+    const snapshot = withComments(...Array.from({ length: 60 }, (_, i) => said("a-person", `${"c".repeat(990)} remark ${i}`)));
+
+    const briefed = await buildBriefing([sourceOf(gh)], { ...gh.ctx, ticket: "1", snapshot } as HookContext, "{brief.github.history}");
+    const text = briefed.github?.history ?? "";
+
+    expect(text).not.toContain("[truncated]");
+    expect(text).toMatch(/remark 59$/m);
+    expect(text).toMatch(/\d+ earlier comments are not listed/);
+    expect(text).toContain("## Review threads");
+    expect(text).toMatch(/finding 39$/m);
+    expect(text).toMatch(/\d+ earlier threads are not listed/);
+  });
+
+  it("says so plainly when nothing was said and nothing was opened", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const text = (await briefOf(gh, "1")).history ?? "";
+    expect(text).toMatch(/## Ticket conversation\n\nNo comments/);
+    expect(text).toMatch(/## Review threads\n\nNo pull request/);
   });
 });
 

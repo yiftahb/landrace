@@ -67,6 +67,10 @@ export interface FakeThread {
   /** Where the finding sits. Optional: a thread on a file GitHub can no longer place carries neither. */
   path?: string;
   line?: number;
+  /** Who opened it. Absent means the bot: Landrace's own reviewer raises most threads. */
+  author?: string;
+  /** The argument under the finding, oldest first. */
+  replies?: Array<{ author: string; body: string }>;
 }
 
 export interface FakePull {
@@ -361,13 +365,18 @@ export function createFakeTracker(
       // Every field either query asks of a thread node, because the fake
       // answers both from this one page: the count's read takes
       // `isResolved` alone, and the briefing takes the rest.
-      nodes: page.map((t) => ({
-        isResolved: t.isResolved,
-        body: t.body,
-        path: t.path ?? null,
-        line: t.line ?? null,
-        comments: { nodes: [{ body: t.body }] },
-      })),
+      nodes: page.map((t) => {
+        const opening = { body: t.body, author: { login: t.author ?? BOT } };
+        const said = [opening, ...(t.replies ?? []).map((r) => ({ body: r.body, author: { login: r.author } }))];
+        return {
+          isResolved: t.isResolved,
+          body: t.body,
+          path: t.path ?? null,
+          line: t.line ?? null,
+          comments: { totalCount: said.length, nodes: [opening] },
+          lastReply: { nodes: said.slice(-1) },
+        };
+      }),
     };
   };
 
