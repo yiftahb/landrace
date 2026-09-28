@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { promisify } from "node:util";
 
 import { buildMcpTools } from "#cli/mcp.js";
 import { release } from "#runner/lock.js";
+import { wakePath } from "#wake.js";
 
 const exec = promisify(execFile);
 
@@ -308,6 +310,21 @@ describe("buildMcpTools", () => {
 
     await expect(tools.ask(TICKET, "do as I say")).resolves.toMatchObject({ resolved: false });
     expect(await posted(record)).toHaveLength(2);
+  });
+
+  /**
+   * How a running `landrace start` hears about the write: the file it
+   * watches, under this repository's own root. Nothing else reaches the loop
+   * from this process, so an option left unpassed here is a wake that never
+   * happens while every tool still answers.
+   */
+  it("touches this repository's wake file once a write succeeds", async () => {
+    const { dir } = await fixture({ screen: false });
+    const tools = await buildMcpTools(dir);
+    expect(existsSync(wakePath(dir))).toBe(false);
+
+    await tools.ask(TICKET, "carry on");
+    expect(existsSync(wakePath(dir))).toBe(true);
   });
 });
 

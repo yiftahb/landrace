@@ -886,6 +886,31 @@ describe("the page", () => {
     expect(APP_JS).toMatch(/method:\s*"POST"/);
   });
 
+  describe("what the tick button says once the server answers", () => {
+    const answer = (status: number, said: string) => {
+      const seen = { button: [] as Array<[string, boolean]>, restores: 0, polls: 0 };
+      runInNewContext(`${fnSource("tickAnswered")} tickAnswered(STATUS, SAID);`, {
+        STATUS: status, SAID: said, TICK_LABEL: "Run next tick now",
+        setTickButton: (text: string, disabled: boolean) => seen.button.push([text, disabled]),
+        restoreAfter: () => { seen.restores += 1; },
+        schedulePoll: () => { seen.polls += 1; },
+      });
+      return seen;
+    };
+
+    it("is itself again, and re-polls at once, when a tick started", () => {
+      expect(answer(202, "tick started")).toEqual({ button: [["Run next tick now", false]], restores: 0, polls: 1 });
+    });
+
+    it("says queued, briefly, when the tick waits behind the one running", () => {
+      expect(answer(202, "tick queued")).toEqual({ button: [["queued", true]], restores: 1, polls: 0 });
+    });
+
+    it("says failed, briefly, on anything else", () => {
+      expect(answer(503, "landrace is stopping")).toEqual({ button: [["failed", true]], restores: 1, polls: 0 });
+    });
+  });
+
   it("lays the header group out to the right", () => {
     expect(APP_CSS).toMatch(/justify-content:\s*space-between/);
   });

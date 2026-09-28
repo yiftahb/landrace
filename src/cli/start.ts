@@ -25,6 +25,7 @@ import type {
   ServerCommand,
   StartOptions,
   UiServer,
+  WakeResult,
 } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
@@ -40,6 +41,7 @@ import { createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
+import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
 
 /**
@@ -70,7 +72,7 @@ export function parsePort(text: string): number {
  * expected it would otherwise have to notice it is missing.
  */
 export async function startUi(
-  opts: { board: Board; ui: boolean; once: boolean; port: number; tick?: () => boolean; goto?: GotoPath | undefined },
+  opts: { board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
   try {
@@ -473,13 +475,13 @@ function onSignals(handler: () => void): () => void {
 }
 
 /**
- * A self-rescheduling timer in place of `setInterval`, so a manual tick can
- * restart the countdown without leaving the old interval also armed.
+ * A self-rescheduling timer in place of `setInterval`, so a wake can restart
+ * the countdown without leaving the old interval also armed.
  *
  * The next scheduled fire is armed the moment a tick *starts*, not when it
  * resolves — exactly what `setInterval` did, and what keeps a scheduled tick
  * landing on time even while an earlier one is still running. `run` is handed
- * to us already caught (`loop`'s `begin` does that), so nothing here needs a
+ * to us already caught (`trackedRun` does that), so nothing here needs a
  * try/catch of its own.
  */
 export function createSchedule(opts: {
@@ -490,31 +492,53 @@ export function createSchedule(opts: {
   const now = opts.now ?? Date.now;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let nextAtValue: number | null = null;
-  // Only a manual tick is exclusive with itself; a scheduled one never waits
-  // on this, which is the "scheduled ticks may still overlap" rule.
-  let manualInFlight: Promise<void> | null = null;
+  // Every run this schedule started, scheduled or woken, still in flight. A
+  // scheduled fire never looks at it — the "scheduled ticks may still
+  // overlap" rule — but a wake does: a person's action lands in the pass
+  // after the one in flight, which may have read the tracker before it.
+  //
+  // ponytail: a pass lasts as long as its longest step, so while any agent
+  // runs, a wake waits for that pass to end — at worst a step's timeout, or
+  // the next scheduled tick, which still overlaps. The upgrade is to queue
+  // only behind a pass that has not listed the tracker yet, and start one
+  // now once every pass in flight has.
+  let running = 0;
+  // Wakes that arrived while something ran, collapsed into one follow-up.
+  let pending = false;
   // Once stop() has run, nothing here may arm a new timer again — not the
-  // scheduled path, not a manual trigger(). Without this, a click on the
-  // page during shutdown re-armed a schedule the daemon believed it had
-  // already torn down: trigger() returned true, set a fresh setTimeout, and
-  // the process stayed alive until a second Ctrl-C caught it.
+  // scheduled path, not a wake. Without this, a click on the page during
+  // shutdown re-armed a schedule the daemon believed it had already torn
+  // down: a fresh setTimeout kept the process alive until a second Ctrl-C.
   let stopped = false;
 
   const arm = (): void => {
     if (stopped) return;
+    if (timer) clearTimeout(timer);
     nextAtValue = now() + opts.intervalMs;
     timer = setTimeout(fire, opts.intervalMs);
+  };
+
+  const begin = (): void => {
+    running += 1;
+    void opts.run().finally(() => {
+      running -= 1;
+      if (running === 0 && pending && !stopped) {
+        pending = false;
+        begin();
+        arm();
+      }
+    });
   };
 
   const fire = (): void => {
     if (stopped) return;
     arm();
-    void opts.run();
+    begin();
   };
 
   return {
     start(): void {
-      void opts.run();
+      begin();
       arm();
     },
     stop(): void {
@@ -526,16 +550,15 @@ export function createSchedule(opts: {
     nextAt(): number | null {
       return nextAtValue;
     },
-    trigger(): boolean {
-      if (stopped) return false;
-      if (manualInFlight) return false;
-      if (timer) clearTimeout(timer);
-      const running = opts.run().finally(() => {
-        manualInFlight = null;
-      });
-      manualInFlight = running;
+    wake() {
+      if (stopped) return "stopped";
+      if (running > 0) {
+        pending = true;
+        return "queued";
+      }
+      begin();
       arm();
-      return true;
+      return "started";
     },
   };
 }
@@ -553,9 +576,9 @@ async function pass(rt: Runtime, board?: Board): Promise<void> {
 
 /**
  * A schedule's `run`: one pass, tracked in `inFlight` so `loop` can wait for
- * it out on shutdown, whether the schedule fired it on time or a manual
- * trigger() did. A poll that failed is not a loop that should stop — the
- * tracker being unreachable for one tick is the ordinary case, and exiting
+ * it out on shutdown, whether the schedule fired it on time or a wake did. A
+ * poll that failed is not a loop that should stop — the tracker being
+ * unreachable for one tick is the ordinary case, and exiting
  * would need a person to notice and start the daemon again.
  */
 function trackedRun(rt: Runtime, board: { current?: Board }, inFlight: Set<Promise<void>>): () => Promise<void> {
@@ -576,7 +599,7 @@ function trackedRun(rt: Runtime, board: { current?: Board }, inFlight: Set<Promi
  * Ticks fire on schedule and are allowed to overlap: mutual exclusion is per
  * ticket, and a global "is a tick running" guard would let one ten-minute step
  * starve every other ticket in the repository. `schedule` and `inFlight` are
- * built by the caller, not here — the page needs `schedule.nextAt`/`trigger`
+ * built by the caller, not here — the page needs `schedule.nextAt`/`wake`
  * wired to the board and the server before this ever starts.
  */
 export async function loop(rt: Runtime, schedule: Schedule, inFlight: Set<Promise<void>>): Promise<void> {
@@ -622,9 +645,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   await runPreflights(rt.preflights, rt.deps.ctx);
 
   // Built before the board and the page, which both need to reach into it —
-  // the board reads schedule.nextAt for the countdown, the page's one write
-  // calls schedule.trigger. `--once` never starts it: one tick and no page
-  // means nothing here is ever armed.
+  // the board reads schedule.nextAt for the countdown, the page's writes and
+  // the wake file call schedule.wake. `--once` never starts it: one tick and
+  // no page means nothing here is ever armed.
   const inFlight = new Set<Promise<void>>();
   const schedule = createSchedule({ intervalMs: rt.intervalMs, run: trackedRun(rt, boardRef, inFlight) });
 
@@ -639,17 +662,21 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
 
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
-    tick: schedule.trigger,
+    tick: schedule.wake,
     goto: gotoFor({ source: rt.source, pre: rt.deps.pre, dispatcher: rt.deps.dispatcher, ctx: rt.deps.ctx, workflow: rt.deps.workflow }),
   });
   if (ui) console.error(`landrace: triage page at ${ui.url}`);
 
+  // What `landrace mcp` touches after a person's write, in its own process:
+  // watched only where there is a loop to wake.
+  const unwatch = opts.once ? null : watchWake(wakePath(dir), schedule.wake);
   const off = onSignals(createInterrupt({ stop: rt.stop }));
   try {
     // A single tick reports its own failure by throwing: one shot, one answer,
     // and the exit code is what a script that ran it will read.
     await (opts.once ? pass(rt, board) : loop(rt, schedule, inFlight));
   } finally {
+    unwatch?.();
     off();
     await ui?.close();
     // --once, a normal stop and the first Ctrl-C all come through here; the

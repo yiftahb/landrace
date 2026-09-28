@@ -78,8 +78,9 @@ function foreignWrite(req: IncomingMessage, action: string, port: number): strin
 /**
  * The triage page, on loopback only. Every route is a GET except the page's
  * three writes: POST /tick, present only when the caller hands us a schedule
- * to trigger, and POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>,
- * present only when it hands us a way to send a ticket back.
+ * to wake, and POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>,
+ * present only when it hands us a way to send a ticket back, and which wake
+ * that schedule too once they have.
  */
 export function serveBoard(opts: UiOptions): Promise<UiServer> {
   let port: number;
@@ -114,8 +115,9 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
         send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
       }
-      const started = opts.tick();
-      send(res, started ? 202 : 409, "text/plain; charset=utf-8", started ? "tick started" : "a tick is already running");
+      const woke = opts.tick();
+      if (woke === "stopped") send(res, 503, "text/plain; charset=utf-8", "landrace is stopping");
+      else send(res, 202, "text/plain; charset=utf-8", `tick ${woke}`);
       return;
     }
 
@@ -169,9 +171,16 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
       }
       const goto = opts.goto;
       Promise.resolve().then(() => goto.send(ticket, target)).then(
-        (r) => ("refused" in r
-          ? send(res, 409, "text/plain; charset=utf-8", r.refused)
-          : send(res, 202, "text/plain; charset=utf-8", `sent #${ticket} back to ${r.to}`)),
+        (r) => {
+          if ("refused" in r) {
+            send(res, 409, "text/plain; charset=utf-8", r.refused);
+            return;
+          }
+          // The person is waiting on the ticket they just sent back: the
+          // pass that picks it up runs now, not when the countdown comes round.
+          opts.tick?.();
+          send(res, 202, "text/plain; charset=utf-8", `sent #${ticket} back to ${r.to}`);
+        },
         (e: unknown) => {
           // Logged in full for the operator; the page gets a fixed sentence,
           // because a tracker's error can quote the ticket it refused.

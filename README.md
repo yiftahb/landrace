@@ -577,7 +577,14 @@ is in the ticket's comments, which the page does not read. `landrace status`
 says "blocked: security check refused a step" for the same ticket.
 
 The page has three writes, and all of them can start paid agent runs, so all
-are guarded beyond the Host check. The tick button starts a tick. The "Retry"
+are guarded beyond the Host check. The tick button starts a tick, or, while
+one is running, says "queued" and runs one once every tick in flight has
+ended — which, with an agent step in flight, can be long after the next
+scheduled tick. A Retry or "Go to step…" that went through, and every
+`landrace mcp` write — reply, goto, ask, resolve, create or update a ticket —
+wake the loop the same way, so a person does not wait out the interval. The
+MCP server is a separate process: it touches a `wake` file beside the locks
+in `$TMPDIR/landrace/<repo>/`, and `start` checks that file every second. The "Retry"
 item, first in a blocked or screened ticket's menu, sends the ticket back to
 the step whose failure put it there. The "Go to step…" items, offered on any
 open ticket whose agent is not running and whose stage lists a goto, send it

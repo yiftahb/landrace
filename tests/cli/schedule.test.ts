@@ -1,18 +1,33 @@
 import { createSchedule } from "#cli/start.js";
 
-/** A run() whose resolution the test controls, to pin manual-tick overlap. */
-function deferredRun(): { run: () => Promise<void>; calls: number; resolve: () => void } {
-  let resolveFn: () => void = () => {};
-  let calls = 0;
+/** Let the schedule see a run that just settled. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+}
+
+/**
+ * A run() whose resolution the test controls, counting how many are in
+ * flight at once, to pin that a wake never starts a tick beside another.
+ */
+function deferredRun(): { run: () => Promise<void>; calls: number; maxActive: number; settle: () => Promise<void> } {
+  const open: Array<() => void> = [];
+  let active = 0;
   const state = {
     calls: 0,
-    resolve: () => resolveFn(),
+    maxActive: 0,
     run: (): Promise<void> => {
-      calls += 1;
-      state.calls = calls;
-      return new Promise<void>((resolve) => {
-        resolveFn = resolve;
-      });
+      state.calls += 1;
+      active += 1;
+      state.maxActive = Math.max(state.maxActive, active);
+      return new Promise<void>((resolve) => open.push(() => {
+        active -= 1;
+        resolve();
+      }));
+    },
+    /** Settle the oldest run still in flight. */
+    settle: async (): Promise<void> => {
+      open.shift()?.();
+      await flush();
     },
   };
   return state;
@@ -45,48 +60,74 @@ describe("createSchedule", () => {
     expect(schedule.nextAt()).toBe(7000);
   });
 
-  it("trigger() runs immediately and moves nextAt() to triggerTime + intervalMs", () => {
+  it("an idle wake runs at once, answers started, and restarts the countdown from now", async () => {
     let now = 0;
     const run = jest.fn(async () => {});
     const schedule = createSchedule({ intervalMs: 1000, run, now: () => now });
     schedule.start();
+    await flush();
+
     now = 300;
-    const ok = schedule.trigger();
-    expect(ok).toBe(true);
+    jest.advanceTimersByTime(300);
+    expect(schedule.wake()).toBe("started");
     expect(run).toHaveBeenCalledTimes(2);
     expect(schedule.nextAt()).toBe(1300);
+
+    // The countdown armed at start is gone, not left to fire beside the new one.
+    jest.advanceTimersByTime(700);
+    expect(run).toHaveBeenCalledTimes(2);
+    jest.advanceTimersByTime(300);
+    expect(run).toHaveBeenCalledTimes(3);
   });
 
-  it("a second trigger() while the first manual tick is unresolved returns false and runs nothing", async () => {
+  it("wakes during a woken run queue, and give one follow-up once it settles, never beside it", async () => {
+    let now = 0;
     const deferred = deferredRun();
-    const schedule = createSchedule({ intervalMs: 1000, run: deferred.run });
+    const schedule = createSchedule({ intervalMs: 1000, run: deferred.run, now: () => now });
     schedule.start();
-    expect(deferred.calls).toBe(1);
-
-    const first = schedule.trigger();
-    expect(first).toBe(true);
+    await deferred.settle();
+    expect(schedule.wake()).toBe("started");
     expect(deferred.calls).toBe(2);
 
-    const second = schedule.trigger();
-    expect(second).toBe(false);
-    expect(deferred.calls).toBe(2);
-  });
-
-  it("after the manual tick resolves, trigger() works again", async () => {
-    const deferred = deferredRun();
-    const schedule = createSchedule({ intervalMs: 1000, run: deferred.run });
-    schedule.start();
-    schedule.trigger();
+    expect([schedule.wake(), schedule.wake(), schedule.wake()]).toEqual(["queued", "queued", "queued"]);
     expect(deferred.calls).toBe(2);
 
-    deferred.resolve();
-    // Let the trigger's promise settle before asking again.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    const third = schedule.trigger();
-    expect(third).toBe(true);
+    now = 400;
+    await deferred.settle();
     expect(deferred.calls).toBe(3);
+    expect(schedule.nextAt()).toBe(1400);
+
+    await deferred.settle();
+    expect(deferred.calls).toBe(3);
+    expect(deferred.maxActive).toBe(1);
+  });
+
+  it("a wake during a scheduled tick queues rather than overlapping it", async () => {
+    const deferred = deferredRun();
+    const schedule = createSchedule({ intervalMs: 1000, run: deferred.run });
+    schedule.start();
+    await deferred.settle();
+    jest.advanceTimersByTime(1000);
+    expect(deferred.calls).toBe(2);
+
+    expect(schedule.wake()).toBe("queued");
+    expect(deferred.calls).toBe(2);
+
+    await deferred.settle();
+    expect(deferred.calls).toBe(3);
+    expect(deferred.maxActive).toBe(1);
+  });
+
+  it("a queued follow-up does not run when stop() comes before the run settles", async () => {
+    const deferred = deferredRun();
+    const schedule = createSchedule({ intervalMs: 1000, run: deferred.run });
+    schedule.start();
+    expect(schedule.wake()).toBe("queued");
+    schedule.stop();
+
+    await deferred.settle();
+    expect(deferred.calls).toBe(1);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it("stop() makes nextAt() null and no further tick fires", () => {
@@ -99,42 +140,36 @@ describe("createSchedule", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("a scheduled tick still fires while a manual one is in flight", async () => {
+  it("a scheduled tick still fires while a woken one is in flight", async () => {
     const deferred = deferredRun();
     const schedule = createSchedule({ intervalMs: 1000, run: deferred.run });
     schedule.start();
-    schedule.trigger();
+    await deferred.settle();
+    expect(schedule.wake()).toBe("started");
     expect(deferred.calls).toBe(2);
 
-    // The manual tick moved nextAt to 1000 (triggerTime 0 + interval); advance
-    // to it while the manual run is still unresolved.
+    // The wake moved nextAt to 1000 (wake time 0 + interval); advance to it
+    // while the woken run is still unresolved.
     jest.advanceTimersByTime(1000);
     expect(deferred.calls).toBe(3);
   });
 
   /**
-   * The bug a review caught: trigger() never checked whether stop() had
+   * The bug a review caught: the manual tick never checked whether stop() had
    * already run, so a click on the page during shutdown re-armed a schedule
    * the daemon believed it had already torn down — a stray setTimeout that
    * held the process open until a second Ctrl-C.
    */
-  it("trigger() after stop() runs nothing, returns false, and nextAt stays null", () => {
+  it("a wake after stop() answers stopped, runs nothing, and arms no timer", () => {
     const run = jest.fn(async () => {});
     const schedule = createSchedule({ intervalMs: 1000, run });
     schedule.start();
     schedule.stop();
     run.mockClear();
 
-    expect(schedule.trigger()).toBe(false);
+    expect(schedule.wake()).toBe("stopped");
     expect(run).not.toHaveBeenCalled();
     expect(schedule.nextAt()).toBeNull();
-  });
-
-  it("no timer is left pending after stop(), even when trigger() is called afterwards", () => {
-    const schedule = createSchedule({ intervalMs: 1000, run: async () => {} });
-    schedule.start();
-    schedule.stop();
-    schedule.trigger();
     expect(jest.getTimerCount()).toBe(0);
   });
 });

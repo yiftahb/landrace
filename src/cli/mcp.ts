@@ -11,6 +11,7 @@ import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { touchWake, wakePath } from "#wake.js";
 import { executorFor, sandboxFor, screenerFor } from "#cli/start.js";
 
 /**
@@ -142,6 +143,10 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     workflow,
     steps,
     ...(sandbox === null ? {} : { sandbox }),
+    // This process is not the loop, so a person's write reaches it through
+    // the file `landrace start` watches. Here only: the child server an agent
+    // is handed gets no wake, so an agent cannot drive the loop.
+    wake: () => touchWake(wakePath(dir)),
   });
 }
 
