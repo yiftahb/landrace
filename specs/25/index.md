@@ -1,42 +1,44 @@
 ## Problem
-Board shows one line per ticket. Watching running agent, answering spec questions → leave page (GitHub, editor, MCP chat). #21 questions, #19 stuck publish, #20/#21 nesting all handled off-board. Engine already has `reply`/`ask`/`resolve`/goto/Retry; page has no place for them.
+Board shows one line per ticket. To see what a running agent does, or to answer a step, you leave the page for GitHub, an editor, or MCP in another chat. #21's spec questions, #19's stuck publish and the #20/#21 nesting were all read and acted on off-board. The engine already has `landrace_reply`, `landrace_ask`, `landrace_resolve`, goto and Retry, but no place on the page uses them.
 
 ## Decisions
 Flow:
-1. Click ticket row → right panel opens, board pushed left; `#ticket=<id>` in URL. Back, ✕ or Escape closes; expand button → full width. Board keeps polling.
-2. Top: title, `#id ↗`, stage, round, model, badge; opened (`createdAt`), stage since (`since`), last activity; artifact rows with kind/state icons.
-3. Bottom, by badge:
-   - `running`: live tool lines (Read `x`, Bash `y`) + agent messages, read-only.
-   - `needs-you`: composer with Reply, Ask the step (confirms first, spinner, answer inline), Resolve; existing Chat deep links.
-   - otherwise: conversation history, read-only.
+1. Click ticket row → right panel opens, board pushed left, URL `#ticket=<id>`. Back, ✕ or Escape closes it. ⤢ makes it full width.
+2. Top of panel: title, `#id ↗`, badge, stage, round, model, opened (`createdAt`), stage since, last activity, artifacts with the board's kind and state icons.
+3. Bottom of panel, by state:
+   - **Running:** live read-only lines (`Read x`, `Bash y`, agent message).
+   - **Needs you:** composer with Reply, Ask the step (confirm first, paid turn), Resolve. Chat deep links stay.
+   - **Otherwise:** conversation so far, read-only.
+4. Board keeps polling behind the panel.
 
 Choices:
-- Plain text v1, no markdown. No vendored files, CSP unchanged.
-- Event `{at, kind: "tool"|"message", text}`, text ≤ 300 chars, ≤ 500 events per round. Bounded file, and nothing large gets stored.
-- Ask shows spinner, not progress. Turn is short; progress needs a second stream.
-- Below `sm`: panel full width. Too narrow to split.
-- Tickets only open a panel. PR rows keep their `↗`, which is enough.
-- Polling every 1.5s. Same model as board, no SSE.
-- Activity is display-only, last round per stage kept. Never read by a decision, so state is still derived.
+- Top data comes from the `BoardRow` already in `/board.json`. No second status read.
+- Activity is stored in a JSONL file, not in memory. `landrace mcp` asks run in another process and must show too.
+- Only the last round per stage is kept, and a new round truncates it. Display only, so "state is derived, never stored" holds.
+- Ask shows progress. The turn emits activity like a step does, so the progress comes free.
+- Conversation comes from `Snapshot.entries`. Tracker-agnostic, one read. #20's `brief.github.history` already shipped, so there is nothing to share.
+- Plain text in v1, no markdown and no vendored libs.
+- Below `sm`, the panel takes full width.
+- Only tickets open a panel. Pull request rows don't.
+- Transport is polling every 1.5s. No SSE, no websockets.
 
 ## Technical design
-- `src/namespace.ts` — `ActivityEvent`; `Executor.run` opts `onActivity?`; `ActivityLog { record, read }`; `HistoryItem {at, author, byAgent, text, pull?}`; `Source.history?(ctx)`; `ConvergeDeps.activity?`, `ConversationDeps.activity?`; `UiOptions.talk?: Pick<Tools, "reply"|"ask"|"resolve">`, `UiOptions.activity?`, `UiOptions.history?`.
-- `src/runner/activity.ts` — new `createActivityLog(root, scrub)`: redacted JSONL at `<sandboxRoot>/activity/<ticket>.jsonl`, new round of a stage drops the older round, caps enforced.
-- `src/runner/step.ts` — passes `onActivity` bound to ticket/stage/round.
-- `src/mcp/conversation.ts` — same for `ask` turns.
-- `.landrace/hooks/claude.ts` — `--output-format stream-json --verbose`, maps `tool_use`/`assistant` text to `onActivity`, final `result` → `{ text, sessionId }`.
-- `.landrace/hooks/github.ts` — `historyItems` one reading; `historyOf` renders from it; `Source.history` returns it.
-- `src/ui/server.ts` — GET `/tickets/<id>/activity?after=<n>`, `/tickets/<id>/history`; POST `/tickets/<id>/reply|ask|resolve` with JSON body ≤ 16 KB, `foreignWrite` per action, wake tick after.
-- `src/cli/start.ts` — builds activity log, `createTools` talk, passes to `serveBoard` and converge deps.
-- `src/ui/page.ts` — panel, hash routing, composer, polling.
+- `src/namespace.ts` — `AgentActivity { kind: "tool" | "message"; text; at }`. `Executor.run` opts gain optional `onActivity(e)`. `UiOptions` gains optional `panel: TicketPanel` (`activity`, `conversation`, `reply`, `ask`, `resolve`). `BoardRow` gains `panel` paths, or null on artifacts. `Entry` gains optional display-only `text`.
+- `src/runner/activity.ts` — new. `createActivityLog(root, redact)`: `record(ticket, stage, round, e)` and `read(ticket, after)`. Writes `<sandboxRoot>/activity/<ticket>/<stage>.jsonl`, `text` cut to 240 chars, 500 lines per round, redacted via `redactValue`.
+- `src/runner/step.ts` — `runStep` passes `onActivity` into `executor.run`.
+- `src/mcp/conversation.ts` — `ask` passes `onActivity` too.
+- `src/conventions.ts` — `entriesFromComments` fills `Entry.text` (marker-stripped body).
+- `src/ui/board.ts` — `boardView` builds `panel` paths from the checked id.
+- `src/ui/server.ts` — `GET /tickets/<id>/activity?after=<n>` and `GET /tickets/<id>/conversation`. `POST /tickets/<id>/reply|ask|resolve` go through `foreignWrite` with actions `reply`, `ask`, `resolve`; ask and resolve wake `tick`.
+- `src/cli/start.ts` — `startUi` wires `panel` from `postReply`, `createConversation` (deps as `src/cli/mcp.ts` builds them) and `createActivityLog`.
+- `src/ui/page.ts` — panel DOM, hash routing, polling, composer, confirm on Ask.
+- `.landrace/hooks/claude.ts` — `--output-format stream-json --verbose`; maps `tool_use` and assistant text to `onActivity`; returns `{ text, sessionId }` from the `result` event.
 
 ## Done when
-- Row click opens panel; `#ticket=25` reload reopens it; Back/Escape closes.
-- Running Claude step shows tool lines within 2s.
-- After step ends, its last round stays visible; restart loses only that view.
-- Reply posts comment; triage runs on next tick.
-- Ask confirms, answers inline; Resolve hands ticket back.
-- Write without `x-landrace-action` or foreign Origin → 403.
+- Row click opens the panel; `#ticket=<id>` reload reopens it; Back and Escape close it.
+- Running step shows tool lines within 2s.
+- Finished step's lines survive until that stage's next round.
+- Needs-you ticket: Reply posts a comment, Resolve hands back, Ask confirms then answers inline with progress.
+- Write without `x-landrace-action`, or with foreign Origin → 403.
 - Executor without `onActivity` → "no live activity for this agent".
-- `brief.github.history` output unchanged.
-- No secret value in activity JSONL.
+- Secret value never appears in an activity file.
