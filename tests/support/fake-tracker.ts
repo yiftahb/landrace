@@ -27,6 +27,9 @@ export interface FakeIssue {
   html_url: string;
   /** GraphQL's `createdAt`, answered only when a test sets one. */
   createdAt?: string;
+  /** When a closed issue closed, and when it last changed. LandraceClosed orders and filters by these. */
+  closedAt?: string;
+  updatedAt?: string;
   labels: string[];
   /** As GitHub returns them — objects with a login, not bare strings — so the hook's own reading of them is what runs. */
   assignees: Array<{ login: string }>;
@@ -259,6 +262,8 @@ export function createFakeTracker(
       assignees: s.assignees ?? [],
       ...(s.stateReason === undefined ? {} : { stateReason: s.stateReason }),
       ...(s.createdAt === undefined ? {} : { createdAt: s.createdAt }),
+      ...(s.closedAt === undefined ? {} : { closedAt: s.closedAt }),
+      ...(s.updatedAt === undefined ? {} : { updatedAt: s.updatedAt }),
       ...(s.parent === undefined ? {} : { parent: s.parent }),
       ...(s.editor === undefined ? {} : { editor: s.editor }),
     });
@@ -466,6 +471,29 @@ export function createFakeTracker(
                   ...issueNode(i),
                   parent: i.parent === undefined ? null : { number: i.parent },
                   subIssues: { nodes: childrenOf(i.number).map(issueNode) },
+                })),
+              },
+            },
+          },
+        });
+      }
+
+      // Closed issues, most recently updated first, as `orderBy: UPDATED_AT DESC` pages them.
+      if (operation === "LandraceClosed") {
+        const closed = [...issues.values()].filter((i) => i.state === "closed")
+          .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "") || a.number - b.number);
+        const from = typeof variables.cursor === "string" && variables.cursor ? Number(variables.cursor) : 0;
+        const size = Number(/issues\(states: CLOSED, first: (\d+)/.exec(String(body.query))?.[1] ?? ISSUE_PAGE);
+        const page = closed.slice(from, from + size);
+        const end = from + page.length;
+        return json({
+          data: {
+            repository: {
+              issues: {
+                pageInfo: { hasNextPage: end < closed.length, endCursor: String(end) },
+                nodes: page.map((i) => ({
+                  ...issueNode(i), closedAt: i.closedAt ?? null, updatedAt: i.updatedAt ?? null,
+                  parent: i.parent === undefined ? null : { number: i.parent },
                 })),
               },
             },
