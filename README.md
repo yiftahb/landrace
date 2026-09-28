@@ -458,7 +458,7 @@ Landrace ships no coding agent. `defineExecutor` registers one, either as `{ id,
 - the rendered prompt;
 - the directory to run in;
 - the step's capabilities;
-- its model;
+- its model and effort;
 - a time limit. At the limit the engine aborts the run's signal but keeps waiting for the run, so an executor that honours neither holds its ticket until the process dies;
 - the session to resume;
 - for a `tickets:create` step, the engine's own ticket server, ready to start.
@@ -473,7 +473,7 @@ A hook reads `agent:` only when `agent.adapter` names it, because `agent:` belon
 - never hand a step or a turn the operator's own `landrace` MCP server;
 - run in the directory it is given, because the engine's read-only check inspects that directory, and a run anywhere else defeats it;
 - never pass the engine's own process environment to the agent, because a secret can come from the shell and the agent must not hold tracker credentials;
-- honour a named model;
+- honour a named model and effort;
 - stop at the limit and on abort.
 
 The engine checks a read-only step's worktree afterwards whatever the executor claims — a backstop, not a licence to skip the rest.
