@@ -4,6 +4,7 @@ import { parse } from "yaml";
 import { expand, parseEnvFile } from "#config/env.js";
 import { MIN_SECRET_LENGTH } from "#runner/events.js";
 import { runtimeConfigSchema } from "#config/schema.js";
+import { TELEMETRY_KEYS } from "#telemetry/otel.js";
 import type { LoadedConfig, Problem } from "#namespace.js";
 
 /**
@@ -134,5 +135,10 @@ export async function loadConfig(dir: string): Promise<LoadedConfig> {
     else vars.set(name, value);
   }
 
-  return { config, missing, secretValues, vars, missingVars };
+  const telemetry = new Map(TELEMETRY_KEYS.flatMap((key) => {
+    const value = env.get(key);
+    return value === undefined ? [] : [[key, value] as const];
+  }));
+
+  return { config, missing, secretValues, vars, missingVars, telemetry };
 }

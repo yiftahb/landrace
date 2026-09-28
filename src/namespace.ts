@@ -329,6 +329,12 @@ export interface LoadedConfig {
    */
   vars: Map<string, string>;
   /**
+   * `LANDRACE_ENABLE_TELEMETRY` and the `OTEL_*` settings telemetry reads,
+   * `.env` over the shell exactly as a secret resolves. `--otel` goes over
+   * both, in `telemetrySettings`.
+   */
+  telemetry: Map<string, string>;
+  /**
    * Variable names that resolved to nothing usable: no such environment
    * variable, or one set to an empty value. Both are reported rather than
    * substituted, because a workflow filled in with "$LANDRACE_ASSIGNEE" or
@@ -766,6 +772,25 @@ export interface LandraceEvent {
 
 export type Logger = (name: EventName, data?: Record<string, unknown>) => void;
 
+/** What `telemetrySettings` resolves `LANDRACE_ENABLE_TELEMETRY` and the `OTEL_*` settings to. */
+export interface TelemetrySettings {
+  exporter: "otlp" | "console";
+  protocol: "http/protobuf" | "http/json";
+  /** The collector's base URL; `/v1/logs` is appended to it. */
+  endpoint: string;
+  headers: Record<string, string>;
+  /** `OTEL_RESOURCE_ATTRIBUTES`, with `service.name` always set. */
+  resource: Record<string, string>;
+  intervalMs: number;
+}
+
+/** A logger's `exporter`, shipping each event to a collector as an OTel log record. */
+export interface OtelSink {
+  sink(e: LandraceEvent): void;
+  /** Flushes what is queued. Never rejects: it runs in a `finally`. */
+  shutdown(): Promise<void>;
+}
+
 /**
  * The engine's logger, which can be told about more secrets after it was made.
  * `scrub` applies that same live set to text that leaves the process outside
@@ -1182,6 +1207,8 @@ export interface Runtime {
    * each ticket unwind through the lock it holds.
    */
   stop: AbortController;
+  /** Present when telemetry is on. `runStart` shuts it down on the way out, flushing what is queued. */
+  telemetry?: { shutdown(): Promise<void> };
 }
 
 /**
@@ -1210,10 +1237,17 @@ export interface StartOptions {
   /** Serve the triage page. Default true; `--no-ui` turns it off. */
   ui?: boolean;
   uiPort?: number;
+  /** See BuildOptions.otel. */
+  otel?: readonly string[];
 }
 
 export interface BuildOptions {
   debug?: boolean;
+  /**
+   * `--otel KEY=VALUE`, and `--telemetry` as `LANDRACE_ENABLE_TELEMETRY=1`:
+   * telemetry settings that win over `.env` and the shell.
+   */
+  otel?: readonly string[];
   /** Where events go. `landrace status` sends them to stderr, because stdout is its report. */
   sink?: (event: LandraceEvent) => void;
   /**

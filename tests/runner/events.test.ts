@@ -70,6 +70,48 @@ describe("createLogger", () => {
   });
 });
 
+/*
+ * The telemetry exporter is a second sink with its own rule: it sees every
+ * event, the debug-only ones included, because a collector is where agent
+ * output is worth having and the terminal is where it is not.
+ */
+describe("a logger with an exporter", () => {
+  it("hands agent.event to the exporter but not to stdout when debug is off", () => {
+    const printed: LandraceEvent[] = [];
+    const exported: LandraceEvent[] = [];
+    const log = createLogger({ sink: (e) => printed.push(e), exporter: (e) => exported.push(e) });
+    log("agent.event", { raw: "thinking" });
+    log("tick.started", {});
+    expect(printed.map((e) => e.name)).toEqual(["tick.started"]);
+    expect(exported).toEqual([{ name: "agent.event", raw: "thinking" }, { name: "tick.started" }]);
+  });
+
+  it("exports the same redacted payload stdout gets", () => {
+    const exported: LandraceEvent[] = [];
+    const log = createLogger({ sink: () => {}, exporter: (e) => exported.push(e), redactValues: ["ghp_secret_1"] });
+    log("agent.event", { raw: "token ghp_secret_1" });
+    log.redact(["a-server-token-1234"]);
+    log("step.started", { note: "a-server-token-1234" });
+    expect(exported).toEqual([
+      { name: "agent.event", raw: "token [redacted]" },
+      { name: "step.started", note: "[redacted]" },
+    ]);
+  });
+
+  it("keeps printing, and does not throw at the caller, when the exporter throws", () => {
+    const printed: LandraceEvent[] = [];
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const log = createLogger({ sink: (e) => printed.push(e), exporter: () => { throw new Error("collector down"); } });
+      expect(() => log("step.finished", { ticket: "7" })).not.toThrow();
+      expect(printed).toEqual([{ name: "step.finished", ticket: "7" }]);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("collector down"));
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
 describe("a logger told about more secrets after it was made", () => {
   it("redacts them from then on, and skips a value too short to redact by rather than refusing", () => {
     const seen: unknown[] = [];

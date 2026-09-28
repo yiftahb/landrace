@@ -92,13 +92,23 @@ program
   .option("--debug", "print every event, the agent's included, and the snapshot behind each decision")
   .option("--ui-port <port>", "port for the triage page", String(DEFAULT_UI_PORT))
   .option("--no-ui", "do not serve the triage page")
-  .action(async (opts: { workflow: string; once?: boolean; debug?: boolean; ui: boolean; uiPort: string }) => {
+  .option("--telemetry", "export every event to an OpenTelemetry collector (sets LANDRACE_ENABLE_TELEMETRY=1)")
+  .option(
+    "--otel <KEY=VALUE>",
+    "a telemetry setting (OTEL_*), over .landrace/.env and the shell; repeatable",
+    (pair: string, pairs: string[]) => [...pairs, pair],
+    [] as string[],
+  )
+  .action(async (opts: {
+    workflow: string; once?: boolean; debug?: boolean; ui: boolean; uiPort: string; telemetry?: boolean; otel: string[];
+  }) => {
     await loadingHooks("start", () =>
       runStart(opts.workflow, {
         ...(opts.once === undefined ? {} : { once: opts.once }),
         ...(opts.debug === undefined ? {} : { debug: opts.debug }),
         ui: opts.ui,
         uiPort: parsePort(opts.uiPort),
+        otel: [...opts.otel, ...(opts.telemetry ? ["LANDRACE_ENABLE_TELEMETRY=1"] : [])],
       }),
     );
   });
