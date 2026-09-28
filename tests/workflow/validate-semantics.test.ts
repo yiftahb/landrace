@@ -582,15 +582,19 @@ describe("every declared output shape has somewhere to go next", () => {
   it("catches the two triage shapes that stranded a real ticket", async () => {
     const { workflow, steps } = await loadWorkflow(".landrace");
     // The shipped workflow as it was: `question` and `unclear` declared, routed
-    // to a comment, and led away from by nothing — every trigger out of triage
-    // that does not demand an answer by name taken out, which leaves only the
-    // ones that read `approve` or `revise`.
+    // to a comment, and led away from by nothing — every trigger that mentions
+    // triage without demanding an answer by name taken out, which leaves only
+    // the ones that read `approve` or `revise`. "Mentions" is the rule's own
+    // test: anchored on triage, or reading its output from another stage, as
+    // spec's amendment triggers do.
+    const mentionsTriage = (when: Record<string, unknown>): boolean =>
+      when["run.stage"] === "triage" || Object.keys(when).some((k) => k.startsWith("run.outputs.triage"));
     const stranded: Workflow = {
       ...workflow,
       stages: workflow.stages.map((stage) => ({
         ...stage,
         triggers: (stage.triggers ?? []).filter((t) =>
-          t.when["run.stage"] !== "triage" || typeof t.when["run.outputs.triage.intent"] === "string"),
+          !mentionsTriage(t.when) || typeof t.when["run.outputs.triage.intent"] === "string"),
       })),
     };
     const found = validateSemantics(stranded, steps).filter((p) => p.rule === "shape-edge");

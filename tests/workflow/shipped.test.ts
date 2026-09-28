@@ -167,8 +167,9 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     ["spec-human-review", "revise", "spec"],
     ["spec-human-review", "question", "spec-human-review"],
     ["spec-human-review", "unclear", "spec-human-review"],
-    // #27: a change asked for on the pull request is built, not sent home.
-    ["pr-human-review", "revise", "build"],
+    // #27: a change asked for on the pull request amends the spec first, so
+    // build, code-review and fix-review all read it from the one authority.
+    ["pr-human-review", "revise", "spec"],
     ...["approve", "question", "unclear"].map((intent) => ["pr-human-review", intent, "pr-human-review"]),
     ...["blocked", "screened"].flatMap((home) =>
       ["approve", "revise", "question", "unclear"].map((intent) => [home, intent, home])),
@@ -176,9 +177,22 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(judged(home, intent))).toBe(to);
   });
 
-  it("builds a change asked for at pr-human-review however many builds already ran", async () => {
-    const later = { counters: { spec: 1, triage: 5, build: 7, "code-review": 3 } };
-    expect(await destination(judged("pr-human-review", "revise", later))).toBe("build");
+  it("amends the spec for a change asked for at pr-human-review, however many spec rounds already ran", async () => {
+    const later = { counters: { spec: 5, triage: 5, build: 7, "code-review": 3 } };
+    expect(await destination(judged("pr-human-review", "revise", later))).toBe("spec");
+  });
+
+  // An amended spec needs no second approval — the person asked for exactly
+  // this change — but a spec redone from scratch, or one before any pull
+  // request, is reviewed as ever.
+  it("builds an amended spec, and asks for review of a redone one or one before any pull request", async () => {
+    const published = (pulls: number, intent: string) => snapshotAt("spec", {
+      outputs: { spec: { kind: "spec" }, triage: { intent } }, rounds: { spec: { entered: 2, output: 2 } },
+      counters: { spec: 2, triage: 2, build: 1, "code-review": 1 },
+    }, { total: pulls, merged: 0, openThreads: 0 });
+    expect(await destination(published(1, "revise"))).toBe("build");
+    expect(await destination(published(1, "goto-spec"))).toBe("spec-human-review");
+    expect(await destination(published(0, "revise"))).toBe("spec-human-review");
   });
 
   it.each(HOMES)("from %s, a goto answer is taken while its step has rounds left", async (home) => {
@@ -276,14 +290,14 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     }
   });
 
-  it("builds only from an approved spec, a change asked for on the pull request, or when a person sends it back", async () => {
+  it("builds only from an approved spec, a spec amended on the pull request, or when a person sends it back", async () => {
     const { workflow } = await loadWorkflow(".landrace");
     expect(workflow.stages.find((s) => s.id === "build")?.triggers?.map((t) => t.when)).toEqual([{
       "run.stage": "triage", "run.lastOutputValid": null,
       "run.previousStage": "spec-human-review", "run.outputs.triage.intent": "approve",
     }, {
-      "run.stage": "triage", "run.lastOutputValid": null,
-      "run.previousStage": "pr-human-review", "run.outputs.triage.intent": "revise",
+      "run.stage": "spec", "run.lastOutputValid": null,
+      "run.outputs.spec.kind": "spec", "rel.implements.in.total": { $gt: 0 }, "run.outputs.triage.intent": "revise",
     }]);
   });
 });
@@ -442,6 +456,23 @@ it.each(["build", "fix-review", "retro"])("%s says which sandbox skips and valid
   expect(prose).toMatch(/tests that start a local server are skipped/);
   expect(prose).toMatch(/`githubToken` secret and `\.mcp\.json` missing/);
   expect(prose).toMatch(/Anything else that fails is real/);
+});
+
+describe("the spec step amends an approved spec", () => {
+  it("is shown the approved spec and the person's last message, fenced, and told to change only what they ask", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/spec.md")?.prompt ?? "";
+    expect(prompt).toMatch(/--- the approved spec ---\s*\{brief\.spec\.content\}\s*--- end of the approved spec ---/);
+    expect(prompt).toMatch(/--- their message ---\s*\{run\.lastHuman\.data\.body\}\s*--- end of their message ---/);
+    expect(prompt.replace(/\s+/g, " ")).toMatch(/amends it: keep the spec, change only what the person's message asks/i);
+  });
+
+  // With the spec amended there is one authority, and code-review reads it:
+  // a person's last message is not a second one (it may only be a question).
+  it("leaves code-review to the spec alone", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    expect(steps.get("steps/code-review.md")?.prompt ?? "").not.toContain("{run.lastHuman.data.body}");
+  });
 });
 
 describe("build is shown what the person asked for", () => {

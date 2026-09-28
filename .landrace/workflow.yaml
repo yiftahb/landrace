@@ -86,6 +86,16 @@ stages:
           "run.previousStage": { $in: [spec-questions, spec-human-review] }
           "run.outputs.triage.intent": revise
           "run.counters.spec": { $lt: 3 }
+      # #27: a change asked for on the pull request went to build alone, the
+      # spec still said otherwise, and code-review had fix-review revert it.
+      # It amends the spec first, so every later step reads it from the one
+      # authority. No round cap: each one waits for a person to write.
+      - name: you asked for changes on the pull request
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": pr-human-review
+          "run.outputs.triage.intent": revise
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
       - { type: tracker.status, value: spec }
@@ -127,8 +137,19 @@ stages:
     goto: *goto
     requires: { "run.outputs.spec.kind": spec }
     triggers:
+      # Every spec but an amendment: one written before any pull request, or
+      # redone from scratch (goto-spec, "Go to step… spec") after one. An
+      # amendment — the change a person asked for on the pull request — goes
+      # straight to build instead; the two triggers are each other's negation.
       - name: the spec was published
-        when: { "run.stage": spec, "run.lastOutputValid": null, "run.outputs.spec.kind": spec }
+        when: { "run.stage": spec, "run.lastOutputValid": null, "run.outputs.spec.kind": spec, "rel.implements.in.total": 0 }
+      - name: the spec was redone after the pull request
+        when:
+          "run.stage": spec
+          "run.lastOutputValid": null
+          "run.outputs.spec.kind": spec
+          "rel.implements.in.total": { $gt: 0 }
+          "run.outputs.triage.intent": { $ne: revise }
       - name: your reply changed nothing here
         when:
           "run.stage": triage
@@ -187,10 +208,9 @@ stages:
   # engine names no branch of its own; a workflow wanting two per ticket names
   # two.
   #
-  # Reached from an approved spec, from a change a person asked for at
-  # pr-human-review, and otherwise only by a person sending the ticket back —
-  # a `goto-build` answer, Retry, or "Go to step…". A change asked for at
-  # pr-human-review has no round cap: each one waits for a person to write.
+  # Reached from an approved spec, from a spec amended with a change asked for
+  # at pr-human-review, and otherwise only by a person sending the ticket back
+  # — a `goto-build` answer, Retry, or "Go to step…".
   #
   # And from itself. publish pushes before it moves the position, so a push
   # that fails — nothing was committed — leaves the ticket here, its round
@@ -209,13 +229,14 @@ stages:
           "run.lastOutputValid": null
           "run.previousStage": spec-human-review
           "run.outputs.triage.intent": approve
-      # #27: "add it under Model" at pr-human-review was judged revise and
-      # came straight back, since nothing there led to build.
-      - name: you asked for changes to the pull request
+      # A change asked for on the pull request, once it is in the spec: the
+      # person asked for exactly this, so it needs no second approval.
+      - name: you amended the spec on the pull request
         when:
-          "run.stage": triage
+          "run.stage": spec
           "run.lastOutputValid": null
-          "run.previousStage": pr-human-review
+          "run.outputs.spec.kind": spec
+          "rel.implements.in.total": { $gt: 0 }
           "run.outputs.triage.intent": revise
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
