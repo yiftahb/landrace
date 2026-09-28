@@ -90,7 +90,7 @@ export const PAGE_HTML = `<!doctype html>
 <span id="next" class="rounded-full border border-neutral-200 px-3 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">No tick scheduled</span>
 <button id="tick" type="button" class="${BUTTON}">Run next tick now</button>
 </div>
-<button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
+<button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
 </button>
@@ -102,7 +102,7 @@ export const PAGE_HTML = `<!doctype html>
 <input id="search" type="search" placeholder="Search tickets…" aria-label="Search tickets" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
 <div class="flex items-center gap-2">
 <button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all (c)" class="${BUTTON}">Collapse all</button>
-<button id="refresh" type="button" aria-label="Refresh" title="Re-read the tracker" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
+<button id="refresh" type="button" aria-label="Refresh" title="Re-read the tracker" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><polyline points="21 3 21 9 15 9"></polyline></svg>
 </button>
 </div>
@@ -1147,15 +1147,21 @@ const REFRESH_LABEL = "Refresh";
 const REFRESH_TITLE = "Re-read the tracker";
 let refreshRestoreTimer = null;
 
-function setRefreshButton(label, title, disabled) {
+// Busy while the request is out: the icon spins and the button pulses, since
+// a tracker round trip can take seconds and a still button reads as a click
+// that never landed. aria-busy says the same to a screen reader.
+function setRefreshButton(label, title, disabled, busy) {
   refreshButton.setAttribute("aria-label", label);
   refreshButton.title = title;
   refreshButton.disabled = disabled;
+  refreshButton.setAttribute("aria-busy", busy ? "true" : "false");
+  refreshButton.classList.toggle("animate-pulse", busy);
+  refreshButton.querySelector("svg").classList.toggle("animate-spin", busy);
 }
 
 function restoreRefreshAfter(ms) {
   if (refreshRestoreTimer !== null) clearTimeout(refreshRestoreTimer);
-  refreshRestoreTimer = setTimeout(() => setRefreshButton(REFRESH_LABEL, REFRESH_TITLE, false), ms);
+  refreshRestoreTimer = setTimeout(() => setRefreshButton(REFRESH_LABEL, REFRESH_TITLE, false, false), ms);
 }
 
 // The status alone decides, the way tickAnswered's failure branch does: the
@@ -1163,17 +1169,17 @@ function restoreRefreshAfter(ms) {
 // with no room to show it.
 function refreshAnswered(status) {
   if (status === 200) {
-    setRefreshButton(REFRESH_LABEL, REFRESH_TITLE, false);
+    setRefreshButton(REFRESH_LABEL, REFRESH_TITLE, false, false);
     schedulePoll(0);
   } else {
-    setRefreshButton("failed", "failed", true);
+    setRefreshButton("failed", "failed", true, false);
     restoreRefreshAfter(3000);
   }
 }
 
 refreshButton.addEventListener("click", () => {
   if (refreshRestoreTimer !== null) clearTimeout(refreshRestoreTimer);
-  setRefreshButton("Refreshing…", "Refreshing…", true);
+  setRefreshButton("Refreshing…", "Refreshing…", true, true);
   fetch("/refresh", { method: "POST", headers: { "x-landrace-action": "refresh" } })
     .then((res) => refreshAnswered(res.status))
     .catch(() => refreshAnswered(0));
