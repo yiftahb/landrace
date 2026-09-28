@@ -70,7 +70,7 @@ export const PAGE_HTML = `<!doctype html>
 <main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
 <input id="search" type="search" placeholder="Search tickets…" aria-label="Search tickets" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
-<button id="toggle-all" type="button" class="${BUTTON}">Collapse all</button>
+<button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all (c)" class="${BUTTON}">Collapse all</button>
 </div>
 <p id="no-match" role="status" aria-live="polite" class="mb-4 px-1 text-sm italic text-neutral-400 empty:hidden dark:text-neutral-500"></p>
 ${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
@@ -300,10 +300,28 @@ document.addEventListener("click", (e) => {
   if (!inside) { closeMenu(); return; }
   resetIdleTimer();
 });
-document.addEventListener("keydown", (e) => {
+// Whether focus is somewhere a "c" is a letter someone is typing, not a
+// shortcut — the search box above all, but any field or contenteditable
+// reads the same way.
+function isTypingTarget(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+// Escape closes whatever row menu is open; an unmodified "c" answers a click
+// on Collapse all / Expand all — never while it would be typed instead, and
+// never while a row's own menu is open, so its own keys are never raced.
+function onKeydown(e) {
   if (e.key === "Escape") { closeMenu({ returnFocus: true }); return; }
+  if (e.key === "c" && !e.ctrlKey && !e.metaKey && !e.altKey && openMenuKey === null && !isTypingTarget(document.activeElement)) {
+    toggleAll.click();
+    return;
+  }
   if (openMenuKey !== null) resetIdleTimer();
-});
+}
+document.addEventListener("keydown", onKeydown);
 
 function menuItem(tag) {
   const node = el(tag, "flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800");
@@ -547,11 +565,15 @@ function anyOpen(rows, drawn) {
 
 // The button's text is its accessible name, so a screen reader hears the same
 // offer a sighted person reads. Rewritten only on a change: the same words
-// every poll could be re-announced on a focused button.
+// every poll could be re-announced on a focused button. The title carries the
+// same word plus the "c" shortcut that answers it, so a hover tells the same
+// story a keyboard user already knows.
 function labelToggleAll(open) {
   collapsesAll = open;
   const text = open ? "Collapse all" : "Expand all";
   if (toggleAll.textContent !== text) toggleAll.textContent = text;
+  const title = text + " (c)";
+  if (toggleAll.title !== title) toggleAll.title = title;
 }
 
 // Title or id, ignoring case — the id also as "#12", the way every row prints it.

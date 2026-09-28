@@ -100,7 +100,7 @@ describe("the filter row", () => {
   it("has one Collapse all / Expand all button, reading Collapse all over a tree that starts open", () => {
     const filters = /<div id="filters"[\s\S]*?\n<\/div>\n/.exec(PAGE_HTML)?.[0] ?? "";
     expect(filters.match(/<button /g)).toHaveLength(1);
-    expect(filters).toMatch(/<button id="toggle-all" type="button" class="[^"]*">Collapse all<\/button>/);
+    expect(filters).toMatch(/<button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all \(c\)" class="[^"]*">Collapse all<\/button>/);
     expect(PAGE_HTML).not.toMatch(/id="(collapse|expand)-all"/);
   });
 
@@ -310,6 +310,70 @@ describe("the one Collapse all / Expand all button", () => {
   it("is relabelled by the real render(), from the rows it has just drawn", () => {
     expect(fnSource("render")).toContain("labelToggleAll(anyOpen(view.rows, seen));");
     expect(listener).toBe('\ntoggleAll.addEventListener("click", () => setAll(!collapsesAll));\n');
+  });
+});
+
+describe("the toggle button's title, kept in step with its label", () => {
+  it("names the shortcut in the title, and updates it whenever the label changes", () => {
+    const toggleAll = { textContent: "", title: "" };
+    const labelToggleAll = runInNewContext(`let collapsesAll;\n${fnSource("labelToggleAll")}labelToggleAll`, { toggleAll }) as (
+      open: boolean,
+    ) => void;
+    labelToggleAll(true);
+    expect(toggleAll.textContent).toBe("Collapse all");
+    expect(toggleAll.title).toBe("Collapse all (c)");
+    labelToggleAll(false);
+    expect(toggleAll.textContent).toBe("Expand all");
+    expect(toggleAll.title).toBe("Expand all (c)");
+  });
+
+  it("names the shortcut for assistive tech through aria-keyshortcuts, on the button itself", () => {
+    expect(PAGE_HTML).toMatch(/<button id="toggle-all"[^>]*\saria-keyshortcuts="c"[^>]*>/);
+  });
+});
+
+describe("the 'c' keyboard shortcut for Collapse all / Expand all", () => {
+  const run = (opts: {
+    key?: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean;
+    active?: { tagName?: string; isContentEditable?: boolean } | null; menuOpen?: boolean;
+  } = {}) => {
+    const seen = { clicks: 0, closes: 0, resets: 0 };
+    const context = {
+      openMenuKey: opts.menuOpen ? "19:menu" : null,
+      toggleAll: { click: () => { seen.clicks++; } },
+      closeMenu: () => { seen.closes++; },
+      resetIdleTimer: () => { seen.resets++; },
+      document: { activeElement: opts.active ?? null },
+      EVENT: { key: opts.key ?? "c", ctrlKey: opts.ctrlKey ?? false, metaKey: opts.metaKey ?? false, altKey: opts.altKey ?? false },
+    };
+    runInNewContext(`${fnSource("isTypingTarget")}${fnSource("onKeydown")}onKeydown(EVENT)`, context);
+    return seen;
+  };
+
+  it("clicks Collapse all / Expand all on a plain, unmodified c", () => {
+    expect(run().clicks).toBe(1);
+  });
+
+  it("does nothing while the search box, or any other field, has focus", () => {
+    expect(run({ active: { tagName: "INPUT" } }).clicks).toBe(0);
+    expect(run({ active: { tagName: "TEXTAREA" } }).clicks).toBe(0);
+    expect(run({ active: { tagName: "SELECT" } }).clicks).toBe(0);
+    expect(run({ active: { isContentEditable: true } }).clicks).toBe(0);
+  });
+
+  it("does nothing on a modified c — Ctrl, Meta or Alt", () => {
+    expect(run({ ctrlKey: true }).clicks).toBe(0);
+    expect(run({ metaKey: true }).clicks).toBe(0);
+    expect(run({ altKey: true }).clicks).toBe(0);
+  });
+
+  it("does nothing while a row's menu is open", () => {
+    expect(run({ menuOpen: true }).clicks).toBe(0);
+  });
+
+  it("still closes an open menu on Escape, and still resets its idle timer on any other key while one is open", () => {
+    expect(run({ key: "Escape", menuOpen: true }).closes).toBe(1);
+    expect(run({ key: "x", menuOpen: true }).resets).toBe(1);
   });
 });
 
