@@ -387,6 +387,33 @@ describe("the shipped steps are handed the approved spec as text", () => {
  * send a build whose push failed back to build.
  */
 /*
+ * Every stepped prompt walks the agent through the same numbered procedure:
+ * a Progress checklist, then one **Step N** section per item, in order, each
+ * ending in what "done" means. Where the step's summary becomes a ticket
+ * comment, it opens with that checklist ticked, so a person can see which
+ * steps ran. Spec's text is the spec itself and triage answers json alone, so
+ * neither echoes it.
+ */
+describe("the shipped prompts follow a numbered procedure", () => {
+  const ECHO = "Start your final summary with the Progress checklist";
+  it.each([
+    ["spec", false], ["triage", false], ["build", true], ["fix-review", true], ["retro", true],
+  ] as const)("%s has a Procedure whose checklist items each have their own Step section, in order", async (id, echoes) => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get(`steps/${id}.md`)?.prompt ?? "";
+    const procedure = prompt.indexOf("## Procedure");
+    expect(procedure).toBeGreaterThanOrEqual(0);
+    const items = [...prompt.matchAll(/^- \[ \] Step (\d+): \S/gm)].map((m) => Number(m[1]));
+    expect(items.length).toBeGreaterThanOrEqual(3);
+    expect(items).toEqual(items.map((_, i) => i + 1));
+    const sections = items.map((n) => prompt.indexOf(`**Step ${n} — `));
+    expect(sections.every((at) => at > procedure)).toBe(true);
+    expect([...sections].sort((a, b) => a - b)).toEqual(sections);
+    expect(prompt.includes(ECHO)).toBe(echoes);
+  });
+});
+
+/*
  * #19–#21's specs ran 770–1,300 words, most of it a step-by-step plan and a
  * test list, written because the spec step was told to use writing-plans. A
  * person approves the product flow and the shape of the change; build plans
