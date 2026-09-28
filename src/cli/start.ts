@@ -6,8 +6,10 @@ import { loadHooks } from "#hooks/load.js";
 import { durationMs, RECORD_EFFECT } from "#conventions.js";
 import { stepTimeoutMs } from "#runner/budget.js";
 import type {
+  ActivityLog,
   Board,
   BuildOptions,
+  ConversationDeps,
   EventName,
   Executor,
   ExecutorContext,
@@ -24,20 +26,25 @@ import type {
   Screener,
   ServerCommand,
   StartOptions,
+  TicketPanel,
   UiServer,
   WakeResult,
 } from "#namespace.js";
+import { createConversation } from "#mcp/conversation.js";
+import { postReply } from "#mcp/tools.js";
+import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
-import { createLogger } from "#runner/events.js";
+import { createLogger, scrubberOf } from "#runner/events.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { held } from "#runner/lock.js";
 import { runPreflights } from "#runner/preflight.js";
-import { snapshotProvides } from "#runner/snapshot.js";
+import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
+import { sandboxRoot } from "#sandbox.js";
 import { oneLine } from "#runner/status.js";
 import { tick } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
-import { createBoard } from "#ui/board.js";
+import { conversationOf, createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
@@ -74,7 +81,7 @@ export function parsePort(text: string): number {
 export async function startUi(
   opts: {
     board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined;
-    refresh?: (() => Promise<void>) | undefined;
+    refresh?: (() => Promise<void>) | undefined; panel?: TicketPanel | undefined;
   },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
@@ -85,6 +92,7 @@ export async function startUi(
       ...(opts.tick === undefined ? {} : { tick: opts.tick }),
       ...(opts.goto === undefined ? {} : { goto: opts.goto }),
       ...(opts.refresh === undefined ? {} : { refresh: opts.refresh }),
+      ...(opts.panel === undefined ? {} : { panel: opts.panel }),
     });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
@@ -103,6 +111,37 @@ export async function startUi(
 export function gotoFor(deps: GotoDeps): GotoPath | undefined {
   if (!deps.dispatcher.handlerFor(RECORD_EFFECT)) return undefined;
   return { send: (ticket, target) => sendTo(deps, ticket, target) };
+}
+
+/**
+ * The ticket panel: the conversation `landrace mcp` holds, held from the
+ * page instead — the same postReply, the same createConversation over the
+ * tick's own source, pre hooks and dispatcher, so what the page writes is
+ * what the next tick re-derives. A turn asked here is held to its step's
+ * declaration, screened and sandboxed exactly as one asked through the MCP.
+ *
+ * A failure is said with every secret taken out: the page shows it to the
+ * person who asked, and an executor's error can quote what it was handed.
+ */
+export function panelFor(
+  deps: ConversationDeps & { activity: ActivityLog; scrub?: (text: string, extra?: readonly string[]) => string },
+): TicketPanel {
+  const conversation = createConversation(deps);
+  const clean = scrubberOf(deps.ctx.secrets, deps.scrub);
+  const scrubbed = <T>(p: Promise<T>): Promise<T> =>
+    p.catch((e: unknown) => {
+      throw new Error(clean(messageOf(e)));
+    });
+  return {
+    activity: (ticket, after) => deps.activity.read(ticket, after),
+    conversation: async (ticket) => {
+      const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+      return conversationOf(snapshot.entries ?? []);
+    },
+    reply: (ticket, message) => scrubbed(postReply(deps, ticket, message)),
+    ask: (ticket, message) => scrubbed(conversation.ask(ticket, message)),
+    resolve: (ticket) => scrubbed(conversation.resolve(ticket)),
+  };
 }
 
 /**
@@ -423,6 +462,9 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       ctx,
       log,
       scrub: log.scrub,
+      // What each step's agent is doing, for the page's ticket panel. Not for
+      // `landrace status`, which runs no step and must write nothing.
+      ...(opts.readOnly ? {} : { activity: createActivityLog(sandboxRoot(dir), scrubberOf(ctx.secrets, log.scrub)) }),
     },
     intervalMs: parseInterval(loaded.config.tick.interval),
     concurrency: loaded.config.tick.concurrency,
@@ -671,6 +713,14 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // Re-read the tracker and reload the board from it: one list, no
     // converge, no step, no agent — the page's Refresh button.
     refresh: async () => { board.list(await rt.source.list(rt.deps.ctx)); },
+    panel: rt.deps.activity === undefined ? undefined : panelFor({
+      source: rt.source, pre: rt.deps.pre, dispatcher: rt.deps.dispatcher, ctx: rt.deps.ctx,
+      executor: rt.deps.executor, workflow: rt.deps.workflow, steps: rt.deps.steps,
+      ...(rt.deps.sandbox ? { sandbox: rt.deps.sandbox } : {}),
+      ...(rt.deps.screen ? { screen: rt.deps.screen } : {}),
+      ...(rt.deps.scrub ? { scrub: rt.deps.scrub } : {}),
+      activity: rt.deps.activity,
+    }),
   });
   if (ui) console.error(`landrace: triage page at ${ui.url}`);
 
