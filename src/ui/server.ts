@@ -75,19 +75,110 @@ function foreignWrite(req: IncomingMessage, action: string, port: number): strin
   return null;
 }
 
-/**
- * The triage page, on loopback only. Every route is a GET except the page's
- * four writes: POST /tick, present only when the caller hands us a schedule
- * to wake; POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>, present
- * only when it hands us a way to send a ticket back, and which wake that
- * schedule too once they have; and POST /refresh, present only when it hands
- * us a way to re-read the tracker, which starts no agent but still spends a
- * tracker read and so is guarded the same way.
- */
-export function serveBoard(opts: UiOptions): Promise<UiServer> {
-  let port: number;
+/** The ticket panel's routes: one ticket, named in the path, and what is asked of it. */
+const PANEL_PATH = /^\/tickets\/([^/]+)\/(activity|conversation|reply|ask|resolve)$/;
 
-  const server = createServer((req, res) => {
+/** Far past what a record carries (conventions' own cap is 32 KiB): the post's own check words the limit. */
+const MAX_BODY_BYTES = 256 * 1024;
+
+/** A write's text, or null when it runs past MAX_BODY_BYTES. */
+function bodyOf(req: IncomingMessage): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) resolve(null);
+      else chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+/**
+ * The ticket panel: two reads and three writes on one ticket. Its activity
+ * is a local file read, open like /board.json. Its conversation spends a
+ * tracker read, so like /refresh it is asked only from the page's own script
+ * — a cross-site `<img>` would otherwise make the operator's token pay for
+ * one. Reply, Ask and Resolve each carry their own name in the header, like
+ * every other write here; Ask and Resolve hand the ticket back to the loop,
+ * so they wake it.
+ */
+function servePanel(
+  opts: UiOptions, req: IncomingMessage, res: ServerResponse, port: number, id: string, what: string,
+): void {
+  const text = "text/plain; charset=utf-8";
+  const panel = opts.panel;
+  if (!panel) return send(res, 404, text, "not found");
+  const reading = what === "activity" || what === "conversation";
+  if (req.method !== (reading ? "GET" : "POST")) return send(res, 405, text, "method not allowed");
+  if (what !== "activity") {
+    const foreign = foreignWrite(req, what, port);
+    if (foreign) return send(res, 403, text, foreign);
+  }
+  let ticket: string;
+  try {
+    ticket = decodeURIComponent(id);
+  } catch {
+    return send(res, 400, text, "that is not a ticket id");
+  }
+  const problem = ticketIdProblem(ticket);
+  if (problem) return send(res, 400, text, problem);
+
+  const json = (value: unknown): void => send(res, 200, "application/json; charset=utf-8", JSON.stringify(value));
+
+  if (what === "activity") {
+    const after = new URL(req.url ?? "/", "http://x").searchParams.get("after") ?? "0";
+    if (!/^\d+$/.test(after)) return send(res, 400, text, "after must be a whole number");
+    // A local file, nothing that can quote a tracker; still never a stack trace.
+    panel.activity(ticket, Number(after)).then(json, () => send(res, 500, text, "the activity could not be read"));
+    return;
+  }
+  if (what === "conversation") {
+    panel.conversation(ticket).then(json, (e: unknown) => {
+      // Logged in full for the operator; the page gets a fixed sentence,
+      // because a tracker's error can quote the ticket it refused.
+      console.error(`landrace: reading #${ticket}'s conversation failed: ${oneLine(messageOf(e))}`);
+      send(res, 502, text, "could not read the conversation; the landrace log says why");
+    });
+    return;
+  }
+
+  bodyOf(req).then(async (body) => {
+    if (body === null) return send(res, 413, text, "that is far longer than a comment can be");
+    if (what !== "resolve" && body.trim() === "") return send(res, 400, text, "write something first");
+    try {
+      if (what === "reply") {
+        await panel.reply(ticket, body);
+        // A reply is a comment and nothing more: the loop reads it on its
+        // own next pass, as it would one typed into the tracker.
+        return send(res, 200, text, "posted");
+      }
+      const answer = what === "ask" ? await panel.ask(ticket, body) : await panel.resolve(ticket);
+      // The ticket is back in the loop's hands: the pass that picks it up
+      // runs now, not when the countdown comes round.
+      opts.tick?.();
+      return json(answer);
+    } catch (e) {
+      // Said, not hidden: the person waiting on a paid turn needs "no
+      // session to join yet" or "screening blocked this turn", and the
+      // panel wiring has already scrubbed secrets out of it. One line,
+      // because the page shows it on one.
+      console.error(`landrace: ${what} on #${ticket} failed: ${oneLine(messageOf(e))}`);
+      return send(res, 502, text, oneLine(messageOf(e)));
+    }
+  }, () => send(res, 400, text, "the request could not be read"));
+}
+
+/**
+ * The page's request listener, apart from the socket it is served on, so a
+ * test can drive it in-process. `port` is the one the server listened on,
+ * asked for per request because it is only known once listening has begun.
+ */
+export function boardListener(opts: UiOptions, portOf: () => number): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    const port = portOf();
     // DNS rebinding: a page on attacker.example can point its own name at
     // 127.0.0.1, and the browser will then send its requests here with that
     // name in Host. Answering only our own names is what stops it reading
@@ -223,6 +314,12 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
       return;
     }
 
+    const panelling = PANEL_PATH.exec(path);
+    if (panelling) {
+      servePanel(opts, req, res, port, panelling[1] ?? "", panelling[2] ?? "");
+      return;
+    }
+
     if (req.method !== "GET") {
       send(res, 405, "text/plain; charset=utf-8", "method not allowed");
       return;
@@ -242,7 +339,22 @@ export function serveBoard(opts: UiOptions): Promise<UiServer> {
       return;
     }
     send(res, 404, "text/plain; charset=utf-8", "not found");
-  });
+  };
+}
+
+/**
+ * The triage page, on loopback only. Every route is a GET except the page's
+ * writes: POST /tick, present only when the caller hands us a schedule to
+ * wake; POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>, present
+ * only when it hands us a way to send a ticket back, and which wake that
+ * schedule too once they have; POST /refresh, present only when it hands us
+ * a way to re-read the tracker, which starts no agent but still spends a
+ * tracker read and so is guarded the same way; and the ticket panel's
+ * Reply, Ask and Resolve, present only when it hands us a panel.
+ */
+export function serveBoard(opts: UiOptions): Promise<UiServer> {
+  let port = 0;
+  const server = createServer(boardListener(opts, () => port));
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);
