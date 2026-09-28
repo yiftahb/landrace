@@ -43,6 +43,12 @@ export interface Node {
   priority: number | null;
   origin: Origin | null;
   state: { [k: string]: Json };
+  /**
+   * When the tracker says it was opened, epoch ms; absent where the source
+   * cannot tell cheaply. Display only: it is not among the paths the snapshot
+   * provides, so a workflow that routes on it fails validation.
+   */
+  createdAt?: number;
 }
 
 export interface Relationship { from: string; to: string; type: string }
@@ -1397,6 +1403,8 @@ export interface BoardRow {
   note: string;
   /** When the current state began, if this process knows. Epoch ms. */
   since: number | null;
+  /** When the source says the node was opened, epoch ms, or null where it gave none. */
+  createdAt: number | null;
   round: number | null;
   model: string | null;
   /** Tickets only. */

@@ -134,6 +134,8 @@ export interface IssueNode {
   author: { login: string } | null;
   /** Who last edited the body, or null if nobody has since it was opened. */
   editor: { login: string } | null;
+  /** ISO 8601. Optional because a reading without it draws no age, never NaN. */
+  createdAt?: string;
 }
 
 /**
@@ -142,7 +144,7 @@ export interface IssueNode {
  * too: a parent counting its children by stage reads their labels.
  */
 export const ISSUE_FIELDS = `
-  number title url state stateReason
+  number title url state stateReason createdAt
   labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
   body author { login } editor { login }`;
@@ -157,7 +159,7 @@ export const ISSUE_FIELDS = `
  * reading is the one kept.
  */
 const SUB_ISSUE_FIELDS = `
-  number title url state stateReason
+  number title url state stateReason createdAt
   labels(first: 20) { nodes { name } }
   assignees(first: 5) { nodes { login } }
   body author { login } editor { login }`;
@@ -1369,7 +1371,7 @@ const MAX_ISSUE_PAGES = 10;
  * a fix round moves. No thread in it — see THREADS_QUERY — and no body.
  */
 const PULL_FIELDS = `
-  number title url state merged headRefName headRefOid isCrossRepository
+  number title url state merged headRefName headRefOid isCrossRepository createdAt
   closingIssuesReferences(first: 20) { nodes { number } }`;
 
 /**
@@ -1461,6 +1463,8 @@ interface PullNode {
   /** From a fork, whose head branch is named in somebody else's repository — and so could be named anything. */
   isCrossRepository: boolean;
   closingIssuesReferences: { nodes: Array<{ number: number }> };
+  /** ISO 8601. Optional for the same reason as IssueNode's. */
+  createdAt?: string;
 }
 
 interface ListedIssue extends IssueNode {
@@ -1559,7 +1563,14 @@ export function nodeOfIssue(issue: IssueNode, bot: string): Node {
     // abstains on those — so an unassigned ticket would be worked by every
     // instance instead of none.
     state: { labels, assignees: issue.assignees.nodes.map((a) => a?.login ?? "").filter(Boolean) },
+    ...createdAtOf(issue.createdAt),
   };
+}
+
+/** The board's "opened 3h ago": absent, not NaN, when GitHub gave no parseable time. */
+function createdAtOf(at: string | undefined): { createdAt?: number } {
+  const ms = at === undefined ? NaN : Date.parse(at);
+  return Number.isNaN(ms) ? {} : { createdAt: ms };
 }
 
 function pullNodeOf(pull: PullNode, openThreads?: number): Node {
@@ -1581,6 +1592,7 @@ function pullNodeOf(pull: PullNode, openThreads?: number): Node {
       ...(pull.isCrossRepository ? {} : { branch: pull.headRefName }),
       ...(openThreads === undefined ? {} : { openThreads }),
     },
+    ...createdAtOf(pull.createdAt),
   };
 }
 

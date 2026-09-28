@@ -462,16 +462,12 @@ describe("a row's title line", () => {
     expect(APP_JS).not.toContain('"–"');
   });
 
-  it("reserves no toggle-sized gap on a row with nothing to open", () => {
-    expect(APP_JS).not.toContain('el("span", "inline-block h-4 w-4 shrink-0")');
-  });
-
   // The toggle used to sit inside the title line, so a parent row's note
   // started under the toggle, a column left of its number.
   it("gives a parent row's toggle its own column, so the number, the note and wrapped chips share one edge", () => {
     const src = fnSource("ticketRowFor");
     expect(src).not.toMatch(/top\.append\(toggleFor/);
-    expect(src).toMatch(/if \(row\.children\.length\) main\.append\(toggleFor\(row, open\)\);/);
+    expect(src).toMatch(/main\.append\(toggleSlot\(row, open\)\);/);
     expect(src).toMatch(/body\.append\(top, bottom\);\s*main\.append\(body\);/);
   });
 
@@ -651,7 +647,7 @@ describe("a ticket row stopped by a security check", () => {
   }
   const build = (row: TicketRow): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
-    ${["el", "elapsed", "external", "treeItem", "shieldMark", "ticketRowFor"].map(fnSource).join("")}
+    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "ticketRowFor"].map(fnSource).join("")}
     ticketRowFor(ROW, 0, 0, false)`, { ROW: row, document: fakeDocument }) as FakeElement;
   const screened: TicketRow = {
     id: "19", kind: "ticket", title: "Payments revamp", link: "https://github.com/a/b/issues/19", closed: null,
@@ -682,15 +678,43 @@ describe("a ticket row stopped by a security check", () => {
   });
 });
 
+// #20 above #21 in one lane: #21 had a document under it and so a toggle, #20
+// had none, and #21's number sat exactly where a child of #20's would — the
+// board read as #21 nested under #20.
+describe("a row's toggle column", () => {
+  const row = (children: unknown[]) => ({
+    id: "20", kind: "ticket", title: "Retro stage", link: "", closed: null, badge: "waiting", stage: "spec",
+    priority: null, note: "", since: null, round: null, model: null, chat: null, screened: false, children,
+  });
+  const build = (r: ReturnType<typeof row>): FakeElement => runInNewContext(`
+    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
+    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "ticketRowFor"].map(fnSource).join("")}
+    ticketRowFor(ROW, 0, 0, ROW.children.length > 0)`, { ROW: r, document: fakeDocument }) as FakeElement;
+  const slot = (li: FakeElement): FakeElement | undefined => li.children[0]?.children[0];
+  const width = (e: FakeElement | undefined): string[] => (e?.className ?? "").split(" ").filter((c) => c.startsWith("w-"));
+
+  it("is kept on a row with nothing to open, blank and the toggle's own width, so siblings' numbers share one edge", () => {
+    const leaf = slot(build(row([])));
+    const parent = slot(build(row([{ id: "spec-20" }])));
+    expect(parent?.tag).toBe("button");
+    expect(leaf?.tag).toBe("span");
+    expect(leaf?.text).toBe("");
+    expect(leaf?.getAttribute("aria-hidden")).toBe("true");
+    expect(width(leaf)).toEqual(width(parent));
+    expect(width(leaf)).not.toEqual([]);
+  });
+});
+
 describe("an artifact row", () => {
   interface Artifact extends Tree {
-    kind: string; link: string; closed: null;
+    kind: string; link: string; closed: null | "done" | "dropped"; createdAt?: number | null;
     system: { name: string; icon: { bg: string; glyph: string } | null } | null;
   }
+  const NOW = Date.parse("2026-09-28T12:00:00Z");
   const build = (row: Artifact, depth = 1): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}
-    ${["el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "external", "treeItem", "toggleFor", "artifactRowFor"].map(fnSource).join("")}
-    artifactRowFor(ROW, ${depth}, ROW.children.length > 0)`, { ROW: row, document: fakeDocument }) as FakeElement;
+    ${["el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "artifactRowFor"].map(fnSource).join("")}
+    artifactRowFor(ROW, ${depth}, ROW.children.length > 0, NOW)`, { ROW: row, NOW, document: fakeDocument }) as FakeElement;
   const spec: Artifact = {
     id: "spec-19", kind: "document", title: "Spec: Payments revamp", link: "https://acme.github.io/widgets/specs/19/",
     system: { name: "GitHub Pages", icon: { bg: "#24292f", glyph: "GH" } }, closed: null, children: [],
@@ -708,7 +732,7 @@ describe("an artifact row", () => {
   });
 
   it("keeps the system's name on the mark, as its tooltip and its accessible name", () => {
-    const mark = descendants(build(spec)).find((d) => d.getAttribute("role") === "img");
+    const mark = descendants(build(spec)).find((d) => d.title === "GitHub Pages");
     expect(mark?.title).toBe("GitHub Pages");
     expect(mark?.getAttribute("aria-label")).toBe("GitHub Pages");
     expect(mark?.children[0]?.tag).toBe("svg");
@@ -726,9 +750,9 @@ describe("an artifact row", () => {
     expect(link(build(pr))?.getAttribute("aria-label")).toBe("API endpoints for payments, pull request on GitHub, opens in a new tab");
   });
 
-  it("puts the mark first and ↗ last, pushed to the row's far edge and hidden from a screen reader", () => {
+  it("puts the kind's mark first, the system's second, and ↗ last, pushed to the row's far edge and hidden from a screen reader", () => {
     const a = link(build(spec));
-    expect(a?.children[0]?.getAttribute("role")).toBe("img");
+    expect(a?.children.slice(0, 2).map((c) => c.getAttribute("aria-label"))).toEqual(["Document", "GitHub Pages"]);
     const arrow = a?.children.at(-1);
     expect(arrow?.text).toBe("↗");
     expect(arrow?.getAttribute("aria-hidden")).toBe("true");
@@ -740,6 +764,56 @@ describe("an artifact row", () => {
     expect(classes.filter((c) => c.includes("underline"))).toEqual([]);
     const own = link(build(spec))?.className.split(" ") ?? [];
     expect(own).toEqual(expect.arrayContaining(["hover:bg-neutral-100", "dark:hover:bg-neutral-800", "focus-visible:outline-2"]));
+  });
+
+  const kindOf = (li: FakeElement): FakeElement | undefined => link(li)?.children[0];
+  it.each([
+    [null, "Open pull request", "green"],
+    ["done", "Merged pull request", "purple"],
+    ["dropped", "Closed pull request", "red"],
+  ] as const)("marks a pull request closed=%s as %s, drawn inline in %s", (closed, name, colour) => {
+    const mark = kindOf(build({ ...pr, closed }));
+    expect(mark?.getAttribute("role")).toBe("img");
+    expect(mark?.getAttribute("aria-label")).toBe(name);
+    expect(mark?.title).toBe(name);
+    expect(mark?.children[0]?.tag).toBe("svg");
+    expect(mark?.className).toContain(`text-${colour}-`);
+  });
+
+  it("marks a document as a document", () => {
+    const mark = kindOf(build(spec));
+    expect(mark?.getAttribute("aria-label")).toBe("Document");
+    expect(mark?.children[0]?.tag).toBe("svg");
+  });
+
+  it("draws no kind mark for a kind it has none for, so the system's mark leads the line", () => {
+    expect(kindOf(build({ ...spec, kind: "design" }))?.getAttribute("aria-label")).toBe("GitHub Pages");
+  });
+
+  it("says how long ago it was created, just ahead of ↗, with the exact time on hover", () => {
+    const at = NOW - 3 * 3_600_000;
+    const li = build({ ...pr, createdAt: at });
+    expect(texts(li)).toEqual(["GH", "API endpoints for payments", "3h", "↗"]);
+    const stamp = descendants(li).find((d) => d.text === "3h");
+    expect(stamp?.title).toBe(new Date(at).toLocaleString());
+    // The link's accessible name replaces its children, so the age has to be in it too.
+    expect(link(li)?.getAttribute("aria-label")).toBe("API endpoints for payments, pull request on GitHub, opened 3h ago, opens in a new tab");
+  });
+
+  it("says nothing about age when the source gave no creation time", () => {
+    expect(texts(build({ ...pr, createdAt: null }))).toEqual(["GH", "API endpoints for payments", "↗"]);
+  });
+
+  it.each([
+    [30_000, "now"],
+    [5 * 60_000, "5m"],
+    [3 * 3_600_000, "3h"],
+    [47 * 3_600_000, "47h"],
+    [49 * 3_600_000, "2d"],
+    [400 * 86_400_000, "400d"],
+    [-60_000, "now"],
+  ])("words an age of %d ms as %s", (ms, words) => {
+    expect(runInNewContext(`${fnSource("ago")} ago(NOW - ${ms}, NOW)`, { NOW })).toBe(words);
   });
 
   it("draws a row with nothing to open as plain text — no anchor, no ↗", () => {
@@ -759,7 +833,7 @@ describe("an artifact row", () => {
   it("keeps the toggle in its own column ahead of the link, so the mark lines up with a ticket's number", () => {
     const leaf = build(spec, 2);
     expect(leaf.className.split(" ")).toContain("pl-16");
-    expect(leaf.children.map((c) => c.tag)).toEqual(["a"]);
+    expect(leaf.children.map((c) => c.tag)).toEqual(["span", "a"]);
     const parent = build({ ...pr, children: [spec] }, 2);
     expect(parent.children.map((c) => [c.tag, c.getAttribute("data-key")])).toEqual([["button", "pr:118:toggle"], ["a", "pr:118:link"]]);
   });

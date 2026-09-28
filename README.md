@@ -112,6 +112,7 @@ interface Node {
   priority: number | null;
   origin: Origin | null;
   state: { [key: string]: Json };   // whatever the source wants a predicate to read
+  createdAt?: number;        // epoch ms, for the board's "opened 3h ago" only — no workflow can route on it
 }
 
 interface Relationship { from: string; to: string; type: string }

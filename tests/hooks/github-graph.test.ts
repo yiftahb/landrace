@@ -117,6 +117,27 @@ describe("the GitHub source", () => {
     expect(JSON.stringify(g)).not.toContain("\"x\""); // no thread body in the graph
   });
 
+  it("stamps an issue and a pull request with when GitHub says each was opened, in every query that reads one", async () => {
+    const gh = createFakeTracker([{ number: 7, createdAt: "2026-09-20T10:00:00Z" }]);
+    gh.openPull({ number: 20, head: "landrace/7", headSha: "a", merged: false, threads: [], createdAt: "2026-09-21T12:30:00Z" });
+    for (const g of [await sourceOf(gh).read("7", ctx(gh)), await sourceOf(gh).list(ctx(gh))]) {
+      expect(g.nodes.find((n) => n.id === "7")?.createdAt).toBe(Date.parse("2026-09-20T10:00:00Z"));
+      expect(g.nodes.find((n) => n.id === "pr-20")?.createdAt).toBe(Date.parse("2026-09-21T12:30:00Z"));
+    }
+    // The fake answers the field whatever it is asked; GitHub answers only what the query names.
+    for (const name of ["LandraceTicket", "LandraceIssues", "LandracePulls"]) {
+      const sent = operations(gh, name);
+      expect(sent.length).toBeGreaterThan(0);
+      for (const q of sent) expect(q.query).toContain("createdAt");
+    }
+  });
+
+  it("leaves a node undated when GitHub gave no time, rather than stamping it with a guess", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    const g = await sourceOf(gh).read("7", ctx(gh));
+    expect(g.nodes.find((n) => n.id === "7")).not.toHaveProperty("createdAt");
+  });
+
   /*
    * A ticket can have a pull request per branch its workflow names, and
    * `pull.open` is satisfied per branch — so every pull request says which

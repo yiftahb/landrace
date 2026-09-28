@@ -25,6 +25,8 @@ export interface FakeIssue {
   body: string;
   state: string;
   html_url: string;
+  /** GraphQL's `createdAt`, answered only when a test sets one. */
+  createdAt?: string;
   labels: string[];
   /** As GitHub returns them — objects with a login, not bare strings — so the hook's own reading of them is what runs. */
   assignees: Array<{ login: string }>;
@@ -81,6 +83,8 @@ export interface FakePull {
   body?: string;
   /** From a fork: its head branch is named in somebody else's repository, and may be named anything. */
   crossRepository?: boolean;
+  /** GraphQL's `createdAt`, answered only when a test sets one. */
+  createdAt?: string;
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -254,6 +258,7 @@ export function createFakeTracker(
       labels: s.labels ?? [],
       assignees: s.assignees ?? [],
       ...(s.stateReason === undefined ? {} : { stateReason: s.stateReason }),
+      ...(s.createdAt === undefined ? {} : { createdAt: s.createdAt }),
       ...(s.parent === undefined ? {} : { parent: s.parent }),
       ...(s.editor === undefined ? {} : { editor: s.editor }),
     });
@@ -371,6 +376,7 @@ export function createFakeTracker(
     url: i.html_url,
     state: i.state.toUpperCase(),
     stateReason: i.stateReason ?? null,
+    ...(i.createdAt === undefined ? {} : { createdAt: i.createdAt }),
     labels: { nodes: i.labels.map((name) => ({ name })) },
     assignees: { nodes: i.assignees },
   });
@@ -393,6 +399,7 @@ export function createFakeTracker(
     headRefName: p.head,
     headRefOid: p.headSha,
     isCrossRepository: p.crossRepository ?? false,
+    ...(p.createdAt === undefined ? {} : { createdAt: p.createdAt }),
     closingIssuesReferences: { nodes: (p.closes ?? []).map((number) => ({ number })) },
   });
 
@@ -771,6 +778,7 @@ export function createFakeTracker(
         ...(pull.state === undefined ? {} : { state: pull.state }),
         ...(pull.closes === undefined ? {} : { closes: pull.closes }),
         ...(pull.crossRepository === undefined ? {} : { crossRepository: pull.crossRepository }),
+        ...(pull.createdAt === undefined ? {} : { createdAt: pull.createdAt }),
       };
       pulls.set(number, created);
       nextPull = Math.max(nextPull, number + 1);
