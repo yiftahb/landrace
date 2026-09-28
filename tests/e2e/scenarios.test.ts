@@ -473,6 +473,8 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
+  retro: '- `.landrace/steps/build.md`: builds skipped the lint run a reviewer then flagged\n\n' +
+    '```json\n{"kind":"learned","changes":[{"file":".landrace/steps/build.md","why":"builds skipped the lint run"}]}\n```',
 };
 
 describe("the §10 cycle, including a fix that does not satisfy the reviewer", () => {
@@ -642,6 +644,72 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
       expect(call.prompt).toContain("# Export CSV\n\nOne file, comma separated.");
       expect(call.prompt).not.toMatch(/\{brief\./);
     }
+  });
+});
+
+/*
+ * #20: a ticket corrected on its way through review stops at `retro` before
+ * the person sees it, and a clean one does not. The reviewer here raises one
+ * finding on its first round and resolves it on its second, so the one fix
+ * round is the only correction the ticket had.
+ */
+describe("the retro, after a review settles", () => {
+  jest.setTimeout(60_000);
+  afterAll(removeRepos);
+
+  const CLEAN: Record<string, ScriptedAnswer> = {
+    ...ANSWERS,
+    spec: '# Export CSV\n\nOne file, comma separated.\n\n```json\n{"kind":"spec","title":"Export CSV"}\n```',
+    triage: '```json\n{"intent":"approve"}\n```',
+  };
+
+  const approved = async (findings: boolean) => {
+    const { root, origin } = await gitRepoWithOrigin();
+    const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }], { git: gitIn(root) });
+    let commits = 0;
+    let reviews = 0;
+    const during = async ({ stage }: { stage: string }) => {
+      if (["build", "fix-review", "retro"].includes(stage)) await commitOn(root, "landrace/1", `${stage}-${++commits}.ts`);
+      if (stage !== "code-review") return;
+      const pull = [...gh.pulls.values()].find((p) => p.head === "landrace/1");
+      if (++reviews === 1 && findings) pull?.threads.push({ isResolved: false, body: "this leaks a file handle", path: "src/x.ts", line: 12 });
+      else for (const thread of pull?.threads ?? []) thread.isResolved = true;
+    };
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: CLEAN, during });
+
+    await run.converge();
+    gh.sayAs("a-person", 1, "looks right, go ahead", new Date(Date.UTC(2026, 1, 2)).toISOString());
+    await run.converge();
+    return { gh, run, root, origin };
+  };
+
+  it("runs once after one fix round, and reaches pr-human-review with its lessons on the ticket and the branch", async () => {
+    const { gh, run, root, origin } = await approved(true);
+
+    expect(run.trail()).toEqual([
+      "spec", "spec-human-review", "triage", "build", "publish",
+      "code-review", "fix-review", "code-review", "retro", "pr-human-review",
+    ]);
+    expect(run.counts().retro).toBe(1);
+    expect(gh.labelsOf(1)).toContain("lr:stage:pr-human-review");
+    expect(gh.entriesOf(1)).toContainEqual(expect.objectContaining({
+      stage: "retro", kind: "output", round: 1, data: expect.objectContaining({ kind: "learned" }),
+    }));
+    // Shown the whole history, the settled finding included, and not a placeholder.
+    const prompt = run.calls().find((c) => c.stage === "retro")?.prompt ?? "";
+    expect(prompt).toContain("src/x.ts:12 — raised by Landrace's reviewer — resolved\nthis leaks a file handle");
+    expect(prompt).toContain("@a-person: looks right, go ahead");
+    expect(prompt).not.toMatch(/\{brief\./);
+    // pr-human-review pushed what the retro committed before the person reads it.
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBe(await commitAt(root, "refs/heads/landrace/1"));
+  });
+
+  it("skips a ticket nothing was corrected on", async () => {
+    const { gh, run } = await approved(false);
+
+    expect(run.trail()).toEqual(["spec", "spec-human-review", "triage", "build", "publish", "code-review", "pr-human-review"]);
+    expect(gh.entriesOf(1).some((e) => e.stage === "retro")).toBe(false);
   });
 });
 
@@ -904,7 +972,8 @@ describe("sending a ticket back to a step", () => {
 
     state.say("1", "looks right");
     const again = await run.converge();
-    expect(again.trail.slice(0, 4)).toEqual(["triage", "build", "publish", "code-review"]);
+    // A second spec round is a correction, so the retro runs before the person sees it again.
+    expect(again.trail).toEqual(["triage", "build", "publish", "code-review", "retro", "pr-human-review"]);
     expect(state.stage("1")).toBe("pr-human-review");
   });
 

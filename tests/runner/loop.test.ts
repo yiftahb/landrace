@@ -25,6 +25,7 @@ const OUTPUT: Record<string, Answer> = {
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
+  retro: 'Nothing here generalises.\n\n```json\n{"kind":"nothing","reason":"specific to this ticket"}\n```',
 };
 
 type World = ReturnType<typeof createFakeTracker>;
@@ -495,14 +496,17 @@ describe("a ticket goes all the way round §10", () => {
 
     expect(trail(asked, specced, reviewed, done)).toEqual([
       "spec", "spec-questions", "triage", "spec", "spec-human-review", "triage", "build", "publish",
-      "code-review", "fix-review", "code-review", "pr-human-review", "done",
+      "code-review", "fix-review", "code-review", "retro", "pr-human-review", "done",
     ]);
+    // Corrected on the way — a second spec round, a fix round — so the retro
+    // runs once before the person sees the pull request.
     expect(reviewed.invocations).toEqual([
       { stage: "triage", round: 2 },
       { stage: "build", round: 1 },
       { stage: "code-review", round: 1 },
       { stage: "fix-review", round: 1 },
       { stage: "code-review", round: 2 },
+      { stage: "retro", round: 1 },
     ]);
     // Terminal: the engine's own labels are gone, so the next tick does not
     // pick the ticket up again.

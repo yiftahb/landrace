@@ -100,15 +100,7 @@ reads it beside the commit before they merge. If you changed something, list
 each file you changed with a one-line reason. If you did not, say in a sentence
 or two why there was nothing to learn.
 
-End with a fenced json block. Either `kind` `learned`, with `changes` listing
-each file you changed and a one-line `why`:
-
-```json
-{"kind": "learned", "changes": [{"file": ".landrace/steps/build.md", "why": "builds skipped the lint run a reviewer then flagged"}]}
-```
-
-or `kind` `nothing`, with a one-line `reason`:
-
-```json
-{"kind": "nothing", "reason": "the one correction was specific to this ticket's CSV format"}
-```
+End with a fenced json block: either `kind` `learned`, with `changes` a list
+holding one object per file you changed — its path as `file`, and the one-line
+reason as `why` — or `kind` `nothing`, with the one-line `reason` there was
+nothing to learn.
