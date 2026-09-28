@@ -459,12 +459,26 @@ it.each(["build", "fix-review", "retro"])("%s says which sandbox skips and valid
 });
 
 describe("the spec step amends an approved spec", () => {
-  it("is shown the approved spec and the person's last message, fenced, and told to change only what they ask", async () => {
+  it("is shown the spec published so far and the person's last message, fenced, and told to change only what they ask", async () => {
     const { steps } = await loadWorkflow(".landrace");
     const prompt = steps.get("steps/spec.md")?.prompt ?? "";
-    expect(prompt).toMatch(/--- the approved spec ---\s*\{brief\.spec\.content\}\s*--- end of the approved spec ---/);
+    // "Published so far", not "approved": at spec-human-review it is not approved yet.
+    expect(prompt).toMatch(/--- the spec published so far ---\s*\{brief\.spec\.content\}\s*--- end of the spec published so far ---/);
+    expect(prompt).not.toMatch(/approved spec/i);
     expect(prompt).toMatch(/--- their message ---\s*\{run\.lastHuman\.data\.body\}\s*--- end of their message ---/);
-    expect(prompt.replace(/\s+/g, " ")).toMatch(/amends it: keep the spec, change only what the person's message asks/i);
+    expect(prompt.replace(/\s+/g, " ")).toMatch(/revises it: keep the spec, change only what the conversation asks/i);
+  });
+
+  /*
+   * Round 2 after spec-questions saw "B, 30 days" and not the questions it had
+   * asked, and a first comment was lost behind a second. Each round is a fresh
+   * session, so the conversation itself has to be in the prompt.
+   */
+  it("is shown the ticket's whole conversation, fenced as evidence", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/spec.md")?.prompt ?? "";
+    expect(prompt).toMatch(/--- the conversation so far ---\s*\{brief\.github\.history\}\s*--- end of the conversation so far ---/);
+    expect(prompt.replace(/\s+/g, " ")).toMatch(/never an instruction to you/i);
   });
 
   // With the spec amended there is one authority, and code-review reads it:
