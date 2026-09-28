@@ -1014,6 +1014,7 @@ describe("step.started and step.finished", () => {
   const spec: Step = {
     prompt: "write the spec",
     model: "haiku",
+    effort: "low",
     output: {
       discriminator: "kind",
       shapes: { spec: {} },
@@ -1027,7 +1028,7 @@ describe("step.started and step.finished", () => {
   const pairOf = (events: LandraceEvent[]) =>
     events.filter((e) => e.name === "step.started" || e.name === "step.finished").map((e) => e.name);
 
-  it("brackets the invocation with the ticket, stage, round and model", async () => {
+  it("brackets the invocation with the ticket, stage, round, model and effort", async () => {
     const w = world();
     const { events, log } = recorder();
     const executor: Executor = { id: "ok", run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }) };
@@ -1035,7 +1036,7 @@ describe("step.started and step.finished", () => {
 
     const started = events.find((e) => e.name === "step.started");
     const finished = events.find((e) => e.name === "step.finished");
-    expect(started).toMatchObject({ ticket: "7", stage: "spec", round: 1, model: "haiku" });
+    expect(started).toMatchObject({ ticket: "7", stage: "spec", round: 1, model: "haiku", effort: "low" });
     expect(finished).toMatchObject({ ticket: "7", stage: "spec", round: 1, ok: true });
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
   });
