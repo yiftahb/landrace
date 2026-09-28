@@ -148,6 +148,22 @@ describe("conversation", () => {
     expect(resumed).toBe("sid-1");
   });
 
+  // The panel's progress on an Ask is the turn's own activity, filed beside
+  // the step's: same stage, same round, so the step's lines are not wiped.
+  it("files what the turn's agent reports under the stage and round it joined", async () => {
+    const recorded: unknown[][] = [];
+    const reporting: Executor = {
+      id: "f",
+      run: async (_p, o) => {
+        o.onActivity?.({ kind: "tool", text: "Read spec.md", at: 3 });
+        return { text: "Understood.", sessionId: "sid-later" };
+      },
+    };
+    const activity = { record: (...args: unknown[]) => { recorded.push(args); }, read: async () => ({ stage: null, round: null, lines: [], total: 0 }) };
+    await world(seeded(), reporting, {}, undefined, { activity }).ask("1", "B2B only");
+    expect(recorded).toEqual([["1", "spec", 1, { kind: "tool", text: "Read spec.md", at: 3 }]]);
+  });
+
   /**
    * The session is derived from the record the step wrote, not handed over in
    * memory: this is the path a *second* MCP process — one that never ran the

@@ -120,6 +120,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     ...(opts.workflow ? { workflow: opts.workflow } : {}),
     ...(opts.steps ? { steps: opts.steps } : {}),
     ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
+    ...(opts.activity ? { activity: opts.activity } : {}),
   });
 
   const snapshotOf = (ticket: string): Promise<Snapshot> =>

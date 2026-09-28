@@ -57,6 +57,17 @@ describe("entriesFromComments", () => {
     expect(entries[1]).toMatchObject({ kind: "human", byAgent: false });
   });
 
+  // For the ticket panel's conversation: what a person reads on the ticket,
+  // never the control state riding at the end of ours.
+  it("carries each comment's text — ours with the marker taken off, a person's whole", () => {
+    const entries = entriesFromComments([
+      { id: 1, body: `draft\n\nsecond paragraph${renderMarker(doc)}`, created_at: at(1), user: { login: "bot" } },
+      { id: 2, body: "looks good", created_at: at(2), user: { login: "yiftahb" } },
+      { id: 3, body: undefined as unknown as string, created_at: at(3), user: { login: "yiftahb" } },
+    ], "bot");
+    expect(entries.map((e) => e.text)).toEqual(["draft\n\nsecond paragraph", "looks good", ""]);
+  });
+
   // The test that used to stand here asserted the opposite — "authorship is
   // decided by the marker, not the login" — and that assumption was the
   // vulnerability: any commenter could complete a stage, block a ticket or run

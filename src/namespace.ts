@@ -100,6 +100,12 @@ export interface Entry {
   at: string;
   /** True when we wrote it. False means a person did. */
   byAgent: boolean;
+  /**
+   * What a person reads on the ticket — ours with the marker taken off.
+   * Display only, for the ticket panel's conversation: it is not among the
+   * paths the snapshot provides, and nothing routes on it.
+   */
+  text?: string;
 }
 
 /** Open by design: hooks contribute whatever they contribute. */
@@ -1217,6 +1223,8 @@ export interface ToolOptions {
   workflow?: Workflow;
   steps?: Map<string, Step>;
   sandbox?: { root: string };
+  /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
+  activity?: ActivityLog;
   /**
    * Told after each write a person makes through the tools succeeds, so a
    * running loop picks it up now rather than on its next scheduled tick.
@@ -1395,6 +1403,11 @@ export interface ConversationDeps {
    */
   screen?: Screener;
   lock?: LockOptions;
+  /**
+   * Where a turn's activity is kept, filed under the stage and round it
+   * joined — the panel's progress on an Ask. Absent, none is.
+   */
+  activity?: ActivityLog;
 }
 
 export interface Conversation {

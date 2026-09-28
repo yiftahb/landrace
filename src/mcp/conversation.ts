@@ -13,6 +13,7 @@ import {
 } from "#conventions.js";
 import { stageBranch } from "#core/index.js";
 import type {
+  AgentActivity,
   Conversation,
   ConversationDeps,
   Entry,
@@ -310,6 +311,11 @@ export function createConversation(deps: ConversationDeps): Conversation {
                 // never reads timeoutMs still stops.
                 timeoutMs: turnTimeoutMs,
                 ...(sandbox ? { cwd: sandbox.path } : {}),
+                // Beside the step's own lines, under the round it joined, so
+                // the panel shows an Ask's progress without wiping the step's.
+                ...(deps.activity
+                  ? { onActivity: (e: AgentActivity) => deps.activity?.record(ticket, stage, round, e) }
+                  : {}),
                 // The caller's own signal when there is one, joined with the
                 // limit above: an MCP client that disconnects mid-turn aborts
                 // the request, which kills the agent and unwinds through the
