@@ -25,6 +25,11 @@ export interface FakeIssue {
   body: string;
   state: string;
   html_url: string;
+  /** GraphQL's `createdAt`, answered only when a test sets one. */
+  createdAt?: string;
+  /** When a closed issue closed, and when it last changed. LandraceClosed orders and filters by these. */
+  closedAt?: string;
+  updatedAt?: string;
   labels: string[];
   /** As GitHub returns them — objects with a login, not bare strings — so the hook's own reading of them is what runs. */
   assignees: Array<{ login: string }>;
@@ -81,6 +86,8 @@ export interface FakePull {
   body?: string;
   /** From a fork: its head branch is named in somebody else's repository, and may be named anything. */
   crossRepository?: boolean;
+  /** GraphQL's `createdAt`, answered only when a test sets one. */
+  createdAt?: string;
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -254,6 +261,9 @@ export function createFakeTracker(
       labels: s.labels ?? [],
       assignees: s.assignees ?? [],
       ...(s.stateReason === undefined ? {} : { stateReason: s.stateReason }),
+      ...(s.createdAt === undefined ? {} : { createdAt: s.createdAt }),
+      ...(s.closedAt === undefined ? {} : { closedAt: s.closedAt }),
+      ...(s.updatedAt === undefined ? {} : { updatedAt: s.updatedAt }),
       ...(s.parent === undefined ? {} : { parent: s.parent }),
       ...(s.editor === undefined ? {} : { editor: s.editor }),
     });
@@ -371,6 +381,7 @@ export function createFakeTracker(
     url: i.html_url,
     state: i.state.toUpperCase(),
     stateReason: i.stateReason ?? null,
+    ...(i.createdAt === undefined ? {} : { createdAt: i.createdAt }),
     labels: { nodes: i.labels.map((name) => ({ name })) },
     assignees: { nodes: i.assignees },
   });
@@ -393,6 +404,7 @@ export function createFakeTracker(
     headRefName: p.head,
     headRefOid: p.headSha,
     isCrossRepository: p.crossRepository ?? false,
+    ...(p.createdAt === undefined ? {} : { createdAt: p.createdAt }),
     closingIssuesReferences: { nodes: (p.closes ?? []).map((number) => ({ number })) },
   });
 
@@ -459,6 +471,29 @@ export function createFakeTracker(
                   ...issueNode(i),
                   parent: i.parent === undefined ? null : { number: i.parent },
                   subIssues: { nodes: childrenOf(i.number).map(issueNode) },
+                })),
+              },
+            },
+          },
+        });
+      }
+
+      // Closed issues, most recently updated first, as `orderBy: UPDATED_AT DESC` pages them.
+      if (operation === "LandraceClosed") {
+        const closed = [...issues.values()].filter((i) => i.state === "closed")
+          .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "") || a.number - b.number);
+        const from = typeof variables.cursor === "string" && variables.cursor ? Number(variables.cursor) : 0;
+        const size = Number(/issues\(states: CLOSED, first: (\d+)/.exec(String(body.query))?.[1] ?? ISSUE_PAGE);
+        const page = closed.slice(from, from + size);
+        const end = from + page.length;
+        return json({
+          data: {
+            repository: {
+              issues: {
+                pageInfo: { hasNextPage: end < closed.length, endCursor: String(end) },
+                nodes: page.map((i) => ({
+                  ...issueNode(i), closedAt: i.closedAt ?? null, updatedAt: i.updatedAt ?? null,
+                  parent: i.parent === undefined ? null : { number: i.parent },
                 })),
               },
             },
@@ -771,6 +806,7 @@ export function createFakeTracker(
         ...(pull.state === undefined ? {} : { state: pull.state }),
         ...(pull.closes === undefined ? {} : { closes: pull.closes }),
         ...(pull.crossRepository === undefined ? {} : { crossRepository: pull.crossRepository }),
+        ...(pull.createdAt === undefined ? {} : { createdAt: pull.createdAt }),
       };
       pulls.set(number, created);
       nextPull = Math.max(nextPull, number + 1);

@@ -656,6 +656,51 @@ function systemMark(system) {
   return mark;
 }
 
+// What an artifact is, ahead of where it lives: a pull request coloured by
+// its state, a document as a page. Stroked in currentColor so a dark: class
+// themes it, drawn inline like every mark here, and named for a hover or a
+// screen reader. A kind with no glyph gets none rather than a guess.
+function kindMark(row) {
+  let name, colour, shapes;
+  if (row.kind === "pull-request") {
+    if (row.closed === "done") [name, colour] = ["Merged pull request", "text-purple-600 dark:text-purple-400"];
+    else if (row.closed === "dropped") [name, colour] = ["Closed pull request", "text-red-600 dark:text-red-400"];
+    else [name, colour] = ["Open pull request", "text-green-600 dark:text-green-400"];
+    shapes = [["circle", { cx: "4", cy: "3.5", r: "1.75" }], ["circle", { cx: "4", cy: "12.5", r: "1.75" }],
+      ["circle", { cx: "12", cy: "12.5", r: "1.75" }], ["path", { d: "M4 5.25v5.5M12 10.75V6.5a2 2 0 0 0-2-2H7.5M9 3 7.5 4.5 9 6" }]];
+  } else if (row.kind === "document") {
+    [name, colour] = ["Document", "text-neutral-500 dark:text-neutral-400"];
+    shapes = [["path", { d: "M4 1.75h5l3.25 3.25v9.25H4zM9 1.75V5h3.25M6 8.5h4M6 11h4" }]];
+  } else {
+    return null;
+  }
+  const svg = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of [["viewBox", "0 0 16 16"], ["width", "14"], ["height", "14"], ["fill", "none"], ["stroke", "currentColor"],
+    ["stroke-width", "1.5"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) svg.setAttribute(k, v);
+  for (const [tag, attrs] of shapes) {
+    const shape = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) shape.setAttribute(k, attrs[k]);
+    svg.append(shape);
+  }
+  const mark = el("span", "inline-flex shrink-0 " + colour);
+  mark.title = name;
+  mark.setAttribute("role", "img");
+  mark.setAttribute("aria-label", name);
+  mark.append(svg);
+  return mark;
+}
+
+// How long ago, in the one unit that matters at a glance: under an hour in
+// minutes, under two days in hours, then days. A clock a little ahead of the
+// tracker's reads as "now", never as a negative age.
+function ago(at, now) {
+  const m = Math.floor((now - at) / 60000);
+  if (m < 1) return "now";
+  if (m < 60) return m + "m";
+  const h = Math.floor(m / 60);
+  return h < 48 ? h + "h" : Math.floor(h / 24) + "d";
+}
+
 // A ticket a security check stopped: a shield beside its badge, drawn inline
 // — the page loads no image — and named, so hovering or a screen reader says
 // what it means rather than leaving an icon to be guessed at.
@@ -694,8 +739,7 @@ function treeItem(row, depth, cls, open) {
 
 // The ▸/▾ in front of any row with children — ticket or artifact, since a
 // document can sit under a pull request too, and a row nobody can open would
-// hide its children for good. A row with no children gets nothing, not a
-// blank of the same size. Keyed like the menu, so render()'s restore-by-key
+// hide its children for good. Keyed like the menu, so render()'s restore-by-key
 // keeps a keyboard user's focus on it across the re-render its own click causes.
 function toggleFor(row, open) {
   const toggle = el("button", "inline-flex h-4 w-4 shrink-0 items-center justify-center text-neutral-400", open ? "▾" : "▸");
@@ -716,6 +760,17 @@ function toggleFor(row, open) {
   return toggle;
 }
 
+// The toggle's column, kept on every row: a blank of the toggle's width where
+// there is nothing to open. Without it a row with children put its number one
+// indent step right of a sibling with none — exactly where a child of that
+// sibling's goes — and #21, with a spec under it, read as nested under #20.
+function toggleSlot(row, open) {
+  if (row.children.length) return toggleFor(row, open);
+  const blank = el("span", "inline-block h-4 w-4 shrink-0");
+  blank.setAttribute("aria-hidden", "true");
+  return blank;
+}
+
 function ticketRowFor(row, depth, now, open) {
   // Stacked below the sm breakpoint, side-by-side above it — a breakpoint, not a
   // content-based flex-wrap. flex-wrap's own line-breaking runs on each
@@ -730,7 +785,7 @@ function ticketRowFor(row, depth, now, open) {
   // inside the title line it pushed the number right but not the note or a
   // wrapped chip, which then started under the toggle instead of the number.
   const main = el("div", "flex min-w-0 w-full items-baseline gap-2 sm:w-auto sm:flex-1");
-  if (row.children.length) main.append(toggleFor(row, open));
+  main.append(toggleSlot(row, open));
   const body = el("div", "min-w-0 flex-1");
 
   const top = el("div", "flex flex-wrap items-baseline gap-x-2 gap-y-1");
@@ -781,13 +836,13 @@ function ticketRowFor(row, depth, now, open) {
 }
 
 // A pull request, a document — anything that is not a ticket — as one line:
-// its system's mark, its title, and ↗ at the far edge, the whole line one link
-// that opens in a new tab. The mark already tells a pull request from a
-// published page and the title tells two of them apart; the system's name and
-// the kind beside them only crowded the title out, so they live in the mark's
-// tooltip and the link's accessible name.
+// what it is, where it lives, its title, how long ago it was opened, and ↗ at
+// the far edge, the whole line one link that opens in a new tab. The two
+// marks say kind and system without words; the names beside them only
+// crowded the title out, so they live in the marks' tooltips and the link's
+// accessible name.
 // No link, no anchor: a row that goes nowhere must not look like it does.
-function artifactRowFor(row, depth, open) {
+function artifactRowFor(row, depth, open, now) {
   const li = treeItem(row, depth, "flex items-center gap-2 py-1 pr-4 text-sm", open);
   // The padding is the link's own, so the whole band it lights up on hover
   // is what a click lands on; the negative margin puts the mark back in the
@@ -795,17 +850,26 @@ function artifactRowFor(row, depth, open) {
   const line = row.link
     ? external(el("a", "-mx-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-neutral-800 dark:focus-visible:outline-blue-400"), row)
     : el("span", "flex min-w-0 flex-1 items-center gap-2 py-1.5");
+  const kindIcon = kindMark(row);
+  if (kindIcon) line.append(kindIcon);
   if (row.system && row.system.icon) line.append(systemMark(row.system));
   line.append(el("span", "min-w-0 truncate text-neutral-700 dark:text-neutral-300", row.title));
+  const opened = typeof row.createdAt === "number" ? ago(row.createdAt, now) : null;
+  if (opened !== null) {
+    // Pushed to the far edge itself, so ↗ follows it rather than splitting the space with it.
+    const stamp = el("span", "ml-auto shrink-0 text-xs tabular-nums text-neutral-400 dark:text-neutral-500", opened);
+    stamp.title = new Date(row.createdAt).toLocaleString();
+    line.append(stamp);
+  }
   if (row.link) {
     const kind = row.kind.replace(/-/g, " ");
-    line.setAttribute("aria-label", row.title + ", " + kind + (row.system ? " on " + row.system.name : "") + ", opens in a new tab");
-    const arrow = el("span", "ml-auto shrink-0 text-neutral-400 dark:text-neutral-500", "↗");
+    line.setAttribute("aria-label", row.title + ", " + kind + (row.system ? " on " + row.system.name : "") +
+      (opened === null ? "" : opened === "now" ? ", opened just now" : ", opened " + opened + " ago") + ", opens in a new tab");
+    const arrow = el("span", (opened === null ? "ml-auto " : "") + "shrink-0 text-neutral-400 dark:text-neutral-500", "↗");
     arrow.setAttribute("aria-hidden", "true");
     line.append(arrow);
   }
-  if (row.children.length) li.append(toggleFor(row, open));
-  li.append(line);
+  li.append(toggleSlot(row, open), line);
   return li;
 }
 
@@ -821,7 +885,7 @@ function treeRows(rows, depth, seen, now, out, search, inMatch) {
     if (!inMatch && !shows(row, search)) continue;
     seen.add(row.id);
     const open = row.children.length > 0 && openOf(row, search);
-    out.push(row.kind === "ticket" ? ticketRowFor(row, depth, now, open) : artifactRowFor(row, depth, open));
+    out.push(row.kind === "ticket" ? ticketRowFor(row, depth, now, open) : artifactRowFor(row, depth, open, now));
     if (open) treeRows(row.children, depth + 1, seen, now, out, search, inMatch || (search !== null && search.self.has(row.id)));
   }
   return out;

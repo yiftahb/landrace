@@ -112,6 +112,7 @@ interface Node {
   priority: number | null;
   origin: Origin | null;
   state: { [key: string]: Json };   // whatever the source wants a predicate to read
+  createdAt?: number;        // epoch ms, for the board's "opened 3h ago" only — no workflow can route on it
 }
 
 interface Relationship { from: string; to: string; type: string }
@@ -533,6 +534,11 @@ reclaim.
 candidate ticket, with its sub-tickets and pull requests nested beneath it, in
 lanes: needs you, agent running now, held by another process (your MCP
 conversation, another instance), waiting, and collapsed not-admitted and done.
+Done holds what the source lists as closed; the shipped GitHub hook lists a
+ticket Landrace moved (it carries an `lr:stage:*` label) for 30 days after it
+closes. Each pull request and document shows what it is, its state (a pull
+request's glyph is green while open, purple once merged, red once closed) and
+how long ago it was opened, when the source says.
 A branch sits in the lane of its most urgent ticket, so a sub-ticket that needs
 you lifts its whole branch into "Needs you", opened down to it. A search box
 filters by title or id, and Collapse all / Expand all set every branch at once.

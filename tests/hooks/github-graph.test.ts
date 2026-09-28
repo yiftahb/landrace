@@ -117,6 +117,55 @@ describe("the GitHub source", () => {
     expect(JSON.stringify(g)).not.toContain("\"x\""); // no thread body in the graph
   });
 
+  it("stamps an issue and a pull request with when GitHub says each was opened, in every query that reads one", async () => {
+    const gh = createFakeTracker([{ number: 7, createdAt: "2026-09-20T10:00:00Z" }]);
+    gh.openPull({ number: 20, head: "landrace/7", headSha: "a", merged: false, threads: [], createdAt: "2026-09-21T12:30:00Z" });
+    for (const g of [await sourceOf(gh).read("7", ctx(gh)), await sourceOf(gh).list(ctx(gh))]) {
+      expect(g.nodes.find((n) => n.id === "7")?.createdAt).toBe(Date.parse("2026-09-20T10:00:00Z"));
+      expect(g.nodes.find((n) => n.id === "pr-20")?.createdAt).toBe(Date.parse("2026-09-21T12:30:00Z"));
+    }
+    // The fake answers the field whatever it is asked; GitHub answers only what the query names.
+    for (const name of ["LandraceTicket", "LandraceIssues", "LandracePulls"]) {
+      const sent = operations(gh, name);
+      expect(sent.length).toBeGreaterThan(0);
+      for (const q of sent) expect(q.query).toContain("createdAt");
+    }
+  });
+
+  describe("recently closed tickets, for the board's Done lane", () => {
+    const daysAgo = (d: number): string => new Date(Date.now() - d * 86_400_000).toISOString();
+    const closed = (number: number, days: number, labels: string[] = ["lr:stage:build"]): Partial<FakeIssue> =>
+      ({ number, state: "closed", stateReason: "COMPLETED", labels, closedAt: daysAgo(days), updatedAt: daysAgo(days) });
+
+    it("lists a ticket Landrace worked and closed in the last 30 days, as closed", async () => {
+      const gh = createFakeTracker([{ number: 1 }, closed(19, 2)]);
+      const g = await sourceOf(gh).list(ctx(gh));
+      expect(g.nodes.find((n) => n.id === "19")).toMatchObject({ kind: "ticket", closed: "done" });
+    });
+
+    it("leaves out an issue Landrace never moved, and one closed more than 30 days ago", async () => {
+      const gh = createFakeTracker([{ number: 1 }, closed(5, 2, ["bug"]), closed(6, 40)]);
+      const ids = (await sourceOf(gh).list(ctx(gh))).nodes.map((n) => n.id);
+      expect(ids).toContain("1");
+      expect(ids).not.toContain("5");
+      expect(ids).not.toContain("6");
+    });
+
+    it("stops paging once it reaches issues last touched before the window", async () => {
+      const old = Array.from({ length: 120 }, (_, i) => closed(100 + i, 45));
+      const gh = createFakeTracker([closed(19, 1), ...old]);
+      const g = await sourceOf(gh).list(ctx(gh));
+      expect(g.nodes.map((n) => n.id)).toContain("19");
+      expect(operations(gh, "LandraceClosed")).toHaveLength(1);
+    });
+  });
+
+  it("leaves a node undated when GitHub gave no time, rather than stamping it with a guess", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    const g = await sourceOf(gh).read("7", ctx(gh));
+    expect(g.nodes.find((n) => n.id === "7")).not.toHaveProperty("createdAt");
+  });
+
   /*
    * A ticket can have a pull request per branch its workflow names, and
    * `pull.open` is satisfied per branch — so every pull request says which
