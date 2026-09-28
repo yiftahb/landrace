@@ -1,8 +1,8 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { isTicketId } from "#conventions.js";
-import type { ActivityLog, ActivityPage, AgentActivity } from "#namespace.js";
+import type { ActivityLog, ActivityPage, ActivityRecord } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { oneLine } from "#runner/status.js";
 
@@ -11,15 +11,13 @@ const MAX_TEXT = 240;
 /** Per round: a long build calls thousands of tools, and the panel shows the latest. */
 const MAX_LINES = 500;
 
-type Held = AgentActivity & { round: number };
-
 /** One run's lines, skipping any that do not parse — a torn write costs its own line, not the read. */
-function parse(text: string): Held[] {
-  const held: Held[] = [];
+function parse(text: string): ActivityRecord[] {
+  const held: ActivityRecord[] = [];
   for (const raw of text.split("\n")) {
     if (!raw.trim()) continue;
     try {
-      const v = JSON.parse(raw) as Partial<Held>;
+      const v = JSON.parse(raw) as Partial<ActivityRecord>;
       if (typeof v.round === "number" && (v.kind === "tool" || v.kind === "message") &&
         typeof v.text === "string" && typeof v.at === "number") {
         held.push({ round: v.round, kind: v.kind, text: v.text, at: v.at });
@@ -31,11 +29,12 @@ function parse(text: string): Held[] {
   return held;
 }
 
-const heldIn = (file: string): Held[] => {
+/** The size of a file, or null when there is none yet. */
+const sizeOf = (file: string): number | null => {
   try {
-    return parse(readFileSync(file, "utf8"));
+    return statSync(file).size;
   } catch {
-    return [];
+    return null;
   }
 };
 
@@ -59,6 +58,21 @@ export function createActivityLog(root: string, redact: (text: string) => string
   // encoded, neither can name a path outside its directory.
   const fileOf = (ticket: string, stage: string): string => join(dirOf(ticket), `${encodeURIComponent(stage)}.jsonl`);
 
+  // Per file, the round it holds and how many lines, as of the size this
+  // process last saw it at. Re-reading the whole file on every line made
+  // a 500-line round quadratic; a file whose size is not the one remembered
+  // was written by someone else — `landrace mcp`, a new round — and is read
+  // afresh, so two processes never disagree about which round a file holds.
+  const known = new Map<string, { round: number; lines: number; size: number }>();
+
+  const heldIn = (file: string, size: number): { round: number; lines: number } | null => {
+    const cached = known.get(file);
+    if (cached && cached.size === size) return cached;
+    const held = parse(readFileSync(file, "utf8"));
+    const first = held[0];
+    return first === undefined ? null : { round: first.round, lines: held.length };
+  };
+
   return {
     record(ticket, stage, round, e) {
       // A display must never be able to stop the work it displays: this is
@@ -72,20 +86,23 @@ export function createActivityLog(root: string, redact: (text: string) => string
           text: oneLine(redact(String(e.text ?? ""))).slice(0, MAX_TEXT),
           at: Number.isFinite(e.at) ? e.at : Date.now(),
         })}\n`;
-        // ponytail: re-reads the round on every line — at most 500 short
-        // lines — so two processes never disagree about which round a file
-        // holds; keep a per-file count if a hot agent ever makes it show.
-        const held = heldIn(file);
-        const current = held[0]?.round;
-        if (current === undefined || current < round) {
+        const bytes = Buffer.byteLength(line);
+        const size = sizeOf(file);
+        const held = size === null ? null : heldIn(file, size);
+        if (held === null || held.round < round) {
           mkdirSync(dirOf(ticket), { recursive: true });
           writeFileSync(file, line);
+          known.set(file, { round, lines: 1, size: bytes });
           return;
         }
         // An older round never overwrites a newer one, and a round past its
         // cap keeps the lines it has.
-        if (current > round || held.length >= MAX_LINES) return;
+        if (held.round > round || held.lines >= MAX_LINES) {
+          known.set(file, { ...held, size: size ?? 0 });
+          return;
+        }
         appendFileSync(file, line);
+        known.set(file, { round, lines: held.lines + 1, size: (size ?? 0) + bytes });
       } catch (err) {
         console.error(`landrace: could not record agent activity for #${ticket}: ${messageOf(err)}`);
       }

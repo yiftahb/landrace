@@ -65,6 +65,16 @@ describe("the activity log", () => {
     expect(await other.read("25", 0)).toMatchObject({ round: 2, total: 1, lines: [tool("Read new.ts")] });
   });
 
+  it("notices another process's write between two of its own", async () => {
+    const root = rootDir();
+    const loop = createActivityLog(root, redact);
+    loop.record("25", "build", 1, tool("Read a.ts"));
+    loop.record("25", "build", 1, tool("Read b.ts"));
+    createActivityLog(root, redact).record("25", "build", 2, tool("Read new.ts"));
+    loop.record("25", "build", 1, tool("Read stale.ts"));
+    expect(await loop.read("25", 0)).toMatchObject({ round: 2, lines: [tool("Read new.ts")] });
+  });
+
   it("never lets an older round overwrite a newer one", async () => {
     const log = createActivityLog(rootDir(), redact);
     log.record("25", "build", 2, tool("Read new.ts"));

@@ -476,6 +476,9 @@ export interface AgentActivity {
   at: number;
 }
 
+/** One line of an activity file: the line, and the round of the run it belongs to. */
+export type ActivityRecord = AgentActivity & { round: number };
+
 /**
  * What the panel reads of a ticket's activity: the stage and round of the
  * run it last recorded, and that run's lines from `after` on. `total` is how
