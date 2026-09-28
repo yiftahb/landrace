@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { createTools } from "#mcp/tools.js";
 import { renderMarker } from "#conventions.js";
-import type { Registry, Source, Step, Workflow } from "#namespace.js";
+import type { Registry, Source, Step, Tools, Workflow } from "#namespace.js";
 import { acquire, release } from "#runner/lock.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
@@ -194,6 +194,71 @@ describe("landrace_goto", () => {
   it("says it cannot, rather than guessing, when it was not given the workflow", async () => {
     const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked"] }]);
     await expect(createTools(tracker.registry, tracker.ctx).goto("4", "spec")).rejects.toThrow(/workflow/);
+  });
+});
+
+/**
+ * A write through the MCP tells a running loop at once, rather than leaving
+ * the person who made it to wait out the interval. After the write only: a
+ * throw wrote nothing a pass could pick up.
+ */
+describe("waking the loop", () => {
+  const workflow: Workflow = { version: 1, name: "t", stages: [
+    { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
+      triggers: [{ when: { "run.stage": null } }] },
+    { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+  ] };
+
+  /** A ticket a step has spoken on, with a session a turn can join. */
+  const asked = () => {
+    const tracker = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] }]);
+    tracker.say(1, `Here are my questions.${renderMarker({ stage: "spec", kind: "output", round: 1, session: "sid-1" })}`);
+    return tracker;
+  };
+
+  const woken = (tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }])) => {
+    const wake = jest.fn();
+    const tools = createTools(tracker.registry, tracker.ctx, {
+      executor: { id: "agent", run: async () => ({ text: "Understood.", sessionId: "sid-2" }) },
+      lock: { root: lockRoot },
+      steps: spec.steps,
+      workflow,
+      wake,
+    });
+    return { wake, tools };
+  };
+
+  it.each([
+    ["landrace_create_ticket", () => woken(), (t: Tools) => t.createTicket({ title: "Add CSV export" })],
+    ["landrace_update_ticket", () => woken(), (t: Tools) => t.updateTicket("4", { title: "Renamed" })],
+    ["landrace_reply", () => woken(), (t: Tools) => t.reply("4", "go ahead")],
+    ["landrace_goto", () => woken(), (t: Tools) => t.goto("4", "spec")],
+    ["landrace_ask", () => woken(asked()), (t: Tools) => t.ask("1", "B2B only")],
+    ["landrace_resolve", () => woken(asked()), (t: Tools) => t.resolve("1")],
+  ])("%s wakes the loop once its write succeeds", async (_name, make, call) => {
+    const { wake, tools } = make();
+    await call(tools);
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not wake the loop when the write throws, nor for a read", async () => {
+    const { wake, tools } = woken();
+    await expect(tools.updateTicket("4", { addLabels: ["lr:stage:done"] })).rejects.toThrow(/workflow's own state/);
+    await expect(tools.goto("4", "build")).rejects.toThrow(/only to "spec"/);
+    await tools.waiting();
+    await tools.status("4");
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("still answers when waking fails, because the write has already happened", async () => {
+    const tracker = createFakeTracker([{ number: 6 }]);
+    const logged: string[] = [];
+    const tools = createTools(tracker.registry, { ...tracker.ctx, log: (event) => logged.push(event) }, {
+      wake: () => { throw new Error("ENOSPC"); },
+    });
+    expect(await tools.reply("6", "go ahead")).toEqual({ ticket: "6", posted: true });
+    expect(tracker.comments.get(6)).toHaveLength(1);
+    expect(logged).toContain("wake.failed");
   });
 });
 

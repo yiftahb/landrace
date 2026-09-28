@@ -13,6 +13,7 @@ import type { Node, ReplyDeps, Snapshot, Source } from "#namespace.js";
 import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
+import { messageOf } from "#runner/errors.js";
 import { sendTo } from "#runner/goto.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 
@@ -126,6 +127,18 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
 
   const summarise = (n: Node) => ({ ticket: n.id, title: n.title, url: n.link, labels: labelsOf(n) });
 
+  // Called once a write has succeeded, never after a throw: a throw wrote
+  // nothing a pass could pick up. And never at the answer's expense — the
+  // write has happened, and a wake that failed only costs the wait for the
+  // next scheduled tick.
+  const wakeLoop = (): void => {
+    try {
+      opts.wake?.();
+    } catch (e) {
+      ctx.log("wake.failed", { reason: messageOf(e) });
+    }
+  };
+
   return {
     async waiting() {
       // Filtered here, not in the hook: whose turn it is is the engine's own
@@ -177,6 +190,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       const wanted = [...new Set([...labels, ...(start ? [LABELS.eligible] : [])])];
       // A marker pasted into a body would read back as something we wrote.
       const created = await operator.createTicket({ title, body: neutraliseMarkers(body), labels: wanted }, ctx);
+      wakeLoop();
       return { ...summarise(created), started: wanted.includes(LABELS.eligible) };
     },
 
@@ -187,23 +201,24 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       refuseEngineLabels(addLabels, "add");
       refuseEngineLabels(removeLabels, "remove");
 
-      return summarise(
-        await operator.updateTicket(
-          ticket,
-          {
-            ...(title === undefined ? {} : { title }),
-            ...(body === undefined ? {} : { body: neutraliseMarkers(body) }),
-            ...(state === undefined ? {} : { state }),
-            addLabels,
-            removeLabels,
-          },
-          ctx,
-        ),
+      const updated = await operator.updateTicket(
+        ticket,
+        {
+          ...(title === undefined ? {} : { title }),
+          ...(body === undefined ? {} : { body: neutraliseMarkers(body) }),
+          ...(state === undefined ? {} : { state }),
+          addLabels,
+          removeLabels,
+        },
+        ctx,
       );
+      wakeLoop();
+      return summarise(updated);
     },
 
     async reply(ticket, message) {
       await postReply({ source: source(), pre: registry.pre, dispatcher, ctx }, ticket, message);
+      wakeLoop();
       return { ticket, posted: true };
     },
 
@@ -219,11 +234,20 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
         stage,
       );
       if ("refused" in r) throw new Error(r.refused);
+      wakeLoop();
       return { ticket, to: r.to, posted: true };
     },
 
-    ask: (ticket, message, askOpts) => conversation.ask(ticket, message, askOpts),
+    async ask(ticket, message, askOpts) {
+      const answered = await conversation.ask(ticket, message, askOpts);
+      wakeLoop();
+      return answered;
+    },
 
-    resolve: (ticket, why) => conversation.resolve(ticket, why),
+    async resolve(ticket, why) {
+      const resolved = await conversation.resolve(ticket, why);
+      wakeLoop();
+      return resolved;
+    },
   };
 }

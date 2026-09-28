@@ -756,7 +756,8 @@ export type EventName =
   | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
   | "lock.acquired" | "lock.denied" | "lock.stolen"
   | "screen.passed" | "screen.blocked"
-  | "display.failed";
+  | "display.failed"
+  | "wake.failed";
 
 export interface LandraceEvent {
   name: EventName;
@@ -1142,6 +1143,13 @@ export interface ToolOptions {
   workflow?: Workflow;
   steps?: Map<string, Step>;
   sandbox?: { root: string };
+  /**
+   * Told after each write a person makes through the tools succeeds, so a
+   * running loop picks it up now rather than on its next scheduled tick.
+   * Absent where nothing should drive the loop — the child server an agent
+   * is handed gets none.
+   */
+  wake?: () => void;
 }
 
 /* ------------------------------------------------------------------- cli -- */
