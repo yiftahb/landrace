@@ -270,21 +270,63 @@ stages:
       - { type: tracker.status, value: fix-review }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
+  # A correction fixes only the ticket it was made on. Once the review settles
+  # on a ticket that was corrected anywhere — a spec revised, a build redone,
+  # a finding fixed — the retro reads the whole history and commits what a
+  # later ticket should not have to learn again, to the prompts, instructions
+  # and skills alone, on this branch. A person reviews that commit beside the
+  # feature; a lesson they reject is a thread, and fix-review reverts it.
+  #
+  # A thread reopened after that goes through fix-review and code-review again,
+  # so the retro runs again, on the whole history, until its three rounds are
+  # spent. A counter for a stage that never ran reads as 0.
+  - id: retro
+    step: steps/retro.md
+    branch: "landrace/{ticket}"
+    requires: { "rel.implements.in.total": { $gt: 0 } }
+    triggers:
+      - name: the review settled after corrections
+        when:
+          "run.stage": code-review
+          "run.lastOutputValid": null
+          "rel.implements.in.sum.openThreads": 0
+          "run.counters.retro": { $lt: 3 }
+          $or:
+            - { "run.counters.spec": { $gt: 1 } }
+            - { "run.counters.build": { $gt: 1 } }
+            - { "run.counters.fix-review": { $gt: 0 } }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Learning from this ticket's corrections, round {round}." }
+      - { type: tracker.status, value: retro }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
+
   - id: pr-human-review
     goto: *goto
     triggers:
+      # The retro's trigger, negated: the two can never match together.
       - name: no threads are open
         when:
           "run.stage": code-review
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.sum.openThreads": 0
+          $or:
+            - $and:
+                - { "run.counters.spec": { $lt: 2 } }
+                - { "run.counters.build": { $lt: 2 } }
+                - { "run.counters.fix-review": { $lt: 1 } }
+            - { "run.counters.retro": { $gte: 3 } }
+      - name: the retro is done
+        when: { "run.stage": retro, "run.lastOutputValid": null }
       # Nothing a reply says approves or merges a pull request — that is done
       # on the pull request — so every answer that does not send the ticket
       # back comes home.
       - name: your reply changed nothing here
         when: { "run.stage": triage, "run.lastOutputValid": null, "run.previousStage": pr-human-review }
     on_enter:
+      # The retro pushes its own commit; this pushes one it left unpushed, and
+      # otherwise reconciles away as satisfied.
+      - { type: branch.push, branch: "landrace/{ticket}" }
       - { type: tracker.status, value: pr-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
@@ -333,6 +375,8 @@ stages:
           "run.counters.code-review": { $lt: 4 }
           "run.counters.fix-review": { $lt: 4 }
           "rel.implements.in.total": { $gt: 0 }
+      - stage: retro
+        when: { "run.counters.retro": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: triage
         when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } }
     triggers:
