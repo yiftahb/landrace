@@ -34,7 +34,37 @@ const RUNNING_DOT =
   '<span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" aria-hidden="true"></span>';
 
 const BUTTON =
-  "rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800";
+  "rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800";
+
+const ICON_BUTTON =
+  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800";
+
+/**
+ * The ticket panel: fixed to the right, the board pushed left beside it from
+ * `sm` up and covered by it below. A static skeleton the script fills with
+ * textContent — the composer lives here, outside anything a poll redraws, so
+ * what someone is typing survives every poll.
+ */
+const PANEL = `
+<aside id="panel" hidden aria-label="Ticket" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]">
+<div class="flex items-start gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+<h2 id="panel-title" class="min-w-0 flex-1 break-words text-sm font-semibold"></h2>
+<button id="panel-wide" type="button" aria-label="Full width" aria-pressed="false" title="Full width" class="${ICON_BUTTON}">⤢</button>
+<button id="panel-close" type="button" aria-label="Close" title="Close (Esc)" class="${ICON_BUTTON}">✕</button>
+</div>
+<div id="panel-top" class="border-b border-neutral-100 px-4 py-3 text-xs dark:border-neutral-800"></div>
+<div id="panel-bottom" class="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-xs"></div>
+<div id="panel-composer" hidden class="border-t border-neutral-100 px-4 py-3 dark:border-neutral-800">
+<textarea id="panel-message" rows="3" aria-label="Message" placeholder="Write to the step…" class="block w-full resize-y rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500"></textarea>
+<div class="mt-2 flex flex-wrap items-center gap-2">
+<button id="panel-reply" type="button" class="${BUTTON}">Reply</button>
+<button id="panel-ask" type="button" class="${BUTTON}">Ask the step</button>
+<button id="panel-resolve" type="button" class="${BUTTON}">Resolve</button>
+</div>
+<p id="panel-status" role="status" aria-live="polite" class="mt-2 text-xs text-neutral-500 empty:hidden dark:text-neutral-400"></p>
+<div id="panel-chat" class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500 dark:text-neutral-400"></div>
+</div>
+</aside>`;
 
 export const PAGE_HTML = `<!doctype html>
 <html lang="en">
@@ -85,6 +115,7 @@ ${lane("waiting", "Waiting", " border-l-4 border-l-neutral-300 dark:border-l-neu
 ${collapsedLane("not-admitted", "Not admitted")}
 ${collapsedLane("discharged", "Done")}
 </main>
+${PANEL}
 </body>
 </html>
 `;
@@ -315,11 +346,16 @@ function isTypingTarget(el) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
-// Escape closes whatever row menu is open; an unmodified "c" answers a click
-// on Collapse all / Expand all — never while it would be typed instead, and
-// never while a row's own menu is open, so its own keys are never raced.
+// Escape closes whatever row menu is open, else the ticket panel; an
+// unmodified "c" answers a click on Collapse all / Expand all — never while
+// it would be typed instead, and never while a row's own menu is open, so its
+// own keys are never raced.
 function onKeydown(e) {
-  if (e.key === "Escape") { closeMenu({ returnFocus: true }); return; }
+  if (e.key === "Escape") {
+    if (openMenuKey !== null) closeMenu({ returnFocus: true });
+    else if (panelId !== null) closePanel();
+    return;
+  }
   if (e.key === "c" && !e.ctrlKey && !e.metaKey && !e.altKey && openMenuKey === null && !isTypingTarget(document.activeElement)) {
     toggleAll.click();
     return;
@@ -824,7 +860,16 @@ function ticketRowFor(row, depth, now, open) {
   // it — flex-1 here previously grew title to fill *all* of main's leftover
   // width, shoving the chip down to the row's far edge, next to the action
   // button, instead of next to the title it names.
-  top.append(num, el("span", "title min-w-0 font-medium text-neutral-900 dark:text-neutral-100", row.title));
+  // A ticket's title opens its panel — a button, so a keyboard reaches it too.
+  const title = row.panel
+    ? el("button", "title min-w-0 cursor-pointer text-left font-medium text-neutral-900 hover:underline dark:text-neutral-100", row.title)
+    : el("span", "title min-w-0 font-medium text-neutral-900 dark:text-neutral-100", row.title);
+  if (row.panel) {
+    title.type = "button";
+    title.setAttribute("data-key", row.id + ":open");
+    title.addEventListener("click", () => openPanel(row.id));
+  }
+  top.append(num, title);
   // No stage at all (a halted ticket, say) shows no chip — not an empty or
   // placeholder one. A row with a round but no stage cannot happen (round is
   // only ever set alongside a running row's own stage), so this only ever
@@ -859,6 +904,15 @@ function ticketRowFor(row, depth, now, open) {
   main.append(body);
   li.append(main);
   if (row.chat) li.append(actionFor(row));
+  // Anywhere else on the row opens the panel too — never a click meant for
+  // its own link, toggle, title button or menu.
+  if (row.panel) {
+    li.classList.add("cursor-pointer");
+    li.addEventListener("click", (e) => {
+      if (e.target && typeof e.target.closest === "function" && e.target.closest("a, button, [role=menu]")) return;
+      openPanel(row.id);
+    });
+  }
   return li;
 }
 
@@ -997,6 +1051,8 @@ function render(view) {
   document.getElementById("meta").textContent = "";
   nextTickAt = view.nextTickAt;
   renderNext();
+  // The panel's top half is this row, so every board poll redraws it too.
+  renderPanel();
 
   // Restore the open menu by key, on the freshly built elements — or drop it
   // if that node is no longer in this view (nothing left to point at).
@@ -1122,6 +1178,443 @@ refreshButton.addEventListener("click", () => {
     .then((res) => refreshAnswered(res.status))
     .catch(() => refreshAnswered(0));
 });
+
+// ---- the ticket panel -------------------------------------------------------
+
+// Faster than the board's own poll, so a running step's tool lines land
+// within two seconds of the agent reporting them.
+const PANEL_POLL_MS = 1500;
+
+// The ticket the panel is open on, or null. The hash is its one source:
+// Back closes the panel, and a reload reopens it (see showPanel).
+let panelId = null;
+// The ticket the state below belongs to — kept across a close, so Escape
+// halfway through a reply loses nothing if the same ticket is reopened.
+let panelHeld = null;
+// ⤢: the panel over the whole page, rather than beside the board.
+let panelWide = false;
+// What the panel holds, as module state like writeNotes: a board poll
+// redraws the panel every two seconds, and the DOM would forget.
+let activity = { stage: null, round: null, lines: [] };
+let conversation = { lines: null, error: "" };
+let asking = null;
+let askAnswer = null;
+let panelBusy = false;
+let panelMode = null;
+let panelTimer = null;
+let chatShownFor = null;
+
+const panelEl = document.getElementById("panel");
+const panelTitle = document.getElementById("panel-title");
+const panelTop = document.getElementById("panel-top");
+const panelBottom = document.getElementById("panel-bottom");
+const composer = document.getElementById("panel-composer");
+const messageBox = document.getElementById("panel-message");
+const panelStatus = document.getElementById("panel-status");
+const panelChat = document.getElementById("panel-chat");
+const wideButton = document.getElementById("panel-wide");
+const replyButton = document.getElementById("panel-reply");
+const askButton = document.getElementById("panel-ask");
+const resolveButton = document.getElementById("panel-resolve");
+
+// "#ticket=12" names ticket 12; any other hash, or one that will not
+// decode, names none.
+function ticketOfHash(hash) {
+  const m = /^#ticket=(.+)$/.exec(hash || "");
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch (e) { return null; }
+}
+
+function findRow(rows, id) {
+  const seen = new Set();
+  const stack = [...rows];
+  while (stack.length) {
+    const row = stack.pop();
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    if (row.id === id) return row;
+    stack.push(...row.children);
+  }
+  return null;
+}
+
+// The panel's row: a ticket the board still lists, with the paths the
+// server gave it. Nothing else opens a panel.
+function currentRow() {
+  if (panelId === null || !lastView) return null;
+  const row = findRow(lastView.rows, panelId);
+  return row && row.kind === "ticket" && row.panel ? row : null;
+}
+
+// Which bottom half a ticket gets: live lines while its agent runs, the
+// composer while it waits on a person, its conversation otherwise.
+function modeOf(row) {
+  return row.badge === "running" ? "running" : row.badge === "needs-you" ? "needs-you" : "other";
+}
+
+// The run a running row is on now — never a file an earlier stage or round
+// left behind, which would read as this step's work.
+function liveLines(held, row) {
+  return held.stage === row.stage && held.round === row.round ? held.lines : [];
+}
+
+// A read from \`after\` joined onto what the panel held. A read of another
+// run than the one held — a new stage, a new round, fewer lines than were
+// already seen — lets go of it, and the next read takes the new run from
+// its start.
+function mergeActivity(held, page, after) {
+  if (page.stage === held.stage && page.round === held.round && page.total >= after) {
+    return { stage: page.stage, round: page.round, lines: held.lines.concat(page.lines) };
+  }
+  if (after === 0) return { stage: page.stage, round: page.round, lines: page.lines };
+  return { stage: null, round: null, lines: [] };
+}
+
+// An Ask's progress: what the agent said since it was asked, with a second's
+// slack for the page's clock reading a moment ahead of the agent's.
+function progressLines(lines, since) {
+  return lines.filter((l) => l.at >= since - 1000);
+}
+
+function agoLabel(at, now) {
+  const a = ago(at, now);
+  return a === "now" ? "just now" : a + " ago";
+}
+
+function activityItem(line) {
+  const item = el("div", line.kind === "tool" ? "font-mono text-neutral-500 dark:text-neutral-400" : "text-neutral-800 dark:text-neutral-200");
+  item.append(el("span", "select-none text-neutral-400 dark:text-neutral-600", line.kind === "tool" ? "▸ " : "· "), el("span", "break-words", line.text));
+  return item;
+}
+
+// One record, as plain text: who said it, where, when — never markup.
+function conversationItem(line, now) {
+  const item = el("article", "py-2");
+  const head = el("div", "mb-1 flex flex-wrap items-baseline gap-x-2 text-[11px] text-neutral-500 dark:text-neutral-400");
+  head.append(el("span", "font-medium " + (line.byAgent ? "text-emerald-700 dark:text-emerald-400" : "text-neutral-800 dark:text-neutral-200"), line.by));
+  if (line.byAgent && line.stage !== "-") head.append(el("span", "font-mono", line.stage + " r" + line.round));
+  const at = Date.parse(line.at);
+  if (!Number.isNaN(at)) {
+    const when = el("span", "tabular-nums", agoLabel(at, now));
+    when.title = new Date(at).toLocaleString();
+    head.append(when);
+  }
+  item.append(head, el("p", "whitespace-pre-wrap break-words text-sm text-neutral-800 dark:text-neutral-200", line.text));
+  return item;
+}
+
+function panelNote(text) {
+  return el("p", "py-1 italic text-neutral-400 dark:text-neutral-500", text);
+}
+
+// The panel's bottom half, from the row and what the panel holds.
+function panelBottomOf(row, mode, state, now) {
+  if (mode === "running") {
+    const lines = liveLines(state.activity, row);
+    return lines.length ? lines.map(activityItem) : [panelNote("no live activity for this agent")];
+  }
+  const out = [];
+  const conv = state.conversation;
+  if (conv.lines === null) out.push(panelNote(conv.error || "Reading the conversation…"));
+  else if (!conv.lines.length) out.push(panelNote("Nothing has been said on this ticket yet."));
+  else out.push(...conv.lines.map((l) => conversationItem(l, now)));
+  if (conv.lines !== null && conv.error) out.push(panelNote(conv.error));
+  if (state.asking) {
+    out.push(panelNote("Asking the step…"));
+    out.push(...progressLines(state.activity.lines, state.asking.since).map(activityItem));
+  } else if (state.answer) {
+    const answer = el("article", "mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 dark:border-emerald-900 dark:bg-emerald-950");
+    answer.append(
+      el("div", "mb-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400", "The step answered"),
+      el("p", "whitespace-pre-wrap break-words text-sm text-neutral-800 dark:text-neutral-200", state.answer.reply),
+      el("div", "mt-1 text-[11px] text-neutral-500 dark:text-neutral-400",
+        state.answer.resolved ? "It has what it needs — Resolve hands the ticket back." : "It still has questions."),
+    );
+    out.push(answer);
+  }
+  return out;
+}
+
+// Keyed under "panel:" so render()'s restore-by-key, and keepingFocus, never
+// confuse one with the board row's own link.
+function panelLink(a, href, key) {
+  a.href = href;
+  a.setAttribute("data-key", key);
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  return a;
+}
+
+// An artifact under the ticket, with the board's own kind and state marks.
+function artifactItem(row, now) {
+  const li = el("li", "flex min-w-0 items-center gap-2");
+  const kind = kindMark(row);
+  if (kind) li.append(kind);
+  if (row.system && row.system.icon) li.append(systemMark(row.system));
+  const title = el(row.link ? "a" : "span", "min-w-0 truncate text-neutral-700 hover:underline dark:text-neutral-300", row.title);
+  if (row.link) panelLink(title, row.link, "panel:artifact:" + row.id);
+  li.append(title);
+  if (typeof row.createdAt === "number") li.append(el("span", "ml-auto shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500", ago(row.createdAt, now)));
+  return li;
+}
+
+// The panel's top half: the BoardRow already in /board.json, and nothing
+// else — no second read of the ticket's status. \`last\` is the newest line
+// of activity the panel has read.
+function panelTopOf(row, last, now) {
+  const head = el("div", "flex flex-wrap items-center gap-2");
+  const num = el("span", "font-mono text-sm text-blue-600 dark:text-blue-400");
+  if (row.link) num.append(panelLink(el("a", null, "#" + row.id + " ↗"), row.link, "panel:link"));
+  else num.textContent = "#" + row.id;
+  head.append(num);
+  if (row.badge && BADGES[row.badge]) {
+    const [label, cls] = BADGES[row.badge];
+    head.append(el("span", "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium " + cls, label));
+  }
+  if (row.screened) head.append(shieldMark());
+  const facts = el("dl", "mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1");
+  for (const [name, value] of [
+    ["Stage", row.stage || "—"],
+    ["Round", row.round ? "r" + row.round : "—"],
+    ["Model", row.model || "—"],
+    ["Opened", typeof row.createdAt === "number" ? agoLabel(row.createdAt, now) : "—"],
+    ["Stage since", typeof row.since === "number" ? elapsed(row.since, now) : "—"],
+    ["Last activity", last ? agoLabel(last.at, now) : "—"],
+  ]) facts.append(el("dt", "text-neutral-500 dark:text-neutral-400", name), el("dd", "min-w-0 truncate font-mono", value));
+  const out = [head, facts];
+  const artifacts = row.children.filter((c) => c.kind !== "ticket");
+  if (artifacts.length) {
+    const list = el("ul", "mt-1 space-y-1");
+    for (const a of artifacts) list.append(artifactItem(a, now));
+    out.push(el("div", "mt-3 text-[11px] font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400", "Artifacts"), list);
+  }
+  return out;
+}
+
+// The Chat deep links stay beside the composer. Built once per ticket: they
+// depend on nothing a poll changes, and rebuilding them would steal focus.
+function renderChat(row) {
+  if (chatShownFor === row.id) return;
+  chatShownFor = row.id;
+  if (!row.chat) { panelChat.replaceChildren(); return; }
+  const links = [el("span", null, "Open in")];
+  for (const target of CHAT_TARGETS) {
+    const a = el("a", "inline-flex items-center gap-1 hover:underline");
+    // The server's own link, as in the row's menu — never one built here.
+    a.href = row.chat.links[target.key];
+    a.rel = "noreferrer";
+    a.setAttribute("data-key", "panel:chat:" + target.key);
+    a.append(target.icon(), el("span", null, target.label));
+    links.push(a);
+  }
+  panelChat.replaceChildren(...links);
+}
+
+// Whatever had focus by key keeps it across a redraw of the panel.
+function keepingFocus(draw) {
+  const active = document.activeElement;
+  const key = active && typeof active.getAttribute === "function" ? active.getAttribute("data-key") : null;
+  draw();
+  if (key) {
+    const again = byKey(key);
+    if (again && again !== document.activeElement) again.focus();
+  }
+}
+
+function setPanelNote(text) {
+  if (panelStatus.textContent !== text) panelStatus.textContent = text;
+}
+
+function syncComposer() {
+  for (const b of [replyButton, askButton, resolveButton]) b.disabled = panelBusy;
+}
+
+function renderPanel() {
+  if (panelId === null) return;
+  keepingFocus(() => {
+    const row = currentRow();
+    const now = Date.now();
+    if (!row) {
+      panelTitle.textContent = lastView ? "#" + panelId + " is not on the board" : "Loading…";
+      panelTop.replaceChildren();
+      panelBottom.replaceChildren();
+      composer.hidden = true;
+      return;
+    }
+    panelTitle.textContent = row.title;
+    const last = activity.lines.length ? activity.lines[activity.lines.length - 1] : null;
+    panelTop.replaceChildren(...panelTopOf(row, last, now));
+    const mode = modeOf(row);
+    if (mode !== panelMode) {
+      panelMode = mode;
+      // A change of state is when the conversation moves on, and one read of
+      // the activity says when the agent last did anything.
+      if (mode !== "running") loadConversation();
+      pollPanel(0);
+    }
+    composer.hidden = mode !== "needs-you";
+    if (mode === "needs-you") renderChat(row);
+    syncComposer();
+    // Held at the bottom while it was there — the newest line is the one
+    // worth reading — and left where a person scrolled it otherwise.
+    const stick = panelBottom.scrollTop + panelBottom.clientHeight >= panelBottom.scrollHeight - 8;
+    const top = panelBottom.scrollTop;
+    panelBottom.replaceChildren(...panelBottomOf(row, mode, { activity, conversation, asking, answer: askAnswer }, now));
+    panelBottom.scrollTop = stick ? panelBottom.scrollHeight : top;
+  });
+}
+
+async function readActivity() {
+  const row = currentRow();
+  if (!row) return;
+  const id = row.id;
+  const after = activity.lines.length;
+  try {
+    const res = await fetch(row.panel.activity + "?after=" + after, { cache: "no-store" });
+    if (!res.ok) return;
+    const page = await res.json();
+    // Another read landed first, or the panel moved on: the next one catches up.
+    if (panelId !== id || activity.lines.length !== after) return;
+    activity = mergeActivity(activity, page, after);
+    renderPanel();
+  } catch (e) {
+    // The board's own poll says when landrace stops answering.
+  }
+}
+
+function stopPanelPoll() {
+  if (panelTimer !== null) { clearTimeout(panelTimer); panelTimer = null; }
+}
+
+// One read now, then one every PANEL_POLL_MS for as long as the agent runs
+// or an Ask is waiting on one.
+function pollPanel(delay) {
+  stopPanelPoll();
+  panelTimer = setTimeout(() => {
+    readActivity().then(() => {
+      panelTimer = null;
+      const row = currentRow();
+      if (panelId !== null && (asking || (row && modeOf(row) === "running"))) pollPanel(PANEL_POLL_MS);
+    });
+  }, delay);
+}
+
+// Asked of the page's own script only: it spends a tracker read.
+async function loadConversation() {
+  const row = currentRow();
+  if (!row) return;
+  const id = row.id;
+  try {
+    const res = await fetch(row.panel.conversation, { cache: "no-store", headers: { "x-landrace-action": "conversation" } });
+    if (!res.ok) throw new Error(String(res.status));
+    const lines = await res.json();
+    if (panelId !== id) return;
+    conversation = { lines, error: "" };
+  } catch (e) {
+    if (panelId !== id) return;
+    conversation = { lines: conversation.lines, error: "could not read the conversation" };
+  }
+  renderPanel();
+}
+
+function parseJson(text) {
+  try { return JSON.parse(text); } catch (e) { return null; }
+}
+
+// Reply, Ask the step, Resolve: the box's words, posted to the path the
+// server put on the row with the header the server asks for. An Ask asks
+// first — it runs a paid agent turn — and its progress is the turn's own
+// activity, read while it runs.
+function panelWrite(kind) {
+  const row = currentRow();
+  if (!row || panelBusy) return;
+  const text = messageBox.value;
+  if (kind !== "resolve" && !text.trim()) { setPanelNote("Write something first."); return; }
+  if (kind === "ask" && !confirm("Ask the step on #" + row.id + "? This runs a paid agent turn.")) return;
+  const id = row.id;
+  panelBusy = true;
+  askAnswer = null;
+  if (kind === "ask") { asking = { since: Date.now() }; pollPanel(0); }
+  setPanelNote(kind === "ask" ? "Asking the step…" : kind === "reply" ? "Posting…" : "Handing back…");
+  syncComposer();
+  renderPanel();
+  fetch(row.panel[kind], {
+    method: "POST",
+    headers: { "x-landrace-action": kind, "content-type": "text/plain;charset=UTF-8" },
+    body: kind === "resolve" ? "" : text,
+  })
+    .then((res) => res.text().then((body) => ({ ok: res.ok, body }), () => ({ ok: res.ok, body: "" })))
+    .then(null, () => ({ ok: false, body: "landrace is not responding" }))
+    .then(({ ok, body }) => {
+      panelBusy = false;
+      asking = null;
+      if (panelId !== id) return;
+      if (!ok) {
+        // The words stay in the box, so nothing typed is lost to a refusal.
+        setPanelNote(body || kind + " failed");
+      } else if (kind === "ask") {
+        askAnswer = parseJson(body);
+        messageBox.value = "";
+        setPanelNote("");
+      } else if (kind === "resolve") {
+        const r = parseJson(body);
+        setPanelNote(r && r.alreadyResolved ? "Already handed back." : "Handed back to the loop.");
+      } else {
+        messageBox.value = "";
+        setPanelNote("Posted.");
+      }
+      syncComposer();
+      if (ok) { loadConversation(); schedulePoll(0); }
+      renderPanel();
+    });
+}
+
+// The one way the panel opens, shuts or changes ticket: the hash changed.
+function showPanel(id) {
+  if (id !== null && id !== panelHeld) {
+    panelHeld = id;
+    activity = { stage: null, round: null, lines: [] };
+    conversation = { lines: null, error: "" };
+    asking = null;
+    askAnswer = null;
+    chatShownFor = null;
+    messageBox.value = "";
+    setPanelNote("");
+  }
+  panelId = id;
+  panelMode = null;
+  const open = id !== null;
+  panelEl.hidden = !open;
+  document.body.classList.toggle("sm:pr-[28rem]", open && !panelWide);
+  if (!open) { stopPanelPoll(); return; }
+  renderPanel();
+}
+
+// A row click: pushed onto the hash, so Back closes the panel and a reload
+// reopens it.
+function openPanel(id) {
+  location.hash = "ticket=" + encodeURIComponent(id);
+}
+
+// ✕ and Escape: the hash goes, as Back would take it, with no history entry
+// of its own for Forward to reopen.
+function closePanel() {
+  history.replaceState(null, "", location.pathname + location.search);
+  showPanel(null);
+}
+
+document.getElementById("panel-close").addEventListener("click", () => closePanel());
+wideButton.addEventListener("click", () => {
+  panelWide = !panelWide;
+  panelEl.classList.toggle("sm:w-[28rem]", !panelWide);
+  wideButton.setAttribute("aria-pressed", panelWide ? "true" : "false");
+  showPanel(panelId);
+});
+replyButton.addEventListener("click", () => panelWrite("reply"));
+askButton.addEventListener("click", () => panelWrite("ask"));
+resolveButton.addEventListener("click", () => panelWrite("resolve"));
+window.addEventListener("hashchange", () => showPanel(ticketOfHash(location.hash)));
+showPanel(ticketOfHash(location.hash));
 
 pollOnce().then(() => schedulePoll(POLL_MS));
 
