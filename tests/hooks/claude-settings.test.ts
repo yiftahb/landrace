@@ -14,12 +14,12 @@ afterAll(removeRepos);
  * `plugin:` for `plugins:` would otherwise run every step without its skills.
  */
 describe("the claude hook's settings", () => {
-  it("reads model, plugins, mcp and sandbox beside the engine's own two keys", () => {
+  it("reads model, effort, plugins, mcp and sandbox beside the engine's own two keys", () => {
     expect(readClaudeSettings({
-      adapter: "claude", isolation: "worktree", model: "opus", plugins: ["p@m"], mcp: ["x", { name: "y", tools: ["t"] }],
-      sandbox: { hosts: ["github.com"], deny: ["~/.kube"] },
+      adapter: "claude", isolation: "worktree", model: "opus", effort: "high", plugins: ["p@m"],
+      mcp: ["x", { name: "y", tools: ["t"] }], sandbox: { hosts: ["github.com"], deny: ["~/.kube"] },
     })).toEqual({
-      model: "opus", plugins: ["p@m"], mcp: ["x", { name: "y", tools: ["t"] }],
+      model: "opus", effort: "high", plugins: ["p@m"], mcp: ["x", { name: "y", tools: ["t"] }],
       sandbox: { hosts: ["github.com"], deny: ["~/.kube"] },
     });
     expect(readClaudeSettings({ adapter: "claude" })).toEqual({
@@ -34,6 +34,13 @@ describe("the claude hook's settings", () => {
   it("refuses a setting of the wrong shape, naming every one", () => {
     expect(() => readClaudeSettings({ adapter: "claude", model: 3, plugins: "p@m", mcp: [{ name: "y", tool: ["t"] }] }))
       .toThrow(/agent\.model[\s\S]*agent\.plugins[\s\S]*agent\.mcp/);
+  });
+
+  it("refuses an effort the CLI does not know, naming the setting and the levels", () => {
+    expect(() => readClaudeSettings({ adapter: "claude", effort: "extreme" }))
+      .toThrow(/agent\.effort[\s\S]*low, medium, high, xhigh, max/);
+    expect(() => readClaudeSettings({ adapter: "claude", effort: 3 })).toThrow(/agent\.effort/);
+    expect(() => readClaudeSettings({ adapter: "claude", effort: null })).toThrow(/agent\.effort/);
   });
 
   // Named by index, the way the zod path this replaces did — a single "some

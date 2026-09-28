@@ -57,6 +57,7 @@ const argvOf = async (
   opts: {
     capabilities?: readonly string[];
     model?: string;
+    effort?: string;
     child?: { parent: string; stage: string; round: number; server?: typeof SERVER };
   },
 ): Promise<string[]> => {
@@ -469,6 +470,52 @@ describe("claude executor", () => {
   it("refuses a model name shaped like a flag instead of passing it through to argv", async () => {
     const dir = withCfg({ out: "unreachable" });
     await expect(run("x", { model: "--dangerous-flag" }, { cwd: dir })).rejects.toThrow(/refused model/);
+  });
+
+  // Effort mirrors model: the run's own wins over the operator's, absent both the CLI decides.
+  it("puts the operator's effort on a step's command line", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, effort: "high" }), { capabilities: ["repo:read"] });
+    expect(flag(argv, "--effort")).toBe("high");
+  });
+
+  it("lets the run's own effort override the executor's default", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin, effort: "high" }), { capabilities: ["repo:read"], effort: "low" });
+    expect(flag(argv, "--effort")).toBe("low");
+    expect(argv).not.toContain("high");
+  });
+
+  it("passes a step's effort when the operator named none", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read", "repo:write"], effort: "max" });
+    expect(flag(argv, "--effort")).toBe("max");
+  });
+
+  it("passes no effort when neither the step nor the operator named one", async () => {
+    expect(await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] })).not.toContain("--effort");
+  });
+
+  // The screener is built from the same `agent:` block, and judges a prompt: out of scope for effort.
+  it("never gives the screener an effort", async () => {
+    expect(await argvOf(createClaudeExecutor({ bin, effort: "high" }), {})).not.toContain("--effort");
+  });
+
+  it("refuses an effort it does not know, naming the levels it does", async () => {
+    const dir = withCfg({ out: "unreachable" });
+    await expect(run("x", {}, { cwd: dir, capabilities: ["repo:read"], effort: "extreme" }))
+      .rejects.toThrow(/refused effort "extreme"[\s\S]*low, medium, high, xhigh, max/);
+    await expect(run("x", {}, { cwd: dir, capabilities: ["repo:read"], effort: "--dangerous-flag" }))
+      .rejects.toThrow(/refused effort/);
+  });
+
+  it("reports the effort it actually put on its command line, or null", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const executor = createClaudeExecutor({
+      bin,
+      effort: "high",
+      log: (name, data = {}) => { if (name === "step.completed") events.push(data); },
+    });
+    await argvOf(executor, { capabilities: ["repo:read"], effort: "low" });
+    await argvOf(executor, {});
+    expect(events).toMatchObject([{ effort: "low" }, { effort: null }]);
   });
 
   it("refuses a resume id shaped like a flag", async () => {
@@ -924,7 +971,7 @@ describe("the factory's wiring, end to end", () => {
     const ctx: ExecutorContext = {
       config: {
         agent: {
-          adapter: "claude", model: "opus", plugins: ["p@m"], mcp: [{ name: "memory", tools: ["t"] }],
+          adapter: "claude", model: "opus", effort: "high", plugins: ["p@m"], mcp: [{ name: "memory", tools: ["t"] }],
           sandbox: { hosts: ["github.com"] },
         },
       } as unknown as ExecutorContext["config"],
@@ -949,6 +996,7 @@ describe("the factory's wiring, end to end", () => {
     try {
       const argv = await argvOf(executor, { capabilities: ["repo:read"] });
       expect(flag(argv, "--model")).toBe("opus");
+      expect(flag(argv, "--effort")).toBe("high");
       expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ enabledPlugins: { "p@m": true } });
       expect(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers).toEqual({
         memory: { command: "codebase-memory-mcp", args: [] },
