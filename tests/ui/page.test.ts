@@ -1140,7 +1140,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners and the ticket panel's — no more, no less", () => {
+  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the ticket panel's and pairing's — no more, no less", () => {
     // Pins the count deliberately: the tick button, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
     // button (each wired once, outside anything a render rebuilds), the
@@ -1154,9 +1154,11 @@ describe("the page", () => {
     // outside-click and Escape (both defined once, so re-rendering never
     // multiplies them). And the ticket panel's: a ticket row's title button
     // and the row itself (each defined once, in ticketRowFor), ✕, ⤢, Reply,
-    // Ask the step, Resolve, and the window's hashchange.
+    // Ask the step, Resolve, and the window's hashchange. And pairing's: the
+    // row menu's Pairing…, the panel's own ⋯, and one for every button of
+    // its Pairing section (defined once, in pairingSectionOf).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(21);
+    expect(listeners).toHaveLength(24);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -1652,5 +1654,108 @@ describe("the ticket panel's writes", () => {
   it("says landrace is not responding when the post never lands", async () => {
     const { seen } = await write("reply", { response: "down" });
     expect(seen.notes.at(-1)).toMatch(/not responding/);
+  });
+});
+
+/*
+ * The panel's Pairing section: built from the server's answer and the
+ * panel's own state, and nothing the page puts together itself.
+ */
+describe("the panel's Pairing section", () => {
+  class Clickable extends FakeElement {
+    disabled = false;
+    listeners = new Map<string, () => void>();
+    override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
+  }
+  const doc = { createElement: (tag: string) => new Clickable(tag), createElementNS: (_: string, tag: string) => new Clickable(tag) };
+  const section = (view: object | null, state: object = {}) => {
+    const seen: unknown[][] = [];
+    const nodes = runInNewContext(
+      `${["el", "panelNote", "offerLabel", "pairingSectionOf"].map(fnSource).join("")} pairingSectionOf(ROW, VIEW, STATE)`,
+      {
+        ROW: { id: "29" }, VIEW: view, STATE: { command: null, note: "", busy: false, error: "", ...state }, document: doc,
+        pairWrite: (...a: unknown[]) => seen.push(["write", ...a]), copyCommand: () => seen.push(["copy"]),
+      },
+    ) as Clickable[];
+    const buttons = nodes.flatMap(descendants).filter((n) => n.tag === "button") as Clickable[];
+    const click = (label: string) => buttons.find((b) => b.textContent === label)?.listeners.get("click")?.();
+    return { text: nodes.map((n) => n.textContent), buttons: buttons.map((b) => b.textContent), click, seen };
+  };
+
+  it("offers each step as the server named it, a fresh pairing or the agent's session continued", () => {
+    const s = section({ open: null, offers: [{ stage: "spec", round: 2, continue: true }, { stage: "build", round: 1, continue: false }] });
+    expect(s.buttons).toEqual(["Continue spec together", "Pair on build"]);
+    s.click("Pair on build");
+    expect(s.seen).toEqual([["write", "pair", "build"]]);
+  });
+
+  it("says so when there is nothing to pair on", () => {
+    expect(section({ open: null, offers: [] }).text.join(" ")).toMatch(/Nothing to pair on/);
+  });
+
+  it("shows the open pairing, with its command once it has one, and Finish… and Release", () => {
+    const open = { open: { stage: "spec", round: 2, n: 1, at: "2026-01-01T00:00:00Z" }, offers: [] };
+    const before = section(open);
+    expect(before.text.join(" ")).toMatch(/Pairing on spec, round 2/);
+    expect(before.buttons).toEqual(["Get command", "Finish…", "Release"]);
+    before.click("Get command");
+    expect(before.seen).toEqual([["write", "pair", "spec"]]);
+
+    const after = section(open, { command: "cd /w/29.pair && agent" });
+    expect(after.text.join(" ")).toContain("cd /w/29.pair && agent");
+    expect(after.buttons).toEqual(["Copy command", "Finish…", "Release"]);
+    after.click("Copy command");
+    after.click("Finish…");
+    after.click("Release");
+    expect(after.seen).toEqual([["copy"], ["write", "finish"], ["write", "release"]]);
+  });
+
+  it("disables its buttons while a write is in flight, and shows what the server said", () => {
+    const s = section({ open: null, offers: [{ stage: "spec", round: 1, continue: false }] }, { busy: true, note: "#29 is busy" });
+    expect(s.text.join(" ")).toContain("#29 is busy");
+    const b = runInNewContext(
+      `${["el", "panelNote", "offerLabel", "pairingSectionOf"].map(fnSource).join("")} pairingSectionOf(ROW, VIEW, STATE)`,
+      { ROW: { id: "29" }, VIEW: { open: null, offers: [{ stage: "spec", round: 1, continue: false }] }, STATE: { busy: true, note: "" }, document: doc },
+    ) as Clickable[];
+    expect((b.flatMap(descendants).find((n) => n.tag === "button") as Clickable).disabled).toBe(true);
+  });
+
+  it("reads while it waits on the server's answer", () => {
+    expect(section(null).text.join(" ")).toMatch(/Reading what may be paired on/);
+  });
+});
+
+describe("a ticket row's Pairing… item", () => {
+  class Listening extends FakeElement {
+    listeners = new Map<string, () => void>();
+    disabled = false;
+    hidden = false;
+    override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
+  }
+  const doc = { createElement: (tag: string) => new Listening(tag), createElementNS: (_: string, tag: string) => new Listening(tag) };
+  const menuFor = (panel: object | null) => {
+    const seen: unknown[][] = [];
+    const menu = runInNewContext(`
+      ${constSource("SVG_NS")}${blockSource("CHAT_TARGETS")}
+      const writeNotes = new Map();
+      const writing = new Set();
+      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "buildRowMenu"].map(fnSource).join("")}
+      buildRowMenu(ROW)`, {
+      ROW: { id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry: null, goto: [], panel },
+      document: doc, navigator: {}, lastView: {},
+      closeMenu: () => seen.push(["close"]), openPairing: (id: string) => seen.push(["pairing", id]),
+    }) as Listening;
+    return { menu, seen };
+  };
+
+  it("comes first on a ticket with a panel, and opens its Pairing section", () => {
+    const { menu, seen } = menuFor({ pairing: "/tickets/19/pairing" });
+    expect(menu.children.slice(0, 2).map((c) => (c.tag === "hr" ? "—" : c.textContent))).toEqual(["Pairing…", "—"]);
+    (menu.children[0] as Listening).listeners.get("click")?.();
+    expect(seen).toEqual([["close"], ["pairing", "19"]]);
+  });
+
+  it("is not offered on a row with no panel", () => {
+    expect(menuFor(null).menu.children[0]?.textContent).toBe("Chat");
   });
 });
