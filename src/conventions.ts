@@ -274,6 +274,12 @@ export const CLOSE_EFFECT = "tracker.close";
  */
 export const BRANCH_PUSH_EFFECT = "branch.push";
 export const PULL_OPEN_EFFECT = "pull.open";
+/**
+ * Put a review step's findings on the pull request from the effect's
+ * `branch`: its prose as the review, a thread per finding, and the threads it
+ * lists as resolved closed — the route's destination, fed the step's output.
+ */
+export const PULL_REVIEW_EFFECT = "pull.review";
 
 /**
  * The branch a publishing effect names. Which branch is the workflow's to

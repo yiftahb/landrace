@@ -58,6 +58,6 @@ describe("GitHub query cost", () => {
 
   it("costs every query the hook sends", () => {
     expect(Object.keys(GRAPHQL_QUERIES).sort()).toEqual(
-      ["BRIEF_QUERY", "CLOSED_PULLS_QUERY", "CLOSED_QUERY", "ISSUES_QUERY", "ISSUE_QUERY", "PREFLIGHT_PR_QUERY", "PULLS_QUERY", "THREADS_QUERY", "TICKET_QUERY"]);
+      ["BRIEF_QUERY", "CLOSED_PULLS_QUERY", "CLOSED_QUERY", "ISSUES_QUERY", "ISSUE_QUERY", "PREFLIGHT_PR_QUERY", "PULLS_QUERY", "RESOLVE_THREAD", "THREADS_QUERY", "TICKET_QUERY"]);
   });
 });

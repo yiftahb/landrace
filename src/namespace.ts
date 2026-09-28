@@ -1131,6 +1131,10 @@ export interface ExternalPull {
   closed: Closed;
   /** The branch it was opened from, when it says: what `pull.open` looks a pull request up by. */
   branch?: string;
+  /** Of `openThreads`, how many a review step raised: the only ones its `resolved` may close. */
+  raised?: number;
+  /** The markers of the reviews `pull.review` posted, so a round is posted once. */
+  reviews?: string[];
 }
 
 /**

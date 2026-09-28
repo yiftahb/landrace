@@ -229,6 +229,28 @@ describe("runStep", () => {
   describe("a route that sends the content off the tracker still records the output", () => {
     const publishing = async (text = '# The spec\n```json\n{"kind":"spec"}\n```') => (await run(text)) as Ok;
 
+    /*
+     * A reviewer's findings are a list, and the hook that posts them as review
+     * threads needs that list, not the prose. The prose stays in `body`; the
+     * validated value rides along as `output`, after the route's own fields,
+     * so a workflow cannot overwrite what the step actually produced.
+     */
+    it("hands the destination the step's validated output value, which the route cannot override", async () => {
+      const posting: Step = {
+        prompt: "go",
+        output: {
+          discriminator: "kind",
+          shapes: { reviewed: { findings: { type: "array", items: { file: "string", body: "string" } } } },
+          routes: [{ when: {}, effect: { type: "pull.review", output: "forged" } }],
+        },
+      };
+      const r = (await run('Two findings.\n```json\n{"kind":"reviewed","findings":[{"file":"a.ts","body":"x"}]}\n```', { step: posting })) as Ok;
+      expect(r.effects[0]).toMatchObject({
+        type: "pull.review", body: "Two findings.",
+        output: { kind: "reviewed", findings: [{ file: "a.ts", body: "x" }] },
+      });
+    });
+
     it("plans the publish first and the record second", async () => {
       const r = await publishing();
       expect(r.effects).toMatchObject([
@@ -247,7 +269,10 @@ describe("runStep", () => {
      */
     it("carries the record's own fields on the record, not on the publish", async () => {
       const [publish, record] = (await publishing()).effects;
-      expect(publish).not.toHaveProperty("output");
+      // The value rides on both (the publish may need it); what makes a record
+      // a record — its kind and its own marker — never goes on the publish.
+      expect(publish).not.toHaveProperty("kind");
+      expect(publish).not.toHaveProperty("marker");
       expect(record?.body).toEqual(expect.stringContaining("spec"));
     });
 

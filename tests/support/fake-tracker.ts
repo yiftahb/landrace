@@ -62,6 +62,8 @@ export interface FakeComment {
  * tell the difference.
  */
 export interface FakeThread {
+  /** GraphQL's node id, which is what resolveReviewThread takes. Absent: one is made up from its place. */
+  id?: string;
   isResolved: boolean;
   body: string;
   /** Where the finding sits. Optional: a thread on a file GitHub can no longer place carries neither. */
@@ -94,6 +96,10 @@ export interface FakePull {
   createdAt?: string;
   /** GraphQL's `updatedAt`. LandraceClosedPulls orders and windows by this, the way LandraceClosed does for issues. */
   updatedAt?: string;
+  /** What `GET /pulls/{n}/files` answers: the diff, a file at a time. */
+  files?: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>;
+  /** Every review posted on it, as `POST /pulls/{n}/reviews` took them. */
+  reviews?: Array<{ body: string; event: string }>;
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -367,10 +373,11 @@ export function createFakeTracker(
       // Every field either query asks of a thread node, because the fake
       // answers both from this one page: the count's read takes
       // `isResolved` alone, and the briefing takes the rest.
-      nodes: page.map((t) => {
+      nodes: page.map((t, i) => {
         const opening = { body: t.body, author: { login: t.author ?? BOT } };
         const said = [opening, ...(t.replies ?? []).map((r) => ({ body: r.body, author: { login: r.author } }))];
         return {
+          id: t.id ?? `thread-${pull.number}-${from + i}`,
           isResolved: t.isResolved,
           body: t.body,
           path: t.path ?? null,
@@ -456,6 +463,19 @@ export function createFakeTracker(
         });
       }
 
+      // A mutation names a node, not a repository, so it is answered before the repository check below.
+      const mutation = /mutation (\w+)/.exec(String(body.query ?? ""))?.[1];
+      if (mutation === "LandraceResolve") {
+        for (const p of pulls.values()) {
+          const thread = p.threads.find((t, i) => (t.id ?? `thread-${p.number}-${i}`) === variables.id);
+          if (thread) {
+            thread.isResolved = true;
+            return json({ data: { resolveReviewThread: { thread: { id: variables.id, isResolved: true } } } });
+          }
+        }
+        return json({ data: null, errors: [{ message: `Could not resolve to a node with the global id of '${String(variables.id)}'` }] });
+      }
+
       // A repository the token cannot see answers with a null repository and
       // no error at all, which is a different failure from "no pull request".
       if (variables.owner !== REPO.split("/")[0] || variables.name !== REPO.split("/")[1]) {
@@ -465,7 +485,7 @@ export function createFakeTracker(
       // Answered by the operation's name, the way a server reads the query
       // rather than guessing from its variables: the hook asks five different
       // questions, and two of them take the same variables.
-      const operation = /query (\w+)/.exec(String(body.query ?? ""))?.[1];
+      const operation = /(?:query|mutation) (\w+)/.exec(String(body.query ?? ""))?.[1];
       const pullOf = (n: unknown): FakePull | null => pulls.get(Number(n)) ?? null;
 
       if (operation === "LandraceIssues") {
@@ -683,6 +703,36 @@ export function createFakeTracker(
       return json({ number, state: "open", head: { ref: head } }, 201);
     }
 
+    // A review, as GitHub takes one: its body, and a thread per line comment,
+    // each landing as an open review thread the graph then counts.
+    const onReviews = /^\/pulls\/(\d+)\/reviews$/.exec(path);
+    if (onReviews) {
+      const pull = pulls.get(Number(onReviews[1]));
+      if (!pull) return new Response("Not Found", { status: 404 });
+      if (method === "GET") return json((pull.reviews ?? []).map((r, i) => ({ id: i + 1, body: r.body, state: "COMMENTED" })));
+      pull.reviews = [...(pull.reviews ?? []), { body: String(body.body ?? ""), event: String(body.event ?? "") }];
+      for (const c of (body.comments as Array<{ path: string; line: number; body: string }> | undefined) ?? []) {
+        pull.threads.push({ id: `thread-${pull.number}-${pull.threads.length}`, isResolved: false, body: c.body, path: c.path, line: c.line });
+      }
+      return json({ id: pull.reviews.length });
+    }
+
+    // A comment on a whole file, which opens a thread with no line.
+    const onReviewComments = /^\/pulls\/(\d+)\/comments$/.exec(path);
+    if (onReviewComments && method === "POST") {
+      const pull = pulls.get(Number(onReviewComments[1]));
+      if (!pull) return new Response("Not Found", { status: 404 });
+      pull.threads.push({ id: `thread-${pull.number}-${pull.threads.length}`, isResolved: false, body: String(body.body ?? ""), path: String(body.path ?? "") });
+      return json({ id: pull.threads.length }, 201);
+    }
+
+    const onFiles = /^\/pulls\/(\d+)\/files$/.exec(path);
+    if (onFiles && method === "GET") {
+      const pull = pulls.get(Number(onFiles[1]));
+      if (!pull) return new Response("Not Found", { status: 404 });
+      return json(Number(url.searchParams.get("page") ?? "1") > 1 ? [] : (pull.files ?? []));
+    }
+
     const onPull = /^\/pulls\/(\d+)$/.exec(path);
     if (onPull && method === "PATCH") {
       const pull = pulls.get(Number(onPull[1]));
@@ -840,6 +890,7 @@ export function createFakeTracker(
         ...(pull.crossRepository === undefined ? {} : { crossRepository: pull.crossRepository }),
         ...(pull.createdAt === undefined ? {} : { createdAt: pull.createdAt }),
         ...(pull.updatedAt === undefined ? {} : { updatedAt: pull.updatedAt }),
+        ...(pull.files === undefined ? {} : { files: pull.files }),
       };
       pulls.set(number, created);
       nextPull = Math.max(nextPull, number + 1);

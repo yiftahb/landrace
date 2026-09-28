@@ -473,7 +473,7 @@ function unboundedAdjacencyOf(w: Workflow): Map<string, string[]> {
   for (const stage of w.stages) {
     for (const t of stage.triggers ?? []) {
       const from = t.when["run.stage"];
-      if (typeof from === "string" && !boundsACounter(t.when)) {
+      if (typeof from === "string" && !boundsACounter(t.when) && !waitsForAPerson(t.when)) {
         adjacency.set(from, [...(adjacency.get(from) ?? []), stage.id]);
       }
     }
@@ -567,6 +567,18 @@ function boundsACounter(c: Condition): boolean {
   visit(c);
   return found;
 }
+
+/**
+ * A trigger that fires only on a person's own message bounds a loop as surely
+ * as a counter does: every time round, it waits for someone to write, so the
+ * loop cannot run away on its own. Triage's loops are this shape, and a round
+ * cap there only cut a real back-and-forth short (#27).
+ *
+ * The exact value at the top level, and nothing looser: `$ne`, `$in` or an
+ * `$or` could each match an agent's turn, and a check that let one through
+ * would pass the very runaway this rule exists to catch.
+ */
+const waitsForAPerson = (c: Condition): boolean => c["run.lastEvent.actor"] === "human";
 
 /**
  * Two conditions are treated as compatible unless they demand different

@@ -245,6 +245,22 @@ describe("an artifact's briefing reaches the prompt and nothing else", () => {
     expect(text).toContain("[truncated]");
   });
 
+  /*
+   * A hook briefs every key it has at once — the GitHub source reads threads,
+   * history and a diff in one call — but a prompt names only some of them. A
+   * retro's history spent the whole budget ahead of a reviewer's diff, which
+   * then arrived empty. A key the prompt never names is left out, and spends
+   * nothing.
+   */
+  it("keeps only the keys the prompt names, so an unused one spends none of the budget", async () => {
+    const built = await buildBriefing(
+      [briefing("pr", () => ({ history: "h".repeat(30_000), diff: "d".repeat(10_000) }))],
+      ctx(),
+      "Review this:\n{brief.pr.diff}",
+    );
+    expect(built).toEqual({ pr: { diff: "d".repeat(10_000) } });
+  });
+
   it("spends the budget across every key rather than per key", async () => {
     const built = await buildBriefing(
       [briefing("pr", () => ({ first: "a".repeat(30_000), second: "b".repeat(30_000) }))],

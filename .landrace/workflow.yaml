@@ -149,17 +149,18 @@ stages:
   # The judge. A reply wherever it is the person's turn comes here, and one
   # judge serves all five: the stage the reply was made at rides on triage's
   # entry record, and each routes the answers that change nothing back home.
-  # Its own budget bounds the conversation — past it a reply stays on the
-  # ticket and nothing runs; the page's "Go to step…" still works.
+  # No round cap: every trigger here waits for a person's own message, so a
+  # conversation is bounded by the person having it, and a cap only ended a
+  # real back-and-forth (#27). The validator counts that wait as a bound.
   - id: triage
     step: steps/triage.md
     goto: *goto
     requires: { "run.lastHuman": { $ne: null } }
     triggers:
       - name: you answered the spec's questions
-        when: { "run.stage": spec-questions, "run.lastEvent.actor": human, "run.counters.triage": { $lt: 20 } }
+        when: { "run.stage": spec-questions, "run.lastEvent.actor": human }
       - name: you replied to the spec
-        when: { "run.stage": spec-human-review, "run.lastEvent.actor": human, "run.counters.triage": { $lt: 20 } }
+        when: { "run.stage": spec-human-review, "run.lastEvent.actor": human }
       # Not once the pull request merged, and not while a thread is open:
       # merging and saying thanks is `done`, and a reopened thread is
       # `fix-review`. Both are triggers of their own, and two matching halts.
@@ -169,11 +170,10 @@ stages:
           "run.lastEvent.actor": human
           "rel.implements.in.not.merged": { $gt: 0 }
           "rel.implements.in.sum.openThreads": 0
-          "run.counters.triage": { $lt: 20 }
       - name: you replied to a halt
-        when: { "run.stage": blocked, "run.lastEvent.actor": human, "run.counters.triage": { $lt: 20 } }
+        when: { "run.stage": blocked, "run.lastEvent.actor": human }
       - name: you replied to a security refusal
-        when: { "run.stage": screened, "run.lastEvent.actor": human, "run.counters.triage": { $lt: 20 } }
+        when: { "run.stage": screened, "run.lastEvent.actor": human }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reading your reply, round {round}." }
       - { type: tracker.status, value: triage }
@@ -187,8 +187,10 @@ stages:
   # engine names no branch of its own; a workflow wanting two per ticket names
   # two.
   #
-  # Reached from an approved spec, and otherwise only by a person sending
-  # the ticket back — a `goto-build` answer, Retry, or "Go to step…".
+  # Reached from an approved spec, from a change a person asked for at
+  # pr-human-review, and otherwise only by a person sending the ticket back —
+  # a `goto-build` answer, Retry, or "Go to step…". A change asked for at
+  # pr-human-review has no round cap: each one waits for a person to write.
   #
   # And from itself. publish pushes before it moves the position, so a push
   # that fails — nothing was committed — leaves the ticket here, its round
@@ -207,6 +209,14 @@ stages:
           "run.lastOutputValid": null
           "run.previousStage": spec-human-review
           "run.outputs.triage.intent": approve
+      # #27: "add it under Model" at pr-human-review was judged revise and
+      # came straight back, since nothing there led to build.
+      - name: you asked for changes to the pull request
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": pr-human-review
+          "run.outputs.triage.intent": revise
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
       - { type: tracker.status, value: build }
@@ -324,9 +334,13 @@ stages:
         when: { "run.stage": retro, "run.lastOutputValid": null }
       # Nothing a reply says approves or merges a pull request — that is done
       # on the pull request — so every answer that does not send the ticket
-      # back comes home.
+      # back comes home. A change asked for is `revise`, which build takes.
       - name: your reply changed nothing here
-        when: { "run.stage": triage, "run.lastOutputValid": null, "run.previousStage": pr-human-review }
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": pr-human-review
+          "run.outputs.triage.intent": { $ne: revise }
     on_enter:
       # The retro pushes its own commit; this pushes one it left unpushed, and
       # otherwise reconciles away as satisfied.
