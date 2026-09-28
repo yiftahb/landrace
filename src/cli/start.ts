@@ -488,6 +488,12 @@ export function createSchedule(opts: {
   // scheduled fire never looks at it — the "scheduled ticks may still
   // overlap" rule — but a wake does: a person's action lands in the pass
   // after the one in flight, which may have read the tracker before it.
+  //
+  // ponytail: a pass lasts as long as its longest step, so while any agent
+  // runs, a wake waits for that pass to end — at worst a step's timeout, or
+  // the next scheduled tick, which still overlaps. The upgrade is to queue
+  // only behind a pass that has not listed the tracker yet, and start one
+  // now once every pass in flight has.
   let running = 0;
   // Wakes that arrived while something ran, collapsed into one follow-up.
   let pending = false;

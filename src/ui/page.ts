@@ -967,9 +967,9 @@ function restoreAfter(ms) {
   restoreTimer = setTimeout(() => setTickButton(TICK_LABEL, false), ms);
 }
 
-// Both 202s mean the ask was taken. A queued one runs as soon as the tick in
-// flight ends, so the button says so for a moment rather than looking as if
-// nothing happened.
+// Both 202s mean the ask was taken. A queued one runs once every tick in
+// flight has ended, so the button says so for a moment rather than looking as
+// if nothing happened.
 function tickAnswered(status, said) {
   if (status === 202 && said === "tick queued") {
     setTickButton("queued", true);
