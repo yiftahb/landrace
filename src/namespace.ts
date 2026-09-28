@@ -496,6 +496,13 @@ export interface ActivityPage {
  * through `landrace mcp` runs in another process, and the page must show it too.
  */
 export interface ActivityLog {
+  /**
+   * A step is about to run: its stage's lines start afresh, even at the
+   * round they already hold — a step that never finished is run again at
+   * the same round, and its dead attempt's lines are not this run's. Never
+   * throws.
+   */
+  begin(ticket: string, stage: string, round: number): void;
   /** Never throws: a display must never be able to stop the work it displays. */
   record(ticket: string, stage: string, round: number, e: AgentActivity): void;
   read(ticket: string, after: number): Promise<ActivityPage>;

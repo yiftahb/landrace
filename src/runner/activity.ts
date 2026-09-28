@@ -10,6 +10,8 @@ import { oneLine } from "#runner/status.js";
 const MAX_TEXT = 240;
 /** Per round: a long build calls thousands of tools, and the panel shows the latest. */
 const MAX_LINES = 500;
+/** What a round keeps when it reaches the cap — half, so the file is rewritten once per 250 lines, not on every one. */
+const KEEP_AT_CAP = MAX_LINES / 2;
 
 /** One run's lines, skipping any that do not parse — a torn write costs its own line, not the read. */
 function parse(text: string): ActivityRecord[] {
@@ -74,6 +76,20 @@ export function createActivityLog(root: string, redact: (text: string) => string
   };
 
   return {
+    begin(ticket, stage, round) {
+      try {
+        if (!isTicketId(ticket)) return;
+        const file = fileOf(ticket, stage);
+        mkdirSync(dirOf(ticket), { recursive: true });
+        // Empty rather than gone: the run starting now is the stage the
+        // panel reads as newest, before it has said anything.
+        writeFileSync(file, "");
+        known.set(file, { round, lines: 0, size: 0 });
+      } catch (err) {
+        console.error(`landrace: could not start agent activity for #${ticket}: ${messageOf(err)}`);
+      }
+    },
+
     record(ticket, stage, round, e) {
       // A display must never be able to stop the work it displays: this is
       // called from inside a paid run, so every failure ends here.
@@ -95,10 +111,18 @@ export function createActivityLog(root: string, redact: (text: string) => string
           known.set(file, { round, lines: 1, size: bytes });
           return;
         }
-        // An older round never overwrites a newer one, and a round past its
-        // cap keeps the lines it has.
-        if (held.round > round || held.lines >= MAX_LINES) {
+        // An older round never overwrites a newer one.
+        if (held.round > round) {
           known.set(file, { ...held, size: size ?? 0 });
+          return;
+        }
+        // At the cap the oldest half goes: the panel is for what the agent
+        // is doing now, and a panel frozen at the cap reads as a stalled run.
+        if (held.lines >= MAX_LINES) {
+          const kept = parse(readFileSync(file, "utf8")).slice(-(KEEP_AT_CAP - 1));
+          const text = `${kept.map((r) => JSON.stringify(r)).join("\n")}\n${line}`;
+          writeFileSync(file, text);
+          known.set(file, { round, lines: kept.length + 1, size: Buffer.byteLength(text) });
           return;
         }
         appendFileSync(file, line);

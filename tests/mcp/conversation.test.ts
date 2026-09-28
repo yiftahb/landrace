@@ -159,7 +159,12 @@ describe("conversation", () => {
         return { text: "Understood.", sessionId: "sid-later" };
       },
     };
-    const activity = { record: (...args: unknown[]) => { recorded.push(args); }, read: async () => ({ stage: null, round: null, lines: [], total: 0 }) };
+    const activity = {
+      // Never called by a turn: it continues the step's lines, it does not replace them.
+      begin: (...args: unknown[]) => { recorded.push(["begin", ...args]); },
+      record: (...args: unknown[]) => { recorded.push(args); },
+      read: async () => ({ stage: null, round: null, lines: [], total: 0 }),
+    };
     await world(seeded(), reporting, {}, undefined, { activity }).ask("1", "B2B only");
     expect(recorded).toEqual([["1", "spec", 1, { kind: "tool", text: "Read spec.md", at: 3 }]]);
   });

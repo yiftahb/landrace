@@ -1050,9 +1050,14 @@ describe("step.started and step.finished", () => {
         return { text: '```json\n{"kind":"spec"}\n```', sessionId: null };
       },
     };
-    const activity = { record: (...args: unknown[]) => { recorded.push(args); }, read: async () => ({ stage: null, round: null, lines: [], total: 0 }) };
+    const activity = {
+      begin: (...args: unknown[]) => { recorded.push(["begin", ...args]); },
+      record: (...args: unknown[]) => { recorded.push(["record", ...args]); },
+      read: async () => ({ stage: null, round: null, lines: [], total: 0 }),
+    };
     await converge("7", deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, activity }));
-    expect(recorded).toEqual([["7", "spec", 1, { kind: "tool", text: "Read spec.md", at: 5 }]]);
+    // Begun first, so a dead attempt at the same round is not read as this one.
+    expect(recorded).toEqual([["begin", "7", "spec", 1], ["record", "7", "spec", 1, { kind: "tool", text: "Read spec.md", at: 5 }]]);
   });
 
   it("says the step did not succeed when the executor throws", async () => {

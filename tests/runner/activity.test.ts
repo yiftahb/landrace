@@ -82,13 +82,45 @@ describe("the activity log", () => {
     expect(await log.read("25", 0)).toMatchObject({ round: 2, lines: [tool("Read new.ts")] });
   });
 
-  it("cuts a line to 240 characters and keeps at most 500 lines a round", async () => {
+  it("cuts a line to 240 characters", async () => {
     const log = createActivityLog(rootDir(), redact);
     log.record("25", "build", 1, { kind: "message", text: "x".repeat(1000), at: 1 });
-    for (let i = 1; i < 600; i++) log.record("25", "build", 1, tool(`Read ${i}`));
+    expect((await log.read("25", 0)).lines[0]?.text).toHaveLength(240);
+  });
+
+  // A long build calls thousands of tools, and the panel is for what it is
+  // doing now: past the cap the oldest lines go, never the newest — a panel
+  // that froze at line 500 made a healthy build look stalled, and an Ask
+  // after it showed no progress at all.
+  it("keeps at most 500 lines a round, and always the newest", async () => {
+    const log = createActivityLog(rootDir(), redact);
+    for (let i = 1; i <= 1200; i++) log.record("25", "build", 1, tool(`Read ${i}`));
     const page = await log.read("25", 0);
-    expect(page.lines[0]?.text).toHaveLength(240);
-    expect(page.total).toBe(500);
+    expect(page.total).toBeLessThanOrEqual(500);
+    expect(page.lines.at(-1)?.text).toBe("Read 1200");
+    expect(page.lines.map((l) => l.text)).not.toContain("Read 1");
+    // Still in order, with nothing missing between the oldest kept and the newest.
+    const numbers = page.lines.map((l) => Number(l.text.slice(5)));
+    expect(numbers).toEqual(numbers.map((_, i) => 1200 - numbers.length + 1 + i));
+  });
+
+  // A step that never finished — a timeout, a Ctrl-C — is run again at the
+  // same round, and its dead attempt's lines are not this run's.
+  it("starts a run afresh when a step begins, even at the round it already holds", async () => {
+    const log = createActivityLog(rootDir(), redact);
+    log.record("25", "build", 1, tool("Read dead.ts"));
+    log.begin("25", "build", 1);
+    expect(await log.read("25", 0)).toMatchObject({ stage: "build", total: 0 });
+    log.record("25", "build", 1, tool("Read live.ts"));
+    expect(await log.read("25", 0)).toMatchObject({ round: 1, lines: [tool("Read live.ts")] });
+  });
+
+  it("never throws when a step begins where it cannot write", () => {
+    const root = rootDir();
+    chmodSync(root, 0o500);
+    const said = jest.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => createActivityLog(root, redact).begin("25", "build", 1)).not.toThrow();
+    said.mockRestore();
   });
 
   it("never writes a secret to disk, even one the 240-character cut would have split", async () => {
