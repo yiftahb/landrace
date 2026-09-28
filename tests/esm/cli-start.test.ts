@@ -8,6 +8,7 @@ import { runStatus } from "#cli/status.js";
 import type { LandraceEvent } from "#namespace.js";
 import { acquire, release } from "#runner/lock.js";
 import { tick } from "#runner/tick.js";
+import { touchWake, wakePath } from "#wake.js";
 
 /**
  * `buildRuntime` over a hook module that is a real file on disk, imported the
@@ -660,4 +661,39 @@ describe("runStatus", () => {
     await expect(rt.deps.executor.run("x", { round: 1, capabilities: ["repo:read"], signal: new AbortController().signal }))
       .rejects.toThrow(/not to run steps/);
   });
+});
+
+/**
+ * The daemon's half of an MCP write reaching it: `landrace mcp` touches the
+ * wake file, and the loop has to be watching it. A watcher never started in
+ * `runStart` leaves every unit test of `watchWake` green while every MCP
+ * write goes back to waiting out the interval — thirty seconds here.
+ */
+describe("runStart and the wake file", () => {
+  const until = async (cond: () => Promise<boolean>, ms: number): Promise<void> => {
+    const end = Date.now() + ms;
+    while (!(await cond())) {
+      if (Date.now() > end) throw new Error("timed out");
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
+
+  it("runs a pass as soon as the wake file is touched, well before the next scheduled tick", async () => {
+    const { dir, record } = await fixture();
+    const wrote = console.log;
+    const said = console.error;
+    console.log = (): void => {};
+    console.error = (): void => {};
+    const running = runStart(dir, { ui: false });
+    try {
+      await until(async () => (await applied(record)).length === 1, 10_000);
+      touchWake(wakePath(dir));
+      await until(async () => (await applied(record)).length === 2, 5_000);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      console.log = wrote;
+      console.error = said;
+    }
+  }, 20_000);
 });

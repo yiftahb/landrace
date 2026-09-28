@@ -40,6 +40,7 @@ import { createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
+import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
 
 /**
@@ -629,9 +630,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   await runPreflights(rt.preflights, rt.deps.ctx);
 
   // Built before the board and the page, which both need to reach into it —
-  // the board reads schedule.nextAt for the countdown, the page's one write
-  // calls schedule.wake. `--once` never starts it: one tick and no page
-  // means nothing here is ever armed.
+  // the board reads schedule.nextAt for the countdown, the page's writes and
+  // the wake file call schedule.wake. `--once` never starts it: one tick and
+  // no page means nothing here is ever armed.
   const inFlight = new Set<Promise<void>>();
   const schedule = createSchedule({ intervalMs: rt.intervalMs, run: trackedRun(rt, boardRef, inFlight) });
 
@@ -651,12 +652,16 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   });
   if (ui) console.error(`landrace: triage page at ${ui.url}`);
 
+  // What `landrace mcp` touches after a person's write, in its own process:
+  // watched only where there is a loop to wake.
+  const unwatch = opts.once ? null : watchWake(wakePath(dir), schedule.wake);
   const off = onSignals(createInterrupt({ stop: rt.stop }));
   try {
     // A single tick reports its own failure by throwing: one shot, one answer,
     // and the exit code is what a script that ran it will read.
     await (opts.once ? pass(rt, board) : loop(rt, schedule, inFlight));
   } finally {
+    unwatch?.();
     off();
     await ui?.close();
   }
