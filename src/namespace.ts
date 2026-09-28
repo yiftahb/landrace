@@ -96,6 +96,12 @@ export interface Entry {
   goto?: string;
   /** On an entry record, the stage the ticket left to enter this one. `run.previousStage` reads it. */
   from?: string;
+  /**
+   * Who produced an output record: "pair" for one a person handed in from a
+   * pairing. Absent reads as "agent", so every record written before pairing
+   * existed routes exactly as it did.
+   */
+  by?: string;
   /** ISO 8601. Ordering is by this field, not array position. */
   at: string;
   /** True when we wrote it. False means a person did. */
@@ -295,6 +301,8 @@ export interface Marker {
   goto?: string;
   /** On an entry record, the stage the ticket left to enter this one. `run.previousStage` reads it. */
   from?: string;
+  /** On an output record, who produced it — see `Entry.by`. */
+  by?: string;
   [key: string]: unknown;
 }
 
