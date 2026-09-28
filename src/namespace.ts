@@ -186,6 +186,27 @@ export interface Run {
    */
   failedStage: string | null;
   unblockedAt: number;
+  /**
+   * The pairing open on this ticket, or null. Read off the records alone: a
+   * pair record opens one, and an output record for its stage at its round or
+   * later, or a release record, closes it. While one is open its stage never
+   * runs alone.
+   */
+  pairing: Pairing | null;
+  /**
+   * Who produced the latest output record — "agent", or "pair" for one a
+   * person handed in from a pairing — or null before any output exists. A
+   * record that names nobody reads as "agent".
+   */
+  lastOutputBy: string | null;
+}
+
+/** An open pairing: its stage and round, which pairing at that round it is, and when it began (ISO 8601). */
+export interface Pairing {
+  stage: string;
+  round: number;
+  n: number;
+  at: string;
 }
 
 /** A MongoDB-style condition document over snapshot dot-paths. */
@@ -263,6 +284,8 @@ export interface Decision {
   round?: number;
   trigger?: string;
   why?: string;
+  /** On a wait: the pairing that holds this stage's owed step, so the board can say so. */
+  paired?: Pairing;
 }
 
 export type Location =

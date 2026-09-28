@@ -283,3 +283,22 @@ describe("a pending goto", () => {
       .toMatchObject({ action: "halt", why: expect.stringMatching(/precondition for "build"/) });
   });
 });
+
+describe("a stage a person is pairing on", () => {
+  const pairing = { stage: "spec", round: 1, n: 1, at: "2026-01-01T00:00:00.000Z" };
+
+  it("never runs alone: its owed step waits, and says who holds it", () => {
+    const s = snap({ run: run({ stage: "spec", pairing }) });
+    expect(decide(wf, s)).toMatchObject({ action: "wait", paired: pairing, why: expect.stringMatching(/pairing on "spec", round 1/) });
+  });
+
+  it("does not hold another stage's step", () => {
+    const s = snap({ run: run({ stage: "spec", pairing: { ...pairing, stage: "review" } }) });
+    expect(decide(wf, s)).toMatchObject({ action: "invoke", step: "steps/spec.md" });
+  });
+
+  it("does not stop the stage's triggers once its round is settled", () => {
+    const s = snap({ run: run({ stage: "spec", pairing, failedStages: ["spec"], lastOutputValid: false }) });
+    expect(decide(wf, s)).toMatchObject({ action: "transition", to: stages[2] });
+  });
+});
