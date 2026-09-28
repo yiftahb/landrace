@@ -92,6 +92,8 @@ export interface FakePull {
   crossRepository?: boolean;
   /** GraphQL's `createdAt`, answered only when a test sets one. */
   createdAt?: string;
+  /** GraphQL's `updatedAt`. LandraceClosedPulls orders and windows by this, the way LandraceClosed does for issues. */
+  updatedAt?: string;
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -524,6 +526,27 @@ export function createFakeTracker(
         });
       }
 
+      // Merged and closed pull requests, most recently updated first, paged
+      // and windowed the same way LandraceClosed pages closed issues.
+      if (operation === "LandraceClosedPulls") {
+        const closed = [...pulls.values()].filter((p) => pullState(p) !== "OPEN")
+          .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "") || a.number - b.number);
+        const from = typeof variables.cursor === "string" && variables.cursor ? Number(variables.cursor) : 0;
+        const size = Number(/pullRequests\(states: \[MERGED, CLOSED\], first: (\d+)/.exec(String(body.query))?.[1] ?? ISSUE_PAGE);
+        const page = closed.slice(from, from + size);
+        const end = from + page.length;
+        return json({
+          data: {
+            repository: {
+              pullRequests: {
+                pageInfo: { hasNextPage: end < closed.length, endCursor: String(end) },
+                nodes: page.map((p) => ({ ...pullNode(p), updatedAt: p.updatedAt ?? null })),
+              },
+            },
+          },
+        });
+      }
+
       if (operation === "LandraceTicket") {
         const issue = issues.get(Number(variables.number));
         const parent = issue?.parent === undefined ? undefined : issues.get(issue.parent);
@@ -816,6 +839,7 @@ export function createFakeTracker(
         ...(pull.closes === undefined ? {} : { closes: pull.closes }),
         ...(pull.crossRepository === undefined ? {} : { crossRepository: pull.crossRepository }),
         ...(pull.createdAt === undefined ? {} : { createdAt: pull.createdAt }),
+        ...(pull.updatedAt === undefined ? {} : { updatedAt: pull.updatedAt }),
       };
       pulls.set(number, created);
       nextPull = Math.max(nextPull, number + 1);

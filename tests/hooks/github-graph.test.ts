@@ -159,6 +159,38 @@ describe("the GitHub source", () => {
       expect(g.nodes.map((n) => n.id)).toContain("19");
       expect(operations(gh, "LandraceClosed")).toHaveLength(1);
     });
+
+    /*
+     * The same window, for a merged or closed pull request on a ticket
+     * that closed inside it — the bug this covers: a Done ticket showed no
+     * pull request at all, because `listGraph` paged open pull requests
+     * only, and a merged one never reaches an OPEN-states query.
+     */
+    it("lists a merged pull request on a recently closed ticket, tied to it", async () => {
+      const gh = createFakeTracker([{ number: 1 }, closed(19, 2)]);
+      gh.openPull({ number: 118, head: "landrace/19", merged: true, updatedAt: daysAgo(2) });
+      const g = await sourceOf(gh).list(ctx(gh));
+      expect(g.nodes.find((n) => n.id === "pr-118")).toMatchObject({ kind: "pull-request", closed: "done" });
+      expect(g.relationships).toContainEqual({ from: "pr-118", to: "19", type: "implements" });
+    });
+
+    it("leaves out a merged pull request last touched more than 30 days ago", async () => {
+      const gh = createFakeTracker([{ number: 1 }, closed(19, 2)]);
+      gh.openPull({ number: 118, head: "landrace/19", merged: true, updatedAt: daysAgo(40) });
+      const g = await sourceOf(gh).list(ctx(gh));
+      expect(g.nodes.map((n) => n.id)).not.toContain("pr-118");
+    });
+
+    it("stops paging pull requests once it reaches ones last touched before the window", async () => {
+      const gh = createFakeTracker([{ number: 1 }, closed(19, 2)]);
+      gh.openPull({ number: 118, head: "landrace/19", merged: true, updatedAt: daysAgo(1) });
+      for (let i = 0; i < 120; i++) {
+        gh.openPull({ number: 200 + i, head: `landrace/${200 + i}`, merged: true, updatedAt: daysAgo(45) });
+      }
+      const g = await sourceOf(gh).list(ctx(gh));
+      expect(g.nodes.map((n) => n.id)).toContain("pr-118");
+      expect(operations(gh, "LandraceClosedPulls")).toHaveLength(1);
+    });
   });
 
   it("leaves a node undated when GitHub gave no time, rather than stamping it with a guess", async () => {

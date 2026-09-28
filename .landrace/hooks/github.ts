@@ -1435,6 +1435,25 @@ query LandracePulls($owner: String!, $name: String!, $cursor: String) {
 }`;
 
 /**
+ * Merged and closed pull requests, most recently updated first, so the list
+ * stops at the first one last touched before the window — the same reasoning
+ * CLOSED_QUERY uses for closed issues: none past it can have been updated
+ * inside the window either. Mirrors CLOSED_QUERY because it exists for the
+ * same bug: a Done ticket's merged pull request never reached the board, since
+ * PULLS_QUERY's OPEN-only list is the one an open pull request needs and a
+ * merged one never answers.
+ */
+const CLOSED_PULLS_QUERY = `
+query LandraceClosedPulls($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: [MERGED, CLOSED], first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ${PULL_FIELDS} updatedAt }
+    }
+  }
+}`;
+
+/**
  * How many sub-issues, and pull requests each way, one ticket read carries.
  * Every one of them is counted by the workflow — "every child closed", "every
  * pull request merged" — so a ticket with more than this is refused by
@@ -1524,6 +1543,16 @@ interface ClosedResponse {
 interface PullsResponse {
   repository: {
     pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: PullNode[] };
+  } | null;
+}
+
+interface ClosedPullNode extends PullNode {
+  updatedAt: string | null;
+}
+
+interface ClosedPullsResponse {
+  repository: {
+    pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: ClosedPullNode[] };
   } | null;
 }
 
@@ -1800,6 +1829,29 @@ async function listGraph(gh: Client, repo: string, link: SpecLink, ctx: RuntimeC
     if (!data.repository) throw unseen(repo);
     const { pullRequests } = data.repository;
     pulls.push(...pullRequests.nodes);
+    if (!pullRequests.pageInfo.hasNextPage) break;
+    cursor = pullRequests.pageInfo.endCursor;
+  }
+
+  // The same Done-lane window as the closed issues above, over merged and
+  // closed pull requests: a closed ticket's own pull request is still work
+  // this list should show, and the open-only query above never answers it —
+  // the bug this covers, a Done ticket with no pull request on the board.
+  // Bounded and stopped quietly past it, like the closed issues: this is for
+  // the board, not the tick.
+  cursor = null;
+  closedPulls: for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
+    const data: ClosedPullsResponse = await gh.graphql<ClosedPullsResponse>(CLOSED_PULLS_QUERY, { owner, name, cursor });
+    if (!data.repository) throw unseen(repo);
+    const { pullRequests } = data.repository;
+    for (const pull of pullRequests.nodes) {
+      // No `updatedAt` at all says nothing about whether it is within the
+      // window, the same reason a closed issue with no `closedAt` is left
+      // out above — never shown on a guess.
+      if (pull.updatedAt === null) continue;
+      if (Date.parse(pull.updatedAt) < since) break closedPulls;
+      pulls.push(pull);
+    }
     if (!pullRequests.pageInfo.hasNextPage) break;
     cursor = pullRequests.pageInfo.endCursor;
   }
@@ -2589,5 +2641,5 @@ export const githubPreflight = definePreflight({ id: "github", check });
 
 /** Every GraphQL document this hook sends, so a test can cost each against GitHub's node limit. */
 export const GRAPHQL_QUERIES = {
-  ISSUE_QUERY, ISSUES_QUERY, CLOSED_QUERY, PULLS_QUERY, TICKET_QUERY, THREADS_QUERY, BRIEF_QUERY, PREFLIGHT_PR_QUERY,
+  ISSUE_QUERY, ISSUES_QUERY, CLOSED_QUERY, PULLS_QUERY, CLOSED_PULLS_QUERY, TICKET_QUERY, THREADS_QUERY, BRIEF_QUERY, PREFLIGHT_PR_QUERY,
 };
