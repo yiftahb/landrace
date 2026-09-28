@@ -26,7 +26,9 @@ For a person reviewing this work, the same spec is published as a page; its
 whole text is above, and nothing in this step needs the page itself:
 {artifacts.spec.url}
 
-Use the `superpowers:executing-plans` skill to work through the spec.
+The spec says what changes and where, not the steps. Plan them first with the
+`superpowers:writing-plans` skill, then work through that plan with
+`superpowers:executing-plans`.
 
 Work on the branch you are on — do not create, switch or rename branches. Your
 commands run in a sandbox: they can write

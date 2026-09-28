@@ -383,6 +383,32 @@ describe("the shipped steps are handed the approved spec as text", () => {
  * write step now does its own git work, inside the sandbox, and a person can
  * send a build whose push failed back to build.
  */
+/*
+ * #19–#21's specs ran 770–1,300 words, most of it a step-by-step plan and a
+ * test list, written because the spec step was told to use writing-plans. A
+ * person approves the product flow and the shape of the change; build plans
+ * the steps itself.
+ */
+describe("the shipped spec is short, and build does the planning", () => {
+  it("asks for problem, decisions, a file-level design and checks, in caveman style, with no step list", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/spec.md")?.prompt ?? "";
+    const at = ["## Problem", "## Decisions", "## Technical design", "## Done when"].map((s) => prompt.indexOf(s));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(prompt).toMatch(/caveman/i);
+    expect(prompt).toMatch(/400 words/);
+    expect(prompt).toMatch(/no step list/i);
+    expect(prompt).not.toContain("superpowers:writing-plans");
+  });
+
+  it("has build plan the work from the spec before it executes the plan", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/build.md")?.prompt ?? "";
+    expect(prompt).toMatch(/`superpowers:writing-plans`[\s\S]*`superpowers:executing-plans`/);
+  });
+});
+
 describe("the shipped write steps merge, test, commit and push their own branch", () => {
   it.each(["build", "fix-review"])("%s tells the agent to merge origin/main, test, commit and push only its branch", async (id) => {
     const { steps } = await loadWorkflow(".landrace");
