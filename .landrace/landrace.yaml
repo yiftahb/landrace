@@ -3,6 +3,8 @@ version: 1
 agent:
   adapter: claude
   model: opus
+  # Every step and turn; a step's own `effort:` wins. Never the screener.
+  effort: high
   isolation: worktree
   # A read-only step runs --restricted, which ignores ~/.claude/settings.json
   # and every plugin enabled there, and its worktree has no .mcp.json — so the

@@ -185,7 +185,7 @@ How agents run and where tickets live. Portable workflows keep none of this.
 |---|---|---|
 | `agent.adapter` | — | Which executor runs steps and conversation turns: an id a hook registers with `defineExecutor`. This repository's is `claude`, from `.landrace/hooks/claude.ts` |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` — how the engine prepares the directory a step runs in |
-| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. The Claude hook reads `model`, `plugins`, `mcp` and `sandbox`, and refuses any other key |
+| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. The Claude hook reads `model`, `effort` (`low`, `medium`, `high`, `xhigh` or `max`), `plugins`, `mcp` and `sandbox`, and refuses any other key |
 | `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` — which a GitHub App token needs (e.g. `myapp`), since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
@@ -504,6 +504,7 @@ Write the spec for #{node.id}: {node.title}…
 |---|---|
 | `capabilities` | What the agent may do — `repo:read`, `repo:write`, `tickets:create`. The first two are enforced by diffing the worktree afterwards, the third by which MCP tool the executor hands the agent — not by the flags the Claude hook hands its agent, which another executor never sees. An unenforceable capability refuses the step rather than pretending |
 | `model` | Overrides `agent.model` for this step. A cheap step should say so |
+| `effort` | Overrides `agent.effort` for this step, and its conversation turns. The executor checks the level; the Claude hook refuses one it does not know |
 | `timeout` | Overrides `budget.stepTimeout` for this step, e.g. `120m`. A step that writes code can need hours where a classifier needs minutes |
 | `output.discriminator` | The field whose value picks the shape |
 | `output.shapes` | What each value of the discriminator must look like. Output that matches none is a hard fail, recorded, never retried |
