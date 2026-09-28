@@ -1,4 +1,5 @@
 import type { EventName, LandraceEvent, RedactingLogger } from "#namespace.js";
+import { messageOf } from "#runner/errors.js";
 
 /**
  * Printed only under `--debug` (spec §14).
@@ -67,6 +68,12 @@ export function createLogger(opts: {
    */
   redactValues?: string[];
   sink?: (e: LandraceEvent) => void;
+  /**
+   * Telemetry's sink. It gets every event, the debug-only ones included —
+   * a collector is where agent output is worth keeping, and the terminal is
+   * where it buries everything else — redacted exactly as `sink`'s are.
+   */
+  exporter?: (e: LandraceEvent) => void;
 } = {}): RedactingLogger {
   // Refused, not skipped: skipping would leave a real secret unredacted, and
   // accepting would shred the log. The value itself is never named in the
@@ -91,8 +98,17 @@ export function createLogger(opts: {
     // Agent output is voluminous and carries attacker-influenced text. It is
     // printed only on request, and it is data — never interpreted. The same
     // goes for the per-pass snapshot, which quotes the issue body verbatim.
-    if (DEBUG_ONLY.has(name) && !opts.debug) return;
-    sink({ name, ...(redactValue(data, secrets) as Record<string, unknown>) });
+    const printed = !DEBUG_ONLY.has(name) || opts.debug === true;
+    if (!printed && !opts.exporter) return;
+    const event = { name, ...(redactValue(data, secrets) as Record<string, unknown>) };
+    // Telemetry must never abort a step, for the same reason a display must
+    // not (see boardSink): this is called from inside runStep outside any try.
+    try {
+      opts.exporter?.(event);
+    } catch (e) {
+      console.error(`landrace: telemetry failed to export an event: ${messageOf(e)}`);
+    }
+    if (printed) sink(event);
   }) as RedactingLogger;
   // After construction, for what an executor's setup turns up. Skipped rather
   // than refused below the minimum: a server env of "1" is a setting, not a
