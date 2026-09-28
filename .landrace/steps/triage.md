@@ -51,7 +51,7 @@ place means, and which answers make sense there:
 
 - `spec-questions` — the spec's author asked blocking questions. An answer to them is `revise`. So is a message saying they are answered, or to carry on: the answers are in the conversation above it.
 - `spec-human-review` — a spec was published for review. `approve` sends it to be built; `revise` asks for changes to it.
-- `pr-human-review` — a pull request is open for review. Nothing said here approves or merges it; that is done on the pull request.
+- `pr-human-review` — a pull request is open for review. A change to the implementation ("add X", "rename Y", "this should also…") is `revise`: it sends the work back to build. Nothing said here approves or merges it; that is done on the pull request.
 - `blocked` — a step failed and stopped.
 - `screened` — a security check stopped a step.
 

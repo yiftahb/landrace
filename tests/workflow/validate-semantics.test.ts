@@ -16,6 +16,29 @@ describe("semantic validation", () => {
     expect(rules(w)).toContain("cycle-bound");
   });
 
+  /*
+   * A loop that waits for a person's message every time round cannot run away
+   * on its own: each lap needs someone to write. Triage's loops are this
+   * shape, and a round cap on them only cut a real conversation short.
+   */
+  it("accepts a loop one of whose edges waits for a person to write", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
+      { id: "b", triggers: [{ when: { "run.stage": "a", "run.lastEvent.actor": "human" } }] },
+    ] };
+    expect(rules(w)).not.toContain("cycle-bound");
+  });
+
+  it("still flags a loop whose actor check is anything but a person, exactly", () => {
+    for (const actor of [{ $ne: "human" }, "agent", { $in: ["human", "agent"] }]) {
+      const w: Workflow = { version: 1, name: "t", stages: [
+        { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
+        { id: "b", triggers: [{ when: { "run.stage": "a", "run.lastEvent.actor": actor } }] },
+      ] };
+      expect(rules(w)).toContain("cycle-bound");
+    }
+  });
+
   it("accepts a loop bounded by a counter comparison", () => {
     const w: Workflow = { version: 1, name: "t", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "b", "run.counters.a": { $lt: 3 } } }] },
