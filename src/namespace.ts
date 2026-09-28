@@ -557,6 +557,14 @@ export interface Executor {
        */
       model?: string;
       /**
+       * The effort the step asked for, read exactly as `model` above: the
+       * step's value wins over the executor's default, absent means the
+       * operator decides, and an executor that cannot honour a named level
+       * must refuse the run. The level names are the provider's words, so
+       * the engine passes this on unread. The screener's run never has one.
+       */
+      effort?: string;
+      /**
        * How long this run may take, in milliseconds. Always present: the
        * step's own `timeout`, else the workflow's `budget.stepTimeout`, else
        * the engine's default, and the screening run gets the workflow's. The

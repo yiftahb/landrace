@@ -303,6 +303,8 @@ export function createConversation(deps: ConversationDeps): Conversation {
                 // default instead.
                 capabilities: step.capabilities ?? [],
                 ...(step.model === undefined ? {} : { model: step.model }),
+                // Its effort too: a turn must not run cheaper than its step.
+                ...(step.effort === undefined ? {} : { effort: step.effort }),
                 // And its time limit: a turn on a two-hour build's session, held
                 // to the operator's default, is killed long before the build
                 // would have been. Every run gets one — the step's own, else
