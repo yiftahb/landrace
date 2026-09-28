@@ -1247,9 +1247,17 @@ function currentRow() {
 }
 
 // Which bottom half a ticket gets: live lines while its agent runs, the
-// composer while it waits on a person, its conversation otherwise.
+// composer while it waits on a person, its conversation — and, while another
+// process holds it, what that process's agent is doing — otherwise.
 function modeOf(row) {
-  return row.badge === "running" ? "running" : row.badge === "needs-you" ? "needs-you" : "other";
+  if (row.badge === "running" || row.badge === "needs-you" || row.badge === "elsewhere") return row.badge;
+  return "other";
+}
+
+// Whether the panel keeps reading activity: an agent runs, here or — an Ask
+// through \`landrace mcp\`, the reason activity is on disk at all — elsewhere.
+function readsLive(mode) {
+  return mode === "running" || mode === "elsewhere";
 }
 
 // The run a running row is on now — never a file an earlier stage or round
@@ -1319,6 +1327,17 @@ function panelBottomOf(row, mode, state, now) {
   else if (!conv.lines.length) out.push(panelNote("Nothing has been said on this ticket yet."));
   else out.push(...conv.lines.map((l) => conversationItem(l, now)));
   if (conv.lines !== null && conv.error) out.push(panelNote(conv.error));
+  if (mode === "elsewhere") {
+    // What the other process's agent did since the conversation's last word
+    // — an Ask posts its question before its agent runs, so the step's own
+    // older lines stay out of it.
+    const lastWord = conv.lines && conv.lines.length ? Date.parse(conv.lines[conv.lines.length - 1].at) : 0;
+    const lines = progressLines(state.activity.lines, Number.isNaN(lastWord) ? 0 : lastWord);
+    out.push(panelNote(lines.length
+      ? "Another process holds this ticket — what its agent is doing:"
+      : "Another process holds this ticket; its agent has reported nothing yet."));
+    out.push(...lines.map(activityItem));
+  }
   if (state.asking) {
     out.push(panelNote("Asking the step…"));
     out.push(...progressLines(state.activity.lines, state.asking.since).map(activityItem));
@@ -1421,6 +1440,17 @@ function keepingFocus(draw) {
   }
 }
 
+// Redrawn only when what it says changed: a poll every 1.5s that redrew the
+// same text wiped any selection in it, and copying the step's question lost
+// it within seconds.
+function replaceIfChanged(target, nodes) {
+  const drawn = nodes.map((n) => n.textContent).join("\\n");
+  if (target.dataset.drawn === drawn) return false;
+  target.dataset.drawn = drawn;
+  target.replaceChildren(...nodes);
+  return true;
+}
+
 function setPanelNote(text) {
   if (panelStatus.textContent !== text) panelStatus.textContent = text;
 }
@@ -1459,8 +1489,8 @@ function renderPanel() {
     // worth reading — and left where a person scrolled it otherwise.
     const stick = panelBottom.scrollTop + panelBottom.clientHeight >= panelBottom.scrollHeight - 8;
     const top = panelBottom.scrollTop;
-    panelBottom.replaceChildren(...panelBottomOf(row, mode, { activity, conversation, asking, answer: askAnswer }, now));
-    panelBottom.scrollTop = stick ? panelBottom.scrollHeight : top;
+    const nodes = panelBottomOf(row, mode, { activity, conversation, asking, answer: askAnswer }, now);
+    if (replaceIfChanged(panelBottom, nodes)) panelBottom.scrollTop = stick ? panelBottom.scrollHeight : top;
   });
 }
 
@@ -1476,6 +1506,9 @@ async function readActivity() {
     // Another read landed first, or the panel moved on: the next one catches up.
     if (panelId !== id || activity.lines.length !== after) return;
     activity = mergeActivity(activity, page, after);
+    // A new run let go of the old one: read it from its start now, not a
+    // poll later — the panel owes a new step's lines within two seconds.
+    if (activity.stage === null && page.stage !== null) return readActivity();
     renderPanel();
   } catch (e) {
     // The board's own poll says when landrace stops answering.
@@ -1494,7 +1527,7 @@ function pollPanel(delay) {
     readActivity().then(() => {
       panelTimer = null;
       const row = currentRow();
-      if (panelId !== null && (asking || (row && modeOf(row) === "running"))) pollPanel(PANEL_POLL_MS);
+      if (panelId !== null && (asking || (row && readsLive(modeOf(row))))) pollPanel(PANEL_POLL_MS);
     });
   }, delay);
 }
@@ -1548,7 +1581,10 @@ function panelWrite(kind) {
     .then(({ ok, body }) => {
       panelBusy = false;
       asking = null;
-      if (panelId !== id) return;
+      // The answer belongs to its ticket, not to whether the panel is open:
+      // closed mid-Ask, it is there when the ticket is reopened, rather than
+      // "Asking the step…" for good. Only another ticket's panel is left alone.
+      if (panelHeld !== id) return;
       if (!ok) {
         // The words stay in the box, so nothing typed is lost to a refusal.
         setPanelNote(body || kind + " failed");
