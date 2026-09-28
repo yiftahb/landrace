@@ -110,7 +110,7 @@ describe("boardView: which rows offer a Retry", () => {
   });
 
   it("offers none while an agent is running on it", () => {
-    const running = new Map<string, Running>([["7", { stage: "build", round: 2, model: null, since: 1 }]]);
+    const running = new Map<string, Running>([["7", { stage: "build", round: 2, model: null, effort: null, since: 1 }]]);
     expect(rowFor(["lr:stage:blocked", "lr:blocked"], {}, { running })?.retry).toBeNull();
   });
 
@@ -140,7 +140,7 @@ describe("boardView: where a row may send its ticket back to", () => {
 
   it("offers none on a closed ticket, or while its agent runs", () => {
     expect(rowFor(["lr:stage:blocked"], { closed: "done" })?.goto).toEqual([]);
-    const running = new Map<string, Running>([["7", { stage: "spec", round: 2, model: null, since: 1 }]]);
+    const running = new Map<string, Running>([["7", { stage: "spec", round: 2, model: null, effort: null, since: 1 }]]);
     expect(rowFor(["lr:stage:blocked"], {}, { running })?.goto).toEqual([]);
   });
 
@@ -162,7 +162,7 @@ describe("boardView: a ticket's panel", () => {
   };
 
   it("names its panel's paths on every ticket — waiting, running, needing you or closed", () => {
-    const running = new Map<string, Running>([["8", { stage: "spec", round: 1, model: null, since: 1 }]]);
+    const running = new Map<string, Running>([["8", { stage: "spec", round: 1, model: null, effort: null, since: 1 }]]);
     const rows = view(graph([
       ticket("7"), ticket("8"), ticket("9", {}, ["go", "lr:stage:blocked", "lr:blocked"]), ticket("10", { closed: "done" }),
     ]), { running }).rows;
@@ -259,7 +259,7 @@ describe("boardView: the tree", () => {
   });
 
   it("never gives a closed ticket a needs-you or running badge", () => {
-    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
+    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, effort: null, since: 5 }]]);
     const g = graph([ticket("1"), ticket("2", { closed: "done" }), ticket("3", { closed: "dropped" }, ["go", "lr:blocked"])], [
       edge("2", "1"), edge("3", "1"),
     ]);
@@ -283,12 +283,12 @@ describe("boardView: lanes", () => {
   });
 
   it("puts a branch with a running child in running", () => {
-    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
+    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, effort: null, since: 5 }]]);
     expect(view(graph([ticket("1"), ticket("2")], [edge("2", "1")]), { running }).rows[0]?.lane).toBe("running");
   });
 
   it("ranks needs-you over running over elsewhere over waiting, whichever sub-branch they sit in", () => {
-    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, since: 5 }]]);
+    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, effort: null, since: 5 }]]);
     const g = graph([ticket("1"), ticket("2"), ticket("3"), ticket("4", {}, blocked)], [edge("2", "1"), edge("3", "1"), edge("4", "3")]);
     expect(view(g, { running }).rows[0]?.lane).toBe("needs-you");
     expect(view(graph([ticket("1"), ticket("2"), ticket("3")], [edge("2", "1"), edge("3", "1")]), { running }).rows[0]?.lane)
@@ -309,7 +309,7 @@ describe("boardView: lanes", () => {
   });
 
   it("puts a ticket with no sub-tickets in the lane of its own badge", () => {
-    const running = new Map<string, Running>([["2", { stage: "spec", round: 1, model: null, since: 5 }]]);
+    const running = new Map<string, Running>([["2", { stage: "spec", round: 1, model: null, effort: null, since: 5 }]]);
     const other: Held = { ticket: "3", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
     const g = graph([
       ticket("1", {}, blocked), ticket("2"), ticket("3"), ticket("4"), ticket("5", {}, []), ticket("6", { closed: "done" }),
@@ -406,16 +406,16 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "closed", "createdAt", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
+      "badge", "chat", "children", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
       "priority", "retry", "round", "screened", "since", "stage", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
 
   it("puts a ticket with an agent running in `running`, over whatever its labels say", () => {
-    const running = new Map<string, Running>([["1", { stage: "spec", round: 2, model: "opus", since: 40 }]]);
+    const running = new Map<string, Running>([["1", { stage: "spec", round: 2, model: "opus", effort: "high", since: 40 }]]);
     const row = view(graph([ticket("1", {}, ["go", "lr:awaiting"])]), { running }).rows[0];
-    expect(row).toMatchObject({ badge: "running", round: 2, model: "opus", since: 40, note: "agent running" });
+    expect(row).toMatchObject({ badge: "running", round: 2, model: "opus", effort: "high", since: 40, note: "agent running" });
   });
 
   it("puts a ticket locked by another process in `elsewhere`, and not its own lock", () => {
@@ -480,11 +480,22 @@ describe("createBoard", () => {
     let t = 10;
     const board = shell(() => t);
     board.list(graph([ticket("1")]));
-    board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 1, model: "opus" });
+    board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 1, model: "opus", effort: "low" });
     t = 20;
-    expect((await board.view()).rows[0]).toMatchObject({ badge: "running", since: 10 });
+    expect((await board.view()).rows[0]).toMatchObject({ badge: "running", since: 10, model: "opus", effort: "low" });
     board.observe({ name: "step.finished", ticket: "1", stage: "spec", round: 1, ok: true });
     expect((await board.view()).rows[0]?.badge).toBe("waiting");
+  });
+
+  // No effort on the step is the executor's default, not a level: null, as
+  // model is, and never whatever else an event put under the key.
+  it("carries no effort for a step that named none, or named something not a string", async () => {
+    const board = shell(() => 0);
+    board.list(graph([ticket("1"), ticket("2")]));
+    board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 1 });
+    board.observe({ name: "step.started", ticket: "2", stage: "spec", round: 1, effort: { level: "max" } });
+    const rows = (await board.view()).rows;
+    expect(rows.map((r) => [r.badge, r.effort])).toEqual([["running", null], ["running", null]]);
   });
 
   it("ignores a step event that names no ticket", async () => {
