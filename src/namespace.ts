@@ -636,9 +636,33 @@ export interface Executor {
        * The engine's callback never throws.
        */
       onActivity?: (e: AgentActivity) => void;
+      /**
+       * Continue `resume` as a new session of its own, leaving the one resumed
+       * untouched: a pairing's closing turn, asked for the step's answer on
+       * the person's session without adding a turn to it. An executor that
+       * cannot fork must refuse a run that asks, never resume in place.
+       */
+      fork?: boolean;
       signal: AbortSignal;
     },
   ): Promise<{ text: string; sessionId: string | null }>;
+  /**
+   * The command a person runs in their own terminal to work a step with the
+   * agent: a session under `session`, in `cwd`, seeded with `prompt` — or,
+   * given `resume`, the agent's own session continued as a fork under
+   * `session`, leaving it untouched. `server` is the engine's own, for the
+   * tools a person's session may reach Landrace with.
+   *
+   * Optional: an executor without it offers no pairing, and asking for one
+   * is refused. Nothing is run here — the person runs what this returns.
+   */
+  handoff?(opts: { cwd: string; session: string; prompt: string; resume?: string; server?: RunServer }): Promise<Handoff>;
+}
+
+/** A command line for a person to run: each argument its own element, and where to run it. */
+export interface Handoff {
+  argv: string[];
+  cwd: string;
 }
 
 /**
@@ -670,7 +694,7 @@ export type ExecutorContext = RuntimeContext & {
  */
 export interface ExecutorFactory {
   id: string;
-  create(ctx: ExecutorContext): Promise<Pick<Executor, "run">>;
+  create(ctx: ExecutorContext): Promise<Pick<Executor, "run" | "handoff">>;
 }
 
 /**
@@ -907,7 +931,7 @@ export type RedactingLogger = Logger & {
   scrub(text: string, extra?: readonly string[]): string;
 };
 
-export type LockKind = "tick" | "conversation" | "execution" | "goto";
+export type LockKind = "tick" | "conversation" | "execution" | "goto" | "pair";
 
 export interface Held {
   ticket: string;
@@ -1695,6 +1719,60 @@ export type GotoResult = { refused: string } | { to: string };
 export interface GotoDeps extends ReplyDeps {
   workflow: Workflow;
   lock?: LockOptions;
+}
+
+/**
+ * What pairing needs beyond a goto's: the steps, the agent that hands a
+ * session over and closes it, the screener, and where worktrees are cut.
+ */
+export interface PairDeps extends GotoDeps {
+  steps: Map<string, Step>;
+  /** Null, or one with no `handoff`: nothing is offered, and a pairing asked for is refused. */
+  executor: Executor | null;
+  screen?: Screener;
+  /** Absent, nothing is offered: a pairing's session needs a checkout of its own. */
+  sandbox?: { root: string };
+  /** `landrace mcp` on this workflow, for the person's session: their way back to Landrace. */
+  server?: ServerCommand;
+  /** How to start the engine's ticket server, for a hand-in on a `tickets:create` step. */
+  childServer?: ServerCommand;
+  /** Asked for the seeded prompt's briefing, as a step's invocation asks them. */
+  artifacts?: ArtifactHook[];
+  scrub?: (text: string, extra?: readonly string[]) => string;
+}
+
+/**
+ * A step a person may pair on now: the stage, the round it would be, and
+ * whether it continues the agent's own session there (a fork of it) or
+ * starts one seeded with the step's prompt.
+ */
+export interface PairOffer {
+  stage: string;
+  round: number;
+  continue: boolean;
+}
+
+/** What the panel's Pairing section shows: the pairing open now, or what may be paired on. */
+export interface PairingView {
+  open: Pairing | null;
+  offers: PairOffer[];
+}
+
+/** A pairing started — or an open one asked for again — and the command that joins it. */
+export interface PairStarted {
+  stage: string;
+  round: number;
+  session: string;
+  cwd: string;
+  /** One line for a POSIX shell: into the worktree, then the agent. */
+  command: string;
+}
+
+/** A hand-in taken: where its output was recorded, and what was left uncommitted and discarded. */
+export interface PairFinished {
+  stage: string;
+  round: number;
+  discarded: string[];
 }
 
 /** How the page's writes reach a ticket. `target` null is a Retry: `run.failedStage`, the failure that put the ticket where it is. */
