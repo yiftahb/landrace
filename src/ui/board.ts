@@ -149,7 +149,7 @@ export function boardView(input: {
       id: node.id, kind: node.kind, title: oneLine(node.title), link,
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
-      note: "", since: null, createdAt: node.createdAt ?? null, round: null, model: null,
+      note: "", since: null, createdAt: node.createdAt ?? null, round: null, model: null, effort: null,
       chat: null, screened: false, retry: null, goto: [], panel: null, children: [],
     };
     const s = status.get(node.id);
@@ -176,7 +176,7 @@ export function boardView(input: {
       // spec" would be talking about a stage the ticket has already left.
       const note = input.sent?.get(node.id) === running.stage ? `agent running — sent back to ${running.stage}` : "agent running";
       return { ...ticket, badge: "running", stage: running.stage, note,
-        since: running.since, round: running.round, model: running.model };
+        since: running.since, round: running.round, model: running.model, effort: running.effort };
     }
     const lock = input.elsewhere.get(node.id);
     if (lock && lock.pid !== input.pid) {
@@ -286,6 +286,7 @@ export function createBoard(opts: {
           stage: String(e.stage ?? ""),
           round: typeof e.round === "number" ? e.round : 0,
           model: typeof e.model === "string" ? e.model : null,
+          effort: typeof e.effort === "string" ? e.effort : null,
           since: now(),
         });
       } else if (e.name === "step.finished") {

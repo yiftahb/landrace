@@ -325,7 +325,7 @@ async function converging(
       // anything watching for "running" would wait on it for ever.
       // The finally is the point — a throw or an abort must not leave a step
       // looking as if it is still going.
-      deps.log("step.started", { ticket, stage: stage.id, round, model: step.model ?? null });
+      deps.log("step.started", { ticket, stage: stage.id, round, model: step.model ?? null, effort: step.effort ?? null });
       // The panel's lines for this run start here: a step that never
       // finished is run again at the same round, and its lines are not these.
       deps.activity?.begin(ticket, stage.id, round);
