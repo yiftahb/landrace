@@ -1461,7 +1461,6 @@ export interface Running {
   stage: string;
   round: number;
   model: string | null;
-  effort: string | null;
   since: number;
 }
 
@@ -1532,8 +1531,6 @@ export interface BoardRow {
   createdAt: number | null;
   round: number | null;
   model: string | null;
-  /** The running step's own `effort`, as `model` is its own `model`; null where it named none. */
-  effort: string | null;
   /** Tickets only. */
   chat: Chat | null;
   /** Stopped by a security check rather than for any other reason — the page draws a shield. */

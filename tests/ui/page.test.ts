@@ -1384,25 +1384,6 @@ describe("the Escape key and the panel", () => {
   });
 });
 
-describe("the ticket panel's facts", () => {
-  const facts = (row: object): Record<string, string> => {
-    const [, dl] = runInNewContext(`${fnSource("el")}${fnSource("panelTopOf")} panelTopOf(ROW, null, 0)`, {
-      ROW: { id: "12", link: "", badge: null, screened: false, stage: "build", round: 2, createdAt: null, since: null, children: [], ...row },
-      document: fakeDocument,
-    }) as FakeElement[];
-    const cells = dl?.children ?? [];
-    return Object.fromEntries(cells.filter((_, i) => i % 2 === 0).map((dt, i) => [dt.text, cells[2 * i + 1]?.text ?? ""]));
-  };
-
-  it("names the running step's effort beside its model", () => {
-    expect(facts({ model: "opus", effort: "high" })).toMatchObject({ Model: "opus", Effort: "high" });
-  });
-
-  it("draws a dash for a step that named no effort, as for no model", () => {
-    expect(facts({ model: null, effort: null })).toMatchObject({ Model: "—", Effort: "—" });
-  });
-});
-
 describe("the ticket panel's live lines", () => {
   const lines = [{ kind: "tool", text: "Read a.ts", at: 1 }, { kind: "message", text: "Looks fine", at: 2 }];
 

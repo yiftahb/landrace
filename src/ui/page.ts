@@ -1402,7 +1402,6 @@ function panelTopOf(row, last, now) {
     ["Stage", row.stage || "—"],
     ["Round", row.round ? "r" + row.round : "—"],
     ["Model", row.model || "—"],
-    ["Effort", row.effort || "—"],
     ["Opened", typeof row.createdAt === "number" ? agoLabel(row.createdAt, now) : "—"],
     ["Stage since", typeof row.since === "number" ? elapsed(row.since, now) : "—"],
     ["Last activity", last ? agoLabel(last.at, now) : "—"],
