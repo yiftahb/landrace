@@ -509,7 +509,10 @@ export async function runStep(opts: {
   // The same rule, and the same code, as an on_enter effect's fields: a route
   // is a workflow-authored template and an effect is structure, not prose.
   const expanded = expandEffectFields(route.effect, vars) as Effect;
-  const destination: Effect = { body, stage: stageId, round, ...expanded };
+  // `output` last, as on the record below: the value the step produced, already
+  // cut to its shape, which a hook posting structured content (a review's
+  // findings) needs and a route must not be able to write over.
+  const destination: Effect = { body, stage: stageId, round, ...expanded, output: value };
 
   // Where the answer sends the ticket, on the record that settles this round
   // — never a record of its own, which could land without the other and

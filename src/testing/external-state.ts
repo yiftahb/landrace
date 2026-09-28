@@ -13,6 +13,7 @@ import {
   parseMarker,
   parseOrigin,
   PULL_OPEN_EFFECT,
+  PULL_REVIEW_EFFECT,
   PULL_REQUEST_KIND,
   RECORD_EFFECT,
   recordMarker,
@@ -301,7 +302,10 @@ export function createExternalState(
 
     post: definePostHook({
       id: "memory",
-      handles: [LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT, BRANCH_PUSH_EFFECT, PULL_OPEN_EFFECT],
+      handles: [
+        LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT, BRANCH_PUSH_EFFECT, PULL_OPEN_EFFECT,
+        PULL_REVIEW_EFFECT,
+      ],
 
       /*
        * Asked of the snapshot rather than of the map behind it, exactly as a
@@ -353,6 +357,11 @@ export function createExternalState(
             return hasPullFrom(
               snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect),
             );
+          case PULL_REVIEW_EFFECT:
+            // As in the shipped tracker hook: apply() checks the pull request
+            // for the round's marker itself, since no snapshot carries reviews.
+            effectBranch(effect);
+            return false;
           default:
             return false;
         }
@@ -405,6 +414,36 @@ export function createExternalState(
           case BRANCH_PUSH_EFFECT:
             pushed.push(effectBranch(effect));
             return;
+          case PULL_REVIEW_EFFECT: {
+            // Threads are a count here, not text, so a review is what it does
+            // to the count: each well-formed finding opens one, and each id
+            // listed as resolved closes one the reviewer raised — never more
+            // than it raised, since a person's thread is theirs to close.
+            const branch = effectBranch(effect);
+            const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown };
+            const fromBranch = [...pulls.values()].filter((p) => p.ticket === ticket && p.branch === branch);
+            const pull = fromBranch.find((p) => p.closed === null && !p.merged);
+            if (!pull) {
+              // The same rule as the shipped hook: merged meanwhile, or a clean
+              // review, is nothing to fix; no pull request from the branch at
+              // all is a route naming the wrong branch.
+              const empty = !(Array.isArray(out.findings) && out.findings.length) && !(Array.isArray(out.resolved) && out.resolved.length);
+              if (empty || fromBranch.length > 0) return;
+              throw new Error(`there is no open pull request from ${branch} to put the review on`);
+            }
+            const marker = String(effect.marker);
+            if ((pull.reviews ?? []).includes(marker)) return;
+            const opened = (Array.isArray(out.findings) ? out.findings : []).filter((f) => {
+              const x = f as { file?: unknown; line?: unknown; body?: unknown } | null;
+              return typeof x === "object" && x !== null && typeof x.file === "string" && Number.isInteger(x.line) && typeof x.body === "string";
+            }).length;
+            const raised = pull.raised ?? 0;
+            const closing = Math.min(raised, Array.isArray(out.resolved) ? out.resolved.length : 0);
+            pull.raised = raised - closing + opened;
+            pull.openThreads = pull.openThreads - closing + opened;
+            pull.reviews = [...(pull.reviews ?? []), marker];
+            return;
+          }
           case PULL_OPEN_EFFECT: {
             const number = pulls.size + 1;
             pulls.set(`pr-${number}`, {

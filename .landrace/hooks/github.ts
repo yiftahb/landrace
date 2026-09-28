@@ -52,6 +52,7 @@ import {
   parseMarker,
   parseOrigin,
   PULL_OPEN_EFFECT,
+  PULL_REVIEW_EFFECT,
   PULL_REQUEST_KIND,
   RECORD_EFFECT,
   recordMarker,
@@ -553,6 +554,31 @@ function createClient(opts: GitHubOptions) {
         throw e;
       }
     },
+    /** The pull request's diff, a file at a time; GitHub stops at 3,000 files, a hundred a page. */
+    pullFiles: async (n: number): Promise<PullFile[]> => {
+      const all: PullFile[] = [];
+      for (let page = 1; page <= 30; page++) {
+        const batch = await call<PullFile[]>("GET", `/pulls/${n}/files?per_page=100&page=${page}`);
+        all.push(...batch);
+        if (batch.length < 100) break;
+      }
+      return all;
+    },
+    // ponytail: the first hundred reviews only; past that a round's marker could be missed and posted twice.
+    listReviews: (n: number) => call<Array<{ body: string | null }>>("GET", `/pulls/${n}/reviews?per_page=100`),
+    postReview: (n: number, body: string, comments: ReviewComment[]) =>
+      named(call("POST", `/pulls/${n}/reviews`, { event: "COMMENT", body, comments }), `"Pull requests: Read and write" on ${repo}`),
+    commentOnFile: (n: number, path: string, body: string, commitId: string) =>
+      named(
+        call("POST", `/pulls/${n}/comments`, { path, body, commit_id: commitId, subject_type: "file" }),
+        `"Pull requests: Read and write" on ${repo}`,
+      ),
+    // Checked, not assumed: an answer that does not say the thread is now
+    // resolved is a resolve that did not happen.
+    resolveThread: async (id: string): Promise<void> => {
+      const done = await graphqlRequest<{ resolveReviewThread?: { thread?: { isResolved?: boolean } } | null }>(RESOLVE_THREAD, { id });
+      if (done.resolveReviewThread?.thread?.isResolved !== true) throw new Error(`GitHub did not resolve review thread ${id}`);
+    },
     addSubIssue: (parent: number, child: number) =>
       named(call("POST", `/issues/${parent}/sub_issues`, { sub_issue_id: child }), `"Issues: Read and write" on ${repo}`),
     listComments: (n: number) => call<Comment[]>("GET", `/issues/${n}/comments?per_page=100`),
@@ -779,6 +805,11 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
     }
     case PULL_OPEN_EFFECT:
       return hasPullFrom(snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect));
+    case PULL_REVIEW_EFFECT:
+      // Asked of GitHub by apply() itself, by the review's marker: the
+      // snapshot carries no reviews, and a step's route effect is only ever
+      // planned once, right after its step.
+      return false;
     default:
       return false;
   }
@@ -1024,6 +1055,7 @@ const PROVIDES = [
 
 const HANDLES = [
   LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT, BRANCH_PUSH_EFFECT, PULL_OPEN_EFFECT,
+  PULL_REVIEW_EFFECT,
 ];
 
 /**
@@ -1490,6 +1522,28 @@ query LandraceTicket($owner: String!, $name: String!, $number: Int!, $head: Stri
  * the snapshot and carried into every predicate. What cannot be fetched
  * cannot leak.
  */
+/** One file of a pull request's diff, as `GET /pulls/{n}/files` answers it. `patch` is absent for a binary or huge file. */
+interface PullFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+}
+
+/** A line comment inside a review — the only place GitHub takes several findings in one request. */
+interface ReviewComment {
+  path: string;
+  line: number;
+  side: "RIGHT";
+  body: string;
+}
+
+const RESOLVE_THREAD = `
+mutation LandraceResolve($id: ID!) {
+  resolveReviewThread(input: { threadId: $id }) { thread { id isResolved } }
+}`;
+
 const THREADS_QUERY = `
 query LandraceThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -2061,6 +2115,7 @@ query LandraceBrief($owner: String!, $name: String!, $number: Int!, $cursor: Str
       reviewThreads(first: ${THREAD_PAGE}, after: $cursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
+          id
           isResolved
           path
           line
@@ -2079,6 +2134,7 @@ interface BriefComment {
 }
 
 interface BriefThread {
+  id: string;
   isResolved: boolean;
   path: string | null;
   line: number | null;
@@ -2137,9 +2193,11 @@ async function briefTicket(gh: Client, repo: string, ticket: string, snapshot: S
   const pulls = (await pullsOf(gh, repo, ticket)).pulls;
   const read = new Map<number, BriefThread[]>();
   for (const pull of pulls) read.set(pull.number, await threadsOn(gh, repo, pull.number));
+  const open = pulls.filter((p) => p.state === "OPEN");
   return {
-    threads: openThreads(pulls.filter((p) => p.state === "OPEN"), read),
+    threads: openThreads(open, read),
     history: historyOf(commentsOf(snapshot), pulls, read, await gh.botLogin()),
+    diff: await diffOf(gh, open),
   };
 }
 
@@ -2166,8 +2224,13 @@ function openThreads(open: PullNode[], read: Map<number, BriefThread[]>): string
       }
     }
     if (shown.length > 0) {
-      sections.push(`## PR #${pull.number}\n\n${shown.map((thread, i) =>
-        `${i + 1}. ${where(thread)}${cut((thread.comments.nodes[0]?.body ?? "").trim(), BRIEF_BODY_CHARS)}`).join("\n\n")}`);
+      sections.push(`## PR #${pull.number}\n\n${shown.map((thread, i) => {
+        const opening = thread.comments.nodes[0]?.body ?? "";
+        // The id is what a reviewer lists to resolve a thread, and only its
+        // own may be: ours by the finding marker pull.review stamped.
+        const ours = parseMarker(opening)?.kind === FINDING_KIND ? "(raised by the reviewer) " : "";
+        return `${i + 1}. [thread ${thread.id}] ${where(thread)}${ours}${cut(stripMarker(opening).trim(), BRIEF_BODY_CHARS)}`;
+      }).join("\n\n")}`);
     }
   }
 
@@ -2180,6 +2243,158 @@ function openThreads(open: PullNode[], read: Map<number, BriefThread[]>): string
     : `\n\n(${more} more open threads are not listed here. Address what is above; the rest come back next round.)`;
 
   return sections.join("\n\n") + tail;
+}
+
+/** How much of the diff a reviewer's prompt carries; the rest is named, to read in the worktree. */
+const BRIEF_DIFF_CHARS = 24_000;
+
+/**
+ * What the ticket's open pull requests change, file by file, for a reviewer
+ * that has no shell to run `git diff` with. Files past the budget are listed
+ * by name rather than dropped silently.
+ */
+async function diffOf(gh: Client, open: PullNode[]): Promise<string> {
+  if (open.length === 0) return "No pull request is open on this ticket, so there is no diff to review.";
+  const parts: string[] = [];
+  const unshown: string[] = [];
+  let spent = 0;
+  for (const pull of open) {
+    const files = await gh.pullFiles(pull.number);
+    parts.push(`## PR #${pull.number} — ${files.length} files changed`);
+    for (const f of files) {
+      const text = `### ${f.filename} (${f.status}, +${f.additions} −${f.deletions})\n\n` +
+        (f.patch === undefined ? "(no textual diff: binary, or too large for GitHub to show)" : "```diff\n" + f.patch + "\n```");
+      if (spent + text.length > BRIEF_DIFF_CHARS) {
+        unshown.push(`- ${f.filename} (+${f.additions} −${f.deletions})`);
+        continue;
+      }
+      spent += text.length;
+      parts.push(text);
+    }
+  }
+  const tail = unshown.length === 0
+    ? ""
+    : `\n\n${unshown.length} more changed files are not shown here; read them in the worktree:\n${unshown.join("\n")}`;
+  return parts.join("\n\n") + tail;
+}
+
+/** The marker kind a finding's thread ends with: how a reviewer's own thread is told from a person's. */
+const FINDING_KIND = "finding";
+
+interface Finding {
+  file: string;
+  line: number;
+  body: string;
+}
+
+const isFinding = (f: unknown): f is Finding => {
+  const x = f as Partial<Finding> | null;
+  return typeof x === "object" && x !== null && typeof x.file === "string" && x.file !== "" &&
+    Number.isInteger(x.line) && (x.line ?? 0) > 0 && typeof x.body === "string" && x.body.trim() !== "";
+};
+
+/**
+ * The new-side lines a patch shows — added or unchanged context — which are
+ * the lines GitHub takes a line comment on. A removed line has no new-side
+ * number, and a line outside every hunk is not in the diff at all.
+ */
+function commentableLines(patch: string | undefined): Set<number> {
+  const lines = new Set<number>();
+  let next = 0;
+  for (const row of (patch ?? "").split("\n")) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
+    if (hunk) {
+      next = Number(hunk[1]);
+      continue;
+    }
+    if (next === 0 || row.startsWith("-") || row.startsWith("\\")) continue;
+    lines.add(next++);
+  }
+  return lines;
+}
+
+/**
+ * pull.review: the reviewer's prose as one review, a thread per finding, and
+ * the reviewer's own threads it lists as addressed resolved.
+ *
+ * Idempotent by the review's trailing marker, checked on GitHub itself: a
+ * step's route effect is applied once, right after the step, and the one way
+ * it runs twice is a crash before the record, which re-runs the step at the
+ * same round. satisfied() cannot answer this — it sees only the snapshot, and
+ * the snapshot carries no reviews.
+ *
+ * Placement follows what GitHub accepts: a finding on a line the diff shows is
+ * a line thread in the review; one elsewhere in a changed file is a thread on
+ * the file, naming the line; one in a file the pull request does not touch
+ * cannot be threaded at all, and is listed in the review's text instead. A
+ * malformed finding is listed the same way rather than failing the step — the
+ * engine checks an output's fields, not what is inside them.
+ */
+async function applyReview(gh: Client, repo: string, effect: Effect, { snapshot, log }: HookContext): Promise<void> {
+  const branch = effectBranch(effect);
+  const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown };
+  const findings = Array.isArray(out.findings) ? out.findings : [];
+  const resolved = Array.isArray(out.resolved) ? out.resolved.filter((id): id is string => typeof id === "string") : [];
+  const fromBranch = ((snapshot.graph as Graph | undefined)?.nodes ?? []).filter(
+    (node) => node.kind === PULL_REQUEST_KIND && node.state.branch === branch,
+  );
+  const pr = fromBranch.find((node) => node.closed === null);
+  const number = Number(/^pr-([1-9][0-9]*)$/.exec(pr?.id ?? "")?.[1]);
+  if (!pr || !Number.isInteger(number)) {
+    // Merged or closed while the review ran — or a clean review with no
+    // pull request left to put it on — is nothing to fix, and halting here
+    // would hold a ticket back from `done`. No pull request from the branch
+    // at all is a route naming the wrong branch, and that is said.
+    if ((findings.length === 0 && resolved.length === 0) || fromBranch.length > 0) {
+      log("github.review.nowhere", { branch, findings: findings.length, why: "no open pull request from the branch" });
+      return;
+    }
+    throw new Error(`there is no open pull request from ${branch} to put the review on`);
+  }
+  const stage = String(effect.stage ?? "review");
+  const round = Number(effect.round ?? 0);
+  const marker = String(effect.marker ?? `review:${stage}:${round}`);
+
+  const posted = (await gh.listReviews(number)).some((r) => parseMarker(r.body ?? "")?.marker === marker);
+  if (!posted) {
+    const changed = new Map((await gh.pullFiles(number)).map((f) => [f.filename, commentableLines(f.patch)]));
+    const onLines: ReviewComment[] = [];
+    const onFiles: Array<{ path: string; body: string }> = [];
+    const unplaced: string[] = [];
+    findings.forEach((f, i) => {
+      if (!isFinding(f)) {
+        unplaced.push(`- ${neutraliseMarkers(cut(typeof f === "string" ? f : JSON.stringify(f) ?? String(f), BRIEF_BODY_CHARS))}`);
+        return;
+      }
+      const tail = renderMarker({ stage, kind: FINDING_KIND, round, marker: `${FINDING_KIND}:${stage}:${round}:${i}` });
+      const text = neutraliseMarkers(cut(f.body.trim(), MAX_COMMENT_CHARS - 1_000));
+      const lines = changed.get(f.file);
+      if (lines?.has(f.line)) onLines.push({ path: f.file, line: f.line, side: "RIGHT", body: text + tail });
+      else if (lines) onFiles.push({ path: f.file, body: `line ${f.line}: ${text}${tail}` });
+      else unplaced.push(`- \`${f.file}:${f.line}\` — ${text}`);
+    });
+    const listed = unplaced.length === 0 ? "" : `\n\nFindings GitHub cannot place on this pull request's diff:\n\n${unplaced.join("\n")}`;
+    const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, MAX_COMMENT_CHARS - 1_000) +
+      renderMarker({ stage, kind: "review", round, marker });
+    // File threads first, the review last: the review's marker is what says
+    // this round is on GitHub, so it lands only once everything else has.
+    const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
+    for (const f of onFiles) await gh.commentOnFile(number, f.path, f.body, head);
+    await gh.postReview(number, body, onLines);
+  }
+
+  if (resolved.length === 0) return;
+  const threads = new Map((await threadsOn(gh, repo, number)).map((t) => [t.id, t]));
+  for (const id of resolved) {
+    const thread = threads.get(id);
+    if (!thread || parseMarker(thread.comments.nodes[0]?.body ?? "")?.kind !== FINDING_KIND) {
+      // A person's thread is theirs to close, and an id that is not on the
+      // pull request is a mistake worth seeing: said, never silently dropped.
+      log("github.review.unresolvable", { thread: id, why: thread ? "a person raised it" : "no such thread on the pull request" });
+      continue;
+    }
+    if (!thread.isResolved) await gh.resolveThread(id);
+  }
 }
 
 /**
@@ -2465,7 +2680,8 @@ export function githubHooks(opts: GitHubOptions): {
       id: "github",
       handles: HANDLES,
       satisfied,
-      apply: (effect, ctx) => applyEffect(gh, push, effect, ctx),
+      apply: (effect, ctx) =>
+        effect.type === PULL_REVIEW_EFFECT ? applyReview(gh, opts.repo, effect, ctx) : applyEffect(gh, push, effect, ctx),
     }),
 
     source: defineSource({
@@ -2642,4 +2858,5 @@ export const githubPreflight = definePreflight({ id: "github", check });
 /** Every GraphQL document this hook sends, so a test can cost each against GitHub's node limit. */
 export const GRAPHQL_QUERIES = {
   ISSUE_QUERY, ISSUES_QUERY, CLOSED_QUERY, PULLS_QUERY, CLOSED_PULLS_QUERY, TICKET_QUERY, THREADS_QUERY, BRIEF_QUERY, PREFLIGHT_PR_QUERY,
+  RESOLVE_THREAD,
 };

@@ -633,13 +633,14 @@ describe("the open threads reach the prompt, and only the prompt", () => {
   });
 
   /* `history` rides along on the same call now; the open list must not notice. */
-  it("briefs the open threads exactly as before, beside the history", async () => {
+  it("briefs the open threads as before, each named by its id, beside the history", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ number: 51, head: "landrace/1", threads: [
       { isResolved: true, body: "settled", author: "a-person", replies: [{ author: "someone", body: "ok" }] },
       { isResolved: false, body: "this leaks a file handle", path: "src/x.ts", line: 12, replies: [{ author: "a-person", body: "no" }] },
     ] });
-    expect((await briefOf(gh, "1")).threads).toBe("## PR #51\n\n1. src/x.ts:12 — this leaks a file handle");
+    // The id is new: it is what a reviewer lists to resolve its own thread.
+    expect((await briefOf(gh, "1")).threads).toBe("## PR #51\n\n1. [thread thread-51-1] src/x.ts:12 — this leaks a file handle");
   });
 });
 

@@ -183,9 +183,9 @@ describe("the §10 review cycle iterates", () => {
     expect(fixing).toContain("finding 1");
     expect(fixing).not.toContain("{brief.github.threads}");
 
-    // And the reviewer, who raises findings rather than addressing them, is
-    // shown none: a briefing is prompt text for the step that asked for it.
-    expect(r.prompts.find((p) => p.stage === "code-review")?.prompt ?? "").not.toContain("finding 0");
+    // The reviewer is shown them too, so it can resolve its own — through its
+    // prompt, like the fixer, never through the snapshot.
+    expect(r.prompts.find((p) => p.stage === "code-review")?.prompt ?? "").toContain("finding 0");
   });
 
   it("records each entry exactly once, and numbers it with the round the step then runs", async () => {
@@ -575,11 +575,13 @@ describe("a ticket goes all the way round §10", () => {
    * declare tickets:create re-reads the ticket once afterwards, to be sure it
    * made no children — none of this workflow's steps declares it.
    */
-  it("costs one ticket read per pass, one per invocation, plus one per step that asks to see the threads", async () => {
+  it("costs one ticket read per pass, one per invocation, plus one per step that asks to see the threads or the diff", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const r = await run(gh);
 
-    const briefed = r.invocations.filter((i) => i.stage === "fix-review").length;
+    // fix-review reads the threads; code-review reads them and the diff, so it
+    // can resolve its own and see the change without a shell.
+    const briefed = r.invocations.filter((i) => i.stage === "fix-review" || i.stage === "code-review").length;
     expect(briefed).toBeGreaterThan(0);
     // The briefing finds the ticket's pull requests the same way `read` does.
     expect(queriesOf(gh, "LandraceTicket")).toBe(r.result.passes + r.invocations.length + briefed);
@@ -590,8 +592,7 @@ describe("a ticket goes all the way round §10", () => {
     expect(gh.graphql.length).toBe(
       queriesOf(gh, "LandraceTicket") + queriesOf(gh, "LandraceThreads") + queriesOf(gh, "LandraceBrief"),
     );
-    // The reviewer runs more often than the fixer and pays for no briefing:
-    // the four invocations of `code-review` add nothing to the number above.
-    expect(r.invocations.filter((i) => i.stage === "code-review").length).toBeGreaterThan(briefed);
+    // And nothing else: the build, the spec and the judge ask for no briefing.
+    expect(briefed).toBeLessThan(r.invocations.length);
   });
 });

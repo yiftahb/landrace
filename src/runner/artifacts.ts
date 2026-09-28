@@ -154,6 +154,16 @@ const briefingsNamedIn = (prompt: string): Set<string> =>
   new Set([...prompt.matchAll(/\{brief\.([a-zA-Z0-9_]+)\./g)].map((m) => m[1] as string));
 
 /**
+ * And which of a hook's keys it asks for. A hook briefs everything it has in
+ * one call — a source reads threads, history and a diff together —
+ * and a key the prompt never names would still spend the hook's budget: a
+ * retro's history used all of it ahead of a reviewer's diff, which then
+ * arrived empty.
+ */
+const keysNamedIn = (prompt: string, id: string): Set<string> =>
+  new Set([...prompt.matchAll(/\{brief\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)/g)].filter((m) => m[1] === id).map((m) => m[2] as string));
+
+/**
  * Ask every hook the prompt names — an artifact or the source — for its briefing: prompt text, filed under
  * the hook's own name, and nowhere near the snapshot.
  *
@@ -193,6 +203,7 @@ export async function buildBriefing(
     }
 
     const kept: Record<string, string> = {};
+    const named = keysNamedIn(prompt, hook.id);
     for (const [key, value] of Object.entries(fragment)) {
       // Same boundary the state above draws, for the same reason: a reserved
       // id is not a field name but a reachable key on a plain object, and the
@@ -205,6 +216,7 @@ export async function buildBriefing(
           `hook "${hook.id}" briefed "${key}" as a ${typeof value}; a briefing is prompt text, nothing else`,
         );
       }
+      if (!named.has(key)) continue;
       const safe = neutraliseMarkers(value);
       kept[key] = safe.length <= left ? safe : `${safe.slice(0, Math.max(0, left))}\n\n…[truncated]`;
       left = Math.max(0, left - safe.length);

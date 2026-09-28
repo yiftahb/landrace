@@ -360,7 +360,7 @@ describe("the shipped steps are handed the approved spec as text", () => {
     const { steps } = await loadWorkflow(".landrace");
     const rendered = renderPrompt(steps.get(`steps/${id}.md`)?.prompt ?? "", snapshot, {
       spec: { content: "# Export CSV\n\nOne file, comma separated." },
-      github: { threads: "1. src/x.ts:12 — this leaks a file handle" },
+      github: { threads: "1. src/x.ts:12 — this leaks a file handle", diff: "## PR #5 — 1 files changed" },
     });
 
     expect(rendered).toContain("One file, comma separated.");
@@ -397,7 +397,7 @@ describe("the shipped steps are handed the approved spec as text", () => {
 describe("the shipped prompts follow a numbered procedure", () => {
   const ECHO = "Start your final summary with the Progress checklist";
   it.each([
-    ["spec", false], ["triage", false], ["build", true], ["fix-review", true], ["retro", true],
+    ["spec", false], ["triage", false], ["build", true], ["code-review", true], ["fix-review", true], ["retro", true],
   ] as const)("%s has a Procedure whose checklist items each have their own Step section, in order", async (id, echoes) => {
     const { steps } = await loadWorkflow(".landrace");
     const prompt = steps.get(`steps/${id}.md`)?.prompt ?? "";
@@ -410,6 +410,36 @@ describe("the shipped prompts follow a numbered procedure", () => {
     expect(sections.every((at) => at > procedure)).toBe(true);
     expect([...sections].sort((a, b) => a - b)).toEqual(sections);
     expect(prompt.includes(ECHO)).toBe(echoes);
+  });
+});
+
+/*
+ * code-review ran on #19, #20 and #21 and never raised a thread: it had no
+ * tool to post one and no shell to see the diff, so every review ended with
+ * "no threads are open" and fix-review never ran. It now reads the diff from
+ * its briefing and answers with a list; pull.review puts that list on the
+ * pull request, where the open-thread count routes the ticket.
+ */
+describe("the shipped code-review raises its findings through its answer", () => {
+  it("is read-only and answers reviewed with findings and resolved, routed to pull.review on the ticket's branch", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const step = steps.get("steps/code-review.md");
+    expect(step?.capabilities).toEqual(["repo:read"]);
+    expect(Object.keys(step?.output?.shapes.reviewed as object).sort()).toEqual(["findings", "resolved"]);
+    expect(step?.output?.routes.map((r) => r.effect)).toEqual([
+      { type: "pull.review", branch: "landrace/{ticket}", marker: "review:{round}" },
+    ]);
+  });
+
+  it("is shown the diff and the open threads, and never told to run anything or post a thread itself", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/code-review.md")?.prompt ?? "";
+    expect(prompt).toContain("{brief.github.diff}");
+    expect(prompt).toContain("{brief.github.threads}");
+    expect(prompt).toMatch(/no shell/i);
+    // The instructions #19–#21's reviewers could not follow.
+    expect(prompt).not.toMatch(/verify a claim by running|raise one thread per finding, on the line/i);
+    expect(prompt).toMatch(/never list a thread a person raised/i);
   });
 });
 
