@@ -142,7 +142,7 @@ const entryRecords = (markers: Marker[], stage: string) =>
   markers.filter((m) => m.kind === "enter" && m.stage === stage).map((m) => m.round);
 
 describe("the §10 review cycle iterates", () => {
-  it("runs code-review again after fix-review, to a second and a third round", async () => {
+  it("runs code-review again after fix-review, five reviews and four fixes in all", async () => {
     const r = await run(world(["lr:auto", "lr:stage:build"]));
 
     expect(r.invocations.filter((i) => i.stage !== "build")).toEqual([
@@ -153,9 +153,11 @@ describe("the §10 review cycle iterates", () => {
       { stage: "code-review", round: 3 },
       { stage: "fix-review", round: 3 },
       { stage: "code-review", round: 4 },
+      { stage: "fix-review", round: 4 },
+      { stage: "code-review", round: 5 },
     ]);
-    expect(r.run.counters["code-review"]).toBe(4);
-    expect(r.run.counters["fix-review"]).toBe(3);
+    expect(r.run.counters["code-review"]).toBe(5);
+    expect(r.run.counters["fix-review"]).toBe(4);
   });
 
   it("stops at the workflow's own review budget, not at the pass cap", async () => {
@@ -190,8 +192,8 @@ describe("the §10 review cycle iterates", () => {
 
   it("records each entry exactly once, and numbers it with the round the step then runs", async () => {
     const r = await run(world(["lr:auto", "lr:stage:build"]));
-    expect(entryRecords(r.markers, "code-review")).toEqual([1, 2, 3, 4]);
-    expect(entryRecords(r.markers, "fix-review")).toEqual([1, 2, 3]);
+    expect(entryRecords(r.markers, "code-review")).toEqual([1, 2, 3, 4, 5]);
+    expect(entryRecords(r.markers, "fix-review")).toEqual([1, 2, 3, 4]);
   });
 });
 
@@ -225,9 +227,9 @@ describe("a crash between the entry record and the position it belongs to", () =
     await run(gh, { breakOn: secondReview });
     const resumed = await run(gh);
 
-    expect(entryRecords(resumed.markers, "code-review")).toEqual([1, 2, 3, 4]);
+    expect(entryRecords(resumed.markers, "code-review")).toEqual([1, 2, 3, 4, 5]);
     expect(resumed.invocations[0]).toEqual({ stage: "code-review", round: 2 });
-    expect(resumed.run.rounds["code-review"]).toEqual({ entered: 4, output: 4 });
+    expect(resumed.run.rounds["code-review"]).toEqual({ entered: 5, output: 5 });
     expect(resumed.result.settled).not.toBe("cap");
   });
 });
@@ -273,8 +275,8 @@ describe("a ticket that has lost its one stage label", () => {
   it("halts for a human rather than restarting a finished run from the entry stage", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const finished = await run(gh);
-    expect(finished.run.counters["code-review"]).toBe(4);
-    expect(finished.run.counters["fix-review"]).toBe(3);
+    expect(finished.run.counters["code-review"]).toBe(5);
+    expect(finished.run.counters["fix-review"]).toBe(4);
 
     stageless(gh);
     const r = await run(gh);
@@ -560,9 +562,44 @@ describe("a ticket goes all the way round §10", () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const r = await run(gh);
 
-    expect(r.invocations.filter((i) => i.stage === "fix-review").length).toBe(3);
+    expect(r.invocations.filter((i) => i.stage === "fix-review").length).toBe(4);
     expect([...gh.pulls.values()][0]?.threads.filter((t) => !t.isResolved).length).toBe(2);
     expect(r.labels).toContain("lr:blocked");
+  });
+
+  /*
+   * #31: a person's line comment at pr-human-review. The fixer answered it
+   * but may not resolve it, so the reviewer's open-thread count sent the
+   * ticket back to fix-review until the review budget ran out, and a right
+   * fix ended `blocked`. Now the fixer's reply hands the thread to the
+   * person, and the ticket comes back to them; their reply on it is a fix
+   * owed again.
+   */
+  it("fixes a person's line comment, answers it on the thread, and hands the pull request back to them", async () => {
+    const gh = world(["lr:auto", "lr:stage:build"]);
+    const reviewed = await run(gh, { resolveOn: 1 });
+    expect(reviewed.labels).toContain("lr:stage:pr-human-review");
+
+    const pull = gh.pulls.get(7);
+    if (!pull) throw new Error("the build never opened a pull request");
+    pull.threads.push({ id: "T-alice", isResolved: false, body: "rename this", author: "alice", path: "src/a.ts", line: 1 });
+    const answers = {
+      "fix-review": '```json\n{"kind":"addressed","replies":[{"thread":"T-alice","body":"Fixed in `abc123`: renamed."}]}\n```',
+    };
+    const fixed = await run(gh, { answers });
+
+    expect(fixed.invocations.map((i) => i.stage)).toEqual(["fix-review", "code-review", "retro"]);
+    expect(fixed.labels).toContain("lr:stage:pr-human-review");
+    expect(fixed.labels).not.toContain("lr:blocked");
+    const thread = pull.threads.find((t) => t.id === "T-alice");
+    expect(thread?.isResolved).toBe(false);
+    expect(parseMarker(thread?.replies?.at(-1)?.body ?? "")).toMatchObject({ kind: "fix", marker: "fix:fix-review:1:T-alice" });
+
+    // The person says it is still not right, on the thread: a fix is owed again.
+    thread?.replies?.push({ author: "alice", body: "the other one too" });
+    const again = await run(gh, { answers });
+    expect(again.invocations[0]).toEqual({ stage: "fix-review", round: 2 });
+    expect(again.labels).toContain("lr:stage:pr-human-review");
   });
 
   /*

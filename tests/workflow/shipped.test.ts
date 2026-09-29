@@ -76,7 +76,7 @@ describe("the shipped workflow splits every failure between blocked and screened
   const failedAt = (stage: string, refused: boolean): Snapshot => ({
     node: { id: "7", kind: "ticket", title: "t", link: "", closed: null, priority: null, origin: null,
       state: { labels: ["lr:auto", `lr:stage:${stage}`], assignees: [] } },
-    rel: { implements: { in: { total: 1, not: { merged: 1 }, sum: { openThreads: 0 }, stage: {} }, out: { total: 0, stage: {} } } },
+    rel: { implements: { in: { total: 1, not: { merged: 1 }, sum: { awaitingFix: 0 }, stage: {} }, out: { total: 0, stage: {} } } },
     run: {
       stage, counters: { spec: 1, triage: 1, build: 1, "code-review": 1, "fix-review": 1 },
       // Every earlier round's output still on the ticket, the way it is at
@@ -117,11 +117,15 @@ describe("the shipped workflow splits every failure between blocked and screened
 
 const HOMES = ["spec-questions", "spec-human-review", "pr-human-review", "blocked", "screened"] as const;
 
-const snapshotAt = (stage: string, run: object, rel = { total: 1, merged: 0, openThreads: 0 }): Snapshot => ({
+/** `openThreads` defaults to `awaitingFix`: every open thread awaits a fix unless a test says some were answered. */
+type Pulls = { total: number; merged: number; awaitingFix: number; openThreads?: number };
+
+const snapshotAt = (stage: string, run: object, rel: Pulls = { total: 1, merged: 0, awaitingFix: 0 }): Snapshot => ({
   node: { id: "7", kind: "ticket", title: "t", link: "", closed: null, priority: null, origin: null,
     state: { labels: ["lr:auto", `lr:stage:${stage}`], assignees: [] } },
   rel: { implements: { in: {
-    total: rel.total, not: { merged: rel.total - rel.merged }, sum: { openThreads: rel.openThreads }, stage: {},
+    total: rel.total, not: { merged: rel.total - rel.merged },
+    sum: { openThreads: rel.openThreads ?? rel.awaitingFix, awaitingFix: rel.awaitingFix }, stage: {},
   }, out: { total: 0, stage: {} } } },
   run: {
     stage, counters: { spec: 1, triage: 1, build: 1, "code-review": 1 }, outputs: { spec: { kind: "spec" } },
@@ -149,8 +153,13 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
 
   it("leaves a reply at pr-human-review to done once the pull request merged, and to fix-review while a thread is open", async () => {
     const replied = { lastEvent: { actor: "human", at: null } };
-    expect(await destination(snapshotAt("pr-human-review", replied, { total: 1, merged: 1, openThreads: 0 }))).toBe("done");
-    expect(await destination(snapshotAt("pr-human-review", replied, { total: 1, merged: 0, openThreads: 1 }))).toBe("fix-review");
+    expect(await destination(snapshotAt("pr-human-review", replied, { total: 1, merged: 1, awaitingFix: 0 }))).toBe("done");
+    expect(await destination(snapshotAt("pr-human-review", replied, { total: 1, merged: 0, awaitingFix: 1 }))).toBe("fix-review");
+  });
+
+  it("takes a reply at pr-human-review to triage while every open thread is answered and waiting on the person", async () => {
+    const replied = { lastEvent: { actor: "human", at: null } };
+    expect(await destination(snapshotAt("pr-human-review", replied, { total: 1, merged: 0, awaitingFix: 0, openThreads: 2 }))).toBe("triage");
   });
 
   const judged = (home: string, intent: string, over: object = {}) => snapshotAt("triage", {
@@ -189,7 +198,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const published = (pulls: number, intent: string) => snapshotAt("spec", {
       outputs: { spec: { kind: "spec" }, triage: { intent } }, rounds: { spec: { entered: 2, output: 2 } },
       counters: { spec: 2, triage: 2, build: 1, "code-review": 1 },
-    }, { total: pulls, merged: 0, openThreads: 0 });
+    }, { total: pulls, merged: 0, awaitingFix: 0 });
     expect(await destination(published(1, "revise"))).toBe("build");
     expect(await destination(published(1, "goto-spec"))).toBe("spec-human-review");
     expect(await destination(published(0, "revise"))).toBe("spec-human-review");
@@ -204,14 +213,14 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const together = snapshotAt("spec", {
       outputs: { spec: { kind: "spec" }, triage: { intent } }, rounds: { spec: { entered: 2, output: 2 } },
       counters: { spec: 2, triage: 2, build: 0 }, lastOutputBy: "pair",
-    }, { total: pulls, merged: 0, openThreads: 0 });
+    }, { total: pulls, merged: 0, awaitingFix: 0 });
     expect(await destination(together)).toBe("build");
   });
 
   it("asks nothing of a spec written together that came back with questions", async () => {
     const asked = snapshotAt("spec", {
       outputs: { spec: { kind: "questions" } }, rounds: { spec: { entered: 1, output: 1 } }, lastOutputBy: "pair",
-    }, { total: 0, merged: 0, openThreads: 0 });
+    }, { total: 0, merged: 0, awaitingFix: 0 });
     expect(await destination(asked)).toBe("spec-questions");
   });
 
@@ -243,8 +252,9 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
   /*
    * Retry is a goto to the step whose failure put the ticket there, and any step can fail:
    * a halt listing only spec and build left a broken review with no retry at
-   * all. Each target is capped by its own rounds — fix-review by code-review's
-   * too, the loop the two share — and offered only where it could run: a
+   * all. Each target is capped by its own rounds — fix-review by its own
+   * twenty alone, so a person's thread is never stranded behind the review's
+   * five — and offered only where it could run: a
    * review needs a pull request, and the judge a message to read. A goto
    * that landed on a stage whose precondition fails would halt there, and
    * nothing could send the ticket on.
@@ -254,10 +264,8 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const every = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
-      { stage: "code-review", when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } } },
-      { stage: "fix-review", when: {
-        "run.counters.code-review": { $lt: 4 }, "run.counters.fix-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 },
-      } },
+      { stage: "code-review", when: { "run.counters.code-review": { $lt: 5 }, "rel.implements.in.total": { $gt: 0 } } },
+      { stage: "fix-review", when: { "run.counters.fix-review": { $lt: 20 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "retro", when: {
         "run.counters.retro": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 }, "rel.implements.in.not.merged": { $gt: 0 },
       } },
@@ -275,16 +283,16 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(at("code-review"))).toBe("code-review");
     expect(await destination(at("fix-review"))).toBe("fix-review");
     expect(await destination(at("triage"))).toBe("triage");
-    expect(await destination(at("code-review", { "code-review": 4 }))).toMatch(/^wait: .*only while/);
-    expect(await destination(at("fix-review", { "code-review": 4 }))).toMatch(/^wait: .*only while/);
-    // A failed fix round advances only its own counter, so code-review's
-    // alone would let Retry run it for ever.
-    expect(await destination(at("fix-review", { "fix-review": 4 }))).toMatch(/^wait: .*only while.*run\.counters\.fix-review/);
+    expect(await destination(at("code-review", { "code-review": 5 }))).toMatch(/^wait: .*only while/);
+    // Past the review's five, a fix is still offered: a person's thread
+    // needs one, and it is bounded by its own twenty.
+    expect(await destination(at("fix-review", { "code-review": 9 }))).toBe("fix-review");
+    expect(await destination(at("fix-review", { "fix-review": 20 }))).toMatch(/^wait: .*only while.*run\.counters\.fix-review/);
     expect(await destination(at("triage", { triage: 20 }))).toMatch(/^wait: .*only while/);
   });
 
   it.each(["blocked", "screened"])("from %s, declines a review with no pull request and the judge with no message", async (halt) => {
-    const noPull = { total: 0, merged: 0, openThreads: 0 };
+    const noPull = { total: 0, merged: 0, awaitingFix: 0 };
     expect(await destination(snapshotAt(halt, { goto: "code-review" }, noPull)))
       .toMatch(/^wait: .*"code-review" only while.*rel\.implements\.in\.total/);
     expect(await destination(snapshotAt(halt, { goto: "fix-review" }, noPull)))
@@ -538,11 +546,11 @@ describe("build is shown what the person asked for", () => {
 });
 
 describe("the shipped code-review raises its findings through its answer", () => {
-  it("is read-only and answers reviewed with findings and resolved, routed to pull.review on the ticket's branch", async () => {
+  it("is read-only and answers reviewed with findings, replies and resolved, routed to pull.review on the ticket's branch", async () => {
     const { steps } = await loadWorkflow(".landrace");
     const step = steps.get("steps/code-review.md");
     expect(step?.capabilities).toEqual(["repo:read"]);
-    expect(Object.keys(step?.output?.shapes.reviewed as object).sort()).toEqual(["findings", "resolved"]);
+    expect(Object.keys(step?.output?.shapes.reviewed as object).sort()).toEqual(["findings", "replies", "resolved"]);
     expect(step?.output?.routes.map((r) => r.effect)).toEqual([
       { type: "pull.review", branch: "landrace/{ticket}", marker: "review:{round}" },
     ]);
@@ -557,6 +565,8 @@ describe("the shipped code-review raises its findings through its answer", () =>
     // The instructions #19–#21's reviewers could not follow.
     expect(prompt).not.toMatch(/verify a claim by running|raise one thread per finding, on the line/i);
     expect(prompt).toMatch(/never list a thread a person raised/i);
+    // Its own threads, re-checked: resolved when fixed, answered when not.
+    expect(prompt).toMatch(/still wrong/i);
   });
 });
 
@@ -610,15 +620,22 @@ describe("the shipped write steps merge, test, commit and push their own branch"
     expect(prompt).toContain("only inside this worktree and the repository's git directory");
   });
 
-  it("fix-review sends a pushback to the round's own comment, not a reply the agent has no way to post", async () => {
+  /*
+   * #31: a pushback in the round's summary was lost, and a person's thread
+   * the fixer answered still read as open. The fixer answers each thread in
+   * its json instead, and pull.review posts each answer where it was raised.
+   */
+  it("fix-review answers each thread through its json, routed to pull.review, and resolves none", async () => {
     const { steps } = await loadWorkflow(".landrace");
-    const prompt = steps.get("steps/fix-review.md")?.prompt ?? "";
-    // The old instruction asked for something the agent cannot do: it has no
-    // tracker or forge access, so it cannot reply on a review thread.
-    expect(prompt).not.toMatch(/or reply saying why the finding is wrong/i);
-    expect(prompt).toMatch(/final summary/i);
-    expect(prompt).toMatch(/cannot reply on the thread/i);
-    // Fix 3 must not loosen the existing rule against resolving threads.
+    const step = steps.get("steps/fix-review.md");
+    expect(Object.keys(step?.output?.shapes.addressed as object)).toEqual(["replies"]);
+    expect(step?.output?.routes.map((r) => r.effect)).toEqual([
+      { type: "pull.review", branch: "landrace/{ticket}", marker: "fix:{round}" },
+    ]);
+    const prompt = step?.prompt ?? "";
+    expect(prompt).toContain("Fixed in `");
+    expect(prompt).toContain("Not changed, because");
+    expect(prompt).not.toMatch(/cannot reply on the thread|your final summary is where a pushback goes/i);
     expect(prompt).toMatch(/do not resolve any thread/i);
   });
 
@@ -641,7 +658,7 @@ describe("the shipped write steps merge, test, commit and push their own branch"
     counters: { spec: 1, triage: 1, build: rounds },
     outputs: { spec: { kind: "spec" }, triage: { intent: "approve" }, build: { kind: "done" } },
     rounds: { build: { entered: rounds, output: rounds } },
-  }, { total: 0, merged: 0, openThreads: 0 });
+  }, { total: 0, merged: 0, awaitingFix: 0 });
 
   it("lets a person send a settled build back to build, within build's three rounds", async () => {
     const { workflow } = await loadWorkflow(".landrace");
@@ -657,6 +674,50 @@ describe("the shipped write steps merge, test, commit and push their own branch"
 });
 
 /*
+ * #31: a thread is a conversation, and the loop routes on each one's last
+ * word. A thread the fixer answered waits on the person and never loops; a
+ * person's reply, or the reviewer's "still wrong", sends it back to be fixed.
+ * code-review runs five rounds; fix-review twenty, and only its own twenty
+ * bounds the way back to review, so a person's thread is never stranded.
+ */
+describe("the shipped review loop routes on whether a thread awaits a fix", () => {
+  const reviewed = (reviews: number, pulls: Pulls) => snapshotAt("code-review", {
+    counters: { spec: 1, triage: 1, build: 1, "code-review": reviews, "fix-review": reviews - 1 },
+    outputs: { spec: { kind: "spec" }, build: { kind: "done" }, "code-review": { kind: "reviewed" } },
+    rounds: { "code-review": { entered: reviews, output: reviews } },
+  }, pulls);
+  const fixed = (fixes: number, reviews: number) => snapshotAt("fix-review", {
+    counters: { spec: 1, triage: 1, build: 1, "code-review": reviews, "fix-review": fixes },
+    outputs: { spec: { kind: "spec" }, build: { kind: "done" }, "fix-review": { kind: "addressed" } },
+    rounds: { "fix-review": { entered: fixes, output: fixes } },
+  }, { total: 1, merged: 0, awaitingFix: 0, openThreads: 1 });
+
+  it("sends a review with threads awaiting a fix to fix-review within five reviews, and to blocked on the fifth", async () => {
+    const waiting = { total: 1, merged: 0, awaitingFix: 1 };
+    expect(await destination(reviewed(4, waiting))).toBe("fix-review");
+    expect(await destination(reviewed(5, waiting))).toBe("blocked");
+  });
+
+  it("never loops on a thread the fixer answered: open, but waiting on the person", async () => {
+    expect(await destination(reviewed(2, { total: 1, merged: 0, awaitingFix: 0, openThreads: 3 }))).toBe("retro");
+    expect(await destination(reviewed(1, { total: 1, merged: 0, awaitingFix: 0, openThreads: 3 }))).toBe("pr-human-review");
+  });
+
+  it("sends a thread the person commented on at pr-human-review to fix-review, however many reviews ran", async () => {
+    const at = (reviews: number) => snapshotAt("pr-human-review", {
+      counters: { spec: 1, triage: 1, build: 1, "code-review": reviews, "fix-review": 3 },
+    }, { total: 1, merged: 0, awaitingFix: 1, openThreads: 2 });
+    expect(await destination(at(1))).toBe("fix-review");
+    expect(await destination(at(9))).toBe("fix-review");
+  });
+
+  it("reviews every fix within fix-review's twenty, past the review's five, and blocks on the twentieth", async () => {
+    expect(await destination(fixed(19, 7))).toBe("code-review");
+    expect(await destination(fixed(20, 7))).toBe("blocked");
+  });
+});
+
+/*
  * #20: a correction fixed only the ticket it was made on. Once the review
  * settles, a ticket that was corrected anywhere — a spec revised, a build
  * redone, a finding fixed — stops at `retro` on its way to the person, and
@@ -667,7 +728,7 @@ describe("the shipped workflow learns from a corrected ticket before a person re
     counters: { spec: 1, triage: 1, build: 1, "code-review": 1, ...counters },
     outputs: { spec: { kind: "spec" }, build: { kind: "done" }, "code-review": { kind: "reviewed" } },
     rounds: { "code-review": { entered: 1, output: 1 } },
-  }, { total: 1, merged, openThreads: 0 });
+  }, { total: 1, merged, awaitingFix: 0 });
 
   /*
    * A person who merged while the review ran has shipped it. Lessons
@@ -738,7 +799,7 @@ describe("the shipped workflow learns from a corrected ticket before a person re
     expect(await destination(at(2))).toBe("retro");
     expect(await destination(at(3))).toMatch(/^wait: .*"retro" only while.*run\.counters\.retro/);
     const merged = snapshotAt(halt, { goto: "retro", counters: { spec: 1, triage: 1, build: 1, "code-review": 1, "fix-review": 1 } },
-      { total: 1, merged: 1, openThreads: 0 });
+      { total: 1, merged: 1, awaitingFix: 0 });
     expect(await destination(merged)).toMatch(/^wait: .*"retro" only while.*rel\.implements\.in\.not\.merged/);
   });
 
