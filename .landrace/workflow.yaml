@@ -12,6 +12,7 @@ name: landrace
 hooks:
   - hooks/github.ts
   - hooks/claude.ts
+  - hooks/slack.ts
 
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
