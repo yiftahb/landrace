@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { outputValueProblem } from "#conventions.js";
 import { decide } from "#core/decide.js";
 import type { Snapshot } from "#namespace.js";
 import { renderPrompt } from "#runner/step.js";
@@ -637,6 +638,21 @@ describe("the shipped write steps merge, test, commit and push their own branch"
     expect(prompt).toContain("Not changed, because");
     expect(prompt).not.toMatch(/cannot reply on the thread|your final summary is where a pushback goes/i);
     expect(prompt).toMatch(/do not resolve any thread/i);
+  });
+
+  /*
+   * The replies ride in the round's output record, which a marker bounds. A
+   * round answering every thread the briefing lists — twenty — at the length
+   * the prompt allows has to fit, or the round fails after its commits are
+   * pushed and no reply is posted at all.
+   */
+  it("fix-review bounds each reply so a round answering twenty threads fits its record", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/fix-review.md")?.prompt ?? "";
+    const limit = Number(/at most (\d+) characters/.exec(prompt)?.[1]);
+    expect(limit).toBeGreaterThan(0);
+    const reply = { thread: "PRRT_kwDOLandraceAbCdEfGh1234", body: `Fixed in \`abc1234\`: <T> ${"x".repeat(limit)}`.slice(0, limit) };
+    expect(outputValueProblem({ kind: "addressed", replies: Array.from({ length: 20 }, () => reply) })).toBeNull();
   });
 
   it("sandboxes this repository's write steps to GitHub and the npm registry, away from its credentials", async () => {

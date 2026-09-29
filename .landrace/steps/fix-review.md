@@ -95,7 +95,9 @@ again.
 posted on that thread for you from your json block:
 "Fixed in `<short sha>`: <what changed>" for a fix, naming the commit that has it,
 or "Not changed, because <the reason>" for a pushback. One or two sentences,
-written to the person who raised it. Done when every thread on your list has one.
+at most 200 characters, written to the person who raised it: the commit says
+the rest, and a longer reply does not fit the round's record, which fails the
+whole round. Done when every thread on your list has one.
 
 **Step 8 — Summarise and end with the json block.** Start your final summary with the Progress checklist, each box ticked, or left open with the reason.
 Then one line per thread: fixed, with the commit, or pushed back, with the

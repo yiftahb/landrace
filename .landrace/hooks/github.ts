@@ -2280,7 +2280,7 @@ function openThreads(open: PullNode[], read: Map<number, BriefThread[]>, bot: st
   // findings and told nothing would report the pull request addressed.
   const tail = more === 0
     ? ""
-    : `\n\n(${more} more open threads are not listed here. Address what is above; the rest come back next round.)`;
+    : `\n\n(${more} more open threads are not listed here, the ones awaiting a fix first. Address what is above; any still awaiting a fix come back next round.)`;
 
   return sections.join("\n\n") + tail;
 }

@@ -53,7 +53,7 @@ budget:
 # reads `"run.lastOutputValid": null` — that stage's latest round did not
 # fail. A failed round is the halts' to route, and only theirs. Without it a
 # failure matched both a halt and the way on: a refused review round also
-# read "no threads are open", a failed fix round also read "the fixer
+# read "no thread awaits a fix", a failed fix round also read "the fixer
 # finished a round", a failed second spec also read the first one's
 # `kind: questions` — two triggers, an ambiguity halt, and the ticket left
 # wearing lr:working at a stage nothing would ever run again.
