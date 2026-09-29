@@ -648,22 +648,30 @@ export interface Executor {
   ): Promise<{ text: string; sessionId: string | null }>;
   /**
    * The command a person runs in their own terminal to work a step with the
-   * agent: a session under `session`, in `cwd`, seeded with `prompt` — or,
-   * given `resume`, the agent's own session continued as a fork under
-   * `session`, leaving it untouched. `server` is the engine's own, for the
-   * tools a person's session may reach Landrace with.
+   * agent: a session under `session`, in `cwd`, seeded with the prompt the
+   * engine wrote to `promptFile` — or, given `resume`, the agent's own
+   * session continued as a fork under `session`, leaving it untouched.
+   * `server` is the engine's own, for the tools a person's session may reach
+   * Landrace with.
+   *
+   * The prompt carries ticket text anyone can write, so it is handed over as
+   * a file and goes into `argv` as `{ file: promptFile }`: what a person
+   * pastes holds paths and ids, never that text.
    *
    * Optional: an executor without it offers no pairing, and asking for one
    * is refused. Nothing is run here — the person runs what this returns.
    */
-  handoff?(opts: { cwd: string; session: string; prompt: string; resume?: string; server?: RunServer }): Promise<Handoff>;
+  handoff?(opts: { cwd: string; session: string; promptFile: string; resume?: string; server?: RunServer }): Promise<Handoff>;
 }
 
 /** A command line for a person to run: each argument its own element, and where to run it. */
 export interface Handoff {
-  argv: string[];
+  argv: HandoffArg[];
   cwd: string;
 }
+
+/** An argument as written, or `{ file }`: that file's contents, read by the person's shell when the command runs. */
+export type HandoffArg = string | { file: string };
 
 /**
  * The ticket-less half of a HookContext, for the two kinds that run before —

@@ -226,6 +226,15 @@ export async function worktreeOf(slot: string, repoRoot: string): Promise<string
 }
 
 /**
+ * git's own directory for a worktree, outside its checkout: a file kept there
+ * is nothing a step can commit or a status lists, and goes when the worktree
+ * is removed.
+ */
+export async function worktreeGitDir(path: string): Promise<string> {
+  return (await git(["rev-parse", "--absolute-git-dir"], path, "could not read the worktree's git directory")).trim();
+}
+
+/**
  * What a worktree looks like right now: its commit, and every path git reports
  * as changed.
  *

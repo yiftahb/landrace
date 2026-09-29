@@ -24,6 +24,7 @@ import {
   unknownCapabilities,
   type Executor,
   type ExecutorFactory,
+  type HandoffArg,
 } from "landrace/hooks";
 
 /** One server as `.mcp.json` defines it, passed on whole: only what the checks read is named. */
@@ -625,30 +626,34 @@ export function createClaudeExecutor(opts: {
 
   /*
    * The interactive `claude` a person runs for a pairing: in the pairing's
-   * checkout, under the session id the engine derived, seeded with the step.
-   * Their own settings, plugins and servers load as they always do — this is
-   * their session, and every tool call in it is theirs to approve — beside
-   * the engine's own server, their way back to Landrace.
+   * checkout, under the session id the engine derived, seeded with the step
+   * from the file the engine wrote it to — read by the person's shell, so its
+   * text is never part of what they paste. Their own settings, plugins and
+   * servers load as they always do — this is their session, and every tool
+   * call in it is theirs to approve — beside the engine's own server, their
+   * way back to Landrace.
    *
    * The CLI keeps a session under the directory it ran in. So a command run a
    * second time — after the terminal was closed — resumes the session it
    * started rather than starting another, and the agent's own session, which
    * ran in the ticket's worktree, is brought over before it is forked here.
    */
-  const handoff: NonNullable<Executor["handoff"]> = async ({ cwd, session, prompt, resume, server }) => {
+  const handoff: NonNullable<Executor["handoff"]> = async ({ cwd, session, promptFile, resume, server }) => {
     assertArgShape("session", session);
     if (resume !== undefined) assertArgShape("resume", resume);
     // The seed goes first, as a positional, where a leading "-" would be read
     // as a flag instead.
-    if (prompt.startsWith("-")) throw new Error("refused a prompt that starts with \"-\": the command line would read it as a flag");
+    if ((await readFile(promptFile, "utf8")).startsWith("-")) {
+      throw new Error("refused a prompt that starts with \"-\": the command line would read it as a flag");
+    }
     const where = await assertCwd(cwd);
     const here = projectDir(home, where);
 
-    const argv = [bin];
+    const argv: HandoffArg[] = [bin];
     if (existsSync(join(here, `${session}.jsonl`))) {
       argv.push("--resume", session);
     } else {
-      argv.push(prompt);
+      argv.push({ file: promptFile });
       if (resume !== undefined && (await bringSession(home, resume, here))) argv.push("--resume", resume, "--fork-session");
       argv.push("--session-id", session);
     }

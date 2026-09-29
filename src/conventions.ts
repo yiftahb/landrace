@@ -4,7 +4,7 @@
  * back as the engine's. None of it belongs to a tracker — a Jira hook would
  * use the same names — so none of it lives in a hook.
  */
-import type { Effect, Entry, Graph, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
+import type { Effect, Entry, Graph, HandoffArg, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
 
 export const LABELS = {
   eligible: "lr:auto",
@@ -228,11 +228,22 @@ export function pairSessionId(
 
 /**
  * A command line a person pastes into a POSIX shell: every argument that is
- * not a plain word single-quoted, so a prompt carrying `$(…)`, a backtick or
- * a quote of its own reaches the program as text and is never run.
+ * not a plain word single-quoted, so one carrying `$(…)`, a backtick or a
+ * quote of its own reaches the program as text and is never run. A file
+ * argument is read by the shell as the command runs, so its contents never
+ * pass through the paste at all.
+ *
+ * Quoting stops the shell, not the terminal: ESC `[201~` ends a bracketed
+ * paste early, and a raw ^C or newline acts the moment it lands. So an
+ * argument carrying any control character is refused, never handed out.
  */
-export const shellLine = (argv: readonly string[]): string =>
-  argv.map((a) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`)).join(" ");
+export function shellLine(argv: readonly HandoffArg[]): string {
+  const quoted = (a: string): string => {
+    if (/\p{Cc}/u.test(a)) throw new Error(`refused a command argument carrying a control character: ${JSON.stringify(a)}`);
+    return /^[A-Za-z0-9_./:=@%+,-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`;
+  };
+  return argv.map((a) => (typeof a === "string" ? quoted(a) : `"$(cat ${quoted(a.file)})"`)).join(" ");
+}
 
 const DURATION_UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
 /** The longest delay setTimeout holds; past it Node fires after about a millisecond. */

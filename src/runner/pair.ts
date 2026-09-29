@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { screenPrompt } from "#agent/screen.js";
-import { ensureWorktree, removeWorktree, worktreeOf, worktreeState } from "#agent/worktree.js";
+import { ensureWorktree, removeWorktree, worktreeGitDir, worktreeOf, worktreeState } from "#agent/worktree.js";
 import {
   CHILD_SERVER_NAME,
   durationMs,
@@ -46,6 +48,9 @@ const PAIR_DEADLINE_MS = 15 * 60_000;
  * the command they copied to the turn that closes it.
  */
 const slotOf = (ticket: string): string => `${ticket}.pair`;
+
+/** The seeded prompt, in the pairing worktree's git directory: out of its checkout, and removed with it. */
+const SEED_FILE = "landrace-pair-prompt.md";
 
 /**
  * What the seeded prompt says before the step's own words: that a person
@@ -231,10 +236,16 @@ export function startPair(deps: PairDeps, ticket: string, stageId: string): Prom
     // cutting again would rebuild a checkout that has fallen behind.
     const cwd = (await worktreeOf(slotOf(ticket), root)) ?? (await ensureWorktree(ticket, root, on, slotOf(ticket)));
 
+    // The seed holds ticket text anyone can write, and the command is pasted
+    // into a terminal, which acts on control characters before any shell
+    // quoting is read. So the command names this file, never its contents.
+    const promptFile = join(await worktreeGitDir(cwd), SEED_FILE);
+    await writeFile(promptFile, prompt);
+
     const session = sessionOf(root, ticket, pairing);
     const resume = agentSession(snapshot, stage.id);
     const hand = await handoff({
-      cwd, session, prompt,
+      cwd, session, promptFile,
       ...(resume === null ? {} : { resume }),
       // The person's own way back to Landrace. Nothing on it is allowed
       // ahead of time: the person approves each call their session makes.

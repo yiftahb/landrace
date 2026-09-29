@@ -54,6 +54,20 @@ describe("a command line a person pastes into a shell", () => {
   it("survives a single quote and shell syntax inside an argument", () => {
     expect(shellLine(["echo", "it's $(rm -rf ~); `x`"])).toBe(`echo 'it'\\''s $(rm -rf ~); \`x\`'`);
   });
+
+  it("has the shell read a file argument when the command runs, naming only its path", () => {
+    expect(shellLine(["agent", { file: "/tmp/it's/seed" }, "--x"])).toBe(`agent "$(cat '/tmp/it'\\''s/seed')" --x`);
+  });
+
+  // Quoting stops the shell, not the terminal: ESC [201~ ends a bracketed
+  // paste early, and a raw ^C or newline acts the moment it is pasted.
+  it.each(["seed\u001b[201~; rm -rf ~", "seed\u0003", "one\ntwo", "\u009b201~"])(
+    "refuses an argument carrying a control character (%j)",
+    (bad) => {
+      expect(() => shellLine(["agent", bad])).toThrow(/control character/);
+      expect(() => shellLine(["agent", { file: `/tmp/${bad}` }])).toThrow(/control character/);
+    },
+  );
 });
 
 describe("the repository's digest", () => {
