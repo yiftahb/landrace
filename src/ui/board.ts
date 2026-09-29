@@ -1,25 +1,12 @@
 import { compareWork, GOTO_TRIGGER, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
 import { gotoTargetsOf } from "#core/index.js";
-import { BLOCKED_NOTE, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
+import { BLOCKED_NOTE, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
   Board, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Pairing, PanelPaths, Running, Stage,
   StatusRow, Workflow,
 } from "#namespace.js";
-
-/**
- * Where a ticket belongs, from what `landrace status` already says about it.
- * Reusing statusRows rather than re-reading labels here is deliberate: two
- * readers of the same labels is how a status table and a page come to
- * disagree about one ticket.
- */
-export function laneOf(row: StatusRow, workflow: Workflow): Lane {
-  if (row.note.startsWith("skipped:")) return "not-admitted";
-  if (row.note.startsWith("halted:") || row.note.startsWith("blocked") || row.note === "waiting on you") return "needs-you";
-  const terminal = workflow.stages.some((s) => s.id === row.stage && s.terminal === true);
-  return terminal ? "discharged" : "waiting";
-}
 
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 

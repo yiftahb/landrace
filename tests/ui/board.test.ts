@@ -1,6 +1,7 @@
 import type { Entry, Graph, Held, Node, Relationship, Running, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
-import { boardView, conversationOf, createBoard, laneOf } from "#ui/board.js";
+import { boardView, conversationOf, createBoard } from "#ui/board.js";
+import { laneOf } from "#runner/status.js";
 
 const workflow: Workflow = {
   version: 1, name: "t",

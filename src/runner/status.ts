@@ -1,5 +1,5 @@
 import { compareIds, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
-import type { Node, StatusRow, Workflow } from "#namespace.js";
+import type { Lane, Node, StatusRow, Workflow } from "#namespace.js";
 import { eligibilityOf } from "#runner/tick.js";
 
 /** Stands in for a ticket that has no position yet, so the column still lines up. */
@@ -31,6 +31,20 @@ export function oneLine(text: string): string {
  */
 export const BLOCKED_NOTE = "blocked: needs a human";
 export const SCREENED_NOTE = "blocked by a security check";
+
+/**
+ * Where a ticket belongs, from what `landrace status` already says about it.
+ * Reusing statusRows rather than re-reading labels here is deliberate: two
+ * readers of the same labels is how a status table and a page come to
+ * disagree about one ticket. Here rather than beside the board because the
+ * runner's notify asks the same question, and must get the page's answer.
+ */
+export function laneOf(row: StatusRow, workflow: Workflow): Lane {
+  if (row.note.startsWith("skipped:")) return "not-admitted";
+  if (row.note.startsWith("halted:") || row.note.startsWith("blocked") || row.note === "waiting on you") return "needs-you";
+  const terminal = workflow.stages.some((s) => s.id === row.stage && s.terminal === true);
+  return terminal ? "discharged" : "waiting";
+}
 
 const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, width - 1)}…` : text;
