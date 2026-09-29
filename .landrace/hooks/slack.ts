@@ -27,14 +27,20 @@ export const slack = defineNotifier({
     const board = event.board ? ` · <${escape(event.board)}|board>` : "";
     const text = `${user ? `<@${user}> ` : ""}${ticket} needs you — ${escape(event.title)} · ${escape(event.why)}${board}`;
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    // The status and Slack's own reply ("no_service", "invalid_payload") —
-    // never the URL, which is the credential.
+    // Never the URL, which is the credential: fetch quotes one it cannot
+    // parse, so its own failure is said with the URL taken out.
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+    } catch (e) {
+      throw new Error(`could not reach Slack: ${(e instanceof Error ? e.message : String(e)).split(url).join("<slackWebhookUrl>")}`);
+    }
+    // The status and Slack's own reply: "no_service", "invalid_payload".
     if (!res.ok) throw new Error(`Slack answered ${res.status}: ${(await res.text()).slice(0, 200)}`);
   },
 });

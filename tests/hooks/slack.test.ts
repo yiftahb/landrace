@@ -78,6 +78,17 @@ describe("the slack notifier", () => {
     await expect(failed).rejects.not.toThrow(/hooks\.slack\.com|secretpart/);
   });
 
+  // Node's fetch quotes a URL it cannot parse — a webhook pasted with a
+  // stray space, say — and the URL is the credential.
+  it("keeps the webhook's URL out of a failure fetch itself reports", async () => {
+    jest.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError(`Failed to parse URL from ${WEBHOOK}`));
+
+    const failed = slack.send(event(), ctx());
+
+    await expect(failed).rejects.toThrow(/could not reach Slack: Failed to parse URL from/);
+    await expect(failed).rejects.not.toThrow(/secretpart/);
+  });
+
   it("says which secret is missing rather than posting nowhere", async () => {
     const { sent } = webhook();
     await expect(slack.send(event(), ctx({}))).rejects.toThrow(/slackWebhookUrl/);
