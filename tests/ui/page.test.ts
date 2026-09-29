@@ -1155,11 +1155,12 @@ describe("the page", () => {
     // multiplies them). And the ticket panel's: a ticket row's title button
     // and the row itself (each defined once, in ticketRowFor), ✕, ⤢, Reply,
     // Ask the step, Resolve, and the window's hashchange. And pairing's: the
-    // row menu's Pairing…, the panel's own ⋯, and one for every button of
-    // its Pairing section (defined once, in pairingSectionOf). And the
-    // bell's: its own click, and a notification's (defined once, in notifyOf).
+    // row menu's Pairing…, the panel header's ⋯ and its Pairing… item, and
+    // one for every button of its Pairing section (defined once, in
+    // pairingSectionOf). And the bell's: its own click, and a notification's
+    // (defined once, in notifyOf).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(26);
+    expect(listeners).toHaveLength(27);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -1305,6 +1306,46 @@ describe("the ticket panel's markup", () => {
   it("names its close and full-width buttons for a screen reader", () => {
     expect(PAGE_HTML).toMatch(/<button id="panel-close" type="button" aria-label="Close"[^>]*>✕<\/button>/);
     expect(PAGE_HTML).toMatch(/<button id="panel-wide" type="button" aria-label="Full width" aria-pressed="false"[^>]*>⤢<\/button>/);
+  });
+
+  // The ⋯ once sat in the redrawn top section and, clicked, opened no menu
+  // at all: a section appeared further down. It is the header's own menu
+  // now, beside ⤢ and ✕, outside anything a poll redraws.
+  it("puts the ticket's actions in a ⋯ menu in the header, anchored under it, with Pairing… in it", () => {
+    const header = PAGE_HTML.slice(PAGE_HTML.indexOf('<aside id="panel"'), PAGE_HTML.indexOf('<div id="panel-top"'));
+    const trigger = /<button id="panel-more"[^>]*>⋯<\/button>/.exec(header)?.[0] ?? "";
+    expect(trigger).toContain('data-key="panel:trigger"');
+    expect(trigger).toContain('aria-haspopup="menu"');
+    expect(trigger).toContain('aria-expanded="false"');
+    expect(trigger).toContain('aria-label="Ticket actions"');
+    const menu = /<div id="panel-menu"[^>]*>/.exec(header)?.[0] ?? "";
+    expect(menu).toContain('data-key="panel:menu"');
+    expect(menu).toContain('role="menu"');
+    expect(menu).toMatch(/\shidden[\s>]/);
+    expect(menu).toMatch(/\babsolute\b.*\bright-0\b/);
+    expect(header).toMatch(/<button id="panel-pairing-item" type="button" role="menuitem"[^>]*>Pairing…<\/button>/);
+    expect(header.indexOf('id="panel-more"')).toBeLessThan(header.indexOf('id="panel-wide"'));
+  });
+
+  it("opens the header's menu as it opens a row's, and its Pairing… closes it and shows the section", () => {
+    expect(APP_JS).toContain('toggleMenu("panel")');
+    expect(APP_JS).toMatch(/pairingItem\.addEventListener\("click", \(\) => \{ closeMenu\(\); togglePairing\(\); \}\)/);
+    expect(APP_JS).not.toContain("panel:more");
+  });
+
+  // Back, or another ticket's row, moves the panel without a click outside
+  // the menu: left open, it would hold the one-open slot and the "c" key.
+  it("closes the header's menu whenever the panel moves or shuts", () => {
+    for (const to of [null, "8"]) {
+      const closed: string[] = [];
+      runInNewContext(`${fnSource("showPanel")} showPanel(TO)`, {
+        TO: to, openMenuKey: "panel", closeMenu: () => closed.push("panel"),
+        panelHeld: "7", pairingOnOpen: null, panelWide: false, messageBox: {}, setPanelNote: () => {},
+        panelEl: {}, document: { body: { classList: { toggle: () => {} } } },
+        stopPanelPoll: () => {}, renderPanel: () => {}, loadPairing: () => {},
+      });
+      expect(closed).toEqual(["panel"]);
+    }
   });
 
   it("has a labelled message box and Reply, Ask the step and Resolve, outside anything a poll redraws", () => {

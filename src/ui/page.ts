@@ -49,6 +49,12 @@ const PANEL = `
 <aside id="panel" hidden aria-label="Ticket" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]">
 <div class="flex items-start gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
 <h2 id="panel-title" class="min-w-0 flex-1 break-words text-sm font-semibold"></h2>
+<div class="relative shrink-0">
+<button id="panel-more" type="button" aria-label="Ticket actions" aria-haspopup="menu" aria-expanded="false" title="Ticket actions" data-key="panel:trigger" class="${ICON_BUTTON}">⋯</button>
+<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<button id="panel-pairing-item" type="button" role="menuitem" class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800">Pairing…</button>
+</div>
+</div>
 <button id="panel-wide" type="button" aria-label="Full width" aria-pressed="false" title="Full width" class="${ICON_BUTTON}">⤢</button>
 <button id="panel-close" type="button" aria-label="Close" title="Close (Esc)" class="${ICON_BUTTON}">✕</button>
 </div>
@@ -1246,6 +1252,8 @@ const messageBox = document.getElementById("panel-message");
 const panelStatus = document.getElementById("panel-status");
 const panelChat = document.getElementById("panel-chat");
 const wideButton = document.getElementById("panel-wide");
+const panelMore = document.getElementById("panel-more");
+const pairingItem = document.getElementById("panel-pairing-item");
 const replyButton = document.getElementById("panel-reply");
 const askButton = document.getElementById("panel-ask");
 const resolveButton = document.getElementById("panel-resolve");
@@ -1424,16 +1432,6 @@ function panelTopOf(row, last, now) {
     head.append(el("span", "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium " + cls, label));
   }
   if (row.screened) head.append(shieldMark());
-  if (row.panel) {
-    // The ticket's own ⋯: its Pairing section, shown and hidden here.
-    const more = el("button", "ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800", "⋯");
-    more.type = "button";
-    more.title = "Pairing";
-    more.setAttribute("aria-label", "Pairing");
-    more.setAttribute("data-key", "panel:more");
-    more.addEventListener("click", () => togglePairing());
-    head.append(more);
-  }
   const facts = el("dl", "mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1");
   for (const [name, value] of [
     ["Stage", row.stage || "—"],
@@ -1508,6 +1506,10 @@ function renderPanel() {
   keepingFocus(() => {
     const row = currentRow();
     const now = Date.now();
+    // Its only action is pairing, which a ticket with no panel paths has not.
+    panelMore.hidden = !(row && row.panel);
+    if (panelMore.hidden && openMenuKey === "panel") closeMenu();
+    pairingItem.textContent = pairing.shown ? "Hide pairing" : "Pairing…";
     if (!row) {
       panelTitle.textContent = lastView ? "#" + panelId + " is not on the board" : "Loading…";
       panelTop.replaceChildren();
@@ -1801,6 +1803,7 @@ function pairWrite(kind, stage) {
 
 // The one way the panel opens, shuts or changes ticket: the hash changed.
 function showPanel(id) {
+  if (openMenuKey === "panel") closeMenu();
   if (id !== null && id !== panelHeld) {
     panelHeld = id;
     activity = { stage: null, round: null, lines: [] };
@@ -1840,6 +1843,10 @@ function closePanel() {
 }
 
 document.getElementById("panel-close").addEventListener("click", () => closePanel());
+// The header's ⋯ is a menu like a row's, under the same one-open rule, and
+// never redrawn: it lives in the skeleton, not in anything a poll replaces.
+panelMore.addEventListener("click", () => toggleMenu("panel"));
+pairingItem.addEventListener("click", () => { closeMenu(); togglePairing(); });
 wideButton.addEventListener("click", () => {
   panelWide = !panelWide;
   panelEl.classList.toggle("sm:w-[28rem]", !panelWide);
