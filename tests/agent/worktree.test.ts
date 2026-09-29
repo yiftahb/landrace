@@ -9,6 +9,7 @@ import {
   ensureWorktree,
   removeWorktree,
   repositoryRoot,
+  worktreeOf,
   worktreeState,
 } from "#agent/worktree.js";
 
@@ -485,5 +486,33 @@ describe("the sandbox path", () => {
     } finally {
       await rm(sandboxRoot, { force: true });
     }
+  });
+});
+
+/*
+ * A pairing's worktree sits beside the ticket's own, in a slot of its own:
+ * the tick and a conversation cut and remove `<ticket>` on every run, and a
+ * person's session must not be deleted out from under them by either.
+ */
+describe("a worktree in its own slot", () => {
+  it("lives beside the ticket's, and removing one leaves the other", async () => {
+    const root = await repo();
+    const mine = await ensureWorktree("5", root);
+    const paired = await ensureWorktree("5", root, undefined, "5.pair");
+    expect(basename(paired)).toBe("5.pair");
+    expect(dirname(paired)).toBe(dirname(mine));
+
+    await removeWorktree("5", root);
+    expect(existsSync(mine)).toBe(false);
+    expect(existsSync(paired)).toBe(true);
+    await removeWorktree("5", root, "5.pair");
+    expect(existsSync(paired)).toBe(false);
+  });
+
+  it("is found where it is registered, and not before it is cut", async () => {
+    const root = await repo();
+    expect(await worktreeOf("6.pair", root)).toBeNull();
+    const paired = await ensureWorktree("6", root, undefined, "6.pair");
+    expect(await worktreeOf("6.pair", root)).toBe(paired);
   });
 });

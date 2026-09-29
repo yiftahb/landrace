@@ -49,6 +49,23 @@ const nameOf = (identity: string): string => {
 // `acquire` and `release` each ask for the root, and a tick asks for all
 // three per ticket.
 const roots = new Map<string, string>();
+const identities = new Map<string, string>();
+
+const identityOf = (dir: string): string => {
+  const cached = identities.get(dir);
+  if (cached !== undefined) return cached;
+  const identity = repoIdentity(dir);
+  identities.set(dir, identity);
+  return identity;
+};
+
+/**
+ * The repository, as a short digest of its identity: what keeps two
+ * repositories' scratch apart, and what a pairing's session id is derived
+ * from, so two checkouts pairing on their own ticket 29 never share one.
+ */
+export const repoDigest = (dir: string): string =>
+  createHash("sha256").update(identityOf(dir)).digest("hex").slice(0, 12);
 
 /**
  * `$TMPDIR/landrace/<repo>/` — everything local this repository owns, which
@@ -63,11 +80,9 @@ export function sandboxRoot(dir: string): string {
   const cached = roots.get(dir);
   if (cached !== undefined) return cached;
 
-  const identity = repoIdentity(dir);
   // The name is for reading; the digest is what keeps two repositories apart,
   // because a path cannot be a path segment.
-  const digest = createHash("sha256").update(identity).digest("hex").slice(0, 12);
-  const root = join(realpathSync(tmpdir()), "landrace", `${nameOf(identity)}-${digest}`);
+  const root = join(realpathSync(tmpdir()), "landrace", `${nameOf(identityOf(dir))}-${repoDigest(dir)}`);
   roots.set(dir, root);
   return root;
 }

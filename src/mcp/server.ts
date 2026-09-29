@@ -122,6 +122,33 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     guard(({ ticket: n, why }) => tools.resolve(n, why)),
   );
 
+  server.tool(
+    "landrace_pair",
+    "Work a step together with the agent, in your own terminal. Without `stage`, lists what may be paired " +
+      "on now and any pairing already open. With it, starts pairing on that step — its round is held for " +
+      "you, the agent never runs it alone meanwhile — and returns the command to run; asked again for the " +
+      "open pairing, returns the same command. End it with landrace_finish or landrace_release.",
+    { ticket, stage: z.string().min(1).max(64).optional() },
+    guard(({ ticket: n, stage }) => (stage === undefined ? tools.pairing(n) : tools.pair(n, stage))),
+  );
+
+  server.tool(
+    "landrace_finish",
+    "Hand the pairing's work in: the session you paired in is asked for the step's answer, which is " +
+      "recorded as yours and moves the ticket on. `note` is passed to that closing turn. Anything left " +
+      "uncommitted in the pairing's checkout is listed and discarded. One turn takes a minute or more.",
+    { ticket, note: z.string().optional() },
+    guard(({ ticket: n, note }) => tools.finish(n, note)),
+  );
+
+  server.tool(
+    "landrace_release",
+    "Give a paired step back to the agent: the pairing ends, its checkout is removed, and the agent runs " +
+      "the step alone on the next tick.",
+    { ticket },
+    guard(({ ticket: n }) => tools.release(n)),
+  );
+
   return server;
 }
 

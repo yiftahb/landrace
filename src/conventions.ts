@@ -4,7 +4,7 @@
  * back as the engine's. None of it belongs to a tracker — a Jira hook would
  * use the same names — so none of it lives in a hook.
  */
-import type { Effect, Entry, Graph, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
+import type { Effect, Entry, Graph, HandoffArg, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
 
 export const LABELS = {
   eligible: "lr:auto",
@@ -184,6 +184,72 @@ export const OUTPUT_KIND = "output";
  */
 export const MALFORMED_KIND = "malformed";
 export const REFUSED_KIND = "refused";
+
+/**
+ * The two records a pairing is derived from. A pair record opens one for a
+ * stage and round — written before that stage's on_enter, so a crash leaves
+ * the ticket held rather than running alone — and it is open until an output
+ * record for its stage at that round or later, or a release record.
+ */
+export const PAIR_KIND = "pair";
+export const RELEASE_KIND = "release";
+
+/**
+ * Who produced an output record, beside the value: a person, working with the
+ * agent in their own session and handing its answer in. Absent is the agent,
+ * which is what every record written before pairing existed reads as.
+ */
+export const PAIR_BY = "pair";
+export const AGENT_BY = "agent";
+
+/** A fixed namespace for the version 5 UUIDs pairings are named by; any fixed value would do. */
+const PAIR_NAMESPACE = "7a3c5a0e-2b1d-4f6e-9c8a-5d4b3e2f1a09";
+
+/**
+ * The session a pairing runs under, derived rather than remembered: the same
+ * repository, ticket, stage, round and pairing number always name the same
+ * session, so a start retried after a crash hands out the command it already
+ * handed out. A version 5 UUID, because that is the shape an agent's session
+ * id takes; SHA-1 is injected, since this file is read by the pure core and
+ * imports nothing that does I/O.
+ */
+export function pairSessionId(
+  sha1: (data: Uint8Array) => Uint8Array,
+  p: { repo: string; ticket: string; stage: string; round: number; n: number },
+): string {
+  const namespace = (PAIR_NAMESPACE.replaceAll("-", "").match(/../g) ?? []).map((h) => parseInt(h, 16));
+  const name = new TextEncoder().encode(`${p.repo}:${p.ticket}:${p.stage}:${p.round}:${p.n}`);
+  const bytes = sha1(Uint8Array.from([...namespace, ...name])).slice(0, 16);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * A command line a person pastes into a POSIX shell: every argument that is
+ * not a plain word single-quoted, so one carrying `$(…)`, a backtick or a
+ * quote of its own reaches the program as text and is never run. A file
+ * argument is read by the shell as the command runs, so its contents never
+ * pass through the paste at all.
+ *
+ * Quoting stops the shell, not the terminal: ESC `[201~` ends a bracketed
+ * paste early, and a raw ^C or newline acts the moment it lands. So an
+ * argument carrying any control character is refused, never handed out.
+ */
+export function shellLine(argv: readonly HandoffArg[]): string {
+  const quoted = (a: string): string => {
+    if (/\p{Cc}/u.test(a)) throw new Error(`refused a command argument carrying a control character: ${JSON.stringify(a)}`);
+    return /^[A-Za-z0-9_./:=@%+,-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`;
+  };
+  const read = (file: string): string => {
+    // The double quotes that keep the contents one argument are also where
+    // an interactive bash or zsh expands history, single quotes or not.
+    if (file.includes("!")) throw new Error(`refused a file path carrying "!": ${JSON.stringify(file)}`);
+    return `"$(cat ${quoted(file)})"`;
+  };
+  return argv.map((a) => (typeof a === "string" ? quoted(a) : read(a.file))).join(" ");
+}
 
 const DURATION_UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
 /** The longest delay setTimeout holds; past it Node fires after about a millisecond. */
@@ -510,6 +576,7 @@ export function recordMarker(effect: Effect): Marker {
   const session = text(effect.session);
   const goto = text(effect.goto);
   const from = text(effect.from);
+  const by = text(effect.by);
   return {
     stage: String(effect.stage ?? "-"),
     kind: String(effect.kind),
@@ -523,6 +590,8 @@ export function recordMarker(effect: Effect): Marker {
     ...(session === undefined ? {} : { session }),
     ...(goto === undefined ? {} : { goto }),
     ...(from === undefined ? {} : { from }),
+    // Routed on: a spec handed in from a pairing goes straight to build.
+    ...(by === undefined ? {} : { by }),
   };
 }
 
@@ -774,6 +843,10 @@ const stageRefsOf = (m: Marker): { goto?: string; from?: string } => {
   return { ...(goto === undefined ? {} : { goto }), ...(from === undefined ? {} : { from }) };
 };
 
+/** Who a marker says produced its record, when it names somebody usable; absent reads as the agent. */
+const byOf = (m: Marker): { by?: string } =>
+  typeof m.by === "string" && m.by !== "" && !isReservedId(m.by) ? { by: m.by } : {};
+
 /**
  * Turn a tracker's records into the engine's own. Vocabulary, not integration:
  * the marker format lives here, so every hook that records progress as text in
@@ -810,6 +883,7 @@ export function entriesFromComments(comments: TrackerComment[], botLogin: string
           data: payloadOf(marker),
           ...sessionOf(marker),
           ...stageRefsOf(marker),
+          ...byOf(marker),
           at: c.created_at,
           byAgent: true,
           text: stripMarker(c.body ?? ""),

@@ -13,7 +13,7 @@ const FIXTURE = "tests/fixtures/children";
 const run = (o: object = {}) => ({
   stage: null, counters: {}, outputs: {}, lastOutputValid: null, lastRefused: null, failedStages: [], rounds: {},
   lastEvent: { actor: null, at: null }, lastHuman: null, unblockedAt: 0, goto: null, previousStage: null,
-  failedStage: null, ...o,
+  failedStage: null, pairing: null, lastOutputBy: null, ...o,
 });
 /**
  * A fresh, eligible ticket with `parents` outgoing child-of edges, made by a

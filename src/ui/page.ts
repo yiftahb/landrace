@@ -53,6 +53,7 @@ const PANEL = `
 <button id="panel-close" type="button" aria-label="Close" title="Close (Esc)" class="${ICON_BUTTON}">✕</button>
 </div>
 <div id="panel-top" class="border-b border-neutral-100 px-4 py-3 text-xs dark:border-neutral-800"></div>
+<div id="panel-pairing" hidden class="border-b border-neutral-100 px-4 py-3 text-xs dark:border-neutral-800"></div>
 <div id="panel-bottom" class="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-xs"></div>
 <div id="panel-composer" hidden class="border-t border-neutral-100 px-4 py-3 dark:border-neutral-800">
 <textarea id="panel-message" rows="3" aria-label="Message" placeholder="Write to the step…" class="block w-full resize-y rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500"></textarea>
@@ -442,6 +443,16 @@ function buildRowMenu(row) {
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const writes = writesOf(row);
+  // Pairing… opens the ticket's panel on its Pairing section, which asks the
+  // server what may be paired on — the row itself cannot tell.
+  if (row.panel) {
+    const pairing = menuItem("button");
+    pairing.type = "button";
+    pairing.textContent = "Pairing…";
+    pairing.setAttribute("data-key", row.id + ":pairing");
+    pairing.addEventListener("click", () => { closeMenu(); openPairing(row.id); });
+    writes.unshift(pairing);
+  }
   if (writes.length) menu.append(...writes, el("hr", "my-1 border-neutral-100 dark:border-neutral-800"));
   const chatCaption = el("div", "px-3 pt-2 pb-1 text-[11px] text-neutral-500 dark:text-neutral-400", "Chat");
   chatCaption.setAttribute("role", "presentation");
@@ -1209,10 +1220,16 @@ let panelBusy = false;
 let panelMode = null;
 let panelTimer = null;
 let chatShownFor = null;
+// The Pairing section: whether it is shown, the server's last answer, the
+// command a start handed back, and what the last write heard.
+let pairing = { shown: false, view: null, command: null, note: "", busy: false, error: "" };
+// A row's Pairing… asked for this ticket's panel before it had opened.
+let pairingOnOpen = null;
 
 const panelEl = document.getElementById("panel");
 const panelTitle = document.getElementById("panel-title");
 const panelTop = document.getElementById("panel-top");
+const panelPairing = document.getElementById("panel-pairing");
 const panelBottom = document.getElementById("panel-bottom");
 const composer = document.getElementById("panel-composer");
 const messageBox = document.getElementById("panel-message");
@@ -1397,6 +1414,16 @@ function panelTopOf(row, last, now) {
     head.append(el("span", "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium " + cls, label));
   }
   if (row.screened) head.append(shieldMark());
+  if (row.panel) {
+    // The ticket's own ⋯: its Pairing section, shown and hidden here.
+    const more = el("button", "ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800", "⋯");
+    more.type = "button";
+    more.title = "Pairing";
+    more.setAttribute("aria-label", "Pairing");
+    more.setAttribute("data-key", "panel:more");
+    more.addEventListener("click", () => togglePairing());
+    head.append(more);
+  }
   const facts = el("dl", "mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1");
   for (const [name, value] of [
     ["Stage", row.stage || "—"],
@@ -1487,8 +1514,11 @@ function renderPanel() {
       // A change of state is when the conversation moves on, and one read of
       // the activity says when the agent last did anything.
       if (mode !== "running") loadConversation();
+      if (pairing.shown) loadPairing();
       pollPanel(0);
     }
+    panelPairing.hidden = !pairing.shown;
+    if (pairing.shown) replaceIfChanged(panelPairing, pairingSectionOf(row, pairing.view, pairing));
     composer.hidden = mode !== "needs-you";
     if (mode === "needs-you") renderChat(row);
     syncComposer();
@@ -1612,6 +1642,153 @@ function panelWrite(kind) {
     });
 }
 
+// A step to pair on, as the server offered it: a fresh session seeded with
+// the step, or the agent's own session there, continued as a fork.
+function offerLabel(o) {
+  return o.continue ? "Continue " + o.stage + " together" : "Pair on " + o.stage;
+}
+
+// The Pairing section, from the server's answer and the panel's own state:
+// what may be paired on, or the pairing open now and what to do with it.
+function pairingSectionOf(row, view, state) {
+  const out = [el("div", "mb-1 text-[11px] font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400", "Pairing")];
+  if (view === null) {
+    out.push(panelNote(state.error || "Reading what may be paired on…"));
+    return out;
+  }
+  const buttons = el("div", "mt-2 flex flex-wrap items-center gap-2");
+  const button = (label, key, onClick) => {
+    const b = el("button", "${BUTTON}", label);
+    b.type = "button";
+    b.disabled = state.busy;
+    b.setAttribute("data-key", "panel:pairing:" + key);
+    b.addEventListener("click", onClick);
+    buttons.append(b);
+  };
+  if (view.open) {
+    out.push(el("p", "text-neutral-800 dark:text-neutral-200",
+      "Pairing on " + view.open.stage + ", round " + view.open.round + " — the agent does not run it alone meanwhile."));
+    if (state.command) {
+      out.push(el("pre", "mt-2 whitespace-pre-wrap break-all rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-[11px] text-neutral-800 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200", state.command));
+      button("Copy command", "copy", () => copyCommand());
+    } else {
+      button("Get command", "command", () => pairWrite("pair", view.open.stage));
+    }
+    button("Finish…", "finish", () => pairWrite("finish"));
+    button("Release", "release", () => pairWrite("release"));
+  } else if (view.offers.length) {
+    for (const o of view.offers) button(offerLabel(o), "offer:" + o.stage, () => pairWrite("pair", o.stage));
+  } else {
+    out.push(panelNote("Nothing to pair on right now."));
+  }
+  if (buttons.children.length) out.push(buttons);
+  if (state.note) out.push(panelNote(state.note));
+  return out;
+}
+
+// Asked of the page's own script only: it spends a tracker read.
+async function loadPairing() {
+  const row = currentRow();
+  if (!row) return;
+  const id = row.id;
+  try {
+    const res = await fetch(row.panel.pairing, { cache: "no-store", headers: { "x-landrace-action": "pairing" } });
+    if (!res.ok) throw new Error(String(res.status));
+    const view = await res.json();
+    if (panelId !== id) return;
+    pairing.view = view;
+    pairing.error = "";
+    // A command belongs to the pairing it joined, and to no later one.
+    if (!view.open) pairing.command = null;
+  } catch (e) {
+    if (panelId !== id) return;
+    pairing.error = "could not read what may be paired on";
+  }
+  renderPanel();
+}
+
+function togglePairing() {
+  pairing.shown = !pairing.shown;
+  // Opened again, it asks for a command afresh: see copyCommand.
+  pairing.command = null;
+  if (pairing.shown) loadPairing();
+  renderPanel();
+}
+
+// A row's Pairing…: its ticket's panel, open on the Pairing section.
+function openPairing(id) {
+  if (panelId === id) {
+    if (!pairing.shown) togglePairing();
+    return;
+  }
+  pairingOnOpen = id;
+  openPanel(id);
+}
+
+// Copied from the click itself — a browser may refuse a clipboard write
+// that comes after a wait — and left on screen to select when it does.
+// Copied, it is dropped: once run, the seeded line refuses its own session
+// id, and only Get command again answers with the line that resumes it.
+function copyCommand() {
+  const clipboard = navigator.clipboard;
+  (clipboard ? clipboard.writeText(pairing.command) : Promise.reject(new Error("no clipboard"))).then(
+    () => { pairing.command = null; pairing.note = "Copied: run it in your terminal. Get command again to rejoin later."; renderPanel(); },
+    () => { pairing.note = "Could not copy: select the command above and copy it."; renderPanel(); },
+  );
+}
+
+// Pair, Finish and Release: posted to the paths the server put on the row.
+// A pairing holds a round and a hand-in runs a paid turn, so each asks first.
+function pairWrite(kind, stage) {
+  const row = currentRow();
+  if (!row || pairing.busy) return;
+  let body = "";
+  if (kind === "pair") {
+    const fresh = !(pairing.view && pairing.view.open);
+    if (fresh && !confirm("Pair on " + stage + " for #" + row.id + "? Its round is held for you: the agent does not run it alone until you finish or release it.")) return;
+    body = stage;
+  } else if (kind === "finish") {
+    const note = prompt("Finish the pairing on #" + row.id + "? Your session is asked for the step's answer, a paid agent turn, and the ticket moves on. A note for it, if you like:", "");
+    if (note === null) return;
+    body = note;
+  } else if (!confirm("Release the pairing on #" + row.id + "? The agent runs the step alone from the next tick, and the pairing's checkout is removed.")) {
+    return;
+  }
+  const id = row.id;
+  pairing.busy = true;
+  pairing.note = kind === "finish" ? "Handing in… this runs an agent turn." : kind === "release" ? "Releasing…" : "Starting…";
+  renderPanel();
+  fetch(row.panel[kind], {
+    method: "POST",
+    headers: { "x-landrace-action": kind, "content-type": "text/plain;charset=UTF-8" },
+    body,
+  })
+    .then((res) => res.text().then((text) => ({ ok: res.ok, text }), () => ({ ok: res.ok, text: "" })))
+    .then(null, () => ({ ok: false, text: "landrace is not responding" }))
+    .then(({ ok, text }) => {
+      pairing.busy = false;
+      if (panelHeld !== id) return;
+      const answer = ok ? parseJson(text) : null;
+      if (!ok) {
+        pairing.note = text || kind + " failed";
+      } else if (kind === "pair") {
+        pairing.command = answer ? answer.command : null;
+        pairing.note = "";
+      } else if (kind === "finish") {
+        pairing.command = null;
+        const left = answer && answer.discarded.length ? " Discarded, uncommitted: " + answer.discarded.join(", ") + "." : "";
+        pairing.note = answer ? "Handed in: " + answer.stage + ", round " + answer.round + "." + left : "Handed in.";
+      } else {
+        pairing.command = null;
+        pairing.note = "Released: the agent runs it alone.";
+      }
+      loadPairing();
+      loadConversation();
+      schedulePoll(0);
+      renderPanel();
+    });
+}
+
 // The one way the panel opens, shuts or changes ticket: the hash changed.
 function showPanel(id) {
   if (id !== null && id !== panelHeld) {
@@ -1621,10 +1798,16 @@ function showPanel(id) {
     asking = null;
     askAnswer = null;
     chatShownFor = null;
+    pairing = { shown: false, view: null, command: null, note: "", busy: false, error: "" };
     messageBox.value = "";
     setPanelNote("");
   }
   panelId = id;
+  if (id !== null && pairingOnOpen === id) {
+    pairingOnOpen = null;
+    pairing.shown = true;
+    loadPairing();
+  }
   panelMode = null;
   const open = id !== null;
   panelEl.hidden = !open;

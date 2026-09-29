@@ -7,6 +7,7 @@ import { durationMs, RECORD_EFFECT } from "#conventions.js";
 import { stepTimeoutMs } from "#runner/budget.js";
 import type {
   ActivityLog,
+  ArtifactHook,
   Board,
   BuildOptions,
   ConversationDeps,
@@ -16,6 +17,7 @@ import type {
   GotoDeps,
   GotoPath,
   LandraceEvent,
+  PairDeps,
   Problem,
   RedactingLogger,
   Registry,
@@ -44,6 +46,7 @@ import { sandboxRoot } from "#sandbox.js";
 import { oneLine } from "#runner/status.js";
 import { tick } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
+import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
 import { loadWorkflow } from "#workflow/load.js";
@@ -124,7 +127,13 @@ export function gotoFor(deps: GotoDeps): GotoPath | undefined {
  * person who asked, and an executor's error can quote what it was handed.
  */
 export function panelFor(
-  deps: ConversationDeps & { activity: ActivityLog; scrub?: (text: string, extra?: readonly string[]) => string },
+  deps: ConversationDeps & {
+    activity: ActivityLog;
+    scrub?: (text: string, extra?: readonly string[]) => string;
+    /** `landrace mcp` on this workflow, handed to a pairing's session. */
+    server?: ServerCommand;
+    artifacts?: ArtifactHook[];
+  },
 ): TicketPanel {
   const conversation = createConversation(deps);
   const clean = scrubberOf(deps.ctx.secrets, deps.scrub);
@@ -132,7 +141,27 @@ export function panelFor(
     p.catch((e: unknown) => {
       throw new Error(clean(messageOf(e)));
     });
+  // The Pairing section runs through the same runner `landrace_pair` does,
+  // over the tick's own source, dispatcher and lock.
+  const paired = <T>(fn: (p: PairDeps) => Promise<T>): Promise<T> => {
+    const { workflow, steps } = deps;
+    if (!workflow || !steps) return Promise.reject(new Error("cannot pair: this process was not given the workflow"));
+    return scrubbed(fn({
+      source: deps.source, pre: deps.pre, dispatcher: deps.dispatcher, ctx: deps.ctx, workflow, steps,
+      executor: deps.executor,
+      ...(deps.screen ? { screen: deps.screen } : {}),
+      ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
+      ...(deps.lock ? { lock: deps.lock } : {}),
+      ...(deps.server ? { server: deps.server, childServer: deps.server } : {}),
+      ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
+      ...(deps.scrub ? { scrub: deps.scrub } : {}),
+    }));
+  };
   return {
+    pairing: (ticket) => paired((p) => pairingView(p, ticket)),
+    pair: (ticket, stage) => paired((p) => startPair(p, ticket, stage)),
+    finish: (ticket, note) => paired((p) => finishPair(p, ticket, note)),
+    release: (ticket) => paired((p) => releasePair(p, ticket)),
     activity: (ticket, after) => deps.activity.read(ticket, after),
     conversation: async (ticket) => {
       const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
@@ -228,7 +257,13 @@ export async function executorFor(
         const made: unknown = await hook.create(ctx);
         const run = (made as { run?: unknown } | null | undefined)?.run;
         if (typeof run !== "function") throw new Error("its factory returned no run function");
-        return { id, run: run as Executor["run"] };
+        // Optional, and only what the factory built: pairing is offered
+        // where this is present, and nowhere else.
+        const handoff = (made as { handoff?: unknown }).handoff;
+        return {
+          id, run: run as Executor["run"],
+          ...(typeof handoff === "function" ? { handoff: handoff as NonNullable<Executor["handoff"]> } : {}),
+        };
       } catch (e) {
         throw new Error(`executor "${id}" could not start: ${messageOf(e)}`);
       }
@@ -719,6 +754,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       ...(rt.deps.sandbox ? { sandbox: rt.deps.sandbox } : {}),
       ...(rt.deps.screen ? { screen: rt.deps.screen } : {}),
       ...(rt.deps.scrub ? { scrub: rt.deps.scrub } : {}),
+      ...(rt.deps.childServer ? { server: rt.deps.childServer } : {}),
+      ...(rt.deps.artifacts ? { artifacts: rt.deps.artifacts } : {}),
       activity: rt.deps.activity,
     }),
   });

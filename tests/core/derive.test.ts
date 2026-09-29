@@ -432,3 +432,49 @@ describe("run.failedStage, the failure that put the ticket where it is", () => {
     expect(deriveRun([], null).failedStage).toBeNull();
   });
 });
+
+describe("a pairing, derived from its records", () => {
+  const pair = (stage: string, round: number): Entry => ({ stage, kind: "pair", round, at: at(), byAgent: true });
+  const release = (stage: string, round: number): Entry => ({ stage, kind: "release", round, at: at(), byAgent: true });
+
+  it("is open from its pair record, numbered and timed", () => {
+    const p = pair("spec", 1);
+    expect(deriveRun([entered("spec", 1), p], "spec").pairing).toEqual({ stage: "spec", round: 1, n: 1, at: p.at });
+  });
+
+  it("is none on a ticket nobody paired on", () => {
+    expect(deriveRun([entered("spec", 1)], "spec").pairing).toBeNull();
+  });
+
+  it("closes at an output for its stage at its round or later, whoever wrote it", () => {
+    expect(deriveRun([entered("spec", 1), pair("spec", 1), out("spec", 1)], "spec").pairing).toBeNull();
+    expect(deriveRun([entered("spec", 2), pair("spec", 2), out("spec", 1)], "spec").pairing).not.toBeNull();
+  });
+
+  it("stays open past a rejected round: a refused hand-in leaves it to be finished again", () => {
+    expect(deriveRun([entered("spec", 1), pair("spec", 1), malformed("spec", 1)], "blocked").pairing)
+      .toMatchObject({ stage: "spec", round: 1 });
+  });
+
+  it("closes at a release, and a second pairing at the same round is its own, numbered two", () => {
+    expect(deriveRun([pair("spec", 1), release("spec", 1)], "spec").pairing).toBeNull();
+    expect(deriveRun([pair("spec", 1), release("spec", 1), pair("spec", 1)], "spec").pairing)
+      .toMatchObject({ stage: "spec", round: 1, n: 2 });
+  });
+
+  it("is not closed by a release for another stage", () => {
+    expect(deriveRun([pair("spec", 1), release("build", 1)], "spec").pairing).toMatchObject({ stage: "spec" });
+  });
+});
+
+describe("who produced the latest output", () => {
+  it("reads a record that names nobody as the agent's, and a paired one as the pair's", () => {
+    expect(deriveRun([out("spec", 1)], "spec").lastOutputBy).toBe("agent");
+    expect(deriveRun([{ ...out("spec", 1), by: "pair" }], "spec").lastOutputBy).toBe("pair");
+    expect(deriveRun([{ ...out("spec", 1), by: "pair" }, out("build", 1)], "build").lastOutputBy).toBe("agent");
+  });
+
+  it("is null before anything has produced one", () => {
+    expect(deriveRun([entered("spec", 1)], "spec").lastOutputBy).toBeNull();
+  });
+});

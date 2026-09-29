@@ -4,7 +4,7 @@ import { BLOCKED_NOTE, oneLine, SCREENED_NOTE, statusRows } from "#runner/status
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
-  Board, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, PanelPaths, Running, Stage,
+  Board, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Pairing, PanelPaths, Running, Stage,
   StatusRow, Workflow,
 } from "#namespace.js";
 
@@ -59,6 +59,8 @@ const panelPaths = (id: string): PanelPaths | null =>
     ? {
         activity: `/tickets/${id}/activity`, conversation: `/tickets/${id}/conversation`,
         reply: `/tickets/${id}/reply`, ask: `/tickets/${id}/ask`, resolve: `/tickets/${id}/resolve`,
+        pairing: `/tickets/${id}/pairing`, pair: `/tickets/${id}/pair`,
+        finish: `/tickets/${id}/finish`, release: `/tickets/${id}/release`,
       }
     : null;
 
@@ -134,6 +136,8 @@ export function boardView(input: {
    * Read only to word the note while that ticket's agent is running now.
    */
   sent?: ReadonlyMap<string, string>;
+  /** The pairing each ticket's latest evaluation said holds its step, per the tick's own events. */
+  paired?: ReadonlyMap<string, Pairing>;
 }): BoardView {
   // Duplicate ids are a graph the engine halts on elsewhere; here the page
   // only has to stay drawable, so a repeat is skipped rather than drawn twice.
@@ -177,6 +181,16 @@ export function boardView(input: {
       const note = input.sent?.get(node.id) === running.stage ? `agent running — sent back to ${running.stage}` : "agent running";
       return { ...ticket, badge: "running", stage: running.stage, note,
         since: running.since, round: running.round, model: running.model, effort: running.effort };
+    }
+    const pairing = input.paired?.get(node.id);
+    if (pairing) {
+      // Held by a person, in their own session: since the pair record, which
+      // — unlike a lock's heartbeat — is when the hold began.
+      const began = Date.parse(pairing.at);
+      return {
+        ...ticket, badge: "elsewhere", stage: pairing.stage, round: pairing.round,
+        note: `Pairing — ${pairing.stage}, round ${pairing.round}`, since: Number.isNaN(began) ? null : began,
+      };
     }
     const lock = input.elsewhere.get(node.id);
     if (lock && lock.pid !== input.pid) {
@@ -271,10 +285,22 @@ export function createBoard(opts: {
   let graph: Graph = { nodes: [], relationships: [] };
   const running = new Map<string, Running>();
   const sent = new Map<string, string>();
+  const paired = new Map<string, Pairing>();
 
   return {
     observe(e: LandraceEvent): void {
       if (typeof e.ticket !== "string") return;
+      // Every evaluation says whether a pairing holds the ticket's step, so
+      // the latest one is the answer — and one that does not name a pairing
+      // is one that has ended.
+      if (e.name === "ticket.evaluated") {
+        const p = e.paired as Partial<Pairing> | null | undefined;
+        if (p && typeof p.stage === "string" && typeof p.round === "number" && typeof p.at === "string") {
+          paired.set(e.ticket, { stage: p.stage, round: p.round, n: typeof p.n === "number" ? p.n : 1, at: p.at });
+        } else {
+          paired.delete(e.ticket);
+        }
+      }
       // The tick's own record of a transition: a goto's is logged under the
       // trigger name no workflow may use, so the board can say so.
       if (e.name === "ticket.evaluated" && e.decision === "transition") {
@@ -302,6 +328,7 @@ export function createBoard(opts: {
       // keeping about.
       const ids = new Set(next.nodes.map((n) => n.id));
       for (const id of sent.keys()) if (!ids.has(id)) sent.delete(id);
+      for (const id of paired.keys()) if (!ids.has(id)) paired.delete(id);
     },
     async view(): Promise<BoardView> {
       // Open tickets only: nothing else can be held, and a closed ticket's
@@ -312,7 +339,7 @@ export function createBoard(opts: {
         if (h) elsewhere.set(n.id, h);
       }));
       return boardView({
-        workflow: opts.workflow, graph, nest, running, elsewhere, now: now(), pid, sent,
+        workflow: opts.workflow, graph, nest, running, elsewhere, now: now(), pid, sent, paired,
         nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },

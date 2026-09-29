@@ -122,6 +122,15 @@ export function decide(w: Workflow, s: Snapshot): Decision {
   // A rejected output is routed by a trigger like any other fact, so the
   // workflow decides where it goes. It is never retried.
   if (subState === "pending") {
+    // A person is working this round with the agent in their own session:
+    // the stage never runs alone while they are, however long that takes.
+    const paired = run.pairing ?? null;
+    if (paired !== null && paired.stage === stage.id) {
+      return {
+        action: "wait", stage, subState, paired,
+        why: `a person is pairing on "${stage.id}", round ${paired.round}`,
+      };
+    }
     return {
       action: "invoke",
       stage,

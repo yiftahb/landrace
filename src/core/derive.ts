@@ -1,4 +1,4 @@
-import { ENTRY_KIND, MALFORMED_KIND, OUTPUT_KIND, REFUSED_KIND } from "#conventions.js";
+import { AGENT_BY, ENTRY_KIND, MALFORMED_KIND, OUTPUT_KIND, PAIR_KIND, REFUSED_KIND, RELEASE_KIND } from "#conventions.js";
 import type { Entry, Run, StageRounds } from "#namespace.js";
 
 /**
@@ -244,6 +244,33 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     !(stage !== null && i > ownEntry && e.from === stage && !failedStages.includes(e.stage)));
   const failedStage = leftLast !== undefined && failedStages.includes(leftLast.stage) ? leftLast.stage : null;
 
+  /*
+   * The pairing open now. Position in the ordered list, like a goto, because
+   * a release closes the pairing open when it was written and no later one:
+   * a person who releases and then pairs again at the same round has a
+   * second pairing, numbered two, which that release says nothing about. An
+   * output at its round or later closes it wherever it sits — none can come
+   * before it, since a pairing starts at a round still owed. A rejected round
+   * does not: a refused hand-in leaves the pairing to be finished again.
+   */
+  let pairing: Run["pairing"] = null;
+  const pairsAt = new Map<string, number>();
+  for (const e of ordered) {
+    if (e.kind === PAIR_KIND) {
+      const key = `${e.stage}:${e.round}`;
+      const n = (pairsAt.get(key) ?? 0) + 1;
+      pairsAt.set(key, n);
+      pairing = { stage: e.stage, round: e.round, n, at: e.at };
+    } else if (e.kind === RELEASE_KIND && pairing !== null && e.stage === pairing.stage && e.round === pairing.round) {
+      pairing = null;
+    }
+  }
+  const open = pairing;
+  if (open !== null && [...(roundsByStage.get(open.stage) ?? [])].some((r) => r >= open.round)) pairing = null;
+
+  const lastOutput = ordered.findLast((e) => e.kind === OUTPUT_KIND);
+  const lastOutputBy = lastOutput === undefined ? null : lastOutput.by ?? AGENT_BY;
+
   return {
     stage,
     counters,
@@ -258,5 +285,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     failedStage,
     rounds,
     unblockedAt,
+    pairing,
+    lastOutputBy,
   };
 }

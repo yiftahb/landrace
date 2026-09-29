@@ -10,7 +10,9 @@
  * repository.
  */
 import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFile, realpath } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { copyFile, mkdir, readdir, readFile, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -22,6 +24,7 @@ import {
   unknownCapabilities,
   type Executor,
   type ExecutorFactory,
+  type HandoffArg,
 } from "landrace/hooks";
 
 /** One server as `.mcp.json` defines it, passed on whole: only what the checks read is named. */
@@ -253,6 +256,8 @@ export function createClaudeExecutor(opts: {
    * the engine ever reaches this constructor through.
    */
   sandbox?: SandboxSettings;
+  /** Whose `~/.claude` a pairing's sessions are looked up in. The operator's own, but for a test. */
+  home?: string;
 } = {}): Executor {
   const {
     model,
@@ -264,14 +269,18 @@ export function createClaudeExecutor(opts: {
     mcpServers = {},
     mcpTools = {},
     sandbox = { hosts: [], deny: [...DEFAULT_DENY] },
+    home = homedir(),
   } = opts;
 
-  const run: Executor["run"] = async (prompt, { round, resume, cwd, capabilities, model: stepModel, effort: stepEffort, timeoutMs: stepTimeoutMs, child: binding, onActivity, signal }) => {
+  const run: Executor["run"] = async (prompt, { round, resume, fork, cwd, capabilities, model: stepModel, effort: stepEffort, timeoutMs: stepTimeoutMs, child: binding, onActivity, signal }) => {
     if (signal.aborted) {
       // Nothing checked this before `spawn` in the first cut, so a run
       // cancelled before it started launched the (paid) agent anyway.
       throw new Error("agent aborted");
     }
+    // Never resumed in place instead: the session asked to be forked is a
+    // person's, and a turn added to it is one they did not take.
+    if (fork && resume === undefined) throw new Error("cannot fork a session: none was named to resume");
 
     // Fail closed on a word this executor cannot turn into a flag. Dropping
     // an unrecognised capability is how a step comes to declare a
@@ -323,6 +332,11 @@ export function createClaudeExecutor(opts: {
     if (chosenEffort !== undefined && !EFFORTS.includes(chosenEffort)) throw new Error(effortProblem("refused effort", chosenEffort));
     if (resume !== undefined) assertArgShape("resume", resume);
     const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
+    // The CLI finds a session only under the directory it ran in, and the
+    // one resumed may have run elsewhere: a pairing's hand-in forks in the
+    // pairing's checkout, and a later turn resumes it from the ticket's.
+    // Not found, the `--resume` below fails as it always did.
+    if (resume !== undefined && resolvedCwd !== undefined) await bringSession(home, resume, projectDir(home, resolvedCwd));
 
     const server = bound?.server;
     if (bound && server === undefined) {
@@ -354,6 +368,7 @@ export function createClaudeExecutor(opts: {
     if (chosenModel !== undefined) args.push("--model", chosenModel);
     if (chosenEffort !== undefined) args.push("--effort", chosenEffort);
     if (resume !== undefined) args.push("--resume", resume);
+    if (fork) args.push("--fork-session");
     // One `--settings` element holding the JSON, or none. Plugins are for
     // steps and turns, never the screener: a plugin that speaks up at session
     // start would be speaking to the one agent whose only job is to judge a
@@ -609,9 +624,76 @@ export function createClaudeExecutor(opts: {
     });
   };
 
+  /*
+   * The interactive `claude` a person runs for a pairing: in the pairing's
+   * checkout, under the session id the engine derived, seeded with the step
+   * from the file the engine wrote it to — read by the person's shell, so its
+   * text is never part of what they paste. Their own settings, plugins and
+   * servers load as they always do — this is their session, and every tool
+   * call in it is theirs to approve — beside the engine's own server, their
+   * way back to Landrace.
+   *
+   * The CLI keeps a session under the directory it ran in. So a command run a
+   * second time — after the terminal was closed — resumes the session it
+   * started rather than starting another, and the agent's own session, which
+   * ran in the ticket's worktree, is brought over before it is forked here.
+   */
+  const handoff: NonNullable<Executor["handoff"]> = async ({ cwd, session, promptFile, resume, server }) => {
+    assertArgShape("session", session);
+    if (resume !== undefined) assertArgShape("resume", resume);
+    // The seed goes first, as a positional, where a leading "-" would be read
+    // as a flag instead.
+    if ((await readFile(promptFile, "utf8")).startsWith("-")) {
+      throw new Error("refused a prompt that starts with \"-\": the command line would read it as a flag");
+    }
+    const where = await assertCwd(cwd);
+    const here = projectDir(home, where);
+
+    const argv: HandoffArg[] = [bin];
+    if (existsSync(join(here, `${session}.jsonl`))) {
+      argv.push("--resume", session);
+    } else {
+      argv.push({ file: promptFile });
+      if (resume !== undefined && (await bringSession(home, resume, here))) argv.push("--resume", resume, "--fork-session");
+      argv.push("--session-id", session);
+    }
+    if (server) {
+      argv.push("--mcp-config", JSON.stringify({ mcpServers: { [server.name]: { command: server.command, args: server.args } } }));
+      if (server.tools.length) argv.push("--allowedTools", ...server.tools.map((tool) => `mcp__${server.name}__${tool}`));
+    }
+    return { argv, cwd: where };
+  };
+
   // Unbranded: only the exported `claude` factory below is the hook the
   // loader classifies. This is a plain constructor a test can call directly.
-  return { id: ID, run };
+  return { id: ID, run, handoff };
+}
+
+/** Where the CLI keeps a directory's sessions: its path, every character but a letter or digit made "-". */
+const projectDir = (home: string, cwd: string): string =>
+  join(home, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+
+/**
+ * The agent's session, made resumable from `here`: already there, or copied
+ * from the one directory it is found under. False when it is under none, or
+ * under several — which of two to continue is not this hook's to guess — and
+ * a pairing then starts fresh, seeded with the step.
+ *
+ * ponytail: reads the CLI's own session layout, which is its to change; a
+ * `--resume` that finds no session is where that shows up.
+ */
+async function bringSession(home: string, session: string, here: string): Promise<boolean> {
+  const file = `${session}.jsonl`;
+  if (existsSync(join(here, file))) return true;
+  const projects = join(home, ".claude", "projects");
+  const found = (await readdir(projects).catch(() => [] as string[]))
+    .map((dir) => join(projects, dir, file))
+    .filter((path) => existsSync(path));
+  const [only, ...more] = found;
+  if (only === undefined || more.length) return false;
+  await mkdir(here, { recursive: true });
+  await copyFile(only, join(here, file));
+  return true;
 }
 
 /**
@@ -959,6 +1041,8 @@ export const claude: ExecutorFactory = defineExecutor({
       mcpTools: tools,
       sandbox: settings.sandbox,
     });
-    return { run: executor.run };
+    // Handoff only here, where `agent:` is this hook's: a screener built
+    // from another agent's block is never the one a person pairs with.
+    return { run: executor.run, ...(executor.handoff ? { handoff: executor.handoff } : {}) };
   },
 });

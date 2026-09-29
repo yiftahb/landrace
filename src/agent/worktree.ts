@@ -51,7 +51,7 @@ async function rootFor(repoRoot: string): Promise<string> {
  * compares both ends after fs.realpath, so a path that exists but leads
  * somewhere else is refused rather than followed.
  */
-async function pathFor(ticket: string, repoRoot: string): Promise<string> {
+export async function pathFor(ticket: string, repoRoot: string): Promise<string> {
   const root = await rootFor(repoRoot);
   const where = await containedPath(root, ticket);
   if (where.ok) return where.path;
@@ -133,8 +133,14 @@ export async function ensureWorktree(
   ticket: string,
   repoRoot: string,
   on?: WorktreeBranch,
+  /**
+   * The directory's name, when it is not the ticket's own: a pairing's
+   * `<ticket>.pair`, which the tick and a conversation — each cutting and
+   * removing `<ticket>` as they run — never touch.
+   */
+  slot: string = ticket,
 ): Promise<string> {
-  const path = await pathFor(ticket, repoRoot);
+  const path = await pathFor(slot, repoRoot);
   const what = `could not create a worktree for #${ticket}`;
   // Pruned first, so a registration whose directory is already gone reads as
   // gone rather than as a worktree to reuse or a branch someone still holds.
@@ -187,11 +193,11 @@ export async function ensureWorktree(
  * reached because something already went wrong. A removal that threw there
  * would replace the real failure with its own.
  */
-export async function removeWorktree(ticket: string, repoRoot: string): Promise<void> {
+export async function removeWorktree(ticket: string, repoRoot: string, slot: string = ticket): Promise<void> {
   // A path this refuses is one that is not ours, and there is nothing of ours
   // at it to remove: doing nothing is the whole answer, and reporting it here
   // would be reporting it from the unwind of something else.
-  const path = await pathFor(ticket, repoRoot).catch(() => null);
+  const path = await pathFor(slot, repoRoot).catch(() => null);
   if (path === null) return;
   await exec("git", ["worktree", "remove", "--force", path], { cwd: repoRoot }).catch(() => undefined);
   // The registration and the directory can outlive each other — a remove that
@@ -200,6 +206,23 @@ export async function removeWorktree(ticket: string, repoRoot: string): Promise<
   // caller is usually already unwinding from something else.
   await rm(path, { recursive: true, force: true }).catch(() => undefined);
   await exec("git", ["worktree", "prune"], { cwd: repoRoot }).catch(() => undefined);
+}
+
+/**
+ * Where a slot's worktree is registered, or null when it has none.
+ *
+ * Asked before `ensureWorktree` wherever a person may already be working in
+ * it: that one rebuilds a worktree that is not on the commit it expects, and
+ * a pairing's detached checkout falls behind the moment main moves — a
+ * rebuild would delete what the person had not committed.
+ */
+export async function worktreeOf(slot: string, repoRoot: string): Promise<string | null> {
+  const path = await pathFor(slot, repoRoot);
+  const what = `could not read the worktree for ${slot}`;
+  await git(["worktree", "prune"], repoRoot, what);
+  return registered(await git(["worktree", "list", "--porcelain"], repoRoot, what)).some((w) => w.path === path)
+    ? path
+    : null;
 }
 
 /**

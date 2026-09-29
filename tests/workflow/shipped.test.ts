@@ -128,7 +128,7 @@ const snapshotAt = (stage: string, run: object, rel = { total: 1, merged: 0, ope
     lastOutputValid: null, lastRefused: null, failedStages: [], rounds: {},
     lastEvent: { actor: "agent", at: null },
     lastHuman: { stage: "-", kind: "human", round: 0, at: "2026-01-01T00:00:00.000Z", byAgent: false },
-    unblockedAt: 0, goto: null, previousStage: null, ...run,
+    unblockedAt: 0, goto: null, previousStage: null, pairing: null, lastOutputBy: "agent", ...run,
   },
 } as unknown as Snapshot);
 
@@ -193,6 +193,26 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(published(1, "revise"))).toBe("build");
     expect(await destination(published(1, "goto-spec"))).toBe("spec-human-review");
     expect(await destination(published(0, "revise"))).toBe("spec-human-review");
+  });
+
+  // A person who wrote the spec with the agent has reviewed it as they
+  // wrote it: it goes straight to build, whenever it was written, and never
+  // waits at spec-human-review for the approval it already has.
+  it.each([
+    [0, "approve"], [0, "revise"], [1, "revise"], [1, "goto-spec"],
+  ])("builds a spec written together, with %i pull requests and the last reply read as %s", async (pulls, intent) => {
+    const together = snapshotAt("spec", {
+      outputs: { spec: { kind: "spec" }, triage: { intent } }, rounds: { spec: { entered: 2, output: 2 } },
+      counters: { spec: 2, triage: 2, build: 0 }, lastOutputBy: "pair",
+    }, { total: pulls, merged: 0, openThreads: 0 });
+    expect(await destination(together)).toBe("build");
+  });
+
+  it("asks nothing of a spec written together that came back with questions", async () => {
+    const asked = snapshotAt("spec", {
+      outputs: { spec: { kind: "questions" } }, rounds: { spec: { entered: 1, output: 1 } }, lastOutputBy: "pair",
+    }, { total: 0, merged: 0, openThreads: 0 });
+    expect(await destination(asked)).toBe("spec-questions");
   });
 
   it.each(HOMES)("from %s, a goto answer is taken while its step has rounds left", async (home) => {
@@ -290,14 +310,16 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     }
   });
 
-  it("builds only from an approved spec, a spec amended on the pull request, or when a person sends it back", async () => {
+  it("builds only from an approved spec, a spec amended on the pull request, one written together, or when a person sends it back", async () => {
     const { workflow } = await loadWorkflow(".landrace");
     expect(workflow.stages.find((s) => s.id === "build")?.triggers?.map((t) => t.when)).toEqual([{
       "run.stage": "triage", "run.lastOutputValid": null,
       "run.previousStage": "spec-human-review", "run.outputs.triage.intent": "approve",
     }, {
-      "run.stage": "spec", "run.lastOutputValid": null,
-      "run.outputs.spec.kind": "spec", "rel.implements.in.total": { $gt: 0 }, "run.outputs.triage.intent": "revise",
+      "run.stage": "spec", "run.lastOutputValid": null, "run.outputs.spec.kind": "spec", "run.lastOutputBy": "agent",
+      "rel.implements.in.total": { $gt: 0 }, "run.outputs.triage.intent": "revise",
+    }, {
+      "run.stage": "spec", "run.lastOutputValid": null, "run.outputs.spec.kind": "spec", "run.lastOutputBy": "pair",
     }]);
   });
 });

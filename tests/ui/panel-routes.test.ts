@@ -44,6 +44,13 @@ function world(over: Partial<TicketPanel> = {}) {
     reply: async (...a) => { calls.push(["reply", ...a]); },
     ask: async (...a) => { calls.push(["ask", ...a]); return { reply: "Understood.", resolved: true }; },
     resolve: async (...a) => { calls.push(["resolve", ...a]); return { alreadyResolved: false }; },
+    pairing: async (...a) => { calls.push(["pairing", ...a]); return { open: null, offers: [{ stage: "spec", round: 1, continue: false }] }; },
+    pair: async (...a) => {
+      calls.push(["pair", ...a]);
+      return { stage: "spec", round: 1, session: "s", cwd: "/w/7.pair", command: "cd /w/7.pair && agent" };
+    },
+    finish: async (...a) => { calls.push(["finish", ...a]); return { stage: "spec", round: 1, discarded: [] }; },
+    release: async (...a) => { calls.push(["release", ...a]); return { stage: "spec", round: 1 }; },
     ...over,
   };
   const opts: UiOptions = { port: 0, view: async () => empty, panel, tick: (): WakeResult => { wakes++; return "started"; } };
@@ -213,5 +220,56 @@ describe("the panel's writes: POST /tickets/<id>/reply, /ask and /resolve", () =
     const res = await drive(opts, "/tickets/7/reply", write("reply", "hi"));
     expect(String(res.headers["content-security-policy"])).toContain("default-src 'none'");
     expect(res.headers["cache-control"]).toBe("no-store");
+  });
+});
+
+describe("the panel's Pairing section", () => {
+  it("reads what may be paired on, from the page's own script only — it spends a tracker read", async () => {
+    const { opts, calls } = world();
+    expect((await drive(opts, "/tickets/7/pairing")).status).toBe(403);
+    const res = await drive(opts, "/tickets/7/pairing", { headers: { "x-landrace-action": "pairing" } });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ open: null, offers: [{ stage: "spec", round: 1, continue: false }] });
+    expect(calls).toEqual([["pairing", "7"]]);
+  });
+
+  it("starts a pairing on the step the body names, answers its command and wakes the loop", async () => {
+    const { opts, calls, wakes } = world();
+    const res = await drive(opts, "/tickets/7/pair", write("pair", "spec"));
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ command: "cd /w/7.pair && agent" });
+    expect(calls).toEqual([["pair", "7", "spec"]]);
+    expect(wakes()).toBe(1);
+  });
+
+  it("needs a step to pair on", async () => {
+    const { opts, calls } = world();
+    expect((await drive(opts, "/tickets/7/pair", write("pair", " "))).status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  it("finishes with an optional note, and releases with none", async () => {
+    const { opts, calls, wakes } = world();
+    expect((await drive(opts, "/tickets/7/finish", write("finish", ""))).status).toBe(200);
+    expect((await drive(opts, "/tickets/7/finish", write("finish", "short version"))).status).toBe(200);
+    expect((await drive(opts, "/tickets/7/release", write("release"))).status).toBe(200);
+    expect(calls).toEqual([["finish", "7", ""], ["finish", "7", "short version"], ["release", "7"]]);
+    expect(wakes()).toBe(3);
+  });
+
+  it("refuses a write made for another of the page's actions", async () => {
+    const { opts, calls } = world();
+    expect((await drive(opts, "/tickets/7/release", write("finish"))).status).toBe(403);
+    expect(calls).toEqual([]);
+  });
+
+  it("wakes the loop after a refused hand-in too: it recorded the rejected round", async () => {
+    const said = jest.spyOn(console, "error").mockImplementation(() => {});
+    const { opts, wakes } = world({ finish: async () => { throw new Error("the hand-in was refused: no json block"); } });
+    const res = await drive(opts, "/tickets/7/finish", write("finish", ""));
+    said.mockRestore();
+    expect(res.status).toBe(502);
+    expect(res.body).toBe("the hand-in was refused: no json block");
+    expect(wakes()).toBe(1);
   });
 });

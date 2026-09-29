@@ -25,6 +25,8 @@ export type {
   ExecutorContext,
   ExecutorFactory,
   Graph,
+  Handoff,
+  HandoffArg,
   HookContext,
   HookKind,
   Json,

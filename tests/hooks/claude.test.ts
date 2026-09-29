@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -217,6 +217,95 @@ describe("claude executor", () => {
       signal: new AbortController().signal,
     });
     expect(r.text).toContain("--resume sid-9");
+  });
+
+  // A pairing's closing turn: the person's session is asked for the answer
+  // without a turn being added to it.
+  it("forks the session it resumes when asked to, and refuses a fork with nothing to resume", async () => {
+    const dir = withCfg({ out: "{{ARGV}}" });
+    const r = await createClaudeExecutor({ bin }).run("x", {
+      round: 2, resume: "sid-9", fork: true, cwd: dir, signal: new AbortController().signal,
+    });
+    expect(r.text).toContain("--resume sid-9 --fork-session");
+    await expect(createClaudeExecutor({ bin }).run("x", { round: 1, fork: true, cwd: dir, signal: new AbortController().signal }))
+      .rejects.toThrow(/fork/);
+  });
+
+  // A pairing's hand-in forks in the pairing's own checkout, and its record
+  // names that fork; a later Ask resumes it from the ticket's worktree.
+  it("brings the session it resumes over from the directory it ran in", async () => {
+    const home = mkdtempSync(join(tmpdir(), "fake-home-"));
+    dirs.push(home);
+    const dir = realpathSync(withCfg({ out: "{{ARGV}}" }));
+    const ranIn = join(home, ".claude", "projects", "-elsewhere-29-pair");
+    await mkdir(ranIn, { recursive: true });
+    await writeFile(join(ranIn, "sid-fork.jsonl"), "{\"x\":1}\n");
+    const r = await createClaudeExecutor({ bin, home }).run("x", {
+      round: 2, resume: "sid-fork", cwd: dir, signal: new AbortController().signal,
+    });
+    expect(r.text).toContain("--resume sid-fork");
+    const here = join(home, ".claude", "projects", dir.replace(/[^A-Za-z0-9]/g, "-"));
+    expect(readFileSync(join(here, "sid-fork.jsonl"), "utf8")).toBe("{\"x\":1}\n");
+  });
+
+  describe("handing a session to a person", () => {
+    const SESSION = "0b7f4c1e-9a2d-5e3f-8c4b-1d2e3f4a5b6c";
+    /** Where the CLI keeps a directory's sessions, under a home of the test's own. */
+    const projectOf = (home: string, cwd: string) => join(home, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+    const setup = (prompt = "You are pairing.") => {
+      const home = mkdtempSync(join(tmpdir(), "fake-home-"));
+      const cwd = mkdtempSync(join(tmpdir(), "pair-"));
+      dirs.push(home, cwd);
+      const promptFile = join(home, "seed.md");
+      writeFileSync(promptFile, prompt);
+      return { home, cwd: realpathSync(cwd), promptFile, executor: createClaudeExecutor({ bin: "claude", home }) };
+    };
+
+    // The seed is ticket text, and the command is pasted into a terminal:
+    // the argument names the file, and the person's shell reads it.
+    it("starts the session under the id it was given, seeded from the prompt's file, with the engine's server loaded", async () => {
+      const { cwd, promptFile, executor } = setup();
+      const hand = await executor.handoff?.({
+        cwd, session: SESSION, promptFile,
+        server: { name: "landrace", command: "node", args: ["cli.js", "mcp"], tools: [] },
+      });
+      expect(hand).toEqual({
+        cwd,
+        argv: ["claude", { file: promptFile }, "--session-id", SESSION,
+          "--mcp-config", JSON.stringify({ mcpServers: { landrace: { command: "node", args: ["cli.js", "mcp"] } } })],
+      });
+    });
+
+    it("resumes the session instead once it exists — the command run a second time", async () => {
+      const { home, cwd, promptFile, executor } = setup();
+      await mkdir(projectOf(home, cwd), { recursive: true });
+      await writeFile(join(projectOf(home, cwd), `${SESSION}.jsonl`), "{}\n");
+      const hand = await executor.handoff?.({ cwd, session: SESSION, promptFile, resume: "sid-agent" });
+      expect(hand?.argv).toEqual(["claude", "--resume", SESSION]);
+    });
+
+    it("continues the agent's session as a fork, bringing it over from the directory the step ran in", async () => {
+      const { home, cwd, promptFile, executor } = setup();
+      const stepRanIn = join(home, ".claude", "projects", "-elsewhere-29");
+      await mkdir(stepRanIn, { recursive: true });
+      await writeFile(join(stepRanIn, "sid-agent.jsonl"), "{\"x\":1}\n");
+      const hand = await executor.handoff?.({ cwd, session: SESSION, promptFile, resume: "sid-agent" });
+      expect(hand?.argv).toEqual(["claude", { file: promptFile }, "--resume", "sid-agent", "--fork-session", "--session-id", SESSION]);
+      expect(readFileSync(join(projectOf(home, cwd), "sid-agent.jsonl"), "utf8")).toBe("{\"x\":1}\n");
+    });
+
+    it("starts fresh, seeded, when the agent's session is nowhere to be found", async () => {
+      const { cwd, promptFile, executor } = setup();
+      const hand = await executor.handoff?.({ cwd, session: SESSION, promptFile, resume: "sid-gone" });
+      expect(hand?.argv).toEqual(["claude", { file: promptFile }, "--session-id", SESSION]);
+    });
+
+    it("refuses a session id or a prompt a command line would read as a flag", async () => {
+      const { cwd, promptFile, executor } = setup();
+      await expect(executor.handoff?.({ cwd, session: "-x", promptFile })).rejects.toThrow(/refused session/);
+      const flag = setup("--dangerously-skip-permissions");
+      await expect(flag.executor.handoff?.({ cwd, session: SESSION, promptFile: flag.promptFile })).rejects.toThrow(/prompt/);
+    });
   });
 
   /*

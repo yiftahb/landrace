@@ -37,13 +37,39 @@ describe("mcp server over a real transport", () => {
     expect(names).toEqual([
       "landrace_ask",
       "landrace_create_ticket",
+      "landrace_finish",
       "landrace_goto",
+      "landrace_pair",
+      "landrace_release",
       "landrace_reply",
       "landrace_resolve",
       "landrace_status",
       "landrace_update_ticket",
       "landrace_waiting",
     ]);
+    await client.close();
+  });
+
+  /*
+   * An executor that cannot hand a session to a person offers nothing to pair
+   * on, and a pairing asked for anyway is refused in a sentence — never
+   * half-started.
+   */
+  it("offers no pairing with an executor that cannot hand a session over, and refuses one asked for", async () => {
+    const plain: Executor = { id: "plain", run: async () => ({ text: "", sessionId: null }) };
+    const { client, gh } = await connect([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }], {
+      executor: plain,
+      workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", entry: true, triggers: [] }] } as Workflow,
+      steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
+      sandbox: { root: process.cwd() },
+    });
+    const view = await client.callTool({ name: "landrace_pair", arguments: { ticket: 1 } });
+    expect(JSON.parse(textOf(view))).toEqual({ open: null, offers: [] });
+
+    const r = await client.callTool({ name: "landrace_pair", arguments: { ticket: 1, stage: "spec" } });
+    expect((r as { isError?: boolean }).isError).toBe(true);
+    expect(textOf(r)).toMatch(/cannot hand a session/);
+    expect(gh.comments.get(1) ?? []).toEqual([]);
     await client.close();
   });
 
