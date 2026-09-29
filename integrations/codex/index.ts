@@ -135,6 +135,9 @@ export class Codex extends BaseExecutor {
    * the run, from where it works up to the repository root — and a step could
    * commit either to its branch: servers of its own, a looser sandbox, a
    * SessionStart hook on the branch's next step. Refused, never loaded.
+   * Codex finding no `.git` reads where it works alone, so the screener's
+   * own directory is as far as its walk goes: past it is the temp directory,
+   * where anyone could leave a config that refuses every screening.
    */
   protected async prepare(plan: RunPlan): Promise<void> {
     if (plan.tier === "screen" && plan.cwd === undefined) this.screenRoot ??= await mkdtemp(join(tmpdir(), "landrace-screen-"));
@@ -146,7 +149,7 @@ export class Codex extends BaseExecutor {
             "servers, hooks or a looser sandbox, and a step could commit them. Remove it from the branch");
         }
       }
-      if (existsSync(join(at, ".git")) || dirname(at) === at) return;
+      if (at === this.screenRoot || existsSync(join(at, ".git")) || dirname(at) === at) return;
     }
   }
 

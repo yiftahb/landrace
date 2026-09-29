@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Codex } from "landrace/integrations/codex";
@@ -120,6 +121,22 @@ describe("the Codex integration", () => {
       const dir = argv[argv.indexOf("-C") + 1] ?? "";
       expect(dir.startsWith(join(tmpdir(), "landrace-screen-"))).toBe(true);
       expect(statSync(dir).mode & 0o777).toBe(0o700);
+    });
+
+    // Codex, finding no `.git`, loads a project's settings from where it
+    // works alone: a /tmp/.codex/config.toml anyone left is not the
+    // screener's, and must not refuse every screening.
+    it("screens beside a codex config in the temp directory above its own", async () => {
+      const shared = temp("shared-tmp-");
+      mkdirSync(join(shared, ".codex"));
+      writeFileSync(join(shared, ".codex", "config.toml"), "[mcp_servers.x]\ncommand = \"x\"\n");
+      const at = jest.spyOn(os, "tmpdir").mockReturnValue(shared);
+      try {
+        const argv = JSON.parse((await run(codex())).text) as string[];
+        expect(argv[argv.indexOf("-C") + 1]?.startsWith(join(shared, "landrace-screen-"))).toBe(true);
+      } finally {
+        at.mockRestore();
+      }
     });
 
     it("puts the model and the effort on a step's command line, the step's own winning", async () => {
