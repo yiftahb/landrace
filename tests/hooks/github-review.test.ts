@@ -129,6 +129,70 @@ describe("pull.review", () => {
     expect(seen.map(([name]) => name)).toContain("github.review.unresolvable");
   });
 
+  /*
+   * fix-review answers each thread where it was raised. Its replies end in a
+   * `fix` marker, which is what hands the thread to the person; it resolves
+   * nothing, whatever its answer lists.
+   */
+  const fixRound = (output: unknown, round = 1): Effect => ({
+    type: "pull.review", branch: "landrace/7", marker: `fix:${round}`, stage: "fix-review", round,
+    body: "Addressed both.", output,
+  });
+
+  it("posts a fix-review's reply on each thread it handled, marked as the fixer's, and resolves none", async () => {
+    const gh = withPull([
+      { id: "T1", isResolved: false, body: `off by one${findingMarker(0)}`, path: "src/a.ts", line: 2 },
+      { id: "T2", isResolved: false, body: "rename this", author: "alice", path: "src/a.ts", line: 2 },
+    ]);
+    await apply(gh, fixRound({
+      kind: "addressed",
+      replies: [{ thread: "T1", body: "Fixed in `abc123`: bound checked." }, { thread: "T2", body: "Not changed, because the spec names it." }],
+      resolved: ["T1"],
+    }));
+
+    const [t1, t2] = pull(gh).threads;
+    expect(t1?.replies).toEqual([{ author: gh.bot, body: expect.stringContaining("Fixed in `abc123`") }]);
+    expect(t2?.replies).toEqual([{ author: gh.bot, body: expect.stringContaining("Not changed, because") }]);
+    expect(parseMarker(t1?.replies?.[0]?.body ?? "")).toMatchObject({ kind: "fix", marker: "fix:fix-review:1:T1" });
+    expect(parseMarker(t2?.replies?.[0]?.body ?? "")).toMatchObject({ kind: "fix", marker: "fix:fix-review:1:T2" });
+    expect(pull(gh).threads.map((t) => t.isResolved)).toEqual([false, false]);
+
+    // Both answered, so nothing on the pull request awaits a fix any more.
+    const pr = ((await snapshotOf(gh)).graph as Graph | undefined)?.nodes.find((n: Node) => n.id === "pr-20");
+    expect(pr?.state).toMatchObject({ openThreads: 2, awaitingFix: 0 });
+  });
+
+  it("posts no reply twice when a round is applied again", async () => {
+    const gh = withPull([{ id: "T1", isResolved: false, body: `off by one${findingMarker(0)}`, path: "src/a.ts", line: 2 }]);
+    const effect = fixRound({ kind: "addressed", replies: [{ thread: "T1", body: "Fixed in `abc123`." }] });
+    await apply(gh, effect);
+    await apply(gh, effect);
+
+    expect(pull(gh).threads[0]?.replies).toHaveLength(1);
+    expect(pull(gh).reviews).toHaveLength(1);
+  });
+
+  it("lets the reviewer say a fix is still wrong, which puts the thread back to awaiting a fix", async () => {
+    const fixed = `Fixed.${renderMarker({ stage: "fix-review", kind: "fix", round: 1, marker: "fix:fix-review:1:T1" })}`;
+    const gh = withPull([
+      { id: "T1", isResolved: false, body: `off by one${findingMarker(0)}`, path: "src/a.ts", line: 2, replies: [{ author: "yiftahb", body: fixed }] },
+    ]);
+    await apply(gh, review({ kind: "reviewed", findings: [], resolved: [], replies: [{ thread: "T1", body: "Still wrong: the bound is exclusive." }] }, 2));
+
+    expect(parseMarker(pull(gh).threads[0]?.replies?.[1]?.body ?? "")).toMatchObject({ kind: "review", marker: "review:code-review:2:T1" });
+    const pr = ((await snapshotOf(gh)).graph as Graph | undefined)?.nodes.find((n: Node) => n.id === "pr-20");
+    expect(pr?.state).toMatchObject({ openThreads: 1, awaitingFix: 1 });
+  });
+
+  it("says so, and goes on, when a reply names a thread the pull request does not have", async () => {
+    const gh = withPull([{ id: "T1", isResolved: false, body: "x", path: "src/a.ts", line: 2 }]);
+    const seen: string[] = [];
+    await apply(gh, fixRound({ kind: "addressed", replies: [{ thread: "T9", body: "?" }, { thread: "T1", body: "Fixed." }] }), (name) => seen.push(name));
+
+    expect(seen).toContain("github.review.unrepliable");
+    expect(pull(gh).threads[0]?.replies).toHaveLength(1);
+  });
+
   it("keeps a malformed finding as text in the review rather than failing the step", async () => {
     const gh = withPull();
     await apply(gh, review({ kind: "reviewed", findings: [{ file: "src/a.ts", body: 42 }, "just a string"], resolved: "T1" }));
@@ -185,6 +249,27 @@ describe("the reviewer's briefing", () => {
     expect(threads).toMatch(/\[thread T1\][^\n]*raised by the reviewer/);
     expect(threads).toMatch(/\[thread T2\]/);
     expect(threads).not.toMatch(/\[thread T2\][^\n]*raised by the reviewer/);
+  });
+
+  /*
+   * A thread is a conversation now, so the briefing says whose turn each is
+   * and what was said last — a person's reply is the thing to act on — and
+   * lists the ones awaiting a fix first, since only those are this round's.
+   */
+  it("says whose turn each thread is, shows its last reply, and lists the ones awaiting a fix first", async () => {
+    const fixed = `Fixed in \`abc123\`.${renderMarker({ stage: "fix-review", kind: "fix", round: 1, marker: "fix:fix-review:1:T1" })}`;
+    const gh = withPull([
+      { id: "T1", isResolved: false, body: "answered already", author: "alice", replies: [{ author: "yiftahb", body: fixed }] },
+      { id: "T2", isResolved: false, body: "argued", author: "alice", replies: [{ author: "yiftahb", body: fixed }, { author: "alice", body: "no, the other bound" }] },
+    ]);
+    const { threads = "" } = await brief(gh);
+
+    expect(threads.indexOf("[thread T2]")).toBeLessThan(threads.indexOf("[thread T1]"));
+    expect(threads).toMatch(/\[thread T2\][^\n]*awaiting a fix/);
+    expect(threads).toMatch(/\[thread T1\][^\n]*answered/);
+    expect(threads).toContain("Last reply, from @alice: no, the other bound");
+    expect(threads).toContain("Last reply, from Landrace: Fixed in `abc123`.");
+    expect(threads).not.toContain("landrace {");
   });
 
   it("shows the pull request's diff, file by file", async () => {

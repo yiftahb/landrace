@@ -238,8 +238,8 @@ describe("publishing a build, over the in-memory tracker", () => {
       workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: ANSWERS,
       during: ({ stage }) => {
         seen.push({ stage, pushes: state.pushes().length });
-        // The reviewer's first round finds two things, and nobody resolves them.
-        if (stage === "code-review") state.pull("pr-1").openThreads = 2;
+        // The reviewer finds two things every round, and no fix satisfies it.
+        if (stage === "code-review") Object.assign(state.pull("pr-1"), { openThreads: 2, awaitingFix: 2 });
       },
     });
 
@@ -247,7 +247,7 @@ describe("publishing a build, over the in-memory tracker", () => {
 
     expect(run.trail()).toEqual([
       "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
-      "code-review", "blocked",
+      "code-review", "fix-review", "code-review", "blocked",
     ]);
     expect(r.result.settled).not.toBe("cap");
     expect(state.pull("pr-1")).toMatchObject({ ticket: "1", branch: "landrace/1" });
@@ -258,7 +258,7 @@ describe("publishing a build, over the in-memory tracker", () => {
       const before = seen[i - 1];
       if (call.stage === "code-review" && before?.stage === "fix-review") expect(call.pushes).toBeGreaterThan(before.pushes);
     }
-    expect(seen.filter((c) => c.stage === "code-review")).toHaveLength(4);
+    expect(seen.filter((c) => c.stage === "code-review")).toHaveLength(5);
   });
 });
 
@@ -544,10 +544,10 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     expect(run.trail()).toEqual([
       "spec", "spec-questions", "triage", "spec", "spec-human-review", "triage", "build", "publish",
       "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
-      "code-review", "blocked",
+      "code-review", "fix-review", "code-review", "blocked",
     ]);
     expect(run.counts()).toEqual({
-      spec: 2, triage: 2, build: 1, "code-review": 4, "fix-review": 3,
+      spec: 2, triage: 2, build: 1, "code-review": 5, "fix-review": 4,
     });
 
     // The budget, not the cap: the workflow decided this, not the engine.
@@ -557,7 +557,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     expect([...gh.pulls.values()][0]?.threads.filter((t) => !t.isResolved)).toHaveLength(2);
     // Every review round read what the last fix committed, because entering
     // code-review pushed it first.
-    expect(reviewedAtHead).toEqual([true, true, true, true]);
+    expect(reviewedAtHead).toEqual([true, true, true, true, true]);
   });
 
   /*
@@ -618,7 +618,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     await run.converge();
 
     const fixes = run.calls().filter((c) => c.stage === "fix-review");
-    expect(fixes).toHaveLength(3);
+    expect(fixes).toHaveLength(4);
     for (const fix of fixes) {
       expect(fix.prompt).toContain("src/x.ts:12 — this leaks a file handle");
       expect(fix.prompt).toContain("off by one");
