@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { parseMarker, renderMarker } from "#conventions.js";
+import { decide } from "#core/index.js";
 import type { Executor, PairDeps, Source, Step, Workflow } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
@@ -35,6 +36,7 @@ const workflow: Workflow = {
     },
     {
       id: "build", step: "build", on_enter: [ENTER, status("build")],
+      goto: [{ stage: "build", when: { "run.counters.build": { $lt: 3 } } }],
       triggers: [{ when: { "run.stage": "spec", "run.lastOutputValid": null, "run.lastOutputBy": "pair" } }],
     },
     { id: "blocked", goto: ["spec"], on_enter: [status("blocked")], triggers: [{ when: { "run.lastOutputValid": false } }] },
@@ -50,9 +52,19 @@ const specStep: Step = {
     routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }],
   },
 };
-const steps = new Map<string, Step>([["spec", specStep], ["build", { prompt: "Build it.", capabilities: ["repo:read", "repo:write"] }]]);
+const buildStep: Step = {
+  prompt: "Build it.",
+  capabilities: ["repo:read", "repo:write"],
+  output: {
+    discriminator: "kind",
+    shapes: { built: {} },
+    routes: [{ when: { kind: "built" }, effect: { type: "tracker.comment", marker: "built:{round}" } }],
+  },
+};
+const steps = new Map<string, Step>([["spec", specStep], ["build", buildStep]]);
 
 const DONE = "The spec.\n\n```json\n{\"kind\":\"spec\"}\n```";
+const BUILT = "Built.\n\n```json\n{\"kind\":\"built\"}\n```";
 
 /** An agent that can hand a session over, and remembers what it was asked. */
 function agent(answer = DONE) {
@@ -110,6 +122,17 @@ function reviewed(executor: Executor | null) {
   say(w.tracker, "spec", "output", 1, { marker: "spec:1", output: { kind: "spec" }, session: "sid-agent" });
   return w;
 }
+
+/** A ticket resting at build with its round settled — where it stays when publish's push fails. */
+function built(executor: Executor | null) {
+  const w = world(["lr:stage:build"], executor);
+  say(w.tracker, "build", "enter", 1, { marker: "enter:build:1" });
+  say(w.tracker, "build", "output", 1, { marker: "built:1", output: { kind: "built" }, session: "sid-agent" });
+  return w;
+}
+
+const snapshotOf = (deps: PairDeps) =>
+  buildSnapshot({ ticket: "29", source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket: "29" } });
 
 describe("what may be paired on", () => {
   it("is the stage's own step while its round is owed", async () => {
@@ -185,6 +208,20 @@ describe("starting a pairing", () => {
     expect((await run())?.stage).toBe("spec");
     const fresh = await startPair(deps, "29", "spec");
     expect(fresh.session).toBe(started.session);
+  });
+
+  it("on the stage the ticket rests at with its round settled, enters the next round so the tick waits on it", async () => {
+    const a = agent(BUILT);
+    const { deps, tracker, run } = built(a.executor);
+    expect((await pairingView(deps, "29")).offers).toEqual([{ stage: "build", round: 2, continue: true }]);
+    await startPair(deps, "29", "build");
+
+    expect(records(tracker, "enter").filter((m) => m?.stage === "build").map((m) => m?.round)).toEqual([1, 2]);
+    expect(decide(workflow, await snapshotOf(deps))).toMatchObject({ action: "wait", paired: { stage: "build", round: 2 } });
+
+    expect(await finishPair(deps, "29")).toMatchObject({ stage: "build", round: 2 });
+    expect(records(tracker, "output").at(-1)).toMatchObject({ stage: "build", round: 2, by: "pair" });
+    expect((await run())?.pairing).toBeNull();
   });
 
   it("refuses a second pairing on another stage while one is open, and writes nothing", async () => {
@@ -263,6 +300,15 @@ describe("finishing a pairing", () => {
     expect(await finishPair(deps, "29")).toMatchObject({ stage: "spec", round: 2 });
     expect(records(tracker, "enter").filter((m) => m?.stage === "spec").map((m) => m?.round)).toEqual([1, 2]);
     expect(records(tracker, "output")).toEqual([expect.objectContaining({ round: 2, by: "pair" })]);
+    expect((await run())?.pairing).toBeNull();
+  });
+
+  it("enters the round a crash left unentered on the settled stage the ticket rests at, and closes it", async () => {
+    const { deps, tracker, run } = built(agent(BUILT).executor);
+    say(tracker, "build", "pair", 2, { marker: "pair:build:2:1" });
+
+    expect(await finishPair(deps, "29")).toMatchObject({ stage: "build", round: 2 });
+    expect(records(tracker, "enter").filter((m) => m?.stage === "build").map((m) => m?.round)).toEqual([1, 2]);
     expect((await run())?.pairing).toBeNull();
   });
 

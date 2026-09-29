@@ -210,10 +210,12 @@ export function startPair(deps: PairDeps, ticket: string, stageId: string): Prom
           "their own session. It runs alone again only once they release it.",
       }]);
     }
-    // Entered unless the ticket already stands there: a goto target now, or
-    // one a crash left the pair record written for and nothing after it.
+    // Entered unless its round is already owed where the ticket stands, as
+    // decide() reads it. Standing there is not enough: a stage that lists
+    // itself as a goto target rests there with its round settled — build,
+    // when publish's push fails — and pairing on it is pairing on the next.
     const origin = gotoOrigin(deps.workflow, snapshot, ticket);
-    if (!("refused" in origin) && origin.from.id !== stage.id) {
+    if (!("refused" in origin) && !(origin.from.id === stage.id && assess(snapshot, stage) === "pending")) {
       await enter(deps, ticket, snapshot, origin.from, stage, pairing.round);
     }
 
@@ -265,8 +267,11 @@ export function finishPair(deps: PairDeps, ticket: string, note?: string): Promi
     const origin = gotoOrigin(deps.workflow, snapshot, ticket);
     if ("refused" in origin) throw new Error(`cannot finish: ${origin.refused}`);
     const round = nextRound(snapshot, stage.id);
-    if (origin.from.id !== stage.id || assess(snapshot, stage) !== "pending") {
-      if (origin.from.id === stage.id) {
+    // Where the ticket stands, settled is a round a crash left unentered —
+    // entered here like any goto target; only a rejected one waits for the halt.
+    const here = origin.from.id === stage.id ? assess(snapshot, stage) : null;
+    if (here !== "pending") {
+      if (here === "failed") {
         throw new Error(`#${ticket}'s last hand-in on "${stage.id}" was refused; once the ticket has halted, finish again`);
       }
       const refused = gotoNotListed(origin.from, stage.id) ?? gotoDeclined(origin.from, snapshot, stage.id);
