@@ -1855,11 +1855,16 @@ showPanel(ticketOfHash(location.hash));
 // Every ticket the board badges needs-you, children included, by id — and
 // one that needed you at the last poll and is only held elsewhere now: a
 // conversation turn or a pairing holds its lock a while, but the ticket never
-// left you, and its return is no arrival.
+// left you, and its return is no arrival. A needs-you read from stale labels
+// counts the same way: once a step has run, the labels may still be the stage
+// the ticket is leaving — a spec approval heading into build reads needs-you
+// between triage's step and the next list — so only a fresh list says it
+// arrived.
 function needingYou(rows, into, before) {
   for (const row of rows) {
-    const held = row.badge === "elsewhere" && before !== null && before.has(row.id);
-    if (row.badge === "needs-you" || held) into.set(row.id, row);
+    const unsure = row.badge === "elsewhere" || (row.badge === "needs-you" && row.stale);
+    const held = unsure && before !== null && before.has(row.id);
+    if ((row.badge === "needs-you" && !row.stale) || held) into.set(row.id, row);
     needingYou(row.children, into, before);
   }
   return into;

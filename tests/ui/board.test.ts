@@ -409,7 +409,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
-      "priority", "retry", "round", "screened", "since", "stage", "system", "title",
+      "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
@@ -504,6 +504,30 @@ describe("createBoard", () => {
     expect((await board.view()).rows[0]).toMatchObject({ badge: "running", since: 10, model: "opus", effort: "low" });
     board.observe({ name: "step.finished", ticket: "1", stage: "spec", round: 1, ok: true });
     expect((await board.view()).rows[0]?.badge).toBe("waiting");
+  });
+
+  /*
+   * After a step, the graph's labels are the ones from before it: a list
+   * read while the tick still holds the ticket may predate the transition
+   * too. Only a list after the tick lets the ticket go vouches for them.
+   */
+  it("marks a stepped ticket's labels stale until a list after its tick let it go", async () => {
+    const board = shell(() => 0);
+    const blocked = ["go", "lr:stage:blocked", "lr:blocked"];
+    const listed = graph([ticket("1", {}, blocked), ticket("2", {}, blocked)]);
+    const stale = async () => (await board.view()).rows.map((r) => [r.id, r.badge, r.stale]);
+    board.list(listed);
+    expect(await stale()).toEqual([["1", "needs-you", false], ["2", "needs-you", false]]);
+    board.observe({ name: "step.started", ticket: "1", stage: "spec", round: 1 });
+    board.observe({ name: "step.finished", ticket: "1", stage: "spec", round: 1, ok: true });
+    expect(await stale()).toEqual([["1", "needs-you", true], ["2", "needs-you", false]]);
+    board.list(listed);
+    expect(await stale()).toEqual([["1", "needs-you", true], ["2", "needs-you", false]]);
+    board.observe({ name: "lock.released", ticket: "1", kind: "tick" });
+    board.observe({ name: "lock.released", ticket: "2", kind: "tick" });
+    expect(await stale()).toEqual([["1", "needs-you", true], ["2", "needs-you", false]]);
+    board.list(listed);
+    expect(await stale()).toEqual([["1", "needs-you", false], ["2", "needs-you", false]]);
   });
 
   // No effort on the step is the executor's default, not a level: null, as

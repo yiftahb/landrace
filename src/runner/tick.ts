@@ -142,13 +142,19 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
       const result = await withLock(
         ticket,
         "tick",
-        () => {
+        async () => {
           deps.log("lock.acquired", { ticket, kind: "tick" });
-          return converge(ticket, {
-            ...deps,
-            source: opts.source,
-            ctx: { ...deps.ctx, ticket } satisfies Omit<HookContext, "snapshot">,
-          });
+          // However the converge ends: the board waits on this before a list
+          // may vouch for the labels a step it ran was about to change.
+          try {
+            return await converge(ticket, {
+              ...deps,
+              source: opts.source,
+              ctx: { ...deps.ctx, ticket } satisfies Omit<HookContext, "snapshot">,
+            });
+          } finally {
+            deps.log("lock.released", { ticket, kind: "tick" });
+          }
         },
         opts.lock,
       );

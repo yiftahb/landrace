@@ -921,7 +921,7 @@ export type EventName =
   | "agent.event"
   | "snapshot.built" | "snapshot.failed"
   | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
-  | "lock.acquired" | "lock.denied" | "lock.stolen"
+  | "lock.acquired" | "lock.released" | "lock.denied" | "lock.stolen"
   | "screen.passed" | "screen.blocked"
   | "display.failed"
   | "wake.failed"
@@ -1655,6 +1655,13 @@ export interface BoardRow {
   chat: Chat | null;
   /** Stopped by a security check rather than for any other reason — the page draws a shield. */
   screened: boolean;
+  /**
+   * The labels the badge was read from predate a step this process ran on
+   * the ticket: from the step's start until a list read after its tick let
+   * the ticket go. Meanwhile a needs-you badge may be the stage it is
+   * leaving, so the page's bell never counts it as an arrival.
+   */
+  stale: boolean;
   /**
    * Where the page's Retry posts, for a ticket that is blocked or screened
    * right now; null everywhere else. Built by the server from a checked id,

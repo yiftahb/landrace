@@ -1816,8 +1816,8 @@ describe("the notify bell", () => {
   });
 
   describe("which tickets have just come to need you", () => {
-    type Row = { id: string; badge: string | null; children: Row[] };
-    const row = (id: string, badge: string | null, children: Row[] = []): Row => ({ id, badge, children });
+    type Row = { id: string; badge: string | null; stale: boolean; children: Row[] };
+    const row = (id: string, badge: string | null, children: Row[] = [], stale = false): Row => ({ id, badge, stale, children });
     /** What each poll in turn announces, the way pollOnce carries one poll's answer into the next. */
     const polls = (...boards: Row[][]): string[][] =>
       runInNewContext(
@@ -1861,6 +1861,24 @@ describe("the notify bell", () => {
 
     it("still finds a ticket held elsewhere before it ever needed you", () => {
       expect(polls([row("1", "elsewhere")], [row("1", "needs-you")])).toEqual([[], ["1"]]);
+    });
+
+    // Between triage's step and the next list, a spec approval heading into
+    // build still reads needs-you from the labels it is leaving.
+    it("finds none for a ticket only passing through a step, while its labels are stale", () => {
+      const running = [row("1", "running")];
+      const stale = [row("1", "needs-you", [], true)];
+      expect(polls([row("1", "needs-you")], running, stale, stale, running)).toEqual([[], [], [], [], []]);
+    });
+
+    it("finds one that came back once a fresh list says so", () => {
+      expect(polls([row("1", "needs-you")], [row("1", "running")], [row("1", "needs-you", [], true)], [row("1", "needs-you")]))
+        .toEqual([[], [], [], ["1"]]);
+    });
+
+    it("keeps one that needed you through stale labels, never announcing it again", () => {
+      const stale = [row("1", "needs-you", [], true)];
+      expect(polls([row("1", "needs-you")], stale, [row("1", "needs-you")])).toEqual([[], [], []]);
     });
   });
 
