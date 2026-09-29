@@ -1725,6 +1725,39 @@ describe("the panel's Pairing section", () => {
   });
 });
 
+/*
+ * A pairing's command is right until it has been run: the seeded line then
+ * refuses its own session id, and only the server's next answer resumes it.
+ * So the panel hands it out once and asks again.
+ */
+describe("the pairing's command, once handed out", () => {
+  const SEEDED = "cd /w/29.pair && claude 'seed' --session-id u";
+  const run = async (source: string, clipboard?: object) => {
+    const ctx = { navigator: { clipboard }, pairing: { shown: true, command: SEEDED, note: "" }, renderPanel: () => {}, loadPairing: () => {} };
+    runInNewContext(`${fnSource(source)} ${source}()`, ctx);
+    await new Promise((r) => setImmediate(r));
+    return ctx.pairing;
+  };
+
+  it("is dropped once copied, so the section offers Get command again", async () => {
+    const copied: string[] = [];
+    const after = await run("copyCommand", { writeText: (t: string) => { copied.push(t); return Promise.resolve(); } });
+    expect(copied).toEqual([SEEDED]);
+    expect(after.command).toBeNull();
+    expect(after.note).toMatch(/Copied/);
+  });
+
+  it("stays on screen to select when the copy fails", async () => {
+    const after = await run("copyCommand");
+    expect(after.command).toBe(SEEDED);
+    expect(after.note).toMatch(/Could not copy/);
+  });
+
+  it("is dropped when the section is shut or opened again", async () => {
+    expect((await run("togglePairing")).command).toBeNull();
+  });
+});
+
 describe("a ticket row's Pairing… item", () => {
   class Listening extends FakeElement {
     listeners = new Map<string, () => void>();

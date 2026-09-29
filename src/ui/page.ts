@@ -1709,6 +1709,8 @@ async function loadPairing() {
 
 function togglePairing() {
   pairing.shown = !pairing.shown;
+  // Opened again, it asks for a command afresh: see copyCommand.
+  pairing.command = null;
   if (pairing.shown) loadPairing();
   renderPanel();
 }
@@ -1725,10 +1727,12 @@ function openPairing(id) {
 
 // Copied from the click itself — a browser may refuse a clipboard write
 // that comes after a wait — and left on screen to select when it does.
+// Copied, it is dropped: once run, the seeded line refuses its own session
+// id, and only Get command again answers with the line that resumes it.
 function copyCommand() {
   const clipboard = navigator.clipboard;
   (clipboard ? clipboard.writeText(pairing.command) : Promise.reject(new Error("no clipboard"))).then(
-    () => { pairing.note = "Copied: run it in your terminal."; renderPanel(); },
+    () => { pairing.command = null; pairing.note = "Copied: run it in your terminal. Get command again to rejoin later."; renderPanel(); },
     () => { pairing.note = "Could not copy: select the command above and copy it."; renderPanel(); },
   );
 }
