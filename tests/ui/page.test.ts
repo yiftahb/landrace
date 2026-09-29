@@ -1866,11 +1866,11 @@ describe("the notify bell", () => {
 
   describe("a notification", () => {
     const shown = (opts: { on: boolean; permission?: string }) => {
-      const made: Array<{ title: string; body: string; tag: string; click?: () => void }> = [];
+      const made: Array<{ title: string; body: string; tag: string; renotify: boolean; click?: () => void }> = [];
       const opened: string[] = [];
       class FakeNotification {
         static permission = opts.permission;
-        constructor(title: string, o: { body: string; tag: string }) { made.push({ title, ...o }); }
+        constructor(title: string, o: { body: string; tag: string; renotify: boolean }) { made.push({ title, ...o }); }
         addEventListener(type: string, f: () => void): void { const last = made.at(-1); if (type === "click" && last) last.click = f; }
         close(): void {}
       }
@@ -1884,9 +1884,11 @@ describe("the notify bell", () => {
       return { made, opened };
     };
 
-    it("is one per ticket, saying which and why, tagged by ticket", () => {
-      expect(shown({ on: true, permission: "granted" }).made.map(({ title, body, tag }) => ({ title, body, tag }))).toEqual([
-        { title: "#29 needs you", body: "Add export — blocked by a security check", tag: "landrace-29" },
+    // renotify beside the tag: a return replaces the last one still listed
+    // for that ticket, and has to alert again rather than swap in silently.
+    it("is one per ticket, saying which and why, tagged by ticket, alerting again on a return", () => {
+      expect(shown({ on: true, permission: "granted" }).made.map(({ title, body, tag, renotify }) => ({ title, body, tag, renotify }))).toEqual([
+        { title: "#29 needs you", body: "Add export — blocked by a security check", tag: "landrace-29", renotify: true },
       ]);
     });
 

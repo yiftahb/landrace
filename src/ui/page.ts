@@ -1874,13 +1874,16 @@ function arrived(before, now) {
 
 // One system notification for a ticket that has just come to need you, only
 // with the bell on and the browser's leave. Tagged by ticket, so a second
-// arrival replaces the first rather than stacking; a click opens its panel.
+// arrival replaces the first rather than stacking — and renotify, so the
+// replacing one still alerts: a return is notified again, not swapped in
+// silently over one still sitting in the notification centre. A click opens
+// its panel.
 // Caught: a browser that refuses the constructor must not read as a poll
 // that failed.
 function notifyOf(row) {
   if (!notifyOn || typeof Notification === "undefined" || Notification.permission !== "granted") return;
   try {
-    const n = new Notification("#" + row.id + " needs you", { body: row.title + " — " + row.note, tag: "landrace-" + row.id });
+    const n = new Notification("#" + row.id + " needs you", { body: row.title + " — " + row.note, tag: "landrace-" + row.id, renotify: true });
     n.addEventListener("click", () => { window.focus(); openPanel(row.id); n.close(); });
   } catch (e) {}
 }
