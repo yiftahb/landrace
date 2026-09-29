@@ -242,7 +242,13 @@ export function shellLine(argv: readonly HandoffArg[]): string {
     if (/\p{Cc}/u.test(a)) throw new Error(`refused a command argument carrying a control character: ${JSON.stringify(a)}`);
     return /^[A-Za-z0-9_./:=@%+,-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`;
   };
-  return argv.map((a) => (typeof a === "string" ? quoted(a) : `"$(cat ${quoted(a.file)})"`)).join(" ");
+  const read = (file: string): string => {
+    // The double quotes that keep the contents one argument are also where
+    // an interactive bash or zsh expands history, single quotes or not.
+    if (file.includes("!")) throw new Error(`refused a file path carrying "!": ${JSON.stringify(file)}`);
+    return `"$(cat ${quoted(file)})"`;
+  };
+  return argv.map((a) => (typeof a === "string" ? quoted(a) : read(a.file))).join(" ");
 }
 
 const DURATION_UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };

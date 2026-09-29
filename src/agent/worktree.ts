@@ -51,7 +51,7 @@ async function rootFor(repoRoot: string): Promise<string> {
  * compares both ends after fs.realpath, so a path that exists but leads
  * somewhere else is refused rather than followed.
  */
-async function pathFor(ticket: string, repoRoot: string): Promise<string> {
+export async function pathFor(ticket: string, repoRoot: string): Promise<string> {
   const root = await rootFor(repoRoot);
   const where = await containedPath(root, ticket);
   if (where.ok) return where.path;
@@ -223,15 +223,6 @@ export async function worktreeOf(slot: string, repoRoot: string): Promise<string
   return registered(await git(["worktree", "list", "--porcelain"], repoRoot, what)).some((w) => w.path === path)
     ? path
     : null;
-}
-
-/**
- * git's own directory for a worktree, outside its checkout: a file kept there
- * is nothing a step can commit or a status lists, and goes when the worktree
- * is removed.
- */
-export async function worktreeGitDir(path: string): Promise<string> {
-  return (await git(["rev-parse", "--absolute-git-dir"], path, "could not read the worktree's git directory")).trim();
 }
 
 /**

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -192,9 +192,30 @@ describe("starting a pairing", () => {
     const started = await startPair(deps, "29", "spec");
     expect(started.command).not.toMatch(/\p{Cc}/u);
     expect(started.command).not.toContain("evil.example");
-    expect(await readFile(a.handoffs[0]?.promptFile ?? "", "utf8")).toContain(body);
+    const seed = a.handoffs[0]?.promptFile ?? "";
+    expect(await readFile(seed, "utf8")).toContain(body);
     // Nothing the person's session could commit, and nothing a hand-in lists as discarded.
     expect(await worktreeState(started.cwd)).toMatchObject({ changes: [] });
+    // Nowhere a step's sandbox may write — its checkout, or the repository's
+    // git directory — so no step can swap it after screening.
+    expect(seed.startsWith(`${started.cwd}/`)).toBe(false);
+    expect(seed.startsWith(`${await realpath(repo)}/.git/`)).toBe(false);
+  });
+
+  it("writes the seed afresh, never through a link planted where it goes", async () => {
+    const a = agent();
+    const { deps } = owed(a.executor);
+    await startPair(deps, "29", "spec");
+    const seed = a.handoffs[0]?.promptFile ?? "";
+    const target = join(lockRoot, "operator-file");
+    await writeFile(target, "the operator's own\n");
+    await rm(seed);
+    await symlink(target, seed);
+
+    await startPair(deps, "29", "spec");
+    expect(await readFile(target, "utf8")).toBe("the operator's own\n");
+    expect((await lstat(seed)).isSymbolicLink()).toBe(false);
+    expect(await readFile(seed, "utf8")).toMatch(/pairing with a person/);
   });
 
   it("asked again, writes nothing more and hands back the same session", async () => {
@@ -303,6 +324,7 @@ describe("finishing a pairing", () => {
     expect(finished).toEqual({ stage: "spec", round: 1, discarded: [] });
     expect(await run()).toMatchObject({ pairing: null, lastOutputBy: "pair" });
     expect(existsSync(started.cwd)).toBe(false);
+    expect(existsSync(a.handoffs[0]?.promptFile ?? "")).toBe(false);
   });
 
   it("does not count the person's own edits against a read-only step, and discards what they left uncommitted", async () => {

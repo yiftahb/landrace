@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { rm, writeFile } from "node:fs/promises";
 
 import { screenPrompt } from "#agent/screen.js";
-import { ensureWorktree, removeWorktree, worktreeGitDir, worktreeOf, worktreeState } from "#agent/worktree.js";
+import { ensureWorktree, pathFor, removeWorktree, worktreeOf, worktreeState } from "#agent/worktree.js";
 import {
   CHILD_SERVER_NAME,
   durationMs,
@@ -49,8 +48,14 @@ const PAIR_DEADLINE_MS = 15 * 60_000;
  */
 const slotOf = (ticket: string): string => `${ticket}.pair`;
 
-/** The seeded prompt, in the pairing worktree's git directory: out of its checkout, and removed with it. */
-const SEED_FILE = "landrace-pair-prompt.md";
+/**
+ * Where the seeded prompt waits for the person's shell to read it: beside the
+ * pairing's checkout, never in it — the person's session could commit it — nor
+ * in the repository's git directory. A step's sandbox may write both, and a
+ * seed swapped there after screening would be pasted into a session no
+ * sandbox confines.
+ */
+const seedOf = async (root: string, ticket: string): Promise<string> => `${await pathFor(slotOf(ticket), root)}.prompt.md`;
 
 /**
  * What the seeded prompt says before the step's own words: that a person
@@ -239,8 +244,11 @@ export function startPair(deps: PairDeps, ticket: string, stageId: string): Prom
     // The seed holds ticket text anyone can write, and the command is pasted
     // into a terminal, which acts on control characters before any shell
     // quoting is read. So the command names this file, never its contents.
-    const promptFile = join(await worktreeGitDir(cwd), SEED_FILE);
-    await writeFile(promptFile, prompt);
+    // Created afresh, never written through what is already there: a link
+    // at the path would have the engine write ticket text wherever it points.
+    const promptFile = await seedOf(root, ticket);
+    await rm(promptFile, { force: true });
+    await writeFile(promptFile, prompt, { flag: "wx", mode: 0o600 });
 
     const session = sessionOf(root, ticket, pairing);
     const resume = agentSession(snapshot, stage.id);
@@ -357,6 +365,7 @@ export function finishPair(deps: PairDeps, ticket: string, note?: string): Promi
     // worktree, and the person is told what that was.
     const discarded = await worktreeState(cwd).then((s) => s.changes, () => []);
     await removeWorktree(ticket, root, slotOf(ticket));
+    await rm(await seedOf(root, ticket), { force: true });
     return { stage: stage.id, round, discarded };
   });
 }
@@ -372,7 +381,10 @@ export function releasePair(deps: PairDeps, ticket: string): Promise<{ stage: st
       marker: `${RELEASE_KIND}:${open.stage}:${open.round}:${open.n}`,
       body: `Released the pairing on ${open.stage}, round ${open.round}: the agent runs it alone.`,
     }]);
-    if (deps.sandbox) await removeWorktree(ticket, deps.sandbox.root, slotOf(ticket));
+    if (deps.sandbox) {
+      await removeWorktree(ticket, deps.sandbox.root, slotOf(ticket));
+      await rm(await seedOf(deps.sandbox.root, ticket), { force: true });
+    }
     return { stage: open.stage, round: open.round };
   });
 }

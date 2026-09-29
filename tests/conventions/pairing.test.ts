@@ -59,6 +59,11 @@ describe("a command line a person pastes into a shell", () => {
     expect(shellLine(["agent", { file: "/tmp/it's/seed" }, "--x"])).toBe(`agent "$(cat '/tmp/it'\\''s/seed')" --x`);
   });
 
+  // Inside double quotes an interactive bash or zsh expands history on "!".
+  it("refuses a file path with a \"!\", which the surrounding double quotes leave to history expansion", () => {
+    expect(() => shellLine(["agent", { file: "/tmp/a!b/seed" }])).toThrow(/"!"/);
+  });
+
   // Quoting stops the shell, not the terminal: ESC [201~ ends a bracketed
   // paste early, and a raw ^C or newline acts the moment it is pasted.
   it.each(["seed\u001b[201~; rm -rf ~", "seed\u0003", "one\ntwo", "\u009b201~"])(
