@@ -12,6 +12,7 @@ import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js
 import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { gitRepo, removeRepos, worktreesOf } from "#tests/support/repo.js";
+import { verdictFor } from "#tests/support/screen.js";
 
 // Real git worktrees, real processes: see tests/mcp/conversation.test.ts.
 jest.setTimeout(60_000);
@@ -88,7 +89,7 @@ function agent(answer = DONE) {
 
 const screener = (verdict: "ok" | "suspicious"): Executor => ({
   id: "screen",
-  run: async () => ({ text: `\`\`\`json\n{"verdict":"${verdict}","reason":"exfiltration"}\n\`\`\``, sessionId: null }),
+  run: async (prompt) => ({ text: verdictFor(prompt, verdict, "exfiltration"), sessionId: null }),
 });
 
 function world(labels: string[], executor: Executor | null, over: Partial<PairDeps> = {}) {

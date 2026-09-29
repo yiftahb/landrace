@@ -1122,7 +1122,8 @@ export interface HarnessOptions {
   answers?: { [stage: string]: ScriptedAnswer };
   /**
    * What the prompt screener answers for each stage's step — a fenced json
-   * verdict, as the real one writes. Absent, nothing is screened. Present, a
+   * verdict, as the real one writes, given the screening's nonce unless it
+   * names one of its own. Absent, nothing is screened. Present, a
    * stage with no answer here is a screener that could not run, which is a
    * refusal: the same fail-closed reading the engine gives a real one.
    */
@@ -1255,7 +1256,7 @@ export type JsonFrame =
   | { kind: "array"; state: "value-or-close" | "comma-or-close" };
 
 /** What the screener's own json block is read as before its fields are checked. */
-export type Verdict = { verdict?: unknown; reason?: unknown };
+export type Verdict = { verdict?: unknown; nonce?: unknown; reason?: unknown };
 
 /* ------------------------------------------------------------------- mcp -- */
 

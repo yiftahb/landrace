@@ -103,14 +103,16 @@ export const executor = brand("executor", {
   // Every invocation written down, so a test can say what this agent was
   // actually handed — which is the only way to tell a turn that is held to
   // the step's declaration from one that merely says it is.
-  run: async (_prompt: string, opts: RunOpts): Promise<{ text: string; sessionId: string | null }> => {
+  run: async (prompt: string, opts: RunOpts): Promise<{ text: string; sessionId: string | null }> => {
     await appendFile(
       ${invocations},
       JSON.stringify({ cwd: opts.cwd ?? null, capabilities: opts.capabilities ?? null, model: opts.model ?? null }) + "\\n",
     );
     opts.onActivity?.({ kind: "tool", text: "Read spec.md", at: 1 });
+    // Screening, the verdict names the screening's nonce, as a real screener's does.
+    const mark = /--- begin prompt under review (\\S+) ---/.exec(prompt)?.[1] ?? "";
     return {
-      text: '\\u0060\\u0060\\u0060json\\n{"verdict":"${verdict}","reason":"exfiltration"}\\n\\u0060\\u0060\\u0060',
+      text: '\\u0060\\u0060\\u0060json\\n{"verdict":"${verdict}","nonce":"' + mark + '","reason":"exfiltration"}\\n\\u0060\\u0060\\u0060',
       sessionId: "sid-2",
     };
   },

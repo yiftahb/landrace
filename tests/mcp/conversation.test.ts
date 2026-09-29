@@ -15,6 +15,7 @@ import { runStep } from "#runner/step.js";
 import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
 import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { gitRepo, removeRepos, worktreesOf } from "#tests/support/repo.js";
+import { verdictFor } from "#tests/support/screen.js";
 
 /*
  * Every test here starts real processes — git worktree operations, child
@@ -52,7 +53,7 @@ const screener = (verdict: "ok" | "suspicious", seen?: (candidate: string) => vo
   id: "screen",
   run: async (prompt) => {
     seen?.(prompt);
-    return { text: `\`\`\`json\n{"verdict":"${verdict}","reason":"exfiltration"}\n\`\`\``, sessionId: null };
+    return { text: verdictFor(prompt, verdict, "exfiltration"), sessionId: null };
   },
 });
 
@@ -363,7 +364,7 @@ describe("conversation", () => {
     const models: Array<string | undefined> = [];
     const watching: Executor = {
       id: "screen",
-      run: async (_prompt, o) => { models.push(o.model); return { text: '```json\n{"verdict":"ok"}\n```', sessionId: null }; },
+      run: async (prompt, o) => { models.push(o.model); return { text: verdictFor(prompt, "ok"), sessionId: null }; },
     };
     await world(tracker, agent("Understood."), {}, watching).ask("1", "what next?");
     expect(models).toEqual(["haiku"]);
@@ -439,7 +440,7 @@ describe("conversation", () => {
     let screened = false;
     const counting: Executor = {
       id: "screen",
-      run: async () => { screened = true; return { text: '```json\n{"verdict":"ok"}\n```', sessionId: null }; },
+      run: async (prompt) => { screened = true; return { text: verdictFor(prompt, "ok"), sessionId: null }; },
     };
 
     await expect(world(tracker, agent("ok"), {}, counting).ask("2", "hello")).rejects.toThrow(/no session to join/);

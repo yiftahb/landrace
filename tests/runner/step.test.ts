@@ -4,6 +4,7 @@ import { DEFAULT_STEP_TIMEOUT_MS } from "#runner/budget.js";
 import { childServerFor } from "#runner/children.js";
 import type { Executor } from "#namespace.js";
 import type { Snapshot, Step, StepResult } from "#namespace.js";
+import { verdictFor } from "#tests/support/screen.js";
 
 // `Effect`'s index signature types every property as `unknown`, so casting a
 // `StepResult` straight to an ad hoc `{ effects: Array<{ marker: string }> }`
@@ -317,7 +318,7 @@ describe("runStep", () => {
     const models: Array<string | undefined> = [];
     const screener: Executor = {
       id: "screen",
-      run: async (_prompt, o) => { models.push(o.model); return { text: '```json\n{"verdict":"ok"}\n```', sessionId: null }; },
+      run: async (prompt, o) => { models.push(o.model); return { text: verdictFor(prompt, "ok"), sessionId: null }; },
     };
     await runStep({
       ticket: "1", step: { ...step, model: "opus" }, stageId: "spec", round: 1, snapshot, executor: agent("free text"),
@@ -397,7 +398,7 @@ describe("runStep", () => {
       id: "screen",
       run: async (prompt) => {
         captured.push(prompt);
-        return { text: '```json\n{"verdict":"ok","reason":"fine"}\n```', sessionId: null };
+        return { text: verdictFor(prompt, "ok"), sessionId: null };
       },
     };
     const templated: Step = { prompt: "Ticket: {ticket.title}" };
@@ -433,7 +434,7 @@ describe("runStep", () => {
       id: "screen",
       run: async (prompt) => {
         captured.push(prompt);
-        return { text: '```json\n{"verdict":"ok","reason":"fine"}\n```', sessionId: null };
+        return { text: verdictFor(prompt, "ok"), sessionId: null };
       },
     };
     const said = {
@@ -1116,7 +1117,7 @@ describe("a step's prompt can read a briefing the snapshot does not carry", () =
       id: "screen",
       run: async (prompt) => {
         captured.push(prompt);
-        return { text: '```json\n{"verdict":"ok","reason":"fine"}\n```', sessionId: null };
+        return { text: verdictFor(prompt, "ok"), sessionId: null };
       },
     };
     await runStep({

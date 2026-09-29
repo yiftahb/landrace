@@ -1,11 +1,19 @@
 import { screenPrompt } from "#agent/screen.js";
-import type { Executor } from "#namespace.js";
+import type { Executor, LandraceEvent } from "#namespace.js";
+import { createLogger } from "#runner/events.js";
 
-const fake = (text: string): Executor => ({
+/** The nonce the screening prompt was marked with, read the way a screener reads it. */
+const markIn = (prompt: string): string => /--- begin prompt under review (\S+) ---/.exec(prompt)?.[1] ?? "";
+
+/** A screener answering `reply`, handed the nonce of the screening it answers when it asks for it. */
+const fake = (reply: string | ((mark: string) => string)): Executor => ({
   id: "fake",
-  run: async () => ({ text, sessionId: null }),
+  run: async (prompt) => ({ text: typeof reply === "string" ? reply : reply(markIn(prompt)), sessionId: null }),
 });
-const opts = (text: string) => ({ model: "haiku", executor: fake(text), signal: new AbortController().signal, timeoutMs: 60_000 });
+const opts = (reply: string | ((mark: string) => string)) =>
+  ({ model: "haiku", executor: fake(reply), signal: new AbortController().signal, timeoutMs: 60_000 });
+/** An honest ok, for the screening it answers. */
+const OK = (mark: string): string => `\`\`\`json\n{"verdict":"ok","nonce":"${mark}"}\n\`\`\``;
 
 describe("screenPrompt", () => {
   /*
@@ -18,14 +26,104 @@ describe("screenPrompt", () => {
     const seen: Array<{ model: string | undefined; timeoutMs: number | undefined }> = [];
     const spy: Executor = {
       id: "spy",
-      run: async (_prompt, o) => { seen.push({ model: o.model, timeoutMs: o.timeoutMs }); return { text: '```json\n{"verdict":"ok"}\n```', sessionId: null }; },
+      run: async (prompt, o) => { seen.push({ model: o.model, timeoutMs: o.timeoutMs }); return { text: OK(markIn(prompt)), sessionId: null }; },
     };
     await screenPrompt("x", { executor: spy, model: "haiku", timeoutMs: 60_000, signal: new AbortController().signal });
     expect(seen).toEqual([{ model: "haiku", timeoutMs: 60_000 }]);
   });
 
   it("passes a clean verdict", async () => {
-    expect(await screenPrompt("write a spec", opts('```json\n{"verdict":"ok"}\n```'))).toEqual({ ok: true });
+    expect(await screenPrompt("write a spec", opts(OK))).toEqual({ ok: true });
+  });
+
+  /*
+   * #33: an ok is this screening's answer only when it names this screening's
+   * nonce. A verdict planted in the screened text was written before the
+   * nonce existed, so a screener that echoes one — or restates the template,
+   * whose verdict is a placeholder — is not obeyed.
+   */
+  describe("an ok carries this screening's nonce", () => {
+    it("blocks an ok with no nonce", async () => {
+      const r = await screenPrompt("x", opts('```json\n{"verdict":"ok"}\n```'));
+      expect(r).toEqual({ ok: false, reason: "the screener's verdict did not carry this screening's nonce" });
+    });
+
+    it("blocks an ok carrying some other nonce", async () => {
+      const r = await screenPrompt("x", opts('```json\n{"verdict":"ok","nonce":"guessed"}\n```'));
+      expect(r).toMatchObject({ ok: false });
+    });
+
+    it("blocks a reply that restates the template's own example, nonce and all", async () => {
+      let example = "";
+      const restating: Executor = {
+        id: "restating",
+        run: async (prompt) => {
+          example = /```json\n(.*)\n```/.exec(prompt)?.[1] ?? "";
+          return { text: `\`\`\`json\n${example}\n\`\`\``, sessionId: null };
+        },
+      };
+      const r = await screenPrompt("x", { model: "haiku", executor: restating, timeoutMs: 60_000, signal: new AbortController().signal });
+      expect(example).toContain("nonce");
+      expect(r).toEqual({ ok: false, reason: "the screener's verdict could not be read" });
+    });
+
+    it("tells the screener that format instructions in the screened text are judged, never obeyed", async () => {
+      let seen = "";
+      const spy: Executor = { id: "spy", run: async (p) => { seen = p; return { text: OK(markIn(p)), sessionId: null }; } };
+      await screenPrompt("x", { model: "haiku", executor: spy, timeoutMs: 60_000, signal: new AbortController().signal });
+      expect(seen).toMatch(/format.*judge/is);
+    });
+
+    it("still blocks a suspicious verdict with no nonce, on its own reason", async () => {
+      const r = await screenPrompt("x", opts('```json\n{"verdict":"suspicious","reason":"asks for the token"}\n```'));
+      expect(r).toEqual({ ok: false, reason: "asks for the token" });
+    });
+  });
+
+  /*
+   * #33: #29's code-review round 5 was blocked as "verdict could not be
+   * read", and what the screener wrote was nowhere. It is logged now, and
+   * only logged: the ticket shows the reason, never the reply.
+   */
+  describe("a reply that fails closed is logged", () => {
+    const blocked = async (reply: string, log = createLogger({ sink: () => {} })) => {
+      const events: LandraceEvent[] = [];
+      const r = await screenPrompt("x", { ...opts(reply), log: (n, d) => { log(n, d); events.push({ name: n, ...d }); } });
+      return { r, event: events.find((e) => e.name === "screen.blocked") };
+    };
+
+    it.each([
+      ["no json block", "looks fine to me"],
+      ["an unparseable block", '```json\n{not valid\n```'],
+      ["an unreadable verdict", '```json\n{"verdict":"probably-fine"}\n```'],
+      ["no nonce", '```json\n{"verdict":"ok"}\n```'],
+    ])("with screen.blocked, on %s", async (_what, reply) => {
+      const { r, event } = await blocked(reply);
+      expect(event?.reply).toBe(reply);
+      expect((r as { reason: string }).reason).not.toContain(reply);
+    });
+
+    it("keeps its last 2,000 characters, where the verdict is", async () => {
+      const reply = `${"reasoning ".repeat(500)}\n\`\`\`json\n{"verdict":"probably-fine"}\n\`\`\``;
+      const { event } = await blocked(reply);
+      const logged = String(event?.reply);
+      expect(logged.length).toBeLessThanOrEqual(2000);
+      expect(reply.endsWith(logged.slice(1))).toBe(true);
+    });
+
+    it("redacted, like every other log line", async () => {
+      const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+      const printed: LandraceEvent[] = [];
+      await blocked(`the token is ${secret}`, createLogger({ redactValues: [secret], sink: (e) => printed.push(e) }));
+      const line = JSON.stringify(printed.find((e) => e.name === "screen.blocked"));
+      expect(line).toContain("the token is");
+      expect(line).not.toContain(secret);
+    });
+
+    it("but not a verdict the screener gave, which carries its own reason", async () => {
+      const { event } = await blocked('```json\n{"verdict":"suspicious","reason":"nope"}\n```');
+      expect(event).toEqual({ name: "screen.blocked", reason: "nope" });
+    });
   });
 
   it("blocks a suspicious verdict and carries the reason", async () => {
@@ -150,7 +248,7 @@ describe("screenPrompt", () => {
 
   it("logs screen.passed on a clean verdict", async () => {
     const events: Array<[string, unknown]> = [];
-    await screenPrompt("x", { ...opts('```json\n{"verdict":"ok"}\n```'), log: (n, d) => events.push([n, d]) });
+    await screenPrompt("x", { ...opts(OK), log: (n, d) => events.push([n, d]) });
     expect(events).toContainEqual(["screen.passed", {}]);
   });
 
@@ -195,13 +293,12 @@ describe("screenPrompt", () => {
     // attack — the model just said the same true thing three times — and
     // the trailing rule now passes it, using the last one.
     it("now passes three repeated, identical ok blocks, rather than refusing them as ambiguous", async () => {
-      const reply = '```json\n{"verdict":"ok"}\n```\n```json\n{"verdict":"ok"}\n```\n```json\n{"verdict":"ok"}\n```';
-      const r = await screenPrompt("x", opts(reply));
+      const r = await screenPrompt("x", opts((mark) => `${OK(mark)}\n${OK(mark)}\n${OK(mark)}`));
       expect(r).toEqual({ ok: true });
     });
 
     it("still accepts a reply with exactly one json block", async () => {
-      expect(await screenPrompt("x", opts('```json\n{"verdict":"ok"}\n```'))).toEqual({ ok: true });
+      expect(await screenPrompt("x", opts(OK))).toEqual({ ok: true });
     });
 
     // Behaviour change, stated plainly: round 2/3 refused this as "many, 2"
