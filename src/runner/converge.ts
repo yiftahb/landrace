@@ -352,6 +352,14 @@ async function converging(
         deps.log("step.finished", { ticket, stage: stage.id, round, ok: finishedOk });
       }
 
+      // A run stopped while its step ran — Ctrl-C, or the ticket closed or
+      // taken off the loop (see tick) — writes nothing, whatever the step
+      // returned: an answer the agent got out as it was killed is not one
+      // anybody still wants, and a screener killed mid-verdict refused
+      // nothing. Nothing written leaves the round owed, so it runs again if
+      // the ticket comes back.
+      if (deps.ctx.signal.aborted) return { passes: pass, settled: "halt", why: "the run was aborted" };
+
       if (!result.ok) {
         deps.log("step.rejected", { ticket, stage: stage.id, round, kind: result.kind, reason: result.reason });
 

@@ -564,6 +564,50 @@ describe("converge", () => {
       expect(r.settled).toBe("halt");
     });
 
+    /*
+     * #33: a ticket closed mid-step is stopped by aborting its run, and a
+     * stopped run writes nothing: not the answer an agent got out as it was
+     * killed, and not a refusal from a screener that was killed mid-verdict.
+     */
+    describe("a run aborted while its step ran writes nothing to the ticket", () => {
+      const oneStep: Workflow = {
+        version: 1, name: "t",
+        stages: [{
+          id: "spec", step: "spec", entry: true,
+          triggers: [{ when: { "run.stage": null } }],
+          on_enter: [{ type: "tracker.status", value: "spec" }],
+        }],
+      };
+      const step: Step = {
+        prompt: "go",
+        output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
+      };
+      const ctxOf = (signal: AbortSignal) => ({ ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal, log: () => {} });
+
+      it("not the answer the agent got out as it was stopped", async () => {
+        const w = world();
+        const controller = new AbortController();
+        const agent: Executor = {
+          id: "agent",
+          run: async () => { controller.abort(); return { text: '```json\n{"kind":"spec"}\n```', sessionId: null }; },
+        };
+        const r = await converge("1", deps(w, { workflow: oneStep, steps: new Map([["spec", step]]), executor: agent, ctx: ctxOf(controller.signal) }));
+        expect(r).toMatchObject({ settled: "halt", why: "the run was aborted" });
+        expect(w.entries).toEqual([]);
+      });
+
+      it("not a refusal from a screener stopped mid-verdict", async () => {
+        const w = world();
+        const controller = new AbortController();
+        const screener: Executor = { id: "screen", run: async () => { controller.abort(); throw new Error("aborted"); } };
+        const r = await converge("1", deps(w, {
+          workflow: oneStep, steps: new Map([["spec", step]]), screen: { executor: screener }, ctx: ctxOf(controller.signal),
+        }));
+        expect(r).toMatchObject({ settled: "halt", why: "the run was aborted" });
+        expect(w.entries).toEqual([]);
+      });
+    });
+
     it("does nothing at all when the signal is already aborted before the first pass", async () => {
       const w = world();
       const controller = new AbortController();
