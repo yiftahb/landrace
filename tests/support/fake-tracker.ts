@@ -475,6 +475,16 @@ export function createFakeTracker(
         }
         return json({ data: null, errors: [{ message: `Could not resolve to a node with the global id of '${String(variables.id)}'` }] });
       }
+      if (mutation === "LandraceReply") {
+        for (const p of pulls.values()) {
+          const thread = p.threads.find((t, i) => (t.id ?? `thread-${p.number}-${i}`) === variables.id);
+          if (thread) {
+            thread.replies = [...(thread.replies ?? []), { author: BOT, body: String(variables.body ?? "") }];
+            return json({ data: { addPullRequestReviewThreadReply: { comment: { id: `reply-${thread.replies.length}` } } } });
+          }
+        }
+        return json({ data: null, errors: [{ message: `Could not resolve to a node with the global id of '${String(variables.id)}'` }] });
+      }
 
       // A repository the token cannot see answers with a null repository and
       // no error at all, which is a different failure from "no pull request".

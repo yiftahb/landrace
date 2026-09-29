@@ -50,6 +50,9 @@ import type {
 const BOT = "landrace";
 const PERSON = "a-person";
 
+/** The kind a fix round's route marker names — `fix:{round}` — as the shipped tracker hook reads it. */
+const FIX_KIND = "fix";
+
 /** Both relationship types this tracker reports: a sub-ticket's parent, and the ticket a pull request implements. */
 const RELATION_DECLS: RelationDecl[] = [
   { type: RELATIONS.childOf, singular: true },
@@ -92,10 +95,11 @@ const prNodeOf = (p: ExternalPull): Node => ({
   // them: a thread left on a merged or abandoned one is nothing a fix round
   // can act on, and counting it would loop the ticket through review for
   // ever. Zero rather than absent, so the sum stays defined when every pull
-  // request is merged and "no threads are open" can still be read.
+  // request is merged and "no thread awaits a fix" can still be read.
   state: {
     merged: p.merged,
     openThreads: p.closed === null ? p.openThreads : 0,
+    awaitingFix: p.closed === null ? p.awaitingFix : 0,
     ...(p.branch === undefined ? {} : { branch: p.branch }),
   },
 });
@@ -222,7 +226,9 @@ export function createExternalState(
       const number = pulls.size + 1;
       // Merged means closed as done, unless the test says otherwise.
       const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
-      const pull: ExternalPull = { id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, ...pr, closed };
+      const pull: ExternalPull = {
+        id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, ...pr, closed,
+      };
       pulls.set(pull.id, pull);
       return pull.id;
     },
@@ -416,38 +422,52 @@ export function createExternalState(
             return;
           case PULL_REVIEW_EFFECT: {
             // Threads are a count here, not text, so a review is what it does
-            // to the count: each well-formed finding opens one, and each id
-            // listed as resolved closes one the reviewer raised — never more
-            // than it raised, since a person's thread is theirs to close.
+            // to the counts: each well-formed finding opens one awaiting a
+            // fix; each reply from a `fix` round hands one to the person and
+            // each other reply hands one back; and each id a review lists as
+            // resolved closes one the reviewer raised — never more than it
+            // raised, since a person's thread is theirs to close. A fix round
+            // resolves nothing.
             const branch = effectBranch(effect);
-            const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown };
+            const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown; replies?: unknown };
+            const some = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
             const fromBranch = [...pulls.values()].filter((p) => p.ticket === ticket && p.branch === branch);
             const pull = fromBranch.find((p) => p.closed === null && !p.merged);
             if (!pull) {
               // The same rule as the shipped hook: merged meanwhile, or a clean
               // review, is nothing to fix; no pull request from the branch at
               // all is a route naming the wrong branch.
-              const empty = !(Array.isArray(out.findings) && out.findings.length) && !(Array.isArray(out.resolved) && out.resolved.length);
+              const empty = !some(out.findings) && !some(out.resolved) && !some(out.replies);
               if (empty || fromBranch.length > 0) return;
               throw new Error(`there is no open pull request from ${branch} to put the review on`);
             }
             const marker = String(effect.marker);
             if ((pull.reviews ?? []).includes(marker)) return;
+            const fix = marker.split(":")[0] === FIX_KIND;
             const opened = (Array.isArray(out.findings) ? out.findings : []).filter((f) => {
               const x = f as { file?: unknown; line?: unknown; body?: unknown } | null;
               return typeof x === "object" && x !== null && typeof x.file === "string" && Number.isInteger(x.line) && typeof x.body === "string";
             }).length;
+            const replied = (Array.isArray(out.replies) ? out.replies : []).filter((r) => {
+              const x = r as { thread?: unknown; body?: unknown } | null;
+              return typeof x === "object" && x !== null && typeof x.thread === "string" && typeof x.body === "string";
+            }).length;
             const raised = pull.raised ?? 0;
-            const closing = Math.min(raised, Array.isArray(out.resolved) ? out.resolved.length : 0);
+            const closing = fix ? 0 : Math.min(raised, Array.isArray(out.resolved) ? out.resolved.length : 0);
             pull.raised = raised - closing + opened;
             pull.openThreads = pull.openThreads - closing + opened;
+            // ponytail: a count cannot tell which thread a reply or a resolve
+            // touched, so it is held inside [0, openThreads]; the shipped
+            // tracker hook reads each thread's last word instead.
+            const awaiting = pull.awaitingFix + opened + (fix ? -replied : replied);
+            pull.awaitingFix = Math.min(pull.openThreads, Math.max(0, awaiting));
             pull.reviews = [...(pull.reviews ?? []), marker];
             return;
           }
           case PULL_OPEN_EFFECT: {
             const number = pulls.size + 1;
             pulls.set(`pr-${number}`, {
-              id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, closed: null, branch: effectBranch(effect),
+              id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, awaitingFix: 0, closed: null, branch: effectBranch(effect),
             });
             return;
           }

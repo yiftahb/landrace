@@ -85,7 +85,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
 
     expect(messages).toEqual(expect.arrayContaining([
       expect.stringContaining("rel.implements.in.total"),
-      expect.stringContaining("rel.implements.in.sum.openThreads"),
+      expect.stringContaining("rel.implements.in.sum.awaitingFix"),
       expect.stringContaining("rel.implements.in.not.merged"),
     ]));
     // And with it loaded, nothing: the same rule, the same workflow.

@@ -53,7 +53,7 @@ budget:
 # reads `"run.lastOutputValid": null` — that stage's latest round did not
 # fail. A failed round is the halts' to route, and only theirs. Without it a
 # failure matched both a halt and the way on: a refused review round also
-# read "no threads are open", a failed fix round also read "the fixer
+# read "no thread awaits a fix", a failed fix round also read "the fixer
 # finished a round", a failed second spec also read the first one's
 # `kind: questions` — two triggers, an ambiguity halt, and the ticket left
 # wearing lr:working at a stage nothing would ever run again.
@@ -192,15 +192,17 @@ stages:
         when: { "run.stage": spec-questions, "run.lastEvent.actor": human }
       - name: you replied to the spec
         when: { "run.stage": spec-human-review, "run.lastEvent.actor": human }
-      # Not once the pull request merged, and not while a thread is open:
-      # merging and saying thanks is `done`, and a reopened thread is
-      # `fix-review`. Both are triggers of their own, and two matching halts.
+      # Not once the pull request merged, and not while a thread awaits a
+      # fix: merging and saying thanks is `done`, and a thread a person
+      # commented on is `fix-review`. Both are triggers of their own, and two
+      # matching halts. A thread the fixer answered is the person's turn on
+      # the pull request, and holds no reply here back.
       - name: you replied about the pull request
         when:
           "run.stage": pr-human-review
           "run.lastEvent.actor": human
           "rel.implements.in.not.merged": { $gt: 0 }
-          "rel.implements.in.sum.openThreads": 0
+          "rel.implements.in.sum.awaitingFix": 0
       - name: you replied to a halt
         when: { "run.stage": blocked, "run.lastEvent.actor": human }
       - name: you replied to a security refusal
@@ -285,11 +287,14 @@ stages:
     triggers:
       - name: the pull request is open
         when: { "run.stage": publish, "rel.implements.in.total": { $gt: 0 } }
+      # Every fix is reviewed, within fix-review's own twenty rounds — not
+      # code-review's five, which would strand a person's thread fixed after
+      # the fifth review with nothing to look at it.
       - name: the fixer finished a round
         when:
           "run.stage": fix-review
           "run.lastOutputValid": null
-          "run.counters.code-review": { $lt: 4 }
+          "run.counters.fix-review": { $lt: 20 }
     on_enter:
       # Pushed first: a fix round's commits have to be on the pull request
       # before the reviewer reads it. The fixer pushes its own; this pushes
@@ -299,21 +304,27 @@ stages:
       - { type: tracker.status, value: code-review }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
+  # A review thread is a conversation, and whose turn it is is its last word:
+  # the fixer's `fix`-marked reply hands it to the person, and anything after
+  # it — a person's reply, the reviewer's "still wrong" — or no reply at all
+  # leaves it awaiting a fix. `sum.awaitingFix` counts those, so a thread the
+  # fixer answered never loops; the person resolves it, or replies.
   - id: fix-review
     step: steps/fix-review.md
     branch: "landrace/{ticket}"
     triggers:
-      - name: the reviewer left open threads
+      - name: the reviewer left threads awaiting a fix
         when:
           "run.stage": code-review
           "run.lastOutputValid": null
-          "rel.implements.in.sum.openThreads": { $gt: 0 }
-          "run.counters.code-review": { $lt: 4 }
-      - name: you reopened a thread
+          "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+          "run.counters.code-review": { $lt: 5 }
+      # No round cap: a person commented on the pull request, and the way
+      # back to review is bounded by fix-review's own twenty.
+      - name: you commented on the pull request
         when:
           "run.stage": pr-human-review
-          "rel.implements.in.sum.openThreads": { $gt: 0 }
-          "run.counters.code-review": { $lt: 4 }
+          "rel.implements.in.sum.awaitingFix": { $gt: 0 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
       - { type: tracker.status, value: fix-review }
@@ -326,7 +337,7 @@ stages:
   # and skills alone, on this branch. A person reviews that commit beside the
   # feature; a lesson they reject is a thread, and fix-review reverts it.
   #
-  # A thread reopened after that goes through fix-review and code-review again,
+  # A thread commented on after that goes through fix-review and code-review again,
   # so the retro runs again, on the whole history, until its three rounds are
   # spent. A counter for a stage that never ran reads as 0. Not once the pull
   # request merged: lessons committed after that land on a branch nothing
@@ -340,7 +351,7 @@ stages:
         when:
           "run.stage": code-review
           "run.lastOutputValid": null
-          "rel.implements.in.sum.openThreads": 0
+          "rel.implements.in.sum.awaitingFix": 0
           "rel.implements.in.not.merged": { $gt: 0 }
           "run.counters.retro": { $lt: 3 }
           $or:
@@ -356,12 +367,12 @@ stages:
     goto: *goto
     triggers:
       # The retro's trigger, negated: the two can never match together.
-      - name: no threads are open
+      - name: no thread awaits a fix
         when:
           "run.stage": code-review
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
-          "rel.implements.in.sum.openThreads": 0
+          "rel.implements.in.sum.awaitingFix": 0
           $or:
             - $and:
                 - { "run.counters.spec": { $lt: 2 } }
@@ -409,10 +420,12 @@ stages:
   # on, but as one made here at the halt, not where it was first written: it
   # comes back here unless it asks for a goto.
   #
-  # Each target runs only within its rounds. Its own counter first: a failed
+  # Each target runs only within its rounds, on its own counter: a failed
   # fix round advances fix-review's and not code-review's, so code-review's
-  # alone would let Retry run it for ever. fix-review is held to
-  # code-review's as well, the loop the two share. And each is offered only
+  # would let Retry run it for ever. fix-review is held to its own twenty
+  # alone, as the way back to review is: held to code-review's five too, a
+  # person's thread left after the fifth review could never be fixed. And
+  # each is offered only
   # where it can run — a review needs a pull request, the judge a message to
   # read — because a goto that landed on a stage whose `requires` fails would
   # halt there, and no goto is taken from a stage whose precondition does
@@ -426,12 +439,9 @@ stages:
       - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
       - stage: code-review
-        when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } }
+        when: { "run.counters.code-review": { $lt: 5 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: fix-review
-        when:
-          "run.counters.code-review": { $lt: 4 }
-          "run.counters.fix-review": { $lt: 4 }
-          "rel.implements.in.total": { $gt: 0 }
+        when: { "run.counters.fix-review": { $lt: 20 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: retro
         when:
           "run.counters.retro": { $lt: 3 }
@@ -440,16 +450,23 @@ stages:
       - stage: triage
         when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } }
     triggers:
-      # The open-thread count is part of the condition, not decoration: the
-      # last review round can finish with nothing left open, and then
+      # The awaiting-fix count is part of the condition, not decoration: the
+      # last review round can finish with nothing awaiting a fix, and then
       # pr-human-review's trigger fires too. Two triggers matching is a halt,
-      # so "the budget is spent" has to mean "spent with findings still open".
+      # so "the budget is spent" has to mean "spent with a fix still owed".
       - name: the review budget is exhausted
         when:
           "run.stage": code-review
           "run.lastOutputValid": null
-          "rel.implements.in.sum.openThreads": { $gt: 0 }
-          "run.counters.code-review": { $gte: 4 }
+          "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+          "run.counters.code-review": { $gte: 5 }
+      # The negation of "the fixer finished a round": twenty fixes and the
+      # threads still argued is for a person to settle.
+      - name: the fix budget is exhausted
+        when:
+          "run.stage": fix-review
+          "run.lastOutputValid": null
+          "run.counters.fix-review": { $gte: 20 }
       # `run.lastRefused` is false for a broken contract and true for a
       # refusal, never null while `lastOutputValid` is false — so this and
       # `screened` below split every failure between them, one each.
