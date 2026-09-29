@@ -579,6 +579,13 @@ function createClient(opts: GitHubOptions) {
       const done = await graphqlRequest<{ resolveReviewThread?: { thread?: { isResolved?: boolean } } | null }>(RESOLVE_THREAD, { id });
       if (done.resolveReviewThread?.thread?.isResolved !== true) throw new Error(`GitHub did not resolve review thread ${id}`);
     },
+    // Checked the same way: no comment in the answer is a reply that did not land.
+    replyToThread: async (id: string, body: string): Promise<void> => {
+      const done = await graphqlRequest<{ addPullRequestReviewThreadReply?: { comment?: { id?: string } | null } | null }>(
+        REPLY_THREAD, { id, body },
+      );
+      if (!done.addPullRequestReviewThreadReply?.comment?.id) throw new Error(`GitHub did not post the reply on review thread ${id}`);
+    },
     addSubIssue: (parent: number, child: number) =>
       named(call("POST", `/issues/${parent}/sub_issues`, { sub_issue_id: child }), `"Issues: Read and write" on ${repo}`),
     listComments: (n: number) => call<Comment[]>("GET", `/issues/${n}/comments?per_page=100`),
@@ -2358,9 +2365,30 @@ function commentableLines(patch: string | undefined): Set<number> {
   return lines;
 }
 
+interface Reply {
+  thread: string;
+  body: string;
+}
+
+const isReply = (r: unknown): r is Reply => {
+  const x = r as Partial<Reply> | null;
+  return typeof x === "object" && x !== null && typeof x.thread === "string" && x.thread !== "" &&
+    typeof x.body === "string" && x.body.trim() !== "";
+};
+
 /**
- * pull.review: the reviewer's prose as one review, a thread per finding, and
- * the reviewer's own threads it lists as addressed resolved.
+ * pull.review: a step's replies on the threads they name, its prose as one
+ * review, a thread per finding, and the reviewer's own threads it lists as
+ * addressed resolved.
+ *
+ * The step is told apart by its route's marker — `fix:{round}` for
+ * fix-review, `review:{round}` for code-review — and that kind is what each
+ * reply ends in: a `fix` one hands the thread to the person, any other puts
+ * it back to awaiting a fix. A fix round replies on any thread and resolves
+ * none; a review replies on any, and resolves only its own findings.
+ *
+ * Each reply is idempotent by its own marker, `{kind}:{stage}:{round}:{thread}`:
+ * a thread whose last word is already this one is not answered again.
  *
  * Idempotent by the review's trailing marker, checked on GitHub itself: a
  * step's route effect is applied once, right after the step, and the one way
@@ -2377,9 +2405,16 @@ function commentableLines(patch: string | undefined): Set<number> {
  */
 async function applyReview(gh: Client, repo: string, effect: Effect, { snapshot, log }: HookContext): Promise<void> {
   const branch = effectBranch(effect);
-  const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown };
+  const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown; replies?: unknown };
   const findings = Array.isArray(out.findings) ? out.findings : [];
-  const resolved = Array.isArray(out.resolved) ? out.resolved.filter((id): id is string => typeof id === "string") : [];
+  const replies = Array.isArray(out.replies) ? out.replies.filter(isReply) : [];
+  const stage = String(effect.stage ?? "review");
+  const round = Number(effect.round ?? 0);
+  const marker = String(effect.marker ?? `review:${stage}:${round}`);
+  const kind = marker.split(":")[0] || "review";
+  const resolved = kind === FIX_KIND || !Array.isArray(out.resolved)
+    ? []
+    : out.resolved.filter((id): id is string => typeof id === "string");
   const fromBranch = ((snapshot.graph as Graph | undefined)?.nodes ?? []).filter(
     (node) => node.kind === PULL_REQUEST_KIND && node.state.branch === branch,
   );
@@ -2390,15 +2425,34 @@ async function applyReview(gh: Client, repo: string, effect: Effect, { snapshot,
     // pull request left to put it on — is nothing to fix, and halting here
     // would hold a ticket back from `done`. No pull request from the branch
     // at all is a route naming the wrong branch, and that is said.
-    if ((findings.length === 0 && resolved.length === 0) || fromBranch.length > 0) {
+    if ((findings.length === 0 && resolved.length === 0 && replies.length === 0) || fromBranch.length > 0) {
       log("github.review.nowhere", { branch, findings: findings.length, why: "no open pull request from the branch" });
       return;
     }
     throw new Error(`there is no open pull request from ${branch} to put the review on`);
   }
-  const stage = String(effect.stage ?? "review");
-  const round = Number(effect.round ?? 0);
-  const marker = String(effect.marker ?? `review:${stage}:${round}`);
+
+  const threads = replies.length > 0 || resolved.length > 0
+    ? new Map((await threadsOn(gh, repo, number)).map((t) => [t.id, t]))
+    : new Map<string, BriefThread>();
+
+  // Replies first, and the review last: its marker is what says the round
+  // is on GitHub, so it lands only once everything else has.
+  const bot = replies.length > 0 ? await gh.botLogin() : "";
+  for (const reply of replies) {
+    const thread = threads.get(reply.thread);
+    if (!thread) {
+      log("github.review.unrepliable", { thread: reply.thread, why: "no such thread on the pull request" });
+      continue;
+    }
+    const said = `${kind}:${stage}:${round}:${thread.id}`;
+    const last = thread.lastReply.nodes[0];
+    if (last?.author && sameLogin(last.author.login, bot) && parseMarker(last.body ?? "")?.marker === said) continue;
+    await gh.replyToThread(
+      thread.id,
+      neutraliseMarkers(cut(reply.body.trim(), MAX_COMMENT_CHARS - 1_000)) + renderMarker({ stage, kind, round, marker: said }),
+    );
+  }
 
   const posted = (await gh.listReviews(number)).some((r) => parseMarker(r.body ?? "")?.marker === marker);
   if (!posted) {
@@ -2420,16 +2474,13 @@ async function applyReview(gh: Client, repo: string, effect: Effect, { snapshot,
     });
     const listed = unplaced.length === 0 ? "" : `\n\nFindings GitHub cannot place on this pull request's diff:\n\n${unplaced.join("\n")}`;
     const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, MAX_COMMENT_CHARS - 1_000) +
-      renderMarker({ stage, kind: "review", round, marker });
-    // File threads first, the review last: the review's marker is what says
-    // this round is on GitHub, so it lands only once everything else has.
+      renderMarker({ stage, kind, round, marker });
+    // File threads first, the review last, for the same reason as the replies.
     const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
     for (const f of onFiles) await gh.commentOnFile(number, f.path, f.body, head);
     await gh.postReview(number, body, onLines);
   }
 
-  if (resolved.length === 0) return;
-  const threads = new Map((await threadsOn(gh, repo, number)).map((t) => [t.id, t]));
   for (const id of resolved) {
     const thread = threads.get(id);
     if (!thread || parseMarker(thread.comments.nodes[0]?.body ?? "")?.kind !== FINDING_KIND) {
@@ -2903,5 +2954,5 @@ export const githubPreflight = definePreflight({ id: "github", check });
 /** Every GraphQL document this hook sends, so a test can cost each against GitHub's node limit. */
 export const GRAPHQL_QUERIES = {
   ISSUE_QUERY, ISSUES_QUERY, CLOSED_QUERY, PULLS_QUERY, CLOSED_PULLS_QUERY, TICKET_QUERY, THREADS_QUERY, BRIEF_QUERY, PREFLIGHT_PR_QUERY,
-  RESOLVE_THREAD,
+  RESOLVE_THREAD, REPLY_THREAD,
 };
