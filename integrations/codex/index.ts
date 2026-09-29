@@ -46,8 +46,9 @@ const KEY_SEGMENT = /^[A-Za-z0-9_-]+$/;
 function serverArgs(name: string, server: McpServerConfig, tools: readonly string[] | null): string[] {
   const at = `mcp_servers.${name}`;
   const args: string[] = [];
-  const set = (key: string, value: unknown): void => {
-    const segments = key.slice(at.length + 1).split(".");
+  // Each name checked as it is, before joining: split after, "X.Api.Key" would pass as three.
+  const set = (segments: readonly string[], value: unknown): void => {
+    const key = [at, ...segments].join(".");
     const bad = [name, ...segments].find((s) => !KEY_SEGMENT.test(s));
     if (bad !== undefined) {
       throw new Error(`refused MCP server "${name}": codex reads ${JSON.stringify(bad)} in "${key}" as more than one key; ` +
@@ -55,15 +56,15 @@ function serverArgs(name: string, server: McpServerConfig, tools: readonly strin
     }
     args.push("-c", `${key}=${JSON.stringify(value)}`);
   };
-  if (typeof server.command === "string") set(`${at}.command`, server.command);
-  if (server.args?.length) set(`${at}.args`, server.args);
-  for (const [key, value] of Object.entries(server.env ?? {})) set(`${at}.env.${key}`, value);
-  if (typeof server["url"] === "string") set(`${at}.url`, server["url"]);
+  if (typeof server.command === "string") set(["command"], server.command);
+  if (server.args?.length) set(["args"], server.args);
+  for (const [key, value] of Object.entries(server.env ?? {})) set(["env", key], value);
+  if (typeof server["url"] === "string") set(["url"], server["url"]);
   const headers = server["headers"];
   if (headers !== null && typeof headers === "object") {
-    for (const [key, value] of Object.entries(headers as Record<string, unknown>)) set(`${at}.http_headers.${key}`, value);
+    for (const [key, value] of Object.entries(headers as Record<string, unknown>)) set(["http_headers", key], value);
   }
-  if (tools !== null) set(`${at}.enabled_tools`, tools);
+  if (tools !== null) set(["enabled_tools"], tools);
   return args;
 }
 

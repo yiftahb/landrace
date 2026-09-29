@@ -184,6 +184,15 @@ describe("the Codex integration", () => {
       expect(existsSync(join(cwd, "spawned"))).toBe(false);
     });
 
+    it.each([
+      ["variable", { command: "x", env: { "a.b": "v" } }, /"a\.b"/],
+      ["header", { url: "https://d.example/mcp", headers: { "X.Api.Key": "k" } }, /"X\.Api\.Key"/],
+    ])("refuses a server with a %s name a -c key path cannot carry, before anything runs", async (_, server, named) => {
+      const cwd = withCfg({ mark: true });
+      await expect(run(codex({ servers: { docs: server } }), { cwd, capabilities: ["repo:read"] })).rejects.toThrow(named);
+      expect(existsSync(join(cwd, "spawned"))).toBe(false);
+    });
+
     it("passes CODEX_HOME on, and nothing else of the engine's environment", async () => {
       const saved = process.env.CODEX_HOME;
       process.env.CODEX_HOME = "/somewhere/codex";
