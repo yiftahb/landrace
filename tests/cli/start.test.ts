@@ -129,6 +129,16 @@ describe("buildRuntime", () => {
     await expect(buildRuntime(dir, {})).rejects.toThrow(/githubToken/);
   });
 
+  it("refuses a notify.via no loaded notifier answers to, naming what is registered", async () => {
+    const dir = await fixture({ extra: "notify: { on: [needs-you], via: [slack] }\n" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow('notify.via names "slack", which no notifier registers: the loaded hooks register none');
+  });
+
+  it("refuses a notify block naming an event there is none of, saying where", async () => {
+    const dir = await fixture({ extra: "notify: { on: [done], via: [slack] }\n" });
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/landrace\.yaml: notify\.on\.0: .*"needs-you"/);
+  });
+
   it("refuses to start when no hook module provides a source to enumerate", async () => {
     await expect(buildRuntime(await fixture(), {})).rejects.toThrow(/source/);
   });

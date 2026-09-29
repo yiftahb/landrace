@@ -90,6 +90,11 @@ export const preflight = brand("preflight", {
 
 const HOOK = hookSource();
 
+/** A notifier exported as `name`, branded the way `landrace/hooks` brands one. */
+const notifierSource = (name: string, id: string): string => `
+export const ${name} = brand("notifier", { id: ${JSON.stringify(id)}, send: async (): Promise<void> => {} });
+`;
+
 /** A hook-registered executor, branded the way `landrace/hooks` brands one. */
 const EXECUTOR = `export const executor = brand("executor", {
   id: "fake",
@@ -144,6 +149,10 @@ async function fixture(
     mcpJson?: unknown;
     /** A message the pre hook fails with, as an upstream error would quote what it was sent. */
     preFails?: string;
+    /** More of the fake hook module, after everything else in it. */
+    hookExtra?: string;
+    /** More of `landrace.yaml`, after everything else in it. */
+    configExtra?: string;
   } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
@@ -151,7 +160,7 @@ async function fixture(
   const dir = join(root, ".landrace");
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
-  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight, opts.preFails));
+  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight, opts.preFails) + (opts.hookExtra ?? ""));
   // The project's own coding agent, by the path this repository's workflow
   // loads it from: the engine ships none. A dynamic import with a computed
   // specifier — the loader's own `import(pathToFileURL(path).href)` pattern —
@@ -175,7 +184,7 @@ tick: { interval: 30s, concurrency: 2 }
 security: { screen: ${opts.screen ?? false}${opts.securityKeys ? `, ${opts.securityKeys}` : ""} }
 log: { redact: [githubToken] }
 secrets: { githubToken: $LR_TEST_TOKEN }
-`,
+${opts.configExtra ?? ""}`,
   );
   await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\n`);
   if (opts.mcpJson !== undefined) await writeFile(join(root, ".mcp.json"), JSON.stringify(opts.mcpJson));
@@ -393,6 +402,26 @@ ${EXECUTOR}`);
   it("refuses an agent.adapter no executor answers to, naming what it could have used", async () => {
     const { dir } = await fixture({ agent: "gpt-9" });
     await expect(buildRuntime(dir, {})).rejects.toThrow(/gpt-9[\s\S]*claude/);
+  });
+
+  it("refuses two notifiers under one id, naming both", async () => {
+    const { dir } = await fixture({ hookExtra: `${notifierSource("one", "slack")}${notifierSource("two", "slack")}` });
+    await expect(buildRuntime(dir, {})).rejects.toThrow('two notifiers share the id "slack": "hooks/fake.ts" and "hooks/fake.ts"');
+  });
+
+  it("refuses a notify.via the loaded notifiers do not answer to, naming the ones they do", async () => {
+    const { dir } = await fixture({
+      hookExtra: notifierSource("chat", "chat"), configExtra: "notify: { on: [needs-you], via: [slack] }\n",
+    });
+    await expect(buildRuntime(dir, {})).rejects.toThrow('notify.via names "slack", which no notifier registers: the loaded hooks register "chat"');
+  });
+
+  it("hands converge a notify when notify is configured, and none to a runtime built only to read", async () => {
+    const { dir } = await fixture({
+      hookExtra: notifierSource("chat", "chat"), configExtra: "notify: { on: [needs-you], via: [chat] }\n",
+    });
+    expect(typeof (await buildRuntime(dir, {})).deps.notify).toBe("function");
+    expect((await buildRuntime(dir, { readOnly: true })).deps.notify).toBeUndefined();
   });
 
   /**

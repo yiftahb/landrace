@@ -1458,6 +1458,8 @@ export interface BuildOptions {
    * without them.
    */
   readOnly?: boolean;
+  /** The board's URL once the page is up, for a notification to link to. Absent, or null, there is none. */
+  board?: () => string | null;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */

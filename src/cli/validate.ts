@@ -6,6 +6,7 @@ import { executorFor, screenerFor } from "#cli/start.js";
 import { configProblems, loadConfig } from "#config/load.js";
 import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
+import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
@@ -133,7 +134,12 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    * instance, where no tracker credentials exist. A `{vars.x}` in the graph
    * then has nothing to resolve against and is reported as exactly that.
    */
-  const loaded = await loadConfig(dir).catch(() => null);
+  const loaded = await loadConfig(dir).catch((e: unknown) => {
+    // Absent is the CI case above; present and unreadable is what `start`
+    // refuses, and reading it as absent would pass what start will not.
+    if ((e as { code?: unknown } | null)?.code !== "ENOENT") problems.push({ rule: "config", message: messageOf(e) });
+    return null;
+  });
   if (loaded) problems.push(...configProblems(dir, loaded));
 
   /*
@@ -185,7 +191,7 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
   // configuration mistake there is `validate`'s business too. Only once the
   // hooks are known to have loaded — a workflow already found unsound, or
   // whose hooks would not import, has no registry to build one against.
-  if (loaded && registry) problems.push(...(await executorProblems(dir, loaded, registry)));
+  if (loaded && registry) problems.push(...(await executorProblems(dir, loaded, registry)), ...notifyProblems(loaded.config, registry));
 
   problems.push(...(await exposedEnv(dir)));
   return { ok: problems.length === 0, problems };
