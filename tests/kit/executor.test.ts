@@ -23,6 +23,7 @@ class Tiny extends BaseExecutor<{ colour: string }> {
   readonly efforts = ["low", "high"];
   readonly pairings: readonly PairingKind[];
   prepared: Promise<void> = Promise.resolve();
+  entered: () => void = () => {};
 
   constructor(bin: string, pairings: readonly PairingKind[] = ["continue", "fork"]) {
     super(bin);
@@ -34,6 +35,7 @@ class Tiny extends BaseExecutor<{ colour: string }> {
   }
 
   protected prepare(): Promise<void> {
+    this.entered();
     return this.prepared;
   }
 
@@ -90,8 +92,10 @@ describe("BaseExecutor", () => {
     const tiny = new Tiny(markingBin());
     let ready: () => void = () => {};
     tiny.prepared = new Promise((resolve) => { ready = resolve; });
+    const entered = new Promise<void>((resolve) => { tiny.entered = resolve; });
     const controller = new AbortController();
     const running = tiny.build(settings).run("p", { round: 1, cwd, signal: controller.signal });
+    await entered;
     controller.abort();
     ready();
     await expect(running).rejects.toThrow(/agent aborted/);
