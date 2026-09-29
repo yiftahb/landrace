@@ -231,6 +231,23 @@ describe("claude executor", () => {
       .rejects.toThrow(/fork/);
   });
 
+  // A pairing's hand-in forks in the pairing's own checkout, and its record
+  // names that fork; a later Ask resumes it from the ticket's worktree.
+  it("brings the session it resumes over from the directory it ran in", async () => {
+    const home = mkdtempSync(join(tmpdir(), "fake-home-"));
+    dirs.push(home);
+    const dir = realpathSync(withCfg({ out: "{{ARGV}}" }));
+    const ranIn = join(home, ".claude", "projects", "-elsewhere-29-pair");
+    await mkdir(ranIn, { recursive: true });
+    await writeFile(join(ranIn, "sid-fork.jsonl"), "{\"x\":1}\n");
+    const r = await createClaudeExecutor({ bin, home }).run("x", {
+      round: 2, resume: "sid-fork", cwd: dir, signal: new AbortController().signal,
+    });
+    expect(r.text).toContain("--resume sid-fork");
+    const here = join(home, ".claude", "projects", dir.replace(/[^A-Za-z0-9]/g, "-"));
+    expect(readFileSync(join(here, "sid-fork.jsonl"), "utf8")).toBe("{\"x\":1}\n");
+  });
+
   describe("handing a session to a person", () => {
     const SESSION = "0b7f4c1e-9a2d-5e3f-8c4b-1d2e3f4a5b6c";
     /** Where the CLI keeps a directory's sessions, under a home of the test's own. */

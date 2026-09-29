@@ -331,6 +331,11 @@ export function createClaudeExecutor(opts: {
     if (chosenEffort !== undefined && !EFFORTS.includes(chosenEffort)) throw new Error(effortProblem("refused effort", chosenEffort));
     if (resume !== undefined) assertArgShape("resume", resume);
     const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
+    // The CLI finds a session only under the directory it ran in, and the
+    // one resumed may have run elsewhere: a pairing's hand-in forks in the
+    // pairing's checkout, and a later turn resumes it from the ticket's.
+    // Not found, the `--resume` below fails as it always did.
+    if (resume !== undefined && resolvedCwd !== undefined) await bringSession(home, resume, projectDir(home, resolvedCwd));
 
     const server = bound?.server;
     if (bound && server === undefined) {
@@ -667,7 +672,7 @@ const projectDir = (home: string, cwd: string): string =>
  * The agent's session, made resumable from `here`: already there, or copied
  * from the one directory it is found under. False when it is under none, or
  * under several — which of two to continue is not this hook's to guess — and
- * the pairing then starts fresh, seeded with the step.
+ * a pairing then starts fresh, seeded with the step.
  *
  * ponytail: reads the CLI's own session layout, which is its to change; a
  * `--resume` that finds no session is where that shows up.
