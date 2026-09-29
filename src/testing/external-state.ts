@@ -50,7 +50,7 @@ import type {
 const BOT = "landrace";
 const PERSON = "a-person";
 
-/** The kind a fix round's route marker names — `fix:{round}` — as the GitHub hook reads it. */
+/** The kind a fix round's route marker names — `fix:{round}` — as the shipped tracker hook reads it. */
 const FIX_KIND = "fix";
 
 /** Both relationship types this tracker reports: a sub-ticket's parent, and the ticket a pull request implements. */
@@ -457,8 +457,8 @@ export function createExternalState(
             pull.raised = raised - closing + opened;
             pull.openThreads = pull.openThreads - closing + opened;
             // ponytail: a count cannot tell which thread a reply or a resolve
-            // touched, so it is held inside [0, openThreads]; the GitHub hook
-            // reads each thread's last word instead.
+            // touched, so it is held inside [0, openThreads]; the shipped
+            // tracker hook reads each thread's last word instead.
             const awaiting = pull.awaitingFix + opened + (fix ? -replied : replied);
             pull.awaitingFix = Math.min(pull.openThreads, Math.max(0, awaiting));
             pull.reviews = [...(pull.reviews ?? []), marker];
