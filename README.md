@@ -167,7 +167,7 @@ src/sandbox.ts       repository identity; the tmp root locks and worktrees share
   landrace.yaml      runtime — how agents run, where tickets live
   workflow.yaml      the process — one graph, stages declaring what activates them
   steps/*.md         the work — front matter is the contract, the body is the prompt
-  hooks/*.ts         the integrations — GitHub and the Claude agent included. Not part of the engine
+  hooks/*.ts         the integrations — GitHub, the Claude agent and Slack included. Not part of the engine
   .env               secrets, gitignored, and `validate` fails if it is not
 ```
 
@@ -195,6 +195,18 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `log.redact` | `[]` | Secret names whose values must never be logged |
 | `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
 | `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |
+| `notify.on` | — | The events to tell a person about. One exists: `needs-you` |
+| `notify.via` | — | Notifier ids, each registered by a hook with `defineNotifier`. This repository's is `slack`, from `.landrace/hooks/slack.ts`. An id no loaded notifier answers to is refused by `start` and reported by `validate` |
+
+#### `notify:` — being told a ticket needs you
+
+Every stop waits on a person, and until something tells them, the only sign is the Needs you lane. With a `notify:` block, a ticket that comes to rest in Needs you — the board's own rule, so the two never disagree — is announced once through each notifier `via` names: `#29 needs you — <title> · <why>`, where why is the board's note (`waiting on you`, `blocked by a security check`, …). A ticket that stays there is not announced again; one that leaves and comes back is. A ticket passing through `triage` on its way back is never announced: `triage` runs its step at once. Sending is fire-and-forget — a notifier that fails is a `notify.failed` line in the log and nothing more, it never stops a ticket, and nothing is kept about what was sent.
+
+```yaml
+notify:
+  on: [needs-you]
+  via: [slack]
+```
 
 ### What a step's agent is handed
 
@@ -282,11 +294,13 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 
 Referenced by name from `landrace.yaml`, resolved at load, and handed to hooks as values — a hook never reads `process.env` itself, which is what makes it testable and what lets redaction know every value to suppress. A `.env` here takes precedence over your shell, because a project's own file should be what runs.
 
+This repository's `landrace.yaml` declares three: `GITHUB_TOKEN`, and two for Slack — `SLACK_WEBHOOK_URL`, an incoming webhook (a Slack app → Incoming Webhooks), which is the credential and is redacted from the log; and `SLACK_NOTIFY_USER`, your member id (`U…`, from your profile's ⋮ → Copy member ID), so the post mentions you. `.env.example` lists them all.
+
 `validate` fails if this file exists and git does not ignore it.
 
 ### Telemetry — OpenTelemetry
 
-Off by default. When on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to a collector as an OTel **log record**, the way Claude Code exports its own events. The body and the `event.name` attribute are the event's name; every other field becomes an attribute prefixed `landrace.` (`landrace.ticket`, and the agent's output in `landrace.raw`), JSON-encoded if it is not a string, number or boolean. `*.failed`, `*.denied`, `*.blocked` and `lock.stolen` are `WARN`, everything else `INFO`. Records carry the same redaction stdout does. Traces and metrics are not exported.
+Off by default. When on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to a collector as an OTel **log record**, the way Claude Code exports its own events. The body and the `event.name` attribute are the event's name; every other field becomes an attribute prefixed `landrace.` (`landrace.ticket`, and the agent's output in `landrace.raw`), JSON-encoded if it is not a string, number or boolean. `*.failed`, `*.denied`, `*.blocked` and `lock.stolen` are `WARN`, everything else `INFO`. Records carry the same redaction stdout does. Traces and metrics are not exported.
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -443,9 +457,11 @@ hooks:
   - hooks/github.ts
 ```
 
-A module imports the contracts from `landrace/hooks` and exports whatever kinds it implements — `definePreHook` to observe, `definePostHook` to act, `defineArtifactHook` for something that is both, `defineSource` to enumerate tickets, `defineOperator` for the create and update an operator asks for by hand, `defineExecutor` for an agent. The loader classifies each export by the brand its helper stamped, so one module can be a whole integration; the order of the list is the order pre hooks run in. A path must resolve inside the workflow directory, symlinks included, because `workflow.yaml` is a repo file a pull request can edit.
+A module imports the contracts from `landrace/hooks` and exports whatever kinds it implements — `definePreHook` to observe, `definePostHook` to act, `defineArtifactHook` for something that is both, `defineSource` to enumerate tickets, `defineOperator` for the create and update an operator asks for by hand, `defineExecutor` for an agent, `defineNotifier` for somewhere to tell a person a ticket needs them. The loader classifies each export by the brand its helper stamped, so one module can be a whole integration; the order of the list is the order pre hooks run in. A path must resolve inside the workflow directory, symlinks included, because `workflow.yaml` is a repo file a pull request can edit.
 
 `.landrace/hooks/github.ts` in this repository is the reference implementation: one file with the REST client, both hooks, the source and the operator. A second tracker is a sibling of it, and nothing in the engine changes — a test enforces that `src/` never names one.
+
+A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", ticket, title, link, stage, why, board }` — `board` the triage page's URL when one is running, else null. Two notifiers under one id halt at load, naming both modules. `.landrace/hooks/slack.ts` is this repository's: it posts `{ text }` to the webhook, mentioning `slackNotifyUser` and linking the ticket, with the title and why escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal throws Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading.
 
 A pre hook declares the snapshot paths it fills, and a source declares which relationship types it reports; `validate`'s `path-coverage` rule is answered from both together with what the engine itself always provides — `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every type the source declares — so a predicate can only read what something actually provides. The shipped GitHub hook's pre hook provides `ticket` (`.body`, `.comments`), `entries` and `tracker.bot`; the in-memory tracker in `landrace/testing` provides the portable subset of that (no `tracker.bot`). A ticket's identity, labels and assignees are not among either — they live on the `node` the *source* reads (see [The ticket graph](#the-ticket-graph)), not on something a pre hook fetches a second time. `node.state.assignees` is a **list of logins** — GitHub's issue has a list, and the singular `assignee` it also returns is that list's first element under a second name, which disagrees with it the moment an issue has two. It is empty, never absent, when nobody is assigned: a rule reading a path a ticket does not carry is one the tick cannot answer, and it abstains on those rather than guessing.
 
@@ -581,6 +597,14 @@ A ticket a security check stopped sits in "Needs you" with a shield beside
 its badge and the note "blocked by a security check"; the refusal's own reason
 is in the ticket's comments, which the page does not read. `landrace status`
 says "blocked: security check refused a step" for the same ticket.
+
+The 🔔 beside the theme toggle turns on browser notifications, remembered per
+browser; the first click asks the browser's permission. With it on, each
+ticket that has come into "Needs you" since the last poll raises one system
+notification — "#29 needs you", with the title and why — and a click on it
+opens that ticket's panel. Opening the page announces nothing that was already
+waiting. If the browser has blocked notifications for the page, the bell
+turns to 🔕 and says so.
 
 The page has four writes, and three of them can start paid agent runs, so all
 are guarded beyond the Host check. The tick button starts a tick, or, while
