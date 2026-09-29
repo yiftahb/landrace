@@ -1181,6 +1181,8 @@ export interface HarnessOptions {
   /** Somewhere for the events to go. The harness reads its own trail off them either way. */
   log?: Logger;
   maxPasses?: number;
+  /** Handed to converge as-is — see `ConvergeDeps.notify`. */
+  notify?: (snapshot: Snapshot) => void;
 }
 
 export interface Harness {

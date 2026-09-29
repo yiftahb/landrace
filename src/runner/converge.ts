@@ -125,7 +125,16 @@ async function converging(
   // the rest of this call's passes re-applying the same no-op.
   const residueApplied = new Set<string>();
 
+  // Whether the pass before this one applied a transition. A ticket that
+  // waits on the pass after one has just come to rest, which is the one
+  // moment a person is told; one found waiting with no move behind it was
+  // already waiting, and was told then. Bounded by this call like `pass`,
+  // never stored: a ticket that leaves and comes back moves again.
+  let moved = false;
+
   for (let pass = 1; pass <= maxPasses; pass++) {
+    const arrived = moved;
+    moved = false;
     // Checked before doing any work this pass: a Ctrl-C between two passes
     // was previously invisible until whatever ran next happened to touch the
     // signal itself (deep inside runStep's executor call). A pass that has
@@ -190,7 +199,18 @@ async function converging(
       deps.log("ticket.skipped", { ticket, reason: why });
       return { passes: pass, settled: "wait", why };
     }
-    if (decision.action === "wait") return { passes: pass, settled: "wait", why: decision.why ?? "no trigger matched" };
+    if (decision.action === "wait") {
+      // Which waits are a person's is the notify's own rule, the board's; a
+      // throw from it is logged like a send that failed, and changes nothing.
+      if (arrived) {
+        try {
+          deps.notify?.(snapshot);
+        } catch (e) {
+          deps.log("notify.failed", { ticket, reason: messageOf(e) });
+        }
+      }
+      return { passes: pass, settled: "wait", why: decision.why ?? "no trigger matched" };
+    }
 
     if (decision.action === "invoke") {
       const stage = decision.stage;
@@ -445,6 +465,7 @@ async function converging(
 
     if (decision.action === "halt") return { passes: pass, settled: "halt", why: decision.why ?? "the workflow halted" };
     if (decision.to?.terminal) return { passes: pass, settled: "terminal" };
+    moved = surviving.length > 0;
     if (surviving.length === 0 && decision.action === "transition") {
       // Nothing left to do and nothing changed: a fixed point, not the same
       // thing as a genuine wait on a human or an external trigger — those

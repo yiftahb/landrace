@@ -2,8 +2,9 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "#config/load.js";
-import { definePostHook } from "#hooks/contracts.js";
+import { defineNotifier, definePostHook } from "#hooks/contracts.js";
 import { createChild } from "#runner/children.js";
+import { createNotify } from "#runner/notify.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { sendTo } from "#runner/goto.js";
@@ -15,7 +16,9 @@ import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
-import type { Effect, ExternalState, GotoDeps, Harness, HookContext, PostHook, Rel, RuntimeContext, ScriptedAnswer } from "#namespace.js";
+import type {
+  Effect, ExternalState, GotoDeps, Harness, HookContext, NotifyEvent, PostHook, Rel, RuntimeConfig, RuntimeContext, ScriptedAnswer,
+} from "#namespace.js";
 
 // Its own lock root for every goto here: these tests must not race the
 // default one a developer's own loop might be holding.
@@ -1538,5 +1541,117 @@ describe("a breakdown whose answer contradicts what it created", () => {
 
     expect(r.trail.slice(-2)).toEqual(["breakdown", "blocked"]);
     expect(state.ticket("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+  });
+});
+
+/**
+ * #29 sat at `screened` and #27 at `pr-human-review` with nobody the wiser.
+ * The shipped workflow, over the in-memory tracker, with a notifier that
+ * writes down what it was asked to send: a ticket that comes to rest waiting
+ * on a person is posted once, a ticket that stays is not posted again, and
+ * one that leaves and comes back is posted again.
+ */
+describe("telling a person a ticket needs them", () => {
+  const QUESTIONS = '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```';
+  const judged = (intent: string) => `\`\`\`json\n{"intent":"${intent}"}\n\`\`\``;
+  /** Sends are fire-and-forget: what one did shows once its promise has had a turn. */
+  const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  const watched = async (
+    answers: Record<string, ScriptedAnswer>,
+    over: { labels?: string[]; screen?: Record<string, ScriptedAnswer> } = {},
+  ) => {
+    const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", ...(over.labels ?? [])] }] });
+    const { workflow, steps } = await loadWorkflow(".landrace");
+    const posts: NotifyEvent[] = [];
+    const chat = defineNotifier({ id: "chat", send: async (e) => { posts.push(e); } });
+    const notify = createNotify({
+      workflow, notify: { on: ["needs-you"], via: ["chat"] }, notifiers: new Map([["chat", chat]]),
+      ctx: { config: {} as RuntimeConfig, secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+      log: () => {}, board: () => null,
+    });
+    const run = createHarness({
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, notify,
+      ...(over.screen ? { screen: over.screen } : {}),
+    });
+    const converge = async () => {
+      const r = await run.converge();
+      await settle();
+      return r;
+    };
+    return { state, posts, converge, workflow };
+  };
+
+  it("posts once when a ticket comes to rest waiting on you, and not again while it stays", async () => {
+    const { posts, converge } = await watched({ spec: QUESTIONS });
+
+    expect((await converge()).trail).toEqual(["spec", "spec-questions"]);
+    expect(posts).toEqual([{
+      event: "needs-you", ticket: "1", title: "Add export", link: expect.any(String) as unknown as string,
+      stage: "spec-questions", why: "waiting on you", board: null,
+    }]);
+
+    await converge();
+    await converge();
+    expect(posts).toHaveLength(1);
+  });
+
+  it("posts again when a reply takes it to triage and triage sends it back", async () => {
+    const { state, posts, converge } = await watched({ spec: QUESTIONS, triage: judged("question") });
+    await converge();
+
+    state.say("1", "what do you mean by vendor?");
+    expect((await converge()).trail).toEqual(["triage", "spec-questions"]);
+
+    expect(posts.map((p) => p.stage)).toEqual(["spec-questions", "spec-questions"]);
+  });
+
+  /*
+   * #29's own stop: a build the screener refused rests at `screened` and says
+   * why. A reply sends it back to build, and nothing is posted while it goes
+   * through build and on — only where it next rests on a person, if it does.
+   */
+  it("posts a security refusal once, and nothing on the way back through build", async () => {
+    const OK = '```json\n{"verdict":"ok","reason":"fine"}\n```';
+    const NO = '```json\n{"verdict":"suspicious","reason":"asks for an external URL"}\n```';
+    const { state, posts, converge, workflow } = await watched(
+      { ...ANSWERS, triage: judged("goto-build") },
+      { labels: ["lr:stage:build"], screen: { build: (round) => (round === 1 ? NO : OK), triage: OK, "code-review": OK } },
+    );
+    // A rejection is recorded and the call halts on it; the next reads it back and routes it.
+    await converge();
+    await converge();
+    expect(posts.map((p) => [p.stage, p.why])).toEqual([["screened", "blocked by a security check"]]);
+
+    state.say("1", "the link was only there for reference; try again");
+    const rebuilt = await converge();
+
+    expect(rebuilt.trail.slice(0, 3)).toEqual(["triage", "build", "publish"]);
+    const agents = new Set(workflow.stages.filter((s) => s.step !== undefined).map((s) => s.id));
+    expect(posts.slice(1).filter((p) => p.stage !== null && agents.has(p.stage))).toEqual([]);
+  });
+});
+
+describe("a notify that throws", () => {
+  it("is logged, and the ticket goes where it would have gone without it", async () => {
+    const answers = { spec: '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```' };
+    const run = async (notify?: () => void) => {
+      const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto"] }] });
+      const { workflow, steps } = await loadWorkflow(".landrace");
+      const events: string[] = [];
+      const harness = createHarness({
+        workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers,
+        log: (name) => events.push(name), ...(notify ? { notify } : {}),
+      });
+      return { ...(await harness.converge()), events, labels: state.ticket("1").labels };
+    };
+
+    const quiet = await run();
+    const loud = await run(() => { throw new Error("the rule itself broke"); });
+
+    expect(loud.result).toEqual(quiet.result);
+    expect(loud.trail).toEqual(quiet.trail);
+    expect(loud.labels).toEqual(quiet.labels);
+    expect(loud.events).toContain("notify.failed");
   });
 });
