@@ -91,6 +91,7 @@ export const PAGE_HTML = `<!doctype html>
 <span id="next" class="rounded-full border border-neutral-200 px-3 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">No tick scheduled</span>
 <button id="tick" type="button" class="${BUTTON}">Run next tick now</button>
 </div>
+<button id="notify-toggle" type="button" aria-pressed="false" aria-label="Notify me when a ticket needs you" title="Notify me when a ticket needs you" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-50 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">🔔</button>
 <button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
@@ -123,6 +124,9 @@ ${PANEL}
 
 const THEME_KEY = "landrace-theme";
 
+/** Whether the 🔔 is on, per browser: a person's choice for this page, never the server's. */
+const NOTIFY_KEY = "landrace-notify";
+
 /**
  * Blocking, in <head>, before /app.css and /app.js: this has to run and set
  * the class before the browser paints anything, or the page flashes light
@@ -144,6 +148,7 @@ export const APP_JS = `
 "use strict";
 const POLL_MS = 2000;
 const THEME_KEY = ${JSON.stringify(THEME_KEY)};
+const NOTIFY_KEY = ${JSON.stringify(NOTIFY_KEY)};
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -1101,6 +1106,11 @@ async function pollOnce() {
     // the open menu and the focused control by key (see its own comment),
     // so a poll landing mid-read costs nothing — no held view, no freeze.
     render(await res.json());
+    // After the render, so a click on a notification opens a panel over the
+    // board it was raised from — which render() just kept as lastView.
+    const now = needingYou(lastView.rows, new Map());
+    for (const row of arrived(neededYou, now)) notifyOf(row);
+    neededYou = now;
   } catch {
     document.getElementById("meta").textContent = "landrace is not responding";
   }
@@ -1841,6 +1851,75 @@ askButton.addEventListener("click", () => panelWrite("ask"));
 resolveButton.addEventListener("click", () => panelWrite("resolve"));
 window.addEventListener("hashchange", () => showPanel(ticketOfHash(location.hash)));
 showPanel(ticketOfHash(location.hash));
+
+// Every ticket the board badges needs-you, children included, by id.
+function needingYou(rows, into) {
+  for (const row of rows) {
+    if (row.badge === "needs-you") into.set(row.id, row);
+    needingYou(row.children, into);
+  }
+  return into;
+}
+
+// The tickets that need you now and did not at the last poll. The first poll
+// has no last one and only seeds: opening the board announces nothing that
+// was already waiting.
+function arrived(before, now) {
+  return before === null ? [] : [...now.values()].filter((row) => !before.has(row.id));
+}
+
+// One system notification for a ticket that has just come to need you, only
+// with the bell on and the browser's leave. Tagged by ticket, so a second
+// arrival replaces the first rather than stacking; a click opens its panel.
+// Caught: a browser that refuses the constructor must not read as a poll
+// that failed.
+function notifyOf(row) {
+  if (!notifyOn || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try {
+    const n = new Notification("#" + row.id + " needs you", { body: row.title + " — " + row.note, tag: "landrace-" + row.id });
+    n.addEventListener("click", () => { window.focus(); openPanel(row.id); n.close(); });
+  } catch (e) {}
+}
+
+// What the bell says: on, off, or that the browser will not let it — a
+// person who turned it on and hears nothing deserves to know why.
+function bellState(on, permission) {
+  if (permission === "denied") {
+    return { icon: "🔕", pressed: "false", label: "Notifications are blocked for this page — allow them in the browser's site settings" };
+  }
+  if (permission === "unsupported") return { icon: "🔕", pressed: "false", label: "Notifications are not available in this browser" };
+  return on && permission === "granted"
+    ? { icon: "🔔", pressed: "true", label: "Notifying you when a ticket needs you — click to stop" }
+    : { icon: "🔔", pressed: "false", label: "Notify me when a ticket needs you" };
+}
+
+const bell = document.getElementById("notify-toggle");
+let notifyOn = false;
+try { notifyOn = localStorage.getItem(NOTIFY_KEY) === "on"; } catch (e) {}
+// Which tickets needed you at the last poll that landed; null until one has.
+let neededYou = null;
+
+function permissionNow() {
+  return typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+}
+
+function syncBell() {
+  const state = bellState(notifyOn, permissionNow());
+  bell.textContent = state.icon;
+  bell.setAttribute("aria-pressed", state.pressed);
+  bell.setAttribute("aria-label", state.label);
+  bell.title = state.label;
+  bell.classList.toggle("opacity-50", state.pressed !== "true");
+}
+
+bell.addEventListener("click", async () => {
+  notifyOn = !notifyOn;
+  try { localStorage.setItem(NOTIFY_KEY, notifyOn ? "on" : "off"); } catch (e) {}
+  // Asked from the click, the one moment a browser lets a page ask.
+  if (notifyOn && permissionNow() === "default") await Notification.requestPermission();
+  syncBell();
+});
+syncBell();
 
 pollOnce().then(() => schedulePoll(POLL_MS));
 
