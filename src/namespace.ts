@@ -916,7 +916,7 @@ export interface Dispatcher {
  */
 export type EventName =
   | "tick.started" | "tick.finished"
-  | "ticket.evaluated" | "ticket.skipped"
+  | "ticket.evaluated" | "ticket.skipped" | "ticket.aborted"
   | "step.invoked" | "step.started" | "step.finished" | "step.completed" | "step.rejected" | "step.unchecked"
   | "agent.event"
   | "snapshot.built" | "snapshot.failed"
@@ -1106,6 +1106,13 @@ export interface TickOptions {
   concurrency?: number;
   lock?: LockOptions;
   /**
+   * Each ticket being converged, by id, with the controller that stops it.
+   * Shared across ticks, which overlap: the tick that lists a ticket closed,
+   * or no longer eligible, stops the run an earlier tick started. Absent,
+   * nothing is stopped but by `ctx.signal`.
+   */
+  running?: Map<string, AbortController>;
+  /**
    * Every node the source returned this tick, eligible or not. For a
    * display: handing over what the tick already fetched costs nothing, and
    * asking the source again would double the tracker traffic of every tick.
@@ -1156,7 +1163,8 @@ export interface HarnessOptions {
   answers?: { [stage: string]: ScriptedAnswer };
   /**
    * What the prompt screener answers for each stage's step — a fenced json
-   * verdict, as the real one writes. Absent, nothing is screened. Present, a
+   * verdict, as the real one writes, given the screening's nonce unless it
+   * names one of its own. Absent, nothing is screened. Present, a
    * stage with no answer here is a screener that could not run, which is a
    * refusal: the same fail-closed reading the engine gives a real one.
    */
@@ -1291,7 +1299,7 @@ export type JsonFrame =
   | { kind: "array"; state: "value-or-close" | "comma-or-close" };
 
 /** What the screener's own json block is read as before its fields are checked. */
-export type Verdict = { verdict?: unknown; reason?: unknown };
+export type Verdict = { verdict?: unknown; nonce?: unknown; reason?: unknown };
 
 /* ------------------------------------------------------------------- mcp -- */
 
@@ -1409,6 +1417,8 @@ export interface Runtime {
    * each ticket unwind through the lock it holds.
    */
   stop: AbortController;
+  /** See TickOptions.running: one map for the life of the loop, so every tick sees every run. */
+  running: Map<string, AbortController>;
   /** Present when telemetry is on. `runStart` shuts it down on the way out, flushing what is queued. */
   telemetry?: { shutdown(): Promise<void> };
 }

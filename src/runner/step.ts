@@ -261,7 +261,9 @@ export async function runStep(opts: {
       // two-hour build's.
       timeoutMs: fallbackMs,
       signal,
-      ...(log ? { log } : {}),
+      // With whose screening it was: tickets are screened side by side, and
+      // a reply that failed closed is only evidence once it can be placed.
+      ...(log ? { log: (name, data) => log(name, { ticket: opts.ticket, stage: stageId, round, ...data }) } : {}),
     });
     if (!verdict.ok) {
       log?.("screen.blocked", { stage: stageId, round, reason: verdict.reason });

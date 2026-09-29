@@ -326,6 +326,17 @@ stages:
         when:
           "run.stage": pr-human-review
           "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+      # #34: work asked for on the pull request that changes no requirement —
+      # resolve the conflicts, get the checks green. A spec round for it
+      # amends nothing, and build re-plans what is already built; the fixer
+      # already merges main and runs the checks. Uncapped like the comment
+      # above: each one waits for a person to write.
+      - name: you asked for work on the pull request
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": pr-human-review
+          "run.outputs.triage.intent": rework
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
       - { type: tracker.status, value: fix-review }
@@ -385,13 +396,14 @@ stages:
         when: { "run.stage": retro, "run.lastOutputValid": null }
       # Nothing a reply says approves or merges a pull request — that is done
       # on the pull request — so every answer that does not send the ticket
-      # back comes home. A change asked for is `revise`, which build takes.
+      # back comes home. A changed requirement is `revise`, which amends the
+      # spec; work that changes none is `rework`, which the fixer takes.
       - name: your reply changed nothing here
         when:
           "run.stage": triage
           "run.lastOutputValid": null
           "run.previousStage": pr-human-review
-          "run.outputs.triage.intent": { $ne: revise }
+          "run.outputs.triage.intent": { $nin: [revise, rework] }
     on_enter:
       # The retro pushes its own commit; this pushes one it left unpushed, and
       # otherwise reconciles away as satisfied.
@@ -425,8 +437,13 @@ stages:
   # fix round advances fix-review's and not code-review's, so code-review's
   # would let Retry run it for ever. fix-review is held to its own twenty
   # alone, as the way back to review is: held to code-review's five too, a
-  # person's thread left after the fifth review could never be fixed. And
-  # each is offered only
+  # person's thread left after the fifth review could never be fixed.
+  # code-review is held to eight, not the loop's five: each later build
+  # round reviews again through publish, uncapped, and #29 was screened on
+  # its fifth review with its Retry refused. Eight leaves Retries past the
+  # reviews a second build adds, one past a third's. A cap on `rel` instead
+  # would bound no counter the validator can see (cycle-bound). And each is
+  # offered only
   # where it can run — a review needs a pull request, the judge a message to
   # read — because a goto that landed on a stage whose `requires` fails would
   # halt there, and no goto is taken from a stage whose precondition does
@@ -440,7 +457,7 @@ stages:
       - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
       - stage: code-review
-        when: { "run.counters.code-review": { $lt: 5 }, "rel.implements.in.total": { $gt: 0 } }
+        when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: fix-review
         when: { "run.counters.fix-review": { $lt: 20 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: retro

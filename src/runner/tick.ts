@@ -2,14 +2,16 @@ import { checkEligible, missingPaths } from "#core/index.js";
 import type {
   ConvergeResult,
   Eligibility,
+  Graph,
   HookContext,
+  Logger,
   Node,
   Snapshot,
   TickOptions,
   TickRow,
   Workflow,
 } from "#namespace.js";
-import { compareIds, compareWork, isOpenTicket, ticketIdProblem } from "#conventions.js";
+import { compareIds, compareWork, isOpenTicket, TICKET_KIND, ticketIdProblem } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
 import { withLock } from "#runner/lock.js";
@@ -54,6 +56,29 @@ export function eligibilityOf(workflow: Workflow, node: Node): Eligibility {
   const snapshot = nodeSnapshot(node);
   const unanswerable = (workflow.eligible ?? []).some((rule) => missingPaths(rule.when, snapshot).length > 0);
   return unanswerable ? { eligible: true } : checkEligible(workflow, snapshot);
+}
+
+/**
+ * Stop the run of every ticket this tick lists as closed or no longer
+ * eligible — how a person stops a step: close the ticket, or take `lr:auto`
+ * off it. #29's own merge closed it mid-build and its agent ran on until it
+ * was killed by hand.
+ *
+ * A ticket missing from the list is left running: a source may drop what it
+ * cannot map (the shipped tracker hook does), and absent is not the same as stopped.
+ * The stopped converge halts and writes nothing (see converge), so the round
+ * is still owed if the ticket comes back.
+ */
+function stopStopped(running: Map<string, AbortController>, graph: Graph, workflow: Workflow, log: Logger): void {
+  for (const node of graph.nodes) {
+    const controller = node.kind === TICKET_KIND ? running.get(node.id) : undefined;
+    if (!controller || controller.signal.aborted) continue;
+    const eligibility = node.closed === null ? eligibilityOf(workflow, node) : null;
+    if (eligibility?.eligible) continue;
+    const reason = eligibility ? eligibility.reason : "the ticket was closed";
+    controller.abort(new Error(reason));
+    log("ticket.aborted", { ticket: node.id, reason });
+  }
 }
 
 /** A lock held elsewhere is a skip, not a failure: the ticket will still be there next tick. */
@@ -110,6 +135,8 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
     deps.log("display.failed", { reason: messageOf(e) });
   }
 
+  if (opts.running) stopStopped(opts.running, graph, deps.workflow, deps.log);
+
   // Open tickets only: a pull request in the list is context for a ticket,
   // and a closed ticket is there for its parent to count — neither is work.
   // Sorted before the pool takes from it, because with a concurrency limit
@@ -144,15 +171,20 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
         "tick",
         async () => {
           deps.log("lock.acquired", { ticket, kind: "tick" });
+          // Its own controller, so a later tick can stop this ticket alone;
+          // joined to the loop's, so Ctrl-C still stops every one.
+          const own = new AbortController();
+          opts.running?.set(ticket, own);
           // However the converge ends: the board waits on this before a list
           // may vouch for the labels a step it ran was about to change.
           try {
             return await converge(ticket, {
               ...deps,
               source: opts.source,
-              ctx: { ...deps.ctx, ticket } satisfies Omit<HookContext, "snapshot">,
+              ctx: { ...deps.ctx, ticket, signal: AbortSignal.any([deps.ctx.signal, own.signal]) } satisfies Omit<HookContext, "snapshot">,
             });
           } finally {
+            if (opts.running?.get(ticket) === own) opts.running.delete(ticket);
             deps.log("lock.released", { ticket, kind: "tick" });
           }
         },

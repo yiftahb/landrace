@@ -1,3 +1,4 @@
+import { markOf } from "#agent/screen.js";
 import { converge } from "#runner/converge.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
@@ -58,7 +59,17 @@ export function createHarness(options: HarnessOptions): Harness {
   const scripted = scriptedExecutor(options.answers ?? {}, () => at);
   // Its own script, never the step's: a screener that answered with the
   // step's text would read as unparseable and refuse everything.
-  const screener = options.screen === undefined ? undefined : scriptedExecutor(options.screen, () => at);
+  const scriptedScreen = options.screen === undefined ? undefined : scriptedExecutor(options.screen, () => at);
+  // A script cannot know the nonce a screening is marked with — it is new on
+  // every call — so each verdict it writes is given it, unless it names one.
+  const screener = scriptedScreen && {
+    id: scriptedScreen.id,
+    run: async (prompt: string, opts: Parameters<typeof scriptedScreen.run>[1]) => {
+      const answer = await scriptedScreen.run(prompt, opts);
+      if (answer.text.includes('"nonce"')) return answer;
+      return { ...answer, text: answer.text.replace(/"verdict"\s*:/g, `"nonce": "${markOf(prompt) ?? ""}", "verdict":`) };
+    },
+  };
   const executor = {
     id: "harness",
     run: async (prompt: string, opts: { round: number; signal: AbortSignal }) => {

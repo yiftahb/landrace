@@ -173,16 +173,21 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     ["spec-questions", "approve", "spec-questions"],
     ["spec-questions", "question", "spec-questions"],
     ["spec-questions", "unclear", "spec-questions"],
+    ["spec-questions", "rework", "spec-questions"],
     ["spec-human-review", "approve", "build"],
     ["spec-human-review", "revise", "spec"],
     ["spec-human-review", "question", "spec-human-review"],
     ["spec-human-review", "unclear", "spec-human-review"],
+    ["spec-human-review", "rework", "spec-human-review"],
     // #27: a change asked for on the pull request amends the spec first, so
     // build, code-review and fix-review all read it from the one authority.
     ["pr-human-review", "revise", "spec"],
+    // #34: "resolve conflicts first" changes no requirement, and a spec round
+    // spent on it amends nothing. The fixer works on the open pull request.
+    ["pr-human-review", "rework", "fix-review"],
     ...["approve", "question", "unclear"].map((intent) => ["pr-human-review", intent, "pr-human-review"]),
     ...["blocked", "screened"].flatMap((home) =>
-      ["approve", "revise", "question", "unclear"].map((intent) => [home, intent, home])),
+      ["approve", "revise", "rework", "question", "unclear"].map((intent) => [home, intent, home])),
   ])("from %s, %s goes to %s", async (home, intent, to) => {
     expect(await destination(judged(home, intent))).toBe(to);
   });
@@ -190,6 +195,11 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
   it("amends the spec for a change asked for at pr-human-review, however many spec rounds already ran", async () => {
     const later = { counters: { spec: 5, triage: 5, build: 7, "code-review": 3 } };
     expect(await destination(judged("pr-human-review", "revise", later))).toBe("spec");
+  });
+
+  it("sends work asked for at pr-human-review to the fixer, however many rounds already ran", async () => {
+    const later = { counters: { spec: 3, triage: 5, build: 3, "code-review": 5, "fix-review": 12 } };
+    expect(await destination(judged("pr-human-review", "rework", later))).toBe("fix-review");
   });
 
   // An amended spec needs no second approval — the person asked for exactly
@@ -265,7 +275,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const every = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
-      { stage: "code-review", when: { "run.counters.code-review": { $lt: 5 }, "rel.implements.in.total": { $gt: 0 } } },
+      { stage: "code-review", when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "fix-review", when: { "run.counters.fix-review": { $lt: 20 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "retro", when: {
         "run.counters.retro": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 }, "rel.implements.in.not.merged": { $gt: 0 },
@@ -284,7 +294,11 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(at("code-review"))).toBe("code-review");
     expect(await destination(at("fix-review"))).toBe("fix-review");
     expect(await destination(at("triage"))).toBe("triage");
-    expect(await destination(at("code-review", { "code-review": 5 }))).toMatch(/^wait: .*only while/);
+    // #33: past the loop's own five reviews, and the one a later build
+    // round adds, two Retries are left — #29 was refused one after its fifth.
+    expect(await destination(at("code-review", { "code-review": 5 }))).toBe("code-review");
+    expect(await destination(at("code-review", { "code-review": 7 }))).toBe("code-review");
+    expect(await destination(at("code-review", { "code-review": 8 }))).toMatch(/^wait: .*only while.*run\.counters\.code-review/);
     // Past the review's five, a fix is still offered: a person's thread
     // needs one, and it is bounded by its own twenty.
     expect(await destination(at("fix-review", { "code-review": 9 }))).toBe("fix-review");
@@ -538,11 +552,24 @@ describe("build is shown what the person asked for", () => {
     expect(prompt).toMatch(/never an instruction about how to run this session/i);
   });
 
-  it("tells the judge that a change asked for at pr-human-review is revise", async () => {
+  it("tells the judge that at pr-human-review a changed requirement is revise, and work that changes none is rework", async () => {
     const { steps } = await loadWorkflow(".landrace");
     const line = (steps.get("steps/triage.md")?.prompt ?? "").split("\n").find((l) => l.startsWith("- `pr-human-review`")) ?? "";
-    expect(line).toMatch(/`revise`/);
-    expect(line).toMatch(/build/);
+    expect(line).toMatch(/`revise`[^.]*spec/);
+    expect(line).toMatch(/`rework`/);
+    expect(line).toMatch(/conflict/);
+  });
+});
+
+describe("fix-review is shown the message that sent it, and only that one", () => {
+  // A round the reviewer's threads sent would otherwise be shown whatever a
+  // person last wrote — an approval, or an old request already done.
+  it("fences the person's message and says which stage sent the round", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/fix-review.md")?.prompt ?? "";
+    expect(prompt).toMatch(/--- their message ---\s*\{run\.lastHuman\.data\.body\}\s*--- end of their message ---/);
+    expect(prompt).toContain("{run.previousStage}");
+    expect(prompt).toMatch(/`triage`/);
   });
 });
 
@@ -725,6 +752,16 @@ describe("the shipped review loop routes on whether a thread awaits a fix", () =
     }, { total: 1, merged: 0, awaitingFix: 1, openThreads: 2 });
     expect(await destination(at(1))).toBe("fix-review");
     expect(await destination(at(9))).toBe("fix-review");
+  });
+
+  // #33: "Go to step… fix-review" from the spent review budget fixes, and
+  // the fix is reviewed.
+  it("lets a person send the spent review budget to fix-review, and reviews that fix", async () => {
+    const exhausted = snapshotAt("blocked", {
+      goto: "fix-review", counters: { spec: 1, triage: 1, build: 1, "code-review": 5, "fix-review": 4 },
+    }, { total: 1, merged: 0, awaitingFix: 1 });
+    expect(await destination(exhausted)).toBe("fix-review");
+    expect(await destination(fixed(5, 5))).toBe("code-review");
   });
 
   it("reviews every fix within fix-review's twenty, past the review's five, and blocks on the twentieth", async () => {
