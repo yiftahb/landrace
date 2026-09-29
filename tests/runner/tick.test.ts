@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { LandraceEvent, Step, TickOptions, Workflow } from "#namespace.js";
 import { definePreHook, defineSource } from "#hooks/contracts.js";
 import type { Executor, Graph, HookContext, Node, RuntimeContext } from "#namespace.js";
-import { staticSource } from "#testing/index.js";
+import { createExternalState, staticSource } from "#testing/index.js";
+import { loadWorkflow } from "#workflow/load.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { acquire, held, release } from "#runner/lock.js";
@@ -409,6 +410,108 @@ describe("tick", () => {
     expect(names.at(-1)).toBe("tick.finished");
     expect(names).toContain("lock.denied");
     expect(names).toContain("lock.acquired");
+  });
+});
+
+/*
+ * #33: #29's own merge closed it mid-build, and its agent ran on until it was
+ * killed by hand. Ticks overlap, so the next one lists the ticket while its
+ * step still runs: closed, or no longer the workflow's to work, that run is
+ * stopped, and a stopped run writes nothing.
+ */
+describe("a ticket stopped while its step runs", () => {
+  const SPEC = '```json\n{"kind":"spec","title":"T"}\n```';
+
+  async function world() {
+    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto"] }] });
+    const loaded = await loadWorkflow("tests/fixtures/minimal");
+    const finish = gate();
+    const runs: Array<{ round: number; stopped: boolean }> = [];
+    // Runs until its run is stopped or the test lets it finish, and answers
+    // either way: an answer got out as it was killed is the worst case for
+    // "writes nothing".
+    const executor: Executor = {
+      id: "agent",
+      run: async (_prompt, { round, signal }) => {
+        const run = { round, stopped: false };
+        runs.push(run);
+        const stopped = new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+        await Promise.race([stopped, finish.wait]);
+        run.stopped = signal.aborted;
+        return { text: SPEC, sessionId: null };
+      },
+    };
+    const events: LandraceEvent[] = [];
+    const running = new Map<string, AbortController>();
+    const stop = new AbortController();
+    const once = (source = state.source) => tick({
+      source, running, lock: { root },
+      deps: deps({
+        workflow: { ...loaded.workflow, eligible: workflow.eligible ?? [] }, steps: loaded.steps,
+        pre: [state.pre], dispatcher: createDispatcher([state.post]), executor,
+        ctx: { config: {} as HookContext["config"], secrets: new Map(), signal: stop.signal, log: () => {} },
+        log: createLogger({ sink: (e) => events.push(e) }),
+      }),
+    });
+    const started = (n: number) => until(() => runs.length === n, `step run ${n} to start`);
+    const aborted = () => events.filter((e) => e.name === "ticket.aborted");
+    return { state, runs, events, running, stop, finish, once, started, aborted };
+  }
+
+  it("stops the step of a ticket closed while it ran, and writes nothing", async () => {
+    const w = await world();
+    const first = w.once();
+    await w.started(1);
+    const before = w.state.comments("1");
+    w.state.ticket("1").closed = "done";
+
+    await w.once();
+    expect(w.aborted()).toEqual([expect.objectContaining({ ticket: "1", reason: "the ticket was closed" })]);
+    expect((await first)[0]?.outcome).toMatch(/^halt .*the run was aborted/);
+    expect(w.runs).toEqual([{ round: 1, stopped: true }]);
+    expect(w.state.comments("1")).toEqual(before);
+    expect(w.running.size).toBe(0);
+    expect(await held("1", { root })).toBeNull();
+  });
+
+  it("stops it when lr:auto comes off, and runs the same round again once it is back on", async () => {
+    const w = await world();
+    const first = w.once();
+    await w.started(1);
+    w.state.unlabel("1", "lr:auto");
+
+    expect(await w.once()).toEqual([{ ticket: "1", outcome: "skipped: no lr:auto label" }]);
+    expect(w.aborted()).toEqual([expect.objectContaining({ ticket: "1", reason: "no lr:auto label" })]);
+    await first;
+
+    w.state.label("1", "lr:auto");
+    const again = w.once();
+    await w.started(2);
+    w.finish.open();
+    expect((await again)[0]?.outcome).toMatch(/^terminal/);
+    expect(w.runs).toEqual([{ round: 1, stopped: true }, { round: 1, stopped: false }]);
+  });
+
+  it("leaves a run alone while its ticket is open and eligible, or missing from the list", async () => {
+    const w = await world();
+    const first = w.once();
+    await w.started(1);
+
+    await w.once();
+    await w.once(source([]));
+    expect(w.aborted()).toEqual([]);
+    w.finish.open();
+    expect((await first)[0]?.outcome).toMatch(/^terminal/);
+    expect(w.runs).toEqual([{ round: 1, stopped: false }]);
+  });
+
+  it("still stops every run on Ctrl-C", async () => {
+    const w = await world();
+    const first = w.once();
+    await w.started(1);
+    w.stop.abort();
+    expect((await first)[0]?.outcome).toMatch(/^halt .*the run was aborted/);
+    expect(w.runs).toEqual([{ round: 1, stopped: true }]);
   });
 });
 

@@ -74,6 +74,12 @@ entry — not something the engine imposes.
 Landrace only touches tickets your `eligible` rule admits — in the shipped
 workflow, those labelled `lr:auto`. Everything else is listed and skipped.
 
+To stop a step while it runs, close its ticket or take `lr:auto` off it (from
+Landrace, `landrace_update_ticket` with `state: closed`). The next tick that
+lists it kills the agent's process group and logs `ticket.aborted`; the
+stopped round writes nothing to the ticket, so putting `lr:auto` back runs
+that same round again. A ticket the tracker stops listing is left running.
+
 To drive tickets from your editor, generate the MCP config:
 
 ```bash
@@ -379,7 +385,7 @@ A person can also send a ticket back to an earlier step. `spec-questions`, `spec
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
 ```
 
-The two halts, `blocked` and `screened`, list more: `code-review`, `fix-review` and `retro` while the ticket has a pull request — `code-review` capped at five rounds, `fix-review` capped on its own counter at twenty, `retro` at three and only while a pull request is unmerged — and `triage` while a person has written on the ticket, capped at twenty. That is because a halt's Retry is a goto to the step whose failure put the ticket there, and any stepped stage can fail, not only `spec` or `build`.
+The two halts, `blocked` and `screened`, list more: `code-review`, `fix-review` and `retro` while the ticket has a pull request — `code-review` capped at eight rounds — past the loop's own five, and past the review each later build round adds through `publish`, uncapped, so a round screened after the fifth review can still be retried — `fix-review` capped on its own counter at twenty, `retro` at three and only while a pull request is unmerged — and `triage` while a person has written on the ticket, capped at twenty. That is because a halt's Retry is a goto to the step whose failure put the ticket there, and any stepped stage can fail, not only `spec` or `build`.
 
 `build` lists one target: itself, while it has run fewer than three rounds. `publish` pushes before it moves the ticket, so a push that fails — nothing was committed — leaves the ticket at `build` with its round settled, and publish retries the push on every tick. "Go to step… build" runs another round instead.
 
@@ -643,7 +649,7 @@ session to have happened already, not the deep link itself.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.
 - A step declares what it may do, and the declaration is enforced by diffing its worktree before and after — not by the flags the Claude hook hands its agent, which another executor never sees. A conversation turn is held to the same declaration as the step it continues.
 - Under the Claude hook, a step or turn gets exactly the MCP servers `agent.mcp` allows, strictly. The hook refuses Landrace's own operator server at startup by name, and by its command line in the common spellings — a best-effort check on operator-trusted config, so do not allowlist a wrapper that runs it. Keeping that server from a step is part of every executor's contract, not this hook's alone.
-- Every agent invocation is screened first, including a turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it. A step the screener refuses is recorded as a refusal, not a broken contract, and lands in `screened` for a person to read.
+- Every agent invocation is screened first, including a turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it. A step the screener refuses is recorded as a refusal, not a broken contract, and lands in `screened` for a person to read. An `ok` counts only when it carries the nonce that screening's prompt was marked with, so a verdict planted in the screened text, or the template restated, fails closed. A reply that fails closed is logged whole in `screen.blocked` (its last 2,000 characters, redacted like any log line) and never posted: the ticket shows the reason alone.
 - The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workflow directory before it is imported, both ends compared after `realpath`.
 - A comment carries control state only because Landrace's own account wrote it. The account is resolved from the token at startup and verified against any configured override; the process refuses to run rather than guess, because a login it cannot resolve would make its own records read as a stranger's.
 

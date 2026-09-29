@@ -402,6 +402,17 @@ describe("claude executor", () => {
     await expect(run("x", {}, { cwd: dir, signal: controller.signal } as never)).rejects.toThrow(/agent aborted/);
   });
 
+  // #33: a tick stops a closed ticket's run whenever it lists it, and that
+  // can land while the run still awaits its checkout, before any listener
+  // exists to hear it. Missed, the agent ran on to its timeout.
+  it("still stops an agent whose abort landed while the run was getting ready", async () => {
+    const dir = withCfg({ hang: true });
+    const controller = new AbortController();
+    const p = createClaudeExecutor({ bin }).run("x", { round: 1, cwd: dir, signal: controller.signal, timeoutMs: 2_000 });
+    controller.abort();
+    await expect(p).rejects.toThrow(/agent aborted/);
+  });
+
   // C1 — a prompt larger than the ~64KB pipe buffer is the *normal* case (an
   // issue body plus a diff), not an edge case: the existing timeout/abort
   // tests above use the prompt "x", which is exactly why they never noticed

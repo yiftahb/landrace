@@ -337,6 +337,9 @@ export function createClaudeExecutor(opts: {
     // pairing's checkout, and a later turn resumes it from the ticket's.
     // Not found, the `--resume` below fails as it always did.
     if (resume !== undefined && resolvedCwd !== undefined) await bringSession(home, resume, projectDir(home, resolvedCwd));
+    // Again past the last await: an abort that landed during them fired with
+    // no listener yet, and the agent would have run on to its timeout.
+    if (signal.aborted) throw new Error("agent aborted");
 
     const server = bound?.server;
     if (bound && server === undefined) {

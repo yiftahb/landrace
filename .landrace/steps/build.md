@@ -72,8 +72,11 @@ Commit as you go: this worktree is removed when the step ends, and anything you 
 commit is lost with it.
 
 **Step 5 — Verify: install, tests, lint.** Install dependencies as needed
-(`pnpm install`), and run the test suite and the lint checks. A reviewer's round spent on something you could have
-caught yourself is a wasted round. Done when
+(`pnpm install`), and run the test suite and the lint checks in the foreground,
+waiting for each to finish: your first reply without a tool call ends this
+session, so a run left in the background never reports back, and a round
+that stops to wait for one ends unpushed, with no json block. A reviewer's
+round spent on something you could have caught yourself is a wasted round. Done when
 all pass; fix and rerun until they do.
 Expected in this sandbox, and not failures: the tests that start a local
 server are skipped (jest says so first), and `landrace validate` reports the
