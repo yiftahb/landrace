@@ -562,7 +562,7 @@ agent:
 | Run | Sandbox | Also |
 |---|---|---|
 | no `repo:write` (read-only) | `read-only` | |
-| `repo:write` | `workspace-write`, with the network off | |
+| `repo:write` | `workspace-write`, with the network off | `$TMPDIR` and `/tmp` not writable: `$TMPDIR` holds every other ticket's worktree, landrace's locks and the screener's directory |
 | the screener | `read-only` | every built-in tool off — the shell, web search, the image viewer, connectors and plugins, the browser, sub-agents, hooks — no server, and run in a directory of its own that only you can write, rather than your checkout |
 
 Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `config.toml` — whose servers include landrace's operator server — and your execpolicy rules do not load; runs with `approval_policy="never"`, since nobody is there to ask; gets `agent.mcp`'s servers per run as `-c mcp_servers.<name>.*`, a listed server's tools as its `enabled_tools`, so nothing is written for a worktree to shadow; takes the prompt on stdin; and has `CODEX_HOME` passed on, nothing else of landrace's environment. The session is `thread.started`'s id, the answer the last `agent_message`, and a `turn.failed` fails the run with codex's own reason.

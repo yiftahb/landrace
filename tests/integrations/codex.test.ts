@@ -74,10 +74,17 @@ describe("the Codex integration", () => {
       ]);
     });
 
-    it("runs a writing step in the workspace-write sandbox, with no network", async () => {
+    /*
+     * workspace-write also opens $TMPDIR and /tmp unless told not to, and
+     * $TMPDIR/landrace/<repo>/ holds every other ticket's worktree, the locks
+     * and the pairing seeds, and the screener's own directory.
+     */
+    it("runs a writing step in the workspace-write sandbox, with no network and no temp directory", async () => {
       const argv = overrides(await argvOf(codex(), { capabilities: ["repo:read", "repo:write"] }));
       expect(argv).toContain('sandbox_mode="workspace-write"');
       expect(argv).toContain("sandbox_workspace_write.network_access=false");
+      expect(argv).toContain("sandbox_workspace_write.exclude_tmpdir_env_var=true");
+      expect(argv).toContain("sandbox_workspace_write.exclude_slash_tmp=true");
     });
 
     /*
