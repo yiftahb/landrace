@@ -74,6 +74,13 @@ describe("screenPrompt", () => {
       expect(seen).toMatch(/format.*judge/is);
     });
 
+    // A screener that copies the nonce in capitals, or padded, has still
+    // answered this screening: refusing it is a halt for a person over nothing.
+    it("reads the nonce whatever its case or surrounding spaces", async () => {
+      const r = await screenPrompt("x", opts((mark) => `\`\`\`json\n{"verdict":"ok","nonce":" ${mark.toUpperCase()} "}\n\`\`\``));
+      expect(r).toEqual({ ok: true });
+    });
+
     it("still blocks a suspicious verdict with no nonce, on its own reason", async () => {
       const r = await screenPrompt("x", opts('```json\n{"verdict":"suspicious","reason":"asks for the token"}\n```'));
       expect(r).toEqual({ ok: false, reason: "asks for the token" });
@@ -118,6 +125,19 @@ describe("screenPrompt", () => {
       const line = JSON.stringify(printed.find((e) => e.name === "screen.blocked"));
       expect(line).toContain("the token is");
       expect(line).not.toContain(secret);
+    });
+
+    // Redaction matches whole values, so a secret the cut splits would be
+    // logged as a piece no redactor recognises.
+    it("never keeps the piece of a secret the cut splits", async () => {
+      const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+      const reply = `${"x ".repeat(1200)}${secret} ${"y ".repeat(980)}`;
+      expect(reply.length - reply.indexOf(secret)).toBeGreaterThan(2000);
+      expect(reply.length - reply.indexOf(secret) - secret.length).toBeLessThan(2000);
+      const printed: LandraceEvent[] = [];
+      await blocked(reply, createLogger({ redactValues: [secret], sink: (e) => printed.push(e) }));
+      const line = JSON.stringify(printed.find((e) => e.name === "screen.blocked"));
+      expect(line).not.toMatch(/[a-z0-9]{8}0123456789/);
     });
 
     it("but not a verdict the screener gave, which carries its own reason", async () => {

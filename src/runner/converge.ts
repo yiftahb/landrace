@@ -539,6 +539,10 @@ async function tryApply(
   snapshot: Snapshot,
   deps: ConvergeDeps,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // A stopped run writes nothing, whichever write it had reached: a
+  // transition decided from a snapshot read as the ticket closed is as
+  // unwanted as a step's answer. See the check after runStep.
+  if (deps.ctx.signal.aborted) return { ok: false, reason: "the run was aborted" };
   try {
     await applyAll(effects, ticket, snapshot, deps);
     return { ok: true };

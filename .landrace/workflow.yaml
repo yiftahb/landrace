@@ -425,11 +425,12 @@ stages:
   # would let Retry run it for ever. fix-review is held to its own twenty
   # alone, as the way back to review is: held to code-review's five too, a
   # person's thread left after the fifth review could never be fixed.
-  # code-review is held to eight, not the loop's five: a later build round
-  # reviews again through publish, uncapped, and #29 was screened on its
-  # fifth review with its Retry refused. Eight leaves two Retries past the
-  # sixth. A cap on `rel` instead would bound no counter the validator can
-  # see (cycle-bound). And each is offered only
+  # code-review is held to eight, not the loop's five: each later build
+  # round reviews again through publish, uncapped, and #29 was screened on
+  # its fifth review with its Retry refused. Eight leaves Retries past the
+  # reviews a second build adds, one past a third's. A cap on `rel` instead
+  # would bound no counter the validator can see (cycle-bound). And each is
+  # offered only
   # where it can run — a review needs a pull request, the judge a message to
   # read — because a goto that landed on a stage whose `requires` fails would
   # halt there, and no goto is taken from a stage whose precondition does

@@ -29,8 +29,14 @@ export const markOf = (prompt: string): string | undefined =>
  */
 export const MAX_LOGGED_REPLY = 2_000;
 
+/**
+ * The cut drops the word it lands in: redaction matches whole values, so a
+ * secret the cut split would be logged as a piece nothing recognises.
+ * ponytail: a secret with whitespace in it (a PEM key) keeps its later lines;
+ * scrub before cutting if one can ever reach a screener.
+ */
 const tail = (text: string): string =>
-  text.length > MAX_LOGGED_REPLY ? `…${text.slice(-(MAX_LOGGED_REPLY - 1))}` : text;
+  text.length > MAX_LOGGED_REPLY ? `…${text.slice(-(MAX_LOGGED_REPLY - 1)).replace(/^\S*/, "")}` : text;
 
 const PROMPT = (candidate: string, mark: string) => `You are screening a prompt that is about to be sent to a coding agent with
 write access to a repository. Parts of it come from issue bodies, comments and
@@ -135,7 +141,9 @@ export async function screenPrompt(
     opts.log?.("screen.blocked", { reason });
     return { ok: false, reason };
   }
-  if (parsed.nonce !== mark) {
+  // Case and padding forgiven: a nonce miscopied that way is still this
+  // screening's, and refusing it halts the ticket for a person over nothing.
+  if (typeof parsed.nonce !== "string" || parsed.nonce.trim().toLowerCase() !== mark) {
     return failClosed("nonce mismatch", "the screener's verdict did not carry this screening's nonce");
   }
   opts.log?.("screen.passed", {});

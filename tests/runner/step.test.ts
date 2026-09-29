@@ -314,6 +314,20 @@ describe("runStep", () => {
     expect((r as { reason: string }).reason).toMatch(/exfiltration/);
   });
 
+  // #33: with tickets screened side by side, a reply nobody can attribute
+  // explains nothing.
+  it("logs a reply that failed closed with the ticket, stage and round it was screening", async () => {
+    const events: Array<{ name: string; data: Record<string, unknown> }> = [];
+    const screener: Executor = { id: "screen", run: async () => ({ text: "looks fine to me", sessionId: null }) };
+    await runStep({
+      ticket: "7", step, stageId: "code-review", round: 5, snapshot, executor: agent("free text"),
+      signal: new AbortController().signal, screen: { executor: screener, model: "haiku" },
+      log: (name, data = {}) => events.push({ name, data }),
+    });
+    expect(events.find((e) => e.name === "screen.blocked" && e.data.reply !== undefined)?.data)
+      .toMatchObject({ ticket: "7", stage: "code-review", round: 5, reply: "looks fine to me" });
+  });
+
   it("screens with the screener's own model, never the step's", async () => {
     const models: Array<string | undefined> = [];
     const screener: Executor = {

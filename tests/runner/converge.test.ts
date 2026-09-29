@@ -564,6 +564,26 @@ describe("converge", () => {
       expect(r.settled).toBe("halt");
     });
 
+    it("applies nothing once the signal is aborted mid-pass, not even the transition that pass decided", async () => {
+      const w = world();
+      const controller = new AbortController();
+      let reads = 0;
+      const aborting = definePreHook({
+        id: "w",
+        run: () => {
+          if (++reads === 2) controller.abort();
+          return { ticket: { labels: [...w.labels] }, entries: [...w.entries] };
+        },
+      });
+      const r = await converge("1", deps(w, {
+        pre: [aborting],
+        ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
+      }));
+      expect(r).toMatchObject({ settled: "halt", why: "the run was aborted" });
+      expect([...w.labels]).toContain("lr:stage:a");
+      expect([...w.labels]).not.toContain("lr:stage:b");
+    });
+
     /*
      * #33: a ticket closed mid-step is stopped by aborting its run, and a
      * stopped run writes nothing: not the answer an agent got out as it was
