@@ -504,6 +504,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     intervalMs: parseInterval(loaded.config.tick.interval),
     concurrency: loaded.config.tick.concurrency,
     stop,
+    running: new Map(),
     ...(telemetry ? { telemetry } : {}),
   };
 }
@@ -647,7 +648,7 @@ export function createSchedule(opts: {
 /** One pass over every ticket, with a line per ticket for the person watching. */
 async function pass(rt: Runtime, board?: Board): Promise<void> {
   const rows = await tick({
-    source: rt.source, deps: rt.deps, concurrency: rt.concurrency,
+    source: rt.source, deps: rt.deps, concurrency: rt.concurrency, running: rt.running,
     ...(board ? { onList: (graph) => board.list(graph) } : {}),
   });
   // Printed beside the log, not through it: an outcome quotes a hook's or an

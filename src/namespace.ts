@@ -889,7 +889,7 @@ export interface Dispatcher {
  */
 export type EventName =
   | "tick.started" | "tick.finished"
-  | "ticket.evaluated" | "ticket.skipped"
+  | "ticket.evaluated" | "ticket.skipped" | "ticket.aborted"
   | "step.invoked" | "step.started" | "step.finished" | "step.completed" | "step.rejected" | "step.unchecked"
   | "agent.event"
   | "snapshot.built" | "snapshot.failed"
@@ -1071,6 +1071,13 @@ export interface TickOptions {
   deps: Omit<ConvergeDeps, "ctx" | "source"> & { ctx: RuntimeContext };
   concurrency?: number;
   lock?: LockOptions;
+  /**
+   * Each ticket being converged, by id, with the controller that stops it.
+   * Shared across ticks, which overlap: the tick that lists a ticket closed,
+   * or no longer eligible, stops the run an earlier tick started. Absent,
+   * nothing is stopped but by `ctx.signal`.
+   */
+  running?: Map<string, AbortController>;
   /**
    * Every node the source returned this tick, eligible or not. For a
    * display: handing over what the tick already fetched costs nothing, and
@@ -1374,6 +1381,8 @@ export interface Runtime {
    * each ticket unwind through the lock it holds.
    */
   stop: AbortController;
+  /** See TickOptions.running: one map for the life of the loop, so every tick sees every run. */
+  running: Map<string, AbortController>;
   /** Present when telemetry is on. `runStart` shuts it down on the way out, flushing what is queued. */
   telemetry?: { shutdown(): Promise<void> };
 }

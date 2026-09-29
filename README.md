@@ -74,6 +74,12 @@ entry — not something the engine imposes.
 Landrace only touches tickets your `eligible` rule admits — in the shipped
 workflow, those labelled `lr:auto`. Everything else is listed and skipped.
 
+To stop a step while it runs, close its ticket or take `lr:auto` off it (from
+Landrace, `landrace_update_ticket` with `state: closed`). The next tick that
+lists it kills the agent's process group and logs `ticket.aborted`; the
+stopped round writes nothing to the ticket, so putting `lr:auto` back runs
+that same round again. A ticket the tracker stops listing is left running.
+
 To drive tickets from your editor, generate the MCP config:
 
 ```bash
