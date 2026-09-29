@@ -114,6 +114,32 @@ describe("no coding agent is named inside the engine", () => {
     const named = linesMatching(/claude(?!\.md)/i).filter((line) => !AGENT_DISPLAY.some((file) => line.startsWith(`${file}:`)));
     expect(named).toEqual([]);
   });
+
+  // The kit is under src/ and every integration builds on it, so the one
+  // agent it could most easily start knowing is the second one it serves.
+  it("has no mention of codex anywhere under src, bar the board's links", () => {
+    const named = linesMatching(/codex/i).filter((line) => !AGENT_DISPLAY.some((file) => line.startsWith(`${file}:`)));
+    expect(named).toEqual([]);
+  });
+});
+
+/*
+ * The other side of the same boundary: an integration builds on what any
+ * integration author has — `landrace/kit`, `landrace/hooks` and node — and
+ * never on the engine's own modules, which would make it part of the engine
+ * and a second agent a change to landrace rather than a file beside it.
+ */
+describe("an integration imports only what any integration author can", () => {
+  it("imports nothing but landrace/kit, landrace/hooks and node:*", () => {
+    const strays = filesUnder("integrations").flatMap((file) =>
+      readFileSync(file, "utf8").split("\n").flatMap((line, i) =>
+        // Every specifier on the line: `from "x"`, `import "x"` and `import("x")`.
+        [...line.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"']+)["']/g)]
+          .filter(([, specifier]) => !/^(landrace\/(kit|hooks)|node:.+)$/.test(specifier ?? ""))
+          .map(() => `${file}:${i + 1}: ${line.trim()}`)));
+    expect(filesUnder("integrations").length).toBeGreaterThan(0);
+    expect(strays).toEqual([]);
+  });
 });
 
 describe("the one display-only file that may name a vendor", () => {
