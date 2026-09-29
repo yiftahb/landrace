@@ -1108,7 +1108,7 @@ async function pollOnce() {
     render(await res.json());
     // After the render, so a click on a notification opens a panel over the
     // board it was raised from — which render() just kept as lastView.
-    const now = needingYou(lastView.rows, new Map());
+    const now = needingYou(lastView.rows, new Map(), neededYou);
     for (const row of arrived(neededYou, now)) notifyOf(row);
     neededYou = now;
   } catch {
@@ -1852,11 +1852,15 @@ resolveButton.addEventListener("click", () => panelWrite("resolve"));
 window.addEventListener("hashchange", () => showPanel(ticketOfHash(location.hash)));
 showPanel(ticketOfHash(location.hash));
 
-// Every ticket the board badges needs-you, children included, by id.
-function needingYou(rows, into) {
+// Every ticket the board badges needs-you, children included, by id — and
+// one that needed you at the last poll and is only held elsewhere now: a
+// conversation turn or a pairing holds its lock a while, but the ticket never
+// left you, and its return is no arrival.
+function needingYou(rows, into, before) {
   for (const row of rows) {
-    if (row.badge === "needs-you") into.set(row.id, row);
-    needingYou(row.children, into);
+    const held = row.badge === "elsewhere" && before !== null && before.has(row.id);
+    if (row.badge === "needs-you" || held) into.set(row.id, row);
+    needingYou(row.children, into, before);
   }
   return into;
 }
@@ -1893,6 +1897,12 @@ function bellState(on, permission) {
     : { icon: "🔔", pressed: "false", label: "Notify me when a ticket needs you" };
 }
 
+// Toggled from what the bell shows, not what was stored: on with the prompt
+// dismissed reads as off, and a click on it has to turn it on and ask again.
+function clickedBell(on, permission) {
+  return bellState(on, permission).pressed !== "true";
+}
+
 const bell = document.getElementById("notify-toggle");
 let notifyOn = false;
 try { notifyOn = localStorage.getItem(NOTIFY_KEY) === "on"; } catch (e) {}
@@ -1913,7 +1923,7 @@ function syncBell() {
 }
 
 bell.addEventListener("click", async () => {
-  notifyOn = !notifyOn;
+  notifyOn = clickedBell(notifyOn, permissionNow());
   try { localStorage.setItem(NOTIFY_KEY, notifyOn ? "on" : "off"); } catch (e) {}
   // Asked from the click, the one moment a browser lets a page ask.
   if (notifyOn && permissionNow() === "default") await Notification.requestPermission();

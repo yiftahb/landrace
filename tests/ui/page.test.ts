@@ -1818,30 +1818,49 @@ describe("the notify bell", () => {
   describe("which tickets have just come to need you", () => {
     type Row = { id: string; badge: string | null; children: Row[] };
     const row = (id: string, badge: string | null, children: Row[] = []): Row => ({ id, badge, children });
-    const arrivals = (before: Row[] | null, now: Row[]): string[] =>
+    /** What each poll in turn announces, the way pollOnce carries one poll's answer into the next. */
+    const polls = (...boards: Row[][]): string[][] =>
       runInNewContext(
         `${fnSource("needingYou")}${fnSource("arrived")}
-         arrived(BEFORE === null ? null : needingYou(BEFORE, new Map()), needingYou(NOW, new Map())).map((r) => r.id)`,
-        { BEFORE: before, NOW: now },
-      ) as string[];
+         let before = null;
+         const out = [];
+         for (const rows of BOARDS) {
+           const now = needingYou(rows, new Map(), before);
+           out.push(arrived(before, now).map((r) => r.id));
+           before = now;
+         }
+         out`,
+        { BOARDS: boards },
+      ) as string[][];
 
     const board = [row("1", "needs-you", [row("3", "needs-you")]), row("2", "running")];
 
     it("finds none on the first poll, which only seeds", () => {
-      expect(arrivals(null, board)).toEqual([]);
+      expect(polls(board)).toEqual([[]]);
     });
 
     it("finds a ticket newly badged needs-you, a child as well as a root", () => {
-      expect(arrivals([row("1", "waiting", [row("3", "running")]), row("2", "running")], board)).toEqual(["1", "3"]);
+      expect(polls([row("1", "waiting", [row("3", "running")]), row("2", "running")], board)).toEqual([[], ["1", "3"]]);
     });
 
     it("finds none for a ticket that stays", () => {
-      expect(arrivals(board, board)).toEqual([]);
+      expect(polls(board, board)).toEqual([[], []]);
     });
 
     it("finds one again that left and came back", () => {
       const left = [row("1", "running", [row("3", "needs-you")]), row("2", "running")];
-      expect(arrivals(left, board)).toEqual(["1"]);
+      expect(polls(board, left, board)).toEqual([[], [], ["1"]]);
+    });
+
+    // A conversation turn from the editor, or a pairing, holds the ticket's
+    // lock: the board badges it elsewhere meanwhile, but it never left you.
+    it("finds none for a ticket only held elsewhere a while, which never left", () => {
+      const held = [row("1", "elsewhere", [row("3", "needs-you")]), row("2", "running")];
+      expect(polls(board, held, held, board)).toEqual([[], [], [], []]);
+    });
+
+    it("still finds a ticket held elsewhere before it ever needed you", () => {
+      expect(polls([row("1", "elsewhere")], [row("1", "needs-you")])).toEqual([[], ["1"]]);
     });
   });
 
@@ -1903,6 +1922,19 @@ describe("the notify bell", () => {
     it("is pressed only when on and allowed", () => {
       expect([state(true, "granted").pressed, state(false, "granted").pressed, state(true, "default").pressed])
         .toEqual(["true", "false", "false"]);
+    });
+
+    // Toggled from what it shows: on, but with the browser's prompt dismissed,
+    // it reads as off — and a click on it must turn it on and ask again, not
+    // quietly turn off a bell that already looked off.
+    it("turns on when clicked while it reads off, whatever was stored", () => {
+      const next = (on: boolean, permission: string) =>
+        runInNewContext(`${fnSource("bellState")}${fnSource("clickedBell")} clickedBell(ON, PERMISSION)`, { ON: on, PERMISSION: permission });
+      expect([next(true, "default"), next(false, "granted"), next(true, "granted")]).toEqual([true, true, false]);
+    });
+
+    it("is toggled through clickedBell", () => {
+      expect(APP_JS).toContain("notifyOn = clickedBell(notifyOn, permissionNow());");
     });
   });
 });
