@@ -503,11 +503,13 @@ it.each(["build", "fix-review", "retro"])("%s says which sandbox skips and valid
   expect(prose).toMatch(/Anything else that fails is real/);
 });
 
-// Every step that does real work thinks hardest; triage is a quick classifier
-// on haiku and declares no capability, so it is handed no effort at all.
-it("runs every step but triage at extra-high effort", async () => {
+// Every step that does real work thinks hard; the spec hardest, since every
+// later step answers to it. Triage is a quick classifier on haiku and
+// declares no capability, so it is handed no effort at all.
+it("runs the spec at max effort, every other step but triage at extra-high", async () => {
   const { steps } = await loadWorkflow(".landrace");
-  for (const id of ["spec", "build", "code-review", "fix-review", "retro"]) {
+  expect(steps.get("steps/spec.md")?.effort).toBe("max");
+  for (const id of ["build", "code-review", "fix-review", "retro"]) {
     expect([id, steps.get(`steps/${id}.md`)?.effort]).toEqual([id, "xhigh"]);
   }
   expect(steps.get("steps/triage.md")?.effort).toBeUndefined();
