@@ -210,13 +210,18 @@ export function startPair(deps: PairDeps, ticket: string, stageId: string): Prom
           "their own session. It runs alone again only once they release it.",
       }]);
     }
-    // Entered unless its round is already owed where the ticket stands, as
-    // decide() reads it. Standing there is not enough: a stage that lists
-    // itself as a goto target rests there with its round settled — build,
-    // when publish's push fails — and pairing on it is pairing on the next.
+    // Entered unless the stage already has been at the pairing's round —
+    // not where the ticket stands, which a refused hand-in moves to a halt
+    // with that round entered, and asking for the command again must leave
+    // it there. A stage that lists itself as a goto target rests at its
+    // settled round — build, when publish's push fails — and pairing on it
+    // enters the next. The one entered round still entered again is a crash
+    // between its record and its status: owed, with the ticket elsewhere.
     const origin = gotoOrigin(deps.workflow, snapshot, ticket);
-    if (!("refused" in origin) && !(origin.from.id === stage.id && assess(snapshot, stage) === "pending")) {
-      await enter(deps, ticket, snapshot, origin.from, stage, pairing.round);
+    if (!("refused" in origin)) {
+      const entered = snapshot.run?.rounds[stage.id]?.entered ?? 0;
+      const unfinished = origin.from.id !== stage.id && assess(snapshot, stage) === "pending";
+      if (entered < pairing.round || unfinished) await enter(deps, ticket, snapshot, origin.from, stage, pairing.round);
     }
 
     const branch = stageBranch(stage, ticket, pairing.round);

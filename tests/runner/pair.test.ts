@@ -210,6 +210,30 @@ describe("starting a pairing", () => {
     expect(fresh.session).toBe(started.session);
   });
 
+  it("retried after a crash between the stage's entry record and its status, finishes entering it", async () => {
+    const { deps, tracker, run } = reviewed(agent().executor);
+    say(tracker, "spec", "pair", 2, { marker: "pair:spec:2:1" });
+    say(tracker, "spec", "enter", 2, { marker: "enter:spec:2" });
+    await startPair(deps, "29", "spec");
+
+    expect(records(tracker, "enter").filter((m) => m?.round === 2)).toHaveLength(1);
+    expect((await run())?.stage).toBe("spec");
+  });
+
+  it("asked again once a refused hand-in has halted the ticket, leaves it at the halt", async () => {
+    const a = agent("no answer block at all");
+    const { deps, tracker, run } = owed(a.executor);
+    const first = await startPair(deps, "29", "spec");
+    await expect(finishPair(deps, "29")).rejects.toThrow(/refused/);
+    const issue = tracker.issues.get(29);
+    if (issue) issue.labels = ["lr:auto", "lr:stage:blocked", "lr:blocked"];
+
+    const again = await startPair(deps, "29", "spec");
+    expect(again.session).toBe(first.session);
+    expect(tracker.labelsOf(29)).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+    expect((await run())?.stage).toBe("blocked");
+  });
+
   it("on the stage the ticket rests at with its round settled, enters the next round so the tick waits on it", async () => {
     const a = agent(BUILT);
     const { deps, tracker, run } = built(a.executor);
