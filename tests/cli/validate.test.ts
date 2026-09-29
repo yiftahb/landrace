@@ -1,7 +1,7 @@
 import { runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
 import { loadWorkflow } from "#workflow/load.js";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -170,6 +170,37 @@ stages:
     expect(r.problems).toContainEqual(
       expect.objectContaining({ rule: "vars", message: expect.stringMatching(/"assignee"[\s\S]*secret/) }),
     );
+  });
+});
+
+/** The notify block, refused here in the words `start` refuses it with. */
+describe("landrace validate, and the notify block", () => {
+  const dirFor = async (config: string): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), "landrace-validate-notify-"));
+    await writeFile(join(dir, "workflow.yaml"), [
+      "version: 1", "name: t", "stages:",
+      "  - id: a", "    entry: true", "    terminal: true", "    triggers:", '      - { when: { "run.stage": null } }', "",
+    ].join("\n"));
+    await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude }\n${config}`);
+    return dir;
+  };
+
+  it("reports an event there is none of, rather than reading the file as absent", async () => {
+    const r = await runValidate(await dirFor("notify: { on: [done], via: [slack] }\n"));
+    expect(r.problems).toContainEqual({ rule: "config", message: expect.stringMatching(/notify\.on\.0: .*"needs-you"/) });
+  });
+
+  it("reports a via id no loaded notifier answers to", async () => {
+    const r = await runValidate(await dirFor("notify: { on: [needs-you], via: [slack] }\n"));
+    expect(r.problems).toContainEqual({
+      rule: "notify", message: 'notify.via names "slack", which no notifier registers: the loaded hooks register none',
+    });
+  });
+
+  it("still checks a workflow with no landrace.yaml beside it", async () => {
+    const dir = await dirFor("");
+    await rm(join(dir, "landrace.yaml"));
+    expect((await runValidate(dir)).problems).toEqual([]);
   });
 });
 

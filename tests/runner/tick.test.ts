@@ -410,6 +410,10 @@ describe("tick", () => {
     expect(names.at(-1)).toBe("tick.finished");
     expect(names).toContain("lock.denied");
     expect(names).toContain("lock.acquired");
+    // Ticket 2's own: the board waits on its release before a list may
+    // vouch for labels a step was changing.
+    expect(names.indexOf("lock.released")).toBeGreaterThan(names.indexOf("lock.acquired"));
+    expect(seen.find((e) => e.name === "lock.released")).toMatchObject({ ticket: "2", kind: "tick" });
   });
 });
 

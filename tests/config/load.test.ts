@@ -20,6 +20,25 @@ async function fixture(env: string | null, extra = ""): Promise<string> {
   return dir;
 }
 
+describe("the notify block", () => {
+  it("reads which events notify, and through which notifiers", async () => {
+    const { config } = await loadConfig(await fixture("", "notify: { on: [needs-you], via: [slack] }\n"));
+    expect(config.notify).toEqual({ on: ["needs-you"], via: ["slack"] });
+  });
+
+  it("is optional", async () => {
+    expect((await loadConfig(await fixture(""))).config.notify).toBeUndefined();
+  });
+
+  it.each([
+    ["an event the engine never fires", "notify: { on: [done], via: [slack] }\n"],
+    ["a key it does not read", "notify: { on: [needs-you], via: [slack], thread: true }\n"],
+    ["no notifier to send through", "notify: { on: [needs-you], via: [] }\n"],
+  ])("refuses %s", async (_, block) => {
+    await expect(loadConfig(await fixture("", block))).rejects.toThrow();
+  });
+});
+
 describe("loadConfig", () => {
   it("resolves a secret from the workflow folder's .env", async () => {
     const { config, secretValues, missing } = await loadConfig(await fixture("GITHUB_TOKEN=ghp_x"));

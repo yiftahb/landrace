@@ -1,25 +1,12 @@
 import { compareWork, GOTO_TRIGGER, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
 import { gotoTargetsOf } from "#core/index.js";
-import { BLOCKED_NOTE, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
+import { BLOCKED_NOTE, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
   Board, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Pairing, PanelPaths, Running, Stage,
   StatusRow, Workflow,
 } from "#namespace.js";
-
-/**
- * Where a ticket belongs, from what `landrace status` already says about it.
- * Reusing statusRows rather than re-reading labels here is deliberate: two
- * readers of the same labels is how a status table and a page come to
- * disagree about one ticket.
- */
-export function laneOf(row: StatusRow, workflow: Workflow): Lane {
-  if (row.note.startsWith("skipped:")) return "not-admitted";
-  if (row.note.startsWith("halted:") || row.note.startsWith("blocked") || row.note === "waiting on you") return "needs-you";
-  const terminal = workflow.stages.some((s) => s.id === row.stage && s.terminal === true);
-  return terminal ? "discharged" : "waiting";
-}
 
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 
@@ -138,6 +125,8 @@ export function boardView(input: {
   sent?: ReadonlyMap<string, string>;
   /** The pairing each ticket's latest evaluation said holds its step, per the tick's own events. */
   paired?: ReadonlyMap<string, Pairing>;
+  /** Tickets whose labels in `graph` predate a step this process ran on them — each row's `stale`. */
+  stale?: ReadonlySet<string>;
 }): BoardView {
   // Duplicate ids are a graph the engine halts on elsewhere; here the page
   // only has to stay drawable, so a repeat is skipped rather than drawn twice.
@@ -154,7 +143,7 @@ export function boardView(input: {
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, round: null, model: null, effort: null,
-      chat: null, screened: false, retry: null, goto: [], panel: null, children: [],
+      chat: null, screened: false, stale: false, retry: null, goto: [], panel: null, children: [],
     };
     const s = status.get(node.id);
     if (node.kind !== TICKET_KIND || !s) return base;
@@ -165,7 +154,7 @@ export function boardView(input: {
     // An id chatFor refuses costs that row its Chat menu, not the page: one
     // throw here blanked every row of the board.
     const ticket: BoardRow = {
-      ...base, stage: s.stage, note: oneLine(s.note), panel: panelPaths(node.id),
+      ...base, stage: s.stage, note: oneLine(s.note), panel: panelPaths(node.id), stale: input.stale?.has(node.id) ?? false,
       chat: isTicketId(node.id) ? chatFor(node.id, input.workspace) : null,
     };
     // A closed ticket is out of the loop whatever its labels still say or a
@@ -286,6 +275,10 @@ export function createBoard(opts: {
   const running = new Map<string, Running>();
   const sent = new Map<string, string>();
   const paired = new Map<string, Pairing>();
+  // Each ticket a step ran on, and whether its tick has let it go since: the
+  // step is about to change its labels, and the graph still holds the ones
+  // from before. Only a list after the release vouches for them again.
+  const stepped = new Map<string, boolean>();
 
   return {
     observe(e: LandraceEvent): void {
@@ -308,6 +301,7 @@ export function createBoard(opts: {
         else sent.delete(e.ticket);
       }
       if (e.name === "step.started") {
+        stepped.set(e.ticket, false);
         running.set(e.ticket, {
           stage: String(e.stage ?? ""),
           round: typeof e.round === "number" ? e.round : 0,
@@ -317,6 +311,8 @@ export function createBoard(opts: {
         });
       } else if (e.name === "step.finished") {
         running.delete(e.ticket);
+      } else if (e.name === "lock.released" && stepped.has(e.ticket)) {
+        stepped.set(e.ticket, true);
       }
     },
     list(next: Graph): void {
@@ -329,6 +325,7 @@ export function createBoard(opts: {
       const ids = new Set(next.nodes.map((n) => n.id));
       for (const id of sent.keys()) if (!ids.has(id)) sent.delete(id);
       for (const id of paired.keys()) if (!ids.has(id)) paired.delete(id);
+      for (const [id, released] of stepped) if (released) stepped.delete(id);
     },
     async view(): Promise<BoardView> {
       // Open tickets only: nothing else can be held, and a closed ticket's
@@ -340,7 +337,7 @@ export function createBoard(opts: {
       }));
       return boardView({
         workflow: opts.workflow, graph, nest, running, elsewhere, now: now(), pid, sent, paired,
-        nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
+        stale: new Set(stepped.keys()), nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },
   };

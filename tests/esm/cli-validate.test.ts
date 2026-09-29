@@ -173,6 +173,18 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    * command whose whole job is to check would be a strange place to run a
    * user's code against a workflow it is about to reject.
    */
+  it("reports two notifiers under one id, naming both, as start refuses them", async () => {
+    const notifier = (name: string) =>
+      `export const ${name} = Object.defineProperty({ id: "slack", send: async () => {} }, KIND, { value: "notifier", enumerable: false });\n`;
+    const dir = await workflowDir(`const KIND = Symbol.for("landrace.hook.kind");\n${notifier("one")}${notifier("two")}`);
+
+    const r = await runValidate(dir);
+
+    expect(r.problems).toContainEqual({
+      rule: "hooks", message: 'two notifiers share the id "slack": "hook.ts" and "hook.ts"',
+    });
+  });
+
   it("does not import a hook module for a workflow it has already found unsound", async () => {
     const dir = await workflowDir(
       "", { entry: false },

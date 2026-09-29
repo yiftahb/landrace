@@ -38,6 +38,7 @@ import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
 import { createLogger, scrubberOf } from "#runner/events.js";
+import { createNotify, notifyProblems } from "#runner/notify.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { held } from "#runner/lock.js";
 import { runPreflights } from "#runner/preflight.js";
@@ -424,6 +425,10 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
   const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
+  // A notify.via nothing answers to is a notification that silently never
+  // comes; `validate` reports the same words.
+  const unnotified = notifyProblems(loaded.config, registry);
+  if (unnotified.length) throw new Error(unnotified.map((p) => `${p.rule}: ${p.message}`).join("\n"));
 
   const stop = new AbortController();
   const ctx: RuntimeContext = {
@@ -500,6 +505,12 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       // What each step's agent is doing, for the page's ticket panel. Not for
       // `landrace status`, which runs no step and must write nothing.
       ...(opts.readOnly ? {} : { activity: createActivityLog(sandboxRoot(dir), scrubberOf(ctx.secrets, log.scrub)) }),
+      // Not for `landrace status` either: reading must not message anyone.
+      ...(opts.readOnly || !loaded.config.notify ? {} : {
+        notify: createNotify({
+          workflow, notify: loaded.config.notify, notifiers: registry.notifiers, ctx, log, board: opts.board ?? (() => null),
+        }),
+      }),
     },
     intervalMs: parseInterval(loaded.config.tick.interval),
     concurrency: loaded.config.tick.concurrency,
@@ -712,10 +723,13 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // stated in a shape the linter can verify rather than one it has to trust.
   const boardRef: { current?: Board } = {};
   const print = (e: LandraceEvent): void => console.log(JSON.stringify(e));
+  // What a notification links to, once the page below is up; null without one.
+  const pageRef: { url: string | null } = { url: null };
   const rt = await buildRuntime(dir, {
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
     ...(opts.otel === undefined ? {} : { otel: opts.otel }),
     sink: boardSink(print, boardRef),
+    board: () => pageRef.url,
   });
 
   // Before anything else the hooks might do — including `--once`'s one tick
@@ -760,7 +774,10 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       activity: rt.deps.activity,
     }),
   });
-  if (ui) console.error(`landrace: triage page at ${ui.url}`);
+  if (ui) {
+    console.error(`landrace: triage page at ${ui.url}`);
+    pageRef.url = ui.url;
+  }
 
   // What `landrace mcp` touches after a person's write, in its own process:
   // watched only where there is a loop to wake.

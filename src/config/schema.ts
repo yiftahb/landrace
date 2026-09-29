@@ -57,4 +57,14 @@ export const runtimeConfigSchema = z.object({
    * in config/load.ts is the check; this comment is the reason it exists.
    */
   vars: z.record(z.string()).default({}),
+  /**
+   * Who is told when a ticket comes to rest waiting on a person: `on` the
+   * events, `via` the notifier hooks by id. Strict, and `needs-you` is the one
+   * event there is — a notify block naming anything else would promise a
+   * message that never comes.
+   */
+  notify: z
+    .object({ on: z.array(z.literal("needs-you")).min(1), via: z.array(z.string().min(1)).min(1) })
+    .strict()
+    .optional(),
 });

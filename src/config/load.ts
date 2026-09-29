@@ -96,7 +96,14 @@ export function assertConfigUsable(dir: string, loaded: LoadedConfig): void {
 }
 
 export async function loadConfig(dir: string): Promise<LoadedConfig> {
-  const config = runtimeConfigSchema.parse(parse(await readFile(join(dir, "landrace.yaml"), "utf8")));
+  const file = join(dir, "landrace.yaml");
+  const parsed = runtimeConfigSchema.safeParse(parse(await readFile(file, "utf8")));
+  // Zod's own message is a JSON dump of every issue; `validate` prints this
+  // as one problem and `start` refuses with it, so it says where, per issue.
+  if (!parsed.success) {
+    throw new Error(`${file}: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  }
+  const config = parsed.data;
 
   const fromFile = await readFile(join(dir, ".env"), "utf8")
     .then(parseEnvFile)

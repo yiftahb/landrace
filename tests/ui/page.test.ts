@@ -1140,7 +1140,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the ticket panel's and pairing's — no more, no less", () => {
+  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the ticket panel's and pairing's, and the bell's — no more, no less", () => {
     // Pins the count deliberately: the tick button, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
     // button (each wired once, outside anything a render rebuilds), the
@@ -1156,9 +1156,10 @@ describe("the page", () => {
     // and the row itself (each defined once, in ticketRowFor), ✕, ⤢, Reply,
     // Ask the step, Resolve, and the window's hashchange. And pairing's: the
     // row menu's Pairing…, the panel's own ⋯, and one for every button of
-    // its Pairing section (defined once, in pairingSectionOf).
+    // its Pairing section (defined once, in pairingSectionOf). And the
+    // bell's: its own click, and a notification's (defined once, in notifyOf).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(24);
+    expect(listeners).toHaveLength(26);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -1790,5 +1791,170 @@ describe("a ticket row's Pairing… item", () => {
 
   it("is not offered on a row with no panel", () => {
     expect(menuFor(null).menu.children[0]?.textContent).toBe("Chat");
+  });
+});
+
+/**
+ * The 🔔: with it on and the browser's leave, a ticket that has just come to
+ * need you — since the last poll, never on the first — raises one system
+ * notification, and a click on it opens that ticket's panel.
+ */
+describe("the notify bell", () => {
+  it("sits in the header, wired in script", () => {
+    const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(header).toContain('id="notify-toggle"');
+    expect(APP_JS).toContain('getElementById("notify-toggle")');
+  });
+
+  it("guards every localStorage access, as the theme's does", () => {
+    expect(APP_JS).toMatch(/try\s*{[^}]*localStorage\.getItem\(NOTIFY_KEY\)[^}]*}\s*catch/s);
+    expect(APP_JS).toMatch(/try\s*{[^}]*localStorage\.setItem\(NOTIFY_KEY[^}]*}\s*catch/s);
+  });
+
+  it("is asked after every poll that landed", () => {
+    expect(fnSource("pollOnce")).toMatch(/arrived\(neededYou, now\)/);
+  });
+
+  describe("which tickets have just come to need you", () => {
+    type Row = { id: string; badge: string | null; stale: boolean; children: Row[] };
+    const row = (id: string, badge: string | null, children: Row[] = [], stale = false): Row => ({ id, badge, stale, children });
+    /** What each poll in turn announces, the way pollOnce carries one poll's answer into the next. */
+    const polls = (...boards: Row[][]): string[][] =>
+      runInNewContext(
+        `${fnSource("needingYou")}${fnSource("arrived")}
+         let before = null;
+         const out = [];
+         for (const rows of BOARDS) {
+           const now = needingYou(rows, new Map(), before);
+           out.push(arrived(before, now).map((r) => r.id));
+           before = now;
+         }
+         out`,
+        { BOARDS: boards },
+      ) as string[][];
+
+    const board = [row("1", "needs-you", [row("3", "needs-you")]), row("2", "running")];
+
+    it("finds none on the first poll, which only seeds", () => {
+      expect(polls(board)).toEqual([[]]);
+    });
+
+    it("finds a ticket newly badged needs-you, a child as well as a root", () => {
+      expect(polls([row("1", "waiting", [row("3", "running")]), row("2", "running")], board)).toEqual([[], ["1", "3"]]);
+    });
+
+    it("finds none for a ticket that stays", () => {
+      expect(polls(board, board)).toEqual([[], []]);
+    });
+
+    it("finds one again that left and came back", () => {
+      const left = [row("1", "running", [row("3", "needs-you")]), row("2", "running")];
+      expect(polls(board, left, board)).toEqual([[], [], ["1"]]);
+    });
+
+    // A conversation turn from the editor, or a pairing, holds the ticket's
+    // lock: the board badges it elsewhere meanwhile, but it never left you.
+    it("finds none for a ticket only held elsewhere a while, which never left", () => {
+      const held = [row("1", "elsewhere", [row("3", "needs-you")]), row("2", "running")];
+      expect(polls(board, held, held, board)).toEqual([[], [], [], []]);
+    });
+
+    it("still finds a ticket held elsewhere before it ever needed you", () => {
+      expect(polls([row("1", "elsewhere")], [row("1", "needs-you")])).toEqual([[], ["1"]]);
+    });
+
+    // Between triage's step and the next list, a spec approval heading into
+    // build still reads needs-you from the labels it is leaving.
+    it("finds none for a ticket only passing through a step, while its labels are stale", () => {
+      const running = [row("1", "running")];
+      const stale = [row("1", "needs-you", [], true)];
+      expect(polls([row("1", "needs-you")], running, stale, stale, running)).toEqual([[], [], [], [], []]);
+    });
+
+    it("finds one that came back once a fresh list says so", () => {
+      expect(polls([row("1", "needs-you")], [row("1", "running")], [row("1", "needs-you", [], true)], [row("1", "needs-you")]))
+        .toEqual([[], [], [], ["1"]]);
+    });
+
+    it("keeps one that needed you through stale labels, never announcing it again", () => {
+      const stale = [row("1", "needs-you", [], true)];
+      expect(polls([row("1", "needs-you")], stale, [row("1", "needs-you")])).toEqual([[], [], []]);
+    });
+  });
+
+  describe("a notification", () => {
+    const shown = (opts: { on: boolean; permission?: string }) => {
+      const made: Array<{ title: string; body: string; tag: string; renotify: boolean; click?: () => void }> = [];
+      const opened: string[] = [];
+      class FakeNotification {
+        static permission = opts.permission;
+        constructor(title: string, o: { body: string; tag: string; renotify: boolean }) { made.push({ title, ...o }); }
+        addEventListener(type: string, f: () => void): void { const last = made.at(-1); if (type === "click" && last) last.click = f; }
+        close(): void {}
+      }
+      runInNewContext(`${fnSource("notifyOf")} notifyOf(ROW);`, {
+        ROW: { id: "29", title: "Add export", note: "blocked by a security check" },
+        notifyOn: opts.on,
+        ...(opts.permission === undefined ? {} : { Notification: FakeNotification }),
+        openPanel: (id: string) => opened.push(id),
+        window: { focus: () => {} },
+      });
+      return { made, opened };
+    };
+
+    // renotify beside the tag: a return replaces the last one still listed
+    // for that ticket, and has to alert again rather than swap in silently.
+    it("is one per ticket, saying which and why, tagged by ticket, alerting again on a return", () => {
+      expect(shown({ on: true, permission: "granted" }).made.map(({ title, body, tag, renotify }) => ({ title, body, tag, renotify }))).toEqual([
+        { title: "#29 needs you", body: "Add export — blocked by a security check", tag: "landrace-29", renotify: true },
+      ]);
+    });
+
+    it.each([
+      ["the bell is off", { on: false, permission: "granted" }],
+      ["the browser denied it", { on: true, permission: "denied" }],
+      ["the browser has not been asked", { on: true, permission: "default" }],
+      ["the browser has no notifications", { on: true }],
+    ])("is not shown when %s", (_, opts) => {
+      expect(shown(opts).made).toEqual([]);
+    });
+
+    it("opens the ticket's panel when clicked", () => {
+      const { made, opened } = shown({ on: true, permission: "granted" });
+      made[0]?.click?.();
+      expect(opened).toEqual(["29"]);
+    });
+  });
+
+  describe("what the bell says", () => {
+    const state = (on: boolean, permission: string) =>
+      runInNewContext(`${fnSource("bellState")} bellState(ON, PERMISSION)`, { ON: on, PERMISSION: permission }) as {
+        icon: string; pressed: string; label: string;
+      };
+
+    it("says so when the browser has blocked notifications, whatever the toggle", () => {
+      for (const on of [true, false]) {
+        expect(state(on, "denied")).toEqual(expect.objectContaining({ icon: "🔕", pressed: "false", label: expect.stringMatching(/blocked/) }));
+      }
+      expect(state(true, "unsupported").label).toMatch(/this browser/);
+    });
+
+    it("is pressed only when on and allowed", () => {
+      expect([state(true, "granted").pressed, state(false, "granted").pressed, state(true, "default").pressed])
+        .toEqual(["true", "false", "false"]);
+    });
+
+    // Toggled from what it shows: on, but with the browser's prompt dismissed,
+    // it reads as off — and a click on it must turn it on and ask again, not
+    // quietly turn off a bell that already looked off.
+    it("turns on when clicked while it reads off, whatever was stored", () => {
+      const next = (on: boolean, permission: string) =>
+        runInNewContext(`${fnSource("bellState")}${fnSource("clickedBell")} clickedBell(ON, PERMISSION)`, { ON: on, PERMISSION: permission });
+      expect([next(true, "default"), next(false, "granted"), next(true, "granted")]).toEqual([true, true, false]);
+    });
+
+    it("is toggled through clickedBell", () => {
+      expect(APP_JS).toContain("notifyOn = clickedBell(notifyOn, permissionNow());");
+    });
   });
 });

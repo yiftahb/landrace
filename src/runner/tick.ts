@@ -175,6 +175,8 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
           // joined to the loop's, so Ctrl-C still stops every one.
           const own = new AbortController();
           opts.running?.set(ticket, own);
+          // However the converge ends: the board waits on this before a list
+          // may vouch for the labels a step it ran was about to change.
           try {
             return await converge(ticket, {
               ...deps,
@@ -183,6 +185,7 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
             });
           } finally {
             if (opts.running?.get(ticket) === own) opts.running.delete(ticket);
+            deps.log("lock.released", { ticket, kind: "tick" });
           }
         },
         opts.lock,
