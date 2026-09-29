@@ -67,7 +67,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   };
   // An executor factory's own two members, beyond what every hook gets: see
   // the same construction in `buildRuntime`.
-  const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact };
+  const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact, steps };
 
   // Before anything else the hooks might do, including the very next check
   // below: a permission problem has to stop this process before it proves the

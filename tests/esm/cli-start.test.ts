@@ -317,6 +317,22 @@ describe("buildRuntime", () => {
     await expect(buildRuntime(dir, { readOnly: true })).resolves.toBeDefined();
   });
 
+  // `validate` names it, and `start` refuses it before the first step runs.
+  it("refuses a step whose effort the executor does not take", async () => {
+    const { dir } = await fixture();
+    await mkdir(join(dir, "steps"), { recursive: true });
+    await writeFile(join(dir, "steps", "build.md"), [
+      "---", "capabilities: [repo:read]", "effort: extreme", "output:", "  discriminator: kind", "  shapes: { done: {} }",
+      "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+      "---", "", "build", "",
+    ].join("\n"));
+    await writeFile(join(dir, "workflow.yaml"), WORKFLOW
+      .replace("    terminal: true\n", "    step: steps/build.md\n")
+      .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/steps\/build\.md asks for effort "extreme", which the claude executor does not take/);
+  });
+
   /**
    * §11.8 in the daemon, not only in the CLI.
    *

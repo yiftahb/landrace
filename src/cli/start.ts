@@ -440,11 +440,12 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     // engine's EventName union.
     log: (event, data) => log(event as EventName, data),
   };
-  // An executor factory's own two members, beyond what every hook gets: where
-  // its repository is, and a way to keep what its setup turns up out of every
-  // log line from here on — an MCP server's env, say, which the configuration
-  // never named and `redactionValues` above never saw.
-  const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact };
+  // An executor factory's own members, beyond what every hook gets: where its
+  // repository is, a way to keep what its setup turns up out of every log
+  // line from here on — an MCP server's env, say, which the configuration
+  // never named and `redactionValues` above never saw — and the steps, whose
+  // efforts it refuses now rather than at each step's first run.
+  const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps };
 
   /*
    * §11.8, the one rule that cannot be answered until the hooks are loaded —
