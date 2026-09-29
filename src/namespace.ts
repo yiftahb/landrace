@@ -1191,6 +1191,8 @@ export interface ExternalPull {
   ticket: string;
   merged: boolean;
   openThreads: number;
+  /** Of `openThreads`, how many await a fix: every one whose last word is not the fixer's answer. */
+  awaitingFix: number;
   closed: Closed;
   /** The branch it was opened from, when it says: what `pull.open` looks a pull request up by. */
   branch?: string;
@@ -1214,8 +1216,11 @@ export interface ExternalState {
   post: PostHook;
   source: Source;
   operator: Operator;
-  /** Open a pull request implementing `ticket`; returns its node id, `pr-<n>`, numbered from 1 in creation order. */
-  openPull(ticket: string, pr?: { merged?: boolean; openThreads?: number; closed?: Closed; branch?: string }): string;
+  /**
+   * Open a pull request implementing `ticket`; returns its node id, `pr-<n>`, numbered from 1 in creation order.
+   * `awaitingFix` defaults to `openThreads`: a thread nobody has answered awaits a fix.
+   */
+  openPull(ticket: string, pr?: { merged?: boolean; openThreads?: number; awaitingFix?: number; closed?: Closed; branch?: string }): string;
   /** Every branch a `branch.push` was applied for, in order: there is no repository here to push to. */
   pushes(): string[];
   /** The live record behind a pull request node, for a test to merge, close or comment on. */

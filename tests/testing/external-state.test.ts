@@ -34,8 +34,9 @@ describe("the in-memory tracker's graph", () => {
     expect(g.nodes.find((n) => n.id === first)).toMatchObject({ closed: "done", state: { merged: true } });
     // A merged pull request has nothing left to fix: zero, whatever threads it kept.
     s.pull(first).openThreads = 3;
+    s.pull(first).awaitingFix = 3;
     const again = await s.source.read("1", ctx);
-    expect(again.nodes.find((n) => n.id === first)?.state).toMatchObject({ openThreads: 0 });
+    expect(again.nodes.find((n) => n.id === first)?.state).toMatchObject({ openThreads: 0, awaitingFix: 0 });
     expect(() => s.pull("pr-9")).toThrow(/no such pull request/);
     expect(() => s.openPull("9")).toThrow(/no such ticket/);
   });
@@ -186,6 +187,32 @@ describe("publishing in the in-memory tracker", () => {
 
     expect(state.post.satisfied(await read(state), { type: "pull.open", branch: "landrace/1" })).toBe(true);
     expect(state.post.satisfied(await read(state), { type: "pull.open", branch: "other/1" })).toBe(false);
+  });
+
+  /*
+   * Threads are counts here, and a review moves them the way the GitHub hook's
+   * replies do: a finding opens one awaiting a fix, a `fix` reply hands one to
+   * the person, and any other reply hands one back.
+   */
+  it("moves the awaiting-fix count with each finding and each reply, once per round", async () => {
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const pr = state.openPull("1", { branch: "landrace/1", openThreads: 1 });
+    expect(state.pull(pr).awaitingFix).toBe(1);
+    const at = (marker: string, output: object) => ({ type: "pull.review", branch: "landrace/1", marker, output });
+
+    await apply(state, at("review:1", { findings: [{ file: "a.ts", line: 1, body: "x" }] }));
+    expect(state.pull(pr)).toMatchObject({ openThreads: 2, awaitingFix: 2 });
+
+    const fix = at("fix:1", { replies: [{ thread: "T1", body: "Fixed." }, { thread: "T2", body: "Not changed, because…" }], resolved: ["T1"] });
+    await apply(state, fix);
+    await apply(state, fix);
+    expect(state.pull(pr)).toMatchObject({ openThreads: 2, awaitingFix: 0 });
+
+    await apply(state, at("review:2", { replies: [{ thread: "T1", body: "Still wrong." }] }));
+    expect(state.pull(pr)).toMatchObject({ openThreads: 2, awaitingFix: 1 });
+
+    const graph = await state.source.read("1", ctx);
+    expect(graph.nodes.find((n) => n.id === pr)?.state).toMatchObject({ openThreads: 2, awaitingFix: 1 });
   });
 
   it("refuses a publishing effect that names no branch", async () => {
