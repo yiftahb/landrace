@@ -65,7 +65,7 @@ export function eligibilityOf(workflow: Workflow, node: Node): Eligibility {
  * was killed by hand.
  *
  * A ticket missing from the list is left running: a source may drop what it
- * cannot map (the GitHub hook does), and absent is not the same as stopped.
+ * cannot map (the shipped tracker hook does), and absent is not the same as stopped.
  * The stopped converge halts and writes nothing (see converge), so the round
  * is still owed if the ticket comes back.
  */
