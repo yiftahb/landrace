@@ -265,7 +265,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const every = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
-      { stage: "code-review", when: { "run.counters.code-review": { $lt: 5 }, "rel.implements.in.total": { $gt: 0 } } },
+      { stage: "code-review", when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "fix-review", when: { "run.counters.fix-review": { $lt: 20 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "retro", when: {
         "run.counters.retro": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 }, "rel.implements.in.not.merged": { $gt: 0 },
@@ -284,7 +284,11 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(at("code-review"))).toBe("code-review");
     expect(await destination(at("fix-review"))).toBe("fix-review");
     expect(await destination(at("triage"))).toBe("triage");
-    expect(await destination(at("code-review", { "code-review": 5 }))).toMatch(/^wait: .*only while/);
+    // #33: past the loop's own five reviews, and the one a later build
+    // round adds, two Retries are left — #29 was refused one after its fifth.
+    expect(await destination(at("code-review", { "code-review": 5 }))).toBe("code-review");
+    expect(await destination(at("code-review", { "code-review": 7 }))).toBe("code-review");
+    expect(await destination(at("code-review", { "code-review": 8 }))).toMatch(/^wait: .*only while.*run\.counters\.code-review/);
     // Past the review's five, a fix is still offered: a person's thread
     // needs one, and it is bounded by its own twenty.
     expect(await destination(at("fix-review", { "code-review": 9 }))).toBe("fix-review");
@@ -725,6 +729,16 @@ describe("the shipped review loop routes on whether a thread awaits a fix", () =
     }, { total: 1, merged: 0, awaitingFix: 1, openThreads: 2 });
     expect(await destination(at(1))).toBe("fix-review");
     expect(await destination(at(9))).toBe("fix-review");
+  });
+
+  // #33: "Go to step… fix-review" from the spent review budget fixes, and
+  // the fix is reviewed.
+  it("lets a person send the spent review budget to fix-review, and reviews that fix", async () => {
+    const exhausted = snapshotAt("blocked", {
+      goto: "fix-review", counters: { spec: 1, triage: 1, build: 1, "code-review": 5, "fix-review": 4 },
+    }, { total: 1, merged: 0, awaitingFix: 1 });
+    expect(await destination(exhausted)).toBe("fix-review");
+    expect(await destination(fixed(5, 5))).toBe("code-review");
   });
 
   it("reviews every fix within fix-review's twenty, past the review's five, and blocks on the twentieth", async () => {

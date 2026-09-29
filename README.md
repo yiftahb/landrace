@@ -385,7 +385,7 @@ A person can also send a ticket back to an earlier step. `spec-questions`, `spec
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
 ```
 
-The two halts, `blocked` and `screened`, list more: `code-review`, `fix-review` and `retro` while the ticket has a pull request — `code-review` capped at five rounds, `fix-review` capped on its own counter at twenty, `retro` at three and only while a pull request is unmerged — and `triage` while a person has written on the ticket, capped at twenty. That is because a halt's Retry is a goto to the step whose failure put the ticket there, and any stepped stage can fail, not only `spec` or `build`.
+The two halts, `blocked` and `screened`, list more: `code-review`, `fix-review` and `retro` while the ticket has a pull request — `code-review` capped at eight rounds — past the loop's own five and the review a later build round adds through `publish`, so a Retry is never refused after the fifth — `fix-review` capped on its own counter at twenty, `retro` at three and only while a pull request is unmerged — and `triage` while a person has written on the ticket, capped at twenty. That is because a halt's Retry is a goto to the step whose failure put the ticket there, and any stepped stage can fail, not only `spec` or `build`.
 
 `build` lists one target: itself, while it has run fewer than three rounds. `publish` pushes before it moves the ticket, so a push that fails — nothing was committed — leaves the ticket at `build` with its round settled, and publish retries the push on every tick. "Go to step… build" runs another round instead.
 
