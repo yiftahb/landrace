@@ -109,8 +109,9 @@ export class Codex extends BaseExecutor {
     if (deny.length) {
       const defaulted = deny.join() === DEFAULT_DENY.join() ? " — the list it has when it is not written —" : "";
       problems.push(
-        `agent.sandbox.deny names ${deny.join(", ")}${defaulted} and codex cannot keep a write step's commands from reading ` +
-        "a path under your home. Write deny: [] to run write steps that can read them",
+        `agent.sandbox.deny names ${deny.join(", ")}${defaulted} and codex cannot keep a command from reading a path ` +
+        "under your home: every step and conversation turn, read-only ones too, has a shell that can. " +
+        "Write deny: [] to run them all able to read those paths",
       );
     }
     return problems;

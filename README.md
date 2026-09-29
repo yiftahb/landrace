@@ -570,7 +570,7 @@ Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `confi
 What codex cannot do is refused rather than run without. At startup, and by `validate`:
 
 - **`agent.sandbox.hosts`.** Its sandbox has the network on or off, with no list of hosts, so list none: a write step then has no network, and cannot install or push.
-- **`agent.sandbox.deny`.** It cannot keep a command from reading a path under your home. The default list applies when `deny` is not written, so write `deny: []` to accept that a write step's commands can read those paths.
+- **`agent.sandbox.deny`.** It cannot keep a command from reading a path under your home, and every step and conversation turn — read-only ones too, whose answer is posted to the ticket — has a shell to run one. The default list applies when `deny` is not written, so write `deny: []` to accept that every step and turn can read those paths.
 - **An effort outside `none`, `low`, `medium`, `high`, `xhigh`.** The shipped `spec` step asks for `max`, and `validate` names it.
 - **`agent.plugins`**, which is Claude's.
 

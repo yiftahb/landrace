@@ -322,7 +322,7 @@ describe("the Codex integration", () => {
     // list is refused too, until the operator writes `deny: []`.
     it("refuses a deny list it cannot keep, the default one included, and takes deny: []", async () => {
       await expect(new Codex().create(ctxFor({ adapter: "codex" })))
-        .rejects.toThrow(/agent\.sandbox\.deny[\s\S]*~\/\.ssh[\s\S]*deny: \[\]/);
+        .rejects.toThrow(/agent\.sandbox\.deny[\s\S]*~\/\.ssh[\s\S]*every step and conversation turn, read-only ones too[\s\S]*deny: \[\]/);
       await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }))).resolves.toBeDefined();
     });
 
