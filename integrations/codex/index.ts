@@ -14,7 +14,7 @@
  * agent's own session.
  */
 import { existsSync } from "node:fs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
@@ -116,23 +116,34 @@ export class Codex extends BaseExecutor {
     return problems;
   }
 
+  /**
+   * Where a screener given nowhere to run works: a directory of its own, made
+   * once, that only this user can write. Not the temp directory itself — on
+   * Linux that is /tmp, where anyone can leave an AGENTS.md telling the
+   * screener to answer ok, with the nonce its own prompt carries.
+   */
+  private screenRoot: string | undefined;
+
   /** Where the agent works: the run's own directory, or — for a screener given none — no project at all. */
   private rootOf({ cwd, tier }: RunPlan): string {
-    return cwd ?? (tier === "screen" ? tmpdir() : process.cwd());
+    return cwd ?? (tier === "screen" && this.screenRoot !== undefined ? this.screenRoot : process.cwd());
   }
 
   /**
-   * A project's own `.codex/config.toml` loads beside the run, from where it
-   * works up to the repository root — and a step could commit one to its
-   * branch: servers of its own, a looser sandbox. Refused, never loaded.
+   * A project's own `.codex/config.toml` and `.codex/hooks.json` load beside
+   * the run, from where it works up to the repository root — and a step could
+   * commit either to its branch: servers of its own, a looser sandbox, a
+   * SessionStart hook on the branch's next step. Refused, never loaded.
    */
   protected async prepare(plan: RunPlan): Promise<void> {
-    const own = join(this.home, "config.toml");
+    if (plan.tier === "screen" && plan.cwd === undefined) this.screenRoot ??= await mkdtemp(join(tmpdir(), "landrace-screen-"));
+    const own = [join(this.home, "config.toml"), join(this.home, "hooks.json")];
     for (let at = this.rootOf(plan); ; at = dirname(at)) {
-      const file = join(at, ".codex", "config.toml");
-      if (file !== own && existsSync(file)) {
-        throw new Error(`refused to run codex where ${file} would load beside it: a project's own codex settings can add ` +
-          "servers or loosen the sandbox, and a step could commit them. Remove it from the branch");
+      for (const file of [join(at, ".codex", "config.toml"), join(at, ".codex", "hooks.json")]) {
+        if (!own.includes(file) && existsSync(file)) {
+          throw new Error(`refused to run codex where ${file} would load beside it: a project's own codex settings can add ` +
+            "servers, hooks or a looser sandbox, and a step could commit them. Remove it from the branch");
+        }
       }
       if (existsSync(join(at, ".git")) || dirname(at) === at) return;
     }
@@ -159,8 +170,9 @@ export class Codex extends BaseExecutor {
     if (model !== undefined) args.push("-m", model);
     if (effort !== undefined) set("model_reasoning_effort", effort);
     for (const [name, server] of Object.entries(servers)) args.push(...serverArgs(name, server, allowed[name] ?? null));
-    // The screener, given nowhere to run, runs nowhere of the operator's: the
-    // checkout it was started in has a `.codex/config.toml` of agsync's.
+    // The screener, given nowhere to run, runs nowhere of the operator's —
+    // the checkout it was started in has a `.codex/config.toml` of agsync's —
+    // but in the directory of its own `prepare` made.
     if (tier === "screen" && cwd === undefined) args.push("-C", this.rootOf(plan));
     // The prompt on stdin: argv is world-readable via `ps`.
     args.push("-");

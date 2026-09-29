@@ -563,7 +563,7 @@ agent:
 |---|---|---|
 | no `repo:write` (read-only) | `read-only` | |
 | `repo:write` | `workspace-write`, with the network off | |
-| the screener | `read-only` | every built-in tool off — the shell, web search, the image viewer, connectors and plugins, the browser, sub-agents, hooks — no server, and run in the temp directory rather than your checkout |
+| the screener | `read-only` | every built-in tool off — the shell, web search, the image viewer, connectors and plugins, the browser, sub-agents, hooks — no server, and run in a directory of its own that only you can write, rather than your checkout |
 
 Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `config.toml` — whose servers include landrace's operator server — and your execpolicy rules do not load; runs with `approval_policy="never"`, since nobody is there to ask; gets `agent.mcp`'s servers per run as `-c mcp_servers.<name>.*`, a listed server's tools as its `enabled_tools`, so nothing is written for a worktree to shadow; takes the prompt on stdin; and has `CODEX_HOME` passed on, nothing else of landrace's environment. The session is `thread.started`'s id, the answer the last `agent_message`, and a `turn.failed` fails the run with codex's own reason.
 
@@ -574,7 +574,7 @@ What codex cannot do is refused rather than run without. At startup, and by `val
 - **An effort outside `none`, `low`, `medium`, `high`, `xhigh`.** The shipped `spec` step asks for `max`, and `validate` names it.
 - **`agent.plugins`**, which is Claude's.
 
-And before a run starts: a project `.codex/config.toml` anywhere from the run's directory up to the repository root — it would load beside the run, and a step could commit one — and a server, variable or header name a `-c` key path cannot carry (one with a `.`).
+And before a run starts: a project `.codex/config.toml` or `.codex/hooks.json` anywhere from the run's directory up to the repository root — either would load beside the run, and a step could commit one — and a server, variable or header name a `-c` key path cannot carry (one with a `.`).
 
 **Pairing.** Codex names every session it starts itself, so none can start under the id landrace gives a pairing. It pairs only by carrying on the agent's own session on the stage: that session's file under `CODEX_HOME/sessions` is copied under the pairing's id, and the person runs `codex resume <that id>`, seeded with the step. Finish forks it with `codex exec fork`. A pairing on a stage the agent has not run yet is refused, saying why — release it, and pair once the agent has run the step.
 

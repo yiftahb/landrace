@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Codex } from "landrace/integrations/codex";
@@ -99,7 +99,20 @@ describe("the Codex integration", () => {
       expect(set.some((s) => s.startsWith("mcp_servers."))).toBe(false);
       expect(set.some((s) => s.startsWith("model_reasoning_effort"))).toBe(false);
       expect(argv[argv.indexOf("-m") + 1]).toBe("gpt-5.1-codex-mini");
-      expect(argv[argv.indexOf("-C") + 1]).toBe(tmpdir());
+    });
+
+    /*
+     * Not the temp directory itself: on Linux that is /tmp, where any local
+     * user can leave an AGENTS.md telling the screener to answer ok — with
+     * the nonce its own prompt carries — or a .codex/config.toml that makes
+     * every screening refuse. A directory of its own, that only this user
+     * can write.
+     */
+    it("screens in a directory of its own that nobody else can write", async () => {
+      const argv = JSON.parse((await run(codex())).text) as string[];
+      const dir = argv[argv.indexOf("-C") + 1] ?? "";
+      expect(dir.startsWith(join(tmpdir(), "landrace-screen-"))).toBe(true);
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
     });
 
     it("puts the model and the effort on a step's command line, the step's own winning", async () => {
@@ -212,6 +225,17 @@ describe("the Codex integration", () => {
       writeFileSync(join(cwd, "fake.json"), JSON.stringify({ mark: true }));
       await expect(run(codex(), { cwd, capabilities: ["repo:read"] })).rejects.toThrow(/\.codex\/config\.toml/);
       expect(existsSync(join(cwd, "spawned"))).toBe(false);
+    });
+
+    // The same threat as config.toml, and Claude met it: a committed hooks
+    // file's SessionStart runs on the branch's next step.
+    it("refuses a run in a checkout carrying a project hooks.json", async () => {
+      const root = await gitRepo();
+      mkdirSync(join(root, ".codex"));
+      writeFileSync(join(root, ".codex", "hooks.json"), "{\"hooks\":{}}\n");
+      writeFileSync(join(root, "fake.json"), JSON.stringify({ mark: true }));
+      await expect(run(codex(), { cwd: root, capabilities: ["repo:read", "repo:write"] })).rejects.toThrow(/\.codex\/hooks\.json/);
+      expect(existsSync(join(root, "spawned"))).toBe(false);
     });
 
     it("does not count the operator's own codex home as a project's", async () => {
