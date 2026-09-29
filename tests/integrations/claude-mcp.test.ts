@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { loadConfig } from "#config/load.js";
-import { mcpRedactionValues, readClaudeSettings, resolveStepServers } from "#landrace/hooks/claude.js";
+import { mcpRedactionValues, readClaudeSettings, resolveStepServers } from "landrace/integrations/claude";
 import { gitRepo, plainDir, removeRepos } from "#tests/support/repo.js";
 
 afterAll(removeRepos);

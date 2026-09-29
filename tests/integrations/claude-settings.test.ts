@@ -1,4 +1,5 @@
-import { claude, readClaudeSettings } from "#landrace/hooks/claude.js";
+import { claude } from "#landrace/hooks/claude.js";
+import { readClaudeSettings } from "landrace/integrations/claude";
 import type { Executor, ExecutorContext, ExecutorFactory } from "#namespace.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

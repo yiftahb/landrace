@@ -5,12 +5,19 @@ export default defineConfig({
   // `testing` is what a workflow author imports to drive their own workflow
   // without a tracker: package.json has declared "./testing" since before
   // anything built it, so it resolved to nothing, exactly as "./hooks" did.
+  // `kit` is what an integration builds on, and `integrations/<vendor>` the
+  // ones landrace ships. An integration imports `landrace/kit` and
+  // `landrace/hooks` as anyone's would, so both stay imports in its bundle,
+  // resolved by package self-reference, rather than a second copy inlined.
   entry: {
     index: "src/index.ts",
     cli: "src/cli/index.ts",
     hooks: "src/hooks/index.ts",
+    kit: "src/kit/executor.ts",
     testing: "src/testing/index.ts",
+    "integrations/claude": "integrations/claude/index.ts",
   },
+  external: [/^landrace\//],
   format: ["esm"],
   target: "node22",
   outDir: "dist",

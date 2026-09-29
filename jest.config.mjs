@@ -43,6 +43,18 @@ const paths = {
   ...Object.fromEntries(Object.entries(imports).map(([specifier, target]) => [specifier, [target]])),
 };
 
+// `landrace/hooks`, `landrace/kit` and `landrace/integrations/<vendor>`, which
+// .landrace/hooks/*.ts and the integrations import the way a consumer's do.
+// Node resolves them to dist/ by package self-reference; here they have to
+// reach the source, so tests never depend on a build having run. Derived from
+// tsconfig's `paths`, which says the same for the typechecker.
+const selfReferences = Object.fromEntries(
+  Object.entries(config.compilerOptions.paths).map(([specifier, [target]]) => {
+    const [head = "", tail = ""] = specifier.split("*");
+    return [`^${escape(head)}${specifier.includes("*") ? "(.*)" : ""}${escape(tail)}$`, target.replace("./", "<rootDir>/").replace("*", "$1")];
+  }),
+);
+
 /*
  * Whether this process may bind 127.0.0.1. A write step's OS sandbox forbids
  * it, deliberately: with loopback open an agent could reach the board's write
@@ -74,10 +86,7 @@ const jestConfig = {
   moduleNameMapper: {
     "^(\\.{1,2}/.*)\\.js$": "$1",
     ...subpathImports,
-    // .landrace/hooks/*.ts import `landrace/hooks` the way a consumer's do.
-    // Node resolves that to dist/ by package self-reference; here it has to
-    // reach the source, so tests never depend on a build having run.
-    "^landrace/hooks$": "<rootDir>/src/hooks/index.ts",
+    ...selfReferences,
   },
   transform: { "^.+\\.ts$": ["ts-jest", { useESM: true, tsconfig: { paths } }] },
   // tests/esm/** needs jest's ESM runtime, which is a process-wide node flag,

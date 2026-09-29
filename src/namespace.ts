@@ -691,6 +691,12 @@ export type RuntimeContext = Omit<HookContext, "ticket" | "snapshot">;
 export type ExecutorContext = RuntimeContext & {
   dir: string;
   redact(values: readonly string[]): void;
+  /**
+   * The workflow's steps, by path, when the runtime has loaded them — so a
+   * factory can refuse at startup what a step asks of it and it cannot do,
+   * an effort it has no level for, rather than at that step's first run.
+   */
+  steps?: ReadonlyMap<string, Step>;
 };
 
 /**
@@ -703,6 +709,137 @@ export type ExecutorContext = RuntimeContext & {
 export interface ExecutorFactory {
   id: string;
   create(ctx: ExecutorContext): Promise<Pick<Executor, "run" | "handoff">>;
+}
+
+/* ------------------------------------------------------------------- kit -- */
+
+/**
+ * One MCP server as `.mcp.json` defines it, passed on whole: only what the
+ * kit's checks read is named.
+ */
+export interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+/** One `agent.mcp` entry: a server's bare name, or its name and the only tools a step may call on it. */
+export type McpEntry = string | { name: string; tools: string[] };
+
+/** `agent.mcp`'s servers, looked up in `.mcp.json`, or why they cannot be. */
+export interface ResolvedMcp {
+  servers: Record<string, McpServerConfig>;
+  tools: Record<string, string[]>;
+  problems: Problem[];
+}
+
+/** What a write step's commands may reach: the only hosts on the network, and the paths under HOME they may not read. */
+export interface SandboxSettings {
+  hosts: string[];
+  deny: string[];
+}
+
+/** `agent:` as the kit and one integration read it: the kit's keys, `mcp` not yet resolved, beside the integration's own `E`. */
+export type AgentSettings<E = unknown> = {
+  model?: string;
+  effort?: string;
+  mcp: McpEntry[];
+  sandbox: SandboxSettings;
+} & E;
+
+/** An executor's own event log, as a hook is handed it. */
+export type HookLog = (event: string, data?: Record<string, unknown>) => void;
+
+/**
+ * What a kit integration's executor is built from: the `agent:` keys every
+ * integration reads, with `agent.mcp` already resolved to the servers
+ * `.mcp.json` defines. An integration's own keys ride beside these.
+ */
+export interface KitSettings {
+  /** The operator's model for every run that names none. */
+  model?: string | undefined;
+  /** The operator's effort for every step and turn; the screener never gets one. */
+  effort?: string | undefined;
+  /** The servers a declared run may use, by name, as `.mcp.json` defines them. */
+  servers: Readonly<Record<string, McpServerConfig>>;
+  /** Per server, the only tools a run may call on it; a server absent here allows every tool it has. */
+  tools: Readonly<Record<string, readonly string[]>>;
+  sandbox: SandboxSettings;
+  log?: HookLog | undefined;
+  /** A backstop only: the engine gives every run a limit. */
+  timeoutMs?: number | undefined;
+}
+
+/**
+ * What a run may do, from what it declared. `screen` declared nothing, and is
+ * the screener's: no tool at all. `read` may not change the repository, and
+ * `write` may.
+ */
+export type Tier = "screen" | "read" | "write";
+
+/**
+ * The three ways a person can pair with an integration's agent. `take`: a
+ * session of their own under the id the engine gives, seeded with the step.
+ * `continue`: the agent's own session on the stage, carried on under that id.
+ * `fork`: Finish's closing turn, asked of the person's session without adding
+ * to it. An integration declares the ones it can do, and is refused the rest.
+ */
+export type PairingKind = "take" | "continue" | "fork";
+
+/**
+ * One run, decided and checked by the kit, for an integration to turn into
+ * its command line — and nothing it could still get wrong: every value that
+ * reaches argv is shaped, the model and effort are chosen, the servers are
+ * the ones this run may load.
+ */
+export interface RunPlan<E = unknown> {
+  tier: Tier;
+  model?: string;
+  effort?: string;
+  resume?: string;
+  /** Continue `resume` as a session of its own, leaving it untouched. */
+  fork: boolean;
+  /** Where the run happens, resolved; absent, the engine's own directory. */
+  cwd?: string;
+  /** The servers the run loads, by name: the allowlisted ones for a step or turn, then the engine's bound one. */
+  servers: Record<string, McpServerConfig>;
+  /** Per server in `servers`, the tools the run may call on it, or null for every tool it has. */
+  allowed: Record<string, readonly string[] | null>;
+  sandbox: SandboxSettings;
+  /** The integration's own settings. */
+  extras: E;
+}
+
+/** A pairing's command, decided and checked by the kit, for an integration to write out. */
+export interface HandoffPlan {
+  /** `take` when there is no agent session to continue, else `continue`. */
+  kind: Exclude<PairingKind, "fork">;
+  /** Resolved. */
+  cwd: string;
+  session: string;
+  promptFile: string;
+  resume?: string;
+  server?: RunServer;
+}
+
+/**
+ * What one line of an agent's output said, as the integration reads it. Every
+ * field is optional: most lines say nothing the run needs.
+ */
+export interface EventReading {
+  /** For the ticket panel. */
+  activity?: Array<Pick<AgentActivity, "kind" | "text">>;
+  /** The run's session, as the agent names it. Checked by the kit: a string, or the run is refused. */
+  session?: unknown;
+  /** The run's answer: the last one read is the run's text. */
+  text?: string;
+  /** The agent said the run is over, and answered. */
+  done?: boolean;
+  /** The agent said the run failed, and why: the run is refused with this. */
+  error?: string;
+  /** Kept out of the log — a tool's result is the files the agent read. */
+  quiet?: boolean;
 }
 
 /**

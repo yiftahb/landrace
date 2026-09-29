@@ -5,7 +5,7 @@ import type { Snapshot } from "#namespace.js";
 import { renderPrompt } from "#runner/step.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { loadConfig } from "#config/load.js";
-import { readClaudeSettings } from "#landrace/hooks/claude.js";
+import { readClaudeSettings } from "landrace/integrations/claude";
 
 /**
  * `tests/esm/cli-validate.test.ts` already proves the shipped workflow
