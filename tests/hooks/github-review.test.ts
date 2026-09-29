@@ -251,6 +251,27 @@ describe("the reviewer's briefing", () => {
     expect(threads).not.toMatch(/\[thread T2\][^\n]*raised by the reviewer/);
   });
 
+  /*
+   * A thread is a conversation now, so the briefing says whose turn each is
+   * and what was said last — a person's reply is the thing to act on — and
+   * lists the ones awaiting a fix first, since only those are this round's.
+   */
+  it("says whose turn each thread is, shows its last reply, and lists the ones awaiting a fix first", async () => {
+    const fixed = `Fixed in \`abc123\`.${renderMarker({ stage: "fix-review", kind: "fix", round: 1, marker: "fix:fix-review:1:T1" })}`;
+    const gh = withPull([
+      { id: "T1", isResolved: false, body: "answered already", author: "alice", replies: [{ author: "yiftahb", body: fixed }] },
+      { id: "T2", isResolved: false, body: "argued", author: "alice", replies: [{ author: "yiftahb", body: fixed }, { author: "alice", body: "no, the other bound" }] },
+    ]);
+    const { threads = "" } = await brief(gh);
+
+    expect(threads.indexOf("[thread T2]")).toBeLessThan(threads.indexOf("[thread T1]"));
+    expect(threads).toMatch(/\[thread T2\][^\n]*awaiting a fix/);
+    expect(threads).toMatch(/\[thread T1\][^\n]*answered/);
+    expect(threads).toContain("Last reply, from @alice: no, the other bound");
+    expect(threads).toContain("Last reply, from Landrace: Fixed in `abc123`.");
+    expect(threads).not.toContain("landrace {");
+  });
+
   it("shows the pull request's diff, file by file", async () => {
     const gh = withPull();
     const { diff = "" } = await brief(gh);

@@ -2142,11 +2142,10 @@ const BRIEF_HISTORY_HALF_CHARS = 14_000;
  * briefing runs once per invocation and feeds a prompt.
  *
  * `comments(first: 1)` is the finding itself — the thread's opening comment.
- * The replies under it are the argument about the finding, including the
- * fixer's own from last round, and a fixer re-reading its own reply is how a
- * round loops without moving. So the open list shows the opening comment
- * alone; `lastReply` is the history's, which shows how the argument ended,
- * and `totalCount` says whether there was one at all.
+ * `lastReply` is the thread's last word, which says whose turn it is (see
+ * `answered`): the open list shows it beside the finding, since a person's
+ * reply is what the fixer acts on, and the history shows how the argument
+ * ended. `totalCount` says whether there was a reply at all.
  */
 const BRIEF_QUERY = `
 query LandraceBrief($owner: String!, $name: String!, $number: Int!, $cursor: String) {
@@ -2234,47 +2233,48 @@ async function briefTicket(gh: Client, repo: string, ticket: string, snapshot: S
   const read = new Map<number, BriefThread[]>();
   for (const pull of pulls) read.set(pull.number, await threadsOn(gh, repo, pull.number));
   const open = pulls.filter((p) => p.state === "OPEN");
+  const bot = await gh.botLogin();
   return {
-    threads: openThreads(open, read),
-    history: historyOf(commentsOf(snapshot), pulls, read, await gh.botLogin()),
+    threads: openThreads(open, read, bot),
+    history: historyOf(commentsOf(snapshot), pulls, read, bot),
     diff: await diffOf(gh, open),
   };
 }
 
 /**
  * The open review threads across every open pull request on the ticket,
- * rendered for a prompt under one `## PR #N` heading each.
+ * rendered for a prompt under one `## PR #N` heading each: whose turn each
+ * is, and its last reply when it has one. The ones awaiting a fix come
+ * first, so the cut falls on threads already answered.
  */
-function openThreads(open: PullNode[], read: Map<number, BriefThread[]>): string {
+function openThreads(open: PullNode[], read: Map<number, BriefThread[]>, bot: string): string {
   if (open.length === 0) return "There is no pull request open on this ticket, so there is nothing to address.";
 
-  let listed = 0;
-  let more = 0;
-  const sections: string[] = [];
+  const unresolved = open.flatMap((pull) => (read.get(pull.number) ?? [])
+    .filter((thread) => !thread.isResolved)
+    .map((thread) => ({ pull: pull.number, thread, waiting: !answered(thread.lastReply.nodes[0], bot) })));
+  if (unresolved.length === 0) return "No review thread on the ticket's pull requests is open. Nothing here needs addressing.";
+  // Stable, so each group keeps GitHub's order.
+  unresolved.sort((a, b) => Number(b.waiting) - Number(a.waiting));
+  const shown = unresolved.slice(0, BRIEF_THREADS);
+  const more = unresolved.length - shown.length;
+  const text = (body: string | null | undefined): string => cut(stripMarker(body ?? "").trim(), BRIEF_BODY_CHARS);
 
-  for (const pull of open) {
-    const shown: BriefThread[] = [];
-    for (const thread of read.get(pull.number) ?? []) {
-      if (thread.isResolved) continue;
-      if (listed < BRIEF_THREADS) {
-        shown.push(thread);
-        listed++;
-      } else {
-        more++;
-      }
-    }
-    if (shown.length > 0) {
-      sections.push(`## PR #${pull.number}\n\n${shown.map((thread, i) => {
-        const opening = thread.comments.nodes[0]?.body ?? "";
-        // The id is what a reviewer lists to resolve a thread, and only its
-        // own may be: ours by the finding marker pull.review stamped.
-        const ours = parseMarker(opening)?.kind === FINDING_KIND ? "(raised by the reviewer) " : "";
-        return `${i + 1}. [thread ${thread.id}] ${where(thread)}${ours}${cut(stripMarker(opening).trim(), BRIEF_BODY_CHARS)}`;
-      }).join("\n\n")}`);
-    }
-  }
-
-  if (listed === 0) return "No review thread on the ticket's pull requests is open. Nothing here needs addressing.";
+  const sections = open.flatMap((pull) => {
+    const here = shown.filter((s) => s.pull === pull.number);
+    return here.length === 0 ? [] : [`## PR #${pull.number}\n\n${here.map(({ thread, waiting }, i) => {
+      const opening = thread.comments.nodes[0]?.body ?? "";
+      // The id is what a reviewer lists to resolve a thread, and only its
+      // own may be: ours by the finding marker pull.review stamped.
+      const ours = parseMarker(opening)?.kind === FINDING_KIND ? "(raised by the reviewer) " : "";
+      const turn = waiting ? "[awaiting a fix] " : "[answered by the fixer, awaiting the person] ";
+      const last = thread.lastReply.nodes[0];
+      const reply = thread.comments.totalCount > 1 && last
+        ? `\n   Last reply, from ${last.author && sameLogin(last.author.login, bot) ? "Landrace" : `@${last.author?.login ?? "ghost"}`}: ${text(last.body)}`
+        : "";
+      return `${i + 1}. [thread ${thread.id}] ${turn}${where(thread)}${ours}${text(opening)}${reply}`;
+    }).join("\n\n")}`];
+  });
 
   // Said out loud rather than left implicit: an agent shown twenty of fifty
   // findings and told nothing would report the pull request addressed.
