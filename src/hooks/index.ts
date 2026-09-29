@@ -33,6 +33,8 @@ export type {
   Marker,
   NewTicket,
   Node,
+  Notifier,
+  NotifyEvent,
   Operator,
   Origin,
   PostHook,

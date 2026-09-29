@@ -10,6 +10,7 @@ import type {
   Executor,
   ExecutorFactory,
   HookModule,
+  Notifier,
   Operator,
   PostHook,
   PreHook,
@@ -38,6 +39,8 @@ export function buildRegistry(modules: HookModule[]): Registry {
   const postIds = new Map<string, Claim>();
   const executorIds = new Map<string, Claim>();
   const preflightIds = new Map<string, Claim>();
+  const notifiers = new Map<string, Notifier>();
+  const notifierIds = new Map<string, Claim>();
   let source: { hook: Source; claim: Claim } | null = null;
   let operator: { hook: Operator; claim: Claim } | null = null;
 
@@ -116,6 +119,12 @@ export function buildRegistry(modules: HookModule[]): Registry {
           preflights.push(hook);
           break;
         }
+        case "notifier": {
+          const hook = value as Notifier;
+          claimed(notifierIds, "notifiers", { id: hook.id, from: module.specifier });
+          notifiers.set(hook.id, hook);
+          break;
+        }
         // A module is free to export helpers, constants and types.
         case null:
           break;
@@ -128,7 +137,9 @@ export function buildRegistry(modules: HookModule[]): Registry {
   // from "the first effect that happens to hit it" to load time.
   createDispatcher(post);
 
-  return { preflights, pre, post, artifacts, source: source?.hook ?? null, operator: operator?.hook ?? null, executors };
+  return {
+    preflights, pre, post, artifacts, source: source?.hook ?? null, operator: operator?.hook ?? null, executors, notifiers,
+  };
 }
 
 /**

@@ -825,6 +825,31 @@ export interface Operator {
 }
 
 /**
+ * What a notifier is told when a ticket has come to rest waiting on a person.
+ * No kind beyond `event`: the stage and why say which stop it is. `why` is the
+ * board's own note for the ticket, and `board` the page's URL when one runs.
+ */
+export interface NotifyEvent {
+  event: "needs-you";
+  ticket: string;
+  title: string;
+  link: string;
+  stage: string | null;
+  why: string;
+  board: string | null;
+}
+
+/**
+ * Tells a person somewhere else — a chat, a pager. Fire-and-forget: a send
+ * that fails is logged and nothing else, so a notifier can never stop a
+ * ticket, and nothing about what was sent is kept.
+ */
+export interface Notifier {
+  id: string;
+  send(event: NotifyEvent, ctx: RuntimeContext): Promise<void>;
+}
+
+/**
  * Inferred from the loader's own vocabulary rather than written out again: a
  * kind the loader can classify and a kind a define* helper can stamp must be
  * the same list, and two spellings of it drift in one direction only.
@@ -860,6 +885,8 @@ export interface Registry {
   /** Optional. With none loaded, the MCP create and update tools say so rather than crashing or silently doing nothing. */
   operator: Operator | null;
   executors: Map<string, Executor | ExecutorFactory>;
+  /** By id: `notify.via` names them. */
+  notifiers: Map<string, Notifier>;
 }
 
 /** One imported module: what the workflow called it, and what it exported. */
@@ -897,7 +924,8 @@ export type EventName =
   | "lock.acquired" | "lock.denied" | "lock.stolen"
   | "screen.passed" | "screen.blocked"
   | "display.failed"
-  | "wake.failed";
+  | "wake.failed"
+  | "notify.sent" | "notify.failed";
 
 export interface LandraceEvent {
   name: EventName;
@@ -1045,6 +1073,12 @@ export interface ConvergeDeps {
   childServer?: ServerCommand;
   /** Where a step's activity is kept for the ticket panel. Absent, none is. */
   activity?: ActivityLog;
+  /**
+   * Handed the snapshot a ticket came to rest on after a transition. Injected
+   * rather than imported: the rule reads the status rows, which import the
+   * tick, which imports converge.
+   */
+  notify?: (snapshot: Snapshot) => void;
 }
 
 export interface ConvergeResult {

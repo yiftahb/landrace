@@ -187,7 +187,9 @@ describe("buildRuntime", () => {
  * engine names no provider.
  */
 describe("which executor screens", () => {
-  const empty: Registry = { preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map() };
+  const empty: Registry = {
+    preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map(), notifiers: new Map(),
+  };
   const ctx = (): ExecutorContext => ({
     config: runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } }),
     secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: ".", redact: () => {},

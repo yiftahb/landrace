@@ -13,6 +13,7 @@ import type {
   Executor,
   ExecutorFactory,
   HookKind,
+  Notifier,
   Operator,
   PostHook,
   PreHook,
@@ -26,7 +27,7 @@ import type {
  * kind with no helper is a kind nobody can register, which would fail silently
  * at load rather than loudly at build.
  */
-export const HOOK_KINDS = ["pre", "post", "artifact", "source", "operator", "executor", "preflight"] as const;
+export const HOOK_KINDS = ["pre", "post", "artifact", "source", "operator", "executor", "preflight", "notifier"] as const;
 
 /**
  * How the loader tells the kinds apart.
@@ -67,3 +68,4 @@ export function defineExecutor(value: Executor | ExecutorFactory): Executor | Ex
 export const defineSource = (source: Source): Source => brand("source", source);
 export const defineOperator = (operator: Operator): Operator => brand("operator", operator);
 export const definePreflight = (preflight: Preflight): Preflight => brand("preflight", preflight);
+export const defineNotifier = (notifier: Notifier): Notifier => brand("notifier", notifier);

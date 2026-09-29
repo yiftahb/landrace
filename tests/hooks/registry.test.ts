@@ -1,7 +1,11 @@
 import { buildRegistry } from "#hooks/load.js";
 import type { HookModule } from "#namespace.js";
-import { defineArtifactHook, defineExecutor, defineOperator, definePostHook, definePreHook, definePreflight, defineSource } from "#hooks/contracts.js";
+import {
+  defineArtifactHook, defineExecutor, defineNotifier, defineOperator, definePostHook, definePreHook, definePreflight, defineSource,
+} from "#hooks/contracts.js";
 import type { HookContext, Node } from "#namespace.js";
+
+const notifier = (id: string) => defineNotifier({ id, send: async () => {} });
 
 const preflight = (id: string, check: () => Promise<void> = async () => {}) => definePreflight({ id, check });
 
@@ -189,6 +193,14 @@ describe("ambiguity halts, naming both sides", () => {
     expect(() =>
       buildRegistry([module_("hooks/a.ts", { p: preflight("same") }), module_("hooks/b.ts", { p: preflight("same") })]),
     ).toThrow(/two preflights[\s\S]*"same"[\s\S]*hooks\/a\.ts[\s\S]*hooks\/b\.ts/);
+  });
+
+  it("files a notifier under its id, and refuses a second one under the same id, naming both", () => {
+    const slack = notifier("slack");
+    expect(buildRegistry([module_("hooks/a.ts", { slack })]).notifiers.get("slack")).toBe(slack);
+    expect(() =>
+      buildRegistry([module_("hooks/a.ts", { n: notifier("slack") }), module_("hooks/b.ts", { n: notifier("slack") })]),
+    ).toThrow('two notifiers share the id "slack": "hooks/a.ts" and "hooks/b.ts"');
   });
 
   /*
