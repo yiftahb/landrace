@@ -213,23 +213,29 @@ export class Codex extends BaseExecutor {
    * the engine's id — codex names every session it starts itself, so this is
    * the only way one comes to answer to the engine's — and seeded with the
    * step, read by the person's shell. Their own config loads as it always
-   * does, beside the engine's server, their way back to Landrace. Run a
-   * second time, the command resumes the copy it made.
+   * does, beside the engine's server, their way back to Landrace. Once the
+   * person has run it — codex has added to the copy — the command resumes the
+   * copy without seeding it again; asked for again before then, it is the
+   * same seeded command.
    */
   protected async handoffArgv({ session, promptFile, resume, server }: HandoffPlan): Promise<HandoffArg[]> {
     const argv: HandoffArg[] = [this.bin, "resume"];
     if (server) argv.push(...serverArgs(server.name, { command: server.command, args: server.args }, server.tools.length ? server.tools : null));
-    if (await rolloutOf(this.home, session)) return [...argv, session];
 
     const agent = resume === undefined ? undefined : await rolloutOf(this.home, resume);
-    if (resume === undefined || agent === undefined) {
+    const copied = resume === undefined || agent === undefined ? undefined : (await readFile(agent, "utf8")).replaceAll(resume, session);
+    const made = await rolloutOf(this.home, session);
+    if (made !== undefined) {
+      const untouched = copied !== undefined && (await readFile(made, "utf8")) === copied;
+      return untouched ? [...argv, session, { file: promptFile }] : [...argv, session];
+    }
+    if (resume === undefined || agent === undefined || copied === undefined) {
       throw new Error(
         `cannot continue the agent's session ${resume ?? ""}: it is not in ${join(this.home, "sessions")}, and codex cannot ` +
         "start a session under the id Landrace gives it. Release the pairing, and let the agent run the step",
       );
     }
-    const copy = join(dirname(agent), basename(agent).replace(resume, session));
-    await writeFile(copy, (await readFile(agent, "utf8")).replaceAll(resume, session), { flag: "wx", mode: 0o600 });
+    await writeFile(join(dirname(agent), basename(agent).replace(resume, session)), copied, { flag: "wx", mode: 0o600 });
     return [...argv, session, { file: promptFile }];
   }
 }

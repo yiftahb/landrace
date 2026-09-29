@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Codex } from "landrace/integrations/codex";
@@ -290,6 +290,16 @@ describe("the Codex integration", () => {
       });
       const copy = join(home, "sessions", "2026", "09", "29", `rollout-2026-09-29T10-00-00-${ENGINE}.jsonl`);
       expect(readFileSync(copy, "utf8")).toBe(`${JSON.stringify({ type: "session_meta", payload: { id: ENGINE, cwd: "/elsewhere" } })}\n{"type":"event_msg"}\n`);
+    });
+
+    it("keeps the seed when asked again before the person ran it, and drops it once codex added to the copy", async () => {
+      const { home, cwd, promptFile, executor } = setup();
+      rollout(home, AGENT);
+      const seeded = ["codex", "resume", ENGINE, { file: promptFile }];
+      expect((await executor.handoff?.({ cwd, session: ENGINE, promptFile, resume: AGENT }))?.argv).toEqual(seeded);
+      expect((await executor.handoff?.({ cwd, session: ENGINE, promptFile, resume: AGENT }))?.argv).toEqual(seeded);
+      appendFileSync(join(home, "sessions", "2026", "09", "29", `rollout-2026-09-29T10-00-00-${ENGINE}.jsonl`), '{"type":"response_item"}\n');
+      expect((await executor.handoff?.({ cwd, session: ENGINE, promptFile, resume: AGENT }))?.argv).toEqual(["codex", "resume", ENGINE]);
     });
 
     it("resumes the engine's session once it exists — the command run a second time", async () => {
