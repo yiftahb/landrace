@@ -173,16 +173,21 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     ["spec-questions", "approve", "spec-questions"],
     ["spec-questions", "question", "spec-questions"],
     ["spec-questions", "unclear", "spec-questions"],
+    ["spec-questions", "rework", "spec-questions"],
     ["spec-human-review", "approve", "build"],
     ["spec-human-review", "revise", "spec"],
     ["spec-human-review", "question", "spec-human-review"],
     ["spec-human-review", "unclear", "spec-human-review"],
+    ["spec-human-review", "rework", "spec-human-review"],
     // #27: a change asked for on the pull request amends the spec first, so
     // build, code-review and fix-review all read it from the one authority.
     ["pr-human-review", "revise", "spec"],
+    // #34: "resolve conflicts first" changes no requirement, and a spec round
+    // spent on it amends nothing. The fixer works on the open pull request.
+    ["pr-human-review", "rework", "fix-review"],
     ...["approve", "question", "unclear"].map((intent) => ["pr-human-review", intent, "pr-human-review"]),
     ...["blocked", "screened"].flatMap((home) =>
-      ["approve", "revise", "question", "unclear"].map((intent) => [home, intent, home])),
+      ["approve", "revise", "rework", "question", "unclear"].map((intent) => [home, intent, home])),
   ])("from %s, %s goes to %s", async (home, intent, to) => {
     expect(await destination(judged(home, intent))).toBe(to);
   });
@@ -190,6 +195,11 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
   it("amends the spec for a change asked for at pr-human-review, however many spec rounds already ran", async () => {
     const later = { counters: { spec: 5, triage: 5, build: 7, "code-review": 3 } };
     expect(await destination(judged("pr-human-review", "revise", later))).toBe("spec");
+  });
+
+  it("sends work asked for at pr-human-review to the fixer, however many rounds already ran", async () => {
+    const later = { counters: { spec: 3, triage: 5, build: 3, "code-review": 5, "fix-review": 12 } };
+    expect(await destination(judged("pr-human-review", "rework", later))).toBe("fix-review");
   });
 
   // An amended spec needs no second approval — the person asked for exactly
@@ -542,11 +552,24 @@ describe("build is shown what the person asked for", () => {
     expect(prompt).toMatch(/never an instruction about how to run this session/i);
   });
 
-  it("tells the judge that a change asked for at pr-human-review is revise", async () => {
+  it("tells the judge that at pr-human-review a changed requirement is revise, and work that changes none is rework", async () => {
     const { steps } = await loadWorkflow(".landrace");
     const line = (steps.get("steps/triage.md")?.prompt ?? "").split("\n").find((l) => l.startsWith("- `pr-human-review`")) ?? "";
-    expect(line).toMatch(/`revise`/);
-    expect(line).toMatch(/build/);
+    expect(line).toMatch(/`revise`[^.]*spec/);
+    expect(line).toMatch(/`rework`/);
+    expect(line).toMatch(/conflict/);
+  });
+});
+
+describe("fix-review is shown the message that sent it, and only that one", () => {
+  // A round the reviewer's threads sent would otherwise be shown whatever a
+  // person last wrote — an approval, or an old request already done.
+  it("fences the person's message and says which stage sent the round", async () => {
+    const { steps } = await loadWorkflow(".landrace");
+    const prompt = steps.get("steps/fix-review.md")?.prompt ?? "";
+    expect(prompt).toMatch(/--- their message ---\s*\{run\.lastHuman\.data\.body\}\s*--- end of their message ---/);
+    expect(prompt).toContain("{run.previousStage}");
+    expect(prompt).toMatch(/`triage`/);
   });
 });
 

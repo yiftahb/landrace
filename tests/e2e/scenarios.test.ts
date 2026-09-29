@@ -619,6 +619,9 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     for (const fix of fixes) {
       expect(fix.prompt).toContain("src/x.ts:12 — this leaks a file handle");
       expect(fix.prompt).toContain("off by one");
+      // The reviewer sent these, not a reply: the prompt says so, and the
+      // person's last message ("looks right, go ahead") is not a request.
+      expect(fix.prompt).toContain("This round was sent here from: code-review");
     }
   });
 
@@ -975,6 +978,24 @@ describe("sending a ticket back to a step", () => {
     // A second spec round is a correction, so the retro runs before the person sees it again.
     expect(again.trail).toEqual(["triage", "build", "publish", "code-review", "retro", "pr-human-review"]);
     expect(state.stage("1")).toBe("pr-human-review");
+  });
+
+  // #34: "Resolve conflicts first." changes no requirement, and a spec round
+  // spent on it amended nothing. The fixer, which merges main anyway, takes it.
+  it("takes work asked for at pr-human-review through the judge to the fixer, shown the message, and back through review", async () => {
+    const { state, run, record } = await world(["lr:stage:pr-human-review", "lr:awaiting"], {
+      ...ANSWERS, triage: judged("rework"),
+    });
+    state.openPull("1", { branch: "landrace/1" });
+    await record({ type: "tracker.comment", kind: "output", stage: "spec", round: 1, marker: "output:spec:1", output: { kind: "spec" } });
+
+    state.say("1", "Resolve conflicts first.");
+    const r = await run.converge();
+    // A fix round is a correction, so the retro runs before the person sees it again.
+    expect(r.trail).toEqual(["pr-human-review", "triage", "fix-review", "code-review", "retro", "pr-human-review"]);
+    const fix = run.calls().find((c) => c.stage === "fix-review")?.prompt ?? "";
+    expect(fix).toContain("This round was sent here from: triage");
+    expect(fix).toMatch(/--- their message ---\s*Resolve conflicts first\.\s*--- end of their message ---/);
   });
 
   it("brings a question asked at a halt back to the halt", async () => {

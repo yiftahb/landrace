@@ -325,6 +325,17 @@ stages:
         when:
           "run.stage": pr-human-review
           "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+      # #34: work asked for on the pull request that changes no requirement —
+      # resolve the conflicts, get the checks green. A spec round for it
+      # amends nothing, and build re-plans what is already built; the fixer
+      # already merges main and runs the checks. Uncapped like the comment
+      # above: each one waits for a person to write.
+      - name: you asked for work on the pull request
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": pr-human-review
+          "run.outputs.triage.intent": rework
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
       - { type: tracker.status, value: fix-review }
@@ -384,13 +395,14 @@ stages:
         when: { "run.stage": retro, "run.lastOutputValid": null }
       # Nothing a reply says approves or merges a pull request — that is done
       # on the pull request — so every answer that does not send the ticket
-      # back comes home. A change asked for is `revise`, which build takes.
+      # back comes home. A changed requirement is `revise`, which amends the
+      # spec; work that changes none is `rework`, which the fixer takes.
       - name: your reply changed nothing here
         when:
           "run.stage": triage
           "run.lastOutputValid": null
           "run.previousStage": pr-human-review
-          "run.outputs.triage.intent": { $ne: revise }
+          "run.outputs.triage.intent": { $nin: [revise, rework] }
     on_enter:
       # The retro pushes its own commit; this pushes one it left unpushed, and
       # otherwise reconciles away as satisfied.
