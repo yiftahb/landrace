@@ -4,8 +4,8 @@ import { laneOf, oneLine, statusRows } from "#runner/status.js";
 
 /**
  * What converge calls with the snapshot a ticket came to rest on. The rule is
- * the board's own — `laneOf` over `statusRows` — so Slack and the page cannot
- * disagree about who is waiting on you.
+ * the board's own — `laneOf` over `statusRows` — so a notifier and the page
+ * cannot disagree about who is waiting on you.
  *
  * Fire-and-forget: every send is started and none is awaited, and a send that
  * fails, however it fails, is a `notify.failed` line and nothing more. A chat
@@ -25,6 +25,9 @@ export function createNotify(opts: {
     const notify = opts.notify;
     if (!notify?.on.includes("needs-you")) return;
     const node = snapshot.node as Node;
+    // The board's own override, before laneOf: a closed ticket is Done
+    // whatever labels nobody took off.
+    if (node.closed !== null) return;
     const [row] = statusRows(opts.workflow, [node]);
     if (!row || laneOf(row, opts.workflow) !== "needs-you") return;
 

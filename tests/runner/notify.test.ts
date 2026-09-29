@@ -72,6 +72,14 @@ describe("createNotify", () => {
     expect(events).toEqual([]);
   });
 
+  // The board files a closed ticket under Done whatever its labels still say.
+  it("says nothing about a closed ticket still wearing lr:awaiting", async () => {
+    const { sent, notifier } = recorder("chat");
+    harness([notifier]).fire({ node: { ...waiting.node, closed: "done" } });
+    await settle();
+    expect(sent).toEqual([]);
+  });
+
   it("sends nothing when no notify block is configured", async () => {
     const { sent, notifier } = recorder("chat");
     harness([notifier], null).fire(waiting);
