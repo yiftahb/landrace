@@ -1517,10 +1517,11 @@ query LandraceTicket($owner: String!, $name: String!, $number: Int!, $head: Stri
  * optimisation, because the review loop's gate is a *count* of unresolved
  * threads — a structural fact nobody can write — and not a judge's verdict.
  *
- * Only what the triggers read is asked for. In particular no thread body: a
- * body is written by anyone with comment access, and the graph is hashed into
- * the snapshot and carried into every predicate. What cannot be fetched
- * cannot leak.
+ * Only what the triggers read reaches the graph. In particular no thread
+ * body: a body is written by anyone with comment access, and the graph is
+ * hashed into the snapshot and carried into every predicate. The last
+ * comment's body is fetched only to be asked whether it is our `fix` answer,
+ * and the graph gets the count, never the text.
  */
 /** One file of a pull request's diff, as `GET /pulls/{n}/files` answers it. `patch` is absent for a binary or huge file. */
 interface PullFile {
@@ -1544,16 +1545,30 @@ mutation LandraceResolve($id: ID!) {
   resolveReviewThread(input: { threadId: $id }) { thread { id isResolved } }
 }`;
 
+/**
+ * Each thread's last comment rides along — 200 nodes a page — because whose
+ * turn a thread is is read off its last word: see `answered`. Its body is
+ * parsed for our marker here and goes no further; the graph gets two counts.
+ */
 const THREADS_QUERY = `
 query LandraceThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: ${THREAD_PAGE}, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { isResolved }
+        nodes { isResolved lastReply: comments(last: 1) { nodes { body author { login } } } }
       }
     }
   }
+}`;
+
+/**
+ * fix-review's reply on a thread, by the thread's GraphQL id — the one the
+ * briefing names. REST's reply endpoint wants a comment id nothing here reads.
+ */
+const REPLY_THREAD = `
+mutation LandraceReply($id: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $id, body: $body }) { comment { id } }
 }`;
 
 interface PullNode {
@@ -1624,7 +1639,10 @@ interface TicketResponse {
 interface ThreadsResponse {
   repository: {
     pullRequest: {
-      reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: Array<{ isResolved: boolean }> };
+      reviewThreads: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        nodes: Array<{ isResolved: boolean; lastReply: { nodes: BriefComment[] } }>;
+      };
     } | null;
   } | null;
 }
@@ -1699,7 +1717,7 @@ function createdAtOf(at: string | undefined): { createdAt?: number } {
   return Number.isNaN(ms) ? {} : { createdAt: ms };
 }
 
-function pullNodeOf(pull: PullNode, openThreads?: number): Node {
+function pullNodeOf(pull: PullNode, threads?: ThreadCounts): Node {
   return {
     id: `pr-${pull.number}`,
     kind: PULL_REQUEST_KIND,
@@ -1716,7 +1734,7 @@ function pullNodeOf(pull: PullNode, openThreads?: number): Node {
       merged: pull.merged,
       headSha: pull.headRefOid,
       ...(pull.isCrossRepository ? {} : { branch: pull.headRefName }),
-      ...(openThreads === undefined ? {} : { openThreads }),
+      ...threads,
     },
     ...createdAtOf(pull.createdAt),
   };
@@ -1734,22 +1752,34 @@ const ticketsNamedBy = (pull: PullNode): Set<string> => {
   return named;
 };
 
+/** What a pull request node says of its threads: how many are unresolved, and how many of those await a fix. */
+interface ThreadCounts {
+  openThreads: number;
+  awaitingFix: number;
+}
+
 /**
- * How many review threads on one pull request nobody has resolved, every page
- * of them, or a refusal — never a number known to be short.
+ * How many review threads on one pull request nobody has resolved, and how
+ * many of those await a fix, every page of them, or a refusal — never a
+ * number known to be short.
  */
-async function countOpenThreads(gh: Client, repo: string, number: number): Promise<number> {
+async function countThreads(gh: Client, repo: string, number: number): Promise<ThreadCounts> {
   const [owner = "", name = ""] = repo.split("/");
+  const bot = await gh.botLogin();
   let cursor: string | null = null;
-  let open = 0;
+  const counts: ThreadCounts = { openThreads: 0, awaitingFix: 0 };
 
   for (let page = 0; page < MAX_THREAD_PAGES; page++) {
     const data: ThreadsResponse = await gh.graphql<ThreadsResponse>(THREADS_QUERY, { owner, name, number, cursor });
     if (!data.repository) throw unseen(repo);
     const threads = data.repository.pullRequest?.reviewThreads;
     if (!threads) throw new Error(`pull request #${number} answered with no review threads at all`);
-    open += threads.nodes.filter((t) => !t.isResolved).length;
-    if (!threads.pageInfo.hasNextPage) return open;
+    for (const t of threads.nodes) {
+      if (t.isResolved) continue;
+      counts.openThreads++;
+      if (!answered(t.lastReply.nodes[0], bot)) counts.awaitingFix++;
+    }
+    if (!threads.pageInfo.hasNextPage) return counts;
     cursor = threads.pageInfo.endCursor;
   }
 
@@ -2043,9 +2073,12 @@ async function readGraph(gh: Client, repo: string, link: SpecLink, ticket: strin
       // nothing a fix round can act on, and counting it would send the ticket
       // to fix-review for ever with nothing to fix. So a closed one reports
       // zero without a query — zero, not nothing: with every pull request
-      // merged, an absent count would leave `sum.openThreads` undefined and
+      // merged, an absent count would leave `sum.awaitingFix` undefined and
       // every review trigger reading it false, parking the ticket in review.
-      const node = pullNodeOf(pull, pull.state === "OPEN" ? await countOpenThreads(gh, repo, pull.number) : 0);
+      const node = pullNodeOf(
+        pull,
+        pull.state === "OPEN" ? await countThreads(gh, repo, pull.number) : { openThreads: 0, awaitingFix: 0 },
+      );
       add(node);
       relationships.push({ from: node.id, to: id, type: RELATIONS.implements });
     }
@@ -2280,6 +2313,18 @@ async function diffOf(gh: Client, open: PullNode[]): Promise<string> {
 
 /** The marker kind a finding's thread ends with: how a reviewer's own thread is told from a person's. */
 const FINDING_KIND = "finding";
+
+/** The marker kind of fix-review's route, and of each reply it posts: the fixer has answered, and the thread is the person's turn. */
+const FIX_KIND = "fix";
+
+/**
+ * Whether a thread's last word is the fixer's answer — ours, by login and
+ * marker both, since anyone with comment access can paste a marker. Anything
+ * else last, or no reply at all, is a thread awaiting a fix.
+ */
+const answered = (last: BriefComment | undefined, bot: string): boolean =>
+  typeof last?.author?.login === "string" && sameLogin(last.author.login, bot) &&
+  parseMarker(last.body ?? "")?.kind === FIX_KIND;
 
 interface Finding {
   file: string;

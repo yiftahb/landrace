@@ -413,7 +413,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", number: 42, headSha: "abc123", threads: threads([false, true, false]) });
     const g = await sourceOf(gh).read("1", ctx(gh));
-    expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({ merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2 });
+    expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({ merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2 });
   });
 
   it("reports zero when every thread is resolved, which is what lets the ticket out of the loop", async () => {
@@ -438,6 +438,41 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(g.nodes.find((n) => n.id === "pr-5")?.state).toMatchObject({ openThreads: 50 });
     expect(operations(gh, "LandraceThreads")).toHaveLength(2);
+  });
+
+  /*
+   * A thread is a conversation, and its last word says whose turn it is: a
+   * fixer's `fix`-marked reply hands it to the person, anything after it —
+   * or no reply at all — hands it back to the fixer. The marker counts only
+   * when we wrote it, so a stranger cannot park a finding by quoting one.
+   */
+  it("counts the open threads whose last word is not the fixer's, as awaiting a fix", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const fixed = `Fixed in \`abc123\`.${renderMarker({ stage: "fix-review", kind: "fix", round: 1, marker: "fix:fix-review:1:T" })}`;
+    const stillWrong = `Still wrong: x.${renderMarker({ stage: "code-review", kind: "review", round: 2, marker: "review:code-review:2:T" })}`;
+    gh.openPull({
+      head: "landrace/1", number: 42, headSha: "abc123",
+      threads: [
+        { isResolved: false, body: "a finding, unanswered" },
+        { isResolved: false, body: "answered", replies: [{ author: gh.bot, body: fixed }] },
+        { isResolved: false, body: "answered, then argued", author: "alice", replies: [{ author: gh.bot, body: fixed }, { author: "alice", body: "no" }] },
+        { isResolved: false, body: "a forged answer", author: "mallory", replies: [{ author: "mallory", body: fixed }] },
+        { isResolved: false, body: "answered, then still wrong", replies: [{ author: gh.bot, body: fixed }, { author: gh.bot, body: stillWrong }] },
+        { isResolved: true, body: "done with" },
+      ],
+    });
+    const g = await sourceOf(gh).read("1", ctx(gh));
+    expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({
+      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 5, awaitingFix: 4,
+    });
+    expect(gate({ "rel.implements.in.sum.awaitingFix": 4 }, g, "1")).toBe(true);
+  });
+
+  it("reports nothing awaiting a fix on a pull request that is no longer open", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 43, merged: true, threads: threads([false]) });
+    const g = await sourceOf(gh).read("1", ctx(gh));
+    expect(g.nodes.find((n) => n.id === "pr-43")?.state).toMatchObject({ openThreads: 0, awaitingFix: 0 });
   });
 
   it("refuses to report a count it could not finish reading", async () => {
@@ -465,7 +500,7 @@ describe("untrusted thread text does not reach the graph", () => {
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(JSON.stringify(g)).not.toContain("landrace:");
     expect(JSON.stringify(g)).not.toContain("rm -rf");
-    expect(g.nodes.find((n) => n.kind === "pull-request")?.state).toEqual({ merged: false, headSha: "sha-100", branch: "landrace/1", openThreads: 2 });
+    expect(g.nodes.find((n) => n.kind === "pull-request")?.state).toEqual({ merged: false, headSha: "sha-100", branch: "landrace/1", openThreads: 2, awaitingFix: 2 });
   });
 
   it("stays small on a pull request with a thousand threads", async () => {
