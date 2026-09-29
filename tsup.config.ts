@@ -16,6 +16,7 @@ export default defineConfig({
     kit: "src/kit/executor.ts",
     testing: "src/testing/index.ts",
     "integrations/claude": "integrations/claude/index.ts",
+    "integrations/codex": "integrations/codex/index.ts",
   },
   external: [/^landrace\//],
   format: ["esm"],

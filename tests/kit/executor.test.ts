@@ -108,6 +108,7 @@ describe("BaseExecutor", () => {
 
   it("refuses a pairing from scratch when the integration can only continue, saying to release it", async () => {
     const cwd = tempDir("tiny-cwd-");
+    writeFileSync(join(cwd, "seed.md"), "You are pairing.");
     const executor = new Tiny("tiny").build(settings);
     await expect(executor.handoff?.({ cwd, session: "s-2", promptFile: join(cwd, "seed.md") }))
       .rejects.toThrow(/tiny[\s\S]*release/i);

@@ -8,7 +8,7 @@
  * that overrides one piece.
  */
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
@@ -244,11 +244,6 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * ran in the ticket's worktree, is brought over before it is forked here.
    */
   protected async handoffArgv({ cwd, session, promptFile, resume, server }: HandoffPlan): Promise<HandoffArg[]> {
-    // The seed goes first, as a positional, where a leading "-" would be read
-    // as a flag instead.
-    if ((await readFile(promptFile, "utf8")).startsWith("-")) {
-      throw new Error("refused a prompt that starts with \"-\": the command line would read it as a flag");
-    }
     const here = projectDir(this.home, cwd);
     const argv: HandoffArg[] = [this.bin];
     if (existsSync(join(here, `${session}.jsonl`))) {

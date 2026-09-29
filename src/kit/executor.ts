@@ -897,6 +897,11 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
             "Release the pairing, and pair once the agent has no session on this stage");
       }
       const where = await assertCwd(cwd);
+      // The seed may go into the command as a positional, where a leading "-"
+      // would be read as a flag instead.
+      if ((await readFile(promptFile, "utf8")).startsWith("-")) {
+        throw new Error("refused a prompt that starts with \"-\": the command line would read it as a flag");
+      }
       const argv = await this.handoffArgv({
         kind, cwd: where, session, promptFile,
         ...(resume === undefined ? {} : { resume }),
