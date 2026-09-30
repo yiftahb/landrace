@@ -23,7 +23,7 @@ import { type Client, clientFor, issueNumber, tokenRejected, unseen } from "./cl
  * body.
  */
 const pullFields = (refs: boolean): string => `
-  number title url state merged headRefName headRefOid isCrossRepository createdAt${refs ? `
+  number title url state merged headRefName headRefOid isCrossRepository createdAt updatedAt${refs ? `
   closingIssuesReferences(first: 20) { nodes { number } }` : ""}`;
 
 /**
@@ -52,7 +52,7 @@ query LandraceClosedPulls($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: [MERGED, CLOSED], first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { ${pullFields(refs)} updatedAt }
+      nodes { ${pullFields(refs)} }
     }
   }
 }`;
@@ -166,6 +166,8 @@ interface PullNode {
   closingIssuesReferences?: { nodes: Array<{ number: number }> };
   /** ISO 8601. Optional because a reading without it draws no age, never NaN. */
   createdAt?: string;
+  /** ISO 8601, when it last changed: the board's lane order. Optional likewise; null where GitHub answers none. */
+  updatedAt?: string | null;
 }
 
 type Page<T> = { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: T[] };
@@ -200,6 +202,7 @@ const recordOf = (pull: PullNode, refs: boolean): PullRecord => ({
   headSha: pull.headRefOid,
   branch: pull.isCrossRepository ? undefined : pull.headRefName,
   createdAt: pull.createdAt,
+  updatedAt: pull.updatedAt ?? undefined,
   tickets: refs ? (pull.closingIssuesReferences?.nodes ?? []).map((i) => String(i.number)) : [],
 });
 

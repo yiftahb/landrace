@@ -52,6 +52,12 @@ export interface Node {
    * provides, so a workflow that routes on it fails validation.
    */
   createdAt?: number;
+  /**
+   * When the tracker says it last changed — a comment, a label, a close —
+   * epoch ms; absent where the source cannot tell cheaply. Display only, as
+   * `createdAt` is: the board orders its lanes by it, and no workflow may.
+   */
+  updatedAt?: number;
 }
 
 export interface Relationship { from: string; to: string; type: string }
@@ -917,6 +923,8 @@ export interface TicketRecord {
   /** Who last edited the body, or undefined if nobody has since it was opened. */
   editor: string | undefined;
   createdAt: string | undefined;
+  /** Optional, so an integration whose tracker cannot say still compiles. */
+  updatedAt?: string | undefined;
   parent: string | null;
   priority?: number | null | undefined;
 }
@@ -935,6 +943,8 @@ export interface PullRecord {
   headSha: string;
   branch: string | undefined;
   createdAt: string | undefined;
+  /** Optional, as `TicketRecord`'s is. */
+  updatedAt?: string | undefined;
   tickets: string[];
 }
 
@@ -1965,6 +1975,8 @@ export interface BoardRow {
   since: number | null;
   /** When the source says the node was opened, epoch ms, or null where it gave none. */
   createdAt: number | null;
+  /** When the source says the node last changed, epoch ms, or null where it gave none — what its lane orders by. */
+  updatedAt: number | null;
   round: number | null;
   model: string | null;
   /** The running step's own `effort`, as `model` is its own `model`; null where it named none. */
@@ -2054,6 +2066,12 @@ export interface TicketPanel {
 
 export interface BoardView {
   generatedAt: number;
+  /**
+   * The root rows in display order, which the page draws as given: lane by
+   * lane, most urgent first; within Needs you by priority, then least
+   * recently updated; within any other lane most recently updated first.
+   * Each branch's children follow its lane's order, at every depth.
+   */
   rows: BoardRow[];
   /** When the next scheduled tick is due, epoch ms; null when nothing is scheduled. */
   nextTickAt: number | null;

@@ -418,6 +418,7 @@ export function createFakeTracker(
     state: i.state.toUpperCase(),
     stateReason: i.stateReason ?? null,
     ...(i.createdAt === undefined ? {} : { createdAt: i.createdAt }),
+    ...(i.updatedAt === undefined ? {} : { updatedAt: i.updatedAt }),
     labels: { nodes: i.labels.map((name) => ({ name })) },
     assignees: { nodes: i.assignees },
   });
@@ -441,6 +442,7 @@ export function createFakeTracker(
     headRefOid: p.headSha,
     isCrossRepository: p.crossRepository ?? false,
     ...(p.createdAt === undefined ? {} : { createdAt: p.createdAt }),
+    ...(p.updatedAt === undefined ? {} : { updatedAt: p.updatedAt }),
     closingIssuesReferences: { nodes: (p.closes ?? []).map((number) => ({ number })) },
   });
 

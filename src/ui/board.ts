@@ -1,4 +1,4 @@
-import { compareWork, GOTO_TRIGGER, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
+import { compareIds, compareWork, GOTO_TRIGGER, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
 import { gotoTargetsOf } from "#core/index.js";
 import { BLOCKED_NOTE, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
@@ -81,6 +81,29 @@ const outranks = (a: Lane, b: Lane | null): boolean => b === null || URGENCY.ind
 
 const moreUrgent = (a: Lane | null, b: Lane | null): Lane | null => (a !== null && outranks(a, b) ? a : b);
 
+/** Where a root row's lane is drawn: most urgent first. */
+const rank = (row: BoardRow): number => (row.lane === null ? URGENCY.length : URGENCY.indexOf(row.lane));
+
+/** Nulls last, whichever way the numbers run. */
+const nullsLast = (a: number | null, b: number | null, dir: 1 | -1): number =>
+  a === b ? 0 : a === null ? 1 : b === null ? -1 : dir * (a - b);
+
+/**
+ * How a lane reads, root rows and branches alike. Needs you is a queue:
+ * priority, unprioritised last as in work order, then whoever has waited
+ * longest. Every other lane is a feed: whatever moved last on top, priority
+ * ignored. A row with no update time has no place in time, so it goes last;
+ * the id settles the rest, as ids read.
+ */
+const laneOrder = (lane: Lane | null) => (a: BoardRow, b: BoardRow): number =>
+  (lane === "needs-you"
+    ? nullsLast(a.priority, b.priority, 1) || nullsLast(a.updatedAt, b.updatedAt, 1)
+    : nullsLast(a.updatedAt, b.updatedAt, -1)) || compareIds(a.id, b.id);
+
+/** A branch in its lane's order, at every depth. */
+const inOrder = (row: BoardRow, order: (a: BoardRow, b: BoardRow) => number): BoardRow =>
+  ({ ...row, children: row.children.map((k) => inOrder(k, order)).sort(order) });
+
 /**
  * Which node each node nests under, if exactly one. Only edges of a type the
  * source declares singular count, and only to a node that is in the graph —
@@ -145,7 +168,8 @@ export function boardView(input: {
       id: node.id, kind: node.kind, title: oneLine(node.title), link,
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
-      note: "", since: null, createdAt: node.createdAt ?? null, round: null, model: null, effort: null,
+      note: "", since: null, createdAt: node.createdAt ?? null, updatedAt: node.updatedAt ?? null,
+      round: null, model: null, effort: null,
       chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null, children: [],
     };
     const s = status.get(node.id);
@@ -236,7 +260,9 @@ export function boardView(input: {
   const rows: BoardRow[] = [];
   // Roots first; then whatever a cycle left unreached — every member of a
   // cycle has a parent, so none of them was a root — at the top level rather
-  // than lost. Both in work order, so the same graph always draws the same.
+  // than lost. Both walked in work order, so the same graph always nests the
+  // same; what the page reads is the lane's order, applied once each branch
+  // knows its lane.
   for (const node of [...roots.sort(compareWork), ...[...nodes.values()].sort(compareWork)]) {
     const row = build(node);
     // A branch with no ticket — a pull request whose ticket is not listed —
@@ -244,8 +270,9 @@ export function boardView(input: {
     // on: it waits while open and is done once closed.
     if (!row) continue;
     const lane = below.get(row.id) ?? (row.closed === null ? "waiting" : "discharged");
-    rows.push({ ...row, lane });
+    rows.push(inOrder({ ...row, lane }, laneOrder(lane)));
   }
+  rows.sort((a, b) => rank(a) - rank(b) || laneOrder(a.lane)(a, b));
 
   return {
     generatedAt: input.now, rows, nextTickAt: input.nextTickAt,

@@ -35,6 +35,8 @@ interface IssueNode {
   editor: { login: string } | null;
   /** ISO 8601. Optional because a reading without it draws no age, never NaN. */
   createdAt?: string;
+  /** ISO 8601, when it last changed: the board's lane order. Optional likewise; null where GitHub answers none. */
+  updatedAt?: string | null;
 }
 
 type Page<T> = { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: T[] };
@@ -45,7 +47,7 @@ type Page<T> = { pageInfo: { hasNextPage: boolean; endCursor: string | null }; n
  * too: a parent counting its children by stage reads their labels.
  */
 const ISSUE_FIELDS = `
-  number title url state stateReason createdAt
+  number title url state stateReason createdAt updatedAt
   labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
   body author { login } editor { login }`;
@@ -60,7 +62,7 @@ const ISSUE_FIELDS = `
  * reading is the one kept.
  */
 const SUB_ISSUE_FIELDS = `
-  number title url state stateReason createdAt
+  number title url state stateReason createdAt updatedAt
   labels(first: 20) { nodes { name } }
   assignees(first: 5) { nodes { login } }
   body author { login } editor { login }`;
@@ -105,7 +107,7 @@ query LandraceClosed($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issues(states: CLOSED, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { ${ISSUE_FIELDS} closedAt updatedAt parent { number } }
+      nodes { ${ISSUE_FIELDS} closedAt parent { number } }
     }
   }
 }`;
@@ -146,6 +148,7 @@ const recordOf = (issue: IssueNode, parent: string | null): TicketRecord => ({
   author: issue.author?.login,
   editor: issue.editor?.login,
   createdAt: issue.createdAt,
+  updatedAt: issue.updatedAt ?? undefined,
   parent,
 });
 

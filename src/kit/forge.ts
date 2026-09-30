@@ -16,7 +16,7 @@ import {
   PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, RELATIONS, renderMarker, sameLogin, stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
-import { createdAtOf, MAX_COMMENT_CHARS, nodesCloseSatisfied, stillOpen, wroteIt } from "#kit/tracker.js";
+import { createdAtOf, MAX_COMMENT_CHARS, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
 import type {
   BranchHeads, BriefTable, ChangedFile, Effect, EffectTable, Finding, Graph, HistoryItem, HookContext, Node, PullRecord,
   RelationDecl, Relationship, Reply, ReviewThread, RuntimeContext, Snapshot, SnapshotComment, ThreadComment, ThreadCounts,
@@ -157,6 +157,7 @@ export function pullNode(pull: Omit<PullRecord, "tickets">, threads?: ThreadCoun
       ...threads,
     },
     ...createdAtOf(pull.createdAt),
+    ...updatedAtOf(pull.updatedAt),
   };
 }
 

@@ -1,7 +1,7 @@
 import { LABELS, renderMarker, renderOrigin } from "#conventions.js";
 import {
   botLoginOf, closeSatisfied, commentSatisfied, commentsOf, createdAtOf, labelSatisfied, nodesCloseSatisfied,
-  priorityFromLabels, statusSatisfied, ticketNode, wroteIt,
+  priorityFromLabels, statusSatisfied, ticketNode, updatedAtOf, wroteIt,
 } from "#kit/tracker.js";
 import type { Effect, Node, Snapshot } from "#namespace.js";
 
@@ -118,19 +118,32 @@ describe("createdAtOf", () => {
   });
 });
 
+describe("updatedAtOf", () => {
+  it("is the time in milliseconds, and absent rather than NaN", () => {
+    expect(updatedAtOf("2026-09-30T12:00:00Z")).toEqual({ updatedAt: Date.parse("2026-09-30T12:00:00Z") });
+    expect(updatedAtOf("not a time")).toEqual({});
+    expect(updatedAtOf(undefined)).toEqual({});
+  });
+});
+
 describe("ticketNode", () => {
   const origin = { parent: "3", stage: "triage", round: 1 };
   const fields = {
     id: "7", title: "Split", link: "https://tracker.example/7", closed: null, labels: ["P1", "lr:auto"],
     assignees: ["someone"], body: `body${renderOrigin(origin)}`, author: BOT, editor: undefined,
-    createdAt: "2026-09-30T00:00:00Z",
+    createdAt: "2026-09-30T00:00:00Z", updatedAt: "2026-09-30T12:00:00Z",
   };
 
   it("is the ticket as the engine reads one", () => {
     expect(ticketNode(fields, BOT)).toEqual({
       id: "7", kind: "ticket", title: "Split", link: "https://tracker.example/7", closed: null, priority: 1, origin,
       state: { labels: ["P1", "lr:auto"], assignees: ["someone"] }, createdAt: Date.parse("2026-09-30T00:00:00Z"),
+      updatedAt: Date.parse("2026-09-30T12:00:00Z"),
     });
+  });
+
+  it("carries no update time for a ticket whose tracker gave none", () => {
+    expect(ticketNode({ ...fields, updatedAt: undefined }, BOT)).not.toHaveProperty("updatedAt");
   });
 
   it("reads no origin from a body a stranger has edited since, nor one a stranger wrote", () => {

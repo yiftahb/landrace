@@ -1964,6 +1964,11 @@ function bellState(on, permission) {
     return { icon: "🔕", pressed: "false", label: "Notifications are blocked for this page — allow them in the browser's site settings" };
   }
   if (permission === "unsupported") return { icon: "🔕", pressed: "false", label: "Notifications are not available in this browser" };
+  // On, but the browser's prompt went unanswered — Arc's can sit unseen
+  // behind a hidden sidebar — so nothing will arrive, and it has to say so.
+  if (on && permission === "default") {
+    return { icon: "🔔", pressed: "false", label: "Your browser has not allowed notifications — allow them for this site in its site settings, or click to ask again" };
+  }
   return on && permission === "granted"
     ? { icon: "🔔", pressed: "true", label: "Notifying you when a ticket needs you — click to stop" }
     : { icon: "🔔", pressed: "false", label: "Notify me when a ticket needs you" };
