@@ -112,6 +112,25 @@ describe("an import failure says what to do about it", () => {
     expect(importFailure("hooks/x.ts", bare).message).toMatch(/may be older than the hook expects/);
   });
 
+  // #32's last review: the kit and the integrations are landrace's own entry
+  // points too, and a hook reaching for an export one gained since the last
+  // build got Node's bare error with no hint.
+  it.each(["landrace/kit", "landrace/integrations/claude", "landrace/integrations/codex"])(
+    "says the same when the module lacking the export is %s",
+    (module) => {
+      const missing = new SyntaxError(`The requested module '${module}' does not provide an export named 'Claude'`);
+      expect(importFailure("hooks/claude.ts", missing).message).toMatch(/may be older than the hook expects/);
+    },
+  );
+
+  it.each(["landrace/kitchen", "landrace/integrations", "landrace/integrations/a/b", "landrace-extra"])(
+    "says nothing about landrace for %s, which is not one of its entry points",
+    (module) => {
+      const missing = new SyntaxError(`The requested module '${module}' does not provide an export named 'x'`);
+      expect(importFailure("hooks/x.ts", missing).message).not.toMatch(/may be older/);
+    },
+  );
+
   // A hook's own sibling module lacking an export is the hook's bug: blaming
   // the landrace build sends the operator to rebuild something that is fine.
   it("says nothing about landrace when the module lacking the export is the hook's own", () => {

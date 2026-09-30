@@ -171,10 +171,11 @@ export function importFailure(specifier: string, error: unknown): Error {
   // repository, a dist/ not rebuilt since a pull — fails on its first import
   // line, and Node names only the export it could not find, which reads as a
   // bug in the hook rather than a build to run. Only when the module Node
-  // quotes is landrace's own: a sibling of the hook lacking an export is the
-  // hook's bug, and a rebuild would fix nothing.
+  // quotes is landrace's own — the package, `landrace/hooks`, `landrace/kit`
+  // or one `landrace/integrations/<vendor>`: a sibling of the hook lacking an
+  // export is the hook's bug, and a rebuild would fix nothing.
   const stale = (error as { name?: unknown } | null)?.name === "SyntaxError" &&
-    /^The requested module 'landrace(?:\/hooks)?' does not provide an export named /.test(reason);
+    /^The requested module 'landrace(?:\/(?:hooks|kit|integrations\/[a-z0-9-]+))?' does not provide an export named /.test(reason);
   return new Error(
     `cannot import hook module "${specifier}": ${reason}` +
     (stale ? "; the landrace this hook was loaded against may be older than the hook expects: rebuild or update it" : ""),
