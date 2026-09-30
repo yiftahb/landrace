@@ -122,6 +122,7 @@ interface Node {
   origin: Origin | null;
   state: { [key: string]: Json };   // whatever the source wants a predicate to read
   createdAt?: number;        // epoch ms, for the board's "opened 3h ago" only — no workflow can route on it
+  updatedAt?: number;        // epoch ms, when it last changed — the board's lane order only, likewise
 }
 
 interface Relationship { from: string; to: string; type: string }
@@ -503,7 +504,7 @@ The functions the bases are made of stay exported, over the same plain shapes, f
 
 | From `landrace/kit` | What it is |
 |---|---|
-| Tracker | `commentsOf`, `wroteIt` and `botLoginOf` — our comments told from a stranger's; `labelSatisfied`, `statusSatisfied`, `commentSatisfied`, `closeSatisfied`, `nodesCloseSatisfied`, one per tracker effect; `ticketNode`, `priorityFromLabels`, `createdAtOf`, `stillOpen`; the paging bounds and `MAX_COMMENT_CHARS` |
+| Tracker | `commentsOf`, `wroteIt` and `botLoginOf` — our comments told from a stranger's; `labelSatisfied`, `statusSatisfied`, `commentSatisfied`, `closeSatisfied`, `nodesCloseSatisfied`, one per tracker effect; `ticketNode`, `priorityFromLabels`, `createdAtOf`, `updatedAtOf`, `stillOpen`; the paging bounds and `MAX_COMMENT_CHARS` |
 | Forge | `answered` and `threadCounts` — whose turn a `ReviewThread` is; `placeFindings` for a review's findings on a diff of `ChangedFile`s; `pullNode`, `prBranch`, `ticketOfBranch`, `ticketsNamedBy`; the `threadsBrief` and `diffBrief` briefings, and `historyBrief` over `commentLine` and `threadLine` entries; `pushSatisfied` |
 | Docs | `SPEC`, `PUBLISH`, `hashOf`, `contentOf`, `mine`, `briefPage`, `publishSatisfied`, `specNode` |
 | Git | `gitIn`, `repositoryOf`, `ownGit`, `branchHeads`, `headsOf`, `headIn`; `originPushUrl` and `pushBranch`, fast-forward only with hooks off, the credential the hook's own |
@@ -691,7 +692,13 @@ closes. Each pull request and document shows what it is, its state (a pull
 request's glyph is green while open, purple once merged, red once closed) and
 how long ago it was opened, when the source says.
 A branch sits in the lane of its most urgent ticket, so a sub-ticket that needs
-you lifts its whole branch into "Needs you", opened down to it. A search box
+you lifts its whole branch into "Needs you", opened down to it. "Needs you" is
+a queue: by priority, P0 first and unprioritised last, then whoever has waited
+longest. Every other lane is newest first, priority ignored. Both go by when
+the source says the ticket or pull request last changed — a comment, a label,
+a close, Landrace's own included, moves it at the next tick's list — and a row
+the source gave no time goes last. A branch's rows, at every depth, follow its
+lane's order, and a branch is placed by its root's own priority and time. A search box
 filters by title or id, and Collapse all / Expand all set every branch at once.
 Top right, a countdown to the next scheduled
 tick and a "Run next tick now" button. It polls every two seconds and costs
