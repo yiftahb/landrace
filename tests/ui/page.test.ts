@@ -2115,6 +2115,16 @@ describe("the notify bell", () => {
         .toEqual(["true", "false", "false"]);
     });
 
+    /*
+     * Turned on, but the browser's prompt went unanswered: Arc anchors it to
+     * a URL bar a hidden sidebar hides, and three went by unseen while the
+     * bell read exactly as off. It says why nothing will arrive.
+     */
+    it("says the browser has not allowed it yet when turned on without an answer", () => {
+      expect(state(true, "default")).toEqual(expect.objectContaining({ pressed: "false", label: expect.stringMatching(/not allowed[\s\S]*site settings[\s\S]*ask again/) }));
+      expect(state(false, "default").label).toBe("Notify me when a ticket needs you");
+    });
+
     // Toggled from what it shows: on, but with the browser's prompt dismissed,
     // it reads as off — and a click on it must turn it on and ask again, not
     // quietly turn off a bell that already looked off.
