@@ -1,43 +1,38 @@
 import {
-  allClosed,
   BRANCH_PUSH_EFFECT,
-  CLOSE_EFFECT,
   effectBranch,
   entriesFromComments,
-  hasPullFrom,
-  LABEL_EFFECT,
-  LABELS,
-  labelsOf,
-  neutraliseMarkers,
-  NODES_CLOSE_EFFECT,
-  parseMarker,
-  parseOrigin,
   PULL_OPEN_EFFECT,
-  PULL_REVIEW_EFFECT,
   PULL_REQUEST_KIND,
+  PULL_REVIEW_EFFECT,
   RECORD_EFFECT,
-  recordMarker,
   RELATIONS,
-  renderMarker,
-  renderOrigin,
-  STAGE_LABEL_PREFIX,
   stageFromLabels,
-  STATUS_EFFECT,
-  TICKET_KIND,
 } from "#conventions.js";
-import { defineOperator, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
+import { defineSource } from "#hooks/contracts.js";
+import { compose } from "#kit/compose.js";
+import { BaseDocs } from "#kit/docs.js";
+import { BaseForge, prBranch } from "#kit/forge.js";
+import { BaseTracker, commentSatisfied } from "#kit/tracker.js";
 import type {
+  BranchHeads,
+  ChangedFile,
+  Closed,
   Effect,
-  Entry,
+  EffectHandler,
+  EffectTable,
   ExternalPull,
   ExternalState,
   ExternalTicket,
   Graph,
+  HookContext,
   Node,
+  PullRecord,
   RelationDecl,
-  Relationship,
-  Snapshot,
+  ReviewThread,
   Source,
+  TicketPatch,
+  TicketRecord,
   TrackerComment,
 } from "#namespace.js";
 
@@ -69,41 +64,6 @@ export function staticSource(graph: Graph, relations: RelationDecl[] = RELATION_
   return defineSource({ id: "static", relations, list: async () => graph, read: async () => graph });
 }
 
-const nodeOf = (row: ExternalTicket): Node => ({
-  id: row.id,
-  kind: TICKET_KIND,
-  title: row.title,
-  link: `memory://tickets/${row.id}`,
-  closed: row.closed ?? null,
-  priority: row.priority ?? null,
-  origin: parseOrigin(row.body, row.author, BOT),
-  // Always lists, empty when there is nothing: an absent path is one an
-  // eligibility rule cannot be answered from, and the tick abstains on those —
-  // which would work a ticket belonging to nobody rather than skip it.
-  state: { labels: [...row.labels], assignees: [...row.assignees] },
-});
-
-const prNodeOf = (p: ExternalPull): Node => ({
-  id: p.id,
-  kind: PULL_REQUEST_KIND,
-  title: `PR #${p.number}`,
-  link: `memory://pulls/${p.number}`,
-  closed: p.closed,
-  priority: null,
-  origin: null,
-  // An open pull request's threads only, as a tracker integration reports
-  // them: a thread left on a merged or abandoned one is nothing a fix round
-  // can act on, and counting it would loop the ticket through review for
-  // ever. Zero rather than absent, so the sum stays defined when every pull
-  // request is merged and "no thread awaits a fix" can still be read.
-  state: {
-    merged: p.merged,
-    openThreads: p.closed === null ? p.openThreads : 0,
-    awaitingFix: p.closed === null ? p.awaitingFix : 0,
-    ...(p.branch === undefined ? {} : { branch: p.branch }),
-  },
-});
-
 /**
  * Monotonic per ticket, the way a real tracker's timestamps are: a comment
  * posted now is never dated before one already on the ticket. A bare counter
@@ -121,32 +81,55 @@ function clock(): (existing: TrackerComment[]) => string {
   };
 }
 
-/**
- * A tracker in memory, speaking the conventions and nobody's dialect.
- *
- * This is not a second copy of an integration. A real integration is tested
- * over a fake HTTP boundary, which is the only way to test *it* — a
- * hand-written imitation would be free to disagree with the real hook, and the
- * place it disagreed is exactly where a leak across the boundary stopped being
- * visible. What this is for is the workflow: labels, records and human turns,
- * so a graph can be driven and its loops watched before any integration for a
- * given tracker exists at all.
- *
- * It handles exactly the three writes a tracker owns, under the names
- * `src/conventions.ts` gives them — the same three the reference integration
- * declares, from the same constants, because two spellings of one name is how
- * a fake and the thing it stands in for drift apart.
- */
-export function createExternalState(
-  seed: { tickets?: Array<Partial<ExternalTicket>> } = {},
-): ExternalState {
-  const rows = new Map<string, ExternalTicket>();
-  const pulls = new Map<string, ExternalPull>();
-  const pushed: string[] = [];
-  const at = clock();
-  let nextId = 1000;
+/** A row as the tracker reads it out: copies of its lists, so a node never aliases the live row a test goes on to move. */
+const recordOf = (row: ExternalTicket): TicketRecord => ({
+  id: row.id,
+  title: row.title,
+  link: `memory://tickets/${row.id}`,
+  closed: row.closed ?? null,
+  labels: [...row.labels],
+  assignees: [...row.assignees],
+  body: row.body,
+  author: row.author,
+  editor: undefined,
+  createdAt: undefined,
+  parent: row.parent,
+  priority: row.priority ?? null,
+});
 
-  const add = (s: Partial<ExternalTicket>, id: string): ExternalTicket => {
+/**
+ * A tracker in memory, on the kit's base like any tracker integration: its
+ * vendor calls are reads and writes of a map.
+ *
+ * It overrides only what a tracker with no network behind it cannot do the
+ * base's way: it knows its own login without asking, so its pre hook records
+ * none, and its comment check asks its own login rather than the snapshot's.
+ */
+export class MemoryTracker extends BaseTracker {
+  /** Every ticket, live: a test moves one the way a person on the tracker would. */
+  readonly rows = new Map<string, ExternalTicket>();
+  private readonly at = clock();
+  private nextComment = 1000;
+
+  constructor(seed: { tickets?: Array<Partial<ExternalTicket>> } = {}) {
+    super();
+    for (const [i, s] of (seed.tickets ?? []).entries()) this.add(s, s.id ?? String(i + 1));
+  }
+
+  /** The live row behind a ticket. */
+  row(id: string): ExternalTicket {
+    const row = this.rows.get(id);
+    if (!row) throw new Error(`no such ticket #${id}`);
+    return row;
+  }
+
+  /** A comment on a ticket, under `author`'s login, dated after every one already there. */
+  post(id: string, author: string, body: string): void {
+    const row = this.row(id);
+    row.comments.push({ id: this.nextComment++, body, created_at: this.at(row.comments), user: { login: author } });
+  }
+
+  private add(s: Partial<ExternalTicket>, id: string): ExternalTicket {
     const row: ExternalTicket = {
       id,
       title: s.title ?? `ticket ${id}`,
@@ -159,322 +142,366 @@ export function createExternalState(
       closed: s.closed ?? null,
       author: s.author ?? PERSON,
     };
-    rows.set(id, row);
+    this.rows.set(id, row);
     return row;
-  };
+  }
 
-  for (const [i, s] of (seed.tickets ?? []).entries()) add(s, s.id ?? String(i + 1));
+  async login(): Promise<string> {
+    return BOT;
+  }
 
-  const must = (id: string): ExternalTicket => {
-    const row = rows.get(id);
-    if (!row) throw new Error(`no such ticket #${id}`);
-    return row;
-  };
+  async tickets(): Promise<TicketRecord[]> {
+    return [...this.rows.values()].map(recordOf);
+  }
 
-  /** Every edge among `ids`: a child to its parent, a pull request to its ticket. */
-  const edgesAmong = (ids: Set<string>): Relationship[] => [
-    ...[...rows.values()]
-      .filter((r) => r.parent !== null && ids.has(r.id) && ids.has(r.parent))
-      .map((r) => ({ from: r.id, to: r.parent as string, type: RELATIONS.childOf })),
-    ...[...pulls.values()]
-      .filter((p) => ids.has(p.id) && ids.has(p.ticket))
-      .map((p) => ({ from: p.id, to: p.ticket, type: RELATIONS.implements })),
-  ];
+  async ticket(id: string): Promise<TicketRecord> {
+    return recordOf(this.row(id));
+  }
 
-  const graphOf = (tickets: ExternalTicket[]): Graph => {
-    const inside = new Set(tickets.map((r) => r.id));
-    const prs = [...pulls.values()].filter((p) => inside.has(p.ticket));
-    const ids = new Set([...inside, ...prs.map((p) => p.id)]);
-    return { nodes: [...tickets.map(nodeOf), ...prs.map(prNodeOf)], relationships: edgesAmong(ids) };
-  };
+  async children(id: string): Promise<TicketRecord[]> {
+    return [...this.rows.values()].filter((r) => r.parent === id).map(recordOf);
+  }
 
-  /** The ticket, its parent, and every descendant, breadth-first. */
-  const neighbourhood = (id: string): ExternalTicket[] => {
-    const row = must(id);
-    const found = [row];
-    const parent = row.parent === null ? undefined : rows.get(row.parent);
-    if (parent) found.push(parent);
-    const seen = new Set(found.map((r) => r.id));
-    for (let i = 0; i < found.length; i++) {
-      const from = found[i];
-      // The parent's other children are its business, not this ticket's.
-      if (from === undefined || from === parent) continue;
-      for (const child of rows.values()) {
-        if (child.parent === from.id && !seen.has(child.id)) {
-          seen.add(child.id);
-          found.push(child);
-        }
-      }
+  async comments(id: string): Promise<TrackerComment[]> {
+    return this.row(id).comments.map((c) => ({ ...c }));
+  }
+
+  async comment(id: string, body: string): Promise<void> {
+    this.post(id, BOT, body);
+  }
+
+  async addLabels(id: string, labels: string[]): Promise<void> {
+    const row = this.row(id);
+    for (const label of labels) if (!row.labels.includes(label)) row.labels.push(label);
+  }
+
+  async removeLabel(id: string, label: string): Promise<void> {
+    const row = this.row(id);
+    row.labels = row.labels.filter((l) => l !== label);
+  }
+
+  async close(id: string, how: "done" | "dropped"): Promise<void> {
+    this.row(id).closed = how;
+  }
+
+  async create(ticket: { title: string; body: string; parent: string | undefined; priority: number | undefined }): Promise<string> {
+    if (ticket.parent !== undefined) this.row(ticket.parent); // throws "no such ticket #<parent>" when it is not one
+    let n = this.rows.size + 1;
+    while (this.rows.has(String(n))) n++;
+    return this.add({ ...ticket, author: BOT, parent: ticket.parent ?? null, priority: ticket.priority ?? null }, String(n)).id;
+  }
+
+  async update(id: string, fields: Pick<TicketPatch, "title" | "body" | "state">): Promise<void> {
+    const row = this.row(id);
+    if (fields.title !== undefined) row.title = fields.title;
+    if (fields.body !== undefined) row.body = fields.body;
+    if (fields.state !== undefined) row.closed = fields.state === "closed" ? "done" : null;
+  }
+
+  /*
+   * Exactly what `observe` below puts in the snapshot — tests/hooks/provides.test.ts
+   * holds the two level. No `tracker.bot`: the login is this class's own.
+   */
+  override provides(): string[] {
+    return ["ticket", "ticket.body", "ticket.comments", "entries"];
+  }
+
+  override async observe({ ticket }: HookContext): Promise<Record<string, unknown>> {
+    const comments = await this.comments(ticket);
+    return { ticket: { body: this.row(ticket).body, comments }, entries: entriesFromComments(comments, BOT) };
+  }
+
+  override effects(): EffectTable {
+    const effects = super.effects();
+    const comment = effects[RECORD_EFFECT] as EffectHandler;
+    // The kit's own check — ours, by login, and the marker parsed whole —
+    // against the login this tracker posts as, which its snapshot does not carry.
+    return {
+      ...effects,
+      [RECORD_EFFECT]: { apply: comment.apply, satisfied: (snapshot, effect) => commentSatisfied({ ...snapshot, tracker: { bot: BOT } }, effect) },
+    };
+  }
+}
+
+/** A pull request as the forge reads it out: memory's names the one ticket it was opened for, whatever its branch. */
+const pullRecordOf = (p: ExternalPull): PullRecord => ({
+  number: p.number,
+  title: `PR #${p.number}`,
+  link: `memory://pulls/${p.number}`,
+  merged: p.merged,
+  closed: p.closed !== null,
+  headSha: "",
+  branch: p.branch,
+  createdAt: undefined,
+  tickets: [p.ticket],
+});
+
+/** The forge's review calls, which the in-memory forge does not make: its threads are counts, and its `pull.review` moves them. */
+const countsOnly = (): Error => new Error("the in-memory forge keeps review threads as counts, not as threads");
+
+/**
+ * A forge in memory, on the kit's base: pull requests are records it keeps,
+ * and a push is something it is only told about.
+ *
+ * Its threads are counts rather than text, so a test can set "two open, one
+ * awaiting a fix" in one line — which is also what it overrides: a pull
+ * request node carries the live counts, and `pull.review` moves them. With no
+ * repository behind it, nothing can say a push has landed, so one is taken
+ * every time it is planned, and a pull request is opened from any branch.
+ */
+export class MemoryForge extends BaseForge {
+  /** Every pull request, by node id: live, so a test merges, closes or comments on one the way a person would. */
+  readonly rows = new Map<string, ExternalPull>();
+  private readonly pushed: string[] = [];
+
+  /**
+   * Open a pull request implementing `ticket`, numbered from 1 in creation
+   * order. Merged means closed as done unless `closed` says otherwise, and
+   * `awaitingFix` defaults to `openThreads`: a thread nobody answered awaits a fix.
+   */
+  add(ticket: string, pr: { merged?: boolean; openThreads?: number; awaitingFix?: number; closed?: Closed; branch?: string } = {}): string {
+    const number = this.rows.size + 1;
+    const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
+    const pull: ExternalPull = {
+      id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, ...pr, closed,
+    };
+    this.rows.set(pull.id, pull);
+    return pull.id;
+  }
+
+  pull(id: string): ExternalPull {
+    const pull = this.rows.get(id);
+    if (!pull) throw new Error(`no such pull request ${id}`);
+    return pull;
+  }
+
+  /** Every branch a `branch.push` was applied for, in order. */
+  pushes(): string[] {
+    return [...this.pushed];
+  }
+
+  async login(): Promise<string> {
+    return BOT;
+  }
+
+  async pulls(): Promise<PullRecord[]> {
+    return [...this.rows.values()].map(pullRecordOf);
+  }
+
+  async pullsNaming(ticket: string): Promise<PullRecord[]> {
+    return [...this.rows.values()].filter((p) => p.ticket === ticket || p.branch === prBranch(ticket)).map(pullRecordOf);
+  }
+
+  // ponytail: counts, not threads — briefed as none open, whatever the count says; hold thread text here if a test ever briefs it.
+  async threads(): Promise<ReviewThread[]> {
+    return [];
+  }
+
+  async changedFiles(): Promise<ChangedFile[]> {
+    return [];
+  }
+
+  async reviews(): Promise<string[]> {
+    throw countsOnly();
+  }
+
+  async postReview(): Promise<void> {
+    throw countsOnly();
+  }
+
+  async reply(): Promise<void> {
+    throw countsOnly();
+  }
+
+  async resolve(): Promise<void> {
+    throw countsOnly();
+  }
+
+  async openPull({ ticket, branch }: { ticket: string; branch: string }): Promise<void> {
+    this.add(ticket, { branch });
+  }
+
+  async closePull(pull: number): Promise<void> {
+    const open = this.pull(`pr-${pull}`);
+    if (open.closed === null) open.closed = "dropped";
+  }
+
+  async heads(): Promise<BranchHeads> {
+    return { local: {}, remote: {} };
+  }
+
+  async push(branch: string): Promise<void> {
+    this.pushed.push(branch);
+  }
+
+  /** No branch heads: there is no checkout behind this forge. */
+  override provides(): string[] {
+    return [];
+  }
+
+  override async observe(): Promise<Record<string, unknown>> {
+    return {};
+  }
+
+  /*
+   * Closed and merged as a test set them, independently, and the live counts
+   * — an open pull request's only, as a forge reports them: a thread left on
+   * a merged or abandoned one is nothing a fix round can act on. Zero rather
+   * than absent, so "no thread awaits a fix" stays readable once all merge.
+   */
+  protected override node(pull: PullRecord): Node {
+    const p = this.pull(`pr-${pull.number}`);
+    return {
+      id: p.id,
+      kind: PULL_REQUEST_KIND,
+      title: pull.title,
+      link: pull.link,
+      closed: p.closed,
+      priority: null,
+      origin: null,
+      state: {
+        merged: p.merged,
+        openThreads: p.closed === null ? p.openThreads : 0,
+        awaitingFix: p.closed === null ? p.awaitingFix : 0,
+        ...(p.branch === undefined ? {} : { branch: p.branch }),
+      },
+    };
+  }
+
+  override effects(): EffectTable {
+    const effects = super.effects();
+    return {
+      ...effects,
+      // Nothing can say the remote already has the branch's head, and a push
+      // of a branch already there changes nothing: taken whenever planned.
+      [BRANCH_PUSH_EFFECT]: {
+        satisfied: (_snapshot, effect) => {
+          effectBranch(effect);
+          return false;
+        },
+        apply: (effect) => this.push(effectBranch(effect)),
+      },
+      // No checkout to ask whether the branch has anything on it.
+      [PULL_OPEN_EFFECT]: {
+        satisfied: (effects[PULL_OPEN_EFFECT] as EffectHandler).satisfied,
+        apply: (effect, { ticket }) => this.openPull({ ticket, branch: effectBranch(effect) }),
+      },
+      [PULL_REVIEW_EFFECT]: {
+        satisfied: (effects[PULL_REVIEW_EFFECT] as EffectHandler).satisfied,
+        apply: async (effect, { ticket }) => this.countReview(effect, ticket),
+      },
+    };
+  }
+
+  /*
+   * A review, as what it does to the counts: each well-formed finding opens a
+   * thread awaiting a fix; each reply from a `fix` round hands one to the
+   * person and each other reply hands one back; and each id a review lists as
+   * resolved closes one the reviewer raised — never more than it raised, since
+   * a person's thread is theirs to close. A fix round resolves nothing. Once
+   * per round, by its marker.
+   */
+  private async countReview(effect: Effect, ticket: string): Promise<void> {
+    const branch = effectBranch(effect);
+    const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown; replies?: unknown };
+    const some = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
+    const fromBranch = [...this.rows.values()].filter((p) => p.ticket === ticket && p.branch === branch);
+    const pull = fromBranch.find((p) => p.closed === null && !p.merged);
+    if (!pull) {
+      // Merged meanwhile, or a clean review, is nothing to fix; no pull
+      // request from the branch at all is a route naming the wrong branch.
+      const empty = !some(out.findings) && !some(out.resolved) && !some(out.replies);
+      if (empty || fromBranch.length > 0) return;
+      throw new Error(`there is no open pull request from ${branch} to put the review on`);
     }
-    return found;
-  };
+    const marker = String(effect.marker);
+    if ((pull.reviews ?? []).includes(marker)) return;
+    const fix = marker.split(":")[0] === FIX_KIND;
+    const opened = (Array.isArray(out.findings) ? out.findings : []).filter((f) => {
+      const x = f as { file?: unknown; line?: unknown; body?: unknown } | null;
+      return typeof x === "object" && x !== null && typeof x.file === "string" && Number.isInteger(x.line) && typeof x.body === "string";
+    }).length;
+    const replied = (Array.isArray(out.replies) ? out.replies : []).filter((r) => {
+      const x = r as { thread?: unknown; body?: unknown } | null;
+      return typeof x === "object" && x !== null && typeof x.thread === "string" && typeof x.body === "string";
+    }).length;
+    const raised = pull.raised ?? 0;
+    const closing = fix ? 0 : Math.min(raised, Array.isArray(out.resolved) ? out.resolved.length : 0);
+    pull.raised = raised - closing + opened;
+    pull.openThreads = pull.openThreads - closing + opened;
+    // ponytail: a count cannot tell which thread a reply or a resolve
+    // touched, so it is held inside [0, openThreads]; a real forge reads
+    // each thread's last word instead.
+    const awaiting = pull.awaitingFix + opened + (fix ? -replied : replied);
+    pull.awaitingFix = Math.min(pull.openThreads, Math.max(0, awaiting));
+    pull.reviews = [...(pull.reviews ?? []), marker];
+  }
+}
 
-  const post = (id: string, author: string, body: string): void => {
-    const row = must(id);
-    row.comments.push({ id: nextId++, body, created_at: at(row.comments), user: { login: author } });
-  };
+/** Docs in memory, on the kit's base: each ticket's spec page is a string it keeps. */
+export class MemoryDocs extends BaseDocs {
+  /** Every published page, by ticket. */
+  readonly pages = new Map<string, string>();
 
-  const entriesOf = (id: string): Entry[] => entriesFromComments(must(id).comments, BOT);
+  async page(ticket: string): Promise<string | null> {
+    return this.pages.get(ticket) ?? null;
+  }
 
-  const wroteIt = (c: TrackerComment): boolean => c.user?.login === BOT;
+  async publish(ticket: string, content: string): Promise<void> {
+    this.pages.set(ticket, content);
+  }
+
+  async link(ticket: string): Promise<string> {
+    return `memory://specs/${ticket}`;
+  }
+
+  async published(): Promise<Set<string>> {
+    return new Set(this.pages.keys());
+  }
+}
+
+/**
+ * A tracker, a forge and a docs integration in memory, composed exactly as a
+ * project's own are, speaking the conventions and nobody's dialect.
+ *
+ * This is not a second copy of an integration. A real integration is tested
+ * over a fake HTTP boundary, which is the only way to test *it* — a
+ * hand-written imitation would be free to disagree with the real hook, and the
+ * place it disagreed is exactly where a leak across the boundary stopped being
+ * visible. What this is for is the workflow: labels, records and human turns,
+ * so a graph can be driven and its loops watched before any integration for a
+ * given tracker exists at all.
+ *
+ * Its hooks are `compose`'s over `MemoryTracker`, `MemoryForge` and
+ * `MemoryDocs`, the same kit bases every integration is built on, so every
+ * effect name and every `satisfied()` is the kit's own rather than a copy.
+ */
+export function createExternalState(seed: { tickets?: Array<Partial<ExternalTicket>> } = {}): ExternalState {
+  const tracker = new MemoryTracker(seed);
+  const forge = new MemoryForge();
+  const docs = new MemoryDocs();
 
   return {
-    ticket: must,
-    children: (parent) => [...rows.values()].filter((r) => r.parent === parent),
+    ...compose({ tracker, forge, docs }),
+    ticket: (id) => tracker.row(id),
+    children: (parent) => [...tracker.rows.values()].filter((r) => r.parent === parent),
     openPull: (ticket, pr = {}) => {
-      must(ticket);
-      const number = pulls.size + 1;
-      // Merged means closed as done, unless the test says otherwise.
-      const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
-      const pull: ExternalPull = {
-        id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, ...pr, closed,
-      };
-      pulls.set(pull.id, pull);
-      return pull.id;
+      tracker.row(ticket);
+      return forge.add(ticket, pr);
     },
-    pull: (id) => {
-      const pull = pulls.get(id);
-      if (!pull) throw new Error(`no such pull request ${id}`);
-      return pull;
-    },
-    pushes: () => [...pushed],
-
-    source: defineSource({
-      id: "memory",
-      relations: RELATION_DECLS,
-      list: async () => graphOf([...rows.values()]),
-      read: async (id) => graphOf(neighbourhood(id)),
-    }),
-
-    operator: defineOperator({
-      id: "memory",
-      createTicket: async ({ title, body, labels, parent, origin, priority }) => {
-        if (parent !== undefined) must(parent); // throws "no such ticket #<parent>" when it is not one
-        let n = rows.size + 1;
-        while (rows.has(String(n))) n++;
-        const stamped = neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : "");
-        return nodeOf(
-          add(
-            { title, body: stamped, labels: labels ?? [], author: BOT, parent: parent ?? null, priority: priority ?? null },
-            String(n),
-          ),
-        );
-      },
-      updateTicket: async (id, patch) => {
-        const row = must(id);
-        if (patch.title !== undefined) row.title = patch.title;
-        if (patch.body !== undefined) row.body = patch.body;
-        if (patch.state !== undefined) row.closed = patch.state === "closed" ? "done" : null;
-        row.labels = row.labels.filter((l) => !(patch.removeLabels ?? []).includes(l));
-        for (const l of patch.addLabels ?? []) if (!row.labels.includes(l)) row.labels.push(l);
-        return nodeOf(row);
-      },
-    }),
-
-    comments: (n) => must(n).comments.map((c) => c.body),
-    entriesOf,
-    stage: (n) => stageFromLabels(must(n).labels).stage,
+    pull: (id) => forge.pull(id),
+    pushes: () => forge.pushes(),
+    comments: (n) => tracker.row(n).comments.map((c) => c.body),
+    entriesOf: (n) => entriesFromComments(tracker.row(n).comments, BOT),
+    stage: (n) => stageFromLabels(tracker.row(n).labels).stage,
     label: (n, label) => {
-      const row = must(n);
+      const row = tracker.row(n);
       if (!row.labels.includes(label)) row.labels.push(label);
     },
     unlabel: (n, label) => {
-      const row = must(n);
+      const row = tracker.row(n);
       row.labels = row.labels.filter((l) => l !== label);
     },
-    say: (n, text) => post(n, PERSON, text),
-
-    pre: definePreHook({
-      id: "memory",
-      /*
-       * Exactly what `run` below puts in the snapshot, and nothing else —
-       * `landrace validate`'s path-coverage rule is answered from this list,
-       * so a path declared and not provided passes a workflow that reads
-       * nothing. Only what a graph cannot hold: the title, the labels and
-       * the assignees are the node's, and a second copy of them here is how
-       * a fake and the integration it stands in for drift apart.
-       * tests/hooks/provides.test.ts holds this level with what `run`
-       * returns, for this tracker and for the shipped one.
-       */
-      provides: ["ticket", "ticket.body", "ticket.comments", "entries"],
-      run: ({ ticket }) => {
-        const row = must(ticket);
-        return {
-          ticket: { body: row.body, comments: row.comments.map((c) => ({ ...c })) },
-          entries: entriesOf(ticket),
-        };
-      },
-    }),
-
-    post: definePostHook({
-      id: "memory",
-      handles: [
-        LABEL_EFFECT, STATUS_EFFECT, RECORD_EFFECT, NODES_CLOSE_EFFECT, CLOSE_EFFECT, BRANCH_PUSH_EFFECT, PULL_OPEN_EFFECT,
-        PULL_REVIEW_EFFECT,
-      ],
-
-      /*
-       * Asked of the snapshot rather than of the map behind it, exactly as a
-       * real hook must: `satisfied` is synchronous and answers "does the world
-       * already show this", and the world it can see is the one this pass read.
-       */
-      satisfied: (snapshot: Snapshot, effect: Effect): boolean => {
-        const ticket = (snapshot.ticket ?? {}) as { comments?: TrackerComment[] };
-        const labels = labelsOf(snapshot.node as Node | undefined);
-        switch (effect.type) {
-          case LABEL_EFFECT: {
-            const add = (effect.add as string[] | undefined) ?? [];
-            const remove = (effect.remove as string[] | undefined) ?? [];
-            return add.every((l) => labels.includes(l)) && remove.every((l) => !labels.includes(l));
-          }
-          case STATUS_EFFECT:
-            return labels.includes(LABELS.stage(String(effect.value)));
-          case RECORD_EFFECT: {
-            // The same refusal a real tracker hook makes, for the same reason:
-            // nothing on the ticket would record that an unmarked comment had
-            // been posted, so reconciling one could only mean posting it again
-            // on every tick.
-            if (effect.marker === undefined) {
-              throw new Error(
-                "a tracker.comment effect with no marker cannot be reconciled: nothing would record that " +
-                "it had already been posted, so it would be posted again on every tick",
-              );
-            }
-            const marker = String(effect.marker);
-            // Ours, and the marker parsed whole — never a substring of the
-            // body. A stranger who guessed the token could otherwise suppress
-            // the effect for good, because reconcile drops it.
-            return (ticket.comments ?? []).some((c) => wroteIt(c) && parseMarker(c.body ?? "")?.marker === marker);
-          }
-          case NODES_CLOSE_EFFECT:
-            return allClosed(snapshot.graph as Graph | undefined, (effect.ids as string[] | undefined) ?? []);
-          case CLOSE_EFFECT:
-            // Closed either way counts, as in the shipped tracker hook: a
-            // person who dropped it decided that, and closing it again as
-            // done would overrule them.
-            return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
-          case BRANCH_PUSH_EFFECT:
-            // No repository behind this tracker, so nothing can say the remote
-            // already has the branch's head — and a push of a branch that is
-            // already there changes nothing, so it is applied whenever planned.
-            effectBranch(effect);
-            return false;
-          case PULL_OPEN_EFFECT:
-            return hasPullFrom(
-              snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect),
-            );
-          case PULL_REVIEW_EFFECT:
-            // As in the shipped tracker hook: apply() checks the pull request
-            // for the round's marker itself, since no snapshot carries reviews.
-            effectBranch(effect);
-            return false;
-          default:
-            return false;
-        }
-      },
-
-      apply: async (effect: Effect, { ticket }): Promise<void> => {
-        const row = must(ticket);
-        switch (effect.type) {
-          case LABEL_EFFECT: {
-            for (const l of (effect.remove as string[] | undefined) ?? []) {
-              row.labels = row.labels.filter((x) => x !== l);
-            }
-            for (const l of (effect.add as string[] | undefined) ?? []) {
-              if (!row.labels.includes(l)) row.labels.push(l);
-            }
-            return;
-          }
-          case STATUS_EFFECT: {
-            // Position is a label here too, and exactly one of them: two
-            // stage labels is a ticket the engine cannot place at all.
-            row.labels = row.labels.filter((l) => !l.startsWith(STAGE_LABEL_PREFIX));
-            row.labels.push(LABELS.stage(String(effect.value)));
-            return;
-          }
-          case RECORD_EFFECT: {
-            const body = neutraliseMarkers(String(effect.body ?? ""));
-            if (effect.kind === undefined) {
-              // An operator's own reply is genuinely a human turn; stamping it
-              // would make the engine read a person's words as its own record.
-              post(ticket, BOT, body);
-              return;
-            }
-            const marker = recordMarker(effect);
-            post(ticket, BOT, body + renderMarker(marker));
-            return;
-          }
-          case NODES_CLOSE_EFFECT: {
-            for (const id of (effect.ids as string[] | undefined) ?? []) {
-              const pull = pulls.get(id);
-              if (pull) { if (pull.closed === null) pull.closed = "dropped"; continue; }
-              const child = rows.get(id);
-              if (child && child.closed === null) child.closed = "dropped";
-            }
-            return;
-          }
-          case CLOSE_EFFECT: {
-            if (row.closed === null) row.closed = "done";
-            return;
-          }
-          case BRANCH_PUSH_EFFECT:
-            pushed.push(effectBranch(effect));
-            return;
-          case PULL_REVIEW_EFFECT: {
-            // Threads are a count here, not text, so a review is what it does
-            // to the counts: each well-formed finding opens one awaiting a
-            // fix; each reply from a `fix` round hands one to the person and
-            // each other reply hands one back; and each id a review lists as
-            // resolved closes one the reviewer raised — never more than it
-            // raised, since a person's thread is theirs to close. A fix round
-            // resolves nothing.
-            const branch = effectBranch(effect);
-            const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown; replies?: unknown };
-            const some = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
-            const fromBranch = [...pulls.values()].filter((p) => p.ticket === ticket && p.branch === branch);
-            const pull = fromBranch.find((p) => p.closed === null && !p.merged);
-            if (!pull) {
-              // The same rule as the shipped hook: merged meanwhile, or a clean
-              // review, is nothing to fix; no pull request from the branch at
-              // all is a route naming the wrong branch.
-              const empty = !some(out.findings) && !some(out.resolved) && !some(out.replies);
-              if (empty || fromBranch.length > 0) return;
-              throw new Error(`there is no open pull request from ${branch} to put the review on`);
-            }
-            const marker = String(effect.marker);
-            if ((pull.reviews ?? []).includes(marker)) return;
-            const fix = marker.split(":")[0] === FIX_KIND;
-            const opened = (Array.isArray(out.findings) ? out.findings : []).filter((f) => {
-              const x = f as { file?: unknown; line?: unknown; body?: unknown } | null;
-              return typeof x === "object" && x !== null && typeof x.file === "string" && Number.isInteger(x.line) && typeof x.body === "string";
-            }).length;
-            const replied = (Array.isArray(out.replies) ? out.replies : []).filter((r) => {
-              const x = r as { thread?: unknown; body?: unknown } | null;
-              return typeof x === "object" && x !== null && typeof x.thread === "string" && typeof x.body === "string";
-            }).length;
-            const raised = pull.raised ?? 0;
-            const closing = fix ? 0 : Math.min(raised, Array.isArray(out.resolved) ? out.resolved.length : 0);
-            pull.raised = raised - closing + opened;
-            pull.openThreads = pull.openThreads - closing + opened;
-            // ponytail: a count cannot tell which thread a reply or a resolve
-            // touched, so it is held inside [0, openThreads]; the shipped
-            // tracker hook reads each thread's last word instead.
-            const awaiting = pull.awaitingFix + opened + (fix ? -replied : replied);
-            pull.awaitingFix = Math.min(pull.openThreads, Math.max(0, awaiting));
-            pull.reviews = [...(pull.reviews ?? []), marker];
-            return;
-          }
-          case PULL_OPEN_EFFECT: {
-            const number = pulls.size + 1;
-            pulls.set(`pr-${number}`, {
-              id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, awaitingFix: 0, closed: null, branch: effectBranch(effect),
-            });
-            return;
-          }
-          default:
-            throw new Error(`the in-memory tracker cannot apply effect "${String(effect.type)}"`);
-        }
-      },
-    }),
+    say: (n, text) => tracker.post(n, PERSON, text),
   };
 }

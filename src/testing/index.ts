@@ -11,5 +11,5 @@
  * converge and writes down where the ticket went and what it was paid for.
  */
 export { createHarness } from "#testing/harness.js";
-export { createExternalState, staticSource } from "#testing/external-state.js";
+export { createExternalState, MemoryDocs, MemoryForge, MemoryTracker, staticSource } from "#testing/external-state.js";
 export { scriptedExecutor } from "#testing/scripted.js";

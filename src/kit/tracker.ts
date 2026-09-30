@@ -11,9 +11,15 @@
  * mapping what they answer into the plain fields `ticketNode` takes.
  */
 import {
-  allClosed, LABELS, labelsOf, parseMarker, parseOrigin, sameLogin, TICKET_KIND,
+  allClosed, CLOSE_EFFECT, entriesFromComments, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES, neutraliseMarkers,
+  NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATIONS, renderMarker, renderOrigin, sameLogin,
+  STAGE_LABEL_PREFIX, STATUS_EFFECT, TICKET_KIND,
 } from "#conventions.js";
-import type { Closed, Effect, Graph, Node, Snapshot, SnapshotComment } from "#namespace.js";
+import { commentLine } from "#kit/forge.js";
+import type {
+  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewTicket, Node, RelationDecl, Relationship,
+  RuntimeContext, Snapshot, SnapshotComment, TicketPatch, TicketRecord, TrackerComment,
+} from "#namespace.js";
 
 export type { SnapshotComment } from "#namespace.js";
 
@@ -173,31 +179,17 @@ export function createdAtOf(at: string | undefined): { createdAt?: number } {
 /**
  * The one mapping from a ticket, as an integration reads its tracker's, to a
  * ticket node. `bot` is the login we post as: an origin counts only in a body
- * we wrote, because a re-run closes whatever claims it. `editor` is who last
- * edited the body, or undefined if nobody has since it was opened.
+ * we wrote, because a re-run closes whatever claims it. The parent is an
+ * edge, not a field, so it is not asked for here.
  */
-export function ticketNode(
-  ticket: {
-    id: string;
-    title: string;
-    link: string;
-    closed: Closed;
-    labels: string[];
-    assignees: string[];
-    body: string;
-    author: string | undefined;
-    editor: string | undefined;
-    createdAt: string | undefined;
-  },
-  bot: string,
-): Node {
+export function ticketNode(ticket: Omit<TicketRecord, "parent">, bot: string): Node {
   return {
     id: ticket.id,
     kind: TICKET_KIND,
     title: ticket.title,
     link: ticket.link,
     closed: ticket.closed,
-    priority: priorityFromLabels(ticket.labels).priority,
+    priority: ticket.priority !== undefined ? ticket.priority : priorityFromLabels(ticket.labels).priority,
     // Nobody but us may have touched the body since: a person keeps the
     // bot's authorship when they edit it, and could otherwise rewrite the
     // marker to claim another stage or round.
@@ -211,4 +203,233 @@ export function ticketNode(
     state: { labels: ticket.labels, assignees: ticket.assignees },
     ...createdAtOf(ticket.createdAt),
   };
+}
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+
+/**
+ * The ids a `nodes.close` names that the snapshot's graph does not already
+ * show closed. Already closed is left alone: a merged pull request cannot be
+ * un-merged, and a ticket closed as done must not be re-closed as dropped.
+ */
+export function stillOpen(snapshot: Snapshot, effect: Effect): string[] {
+  const closed = new Map(((snapshot.graph as Graph | undefined)?.nodes ?? []).map((n) => [n.id, n.closed]));
+  return strings(effect.ids).filter((id) => (closed.get(id) ?? null) === null);
+}
+
+/**
+ * A tracker integration: its vendor's calls, and nothing else.
+ *
+ * An integration extends this and writes the abstract methods — each one a
+ * request to its tracker, answered in the plain shapes of `src/namespace.ts`.
+ * Everything a tracker does that is not its vendor's is here: the ticket
+ * graph and its bounds, the pre hook's fragment, the five tracker effects
+ * with their `satisfied()`, the history's comments, and the operator's two
+ * writes. `compose` makes the hooks out of it.
+ *
+ * To change one piece, subclass and override it: an effect by spreading
+ * `super.effects()` and replacing or adding an entry, a briefing the same way
+ * with `briefs()`.
+ */
+export abstract class BaseTracker {
+  /** The login we post as: what tells our comments and markers from a stranger's. */
+  abstract login(ctx: RuntimeContext): Promise<string>;
+  /** Every open ticket, and any closed one the board should still show, each with its parent. */
+  abstract tickets(ctx: RuntimeContext): Promise<TicketRecord[]>;
+  /** One ticket. Throws when there is none: a missing ticket is not an empty one. */
+  abstract ticket(id: string, ctx: RuntimeContext): Promise<TicketRecord>;
+  /** A ticket's children, closed ones too: "every child closed" counts all of them. */
+  abstract children(id: string, ctx: RuntimeContext): Promise<TicketRecord[]>;
+  /** Every comment on a ticket, oldest first, every page — or a refusal, never a short list. */
+  abstract comments(id: string, ctx: RuntimeContext): Promise<TrackerComment[]>;
+  /** Post a comment exactly as given: the base has already escaped it and stamped its marker. */
+  abstract comment(id: string, body: string, ctx: RuntimeContext): Promise<void>;
+  abstract addLabels(id: string, labels: string[], ctx: RuntimeContext): Promise<void>;
+  abstract removeLabel(id: string, label: string, ctx: RuntimeContext): Promise<void>;
+  /** Close a ticket as done (completed) or dropped (not planned). */
+  abstract close(id: string, how: "done" | "dropped", ctx: RuntimeContext): Promise<void>;
+  /**
+   * Create a ticket — linked under `parent`, with `priority` in whatever form
+   * the tracker keeps it — and answer its id. The body is already escaped and
+   * stamped; the labels follow from the base once it is linked, because the
+   * eligibility label is what lets a tick work it.
+   */
+  abstract create(
+    ticket: { title: string; body: string; parent: string | undefined; priority: number | undefined },
+    ctx: RuntimeContext,
+  ): Promise<string>;
+  /** Change a ticket's title, body or state; labels go through `addLabels` and `removeLabel`. */
+  abstract update(id: string, fields: Pick<TicketPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void>;
+
+  /** Run once at startup, before anything is paid for: a permission the workflow needs and the token lacks, say. */
+  check?(ctx: RuntimeContext): Promise<void>;
+
+  relations(): RelationDecl[] {
+    return [{ type: RELATIONS.childOf, singular: true }];
+  }
+
+  /**
+   * Exactly what `observe` puts in the snapshot — `landrace validate` answers
+   * its path-coverage rule from this list, so a path declared and not
+   * provided passes a workflow that reads nothing. Only what a graph cannot
+   * hold: the title, labels and assignees are the node's.
+   */
+  provides(): string[] {
+    return ["ticket", "ticket.body", "ticket.comments", "entries", "tracker", "tracker.bot"];
+  }
+
+  /**
+   * The ticket's body and records, and the login we post as — recorded
+   * because `satisfied()` is synchronous and must know which comments are ours.
+   */
+  async observe(ctx: HookContext): Promise<Record<string, unknown>> {
+    const ticket = await this.ticket(ctx.ticket, ctx);
+    const comments = await this.comments(ctx.ticket, ctx);
+    const bot = await this.login(ctx);
+    return { ticket: { body: ticket.body, comments }, entries: entriesFromComments(comments, bot), tracker: { bot } };
+  }
+
+  effects(): EffectTable {
+    return {
+      [LABEL_EFFECT]: {
+        satisfied: labelSatisfied,
+        apply: async (effect, ctx) => {
+          for (const label of strings(effect.remove)) await this.removeLabel(ctx.ticket, label, ctx);
+          const add = strings(effect.add);
+          if (add.length > 0) await this.addLabels(ctx.ticket, add, ctx);
+        },
+      },
+      [STATUS_EFFECT]: {
+        satisfied: statusSatisfied,
+        apply: async (effect, ctx) => {
+          // Position is one label, and moving it is more than one request, so
+          // there is a window in the middle. Removing first left zero stage
+          // labels in it, and a ticket with no position reads as a new one:
+          // a crash there restarted a finished ticket from its entry step.
+          // Adding first leaves two, which the engine refuses to place rather
+          // than places wrongly — and the next status apply removes the
+          // loser, because what it removes is read off the ticket.
+          const want = LABELS.stage(String(effect.value));
+          await this.addLabels(ctx.ticket, [want], ctx);
+          const { labels } = await this.ticket(ctx.ticket, ctx);
+          for (const stale of labels.filter((l) => l.startsWith(STAGE_LABEL_PREFIX) && l !== want)) {
+            await this.removeLabel(ctx.ticket, stale, ctx);
+          }
+        },
+      },
+      [RECORD_EFFECT]: {
+        satisfied: commentSatisfied,
+        apply: async (effect, ctx) => {
+          const body = neutraliseMarkers(String(effect.body ?? ""));
+          // No kind, no marker: an operator's reply is genuinely a human turn,
+          // and stamping it would read a person's words as our own record.
+          await this.comment(ctx.ticket, effect.kind === undefined ? body : body + renderMarker(recordMarker(effect)), ctx);
+        },
+      },
+      [CLOSE_EFFECT]: {
+        satisfied: (snapshot) => closeSatisfied(snapshot),
+        apply: async (_effect, ctx) => {
+          // A person who dropped it decided that; closing it as done would overrule them.
+          if (ctx.snapshot !== undefined && closeSatisfied(ctx.snapshot)) return;
+          await this.close(ctx.ticket, "done", ctx);
+        },
+      },
+      [NODES_CLOSE_EFFECT]: {
+        satisfied: nodesCloseSatisfied,
+        apply: async (effect, ctx) => {
+          for (const id of stillOpen(ctx.snapshot, effect)) await this.close(id, "dropped", ctx);
+        },
+      },
+    };
+  }
+
+  /** Prompt text under `{brief.project.<key>}`. A tracker's comments reach a step through `history`, so none by default. */
+  briefs(): BriefTable {
+    return {};
+  }
+
+  /** The ticket's comments, for the history's one timeline. */
+  async history(ctx: HookContext): Promise<HistoryItem[]> {
+    const bot = await this.login(ctx);
+    return (await this.comments(ctx.ticket, ctx)).map((c) => ({ at: c.created_at, text: commentLine(c, bot) }));
+  }
+
+  /** Every ticket the tracker lists, and each child's edge to a parent the list carries: none dangles. */
+  async list(ctx: RuntimeContext): Promise<Graph> {
+    const bot = await this.login(ctx);
+    const tickets = await this.tickets(ctx);
+    const listed = new Set(tickets.map((t) => t.id));
+    return {
+      nodes: tickets.map((t) => ticketNode(t, bot)),
+      relationships: tickets.flatMap((t) =>
+        t.parent !== null && listed.has(t.parent) ? [{ from: t.id, to: t.parent, type: RELATIONS.childOf }] : []),
+    };
+  }
+
+  /**
+   * One ticket's neighbourhood: itself, its parent, and every descendant,
+   * breadth first — the whole subtree, because a re-run's cascade closes what
+   * hangs off a stale child and can close only what the graph shows it. The
+   * parent's other children are its business, not this ticket's. The read
+   * stops past MAX_SUBGRAPH_NODES rather than paying for a graph the engine
+   * would refuse.
+   */
+  async read(id: string, ctx: RuntimeContext): Promise<Graph> {
+    const bot = await this.login(ctx);
+    const root = await this.ticket(id, ctx);
+    if (root.priority === undefined) {
+      const { found } = priorityFromLabels(root.labels);
+      if (found.length > 1) throw new Error(`#${id} carries ${found.join(" and ")}; priority is one`);
+    }
+    const read: TicketRecord[] = [root];
+    const relationships: Relationship[] = [];
+    if (root.parent !== null) {
+      read.push(await this.ticket(root.parent, ctx));
+      relationships.push({ from: id, to: root.parent, type: RELATIONS.childOf });
+    }
+    const seen = new Set(read.map((t) => t.id));
+    const queue = [root];
+    for (let i = 0; i < queue.length; i++) {
+      const at = queue[i] as TicketRecord;
+      for (const child of await this.children(at.id, ctx)) {
+        // A tracker keeps a tree; this only stops a read that is not one from walking in circles.
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        read.push(child);
+        queue.push(child);
+        relationships.push({ from: child.id, to: at.id, type: RELATIONS.childOf });
+        if (read.length > MAX_SUBGRAPH_NODES) {
+          throw new Error(
+            `#${id} has more than the ${MAX_SUBGRAPH_NODES} nodes one read may carry; a graph known to be short is not one to decide from`,
+          );
+        }
+      }
+    }
+    return { nodes: read.map((t) => ticketNode(t, bot)), relationships };
+  }
+
+  /**
+   * The operator's create, read back as the node `read` would report. Marked
+   * under our own login, so the origin reads back as ours and only ours; the
+   * body is escaped first, so an agent cannot bring a marker of its own.
+   */
+  async createTicket({ title, body, labels, parent, origin, priority }: NewTicket, ctx: RuntimeContext): Promise<Node> {
+    const stamped = neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : "");
+    const id = await this.create({ title, body: stamped, parent, priority }, ctx);
+    if ((labels ?? []).length > 0) await this.addLabels(id, labels ?? [], ctx);
+    return ticketNode(await this.ticket(id, ctx), await this.login(ctx));
+  }
+
+  async updateTicket(id: string, { title, body, state, addLabels, removeLabels }: TicketPatch, ctx: RuntimeContext): Promise<Node> {
+    for (const label of removeLabels ?? []) await this.removeLabel(id, label, ctx);
+    if ((addLabels ?? []).length > 0) await this.addLabels(id, addLabels ?? [], ctx);
+    const fields = {
+      ...(title === undefined ? {} : { title }),
+      ...(body === undefined ? {} : { body }),
+      ...(state === undefined ? {} : { state }),
+    };
+    if (Object.keys(fields).length > 0) await this.update(id, fields, ctx);
+    return ticketNode(await this.ticket(id, ctx), await this.login(ctx));
+  }
 }

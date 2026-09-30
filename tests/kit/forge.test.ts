@@ -1,10 +1,10 @@
 import { renderMarker } from "#conventions.js";
 import {
-  answered, BRIEF_DIFF_CHARS, BRIEF_THREADS, commentableLines, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
+  answered, BRIEF_DIFF_CHARS, BRIEF_HISTORY_ITEMS, BRIEF_THREADS, commentableLines, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
   isFinding, isReply, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
-  ticketOfBranch, where,
+  threadLine, ticketOfBranch, where,
 } from "#kit/forge.js";
-import type { ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
+import type { HistoryItem, ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
 
 const BOT = "landrace-bot";
 
@@ -227,28 +227,51 @@ describe("diffBrief", () => {
   });
 });
 
+describe("commentLine", () => {
+  it("is Landrace's by login and marker both, and anyone else's by name", () => {
+    expect(commentLine({ body: stamped("Entered spec.", "enter", "enter:spec:1"), user: { login: BOT } }, BOT))
+      .toBe("Landrace [enter:spec:1]: Entered spec.");
+    expect(commentLine({ body: stamped("Entered spec.", "enter", "enter:spec:1"), user: { login: "alice" } }, BOT))
+      .toMatch(/^@alice: Entered spec\./);
+    expect(commentLine({ body: "Looks good", user: null }, BOT)).toBe("@ghost: Looks good");
+  });
+});
+
+describe("threadLine", () => {
+  it("says where, who raised it, whether it is settled, and its last reply", () => {
+    expect(threadLine(thread({ path: "src/a.ts", line: 3, first: said("Rename x."), last: said("ok", "alice"), comments: 2, resolved: true }), BOT))
+      .toBe("src/a.ts:3 — raised by Landrace's reviewer — resolved\nRename x.\nLast reply, from @alice: ok");
+    expect(threadLine(thread({ first: said("Nit", null), last: said("Nit", null) }), BOT)).toBe("raised by @ghost — open\nNit");
+  });
+});
+
 describe("historyBrief", () => {
-  it("is the conversation, then every thread on every pull request, ours told from a person's", () => {
-    const comments = [
-      { body: stamped("Entered spec.", "enter", "enter:spec:1"), user: { login: BOT } },
-      { body: "Looks good", user: { login: "alice" } },
+  const item = (at: string, text: string): HistoryItem => ({ at, text });
+
+  it("is one timeline, oldest first, whichever role each entry came from", () => {
+    const items = [
+      item("2026-01-01T00:00:00Z", "@alice: first"),
+      item("2026-01-03T00:00:00Z", "@alice: third"),
+      item("2026-01-02T00:00:00.000Z", "On PR #4 (open): raised by @bob — open\nsecond"),
     ];
-    const read = new Map([
-      [5, [thread({ path: "src/a.ts", line: 3, first: said("Rename x."), last: said("ok", "alice"), comments: 2, resolved: true })]],
-      [4, [thread({ first: said("Nit", null), last: said("Nit", null) })]],
-    ]);
-    expect(historyBrief(comments, [{ number: 5, state: "MERGED" }, { number: 4, state: "CLOSED" }], read, BOT)).toBe(
-      "## Ticket conversation\n\nLandrace [enter:spec:1]: Entered spec.\n\n@alice: Looks good\n\n" +
-      "## Review threads\n\n" +
-      "### PR #4 (closed)\n\n1. raised by @ghost — open\nNit\n\n" +
-      "### PR #5 (merged)\n\n2. src/a.ts:3 — raised by Landrace's reviewer — resolved\nRename x.\nLast reply, from @alice: ok",
-    );
+    expect(historyBrief(items)).toBe("@alice: first\n\nOn PR #4 (open): raised by @bob — open\nsecond\n\n@alice: third");
   });
 
-  it("says when there were no comments and no pull requests", () => {
-    expect(historyBrief([], [], new Map(), BOT)).toBe(
-      "## Ticket conversation\n\nNo comments on the ticket.\n\n## Review threads\n\nNo pull request was opened on this ticket.",
-    );
+  it("puts an entry whose time is unknown first, rather than dropping it", () => {
+    expect(historyBrief([item("2026-01-01T00:00:00Z", "dated"), item("", "undated")])).toBe("undated\n\ndated");
+  });
+
+  it("keeps the newest past its cap and says how many it left out", () => {
+    const items = Array.from({ length: BRIEF_HISTORY_ITEMS + 5 }, (_, i) =>
+      item(new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(), `entry ${i}`));
+    const text = historyBrief(items);
+    expect(text).toMatch(/^\(5 earlier entries are not listed here\.\)/);
+    expect(text).not.toMatch(/^entry 4$/m);
+    expect(text).toMatch(/^entry 5$/m);
+  });
+
+  it("says so when nothing was said and nothing raised", () => {
+    expect(historyBrief([])).toBe("Nothing has been said on this ticket, and no review thread was raised on its pull requests.");
   });
 });
 
