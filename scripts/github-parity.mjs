@@ -15,6 +15,8 @@
  *
  * ponytail: a read that throws on both sides counts as equal whatever each
  * said — the wording moved with the code; compare messages if that matters.
+ * It compared nothing, though: `equal` says how many did, and a run where
+ * every read did is not parity — a rate limit partway through looks like it.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -75,6 +77,7 @@ try {
   const before = (await import(pathToFileURL(copy).href)).source;
   const after = (await import(pathToFileURL(join(root, ".landrace", "hooks", "github.ts")).href)).source;
   const found = [];
+  let threw = 0;
 
   /** One read through both; the graph `ref`'s hook answered, when it did. */
   const compare = async (label, read) => {
@@ -85,6 +88,7 @@ try {
         found.push(`${label}: ${ref} ${x.error === undefined ? "read it" : `threw: ${x.error}`}; ` +
           `this checkout ${y.error === undefined ? "read it" : `threw: ${y.error}`}`);
       } else {
+        threw++;
         console.error(`${label}: both threw\n  ${ref}: ${x.error}\n  this checkout: ${y.error}`);
       }
       return x.graph;
@@ -96,11 +100,15 @@ try {
   const listed = await compare("list", (source) => source.list(ctx));
   // Nothing listed through `ref` is nothing compared, which is not parity.
   if (listed === undefined && found.length === 0) found.push(`list: ${ref}'s hook could not list the repository, so nothing was compared`);
-  for (const id of (listed?.nodes ?? []).filter((n) => n.kind === "ticket").map((n) => n.id)) {
+  const tickets = (listed?.nodes ?? []).filter((n) => n.kind === "ticket").map((n) => n.id);
+  for (const id of tickets) {
     await compare(`read #${id}`, (source) => source.read(id, ctx));
   }
+  // Likewise every read throwing on both sides: the list alone is not parity.
+  if (tickets.length > 0 && threw === tickets.length) found.push(`read: all ${threw} reads threw on both sides, so no read was compared`);
 
-  console.log(found.length === 0 ? "equal" : found.join("\n"));
+  const note = threw === 0 ? "" : ` (${tickets.length - threw} of ${tickets.length} reads compared; ${threw} threw on both sides)`;
+  console.log(found.length === 0 ? `equal${note}` : found.join("\n"));
   process.exitCode = found.length === 0 ? 0 : 1;
 } finally {
   rmSync(copy, { force: true });
