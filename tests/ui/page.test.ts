@@ -665,8 +665,8 @@ describe("a stopped ticket's Retry", () => {
     override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
   }
   const doc = { createElement: (tag: string) => new Listening(tag), createElementNS: (_: string, tag: string) => new Listening(tag) };
-  const row = (retry: string | null, goto: Array<{ stage: string; path: string }> = []) => ({
-    id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry, goto,
+  const row = (retry: string | null, goto: Array<{ stage: string; path: string }> = [], clear: string | null = null) => ({
+    id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry, goto, clear,
   });
 
   /** The menu for a row, with the world a click reaches stood in for and written down. */
@@ -720,6 +720,21 @@ describe("a stopped ticket's Retry", () => {
     const item = retryOf(menuFor(row("/tickets/19/retry")).menu);
     expect(item?.tag).toBe("button");
     expect(item?.getAttribute("role")).toBe("menuitem");
+  });
+
+  // A screened ticket's overrule: next to Retry, asked in words that say the
+  // security check is skipped, and posted under its own header.
+  it("offers Clear & retry right after Retry, only where the server put a path", () => {
+    expect(items(menuFor(row("/tickets/19/retry", [], "/tickets/19/clear")).menu).slice(0, 3)).toEqual(["Retry", "Clear & retry", "—"]);
+  });
+
+  it("asks that the refused text was read, then posts with the clear header", async () => {
+    const { menu, seen } = menuFor(row("/tickets/19/retry", [], "/tickets/19/clear"));
+    const clear = menu.children.find((c) => c.getAttribute("data-key") === "19:clear") as Listening | undefined;
+    clear?.listeners.get("click")?.();
+    await settle();
+    expect(seen.confirms[0]).toMatch(/#19[\s\S]*without the security check[\s\S]*read/);
+    expect(seen.posts).toEqual([["/tickets/19/clear", { method: "POST", headers: { "x-landrace-action": "clear" } }]]);
   });
 
   it("asks before it posts, and posts nothing when told no", async () => {

@@ -958,6 +958,30 @@ describe("sending a ticket back to a step", () => {
   // entered, and a seed with none would have failed nowhere.
   const BUILD_ENTERED: Effect = { type: "tracker.comment", kind: "enter", stage: "build", round: 1, marker: "enter:build:1" };
 
+  // #39: a spec the screener refused for its own template's wording, round
+  // after round. A person clears it: that one round runs, and the next is
+  // screened — and refused — as ever.
+  it("runs a refused step's next round unscreened once a person clears it, and screens the round after", async () => {
+    const QUESTIONS = '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```';
+    const NO = '```json\n{"verdict":"suspicious","reason":"template wording"}\n```';
+    const OK = '```json\n{"verdict":"ok","reason":"fine"}\n```';
+    const { state, run, deps } = await world([], { spec: QUESTIONS, triage: judged("revise") }, { spec: NO, triage: OK });
+    await run.converge();
+    await run.converge();
+    expect(state.stage("1")).toBe("screened");
+
+    expect(await sendTo(deps, "1", null, { clear: true })).toEqual({ to: "spec" });
+    await run.converge();
+    expect(state.stage("1")).toBe("spec-questions");
+    expect(state.comments("1").join("\n")).toMatch(/Security check cleared by a person: spec, round 2/);
+
+    state.say("1", "in-house");
+    await run.converge();
+    await run.converge();
+    expect(state.stage("1")).toBe("screened");
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused").map((e) => e.round)).toEqual([1, 3]);
+  });
+
   it("takes 'go back to spec' at pr-human-review through the judge to a second spec round, and back through review", async () => {
     const { state, run, record } = await world(["lr:stage:pr-human-review", "lr:awaiting"], {
       ...ANSWERS, spec: SPEC, triage: (round) => judged(round === 1 ? "goto-spec" : "approve"),

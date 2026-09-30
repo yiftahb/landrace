@@ -42,6 +42,7 @@ export const ENGINE_PROVIDES: readonly string[] = [
   "run.lastOutputValid",
   "run.lastRefused",
   "run.goto", "run.previousStage",
+  "run.cleared", "run.cleared.*",
   "run.failedStages", "run.failedStage",
   "run.unblockedAt",
   "run.pairing", "run.pairing.*",

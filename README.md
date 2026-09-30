@@ -395,6 +395,8 @@ stages:
 
 A step whose round fails is never retried; the ticket halts, and there are two halts, one each for the two ways a round fails. A round whose output broke its contract — no json block, an undeclared shape, too long to record — is recorded as `malformed` and goes to `blocked` (`lr:blocked`). A round a security check stopped — the prompt screener said no or could not run, or the agent changed a worktree or created a ticket it had not declared it could — is recorded as `refused`, headed "Step refused by a security check" with the reason, and goes to `screened`, which wears `lr:screened` beside `lr:blocked`: it is still blocked for everything that asks, and says why. The split is `run.lastRefused`, derived beside `run.lastOutputValid` and scoped the same way — `false` for a broken contract, `true` for a refusal, `null` when the current stage has not failed — so exactly one of the two triggers takes any failure. Every other trigger leaving a stage that runs a step reads `"run.lastOutputValid": null`: a failed round is only ever the halts' to route.
 
+**Clearing a refused step.** The screener is a model reading the whole rendered prompt, template included, and it can refuse a prompt that is fine — #39's spec was refused twice for its own template's wording. A person can overrule it, and only a person: the board's "Clear & retry" (offered beside Retry on a screened ticket) or `landrace_clear`, never a reply — a comment is text anyone can write, and an injection that could clear itself would make the screener decoration. It writes a `cleared` record naming exactly the round the retry will run (`cleared:<stage>:<round>`), then the same goto Retry writes; that round runs without prompt screening and logs `screen.cleared`, and every later round is screened as ever. `run.cleared` derives it from the records, and anything written on the ticket after the clearance voids it, so new text never reaches a prompt unread. It is refused on a ticket no security check stopped (`lr:screened`), and nothing is written where the goto itself would be refused. The agent's confinement does not change: the sandbox, the capability checks and the worktree diff still hold for a cleared round.
+
 Wherever it is a person's turn — `spec-questions`, `spec-human-review`, `pr-human-review`, `blocked`, `screened` — a reply goes to `triage`, one judge for all five. It reads the reply into a closed set of answers: `approve`, `revise`, `rework`, `question`, `unclear`, `goto-spec`, `goto-build`. An answer that changes nothing where the reply was made sends the ticket back there; `run.previousStage` says where, read off `triage`'s own entry record. At `pr-human-review`, `revise` — a change asked for on the pull request — sends the ticket to `spec` first, as often as a person asks: that round is shown the approved spec and the message, amends the spec with just that change, and goes straight to `build`, since the person asked for exactly it. So `build`, `code-review` and `fix-review` all read the change from the one authority they already check against — on #27 a request that reached `build` alone was flagged against the unchanged spec and reverted. Work asked for there that changes no requirement — resolve the conflicts, get a failing check green — is `rework` instead, and goes straight to `fix-review`, which already merges main and runs the checks; it is shown the message only when a reply sent the round (`run.previousStage` is `triage`), never on a round the reviewer's threads sent. On #34 "Resolve conflicts first." was read as `revise` and spent a spec round amending nothing. A spec redone from scratch after a pull request exists (`goto-spec`, "Go to step… spec") is reviewed at `spec-human-review` as ever. At a halt, `triage` is also told which step failed — `run.failedStage`, the failure that put the ticket there, never an older one it has since been sent around, and `none` when there is none — and "try again" there means that step when it was `spec` or `build` — for any other failure, that is the board's Retry to retry, not a reply's to say. `triage` has no round cap: each round waits for a person's own message, so a conversation is bounded by the person having it.
 
 A person can also send a ticket back to an earlier step. `spec-questions`, `spec-human-review`, `pr-human-review` and `triage` itself list, under `goto`, the same two steps a `goto-spec` or `goto-build` answer may reach — `spec` and `build`, each while it has run fewer than three rounds:
@@ -690,14 +692,16 @@ are guarded beyond the Host check. The tick button starts a tick, or, while
 one is running, says "queued" and runs one once every tick in flight has
 ended — which, with an agent step in flight, can be long after the next
 scheduled tick. A Retry or "Go to step…" that went through, and every
-`landrace mcp` write — reply, goto, ask, resolve, create or update a ticket —
+`landrace mcp` write — reply, goto, clear, ask, resolve, create or update a ticket —
 wake the loop the same way, so a person does not wait out the interval. The
 MCP server is a separate process: it touches a `wake` file beside the locks
 in `$TMPDIR/landrace/<repo>/`, and `start` checks that file every second. The "Retry"
 item, first in a blocked or screened ticket's menu, sends the ticket back to
 the step whose failure put it there. The "Go to step…" items, offered on any
 open ticket whose agent is not running and whose stage lists a goto, send it
-back to a step its stage names. Each asks first, and each writes the same
+back to a step its stage names. "Clear & retry", beside Retry on a screened
+ticket only, is a Retry that also clears the refused step's next round of the
+security check (see above). Each asks first, and each writes the same
 goto record `landrace_goto` does, after reading the ticket afresh: a ticket
 that has moved on, a step its stage does not list, or one past its cap is
 refused in a sentence the menu shows. The icon-only Refresh button, right of
@@ -705,7 +709,7 @@ Collapse all / Expand all, starts no agent at all — it re-reads the tracker an
 reloads the board from it, one list and nothing more — but it still spends
 that read, so it is guarded the same way as the other three rather than left
 as a plain GET. Each write requires its own custom `x-landrace-action` header
-(`tick`, `retry`, `goto`, `refresh`), which a cross-site `<form>` cannot set,
+(`tick`, `retry`, `clear`, `goto`, `refresh`), which a cross-site `<form>` cannot set,
 and a cross-origin `fetch` that does set one triggers a CORS preflight this
 server never answers with permission. Each also refuses any `Origin` other
 than the page's own, and any request the browser marks `Sec-Fetch-Site` as

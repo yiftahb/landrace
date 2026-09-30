@@ -431,6 +431,16 @@ function writesOf(row) {
       ask: "Retry #" + row.id + "? This sends it back to the step that failed and re-runs a paid step.",
     }));
   }
+  // A screened ticket's overrule: the refused step's next round runs once
+  // without the security check. The server re-reads the ticket and alone
+  // decides; this is only its offer.
+  if (row.clear) {
+    items.push(writeItem({
+      key: row.id + ":clear", label: "Clear & retry", busy: "Clearing…", path: row.clear, action: "clear",
+      ask: "Retry #" + row.id + " without the security check? Its next round runs once unscreened — only if you have " +
+        "read what was refused and trust it. Anything written on the ticket after this voids it.",
+    }));
+  }
   const targets = row.goto || [];
   if (targets.length) {
     const caption = el("div", "px-3 pt-2 pb-1 text-[11px] text-neutral-500 dark:text-neutral-400", "Go to step…");
