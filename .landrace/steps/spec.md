@@ -25,9 +25,9 @@ The spec published for this ticket so far, if there is one:
 {brief.spec.content}
 --- end of the spec published so far ---
 
-The conversation on the ticket so far — every comment in order, the
-questions an earlier round asked and the answers to them, and any review
-threads:
+The conversation on the ticket so far, as one timeline, oldest first — every
+comment, the questions an earlier round asked and the answers to them, and
+any review threads, each where it was said:
 
 --- the conversation so far ---
 {brief.project.history}

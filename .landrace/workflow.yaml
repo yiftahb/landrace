@@ -3,7 +3,7 @@ name: landrace
 
 # Integrations are imported by path, not named by id. Every path is relative to
 # this directory and must stay inside it, and the order is the order pre hooks
-# run in. One module can export several kinds — hooks/github.ts exports five —
+# run in. One module can export several kinds — hooks/github.ts exports six —
 # so the list is flat: the define* helpers brand each export with its kind, and
 # the loader files it from there.
 #
