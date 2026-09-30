@@ -47,6 +47,53 @@ const world = (labels: string[]) => {
   return { tracker, deps, run, failed, settled, rejected };
 };
 
+/*
+ * A person clearing a refused step: the round the retry will run is named on
+ * a clearance record, and the goto is the same one a Retry writes. Only where
+ * a security check stopped the ticket, and never where the goto itself would
+ * be refused — a clearance nothing will run is a standing waiver.
+ */
+describe("clearing a step the security check refused", () => {
+  const SCREENED = ["lr:stage:blocked", "lr:blocked", "lr:screened"];
+  const refusedAt = (w: ReturnType<typeof world>, stage: string, round: number) => {
+    w.tracker.say(3, `entered${renderMarker({ stage, kind: "enter", round })}`);
+    w.tracker.say(3, `refused${renderMarker({ stage, kind: "refused", round })}`);
+  };
+
+  it("clears the round the retry will run, and sends the ticket back to it", async () => {
+    const w = world(SCREENED);
+    refusedAt(w, "spec", 1);
+    expect(await sendTo(w.deps, "3", null, { clear: true })).toEqual({ to: "spec" });
+    const run = await w.run();
+    expect(run?.goto).toBe("spec");
+    expect(run?.cleared).toEqual({ stage: "spec", round: 2 });
+  });
+
+  it("clears the stage named instead, when the halt lists it", async () => {
+    const w = world(SCREENED);
+    refusedAt(w, "spec", 1);
+    expect(await sendTo(w.deps, "3", "build", { clear: true })).toEqual({ to: "build" });
+    expect((await w.run())?.cleared).toEqual({ stage: "build", round: 1 });
+  });
+
+  it("refuses a ticket no security check stopped, and writes nothing", async () => {
+    const w = world(["lr:stage:blocked", "lr:blocked"]);
+    w.rejected("spec", 1);
+    const r = await sendTo(w.deps, "3", null, { clear: true });
+    expect(r).toEqual({ refused: expect.stringMatching(/not stopped by a security check/) });
+    const run = await w.run();
+    expect(run?.cleared).toBeNull();
+    expect(run?.goto).toBeNull();
+  });
+
+  it("writes no clearance when the goto itself is refused", async () => {
+    const w = world(SCREENED);
+    refusedAt(w, "spec", 1);
+    expect(await sendTo(w.deps, "3", "judge", { clear: true })).toEqual({ refused: expect.any(String) });
+    expect((await w.run())?.cleared).toBeNull();
+  });
+});
+
 describe("sending a ticket back to a step", () => {
   it("writes a goto the engine reads back as Landrace's own", async () => {
     const { deps, run } = world(["lr:stage:blocked", "lr:blocked"]);

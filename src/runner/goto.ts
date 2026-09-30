@@ -1,4 +1,4 @@
-import { GOTO_KIND, RECORD_EFFECT } from "#conventions.js";
+import { CLEAR_KIND, GOTO_KIND, LABELS, RECORD_EFFECT } from "#conventions.js";
 import { assess, checkEligible, compile, gotoDeclined, gotoNotListed, locate } from "#core/index.js";
 import type { GotoDeps, GotoResult, Node, Snapshot, Stage, Workflow } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
@@ -49,9 +49,11 @@ const WAIT_FOR_TICK_MS = 3_000;
  * A tick holds the lock for as long as a step runs, so this waits only a
  * moment and then says so, rather than leaving a click hanging.
  */
-export async function sendTo(deps: GotoDeps, ticket: string, target: string | null): Promise<GotoResult> {
+export async function sendTo(
+  deps: GotoDeps, ticket: string, target: string | null, opts: { clear?: boolean } = {},
+): Promise<GotoResult> {
   try {
-    return await withLock(ticket, "goto", () => sendAt(deps, ticket, target), { waitMs: WAIT_FOR_TICK_MS, ...deps.lock });
+    return await withLock(ticket, "goto", () => sendAt(deps, ticket, target, opts.clear === true), { waitMs: WAIT_FOR_TICK_MS, ...deps.lock });
   } catch (e) {
     if ((e as { code?: unknown } | null)?.code === "ELOCKED") return { refused: `#${ticket} is busy; try again in a moment` };
     throw e;
@@ -100,7 +102,7 @@ export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, ticket: strin
   return { from };
 }
 
-async function sendAt(deps: GotoDeps, ticket: string, target: string | null): Promise<GotoResult> {
+async function sendAt(deps: GotoDeps, ticket: string, target: string | null, clear: boolean): Promise<GotoResult> {
   const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
   const origin = gotoOrigin(deps.workflow, snapshot, ticket);
   if ("refused" in origin) return origin;
@@ -110,10 +112,31 @@ async function sendAt(deps: GotoDeps, ticket: string, target: string | null): Pr
     return { refused: `#${ticket} is at "${from.id}", whose step is still to run; wait for its answer` };
   }
 
+  // A clearance waives the screener, which only a security stop calls for.
+  // The label, not `run.lastRefused`: at the halt that reads the halt's own
+  // stage, which nothing refused.
+  const labels = (snapshot.node as Node).state.labels;
+  if (clear && !(Array.isArray(labels) && labels.includes(LABELS.screened))) {
+    return { refused: `#${ticket} was not stopped by a security check, so there is nothing to clear` };
+  }
+
   const to = target ?? snapshot.run?.failedStage ?? null;
   if (to === null) return { refused: `nothing has failed on #${ticket}, so there is nothing to retry` };
   const refused = gotoNotListed(from, to) ?? gotoDeclined(from, snapshot, to);
   if (refused) return { refused: `#${ticket}: ${refused}` };
+
+  if (clear) {
+    // The round decide() will enter `to` at, so the clearance covers exactly
+    // the run this goto starts and nothing after it.
+    const round = (snapshot.run?.counters[to] ?? 0) + 1;
+    await deps.dispatcher.apply(
+      {
+        type: RECORD_EFFECT, kind: CLEAR_KIND, stage: to, round, marker: `${CLEAR_KIND}:${to}:${round}`,
+        body: `Security check cleared by a person: ${to}, round ${round}, runs without prompt screening.`,
+      },
+      { ...deps.ctx, ticket, snapshot },
+    );
+  }
 
   await deps.dispatcher.apply(
     {
