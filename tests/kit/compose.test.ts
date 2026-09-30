@@ -223,6 +223,17 @@ describe("the graph compose reads", () => {
     expect(listed.nodes.map((n) => n.id)).not.toContain(pr);
   });
 
+  it("halts a read on a pull request from an unrelated ticket's landrace/ head naming this one", async () => {
+    const tracker = new MemoryTracker({ tickets: [{ id: "8" }, { id: "12" }] });
+    const forge = new MemoryForge();
+    // #12's branch, its text closing #8: #12 is outside #8's neighbourhood, and still a ticket.
+    forge.add("8", { branch: "landrace/12" });
+    const hooks = compose({ tracker, forge });
+
+    await expect(hooks.source.read("8", ctx)).rejects.toThrow("pull request #1 is tied to #8 and #12");
+    await expect(hooks.source.read("12", ctx)).rejects.toThrow("pull request #1 is tied to #8 and #12");
+  });
+
   it("ties a pull request to its ticket by a landrace/{ticket} head or by the tickets it names, and nothing else", async () => {
     class Forked extends MemoryForge {
       override async pullsNaming(ticket: string): Promise<PullRecord[]> {

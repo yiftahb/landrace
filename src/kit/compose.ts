@@ -180,9 +180,13 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
       },
       read: async (id, ctx) => {
         const tickets = await tracker.read(id, ctx);
+        // ponytail: `ticket` throwing reads as "no such ticket", a failed call
+        // too — asked only of a landrace/ head outside the neighbourhood, which
+        // is rare; a tracker-side `exists` if an outage there ever misroutes.
+        const isTicket = (ticket: string): Promise<boolean> => tracker.ticket(ticket, ctx).then(() => true, () => false);
         return merged([
           [TRACKER, tickets],
-          [FORGE, forge ? await forge.read(ticketsIn(tickets), ctx) : none],
+          [FORGE, forge ? await forge.read(ticketsIn(tickets), ctx, isTicket) : none],
           [DOCS, docs ? await docs.read(id, ctx) : none],
         ]);
       },
