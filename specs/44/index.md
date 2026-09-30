@@ -1,33 +1,34 @@
 ## Problem
-Every lane draws rows in `boardView`'s `compareWork` order: priority, then id — work order, not reading order. Case: Waiting — ticket opened today, unprioritised, sits under every prioritised one, however old.
+Every lane draws rows in `compareWork` order — priority, then id: work order, not reading order. Rows carry no last-update time. Case: Waiting — unprioritised ticket updated today sits under every prioritised one, however stale.
 
 ## Decisions
-Seen on board:
-- Needs you: P0 branches top, then P1…, unprioritised last; within one priority, earliest opened on top.
-- Agent running, Held elsewhere, Waiting, Not admitted, Done: latest opened on top; priority ignored.
-- Undated (no `createdAt`): last in its priority in Needs you, last in lane elsewhere.
-- Children: lane's rule, every depth.
+- Needs you: priority, P0 first, unprioritised last; then least recently updated on top.
+- Other lanes: most recently updated on top; priority ignored.
+- Children: lane's rule, every depth — branch reads like its lane.
+- Comment, label, close — Landrace's own too — re-dates row at next tick's list.
 
 Choices:
-- Date: `createdAt`, every lane. `since` set only while agent runs or pairing holds — null on every `needs-you`, `waiting`, `not-admitted`, `discharged` row; patchy in Agent running, Held elsewhere (lifted roots, foreign locks). No record of when ticket began needing you: opened earliest stands in for longest waiting.
-- Undated last: no place in time; mirrors `compareWork`'s unprioritised-last.
-- Children too: one rule per lane; branch reads like its lane.
-- Branch keys: root row's own `priority`, `createdAt` — row lane lists; its P chip explains its place.
+- Date: source's `updatedAt`, was `createdAt`. Per reply: moves when ticket moves, like `since`, yet on every listed row; GitHub's list already answers it, no new call.
+- `updatedAt` optional, display only, like `createdAt`: integrations lacking it compile; no snapshot path.
+- Undated last — within priority in Needs you: no place in time; mirrors `compareWork`'s unprioritised-last.
+- Branch keys: root's own `priority`, `updatedAt` — row lane lists.
 - Ties: `compareIds` ascending — ids' reading order everywhere.
-- Location (ticket's open question): `boardView`; page draws as given. Server owns row order, lane cascade; `compareIds`, `URGENCY` reused, not copied into page script; typed pure test.
+- Location: `boardView`, page draws as given — reuses `compareIds`, `URGENCY`; pure test.
 
 ## Technical design
-- `src/ui/board.ts` — new `laneOrder(lane: Lane)`, `BoardRow` comparator: `needs-you` → `priority` asc, `createdAt` asc; other lanes → `createdAt` desc; nulls last; then `compareIds`. `boardView`: traversal keeps `compareWork`; once root's `lane` set, sort branch `children` every depth by `laneOrder(lane)`; `rows` by `URGENCY` index, then `laneOrder`.
-- `src/namespace.ts` — `BoardView.rows` doc: display order, lane by lane.
-- `tests/ui/board.test.ts` — sibling-order test pins lane order, not `compareWork`.
-- `README.md` — board paragraph: one sentence on lane order.
+- `src/namespace.ts` — `updatedAt`: optional on `Node`, `TicketRecord`, `PullRecord`; `BoardRow`'s `number | null`; `BoardView.rows` doc: display order.
+- `src/kit/tracker.ts` — `updatedAtOf` beside `createdAtOf`; `ticketNode` carries it.
+- `src/kit/forge.ts` — `pullNode` carries `updatedAt`.
+- `.landrace/hooks/github.ts` — `ISSUE_FIELDS`, `SUB_ISSUE_FIELDS`, `PULL_FIELDS` ask `updatedAt`; `nodeOfIssue`, `pullNodeOf` pass it.
+- `src/ui/board.ts` — `rowOf` copies `updatedAt`; new `laneOrder(lane)` comparator: `needs-you` → `priority`, `updatedAt` asc; else `updatedAt` desc; nulls last; then `compareIds`. `boardView`: `compareWork` traversal kept; each branch sorted, every depth, by root lane's `laneOrder`; `rows` by `URGENCY`, then `laneOrder`.
+- `README.md` — `Node` listing: `updatedAt`; kit table: `updatedAtOf`; board paragraph: lane order.
 
 ## Done when
-- Needs you: P0 root above P1 above unprioritised, whatever `createdAt`.
-- Needs you, same priority: earlier `createdAt` above later; undated below both.
-- Agent running, Held elsewhere, Waiting, Not admitted, Done: later `createdAt` above earlier, priority ignored; undated last.
-- Equal keys: `compareIds` order (`9` before `10`), identical across calls.
+- Needs you: P0 root above P1 above unprioritised, whatever `updatedAt`; same priority, earlier `updatedAt` above later, undated below both.
+- Agent running, Held elsewhere, Waiting, Not admitted, Done: later `updatedAt` above earlier, priority ignored; undated last.
+- Equal keys: `compareIds` order (`9` before `10`).
 - Children: newest first under Waiting root; priority, then oldest, under Needs you root.
-- Root lifted into Needs you by child sorts by its own `priority`, `createdAt`.
+- Root lifted into Needs you by child: placed by own `priority`, `updatedAt`.
+- `/board.json`: GitHub issue, pull request rows carry `updatedAt` epoch ms; else `null`.
 - `git diff main -- src/conventions.ts src/runner/tick.ts` empty.
 - `npm test`, `npm run typecheck`, `npm run lint` pass.
