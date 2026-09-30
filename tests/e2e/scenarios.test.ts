@@ -802,15 +802,33 @@ describe("a step refused by a security check", () => {
   const at = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen: Record<string, ScriptedAnswer>) => {
     const state = createExternalState({ tickets: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
     const { workflow, steps } = await loadWorkflow(".landrace");
-    // The judge is screened like every step, so it gets a verdict too.
+    // The judge declares no capability, so it is never screened: only the
+    // steps that can act get a verdict.
     const run = createHarness({
-      workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, screen: { triage: OK, ...screen },
+      workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, screen,
     });
     // Two ticks: a rejection is recorded and the call halts on it; the next
     // tick reads it back and routes it. A person replies after that.
     const tick = async () => { await run.converge(); await run.converge(); };
     return { state, run, tick };
   };
+
+  // #39, #41: a screener refusing the judge's own template stopped a person's
+  // approval twice. The judge can do nothing but answer, so it is not screened.
+  it("judges a person's reply without screening it, and an approval goes on to build", async () => {
+    const { state, run } = await at(["lr:stage:spec-human-review", "lr:awaiting"], { ...ANSWERS, triage: judged("approve") }, {
+      triage: NO, build: OK, "code-review": OK,
+    });
+    // A published spec is what spec-human-review requires.
+    await state.post.apply(
+      { type: "tracker.comment", kind: "output", stage: "spec", round: 1, marker: "output:spec:1", output: { kind: "spec" } },
+      { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {}, ticket: "1" } as unknown as HookContext,
+    );
+    state.say("1", "looks right, build it");
+    await run.converge();
+    expect(run.trail().slice(0, 3)).toEqual(["spec-human-review", "triage", "build"]);
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused")).toEqual([]);
+  });
 
   it("lands in screened, wearing lr:screened, with the refusal on the ticket and nothing paid for", async () => {
     const { state, run, tick } = await at(["lr:stage:build"], ANSWERS, { build: NO });

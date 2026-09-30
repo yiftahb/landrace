@@ -247,11 +247,17 @@ export async function runStep(opts: {
   if (!start.ok) return { ok: false, kind: "refused", reason: start.reason };
   const before = start.before;
 
-  // A person cleared exactly this round of this stage after reading what the
-  // screener refused (`run.cleared`, void once anyone wrote since). Any other
-  // round is screened as ever.
+  // The screener guards an agent that can act. One declaring no capability
+  // runs with no tool and no repository — a judge answering from a closed
+  // set — and screening it only refused people's approvals for the judge
+  // template's own wording (#39, #41). A person cleared exactly this round of
+  // this stage after reading what the screener refused (`run.cleared`, void
+  // once anyone wrote since); any other round is screened as ever.
   const cleared = snapshot.run?.cleared;
-  if (opts.screen && cleared?.stage === stageId && cleared.round === round) {
+  const acts = (step.capabilities?.length ?? 0) > 0;
+  if (opts.screen && !acts) {
+    log?.("screen.skipped", { stage: stageId, round });
+  } else if (opts.screen && cleared?.stage === stageId && cleared.round === round) {
     log?.("screen.cleared", { stage: stageId, round });
   } else if (opts.screen) {
     // Screen the rendered prompt, never the template: the template is the

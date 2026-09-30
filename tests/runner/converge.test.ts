@@ -600,6 +600,7 @@ describe("converge", () => {
       };
       const step: Step = {
         prompt: "go",
+        capabilities: ["repo:read"],
         output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
       };
       const ctxOf = (signal: AbortSignal) => ({ ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal, log: () => {} });
@@ -727,6 +728,7 @@ describe("converge", () => {
     };
     const step: Step = {
       prompt: "go",
+      capabilities: ["repo:read"],
       output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
     };
     const agentExecutor: Executor = { id: "agent", run: async () => { agentCalls++; return { text: "", sessionId: null }; } };
@@ -767,6 +769,7 @@ describe("converge", () => {
     };
     const step: Step = {
       prompt: "go",
+      capabilities: ["repo:read"],
       output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
     };
     const answering = (text: string): Executor => ({ id: "agent", run: async () => ({ text, sessionId: null }) });
@@ -818,6 +821,7 @@ describe("converge", () => {
     };
     const step: Step = {
       prompt: "go",
+      capabilities: ["repo:read"],
       output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
     };
     const secretValue = "sk-supersecrettoken1234567890";
@@ -858,6 +862,7 @@ describe("converge", () => {
     };
     const step: Step = {
       prompt: "go",
+      capabilities: ["repo:read"],
       output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
     };
     const bareSecret = "sk-paddedsecrettoken1234567890";
@@ -900,6 +905,7 @@ describe("converge", () => {
     };
     const step: Step = {
       prompt: "go",
+      capabilities: ["repo:read"],
       output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
     };
     const serverToken = "mcp-server-token-1234";
@@ -932,6 +938,7 @@ describe("converge", () => {
     };
     const step: Step = {
       prompt: "go",
+      capabilities: ["repo:read"],
       output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
     };
     const webhook = "https://hooks.example.com/services/T0/B0/SECRETTAIL42";

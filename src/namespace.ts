@@ -1139,7 +1139,7 @@ export type EventName =
   | "snapshot.built" | "snapshot.failed"
   | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
   | "lock.acquired" | "lock.released" | "lock.denied" | "lock.stolen"
-  | "screen.passed" | "screen.blocked" | "screen.cleared"
+  | "screen.passed" | "screen.blocked" | "screen.cleared" | "screen.skipped"
   | "display.failed"
   | "wake.failed"
   | "notify.sent" | "notify.failed";
