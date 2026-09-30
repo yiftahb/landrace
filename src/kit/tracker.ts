@@ -147,7 +147,7 @@ export function nodesCloseSatisfied(snapshot: Snapshot, effect: Effect): boolean
  * `tracker.close`. Closed either way counts: a person who closed it as not
  * planned decided that, and re-closing it as completed would overrule them.
  */
-export function closeSatisfied(snapshot: Snapshot, _effect: Effect): boolean {
+export function closeSatisfied(snapshot: Snapshot): boolean {
   return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
 }
 

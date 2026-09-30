@@ -89,9 +89,8 @@ describe("commentSatisfied", () => {
 
 describe("closeSatisfied", () => {
   it("is the ticket closed, either way", () => {
-    const effect: Effect = { type: "tracker.close" };
-    expect(closeSatisfied(snapshotWith({ node: ticket({ closed: "dropped" }) }), effect)).toBe(true);
-    expect(closeSatisfied(snapshotWith({ node: ticket() }), effect)).toBe(false);
+    expect(closeSatisfied(snapshotWith({ node: ticket({ closed: "dropped" }) }))).toBe(true);
+    expect(closeSatisfied(snapshotWith({ node: ticket() }))).toBe(false);
   });
 });
 
