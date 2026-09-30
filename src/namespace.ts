@@ -1470,6 +1470,8 @@ export interface Tools {
   ): Promise<unknown>;
   reply(ticket: string, message: string): Promise<unknown>;
   goto(ticket: string, stage: string): Promise<unknown>;
+  /** A goto that also clears the step it sends to of the security check, for that round alone. Absent a stage, the one refused. */
+  clear(ticket: string, stage?: string | undefined): Promise<unknown>;
   ask(ticket: string, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
   resolve(ticket: string, why?: string | undefined): Promise<unknown>;
   /** What may be paired on now, and the pairing open, if any. */

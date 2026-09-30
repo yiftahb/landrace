@@ -103,6 +103,16 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   );
 
   server.tool(
+    "landrace_clear",
+    "Overrule the security check on a ticket it stopped: the refused step — or the stage named, where the " +
+      "workflow lets the ticket go — runs its next round once without prompt screening, then every later round " +
+      "is screened as ever. Only after reading what was refused. Anything written on the ticket after the " +
+      "clearance voids it. Refused where no security check stopped the ticket.",
+    { ticket, stage: z.string().min(1).max(64).optional() },
+    guard(({ ticket: n, stage }) => tools.clear(n, stage)),
+  );
+
+  server.tool(
     "landrace_ask",
     "Answer a step's open questions, or ask it something. Resumes the step's own session, so " +
       "it still has its draft, and records both halves on the ticket. Returns its reply and " +

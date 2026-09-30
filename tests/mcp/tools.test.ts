@@ -197,6 +197,40 @@ describe("landrace_goto", () => {
   });
 });
 
+/*
+ * The operator plane's half of a clearance: a person, here, deciding a
+ * refused step may run once without the screener. Never a reply's to make.
+ */
+describe("landrace_clear", () => {
+  const workflow: Workflow = { version: 1, name: "t", stages: [
+    { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
+      triggers: [{ when: { "run.stage": null } }] },
+    { id: "screened", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+  ] };
+  const refused = (labels: string[]) => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", ...labels] }]);
+    tracker.say(4, `entered${renderMarker({ stage: "spec", kind: "enter", round: 1 })}`);
+    tracker.say(4, `refused${renderMarker({ stage: "spec", kind: "refused", round: 1 })}`);
+    return tracker;
+  };
+  const runOf = async (tracker: ReturnType<typeof refused>) => (await buildSnapshot({
+    ticket: "4", source: tracker.registry.source as Source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "4" },
+  })).run;
+
+  it("clears the refused step's next round and sends the ticket back to it", async () => {
+    const tracker = refused(["lr:stage:screened", "lr:blocked", "lr:screened"]);
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
+    expect(await tools.clear("4")).toEqual({ ticket: "4", to: "spec", cleared: true, posted: true });
+    expect((await runOf(tracker))?.cleared).toEqual({ stage: "spec", round: 2 });
+  });
+
+  it("refuses, as an error the client shows, where no security check stopped the ticket", async () => {
+    const tracker = refused(["lr:stage:screened", "lr:blocked"]);
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
+    await expect(tools.clear("4")).rejects.toThrow(/not stopped by a security check/);
+  });
+});
+
 /**
  * A write through the MCP tells a running loop at once, rather than leaving
  * the person who made it to wait out the interval. After the write only: a
@@ -233,6 +267,8 @@ describe("waking the loop", () => {
     ["landrace_update_ticket", () => woken(), (t: Tools) => t.updateTicket("4", { title: "Renamed" })],
     ["landrace_reply", () => woken(), (t: Tools) => t.reply("4", "go ahead")],
     ["landrace_goto", () => woken(), (t: Tools) => t.goto("4", "spec")],
+    ["landrace_clear", () => woken(createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked", "lr:screened"] }])),
+      (t: Tools) => t.clear("4", "spec")],
     ["landrace_ask", () => woken(asked()), (t: Tools) => t.ask("1", "B2B only")],
     ["landrace_resolve", () => woken(asked()), (t: Tools) => t.resolve("1")],
   ])("%s wakes the loop once its write succeeds", async (_name, make, call) => {

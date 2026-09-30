@@ -240,6 +240,19 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       return { ticket, to: r.to, posted: true };
     },
 
+    async clear(ticket, stage) {
+      if (!opts.workflow) throw new Error("cannot clear a step: this process was not given the workflow");
+      const r = await sendTo(
+        { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
+        ticket,
+        stage ?? null,
+        { clear: true },
+      );
+      if ("refused" in r) throw new Error(r.refused);
+      wakeLoop();
+      return { ticket, to: r.to, cleared: true, posted: true };
+    },
+
     async ask(ticket, message, askOpts) {
       const answered = await conversation.ask(ticket, message, askOpts);
       wakeLoop();
