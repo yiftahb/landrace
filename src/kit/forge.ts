@@ -356,14 +356,18 @@ export function pushSatisfied(snapshot: Snapshot, effect: Effect): boolean {
 
 /**
  * Every ticket a pull request names: the ones its own text does (`Closes #n`)
- * and the one a `landrace/{ticket}` head is for. A branch named any other way
- * — `api/{ticket}`, a fork's — names nothing: anybody can call a branch
- * after any ticket, and only our own head convention is ours.
+ * and the one a `landrace/{ticket}` head is for, when that is one of the
+ * `known` tickets. A branch named any other way — `api/{ticket}`, a fork's —
+ * names nothing: anybody can call a branch after any ticket, and only our own
+ * head convention is ours. Nor does a `landrace/` head that is no ticket's —
+ * `landrace/7-api`, a workflow's second branch for #7 — which a tracker whose
+ * ids may carry a "-" could not otherwise tell from a ticket called "7-api".
  */
-export function ticketsNamedBy(pull: Pick<PullRecord, "branch" | "tickets">): Set<string> {
+export function ticketsNamedBy(pull: Pick<PullRecord, "branch" | "tickets">, known: ReadonlySet<string>): Set<string> {
   const named = new Set(pull.tickets);
   const ours = prBranch("");
-  if (pull.branch?.startsWith(ours) && pull.branch.length > ours.length) named.add(pull.branch.slice(ours.length));
+  const head = pull.branch?.startsWith(ours) ? pull.branch.slice(ours.length) : undefined;
+  if (head !== undefined && known.has(head)) named.add(head);
   return named;
 }
 
@@ -460,7 +464,7 @@ export abstract class BaseForge {
     const nodes: Node[] = [];
     const relationships: Relationship[] = [];
     for (const pull of await this.pulls(ctx)) {
-      const [only, ...more] = ticketsNamedBy(pull);
+      const [only, ...more] = ticketsNamedBy(pull, tickets);
       if (only === undefined || more.length > 0 || !tickets.has(only)) continue;
       const node = this.node(pull);
       nodes.push(node);
@@ -472,7 +476,9 @@ export abstract class BaseForge {
   /**
    * Every pull request tied to any of these tickets, merged and closed ones
    * included — "every pull request is merged" is a count over all of them.
-   * One tied to two tickets halts: which it implements is not a guess.
+   * One tied to two tickets halts: which it implements is not a guess. A
+   * `landrace/` head counts for a ticket in this read; outside it, only
+   * what the pull request's own text names does.
    *
    * Only an open one's threads are counted. A thread left on a merged or
    * abandoned one is nothing a fix round can act on, and counting it would
@@ -482,9 +488,10 @@ export abstract class BaseForge {
   async read(tickets: string[], ctx: RuntimeContext): Promise<Graph> {
     const nodes = new Map<number, Node>();
     const relationships: Relationship[] = [];
+    const known = new Set(tickets);
     for (const ticket of tickets) {
       for (const pull of await this.pullsNaming(ticket, ctx)) {
-        const named = ticketsNamedBy(pull);
+        const named = ticketsNamedBy(pull, known);
         if (named.size > 1) {
           throw new Error(
             `pull request #${pull.number} is tied to ${[...named].map((t) => `#${t}`).join(" and ")}; a pull request implements one ticket`,

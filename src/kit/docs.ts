@@ -156,16 +156,15 @@ export abstract class BaseDocs {
    * this tick its documents and a log line saying why.
    */
   async list(tickets: ReadonlySet<string>, ctx: RuntimeContext): Promise<Graph> {
-    let paged: Set<string>;
     try {
-      paged = await this.published(ctx);
+      const paged = await this.published(ctx);
+      return await this.documents([...tickets].filter((t) => paged.has(t)), ctx);
     } catch (e) {
       ctx.log("docs.skipped", {
         reason: `the pages could not be listed, so none is reported this tick: ${e instanceof Error ? e.message : String(e)}`,
       });
       return { nodes: [], relationships: [] };
     }
-    return this.documents([...tickets].filter((t) => paged.has(t)), ctx);
   }
 
   /** The ticket's own page, by one read: that is all `rel.documents` counts. */

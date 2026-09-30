@@ -81,6 +81,15 @@ describe("compose refuses two roles claiming one thing", () => {
     expect(() => compose({ tracker: new Heads(), forge: new Git() })).toThrow(/"git".*the tracker.*the forge/);
   });
 
+  it("halts on a path under another role's, whose fragment would replace the other's whole", async () => {
+    class Nested extends MemoryForge {
+      override provides(): string[] {
+        return ["ticket.pulls"];
+      }
+    }
+    expect(() => compose({ tracker: seeded(), forge: new Nested() })).toThrow(/"ticket".*the tracker.*the forge/);
+  });
+
   it("refuses a node id two roles both report, on list and on read, naming both", async () => {
     class Squatting extends MemoryForge {
       protected override node(pull: PullRecord): Node {
@@ -122,6 +131,29 @@ describe("nodes.close, the one effect two roles share", () => {
 
     expect(closed).toEqual(["forge 1", "tracker 2 dropped"]);
     expect(hooks.post.satisfied(await snapshotOf(hooks, "1"), effect)).toBe(true);
+  });
+
+  // Core orders a close so a pull request is dropped before the ticket it
+  // implements; the split must not regroup the ids and undo that.
+  it("closes the ids in the order they were planned, whichever role each is", async () => {
+    const closed: string[] = [];
+    class Tracker extends MemoryTracker {
+      override async close(id: string, how: "done" | "dropped"): Promise<void> {
+        closed.push(id);
+        return super.close(id, how);
+      }
+    }
+    class Forge extends MemoryForge {
+      override async closePull(pull: number): Promise<void> {
+        closed.push(`pr-${pull}`);
+        return super.closePull(pull);
+      }
+    }
+    const forge = new Forge();
+    const pr = forge.add("3");
+    const hooks = compose({ tracker: new Tracker({ tickets: [{ id: "1" }, { id: "2", parent: "1" }, { id: "3", parent: "1" }] }), forge });
+    await hooks.post.apply({ type: "nodes.close", ids: ["2", pr, "3"] }, on("1", await snapshotOf(hooks, "1")));
+    expect(closed).toEqual(["2", "pr-1", "3"]);
   });
 
   it("halts on an id no role closes: one not in the graph, or a document", async () => {
@@ -179,13 +211,14 @@ describe("the preflight", () => {
 
 describe("the graph compose reads", () => {
   it("halts a read on a pull request tied to two tickets, and lists it with no edge", async () => {
-    const tracker = seeded();
+    const tracker = new MemoryTracker({ tickets: [{ id: "7" }, { id: "8", parent: "7" }] });
     const forge = new MemoryForge();
-    // Opened against #1, from #2's branch: it names both.
-    const pr = forge.add("1", { branch: "landrace/2" });
+    // Opened against #7, from #8's branch: it names both, and a read of either sees both.
+    const pr = forge.add("7", { branch: "landrace/8" });
     const hooks = compose({ tracker, forge });
 
-    await expect(hooks.source.read("1", ctx)).rejects.toThrow(/pr-1|#1.*#2|#2.*#1/);
+    await expect(hooks.source.read("7", ctx)).rejects.toThrow("pull request #1 is tied to #7 and #8");
+    await expect(hooks.source.read("8", ctx)).rejects.toThrow("pull request #1 is tied to #7 and #8");
     const listed = await hooks.source.list(ctx);
     expect(listed.nodes.map((n) => n.id)).not.toContain(pr);
   });
@@ -210,6 +243,16 @@ describe("the graph compose reads", () => {
     expect(edges(await hooks.source.list(ctx))).toEqual(["pr-1", "pr-2"]);
   });
 
+  // A workflow with two branches per ticket names the second landrace/{ticket}-api:
+  // that head names no ticket there is, so the pull request is the one its text names.
+  it("reads a landrace/ head that is no ticket's as naming nothing", async () => {
+    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const pr = state.openPull("1", { branch: "landrace/1-api" });
+    const tied = { from: pr, to: "1", type: "implements" };
+    expect((await state.source.read("1", ctx)).relationships).toContainEqual(tied);
+    expect((await state.source.list(ctx)).relationships).toContainEqual(tied);
+  });
+
   it("declares every role's relationship types, and draws a published page beside its ticket", async () => {
     const docs = new MemoryDocs();
     const hooks = compose({ tracker: seeded(), forge: new MemoryForge(), docs });
@@ -219,6 +262,20 @@ describe("the graph compose reads", () => {
     expect((await hooks.source.read("2", ctx)).relationships).toContainEqual({ from: "spec-2", to: "2", type: "documents" });
     expect((await hooks.source.read("1", ctx)).nodes.map((n) => n.id)).not.toContain("spec-2");
     expect((await hooks.source.list(ctx)).relationships).toContainEqual({ from: "spec-2", to: "2", type: "documents" });
+  });
+
+  it("lists the tickets without the pages when a page's link cannot be had, and says so", async () => {
+    class Unlinked extends MemoryDocs {
+      override async link(): Promise<string> {
+        throw new Error("the site answered 502");
+      }
+    }
+    const docs = new Unlinked();
+    await docs.publish("1", "# Spec");
+    logged.length = 0;
+    const listed = await compose({ tracker: seeded(), docs }).source.list(ctx);
+    expect(listed.nodes.map((n) => n.id)).toEqual(["1", "2"]);
+    expect(logged).toEqual([expect.objectContaining({ event: "docs.skipped", data: expect.objectContaining({ reason: expect.stringMatching(/502/) }) })]);
   });
 
   it("lists the tickets and their work without the pages when the docs listing fails, and says so", async () => {

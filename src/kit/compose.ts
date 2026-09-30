@@ -100,12 +100,16 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
    * is the tracker's to close and a pull request the forge's. Anything else —
    * an id the graph does not hold, a document — is a kind no role closes, and
    * closing it some other way would be a guess.
+   *
+   * In the order planned, one run of consecutive ids per role: core orders a
+   * close so a pull request is dropped before the ticket it implements, and
+   * grouping by role would undo that.
    */
   const split = (snapshot: Snapshot | undefined, effect: Effect): Array<[EffectHandler, Effect]> => {
     const graph = snapshot?.graph as Graph | undefined;
     if (!graph) throw new Error("a nodes.close effect cannot be checked: the snapshot has no graph");
     const kinds = new Map(graph.nodes.map((n) => [n.id, n.kind]));
-    const byRole = new Map<EffectHandler, string[]>();
+    const runs: Array<[EffectHandler, string[]]> = [];
     for (const id of (effect.ids as string[] | undefined) ?? []) {
       const kind = kinds.get(id);
       const handler = kind === TICKET_KIND ? tracked[NODES_CLOSE_EFFECT] : kind === PULL_REQUEST_KIND ? forged[NODES_CLOSE_EFFECT] : undefined;
@@ -114,9 +118,11 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
           `nodes.close names "${id}", ${kind === undefined ? "which is not in the snapshot's graph" : `a ${kind}`}, and no role closes it`,
         );
       }
-      byRole.set(handler, [...(byRole.get(handler) ?? []), id]);
+      const last = runs.at(-1);
+      if (last?.[0] === handler) last[1].push(id);
+      else runs.push([handler, [id]]);
     }
-    return [...byRole].map(([handler, ids]) => [handler, { ...effect, ids }]);
+    return runs.map(([handler, ids]) => [handler, { ...effect, ids }]);
   };
 
   // Briefings: the tracker's and the forge's under `project`, beside the one
@@ -131,11 +137,14 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
   }
   briefs.history = async (ctx) => historyBrief([...(await tracker.history(ctx)), ...(forge ? await forge.history(ctx) : [])]);
 
-  // Snapshot paths: each is one role's, or a merged fragment would let one
-  // role's reading silently replace the other's.
-  const paths = new Map<string, string>();
-  for (const [role, list] of [[TRACKER, tracker.provides()], [FORGE, forge?.provides() ?? []]] as const) {
-    for (const path of list) claim(paths, "snapshot path", path, role);
+  // Snapshot paths, by their top-level key: the fragments merge one level
+  // deep, so a role providing `ticket.pulls` beside the tracker's `ticket`
+  // would replace the tracker's whole reading of the ticket with its own.
+  const tops = new Map<string, string>();
+  const trackerPaths = tracker.provides();
+  const forgePaths = forge?.provides() ?? [];
+  for (const [role, paths] of [[TRACKER, trackerPaths], [FORGE, forgePaths]] as const) {
+    for (const top of new Set(paths.map((path) => path.split(".")[0] ?? path))) claim(tops, "snapshot path", top, role);
   }
 
   const relations = [...tracker.relations(), ...(forge?.relations() ?? []), ...(docs?.relations() ?? [])];
@@ -190,7 +199,7 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
 
     pre: definePreHook({
       id: PROJECT,
-      provides: [...paths.keys()],
+      provides: [...trackerPaths, ...forgePaths],
       run: async (ctx) => ({ ...(await tracker.observe(ctx)), ...(forge ? await forge.observe(ctx) : {}) }),
     }),
 
