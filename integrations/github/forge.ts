@@ -341,10 +341,12 @@ function prReadFailure(e: unknown, repo: string): Error {
 }
 
 /**
- * The file that called `new GitHubForge(...)`: the first frame outside this
- * one. For a project's hook file, that file — a frame read anywhere in here
- * would name this module instead, and an integration run against a linked
- * landrace would read landrace's repository rather than the project's.
+ * The file that said `new`: past this module's own frames, and past the
+ * constructors of any subclass, wherever those are defined — a subclass in a
+ * shared package is still constructed by the project's hook file. A frame
+ * read anywhere in here would name this module instead, and an integration
+ * run against a linked landrace would read landrace's repository rather than
+ * the project's.
  *
  * `import.meta` cannot be the caller's anyway, and ts-jest's default pass
  * compiles CommonJS, where it is refused outright. The file name V8 records
@@ -357,7 +359,11 @@ function constructedIn(): string | null {
     Error.prepareStackTrace = (_error, frames) => frames;
     const frames = (new Error().stack as unknown as NodeJS.CallSite[] | undefined) ?? [];
     const here = frames[0]?.getFileName();
-    return frames.map((f) => f.getFileName()).find((file) => !!file && file !== here && !file.startsWith("node:")) ?? null;
+    const caller = frames.find((f) => {
+      const file = f.getFileName();
+      return !!file && file !== here && !file.startsWith("node:") && !f.isConstructor();
+    });
+    return caller?.getFileName() ?? null;
   } finally {
     Error.prepareStackTrace = saved;
   }

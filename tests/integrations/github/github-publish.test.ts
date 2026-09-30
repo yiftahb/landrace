@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -641,8 +642,8 @@ describe("pull.open", () => {
  * project — never the directory the process happened to be started from.
  */
 describe("the checkout the forge works in", () => {
-  it("is the repository of the file that constructs it, whatever the working directory", async () => {
-    const forge = new GitHubForge({ client: createClient({ repo: "acme/widgets", token: TOKEN }) });
+  /** The forge's branch heads, read from a directory that is no repository at all, against this repository's. */
+  const readsThisRepository = async (forge: GitHubForge): Promise<void> => {
     const root = await run(process.cwd(), "rev-parse", "--show-toplevel");
     const back = process.cwd();
     const away = await mkdtemp(join(tmpdir(), "lr-away-"));
@@ -653,6 +654,32 @@ describe("the checkout the forge works in", () => {
     } finally {
       process.chdir(back);
     }
+  };
+  const client = () => createClient({ repo: "acme/widgets", token: TOKEN });
+
+  it("is the repository of the file that constructs it, whatever the working directory", async () => {
+    await readsThisRepository(new GitHubForge({ client: client() }));
+  });
+
+  /*
+   * A subclass is how one piece of a role is changed, and it can live in a
+   * shared package outside the project: the file that says `new` is still
+   * the project's, and its repository is the one to read and push.
+   */
+  it("is the constructing file's repository when the forge is a subclass defined elsewhere", async () => {
+    const lib = await mkdtemp(join(tmpdir(), "lr-lib-"));
+    made.push(lib);
+    const file = join(lib, "forges.cjs");
+    await writeFile(file, [
+      "module.exports = (Base) => [",
+      "  class Implicit extends Base {},",
+      "  class Explicit extends Base { constructor(opts) { super(opts); } },",
+      "];",
+    ].join("\n"));
+    type Forge = new (opts: ConstructorParameters<typeof GitHubForge>[0]) => GitHubForge;
+    const [Implicit, Explicit] = (createRequire(__filename)(file) as (base: typeof GitHubForge) => [Forge, Forge])(GitHubForge);
+    await readsThisRepository(new Implicit({ client: client() }));
+    await readsThisRepository(new Explicit({ client: client() }));
   });
 });
 
