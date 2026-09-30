@@ -10,4 +10,10 @@ describe("landrace/kit", () => {
       expect(typeof (kit as Record<string, unknown>)[name]).toBe("function");
     }
   });
+
+  it("carries the tracker, forge and docs bases, and compose", () => {
+    for (const name of ["BaseTracker", "BaseForge", "BaseDocs", "compose"]) {
+      expect(typeof (kit as Record<string, unknown>)[name]).toBe("function");
+    }
+  });
 });

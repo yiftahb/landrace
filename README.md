@@ -32,6 +32,7 @@ treat the first one as a supervised experiment rather than a deployment.
 | Hook loader, GitHub hooks, agent execution | ✅ built |
 | Integration kit (`BaseExecutor`), with Claude and Codex as native integrations | ✅ built |
 | Integration kit: the shared tracker, forge and docs code, out of the GitHub hook | ✅ built |
+| Integration kit: tracker, forge and docs bases, `compose()`, and the in-memory adapter on them | ✅ built |
 | Tick loop: polling, concurrency, per-ticket locking | ✅ built |
 | Artifact publishing to GitHub Pages, PR review threads | ✅ built |
 | Worktree sandbox with enforced capabilities | ✅ built |
@@ -161,8 +162,9 @@ src/core/            the decision engine — pure, and enforced: no I/O, no cloc
                      no randomness. Time arrives as `snapshot.now`
 src/workflow/        load and validate workflow definitions
 src/hooks/           the define* contracts, and the loader that imports yours
-src/kit/             `landrace/kit` — BaseExecutor, what every coding agent integration shares,
-                     and the tracker, forge, docs and git code the other integrations share
+src/kit/             `landrace/kit` — BaseExecutor, what every coding agent integration shares;
+                     BaseTracker, BaseForge, BaseDocs and compose() for the other integrations,
+                     and the tracker, forge, docs and git code they are made of
 src/agent/           prompt screening, the worktree sandbox
 src/runner/          tick, converge, step, lock, effect dispatch, events
 src/config/          landrace.yaml + .env
@@ -486,16 +488,27 @@ A module imports the contracts from `landrace/hooks` and exports whatever kinds 
 
 `.landrace/hooks/github.ts` in this repository is the reference implementation: one file with the REST client, both hooks, the source and the operator. A second tracker is a sibling of it, and nothing in the engine changes — a test enforces that `src/` never names one.
 
-What a sibling would otherwise copy out of it comes from `landrace/kit` instead, over plain shapes the hook maps its own API's answers into:
+A sibling is built on `landrace/kit`'s bases instead, and writes only its vendor's calls. A tracker extends `BaseTracker` (list and read tickets and their children, read and post comments, add and remove labels, close, create and update a ticket), a forge `BaseForge` (list pull requests and those naming a ticket, read threads, changed files and posted reviews, open and close a pull request, post a review, reply and resolve, read branch heads and push), a docs integration `BaseDocs` (read, publish and link a ticket's page, and list which tickets have one) — each answered in plain shapes: `TicketRecord`, `PullRecord`, `ReviewThread`, `ChangedFile`. The base holds everything else: the graph and its bounds, the pre hook's fragment, an `effects()` table with each effect's `satisfied()` beside its `apply()`, a `briefs()` table, the history's entries and the operator's writes. A hook file then exports what `compose` makes of them:
+
+```ts
+import { compose } from "landrace/kit";
+export const { preflight, source, operator, pre, post, spec } = compose({
+  tracker: new MyTracker(), forge: new MyForge(), docs: new MyDocs(), // your classes on the three bases
+});
+```
+
+That is one source, one operator, one pre and one post hook under the id `project`, and the docs role's artifact `spec` — so a prompt names `{brief.project.threads}`, `{brief.project.diff}`, `{brief.project.history}` and `{brief.spec.content}`, and `history` is one timeline of the tracker's comments and the forge's review threads, oldest first. A forge's pull request implements a ticket by a `landrace/{ticket}` head or by naming it (`PullRecord.tickets`, a forge's `Closes #n`); one naming two tickets halts a read. Every clash between roles halts, naming both: an effect type, a briefing key or a snapshot path two roles claim stops `compose`, and a node id two report stops `list` or `read`. `nodes.close` is the one effect two roles share: its ids are split by their kind in the snapshot's graph, tickets to the tracker and pull requests to the forge, and a kind no role closes halts. A role's own `check` runs in the preflight, and its failure names the role. To change one piece, subclass and override it — an effect by spreading `super.effects()` and replacing or adding an entry. `createExternalState` in `landrace/testing` is `compose` over `MemoryTracker`, `MemoryForge` and `MemoryDocs`, built exactly this way.
+
+The functions the bases are made of stay exported, over the same plain shapes, for an integration not built on one — which this repository's GitHub hook still is:
 
 | From `landrace/kit` | What it is |
 |---|---|
-| Tracker | `commentsOf`, `wroteIt` and `botLoginOf` — our comments told from a stranger's; `labelSatisfied`, `statusSatisfied`, `commentSatisfied`, `closeSatisfied`, `nodesCloseSatisfied`, one per tracker effect; `ticketNode`, `priorityFromLabels`, `createdAtOf`; the paging bounds and `MAX_COMMENT_CHARS` |
-| Forge | `answered` and `threadCounts` — whose turn a `ReviewThread` is; `placeFindings` for a review's findings on a diff of `ChangedFile`s; `pullNode`, `prBranch`, `ticketOfBranch`; the `threadsBrief`, `diffBrief` and `historyBrief` briefings; `pushSatisfied` |
+| Tracker | `commentsOf`, `wroteIt` and `botLoginOf` — our comments told from a stranger's; `labelSatisfied`, `statusSatisfied`, `commentSatisfied`, `closeSatisfied`, `nodesCloseSatisfied`, one per tracker effect; `ticketNode`, `priorityFromLabels`, `createdAtOf`, `stillOpen`; the paging bounds and `MAX_COMMENT_CHARS` |
+| Forge | `answered` and `threadCounts` — whose turn a `ReviewThread` is; `placeFindings` for a review's findings on a diff of `ChangedFile`s; `pullNode`, `prBranch`, `ticketOfBranch`, `ticketsNamedBy`; the `threadsBrief` and `diffBrief` briefings, and `historyBrief` over `commentLine` and `threadLine` entries; `pushSatisfied` |
 | Docs | `SPEC`, `PUBLISH`, `hashOf`, `contentOf`, `mine`, `briefPage`, `publishSatisfied`, `specNode` |
 | Git | `gitIn`, `repositoryOf`, `ownGit`, `branchHeads`, `headsOf`, `headIn`; `originPushUrl` and `pushBranch`, fast-forward only with hooks off, the credential the hook's own |
 
-The hook keeps what is its vendor's: the client, the queries and their paging, its shapes and the mapping from them, which push URLs it trusts with a token and the scrubbing of it from what git says, and every event and word in its own name. The kit never logs.
+The hook keeps what is its vendor's: the client, the queries and their paging, its shapes and the mapping from them, which push URLs it trusts with a token and the scrubbing of it from what git says, and every event and word in its own name. The kit's functions never log; a base logs only in its role's name (`forge.review.*`, `docs.skipped`).
 
 A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", ticket, title, link, stage, why, board }` — `board` the triage page's URL when one is running, else null. Two notifiers under one id halt at load, naming both modules. `landrace/integrations/slack` is the one landrace ships, and this repository's `.landrace/hooks/slack.ts` re-exports it: it posts `{ text }` to the webhook, mentioning `slackNotifyUser` and linking the ticket, with the title and why escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal throws Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading.
 
