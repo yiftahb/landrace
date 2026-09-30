@@ -128,14 +128,18 @@ describe("no coding agent is named inside the engine", () => {
  * integration author has — `landrace/kit`, `landrace/hooks` and node — and
  * never on the engine's own modules, which would make it part of the engine
  * and a second agent a change to landrace rather than a file beside it.
+ *
+ * And its own files, beside it: `./client.js` inside one integration's
+ * directory, never `../` into another's — a sibling integration is not
+ * something any author has either.
  */
 describe("an integration imports only what any integration author can", () => {
-  it("imports nothing but landrace/kit, landrace/hooks and node:*", () => {
+  it("imports nothing but landrace/kit, landrace/hooks, node:* and its own ./<file>.js", () => {
     const strays = filesUnder("integrations").flatMap((file) =>
       readFileSync(file, "utf8").split("\n").flatMap((line, i) =>
         // Every specifier on the line: `from "x"`, `import "x"` and `import("x")`.
         [...line.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"']+)["']/g)]
-          .filter(([, specifier]) => !/^(landrace\/(kit|hooks)|node:.+)$/.test(specifier ?? ""))
+          .filter(([, specifier]) => !/^(landrace\/(kit|hooks)|node:.+|\.\/[A-Za-z0-9_-]+\.js)$/.test(specifier ?? ""))
           .map(() => `${file}:${i + 1}: ${line.trim()}`)));
     expect(filesUnder("integrations").length).toBeGreaterThan(0);
     expect(strays).toEqual([]);

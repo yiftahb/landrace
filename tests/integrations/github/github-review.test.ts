@@ -126,7 +126,7 @@ describe("pull.review", () => {
 
     expect(pull(gh).threads.map((t) => [t.id, t.isResolved])).toEqual([["T1", true], ["T2", false]]);
     // Said, not silently dropped: an agent that listed a thread it may not close should be visible.
-    expect(seen.map(([name]) => name)).toContain("github.review.unresolvable");
+    expect(seen.map(([name]) => name)).toContain("forge.review.unresolvable");
   });
 
   /*
@@ -189,7 +189,7 @@ describe("pull.review", () => {
     const seen: string[] = [];
     await apply(gh, fixRound({ kind: "addressed", replies: [{ thread: "T9", body: "?" }, { thread: "T1", body: "Fixed." }] }), (name) => seen.push(name));
 
-    expect(seen).toContain("github.review.unrepliable");
+    expect(seen).toContain("forge.review.unrepliable");
     expect(pull(gh).threads[0]?.replies).toHaveLength(1);
   });
 
@@ -229,7 +229,7 @@ describe("pull.review", () => {
     const seen: string[] = [];
     await apply(gh, review({ kind: "reviewed", findings: [{ file: "src/a.ts", line: 2, body: "x" }], resolved: [] }), (name) => seen.push(name));
     expect(pull(gh).reviews ?? []).toEqual([]);
-    expect(seen).toContain("github.review.nowhere");
+    expect(seen).toContain("forge.review.nowhere");
   });
 
   it("does nothing for a clean review with no pull request to put it on", async () => {

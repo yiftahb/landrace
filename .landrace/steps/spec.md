@@ -30,7 +30,7 @@ questions an earlier round asked and the answers to them, and any review
 threads:
 
 --- the conversation so far ---
-{brief.github.history}
+{brief.project.history}
 --- end of the conversation so far ---
 
 The last thing a person wrote on the ticket, which sent it here:

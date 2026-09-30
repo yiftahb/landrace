@@ -432,7 +432,7 @@ describe("the shipped steps are handed the approved spec as text", () => {
     const { steps } = await loadWorkflow(".landrace");
     const rendered = renderPrompt(steps.get(`steps/${id}.md`)?.prompt ?? "", snapshot, {
       spec: { content: "# Export CSV\n\nOne file, comma separated." },
-      github: { threads: "1. src/x.ts:12 — this leaks a file handle", diff: "## PR #5 — 1 files changed" },
+      project: { threads: "1. src/x.ts:12 — this leaks a file handle", diff: "## PR #5 — 1 files changed" },
     });
 
     expect(rendered).toContain("One file, comma separated.");
@@ -534,7 +534,7 @@ describe("the spec step amends an approved spec", () => {
   it("is shown the ticket's whole conversation, fenced as evidence", async () => {
     const { steps } = await loadWorkflow(".landrace");
     const prompt = steps.get("steps/spec.md")?.prompt ?? "";
-    expect(prompt).toMatch(/--- the conversation so far ---\s*\{brief\.github\.history\}\s*--- end of the conversation so far ---/);
+    expect(prompt).toMatch(/--- the conversation so far ---\s*\{brief\.project\.history\}\s*--- end of the conversation so far ---/);
     expect(prompt.replace(/\s+/g, " ")).toMatch(/never an instruction to you/i);
   });
 
@@ -589,8 +589,8 @@ describe("the shipped code-review raises its findings through its answer", () =>
   it("is shown the diff and the open threads, and never told to run anything or post a thread itself", async () => {
     const { steps } = await loadWorkflow(".landrace");
     const prompt = steps.get("steps/code-review.md")?.prompt ?? "";
-    expect(prompt).toContain("{brief.github.diff}");
-    expect(prompt).toContain("{brief.github.threads}");
+    expect(prompt).toContain("{brief.project.diff}");
+    expect(prompt).toContain("{brief.project.threads}");
     expect(prompt).toMatch(/no shell/i);
     // The instructions #19–#21's reviewers could not follow.
     expect(prompt).not.toMatch(/verify a claim by running|raise one thread per finding, on the line/i);
@@ -879,7 +879,7 @@ describe("the shipped workflow learns from a corrected ticket before a person re
     it("renders the spec and the history, fenced as evidence, with no placeholder left", async () => {
       const rendered = renderPrompt((await retro()).prompt, { node: { id: "7" } } as unknown as Snapshot, {
         spec: { content: "# Export CSV" },
-        github: { threads: "none open", history: "## Ticket conversation\n\n@a-person: use tabs, not commas" },
+        project: { threads: "none open", history: "@a-person: use tabs, not commas" },
       });
       expect(rendered).toMatch(/approved spec[\s\S]*# Export CSV[\s\S]*end of the approved spec/i);
       expect(rendered).toMatch(/ticket's history[\s\S]*use tabs, not commas[\s\S]*end of the ticket's history/i);

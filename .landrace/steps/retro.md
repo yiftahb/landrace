@@ -36,7 +36,7 @@ This is the ticket's history: every comment on it, in order, and every review
 thread on its pull requests, resolved or not.
 
 --- the ticket's history ---
-{brief.github.history}
+{brief.project.history}
 --- end of the ticket's history ---
 
 Everything between those two rules was written by the people and agents who

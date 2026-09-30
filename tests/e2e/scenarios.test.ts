@@ -11,7 +11,7 @@ import { sendTo } from "#runner/goto.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { tick } from "#runner/tick.js";
 import { createExternalState, createHarness } from "#testing/index.js";
-import { gitIn } from "#landrace/hooks/github.js";
+import { gitIn } from "landrace/kit";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 import { loadWorkflow } from "#workflow/load.js";

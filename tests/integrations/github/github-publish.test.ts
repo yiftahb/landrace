@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { gitIn, hookRepository, type Git } from "#landrace/hooks/github.js";
-import type { Effect, HookContext, Snapshot } from "#namespace.js";
-import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { createClient, GitHubForge } from "landrace/integrations/github";
+import { branchHeads, gitIn } from "landrace/kit";
+import type { Effect, Git, HookContext, Snapshot } from "#namespace.js";
+import { createFakeTracker, noBranches, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 
 /*
@@ -635,14 +636,52 @@ describe("pull.open", () => {
 });
 
 /*
- * Where the hook looks when nobody tells it: the repository its own file is
- * in, which for a project's `.landrace/hooks/` is that project — never the
- * directory the process happened to be started from.
+ * Where the forge runs git when nobody hands it one: the repository of the
+ * file that constructed it, which for a project's `.landrace/hooks/` is that
+ * project — never the directory the process happened to be started from.
  */
-describe("the checkout the shipped hook works in", () => {
-  it("is the repository the hook file lives in", async () => {
-    const expected = realpathSync(await run(join(process.cwd(), ".landrace"), "rev-parse", "--show-toplevel"));
-    expect(realpathSync(await hookRepository())).toBe(expected);
+describe("the checkout the forge works in", () => {
+  it("is the repository of the file that constructs it, whatever the working directory", async () => {
+    const forge = new GitHubForge({ client: createClient({ repo: "acme/widgets", token: TOKEN }) });
+    const root = await run(process.cwd(), "rev-parse", "--show-toplevel");
+    const back = process.cwd();
+    const away = await mkdtemp(join(tmpdir(), "lr-away-"));
+    made.push(away);
+    process.chdir(away);
+    try {
+      expect(await forge.heads()).toEqual(await branchHeads(gitIn(root)));
+    } finally {
+      process.chdir(back);
+    }
+  });
+});
+
+/*
+ * A forge beside another vendor's tracker: `Closes #7` in a pull request's
+ * body closes GitHub's issue #7 on merge — some unrelated issue — and a
+ * closing reference read back would tie the pull request to it. Off, the
+ * forge writes none and reads none, and a head is the only tie.
+ */
+describe("a forge with closing references off", () => {
+  const forgeOver = (gh: FakeTracker): GitHubForge =>
+    new GitHubForge({ client: createClient({ repo: "acme/widgets", token: TOKEN, fetchImpl: gh.fetchImpl }), git: noBranches });
+
+  it("opens a pull request with no closing reference in its body", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    await forgeOver(gh).openPull({ ticket: "1", branch: "landrace/1", title: "t" }, gh.ctx);
+    expect([...gh.pulls.values()]).toEqual([expect.objectContaining({ head: "landrace/1", body: "" })]);
+    expect([...gh.pulls.values()][0]?.closes).toBeUndefined();
+  });
+
+  it("ties a pull request to a ticket by its head alone, and asks GitHub for no closing reference", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ number: 20, head: "feature/x", closes: [1] });
+    gh.openPull({ number: 21, head: "landrace/1", closes: [1] });
+    const forge = forgeOver(gh);
+
+    expect((await forge.pullsNaming("1", gh.ctx)).map((p) => [p.number, p.tickets])).toEqual([[21, []]]);
+    expect((await forge.pulls(gh.ctx)).map((p) => p.tickets)).toEqual([[], []]);
+    expect(gh.graphql.filter((q) => /closingIssuesReferences|closedByPullRequestsReferences/.test(q.query))).toEqual([]);
   });
 });
 

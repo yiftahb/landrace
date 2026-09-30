@@ -40,7 +40,7 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     const gh = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }]);
     const hook = gh.registry.pre[0];
     if (!hook) throw new Error("the fake tracker registered no pre hook");
-    expect(hook.id).toBe("github");
+    expect(hook.id).toBe("project");
 
     const fragment = await hook.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
     expect(pathsIn(fragment)).toEqual(declaredBy(hook));

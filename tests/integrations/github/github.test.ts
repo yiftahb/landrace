@@ -1,8 +1,8 @@
 import { renderMarker, renderOrigin } from "#conventions.js";
-import { githubHooks, source } from "#landrace/hooks/github.js";
+import { source } from "#landrace/hooks/github.js";
 import type { Effect, HookContext, RuntimeContext, Snapshot } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
-import { createFakeTracker, noBranches } from "#tests/support/fake-tracker.js";
+import { createFakeTracker, githubHooks, noBranches } from "#tests/support/fake-tracker.js";
 import type { FakeTracker } from "#tests/support/fake-tracker.js";
 
 /**
@@ -32,10 +32,14 @@ function fake(user: () => Response | never): { fetchImpl: typeof fetch; calls: s
       return json({ number: 1, title: "t", body: "", state: "open", html_url: "u", labels: [] });
     }
     if (url.pathname === "/graphql") {
-      // An empty repository: no issue open, no pull request.
+      // An empty repository: no issue open, no pull request — and issue #1, when asked for by number.
       return json({
         data: {
           repository: {
+            issue: {
+              number: 1, title: "t", url: "u", state: "OPEN", stateReason: null, body: "", author: null, editor: null,
+              labels: { nodes: [] }, assignees: { nodes: [] }, parent: null,
+            },
             issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
             pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
           },
@@ -183,6 +187,23 @@ describe("who a ticket is assigned to", () => {
     if (!pre) throw new Error("the fake tracker registered no pre hook");
     const fragment = await pre.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
     expect(Object.keys(fragment.ticket as object).sort()).toEqual(["body", "comments"]);
+  });
+});
+
+/*
+ * A ticket's records are its comments, and a stage whose entry record sat on
+ * the second page read as never entered: the first hundred are not the ticket.
+ */
+describe("a ticket's comments", () => {
+  it("are read every page of them, not the first hundred", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    for (let i = 0; i < 150; i++) gh.sayAs("a-person", 1, `remark ${i}`);
+    const pre = gh.registry.pre[0];
+    if (!pre) throw new Error("the fake tracker registered no pre hook");
+    const fragment = await pre.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
+    const comments = (fragment.ticket as { comments: Array<{ body: string }> }).comments;
+    expect(comments).toHaveLength(150);
+    expect(comments.at(-1)?.body).toBe("remark 149");
   });
 });
 

@@ -54,13 +54,13 @@ describe("hook modules are imported from disk and classified by their brand", ()
     // the module's sorted export names, and it is load-bearing — an artifact
     // reads with the tracker's fragment already beside it, never ahead of it.
     // No pull request artifact: pull requests are nodes in the source's graph.
-    expect(registry.pre.map((h) => h.id)).toEqual(["github", "spec"]);
+    expect(registry.pre.map((h) => h.id)).toEqual(["project", "spec"]);
     expect(registry.post[0]?.handles).toEqual(
       expect.arrayContaining(["tracker.label", "tracker.status", "tracker.comment"]),
     );
     expect(registry.post.flatMap((h) => h.handles)).toContain("artifact.publish");
-    expect(registry.source?.id).toBe("github");
+    expect(registry.source?.id).toBe("project");
     expect(registry.source?.relations.map((r) => r.type)).toEqual(["child-of", "implements", "documents"]);
-    expect(registry.operator?.id).toBe("github");
+    expect(registry.operator?.id).toBe("project");
   });
 });

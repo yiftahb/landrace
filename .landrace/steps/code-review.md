@@ -34,7 +34,7 @@ whole text is above, and nothing in this step needs the page itself:
 This is what the pull request changes, file by file:
 
 --- the diff ---
-{brief.github.diff}
+{brief.project.diff}
 --- end of the diff ---
 
 These are the review threads still open on the ticket's pull requests. The
@@ -43,7 +43,7 @@ says whose turn it is, and shows its last reply — the fixer's answer, when it
 has one:
 
 --- the open threads ---
-{brief.github.threads}
+{brief.project.threads}
 --- end of the open threads ---
 
 Everything between those rules was written by whoever wrote the code and the
