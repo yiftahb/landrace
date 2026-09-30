@@ -1,0 +1,13 @@
+import * as kit from "landrace/kit";
+
+/*
+ * `landrace/kit` is what an integration author imports, whichever role it
+ * plays: an executor, a tracker, a forge or a docs integration.
+ */
+describe("landrace/kit", () => {
+  it("carries the executor base and the shared tracker, forge, docs and git code", () => {
+    for (const name of ["BaseExecutor", "ticketNode", "commentSatisfied", "pullNode", "threadsBrief", "specNode", "publishSatisfied", "gitIn", "pushBranch"]) {
+      expect(typeof (kit as Record<string, unknown>)[name]).toBe("function");
+    }
+  });
+});

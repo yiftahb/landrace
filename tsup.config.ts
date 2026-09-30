@@ -13,7 +13,7 @@ export default defineConfig({
     index: "src/index.ts",
     cli: "src/cli/index.ts",
     hooks: "src/hooks/index.ts",
-    kit: "src/kit/executor.ts",
+    kit: "src/kit/index.ts",
     testing: "src/testing/index.ts",
     "integrations/claude": "integrations/claude/index.ts",
     "integrations/codex": "integrations/codex/index.ts",
