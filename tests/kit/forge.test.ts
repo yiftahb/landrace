@@ -117,6 +117,7 @@ describe("pullNode", () => {
   const pull = {
     number: 5, title: "Split", link: "https://forge.example/pull/5", merged: false, closed: false, headSha: "abc",
     branch: "landrace/7" as string | undefined, createdAt: "2026-09-30T00:00:00Z" as string | undefined,
+    updatedAt: "2026-09-30T12:00:00Z" as string | undefined,
   };
 
   it("is the pull request as the engine reads one, with its thread counts", () => {
@@ -124,7 +125,7 @@ describe("pullNode", () => {
       id: "pr-5", kind: "pull-request", title: "Split", link: "https://forge.example/pull/5", closed: null,
       priority: null, origin: null,
       state: { merged: false, headSha: "abc", branch: "landrace/7", openThreads: 2, awaitingFix: 1 },
-      createdAt: Date.parse("2026-09-30T00:00:00Z"),
+      createdAt: Date.parse("2026-09-30T00:00:00Z"), updatedAt: Date.parse("2026-09-30T12:00:00Z"),
     });
   });
 
@@ -132,6 +133,7 @@ describe("pullNode", () => {
     expect(pullNode({ ...pull, merged: true, closed: true }).closed).toBe("done");
     expect(pullNode({ ...pull, closed: true }).closed).toBe("dropped");
     expect(pullNode({ ...pull, branch: undefined, createdAt: undefined })).not.toHaveProperty("state.branch");
+    expect(pullNode({ ...pull, updatedAt: undefined })).not.toHaveProperty("updatedAt");
   });
 });
 
