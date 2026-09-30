@@ -171,14 +171,14 @@ src/testing/         the harness, for testing a workflow of your own
 src/conventions.ts   label and marker vocabulary, shared by every hook
 src/sandbox.ts       repository identity; the tmp root locks and worktrees share
 
-integrations/        the coding agents landrace ships on the kit: claude/, codex/
+integrations/        the integrations landrace ships: claude/ and codex/ on the kit, and slack/
                      (`landrace/integrations/<vendor>`). Not part of the engine
 
 .landrace/
   landrace.yaml      runtime — how agents run, where tickets live
   workflow.yaml      the process — one graph, stages declaring what activates them
   steps/*.md         the work — front matter is the contract, the body is the prompt
-  hooks/*.ts         this project's integrations — GitHub, Slack, and `new Claude()`. Not part of the engine
+  hooks/*.ts         this project's integrations — GitHub, `new Claude()` and the Slack re-export. Not part of the engine
   .env               secrets, gitignored, and `validate` fails if it is not
 ```
 
@@ -209,7 +209,7 @@ How agents run and where tickets live. Portable workflows keep none of this.
 | `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
 | `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |
 | `notify.on` | — | The events to tell a person about. One exists: `needs-you` |
-| `notify.via` | — | Notifier ids, each registered by a hook with `defineNotifier`. This repository's is `slack`, from `.landrace/hooks/slack.ts`. An id no loaded notifier answers to is refused by `start` and reported by `validate` |
+| `notify.via` | — | Notifier ids, each registered by a hook with `defineNotifier`. This repository's is `slack`, shipped as `landrace/integrations/slack` and re-exported by `.landrace/hooks/slack.ts`. An id no loaded notifier answers to is refused by `start` and reported by `validate` |
 
 #### `notify:` — being told a ticket needs you
 
@@ -482,7 +482,7 @@ A module imports the contracts from `landrace/hooks` and exports whatever kinds 
 
 `.landrace/hooks/github.ts` in this repository is the reference implementation: one file with the REST client, both hooks, the source and the operator. A second tracker is a sibling of it, and nothing in the engine changes — a test enforces that `src/` never names one.
 
-A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", ticket, title, link, stage, why, board }` — `board` the triage page's URL when one is running, else null. Two notifiers under one id halt at load, naming both modules. `.landrace/hooks/slack.ts` is this repository's: it posts `{ text }` to the webhook, mentioning `slackNotifyUser` and linking the ticket, with the title and why escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal throws Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading.
+A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", ticket, title, link, stage, why, board }` — `board` the triage page's URL when one is running, else null. Two notifiers under one id halt at load, naming both modules. `landrace/integrations/slack` is the one landrace ships, and this repository's `.landrace/hooks/slack.ts` re-exports it: it posts `{ text }` to the webhook, mentioning `slackNotifyUser` and linking the ticket, with the title and why escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal throws Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading.
 
 A pre hook declares the snapshot paths it fills, and a source declares which relationship types it reports; `validate`'s `path-coverage` rule is answered from both together with what the engine itself always provides — `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every type the source declares — so a predicate can only read what something actually provides. The shipped GitHub hook's pre hook provides `ticket` (`.body`, `.comments`), `entries` and `tracker.bot`; the in-memory tracker in `landrace/testing` provides the portable subset of that (no `tracker.bot`). A ticket's identity, labels and assignees are not among either — they live on the `node` the *source* reads (see [The ticket graph](#the-ticket-graph)), not on something a pre hook fetches a second time. `node.state.assignees` is a **list of logins** — GitHub's issue has a list, and the singular `assignee` it also returns is that list's first element under a second name, which disagrees with it the moment an issue has two. It is empty, never absent, when nobody is assigned: a rule reading a path a ticket does not carry is one the tick cannot answer, and it abstains on those rather than guessing.
 

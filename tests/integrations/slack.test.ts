@@ -1,5 +1,6 @@
 import { loadConfig } from "#config/load.js";
 import { slack } from "#landrace/hooks/slack.js";
+import { slack as shipped } from "landrace/integrations/slack";
 import type { NotifyEvent, RuntimeConfig, RuntimeContext } from "#namespace.js";
 
 const WEBHOOK = "https://hooks.slack.com/services/T000/B000/secretpart";
@@ -102,4 +103,10 @@ describe("this repository's own notify", () => {
     expect(config.notify).toEqual({ on: ["needs-you"], via: ["slack"] });
     expect(config.log.redact).toContain("slackWebhookUrl");
   });
+});
+
+// The notifier ships with landrace, as the coding agents do: a project using
+// Slack re-exports it rather than keeping a copy of its own to drift.
+it("is the notifier landrace ships, re-exported by this project's hook", () => {
+  expect(slack).toBe(shipped);
 });

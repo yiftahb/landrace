@@ -20,8 +20,8 @@ src/cli/          validate, next, mcp, start, status
 src/conventions.ts  label and marker vocabulary shared by all of the above
 src/sandbox.ts     repository identity, and the tmp root locks and worktrees share
 
-integrations/     the coding agents landrace ships on the kit — claude/, codex/ (`landrace/integrations/<vendor>`). Not part of the engine.
-.landrace/hooks/  this project's integrations — GitHub, Slack, and its coding agent (claude.ts: `new Claude()`). Not part of the engine.
+integrations/     the integrations landrace ships — the coding agents on the kit (claude/, codex/) and the Slack notifier (slack/), each `landrace/integrations/<vendor>`. Not part of the engine.
+.landrace/hooks/  this project's integrations — GitHub, and one-line re-exports of its coding agent (claude.ts: `new Claude()`) and its notifier (slack.ts). Not part of the engine.
 ```
 
 ## Rules
