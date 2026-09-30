@@ -49,6 +49,8 @@ export function renderPrompt(
   template: string,
   snapshot: Snapshot,
   briefing?: Record<string, Record<string, string>>,
+  // Wraps each value filled in — the screener's fence; the agent gets them bare.
+  quote: (text: string) => string = (text) => text,
 ): string {
   // The briefing sits beside the snapshot under a name the engine reserves,
   // and it wins: a hook that happened to put its own `brief` in the snapshot
@@ -67,7 +69,7 @@ export function renderPrompt(
     if (value === null) return "none";
     // String() runs a list together — "code-review,build" — and a model
     // reading which steps failed has to be able to tell the items apart.
-    return Array.isArray(value) ? value.join(", ") : String(value);
+    return quote(Array.isArray(value) ? value.join(", ") : String(value));
   });
 }
 
@@ -265,8 +267,9 @@ export async function runStep(opts: {
     // the snapshot substituted into it does (an issue body, a comment) — and
     // so does the briefing, which is the least trusted text of the three.
     // Screening the template would approve text nobody is ever sent, and
-    // never look at the one part that is actually untrusted.
-    const verdict = await screenPrompt(prompt, {
+    // never look at the one part that is actually untrusted. Rendered again
+    // with each substituted value fenced, so the screener can tell which.
+    const verdict = await screenPrompt((quote) => renderPrompt(step.prompt, snapshot, opts.briefing, quote), {
       executor: opts.screen.executor,
       model: opts.screen.model,
       // Screening is quick, so it gets the workflow's budget, not a
