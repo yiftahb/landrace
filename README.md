@@ -31,6 +31,7 @@ treat the first one as a supervised experiment rather than a deployment.
 | MCP server: read, create, update, comment, ask, resolve, goto | ✅ built |
 | Hook loader, GitHub hooks, agent execution | ✅ built |
 | Integration kit (`BaseExecutor`), with Claude and Codex as native integrations | ✅ built |
+| Integration kit: the shared tracker, forge and docs code, out of the GitHub hook | ✅ built |
 | Tick loop: polling, concurrency, per-ticket locking | ✅ built |
 | Artifact publishing to GitHub Pages, PR review threads | ✅ built |
 | Worktree sandbox with enforced capabilities | ✅ built |
@@ -160,7 +161,8 @@ src/core/            the decision engine — pure, and enforced: no I/O, no cloc
                      no randomness. Time arrives as `snapshot.now`
 src/workflow/        load and validate workflow definitions
 src/hooks/           the define* contracts, and the loader that imports yours
-src/kit/             BaseExecutor — what every coding agent integration shares (`landrace/kit`)
+src/kit/             `landrace/kit` — BaseExecutor, what every coding agent integration shares,
+                     and the tracker, forge, docs and git code the other integrations share
 src/agent/           prompt screening, the worktree sandbox
 src/runner/          tick, converge, step, lock, effect dispatch, events
 src/config/          landrace.yaml + .env
@@ -184,7 +186,7 @@ integrations/        the integrations landrace ships: claude/ and codex/ on the 
 
 Imports inside `src/` and `tests/` go through the `imports` map in `package.json`
 — `#core/index.js`, `#namespace.js` — so nothing walks up the tree. Hooks import
-`landrace/hooks`, and integrations `landrace/kit` too, which is what an external
+`landrace/hooks`, and hooks and integrations `landrace/kit` too, which is what an external
 author writes; `integrations/` may import nothing else but `node:*`, and a test
 holds it to that.
 
@@ -483,6 +485,17 @@ hooks:
 A module imports the contracts from `landrace/hooks` and exports whatever kinds it implements — `definePreHook` to observe, `definePostHook` to act, `defineArtifactHook` for something that is both, `defineSource` to enumerate tickets, `defineOperator` for the create and update an operator asks for by hand, `defineExecutor` for an agent, `defineNotifier` for somewhere to tell a person a ticket needs them. The loader classifies each export by the brand its helper stamped, so one module can be a whole integration; the order of the list is the order pre hooks run in. A path must resolve inside the workflow directory, symlinks included, because `workflow.yaml` is a repo file a pull request can edit.
 
 `.landrace/hooks/github.ts` in this repository is the reference implementation: one file with the REST client, both hooks, the source and the operator. A second tracker is a sibling of it, and nothing in the engine changes — a test enforces that `src/` never names one.
+
+What a sibling would otherwise copy out of it comes from `landrace/kit` instead, over plain shapes the hook maps its own API's answers into:
+
+| From `landrace/kit` | What it is |
+|---|---|
+| Tracker | `commentsOf`, `wroteIt` and `botLoginOf` — our comments told from a stranger's; `labelSatisfied`, `statusSatisfied`, `commentSatisfied`, `closeSatisfied`, `nodesCloseSatisfied`, one per tracker effect; `ticketNode`, `priorityFromLabels`, `createdAtOf`; the paging bounds and `MAX_COMMENT_CHARS` |
+| Forge | `answered` and `threadCounts` — whose turn a `ReviewThread` is; `placeFindings` for a review's findings on a diff of `ChangedFile`s; `pullNode`, `prBranch`, `ticketOfBranch`; the `threadsBrief`, `diffBrief` and `historyBrief` briefings; `pushSatisfied` |
+| Docs | `SPEC`, `PUBLISH`, `hashOf`, `contentOf`, `mine`, `briefPage`, `publishSatisfied`, `specNode` |
+| Git | `gitIn`, `repositoryOf`, `ownGit`, `branchHeads`, `headsOf`, `headIn`; `originPushUrl` and `pushBranch`, fast-forward only with hooks off, the credential the hook's own |
+
+The hook keeps what is its vendor's: the client, the queries and their paging, its shapes and the mapping from them, which push URLs it trusts with a token and the scrubbing of it from what git says, and every event and word in its own name. The kit never logs.
 
 A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", ticket, title, link, stage, why, board }` — `board` the triage page's URL when one is running, else null. Two notifiers under one id halt at load, naming both modules. `landrace/integrations/slack` is the one landrace ships, and this repository's `.landrace/hooks/slack.ts` re-exports it: it posts `{ text }` to the webhook, mentioning `slackNotifyUser` and linking the ticket, with the title and why escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal throws Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading.
 

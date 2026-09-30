@@ -22,14 +22,14 @@
  * And one part that is not HTTP at all: publishing a branch a step committed
  * to is a `git push` from the operator's own checkout, with the token handed
  * to git through its environment rather than its command line.
+ *
+ * What any tracker, forge or docs hook would need as much as this one — the
+ * satisfied() rules, whose turn a thread is, the briefings, the spec's hash,
+ * git itself — is in `landrace/kit`, and this file is what is GitHub's: the
+ * client, the queries, GitHub's shapes and their mapping into the kit's, the
+ * push URLs it trusts with a token, and every word said in GitHub's name.
  */
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import {
-  allClosed,
   BRANCH_PUSH_EFFECT,
   CLOSE_EFFECT,
   defineArtifactHook,
@@ -38,19 +38,15 @@ import {
   definePreHook,
   definePreflight,
   defineSource,
-  DOCUMENT_KIND,
   effectBranch,
   entriesFromComments,
   hasPullFrom,
-  isReservedId,
   LABEL_EFFECT,
   LABELS,
-  labelsOf,
   MAX_SUBGRAPH_NODES,
   neutraliseMarkers,
   NODES_CLOSE_EFFECT,
   parseMarker,
-  parseOrigin,
   PULL_OPEN_EFFECT,
   PULL_REVIEW_EFFECT,
   PULL_REQUEST_KIND,
@@ -62,8 +58,6 @@ import {
   sameLogin,
   STAGE_LABEL_PREFIX,
   STATUS_EFFECT,
-  stripMarker,
-  TICKET_KIND,
   type ArtifactHook,
   type Closed,
   type Effect,
@@ -82,14 +76,32 @@ import {
   type Source,
   type TicketPatch,
 } from "landrace/hooks";
+import {
+  // the tracker's
+  closeSatisfied, commentSatisfied, commentsOf, DONE_WINDOW_MS, ISSUE_PAGE, labelSatisfied, MAX_COMMENT_CHARS,
+  MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nodesCloseSatisfied, priorityFromLabels, statusSatisfied, THREAD_PAGE,
+  TICKET_PAGE, ticketNode,
+  // the forge's
+  cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief, isReply, placeFindings, prBranch, pullNode, pushSatisfied,
+  threadCounts, threadsBrief, ticketOfBranch,
+  // the docs'
+  briefPage, contentOf, hashOf, mine, PUBLISH, publishSatisfied, SPEC, specNode,
+  // git's
+  branchHeads, gitIn, headIn, headsOf, nothingCommitted, originPushUrl, ownGit, pushBranch, repositoryOf,
+  type ChangedFile, type Git, type ReviewThread, type ThreadComment, type ThreadCounts,
+} from "landrace/kit";
 /*
- * `landrace/hooks` resolves here by Node's package self-reference — the same
- * specifier a consumer with landrace installed writes, and the reason this
- * file is a copyable example rather than a repo-shaped one. It points at the
- * built `dist/hooks.js`, so run `pnpm build` before running the CLI out of
- * this repository; the test suite maps it to `src/` so it never waits on a
- * build.
+ * `landrace/hooks` and `landrace/kit` resolve here by Node's package
+ * self-reference — the same specifiers a consumer with landrace installed
+ * writes, and the reason this file is a copyable example rather than a
+ * repo-shaped one. They point at the built `dist/`, so run `pnpm build`
+ * before running the CLI out of this repository; the test suite maps them to
+ * `src/` so it never waits on a build.
  */
+
+/* git, as the tests and the tracker fake reach it through this hook. */
+export { gitIn };
+export type { Git };
 
 /* ── GitHub's own shapes ────────────────────────────────────────────────── */
 
@@ -191,49 +203,6 @@ export interface GitHubOptions {
 }
 
 /**
- * Runs git with these arguments and this extra environment, in one checkout,
- * and answers its stdout — stopped when `signal` aborts or `timeoutMs` passes.
- */
-export type Git = (
-  args: string[],
-  env?: Record<string, string>,
-  opts?: { signal?: AbortSignal | undefined; timeoutMs?: number | undefined },
-) => Promise<string>;
-
-const execFileAsync = promisify(execFile);
-
-/**
- * git in `dir`, reporting git's own words rather than a stack trace.
- *
- * The operator's environment is passed through — HOME, an ssh agent, a proxy
- * are all how their git already reaches their remote — with prompting off: a
- * push that wants a password must fail and say so, not wait on a terminal
- * nobody is watching.
- */
-export function gitIn(dir: string): Git {
-  return async (args, env = {}, { signal, timeoutMs } = {}) => {
-    try {
-      const { stdout } = await execFileAsync("git", args, {
-        cwd: dir,
-        env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
-        maxBuffer: 16 * 1024 * 1024,
-        ...(signal === undefined ? {} : { signal }),
-        ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
-      });
-      return stdout;
-    } catch (e) {
-      const what = `git ${args[0] ?? ""} in ${dir}`;
-      if (signal?.aborted) throw new Error(`${what} was aborted`);
-      if ((e as { killed?: unknown }).killed === true && timeoutMs !== undefined) {
-        throw new Error(`${what} did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped`);
-      }
-      const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
-      throw new Error(`${what}: ${stderr || (e instanceof Error ? e.message : String(e))}`);
-    }
-  };
-}
-
-/**
  * The repository this file is in: for a project's `.landrace/hooks/`, that
  * project — whatever directory the process was started from.
  *
@@ -241,7 +210,8 @@ export function gitIn(dir: string): Git {
  * ts-jest's default pass compiles this file as CommonJS and refuses
  * `import.meta` outright (TS1343; see tests/hooks/claude.test.ts). The file
  * name V8 records for this very frame is the same fact, in either module
- * system — a path under jest, a file: URL under node.
+ * system — a path under jest, a file: URL under node. Read here and nowhere
+ * else: the same lookup inside the kit would name the kit's own file.
  */
 export async function hookRepository(): Promise<string> {
   const saved = Error.prepareStackTrace;
@@ -253,35 +223,11 @@ export async function hookRepository(): Promise<string> {
     Error.prepareStackTrace = saved;
   }
   if (!file) throw new Error("the github hook cannot tell which file it was loaded from, so it cannot find its repository");
-  const here = dirname(file.startsWith("file:") ? fileURLToPath(file) : file);
-  return (await gitIn(here)(["rev-parse", "--show-toplevel"])).trim();
-}
-
-/** git in the hook's own repository, found the first time it is needed. */
-function ownGit(): Git {
-  let root: Promise<string> | undefined;
-  return async (args, env, opts) => {
-    root ??= hookRepository();
-    return gitIn(await root)(args, env, opts);
-  };
+  return repositoryOf(file);
 }
 
 /** A 404 from the API, told apart from every other failure by its status rather than by its text. */
 const isMissing = (e: unknown): boolean => (e as { status?: unknown } | null)?.status === 404;
-
-/**
- * The most GitHub will take in an issue comment body. Its number, so it lives
- * here: a Jira hook's is 32,767, and an engine that knew either of them would
- * be an engine that knows which tracker it is driving.
- *
- * The engine's own bound is `recordBodyProblem` in src/conventions.ts, which
- * is lower and tracker-agnostic, and which rejects at the step boundary where
- * the refusal is *recorded* on the ticket. This is the backstop under it — for
- * the bodies the engine does not compose, an operator's own `landrace_reply`
- * among them — and it reports the size rather than letting the API answer 422
- * to a request that should never have gone out.
- */
-const MAX_COMMENT_CHARS = 65_536;
 
 function createClient(opts: GitHubOptions) {
   const { repo, token } = opts;
@@ -719,97 +665,26 @@ type Client = ReturnType<typeof createClient>;
 
 /* ── the post hook's satisfied(), which needs no client ─────────────────── */
 
-interface SnapshotComment {
-  body?: string;
-  user?: { login?: string } | null;
-}
-
-const commentsOf = (s: Snapshot): SnapshotComment[] =>
-  ((s.ticket as { comments?: SnapshotComment[] })?.comments ?? []);
-
 /**
- * Who we post as, as the pre hook recorded it this tick. satisfied() is
- * synchronous by contract, so it cannot resolve the login itself; the
- * snapshot is where the state a decision reads belongs anyway.
- *
- * Absent means we cannot tell whether an effect has landed, and the two ways
- * of guessing are both wrong: "satisfied" silently drops the work, "not
- * satisfied" re-posts a comment on every tick. Halting is the third option,
- * and the dispatcher attributes the throw to this hook.
+ * One check per effect this hook handles, each the kit's but `pull.review`'s.
+ * Every one reads only the snapshot: the labels and closed state the source
+ * read, the comments and login and branch heads the pre hook recorded.
  */
-function botLoginOf(s: Snapshot): string {
-  const bot = (s.tracker as { bot?: unknown } | undefined)?.bot;
-  if (typeof bot !== "string" || !bot.trim()) {
-    throw new Error("the snapshot does not record the login landrace posts as, so no effect can be checked");
-  }
-  return bot.trim().toLowerCase();
-}
-
-/** sameLogin, for the reason entriesFromComments uses it: an app has two spellings. */
-const wroteIt = (c: SnapshotComment, bot: string): boolean =>
-  typeof c.user?.login === "string" && sameLogin(c.user.login, bot);
-
 function satisfied(snapshot: Snapshot, effect: Effect): boolean {
-  // The labels the source read, not a second copy of them from the pre hook:
-  // one reading of the ticket, which is the one the engine placed it from.
-  const present = labelsOf(snapshot.node as Node | undefined);
   switch (effect.type) {
-    // The two label cases read labels, which only an account with write
-    // access can set — unlike a comment, which anyone can post. Forging one
-    // is the operator-tools problem (lr: labels are refused there), not an
-    // authorship question this hook can answer.
-    case LABEL_EFFECT: {
-      const add = (effect.add as string[]) ?? [];
-      const remove = (effect.remove as string[]) ?? [];
-      return add.every((l) => present.includes(l)) && remove.every((l) => !present.includes(l));
-    }
+    case LABEL_EFFECT:
+      return labelSatisfied(snapshot, effect);
     case STATUS_EFFECT:
       // GitHub has no status field; position is a stage label.
-      return present.includes(LABELS.stage(String(effect.value)));
-    case RECORD_EFFECT: {
-      // An unmarked comment is an operator's own turn, applied directly and
-      // never planned by a stage — nothing on the ticket would say it had
-      // already been posted, so reconciling one could only mean re-posting it
-      // on every tick. Halting is the honest answer, and it is the rule that
-      // every effect has a real satisfied() beside its apply().
-      if (effect.marker === undefined) {
-        throw new Error(
-          "a tracker.comment effect with no marker cannot be reconciled: nothing would record that it had " +
-          "already been posted, so it would be posted again on every tick",
-        );
-      }
-      // Only a comment *we* wrote can mean our comment effect has landed.
-      // Reading any comment let a stranger who guessed the marker string
-      // suppress the effect for good, because reconcile drops it.
-      //
-      // And only the marker we stamped, parsed and compared whole — never
-      // the token found somewhere in the body. A body is mostly the agent's
-      // own prose, and an output comment now carries the agent's own words
-      // inside the marker as well, so a substring scan hands the agent the
-      // token that means "this already happened": one round's prose
-      // containing "enter:spec:2" makes reconcile drop the next round's
-      // entry record, and a stage with no new entry record reads as complete
-      // and is never run again. The same scan also made "enter:x:1"
-      // satisfied by a comment recording "enter:x:10".
-      const bot = botLoginOf(snapshot);
-      const marker = String(effect.marker);
-      return commentsOf(snapshot).some((c) => wroteIt(c, bot) && parseMarker(c.body ?? "")?.marker === marker);
-    }
+      return statusSatisfied(snapshot, effect);
+    case RECORD_EFFECT:
+      return commentSatisfied(snapshot, effect);
     case NODES_CLOSE_EFFECT:
-      return allClosed(snapshot.graph as Graph | undefined, (effect.ids as string[] | undefined) ?? []);
+      return nodesCloseSatisfied(snapshot, effect);
     case CLOSE_EFFECT:
-      // Closed either way counts: a person who closed it as not planned
-      // decided that, and re-closing it as completed would overrule them.
-      return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
-    case BRANCH_PUSH_EFFECT: {
-      // Done when origin's head, as this checkout last saw it, is the local
-      // one. A branch the checkout does not have has nothing to publish —
-      // pushing it would fail, not push — so that is done too.
-      const branch = effectBranch(effect);
-      const { local, remote } = headsOf(snapshot);
-      const head = headIn(local, branch);
-      return head === undefined || headIn(remote, branch) === head;
-    }
+      return closeSatisfied(snapshot);
+    case BRANCH_PUSH_EFFECT:
+      return pushSatisfied(snapshot, effect);
     case PULL_OPEN_EFFECT:
       return hasPullFrom(snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect));
     case PULL_REVIEW_EFFECT:
@@ -821,65 +696,6 @@ function satisfied(snapshot: Snapshot, effect: Effect): boolean {
       return false;
   }
 }
-
-/**
- * The branch heads the pre hook read this pass. Absent is a halt, for the
- * reason botLoginOf gives: "satisfied" would drop a push that never happened,
- * and "not satisfied" would push on every tick.
- */
-function headsOf(s: Snapshot): { local: Record<string, unknown>; remote: Record<string, unknown> } {
-  const git = s.git as { local?: unknown; remote?: unknown } | undefined;
-  const isMap = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
-  if (!git || !isMap(git.local) || !isMap(git.remote)) {
-    throw new Error("the snapshot does not record this checkout's branches, so no push can be checked");
-  }
-  return { local: git.local, remote: git.remote };
-}
-
-/** One branch's head out of a map a snapshot carried, own keys only: a branch called "constructor" is still a branch. */
-const headIn = (heads: Record<string, unknown>, branch: string): string | undefined =>
-  Object.hasOwn(heads, branch) && typeof heads[branch] === "string" ? heads[branch] : undefined;
-
-/**
- * Every local branch head, and every head origin had when this checkout last
- * heard from it — out of the checkout's own refs, never the network. A
- * remote-tracking ref is exactly what a push moves, so the pass after
- * `branch.push` reads its own push back from here.
- *
- * ponytail: every branch, on every pass, into the snapshot. A repository with
- * thousands of branches pays for all of them each time; narrow this to the
- * branches the workflow's effects name if one ever does.
- */
-async function branchHeads(git: Git): Promise<{ local: Record<string, string>; remote: Record<string, string> }> {
-  const out = await git(["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads", "refs/remotes/origin"]);
-  const local: Record<string, string> = {};
-  const remote: Record<string, string> = {};
-  for (const line of out.split("\n")) {
-    const [ref = "", sha = ""] = line.split("\0");
-    const into = ref.startsWith("refs/heads/") ? local : ref.startsWith("refs/remotes/origin/") ? remote : null;
-    const name = ref.replace(/^refs\/(heads|remotes\/origin)\//, "");
-    // origin/HEAD points at a branch rather than being one, and a reserved
-    // key is a prototype write rather than a name.
-    if (into === null || sha === "" || name === "HEAD" || isReservedId(name)) continue;
-    into[name] = sha;
-  }
-  return { local, remote };
-}
-
-/** How long one push may take before it is stopped: it holds the ticket's lock while it runs. */
-const PUSH_TIMEOUT_MS = 5 * 60_000;
-
-/**
- * What a publishing effect says when there is nothing on the branch to
- * publish. The push checks for it and GitHub answers it to `pull.open`, so
- * both say it in one sentence: a halt that clears itself once somebody
- * commits, because the next tick asks again.
- */
-const nothingCommitted = (branch: string, ticket: string): Error =>
-  new Error(
-    `nothing was committed on ${branch} for #${ticket}: it is already part of origin's default branch, so ` +
-    "there is nothing to push or propose. Commit to the branch and the next tick carries on",
-  );
 
 /** An owner or a repository name, as `tracker.repo` itself is validated: nothing a parser could read two ways. */
 const NAME = "[A-Za-z0-9_-][A-Za-z0-9._-]*";
@@ -924,13 +740,8 @@ const looksLikeGithub = (url: string): boolean => /github\.com/i.test(url);
 const shown = (url: string): string => url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, "$1");
 
 /**
- * Publish one branch to origin, fast-forward only.
- *
- * To exactly one destination. `git push origin` pushes to every push URL
- * origin has, and a step that may write shares this repository's config, so
- * one more pushurl is one line away. An origin with anything but one push
- * URL — `git remote get-url --push --all`, after every rewrite a config could
- * apply — is refused before anything else is built.
+ * Publish one branch to origin, fast-forward only — `pushBranch`, to the one
+ * push URL `originPushUrl` allows, once this hook has checked it.
  *
  * The token goes into the push's environment only when that one URL is an
  * https URL on github.com naming this very repository. An ssh origin, one
@@ -939,41 +750,20 @@ const shown = (url: string): string => url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/
  * naming some other repository is refused, since its branch could never be
  * the head of a pull request here.
  *
- * With the token, it rides in git's environment and never on its command
- * line: argv is readable by every process on the machine. `GIT_CONFIG_*` is
- * git's own way to take configuration from the environment — appended after
- * any the operator already set. The header is scoped to that exact URL, not
- * to github.com, so no other destination that slipped in would be handed it;
+ * With the token, it rides in git's environment as configuration and never
+ * on its command line. The header is scoped to that exact URL, not to
+ * github.com, so no other destination that slipped in would be handed it;
  * an empty value first clears a header some other tool left configured (a CI
  * checkout does), and credential helpers and askpass are cleared so nothing
- * git would start to ask for credentials sees the token either.
- *
- * Hooks are off for every push. A step that may write can point
- * core.hooksPath at a script of its own, and a pre-push or
- * reference-transaction hook runs inside this very environment. The push is
- * the one branch and nothing more: an explicit refspec makes git ignore
- * `remote.origin.push`, a mirror remote refuses one outright, and following
- * tags or pushing submodules is switched off here rather than left to config.
- * Whatever git says back is scrubbed of both spellings of the token before
- * it becomes an error, a log line or a comment.
- *
- * Never forced: a branch origin has moved on is somebody else's work, and
- * the way through it is a person's.
+ * git would start to ask for credentials sees the token either. Whatever git
+ * says back is scrubbed of both spellings of the token before it becomes an
+ * error, a log line or a comment.
  */
 function pusher(git: Git, token: string, repo: string): (branch: string, ticket: string, signal: AbortSignal) => Promise<void> {
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
   return async (branch, ticket, signal) => {
-    const urls = (await git(["remote", "get-url", "--push", "--all", "origin"], {}, { signal }))
-      .split("\n").map((u) => u.trim()).filter(Boolean);
-    const [url] = urls;
-    if (urls.length !== 1 || url === undefined) {
-      throw new Error(
-        `refusing to push ${branch}: origin has ${urls.length} push URLs, and landrace pushes a ticket's branch ` +
-        "to exactly one destination — the one it can check. Leave origin a single push URL " +
-        "(git remote set-url --push origin <url>) and the ticket carries on",
-      );
-    }
+    const url = await originPushUrl(git, branch, signal);
     const remote = githubRemote(url);
     if (remote === null && looksLikeGithub(url)) {
       throw new Error(
@@ -989,54 +779,15 @@ function pusher(git: Git, token: string, repo: string): (branch: string, ticket:
         "this workflow's tracker is — a pull request here could never be opened from it",
       );
     }
-    const withToken = remote?.https === true;
-
-    // Nothing to publish either when origin already has everything the
-    // branch has: a person's push, or the forge's "Update branch", moved it on
-    // and a fetch brought the news. A fast-forward-only push of it would be
-    // refused, on every tick, over commits that are already there.
-    const theirs = `refs/remotes/origin/${branch}`;
-    if ((await git(["for-each-ref", "--format=%(objectname)", theirs], {}, { signal })).trim() !== "") {
-      const contained = await git(["merge-base", "--is-ancestor", `refs/heads/${branch}`, theirs], {}, { signal })
-        .then(() => true, () => false);
-      if (contained) return;
-    }
-
-    // Nothing to publish: the branch is origin's default branch, or behind
-    // it. Asked of refs this checkout already has — origin/HEAD, as the clone
-    // or `git remote set-head` left it — and skipped when it has none;
-    // GitHub's own answer to `pull.open` says the same thing then.
-    const base = (await git(["for-each-ref", "--format=%(objectname)", "refs/remotes/origin/HEAD"], {}, { signal })).trim();
-    if (base !== "") {
-      const ahead = (await git(["rev-list", "--count", `${base}..refs/heads/${branch}`], {}, { signal })).trim();
-      if (ahead === "0") throw nothingCommitted(branch, ticket);
-    }
-
-    const config: Array<[string, string]> = [
-      ["core.hooksPath", "/dev/null"], ["push.followTags", "false"], ["push.recurseSubmodules", "no"],
-    ];
-    if (withToken) {
-      const header = `http.${url}.extraheader`;
-      config.push(
-        [header, ""], [header, `AUTHORIZATION: basic ${basic}`], ["credential.helper", ""], ["core.askPass", ""],
-      );
-    }
-    const at = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10) || 0;
-    const env: Record<string, string> = { GIT_CONFIG_COUNT: String(at + config.length) };
-    for (const [i, [key, value]] of config.entries()) {
-      env[`GIT_CONFIG_KEY_${at + i}`] = key;
-      env[`GIT_CONFIG_VALUE_${at + i}`] = value;
-    }
+    const header = `http.${url}.extraheader`;
+    const auth: Array<[string, string]> = remote?.https === true
+      ? [[header, ""], [header, `AUTHORIZATION: basic ${basic}`], ["credential.helper", ""], ["core.askPass", ""]]
+      : [];
 
     try {
-      await git(["push", "origin", `refs/heads/${branch}:refs/heads/${branch}`], env, { signal, timeoutMs: PUSH_TIMEOUT_MS });
+      await pushBranch(git, branch, ticket, signal, auth);
     } catch (e) {
-      const said = scrub(e instanceof Error ? e.message : String(e));
-      const behind = /non-fast-forward|fetch first/i.test(said)
-        ? ` — origin's ${branch} has commits this checkout does not, and landrace does not force-push; ` +
-          "bring the branch up to date by hand and the ticket carries on"
-        : "";
-      throw new Error(`could not push ${branch} to origin${behind}: ${said}`);
+      throw new Error(scrub(e instanceof Error ? e.message : String(e)));
     }
   };
 }
@@ -1192,15 +943,6 @@ async function applyEffect(
 /* ── the spec artifact, published to Pages ──────────────────────────────── */
 
 /**
- * The artifact this hook owns, and the effect type it answers. One name, used
- * for the snapshot path, the effect's `artifact` field and the hook's id: the
- * engine nests an artifact's state under the hook's own id, so a second
- * spelling here would be a path no workflow could read.
- */
-const SPEC = "spec";
-const PUBLISH = "artifact.publish";
-
-/**
  * An orphan branch: nothing published here is part of main's history, and no
  * checkout is involved.
  */
@@ -1274,69 +1016,11 @@ function specLinks(gh: Client, repo: string) {
 
 type SpecLink = ReturnType<typeof specLinks>;
 
-/**
- * The same page as the graph reports it: a document beside its ticket, so the
- * board can draw it. Derived from the ticket like the path and the url, so
- * there is nothing to remember about it — and nothing routes on it: what the
- * workflow reads is `artifacts.spec`, below, exactly as before.
- */
-const specNode = (ticket: string, link: string): Node => ({
-  id: `spec-${ticket}`,
-  kind: DOCUMENT_KIND,
-  title: "Spec",
-  link,
-  closed: null,
-  priority: null,
-  origin: null,
-  state: {},
-});
-
-const hashOf = (content: string): string => createHash("sha256").update(content).digest("hex");
-
-/**
- * What this publish puts on the page.
- *
- * An empty body is refused rather than published: an empty document would
- * hash, satisfy and read back perfectly well, so the stage would complete and
- * the reviewer would be sent to a blank page with nothing saying why.
- */
-function contentOf(effect: Effect): string {
-  const body = typeof effect.body === "string" ? effect.body : "";
-  if (!body.trim()) throw new Error(`a "${PUBLISH}" effect for "${SPEC}" carried no content to publish`);
-  return body;
-}
-
-/** Refuses a publish addressed to an artifact this hook does not own, rather than writing it to the spec's path. */
-function mine(effect: Effect): void {
-  if (effect.artifact !== SPEC) {
-    throw new Error(`this hook publishes the "${SPEC}" artifact, not "${String(effect.artifact)}"`);
-  }
-}
-
 async function readPage(gh: Client, link: SpecLink, ticket: string, log: HookContext["log"]): Promise<Record<string, unknown>> {
   const content = await gh.getFile(PAGES_BRANCH, pagePath(ticket));
   // `exists` and a content hash are the whole state: presence is what a
   // precondition reads, and the hash is what makes a republish a no-op.
   return { exists: content !== null, hash: content === null ? null : hashOf(content), url: await link(ticket, log) };
-}
-
-/** What a step is told when there is no page to hand it — said, so the prompt never shows a bare placeholder. */
-const NO_SPEC = "No spec has been published for this ticket.";
-
-/**
- * The page's own text, for a step to work from — the prose half of the
- * artifact, beside `readPage`'s state.
- *
- * Handed over as text rather than as a link. A link sends the agent off to
- * fetch something, which a prompt screener rightly reads as an injection
- * vector and which, in a private repository, it could not have opened in the
- * first place. Escaping and the size bound are the engine's, applied to every
- * briefing on the way in; a failed read throws, because "the spec could not
- * be read" and "there is no spec" are different things to tell a build.
- */
-async function briefPage(gh: Client, ticket: string): Promise<Record<string, string>> {
-  const content = await gh.getFile(PAGES_BRANCH, pagePath(ticket));
-  return { content: content ?? NO_SPEC };
 }
 
 async function publishPage(gh: Client, effect: Effect, ticket: string): Promise<void> {
@@ -1353,24 +1037,6 @@ async function publishPage(gh: Client, effect: Effect, ticket: string): Promise<
   await gh.putFile(PAGES_BRANCH, pagePath(ticket), content, `landrace: publish the spec for #${ticket}`);
 }
 
-/**
- * Idempotence, without a ledger: the page's own content hash, as this tick
- * read it, against the hash of what we are about to publish.
- *
- * Absent state is neither yes nor no. "Satisfied" would silently drop the
- * publish and complete a stage with nothing published; "not satisfied" would
- * republish on every tick. Halting is the third option, exactly as for a
- * missing bot login.
- */
-function publishSatisfied(snapshot: Snapshot, effect: Effect): boolean {
-  mine(effect);
-  const state = (snapshot.artifacts as Record<string, { hash?: unknown }> | undefined)?.[SPEC];
-  if (state === undefined || state === null) {
-    throw new Error(`the snapshot has no artifacts.${SPEC} state, so no publish of it can be checked`);
-  }
-  return state.hash === hashOf(contentOf(effect));
-}
-
 /* ── the graph: issues, sub-issues and pull requests over GraphQL, and pages ── */
 
 /**
@@ -1384,37 +1050,12 @@ const issueNumber = (id: string): number => {
   return Number(id);
 };
 
-/**
- * Derived from the ticket, never stored — the same rule the spec's path
- * follows. There is no PR id to remember and nothing to repair: the branch
- * names the ticket, and every pull request with that head is its work.
- */
-const prBranch = (ticket: string): string => `landrace/${ticket}`;
-
-/** The ticket a head branch names, when it is one of ours. */
-const ticketOfBranch = (head: string): string | null => /^landrace\/([1-9][0-9]*)$/.exec(head)?.[1] ?? null;
-
 /** Every relationship type this source reports; a node has one parent, a pull request one ticket, a page one ticket. */
 const RELATION_DECLS: RelationDecl[] = [
   { type: RELATIONS.childOf, singular: true },
   { type: RELATIONS.implements, singular: true },
   { type: RELATIONS.documents, singular: true },
 ];
-
-/**
- * GitHub's own page size for a connection, and how many pages one read will
- * pay for. A count that stopped at the first page would read a 150-thread pull
- * request as having fewer findings than it has — and, with the first hundred
- * resolved, as having none at all, which is a ticket leaving the review loop
- * with open findings on it. Past the cap the honest answer is that the count
- * could not be read, not a number we know is short.
- */
-const THREAD_PAGE = 100;
-const MAX_THREAD_PAGES = 10;
-
-/** The same bound on the issue and pull request lists, for the same reason: the REST list this replaced stopped at 100 without saying so. */
-const ISSUE_PAGE = 100;
-const MAX_ISSUE_PAGES = 10;
 
 /**
  * What a pull request is asked for, wherever it is found: enough to know
@@ -1438,10 +1079,6 @@ query LandraceIssues($owner: String!, $name: String!, $cursor: String) {
     }
   }
 }`;
-
-// ponytail: a constant, not a setting — tracker config if another window is ever wanted.
-/** How far back the board's Done lane reaches. Display only: tick works open tickets alone. */
-const DONE_WINDOW_MS = 30 * 86_400_000;
 
 /**
  * Closed issues, most recently updated first, so the list stops at the first
@@ -1491,14 +1128,6 @@ query LandraceClosedPulls($owner: String!, $name: String!, $cursor: String) {
     }
   }
 }`;
-
-/**
- * How many sub-issues, and pull requests each way, one ticket read carries.
- * Every one of them is counted by the workflow — "every child closed", "every
- * pull request merged" — so a ticket with more than this is refused by
- * `read` rather than read as one with fewer.
- */
-const TICKET_PAGE = 50;
 
 /** One ticket: itself, its parent, its sub-issues, and every pull request tied to it either way. */
 const TICKET_QUERY = `
@@ -1676,75 +1305,38 @@ function closedOf(issue: IssueNode): Closed {
   );
 }
 
-const PRIORITY_LABEL = /^P([0-9])$/;
-
 /**
- * `P0`..`P9`, the convention this repository's labels use. Two of them is a
- * ticket whose priority cannot be told — reported, like two stage labels,
- * rather than resolved by taking the first.
- */
-function priorityFromLabels(labels: string[]): { priority: number | null; found: string[] } {
-  const found = labels.filter((l) => PRIORITY_LABEL.test(l));
-  const only = found.length === 1 ? found[0] : undefined;
-  return { priority: only === undefined ? null : Number(PRIORITY_LABEL.exec(only)?.[1]), found };
-}
-
-/**
- * The one mapping from a GitHub issue to a ticket node. `bot` is the login we
- * post as: an origin counts only in a body we wrote, because a re-run closes
- * whatever claims it.
+ * The one mapping from a GitHub issue to a ticket node: GitHub's fields read
+ * into the kit's `ticketNode`. `bot` is the login we post as: an origin
+ * counts only in a body we wrote, because a re-run closes whatever claims it.
  */
 export function nodeOfIssue(issue: IssueNode, bot: string): Node {
-  const labels = issue.labels.nodes.map((l) => l.name);
-  return {
+  return ticketNode({
     id: String(issue.number),
-    kind: TICKET_KIND,
     title: issue.title,
     link: issue.url,
     closed: closedOf(issue),
-    priority: priorityFromLabels(labels).priority,
-    // Nobody but us may have touched the body since: a person keeps the
-    // bot's authorship when they edit it, and could otherwise rewrite the
-    // marker to claim another stage or round.
-    origin: issue.editor && !sameLogin(issue.editor.login, bot)
-      ? null
-      : parseOrigin(issue.body ?? "", issue.author?.login, bot),
-    // Always lists, and empty rather than absent: an eligibility rule reading
-    // a path the node does not carry is one the tick cannot answer, and it
-    // abstains on those — so an unassigned ticket would be worked by every
-    // instance instead of none.
-    state: { labels, assignees: issue.assignees.nodes.map((a) => a?.login ?? "").filter(Boolean) },
-    ...createdAtOf(issue.createdAt),
-  };
+    labels: issue.labels.nodes.map((l) => l.name),
+    assignees: issue.assignees.nodes.map((a) => a?.login ?? "").filter(Boolean),
+    body: issue.body ?? "",
+    author: issue.author?.login,
+    editor: issue.editor?.login,
+    createdAt: issue.createdAt,
+  }, bot);
 }
 
-/** The board's "opened 3h ago": absent, not NaN, when GitHub gave no parseable time. */
-function createdAtOf(at: string | undefined): { createdAt?: number } {
-  const ms = at === undefined ? NaN : Date.parse(at);
-  return Number.isNaN(ms) ? {} : { createdAt: ms };
-}
-
+/** A pull request as GraphQL answers it, as the kit's `pullNode`: a fork's head branch is not named. */
 function pullNodeOf(pull: PullNode, threads?: ThreadCounts): Node {
-  return {
-    id: `pr-${pull.number}`,
-    kind: PULL_REQUEST_KIND,
+  return pullNode({
+    number: pull.number,
     title: pull.title,
     link: pull.url,
-    closed: pull.merged ? "done" : pull.state === "CLOSED" ? "dropped" : null,
-    priority: null,
-    origin: null,
-    // The head branch, so `pull.open` can tell one branch's pull request from
-    // another's: a ticket has as many as its workflow's stages name. Not for
-    // a fork's, whose branch is in another repository and could carry any
-    // name — ours included — and so stand in for the one we would open.
-    state: {
-      merged: pull.merged,
-      headSha: pull.headRefOid,
-      ...(pull.isCrossRepository ? {} : { branch: pull.headRefName }),
-      ...threads,
-    },
-    ...createdAtOf(pull.createdAt),
-  };
+    merged: pull.merged,
+    closed: pull.state === "CLOSED",
+    headSha: pull.headRefOid,
+    branch: pull.isCrossRepository ? undefined : pull.headRefName,
+    createdAt: pull.createdAt,
+  }, threads);
 }
 
 /**
@@ -1759,12 +1351,6 @@ const ticketsNamedBy = (pull: PullNode): Set<string> => {
   return named;
 };
 
-/** What a pull request node says of its threads: how many are unresolved, and how many of those await a fix. */
-interface ThreadCounts {
-  openThreads: number;
-  awaitingFix: number;
-}
-
 /**
  * How many review threads on one pull request nobody has resolved, and how
  * many of those await a fix, every page of them, or a refusal — never a
@@ -1774,19 +1360,15 @@ async function countThreads(gh: Client, repo: string, number: number): Promise<T
   const [owner = "", name = ""] = repo.split("/");
   const bot = await gh.botLogin();
   let cursor: string | null = null;
-  const counts: ThreadCounts = { openThreads: 0, awaitingFix: 0 };
+  const read: Array<Pick<ReviewThread, "resolved" | "last">> = [];
 
   for (let page = 0; page < MAX_THREAD_PAGES; page++) {
     const data: ThreadsResponse = await gh.graphql<ThreadsResponse>(THREADS_QUERY, { owner, name, number, cursor });
     if (!data.repository) throw unseen(repo);
     const threads = data.repository.pullRequest?.reviewThreads;
     if (!threads) throw new Error(`pull request #${number} answered with no review threads at all`);
-    for (const t of threads.nodes) {
-      if (t.isResolved) continue;
-      counts.openThreads++;
-      if (!answered(t.lastReply.nodes[0], bot)) counts.awaitingFix++;
-    }
-    if (!threads.pageInfo.hasNextPage) return counts;
+    read.push(...threads.nodes.map((t) => ({ resolved: t.isResolved, last: commentOf(t.lastReply.nodes[0]) })));
+    if (!threads.pageInfo.hasNextPage) return threadCounts(read, bot);
     cursor = threads.pageInfo.endCursor;
   }
 
@@ -2106,34 +1688,6 @@ async function readGraph(gh: Client, repo: string, link: SpecLink, ticket: strin
 }
 
 /**
- * What the briefing carries, and it is not the same bound as the count's.
- *
- * Twenty findings is more than any one fix round can honestly address, and a
- * thousand characters is a long review comment. The count stays exact however
- * many there are — that is the gate — while the text is a working list, cut
- * with a line saying how much was left out so the agent is never told there
- * are three findings when there are fifty.
- */
-const BRIEF_THREADS = 20;
-const BRIEF_BODY_CHARS = 1000;
-
-/**
- * The history's bounds: the newest of each kept, since the latest correction
- * is the one a retro most needs to see, with the older ones counted aloud.
- */
-const BRIEF_COMMENTS = 60;
-const BRIEF_HISTORY_THREADS = 40;
-
-/**
- * And what each of its two halves may spend. The engine cuts a hook's whole
- * briefing at 32 KB from the end, which on a long history would drop the
- * newest comments and every review thread first — the opposite of what the
- * retro needs. Two halves this size, and the short `threads` beside them
- * when the review has settled, stay inside it.
- */
-const BRIEF_HISTORY_HALF_CHARS = 14_000;
-
-/**
  * The open threads as prose, asked for only when a step is about to run.
  *
  * This is the one place thread text is fetched at all, and it is deliberately
@@ -2189,11 +1743,25 @@ interface BriefResponse {
   } | null;
 }
 
-const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text);
+/** A thread comment as GraphQL answers it, as the kit reads one: a deleted account is no author at all. */
+const commentOf = (c: BriefComment | undefined): ThreadComment | null =>
+  c === undefined ? null : { body: c.body ?? "", author: c.author?.login ?? null };
 
-/** "src/x.ts:12", "src/x.ts", or nothing at all — GitHub cannot always place a thread. */
-const where = (thread: BriefThread): string =>
-  thread.path === null ? "" : `${thread.path}${thread.line === null ? "" : `:${thread.line}`} — `;
+/** A review thread as GraphQL answers it, as the kit reads one. */
+const threadOf = (t: BriefThread): ReviewThread => ({
+  id: t.id,
+  resolved: t.isResolved,
+  path: t.path,
+  line: t.line,
+  first: commentOf(t.comments.nodes[0]),
+  last: commentOf(t.lastReply.nodes[0]),
+  comments: t.comments.totalCount,
+});
+
+/** One file of a pull request as REST answers it, as the kit reads one. */
+const changedFile = (f: PullFile): ChangedFile => ({
+  path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, patch: f.patch,
+});
 
 /**
  * Every review thread on one pull request, resolved or not, every page.
@@ -2204,9 +1772,9 @@ const where = (thread: BriefThread): string =>
  * findings were open — and a step told to address nothing answers "addressed",
  * which spends a round and moves the ticket on with the findings still there.
  */
-async function threadsOn(gh: Client, repo: string, number: number): Promise<BriefThread[]> {
+async function threadsOn(gh: Client, repo: string, number: number): Promise<ReviewThread[]> {
   const [owner = "", name = ""] = repo.split("/");
-  const all: BriefThread[] = [];
+  const all: ReviewThread[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_THREAD_PAGES; page++) {
     const data: BriefResponse = await gh.graphql<BriefResponse>(BRIEF_QUERY, { owner, name, number, cursor });
@@ -2215,7 +1783,7 @@ async function threadsOn(gh: Client, repo: string, number: number): Promise<Brie
     if (!data.repository) throw unseen(repo);
     const threads = data.repository.pullRequest?.reviewThreads;
     if (!threads) throw new Error(`pull request #${number} answered with no review threads at all`);
-    all.push(...threads.nodes);
+    all.push(...threads.nodes.map(threadOf));
     if (!threads.pageInfo.hasNextPage) break;
     cursor = threads.pageInfo.endCursor;
   }
@@ -2230,151 +1798,18 @@ async function threadsOn(gh: Client, repo: string, number: number): Promise<Brie
  */
 async function briefTicket(gh: Client, repo: string, ticket: string, snapshot: Snapshot): Promise<Record<string, string>> {
   const pulls = (await pullsOf(gh, repo, ticket)).pulls;
-  const read = new Map<number, BriefThread[]>();
+  const read = new Map<number, ReviewThread[]>();
   for (const pull of pulls) read.set(pull.number, await threadsOn(gh, repo, pull.number));
   const open = pulls.filter((p) => p.state === "OPEN");
   const bot = await gh.botLogin();
+  const changed: Array<{ number: number; files: ChangedFile[] }> = [];
+  for (const pull of open) changed.push({ number: pull.number, files: (await gh.pullFiles(pull.number)).map(changedFile) });
   return {
-    threads: openThreads(open, read, bot),
-    history: historyOf(commentsOf(snapshot), pulls, read, bot),
-    diff: await diffOf(gh, open),
+    threads: threadsBrief(open.map((p) => p.number), read, bot),
+    history: historyBrief(commentsOf(snapshot), pulls, read, bot),
+    diff: diffBrief(changed),
   };
 }
-
-/**
- * The open review threads across every open pull request on the ticket,
- * rendered for a prompt under one `## PR #N` heading each: whose turn each
- * is, and its last reply when it has one. The ones awaiting a fix come
- * first, so the cut falls on threads already answered.
- */
-function openThreads(open: PullNode[], read: Map<number, BriefThread[]>, bot: string): string {
-  if (open.length === 0) return "There is no pull request open on this ticket, so there is nothing to address.";
-
-  const unresolved = open.flatMap((pull) => (read.get(pull.number) ?? [])
-    .filter((thread) => !thread.isResolved)
-    .map((thread) => ({ pull: pull.number, thread, waiting: !answered(thread.lastReply.nodes[0], bot) })));
-  if (unresolved.length === 0) return "No review thread on the ticket's pull requests is open. Nothing here needs addressing.";
-  // Stable, so each group keeps GitHub's order.
-  unresolved.sort((a, b) => Number(b.waiting) - Number(a.waiting));
-  const shown = unresolved.slice(0, BRIEF_THREADS);
-  const more = unresolved.length - shown.length;
-  const text = (body: string | null | undefined): string => cut(stripMarker(body ?? "").trim(), BRIEF_BODY_CHARS);
-
-  const sections = open.flatMap((pull) => {
-    const here = shown.filter((s) => s.pull === pull.number);
-    return here.length === 0 ? [] : [`## PR #${pull.number}\n\n${here.map(({ thread, waiting }, i) => {
-      const opening = thread.comments.nodes[0]?.body ?? "";
-      // The id is what a reviewer lists to resolve a thread, and only its
-      // own may be: ours by the finding marker pull.review stamped.
-      const ours = parseMarker(opening)?.kind === FINDING_KIND ? "(raised by the reviewer) " : "";
-      const turn = waiting ? "[awaiting a fix] " : "[answered by the fixer, awaiting the person] ";
-      const last = thread.lastReply.nodes[0];
-      const reply = thread.comments.totalCount > 1 && last
-        ? `\n   Last reply, from ${last.author && sameLogin(last.author.login, bot) ? "Landrace" : `@${last.author?.login ?? "ghost"}`}: ${text(last.body)}`
-        : "";
-      return `${i + 1}. [thread ${thread.id}] ${turn}${where(thread)}${ours}${text(opening)}${reply}`;
-    }).join("\n\n")}`];
-  });
-
-  // Said out loud rather than left implicit: an agent shown twenty of fifty
-  // findings and told nothing would report the pull request addressed.
-  const tail = more === 0
-    ? ""
-    : `\n\n(${more} more open threads are not listed here, the ones awaiting a fix first. Address what is above; any still awaiting a fix come back next round.)`;
-
-  return sections.join("\n\n") + tail;
-}
-
-/** How much of the diff a reviewer's prompt carries; the rest is named, to read in the worktree. */
-const BRIEF_DIFF_CHARS = 24_000;
-
-/**
- * What the ticket's open pull requests change, file by file, for a reviewer
- * that has no shell to run `git diff` with. Files past the budget are listed
- * by name rather than dropped silently.
- */
-async function diffOf(gh: Client, open: PullNode[]): Promise<string> {
-  if (open.length === 0) return "No pull request is open on this ticket, so there is no diff to review.";
-  const parts: string[] = [];
-  const unshown: string[] = [];
-  let spent = 0;
-  for (const pull of open) {
-    const files = await gh.pullFiles(pull.number);
-    parts.push(`## PR #${pull.number} — ${files.length} files changed`);
-    for (const f of files) {
-      const text = `### ${f.filename} (${f.status}, +${f.additions} −${f.deletions})\n\n` +
-        (f.patch === undefined ? "(no textual diff: binary, or too large for GitHub to show)" : "```diff\n" + f.patch + "\n```");
-      if (spent + text.length > BRIEF_DIFF_CHARS) {
-        unshown.push(`- ${f.filename} (+${f.additions} −${f.deletions})`);
-        continue;
-      }
-      spent += text.length;
-      parts.push(text);
-    }
-  }
-  const tail = unshown.length === 0
-    ? ""
-    : `\n\n${unshown.length} more changed files are not shown here; read them in the worktree:\n${unshown.join("\n")}`;
-  return parts.join("\n\n") + tail;
-}
-
-/** The marker kind a finding's thread ends with: how a reviewer's own thread is told from a person's. */
-const FINDING_KIND = "finding";
-
-/** The marker kind of fix-review's route, and of each reply it posts: the fixer has answered, and the thread is the person's turn. */
-const FIX_KIND = "fix";
-
-/**
- * Whether a thread's last word is the fixer's answer — ours, by login and
- * marker both, since anyone with comment access can paste a marker. Anything
- * else last, or no reply at all, is a thread awaiting a fix.
- */
-const answered = (last: BriefComment | undefined, bot: string): boolean =>
-  typeof last?.author?.login === "string" && sameLogin(last.author.login, bot) &&
-  parseMarker(last.body ?? "")?.kind === FIX_KIND;
-
-interface Finding {
-  file: string;
-  line: number;
-  body: string;
-}
-
-const isFinding = (f: unknown): f is Finding => {
-  const x = f as Partial<Finding> | null;
-  return typeof x === "object" && x !== null && typeof x.file === "string" && x.file !== "" &&
-    Number.isInteger(x.line) && (x.line ?? 0) > 0 && typeof x.body === "string" && x.body.trim() !== "";
-};
-
-/**
- * The new-side lines a patch shows — added or unchanged context — which are
- * the lines GitHub takes a line comment on. A removed line has no new-side
- * number, and a line outside every hunk is not in the diff at all.
- */
-function commentableLines(patch: string | undefined): Set<number> {
-  const lines = new Set<number>();
-  let next = 0;
-  for (const row of (patch ?? "").split("\n")) {
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
-    if (hunk) {
-      next = Number(hunk[1]);
-      continue;
-    }
-    if (next === 0 || row.startsWith("-") || row.startsWith("\\")) continue;
-    lines.add(next++);
-  }
-  return lines;
-}
-
-interface Reply {
-  thread: string;
-  body: string;
-}
-
-const isReply = (r: unknown): r is Reply => {
-  const x = r as Partial<Reply> | null;
-  return typeof x === "object" && x !== null && typeof x.thread === "string" && x.thread !== "" &&
-    typeof x.body === "string" && x.body.trim() !== "";
-};
 
 /**
  * pull.review: a step's replies on the threads they name, its prose as one
@@ -2396,12 +1831,8 @@ const isReply = (r: unknown): r is Reply => {
  * same round. satisfied() cannot answer this — it sees only the snapshot, and
  * the snapshot carries no reviews.
  *
- * Placement follows what GitHub accepts: a finding on a line the diff shows is
- * a line thread in the review; one elsewhere in a changed file is a thread on
- * the file, naming the line; one in a file the pull request does not touch
- * cannot be threaded at all, and is listed in the review's text instead. A
- * malformed finding is listed the same way rather than failing the step — the
- * engine checks an output's fields, not what is inside them.
+ * Placement is the kit's `placeFindings`, by what GitHub accepts: a line
+ * thread in the review, a thread on the file, or a line in the review's text.
  */
 async function applyReview(gh: Client, repo: string, effect: Effect, { snapshot, log }: HookContext): Promise<void> {
   const branch = effectBranch(effect);
@@ -2434,7 +1865,7 @@ async function applyReview(gh: Client, repo: string, effect: Effect, { snapshot,
 
   const threads = replies.length > 0 || resolved.length > 0
     ? new Map((await threadsOn(gh, repo, number)).map((t) => [t.id, t]))
-    : new Map<string, BriefThread>();
+    : new Map<string, ReviewThread>();
 
   // Replies first, and the review last: its marker is what says the round
   // is on GitHub, so it lands only once everything else has.
@@ -2446,8 +1877,8 @@ async function applyReview(gh: Client, repo: string, effect: Effect, { snapshot,
       continue;
     }
     const said = `${kind}:${stage}:${round}:${thread.id}`;
-    const last = thread.lastReply.nodes[0];
-    if (last?.author && sameLogin(last.author.login, bot) && parseMarker(last.body ?? "")?.marker === said) continue;
+    const last = thread.last;
+    if (typeof last?.author === "string" && sameLogin(last.author, bot) && parseMarker(last.body)?.marker === said) continue;
     await gh.replyToThread(
       thread.id,
       neutraliseMarkers(cut(reply.body.trim(), MAX_COMMENT_CHARS - 1_000)) + renderMarker({ stage, kind, round, marker: said }),
@@ -2456,114 +1887,26 @@ async function applyReview(gh: Client, repo: string, effect: Effect, { snapshot,
 
   const posted = (await gh.listReviews(number)).some((r) => parseMarker(r.body ?? "")?.marker === marker);
   if (!posted) {
-    const changed = new Map((await gh.pullFiles(number)).map((f) => [f.filename, commentableLines(f.patch)]));
-    const onLines: ReviewComment[] = [];
-    const onFiles: Array<{ path: string; body: string }> = [];
-    const unplaced: string[] = [];
-    findings.forEach((f, i) => {
-      if (!isFinding(f)) {
-        unplaced.push(`- ${neutraliseMarkers(cut(typeof f === "string" ? f : JSON.stringify(f) ?? String(f), BRIEF_BODY_CHARS))}`);
-        return;
-      }
-      const tail = renderMarker({ stage, kind: FINDING_KIND, round, marker: `${FINDING_KIND}:${stage}:${round}:${i}` });
-      const text = neutraliseMarkers(cut(f.body.trim(), MAX_COMMENT_CHARS - 1_000));
-      const lines = changed.get(f.file);
-      if (lines?.has(f.line)) onLines.push({ path: f.file, line: f.line, side: "RIGHT", body: text + tail });
-      else if (lines) onFiles.push({ path: f.file, body: `line ${f.line}: ${text}${tail}` });
-      else unplaced.push(`- \`${f.file}:${f.line}\` — ${text}`);
-    });
+    const { onLines, onFiles, unplaced } = placeFindings(findings, (await gh.pullFiles(number)).map(changedFile), stage, round);
     const listed = unplaced.length === 0 ? "" : `\n\nFindings GitHub cannot place on this pull request's diff:\n\n${unplaced.join("\n")}`;
     const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, MAX_COMMENT_CHARS - 1_000) +
       renderMarker({ stage, kind, round, marker });
     // File threads first, the review last, for the same reason as the replies.
     const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
     for (const f of onFiles) await gh.commentOnFile(number, f.path, f.body, head);
-    await gh.postReview(number, body, onLines);
+    await gh.postReview(number, body, onLines.map((c): ReviewComment => ({ path: c.path, line: c.line, side: "RIGHT", body: c.body })));
   }
 
   for (const id of resolved) {
     const thread = threads.get(id);
-    if (!thread || parseMarker(thread.comments.nodes[0]?.body ?? "")?.kind !== FINDING_KIND) {
+    if (!thread || parseMarker(thread.first?.body ?? "")?.kind !== FINDING_KIND) {
       // A person's thread is theirs to close, and an id that is not on the
       // pull request is a mistake worth seeing: said, never silently dropped.
       log("github.review.unresolvable", { thread: id, why: thread ? "a person raised it" : "no such thread on the pull request" });
       continue;
     }
-    if (!thread.isResolved) await gh.resolveThread(id);
+    if (!thread.resolved) await gh.resolveThread(id);
   }
-}
-
-/**
- * The newest of a list, rendered, oldest first: at most `keep` of them and
- * no more text than one half of the history may spend — and the line saying
- * how many earlier ones were left out.
- */
-function newest<T>(all: T[], keep: number, what: string, render: (item: T) => string): { kept: Array<{ item: T; text: string }>; left: string } {
-  const kept: Array<{ item: T; text: string }> = [];
-  let spent = 0;
-  for (let i = all.length - 1; i >= 0 && kept.length < keep; i--) {
-    const item = all[i] as T;
-    const text = render(item);
-    if (spent + text.length > BRIEF_HISTORY_HALF_CHARS) break;
-    spent += text.length;
-    kept.push({ item, text });
-  }
-  const dropped = all.length - kept.length;
-  return {
-    kept: kept.reverse(),
-    left: dropped === 0 ? "" : `(${dropped} earlier ${what} are not listed here.)\n\n`,
-  };
-}
-
-/**
- * The ticket's whole history, for the retro: every comment on it in order,
- * then every review thread on every pull request tied to it — resolved or
- * not, merged or not, because a correction that was argued and settled is
- * exactly what a retro learns from.
- *
- * A comment is Landrace's by the test `entriesFromComments` applies — our
- * login *and* our marker — so a person's reply the board posted as the bot
- * reads as that person's turn, not as a record. Each body is cut here, and
- * the engine bounds the whole on the way in.
- */
-function historyOf(comments: SnapshotComment[], pulls: PullNode[], read: Map<number, BriefThread[]>, bot: string): string {
-  const ours = (login: string | undefined): boolean => typeof login === "string" && sameLogin(login, bot);
-  const text = (body: string | null | undefined): string => cut((body ?? "").trim(), BRIEF_BODY_CHARS);
-
-  const said = newest(comments, BRIEF_COMMENTS, "comments", (c) => {
-    const marker = wroteIt(c, bot) ? parseMarker(c.body ?? "") : null;
-    return marker
-      ? `Landrace [${marker.marker ?? marker.kind}]: ${text(stripMarker(c.body ?? ""))}`
-      : `@${c.user?.login ?? "ghost"}: ${text(c.body)}`;
-  });
-  const conversation = said.kept.length === 0
-    ? "No comments on the ticket."
-    : said.left + said.kept.map((k) => k.text).join("\n\n");
-
-  const ordered = [...pulls].sort((a, b) => a.number - b.number);
-  const raised = newest(
-    ordered.flatMap((pull) => (read.get(pull.number) ?? []).map((thread) => ({ pull: pull.number, thread }))),
-    BRIEF_HISTORY_THREADS,
-    "threads",
-    ({ thread }) => {
-      const opening = thread.comments.nodes[0];
-      const last = thread.lastReply.nodes[0];
-      const by = ours(opening?.author?.login) ? "Landrace's reviewer" : `@${opening?.author?.login ?? "ghost"}`;
-      const reply = thread.comments.totalCount > 1 && last
-        ? `\nLast reply, from ${ours(last.author?.login) ? "Landrace" : `@${last.author?.login ?? "ghost"}`}: ${text(last.body)}`
-        : "";
-      return `${where(thread)}raised by ${by} — ${thread.isResolved ? "resolved" : "open"}\n${text(opening?.body)}${reply}`;
-    },
-  );
-  let n = 0;
-  const reviews = ordered.length === 0
-    ? "No pull request was opened on this ticket."
-    : raised.left + ordered.map((pull) => {
-      const listed = raised.kept.filter((r) => r.item.pull === pull.number).map((r) => `${++n}. ${r.text}`);
-      return `### PR #${pull.number} (${pull.state.toLowerCase()})\n\n${listed.length === 0 ? "Nothing listed." : listed.join("\n\n")}`;
-    }).join("\n\n");
-
-  return `## Ticket conversation\n\n${conversation}\n\n## Review threads\n\n${reviews}`;
 }
 
 /* ── the startup preflight ───────────────────────────────────────────────── */
@@ -2747,7 +2090,7 @@ export function githubHooks(opts: GitHubOptions): {
 } {
   const gh = createClient(opts);
   const link = specLinks(gh, opts.repo);
-  const git = opts.git ?? ownGit();
+  const git = opts.git ?? ownGit(hookRepository);
   const push = pusher(git, opts.token, opts.repo);
 
   return {
@@ -2760,8 +2103,9 @@ export function githubHooks(opts: GitHubOptions): {
       id: SPEC,
       handles: [PUBLISH],
       read: ({ ticket, log }) => readPage(gh, link, ticket, log),
-      // Asked only by a step whose prompt names {brief.spec.…}, once per invocation.
-      brief: ({ ticket }) => briefPage(gh, ticket),
+      // Asked only by a step whose prompt names {brief.spec.…}, once per
+      // invocation. A failed read throws rather than reading as no page.
+      brief: async ({ ticket }) => briefPage(await gh.getFile(PAGES_BRANCH, pagePath(ticket))),
       satisfied: publishSatisfied,
       apply: (effect, { ticket }) => publishPage(gh, effect, ticket),
     }),

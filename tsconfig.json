@@ -21,7 +21,7 @@
     // from this one.
     "paths": {
       "landrace/hooks": ["./src/hooks/index.ts"],
-      "landrace/kit": ["./src/kit/executor.ts"],
+      "landrace/kit": ["./src/kit/index.ts"],
       "landrace/integrations/*": ["./integrations/*/index.ts"]
     }
   },

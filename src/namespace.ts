@@ -849,6 +849,79 @@ export interface EventReading {
   quiet?: boolean;
 }
 
+/* ---------------------------------------------- kit: tracker, forge, docs -- */
+
+/**
+ * Runs git with these arguments and this extra environment, in one checkout,
+ * and answers its stdout — stopped when `signal` aborts or `timeoutMs` passes.
+ */
+export type Git = (
+  args: string[],
+  env?: Record<string, string>,
+  opts?: { signal?: AbortSignal | undefined; timeoutMs?: number | undefined },
+) => Promise<string>;
+
+/** Every local branch head, and every head origin had when the checkout last heard from it, by branch name. */
+export interface BranchHeads {
+  local: Record<string, string>;
+  remote: Record<string, string>;
+}
+
+/** A comment as a pre hook put it in the snapshot: only what telling ours from a stranger's needs. */
+export interface SnapshotComment {
+  body?: string;
+  user?: { login?: string } | null;
+}
+
+/** One comment on a review thread. `author` is null for an account since deleted. */
+export interface ThreadComment {
+  body: string;
+  author: string | null;
+}
+
+/** A review thread on a pull request, as a forge integration maps its own answer into it. */
+export interface ReviewThread {
+  id: string;
+  resolved: boolean;
+  /** Where in the diff, when the forge can place it at all. */
+  path: string | null;
+  line: number | null;
+  /** The opening comment: the finding itself. */
+  first: ThreadComment | null;
+  /** The last word, which says whose turn the thread is. */
+  last: ThreadComment | null;
+  /** How many comments the thread has: more than one means somebody replied. */
+  comments: number;
+}
+
+/** What a pull request node says of its threads: how many are unresolved, and how many of those await a fix. */
+export interface ThreadCounts {
+  openThreads: number;
+  awaitingFix: number;
+}
+
+/** One finding a review step reported, on a file and a line. */
+export interface Finding {
+  file: string;
+  line: number;
+  body: string;
+}
+
+/** One reply a step posts on a review thread, by the thread's id. */
+export interface Reply {
+  thread: string;
+  body: string;
+}
+
+/** One file of a pull request's diff. `patch` is absent for a binary file, or one too large for the forge to show. */
+export interface ChangedFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch?: string | undefined;
+}
+
 /**
  * The engine's *when* for a permission problem, tracker-agnostic by
  * construction: run once at startup, before any tick, page or MCP connection,
