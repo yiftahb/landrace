@@ -2,7 +2,8 @@ import { chmodSync, copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSyn
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claude, createClaudeExecutor } from "#landrace/hooks/claude.js";
+import { claude } from "#landrace/hooks/claude.js";
+import { createClaudeExecutor } from "landrace/integrations/claude";
 import type { Executor, ExecutorContext } from "#namespace.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 

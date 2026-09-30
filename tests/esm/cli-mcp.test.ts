@@ -388,6 +388,13 @@ describe("buildMcpTools and what a turn is held to", () => {
 describe("buildMcpTools and the servers a turn is handed", () => {
   const MEMORY = { command: "codebase-memory-mcp", args: [], env: {} };
 
+  // A turn runs at its step's effort, so the plane refuses one the executor has no level for, as `start` does.
+  it("refuses a step whose effort the executor does not take", async () => {
+    const { dir } = await fixture({ screen: false, adapter: "claude" });
+    await writeFile(join(dir, "steps", "spec.md"), "---\ncapabilities: [repo:read]\neffort: extreme\n---\n\nWrite the spec.\n");
+    await expect(buildMcpTools(dir)).rejects.toThrow(/steps\/spec\.md asks for effort "extreme", which the claude executor does not take/);
+  });
+
   it("hands a turn the step's plugins and allowlisted servers, from the root's .mcp.json and no other", async () => {
     const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
     await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));

@@ -127,6 +127,20 @@ describe("landrace validate, against the hooks the workflow loads", () => {
     ]));
   });
 
+  /*
+   * A step's effort is a word the executor must have a level for, and one it
+   * has none for is refused before the first step runs — not at that step,
+   * hours in — so `validate` names the step and the word.
+   */
+  it("reports a step whose effort the executor does not take, naming the step", async () => {
+    const dir = await validateDirWithClaudeHook("model: opus", { effort: "extreme" });
+    const r = await runValidate(dir);
+    expect(r.problems).toContainEqual({
+      rule: "executor",
+      message: 'executor "claude" could not start: steps/spec.md asks for effort "extreme", which the claude executor does not take: low, medium, high, xhigh, max',
+    });
+  });
+
   /**
    * The wiring itself, end to end through the command: a path nothing
    * provides, in a workflow whose one hook does declare what it provides.
@@ -205,7 +219,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
  * cannot start" and the multi-line case beside it need: a hook whose
  * `create()` can actually be reached and made to refuse.
  */
-async function validateDirWithClaudeHook(agentKeys: string): Promise<string> {
+async function validateDirWithClaudeHook(agentKeys: string, step?: { effort: string }): Promise<string> {
   const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
   await mkdir(join(dir, "hooks"), { recursive: true });
   // A dynamic import with a computed specifier, not a static
@@ -220,6 +234,16 @@ export const { claude } = await import(pathToFileURL(${JSON.stringify(join(proce
 `,
   );
   await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude, ${agentKeys} }\n`);
+  if (step) {
+    // The minimal fixture's sound workflow, its one step asking for `effort`.
+    const minimal = join(process.cwd(), "tests", "fixtures", "minimal");
+    const workflow = await readFile(join(minimal, "workflow.yaml"), "utf8");
+    await writeFile(join(dir, "workflow.yaml"), workflow.replace("name: minimal\n", "name: minimal\nhooks: [hooks/claude.ts]\n"));
+    await mkdir(join(dir, "steps"));
+    const spec = await readFile(join(minimal, "steps", "spec.md"), "utf8");
+    await writeFile(join(dir, "steps", "spec.md"), spec.replace(/^---\n/, `---\neffort: ${step.effort}\n`));
+    return dir;
+  }
   await writeFile(join(dir, "workflow.yaml"), [
     "version: 1", "name: t", "hooks: [hooks/claude.ts]", "stages:",
     "  - id: a", "    entry: true", "    terminal: true", "    triggers:",

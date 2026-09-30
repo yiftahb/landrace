@@ -14,10 +14,16 @@
     // to resolve an import-map entry into the project without being told
     // where the project starts — "the project root is ambiguous" (TS2210).
     "rootDir": ".",
-    // A hook module imports `landrace/hooks`, which Node resolves by package
-    // self-reference to the built dist/hooks.js. Mapped to the source here so
-    // a clean clone typechecks before it has ever been built.
-    "paths": { "landrace/hooks": ["./src/hooks/index.ts"] }
+    // A hook module imports `landrace/hooks`, and an integration
+    // `landrace/kit`, which Node resolves by package self-reference to the
+    // built dist/. Mapped to the source here so a clean clone typechecks
+    // before it has ever been built. jest.config.mjs derives its own mapping
+    // from this one.
+    "paths": {
+      "landrace/hooks": ["./src/hooks/index.ts"],
+      "landrace/kit": ["./src/kit/executor.ts"],
+      "landrace/integrations/*": ["./integrations/*/index.ts"]
+    }
   },
-  "include": ["src", "tests"]
+  "include": ["src", "tests", "integrations"]
 }

@@ -10,7 +10,7 @@ import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
-import type { ExecutorContext, LoadedConfig, Problem, Registry } from "#namespace.js";
+import type { ExecutorContext, LoadedConfig, Problem, Registry, Step } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -103,10 +103,10 @@ function startRefusalProblems(message: string): Problem[] {
  * files outside the workflow itself, so a missing one is reported here too,
  * as `start` would refuse over it.
  */
-async function executorProblems(dir: string, loaded: LoadedConfig, registry: Registry): Promise<Problem[]> {
+async function executorProblems(dir: string, loaded: LoadedConfig, registry: Registry, steps: ReadonlyMap<string, Step>): Promise<Problem[]> {
   const ctx: ExecutorContext = {
     config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal,
-    log: () => {}, dir, redact: () => {},
+    log: () => {}, dir, redact: () => {}, steps,
   };
   try {
     // Screener before executor, the same order `start` builds them in:
@@ -191,7 +191,7 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
   // configuration mistake there is `validate`'s business too. Only once the
   // hooks are known to have loaded — a workflow already found unsound, or
   // whose hooks would not import, has no registry to build one against.
-  if (loaded && registry) problems.push(...(await executorProblems(dir, loaded, registry)), ...notifyProblems(loaded.config, registry));
+  if (loaded && registry) problems.push(...(await executorProblems(dir, loaded, registry, steps)), ...notifyProblems(loaded.config, registry));
 
   problems.push(...(await exposedEnv(dir)));
   return { ok: problems.length === 0, problems };

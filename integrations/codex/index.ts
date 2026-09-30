@@ -1,0 +1,252 @@
+/*
+ * OpenAI's `codex exec`, as a landrace integration: the command line per
+ * tier, the JSONL events `--json` prints, and the session files a pairing
+ * carries on. Written against codex-cli 0.154; everything else is the kit's.
+ *
+ * A project's hook is `export const codex = new Codex();`, with
+ * `agent.adapter: codex`.
+ *
+ * What codex cannot do is refused rather than run without: its sandbox has the
+ * network on or off and no list of hosts, and cannot keep a command from
+ * reading a path, so `agent.sandbox.hosts` and `agent.sandbox.deny` must be
+ * empty (`deny: []` says so); it has no `max` effort; and it cannot start a
+ * session under an id it is given, so a person pairs only by carrying on the
+ * agent's own session.
+ */
+import { existsSync } from "node:fs";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
+import type { EventReading, HandoffPlan, McpServerConfig, PairingKind, RunPlan, SandboxSettings } from "landrace/kit";
+import type { HandoffArg } from "landrace/hooks";
+
+/**
+ * The built-in tools codex 0.154 turns on by default, each turned off for the
+ * screener, which judges a prompt and needs none of them: the shell, the
+ * image viewer, connectors and plugins, the browser and the desktop, image
+ * generation, sub-agents, goals, sleeping, tool suggestions, and hooks.
+ */
+const SCREENER_OFF = [
+  "shell_tool", "unified_exec", "view_image", "apps", "plugins", "browser_use", "computer_use",
+  "image_generation", "multi_agent", "goals", "sleep_tool", "tool_suggest", "hooks",
+];
+
+/**
+ * A segment of a `-c` key path: codex splits the path on ".", so a server,
+ * variable or header name carrying one would set some other key.
+ */
+const KEY_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * `-c <key>=<value>` for each setting of one server, the way codex's own
+ * config.toml spells an MCP server. The value is TOML, and JSON writes the
+ * strings and lists of strings used here as TOML reads them.
+ */
+function serverArgs(name: string, server: McpServerConfig, tools: readonly string[] | null): string[] {
+  const at = `mcp_servers.${name}`;
+  const args: string[] = [];
+  // Each name checked as it is, before joining: split after, "X.Api.Key" would pass as three.
+  const set = (segments: readonly string[], value: unknown): void => {
+    const key = [at, ...segments].join(".");
+    const bad = [name, ...segments].find((s) => !KEY_SEGMENT.test(s));
+    if (bad !== undefined) {
+      throw new Error(`refused MCP server "${name}": codex reads ${JSON.stringify(bad)} in "${key}" as more than one key; ` +
+        "use letters, digits, '_' and '-' only");
+    }
+    args.push("-c", `${key}=${JSON.stringify(value)}`);
+  };
+  if (typeof server.command === "string") set(["command"], server.command);
+  if (server.args?.length) set(["args"], server.args);
+  for (const [key, value] of Object.entries(server.env ?? {})) set(["env", key], value);
+  if (typeof server["url"] === "string") set(["url"], server["url"]);
+  const headers = server["headers"];
+  if (headers !== null && typeof headers === "object") {
+    for (const [key, value] of Object.entries(headers as Record<string, unknown>)) set(["http_headers", key], value);
+  }
+  if (tools !== null) set(["enabled_tools"], tools);
+  return args;
+}
+
+/**
+ * The file codex keeps a session in: `<CODEX_HOME>/sessions/<y>/<m>/<d>/
+ * rollout-<time>-<id>.jsonl`. Undefined under none, or under several — which
+ * of two to carry on is not this integration's to guess.
+ *
+ * ponytail: reads codex's own session layout, which is its to change; a
+ * `codex resume` that finds no session is where that shows up.
+ */
+async function rolloutOf(home: string, id: string): Promise<string | undefined> {
+  const sessions = join(home, "sessions");
+  const found = (await readdir(sessions, { recursive: true }).catch(() => [] as string[]))
+    .filter((path) => path.endsWith(`-${id}.jsonl`));
+  return found.length === 1 && found[0] !== undefined ? join(sessions, found[0]) : undefined;
+}
+
+export class Codex extends BaseExecutor {
+  readonly id = "codex";
+  /** The levels `model_reasoning_effort` takes in codex 0.154. */
+  readonly efforts = ["none", "low", "medium", "high", "xhigh"];
+  /** No `take`: codex names every session itself, so none can start under the engine's id. */
+  readonly pairings: readonly PairingKind[] = ["continue", "fork"];
+  /** Where codex keeps its auth, sessions and config, when not `~/.codex`. */
+  readonly envKeys = ["CODEX_HOME"];
+  /** The CODEX_HOME sessions are looked up in. The operator's own, but for a test. */
+  private readonly home: string;
+
+  constructor({ bin = "codex", home = process.env.CODEX_HOME ?? join(homedir(), ".codex") }: { bin?: string; home?: string } = {}) {
+    super(bin);
+    this.home = home;
+  }
+
+  protected sandboxProblems({ hosts, deny }: SandboxSettings): string[] {
+    const problems: string[] = [];
+    if (hosts.length) {
+      problems.push(
+        `agent.sandbox.hosts names ${hosts.join(", ")}, and codex cannot hold a write step to some hosts: ` +
+        "its sandbox has the network on or off. Remove hosts: a write step then has no network",
+      );
+    }
+    if (deny.length) {
+      const defaulted = deny.join() === DEFAULT_DENY.join() ? " — the list it has when it is not written —" : "";
+      problems.push(
+        `agent.sandbox.deny names ${deny.join(", ")}${defaulted} and codex cannot keep a command from reading a path ` +
+        "under your home: every step and conversation turn, read-only ones too, has a shell that can. " +
+        "Write deny: [] to run them all able to read those paths",
+      );
+    }
+    return problems;
+  }
+
+  /**
+   * Where a screener given nowhere to run works: a directory of its own, made
+   * once, that only this user can write. Not the temp directory itself — on
+   * Linux that is /tmp, where anyone can leave an AGENTS.md telling the
+   * screener to answer ok, with the nonce its own prompt carries.
+   */
+  private screenRoot: string | undefined;
+
+  /** Where the agent works: the run's own directory, or — for a screener given none — no project at all. */
+  private rootOf({ cwd, tier }: RunPlan): string {
+    return cwd ?? (tier === "screen" && this.screenRoot !== undefined ? this.screenRoot : process.cwd());
+  }
+
+  /**
+   * A project's own `.codex/config.toml` and `.codex/hooks.json` load beside
+   * the run, from where it works up to the repository root — and a step could
+   * commit either to its branch: servers of its own, a looser sandbox, a
+   * SessionStart hook on the branch's next step. Refused, never loaded.
+   * Codex finding no `.git` reads where it works alone, so the screener's
+   * own directory is as far as its walk goes: past it is the temp directory,
+   * where anyone could leave a config that refuses every screening.
+   */
+  protected async prepare(plan: RunPlan): Promise<void> {
+    if (plan.tier === "screen" && plan.cwd === undefined) this.screenRoot ??= await mkdtemp(join(tmpdir(), "landrace-screen-"));
+    const own = [join(this.home, "config.toml"), join(this.home, "hooks.json")];
+    for (let at = this.rootOf(plan); ; at = dirname(at)) {
+      for (const file of [join(at, ".codex", "config.toml"), join(at, ".codex", "hooks.json")]) {
+        if (!own.includes(file) && existsSync(file)) {
+          throw new Error(`refused to run codex where ${file} would load beside it: a project's own codex settings can add ` +
+            "servers, hooks or a looser sandbox, and a step could commit them. Remove it from the branch");
+        }
+      }
+      if (at === this.screenRoot || existsSync(join(at, ".git")) || dirname(at) === at) return;
+    }
+  }
+
+  protected argv(plan: RunPlan): string[] {
+    const { tier, model, effort, resume, fork, cwd, servers, allowed } = plan;
+    const args = ["exec"];
+    if (resume !== undefined) args.push(fork ? "fork" : "resume", resume);
+    // The operator's own config.toml holds their servers — landrace's
+    // operator server among them — and an execpolicy rule can let a command
+    // out of the sandbox: a run loads neither, and has exactly what it is
+    // handed below.
+    args.push("--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules");
+    const set = (key: string, value: unknown): void => { args.push("-c", `${key}=${JSON.stringify(value)}`); };
+    // Nobody is there to ask: every command runs, or not, by the sandbox alone.
+    set("approval_policy", "never");
+    set("sandbox_mode", tier === "write" ? "workspace-write" : "read-only");
+    if (tier === "write") {
+      set("sandbox_workspace_write.network_access", false);
+      // workspace-write opens $TMPDIR and /tmp too, unless told not to — and
+      // $TMPDIR/landrace/<repo>/ holds every other ticket's worktree, the
+      // locks and pairing seeds, and the screener's directory of its own.
+      set("sandbox_workspace_write.exclude_tmpdir_env_var", true);
+      set("sandbox_workspace_write.exclude_slash_tmp", true);
+    }
+    if (tier === "screen") {
+      for (const feature of SCREENER_OFF) set(`features.${feature}`, false);
+      set("web_search", "disabled");
+    }
+    if (model !== undefined) args.push("-m", model);
+    if (effort !== undefined) set("model_reasoning_effort", effort);
+    for (const [name, server] of Object.entries(servers)) args.push(...serverArgs(name, server, allowed[name] ?? null));
+    // The screener, given nowhere to run, runs nowhere of the operator's —
+    // the checkout it was started in has a `.codex/config.toml` of agsync's —
+    // but in the directory of its own `prepare` made.
+    if (tier === "screen" && cwd === undefined) args.push("-C", this.rootOf(plan));
+    // The prompt on stdin: argv is world-readable via `ps`.
+    args.push("-");
+    return args;
+  }
+
+  protected readEvent(event: object, cwd: string): EventReading {
+    const e = event as { type?: unknown; thread_id?: unknown; item?: Record<string, unknown> | null; error?: { message?: unknown } | null };
+    if (e.type === "thread.started") return { session: e.thread_id };
+    if (e.type === "turn.completed") return { done: true };
+    if (e.type === "turn.failed") return { error: `agent reported an error: ${String(e.error?.message ?? "its turn failed")}` };
+    const item = e.item;
+    if (typeof e.type !== "string" || !e.type.startsWith("item.") || !item) return {};
+    // What a command printed and what a tool returned: the files the agent
+    // read and the output of what it ran.
+    const quiet = item.type === "command_execution" || item.type === "mcp_tool_call";
+    if (e.type !== "item.completed") return { quiet };
+    if (item.type === "agent_message" && typeof item.text === "string") {
+      return { text: item.text, ...(item.text.trim() ? { activity: [{ kind: "message", text: item.text }] } : {}) };
+    }
+    if (item.type === "command_execution" && typeof item.command === "string") {
+      return { quiet, activity: [{ kind: "tool", text: `shell ${item.command}` }] };
+    }
+    if (item.type === "file_change" && Array.isArray(item.changes)) {
+      const paths = (item.changes as Array<{ path?: unknown } | null>).flatMap((c) => (typeof c?.path === "string" ? [shortPath(c.path, cwd)] : []));
+      return { activity: [{ kind: "tool", text: `edit ${paths.join(", ")}` }] };
+    }
+    if (item.type === "mcp_tool_call") {
+      return { quiet, activity: [{ kind: "tool", text: `mcp ${String(item.server)}.${String(item.tool)}` }] };
+    }
+    return { quiet };
+  }
+
+  /*
+   * The interactive `codex resume` a person runs for a pairing, in the
+   * pairing's checkout: the agent's own session on the stage, copied under
+   * the engine's id — codex names every session it starts itself, so this is
+   * the only way one comes to answer to the engine's — and seeded with the
+   * step, read by the person's shell. Their own config loads as it always
+   * does, beside the engine's server, their way back to Landrace. Once the
+   * person has run it — codex has added to the copy — the command resumes the
+   * copy without seeding it again; asked for again before then, it is the
+   * same seeded command.
+   */
+  protected async handoffArgv({ session, promptFile, resume, server }: HandoffPlan): Promise<HandoffArg[]> {
+    const argv: HandoffArg[] = [this.bin, "resume"];
+    if (server) argv.push(...serverArgs(server.name, { command: server.command, args: server.args }, server.tools.length ? server.tools : null));
+
+    const agent = resume === undefined ? undefined : await rolloutOf(this.home, resume);
+    const copied = resume === undefined || agent === undefined ? undefined : (await readFile(agent, "utf8")).replaceAll(resume, session);
+    const made = await rolloutOf(this.home, session);
+    if (made !== undefined) {
+      const untouched = copied !== undefined && (await readFile(made, "utf8")) === copied;
+      return untouched ? [...argv, session, { file: promptFile }] : [...argv, session];
+    }
+    if (resume === undefined || agent === undefined || copied === undefined) {
+      throw new Error(
+        `cannot continue the agent's session ${resume ?? ""}: it is not in ${join(this.home, "sessions")}, and codex cannot ` +
+        "start a session under the id Landrace gives it. Release the pairing, and let the agent run the step",
+      );
+    }
+    await writeFile(join(dirname(agent), basename(agent).replace(resume, session)), copied, { flag: "wx", mode: 0o600 });
+    return [...argv, session, { file: promptFile }];
+  }
+}

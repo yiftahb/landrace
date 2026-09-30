@@ -9,6 +9,8 @@
   "exports": {
     ".": "./dist/index.js",
     "./hooks": "./dist/hooks.js",
+    "./kit": "./dist/kit.js",
+    "./integrations/*": "./dist/integrations/*.js",
     "./testing": "./dist/testing.js"
   },
   "imports": {
@@ -28,7 +30,7 @@
     "css": "node --experimental-strip-types scripts/build-css.mjs",
     "test": "jest && node --experimental-vm-modules ./node_modules/jest/bin/jest.js -c jest.esm.config.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests .landrace",
+    "lint": "eslint src tests .landrace integrations",
     "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
   },
   "dependencies": {

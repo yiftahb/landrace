@@ -11,6 +11,7 @@ src/namespace.ts   every type in the system, and nothing else
 src/core/         pure decision engine — no I/O, no clock, no randomness
 src/workflow/     load and validate workflow definitions
 src/hooks/        the define* contracts and the loader that imports .landrace/hooks/*.ts
+src/kit/          BaseExecutor (`landrace/kit`): what every coding agent integration shares — vendor-neutral
 src/agent/        prompt screening, worktrees, an agent's json output — never an agent itself
 src/runner/       tick, converge, step, lock, effect dispatch, events
 src/config/       landrace.yaml + .env
@@ -19,7 +20,8 @@ src/cli/          validate, next, mcp, start, status
 src/conventions.ts  label and marker vocabulary shared by all of the above
 src/sandbox.ts     repository identity, and the tmp root locks and worktrees share
 
-.landrace/hooks/  the integrations — GitHub, and the coding agent (claude.ts). Not part of the engine.
+integrations/     the coding agents landrace ships on the kit — claude/, codex/ (`landrace/integrations/<vendor>`). Not part of the engine.
+.landrace/hooks/  this project's integrations — GitHub, Slack, and its coding agent (claude.ts: `new Claude()`). Not part of the engine.
 ```
 
 ## Rules
@@ -49,17 +51,18 @@ Every effect needs a `satisfied()` beside its `apply()`, in the same hook. An ef
 This is the project's most important boundary. Two layers, and nothing crosses between them except the contracts:
 
 - **The engine (`src/`) knows no vendor.** It owns the workflow, the decisions, agent invocation, locks, effect dispatch, the MCP plane and the UI. It defines the *shape* of what it consumes — `Node`, `Relationship`, `Graph`, `Source`, `Operator`, the `define*` hooks — and the shared vocabulary in `src/conventions.ts` (labels, markers, kinds, relationship names), because a Jira hook must use the same names a GitHub one does.
-- **Hooks (`.landrace/hooks/*.ts`) are the integration layer, and they are vendor-aware.** They are defined *per project*, in that project's own `.landrace/`, and loaded by path from its `workflow.yaml`. Everything that talks to a tracker, a forge, a docs site or a coding agent — which issues exist, how a sub-issue or a pull request is read, how a ticket is created, linked or closed, what a close reason or a priority label means, which command line runs the agent — lives there and nowhere else. The coding agent is a hook like any other: `.landrace/hooks/claude.ts` is a `defineExecutor` factory, and the engine ships none.
+- **Hooks (`.landrace/hooks/*.ts`) are the integration layer, and they are vendor-aware.** They are defined *per project*, in that project's own `.landrace/`, and loaded by path from its `workflow.yaml`. Everything that talks to a tracker, a forge, a docs site or a coding agent — which issues exist, how a sub-issue or a pull request is read, how a ticket is created, linked or closed, what a close reason or a priority label means, which command line runs the agent — lives there and nowhere else. The coding agent is a hook like any other: `.landrace/hooks/claude.ts` is `export const claude = new Claude();`, and the engine ships none.
+- **Coding agents are built on the kit.** `BaseExecutor` (`src/kit/executor.ts`, published as `landrace/kit`) is an `ExecutorFactory` that brands itself, holding everything an agent integration shares: the process with no shell and no engine environment, argument, cwd and capability checks, `.mcp.json`, the sandbox's settings, killing the process group, and the abort re-checked after `prepare()`. An integration (`integrations/<vendor>/`, published as `landrace/integrations/<vendor>`) says only what is its agent's — `argv`, `readEvent`, `handoffArgv`, optionally `prepare`, `readExtras`, `sandboxProblems`, `mcpFile` — and declares `efforts`, `pairings` and `envKeys`. What it cannot enforce it refuses at startup: an `agent.*` key nobody reads, a step's effort outside `efforts`, a sandbox setting its agent would not keep. `integrations/` imports only `landrace/kit`, `landrace/hooks` and `node:*`, so it is exactly what a third party could write.
 
 The engine asks *what* (give me the graph, create this child under that parent, close these ids, run this prompt under these capabilities); the hook decides *how* for its vendor. A second tracker, or a second coding agent, is a new hook file, never a change to `src/`.
 
-Enforced: `tests/boundaries.test.ts` fails on "github" or "claude" anywhere under `src/`, naming the file and line. The deliberate exceptions are display-only. For "github", `src/ui/systems.ts`, a table that names the system a link points into; it imports nothing and a test pins that. For "claude", `src/ui/chat.ts` and `src/ui/page.ts`, the board's links that open a chat in an editor, and any mention of `CLAUDE.md`, the instructions file comments cite.
+Enforced: `tests/boundaries.test.ts` fails on "github", "claude" or "codex" anywhere under `src/`, naming the file and line — the kit included — and on an import under `integrations/` other than `landrace/kit`, `landrace/hooks` or `node:*`. The deliberate exceptions are display-only. For "github", `src/ui/systems.ts`, a table that names the system a link points into; it imports nothing and a test pins that. For "claude" and "codex", `src/ui/chat.ts` and `src/ui/page.ts`, the board's links that open a chat in an editor, and any mention of `CLAUDE.md`, the instructions file comments cite.
 
 If you are about to import a vendor SDK, call a vendor API, or write a vendor's field name into `src/`, you are writing a hook. If a hook seems to need a decision — which stage comes next, whether a step may run — that decision belongs in the engine, expressed as a value the workflow routes on.
 
 Worked example — an agent creating sub-tickets crosses the boundary three times, and each side keeps to its half:
 
-1. **Engine, then the executor hook:** a step declaring `tickets:create` is handed the engine's own ticket server with exactly one tool, `landrace_create_child`, bound by the runner to (parent, stage, round) on the server's argv. The engine validates the input, escapes the body and stamps an origin marker (`src/runner/children.ts`, `src/mcp/server.ts`). The project's executor loads that server for the step and allows exactly that tool; for Claude, through `--mcp-config` and `--allowedTools` (`.landrace/hooks/claude.ts`).
+1. **Engine, then the executor hook:** a step declaring `tickets:create` is handed the engine's own ticket server with exactly one tool, `landrace_create_child`, bound by the runner to (parent, stage, round) on the server's argv. The engine validates the input, escapes the body and stamps an origin marker (`src/runner/children.ts`, `src/mcp/server.ts`). The project's executor loads that server for the step and allows exactly that tool; for Claude, through `--mcp-config` and `--allowedTools` (`integrations/claude/`), for Codex through `-c mcp_servers.<name>.enabled_tools` (`integrations/codex/`).
 2. **Hook:** the project's `Operator.createTicket` does the vendor work — on GitHub, create the issue, link it as a sub-issue, then label it (`.landrace/hooks/github.ts`); the in-memory tracker does the same against a map.
 3. **Engine:** the next tick reads the graph back through `Source.list/read`; the child is a `Node` with an `origin` and a `child-of` edge, and the workflow routes on `rel.*` counts. Re-running the breakdown plans `nodes.close` from the graph in pure core (`src/core/children.ts`); the hook closes the ids its own way and answers `satisfied()`.
 
@@ -71,9 +74,11 @@ Every import under `src/` and `tests/` goes through the `imports` map in
 `package.json` — `#core/index.js`, `#namespace.js`, `#tests/...`. Not tsconfig
 `paths`: this code runs three ways that have to agree, and raw Node executes
 `src` directly in the ESM test pass and the hook loader, where `paths` would not
-rewrite anything. A lint rule refuses a `../` import. Hooks in `.landrace/` are
-the exception and import `landrace/hooks`, which is what an external hook author
-writes.
+rewrite anything. A lint rule refuses a `../` import. Hooks in `.landrace/` and
+the integrations in `integrations/` are the exception and import `landrace/hooks`
+and `landrace/kit` (and a hook `landrace/integrations/<vendor>`), which is what an
+external author writes — resolved by package self-reference to `dist/`, and to
+the source by tsconfig `paths` and the jest mapping derived from them.
 
 ### Every type lives in `src/namespace.ts`
 

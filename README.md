@@ -29,7 +29,8 @@ treat the first one as a supervised experiment rather than a deployment.
 | Decision engine, workflow format, validator | ✅ built |
 | CLI: `validate`, `next`, `mcp`, `start`, `status` | ✅ built |
 | MCP server: read, create, update, comment, ask, resolve, goto | ✅ built |
-| Hook loader, GitHub and Claude hooks, agent execution | ✅ built |
+| Hook loader, GitHub hooks, agent execution | ✅ built |
+| Integration kit (`BaseExecutor`), with Claude and Codex as native integrations | ✅ built |
 | Tick loop: polling, concurrency, per-ticket locking | ✅ built |
 | Artifact publishing to GitHub Pages, PR review threads | ✅ built |
 | Worktree sandbox with enforced capabilities | ✅ built |
@@ -159,6 +160,7 @@ src/core/            the decision engine — pure, and enforced: no I/O, no cloc
                      no randomness. Time arrives as `snapshot.now`
 src/workflow/        load and validate workflow definitions
 src/hooks/           the define* contracts, and the loader that imports yours
+src/kit/             BaseExecutor — what every coding agent integration shares (`landrace/kit`)
 src/agent/           prompt screening, the worktree sandbox
 src/runner/          tick, converge, step, lock, effect dispatch, events
 src/config/          landrace.yaml + .env
@@ -169,17 +171,22 @@ src/testing/         the harness, for testing a workflow of your own
 src/conventions.ts   label and marker vocabulary, shared by every hook
 src/sandbox.ts       repository identity; the tmp root locks and worktrees share
 
+integrations/        the coding agents landrace ships on the kit: claude/, codex/
+                     (`landrace/integrations/<vendor>`). Not part of the engine
+
 .landrace/
   landrace.yaml      runtime — how agents run, where tickets live
   workflow.yaml      the process — one graph, stages declaring what activates them
   steps/*.md         the work — front matter is the contract, the body is the prompt
-  hooks/*.ts         the integrations — GitHub, the Claude agent and Slack included. Not part of the engine
+  hooks/*.ts         this project's integrations — GitHub, Slack, and `new Claude()`. Not part of the engine
   .env               secrets, gitignored, and `validate` fails if it is not
 ```
 
 Imports inside `src/` and `tests/` go through the `imports` map in `package.json`
 — `#core/index.js`, `#namespace.js` — so nothing walks up the tree. Hooks import
-`landrace/hooks`, which is what an external hook author writes too.
+`landrace/hooks`, and integrations `landrace/kit` too, which is what an external
+author writes; `integrations/` may import nothing else but `node:*`, and a test
+holds it to that.
 
 ## Configuration
 
@@ -189,9 +196,9 @@ How agents run and where tickets live. Portable workflows keep none of this.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent.adapter` | — | Which executor runs steps and conversation turns: an id a hook registers with `defineExecutor`. This repository's is `claude`, from `.landrace/hooks/claude.ts` |
+| `agent.adapter` | — | Which executor runs steps and conversation turns: an id a hook registers with `defineExecutor`. This repository's is `claude`, from `.landrace/hooks/claude.ts`; `codex` is the other integration landrace ships |
 | `agent.isolation` | `worktree` | `none`, `worktree`, or `container` — how the engine prepares the directory a step runs in |
-| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. The Claude hook reads `model`, `effort` (`low`, `medium`, `high`, `xhigh` or `max`), `plugins`, `mcp` and `sandbox`, and refuses any other key |
+| `agent.*` (anything else) | — | Passed unread to the executor `agent.adapter` names. Both shipped integrations read `model`, `effort`, `mcp` and `sandbox`, and refuse any other key; Claude also reads `plugins`. `effort` is `low`, `medium`, `high`, `xhigh` or `max` for Claude, `none`, `low`, `medium`, `high` or `xhigh` for Codex — see [Codex](#codex) for what else it refuses |
 | `tracker.*` | — | Opaque to the engine, handed to your hooks unread. The shipped GitHub hook reads `tracker.repo` (`owner/name`) and optionally `tracker.bot` — which a GitHub App token needs (e.g. `myapp`), since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]` |
 | `tick.interval` | `60s` | How often to run |
 | `tick.concurrency` | `3` | Tickets acted on at once |
@@ -216,7 +223,7 @@ notify:
 
 ### What a step's agent is handed
 
-A step's `capabilities` decide how the Claude hook starts the agent:
+A step's `capabilities` decide how the Claude integration starts the agent (for Codex, see [Codex](#codex)):
 
 | Step declares | Permission mode | Also |
 |---|---|---|
@@ -250,7 +257,7 @@ Servers are resolved once, at startup, from the **repository root's** `.mcp.json
 
 Three things this does not do:
 
-- **A different executor gets none of it.** `agent.plugins` and `agent.mcp` are settings the Claude hook reads; an `agent.adapter` naming a different hook gets the same `agent:` block passed on unread, these two keys included, and owes them no meaning of its own.
+- **A different executor may read none of it.** `agent.mcp` is read by the kit, so both shipped integrations resolve it exactly this way; `agent.plugins` is Claude's alone, and Codex refuses it. An `agent.adapter` naming a hook not built on the kit gets the same `agent:` block passed on unread, and owes these keys no meaning of its own.
 - **A definition's relative paths are not rebased.** A server is resolved from the root's `.mcp.json` but started by the agent's CLI in the step's working directory — its worktree — so a relative `command` or argument in that definition resolves there, against committed files only. Use absolute paths or commands on `PATH`.
 - **A plugin's hooks still run.** `--restricted` ignores your settings files but not the hooks an enabled plugin ships, so every plugin in `agent.plugins` runs its hooks under read-only steps too. Enable only plugins you would let run there.
 
@@ -258,7 +265,7 @@ Three things this does not do:
 
 ### A write step's sandbox
 
-A step declaring `repo:write` runs Bash. In this repository that is `build`, `fix-review` and `retro`: each merges `origin/main`, installs, runs the tests, commits, and pushes its own branch. The Claude hook starts every command such a step runs inside Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux):
+A step declaring `repo:write` runs Bash. In this repository that is `build`, `fix-review` and `retro`: each merges `origin/main`, installs, runs the tests, commits, and pushes its own branch. The Claude integration starts every command such a step runs inside Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux):
 
 ```yaml
 agent:
@@ -479,13 +486,13 @@ A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", 
 
 A pre hook declares the snapshot paths it fills, and a source declares which relationship types it reports; `validate`'s `path-coverage` rule is answered from both together with what the engine itself always provides — `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every type the source declares — so a predicate can only read what something actually provides. The shipped GitHub hook's pre hook provides `ticket` (`.body`, `.comments`), `entries` and `tracker.bot`; the in-memory tracker in `landrace/testing` provides the portable subset of that (no `tracker.bot`). A ticket's identity, labels and assignees are not among either — they live on the `node` the *source* reads (see [The ticket graph](#the-ticket-graph)), not on something a pre hook fetches a second time. `node.state.assignees` is a **list of logins** — GitHub's issue has a list, and the singular `assignee` it also returns is that list's first element under a second name, which disagrees with it the moment an issue has two. It is empty, never absent, when nobody is assigned: a rule reading a path a ticket does not carry is one the tick cannot answer, and it abstains on those rather than guessing.
 
-For an installed landrace, hook modules are imported at runtime with no build step, so they need a Node that strips types: 22.18 or newer does it unflagged, and an older 22.x needs `--experimental-strip-types`. Inside this repository the build is the dependency: `landrace/hooks` resolves, by package self-reference, to the built `dist/hooks.js`. After pulling, run `pnpm build` before `landrace start`, `landrace mcp` or `landrace validate`. A hook newer than the build fails to import, and the error says to rebuild.
+For an installed landrace, hook modules are imported at runtime with no build step, so they need a Node that strips types: 22.18 or newer does it unflagged, and an older 22.x needs `--experimental-strip-types`. Inside this repository the build is the dependency: `landrace/hooks`, `landrace/kit` and `landrace/integrations/<vendor>` resolve, by package self-reference, to the built `dist/`. After pulling, run `pnpm build` before `landrace start`, `landrace mcp` or `landrace validate`. A hook newer than the build fails to import, and the error says to rebuild.
 
 Conditions are MongoDB-style documents over snapshot paths, evaluated with a **closed operator allowlist** — `$eq $ne $in $nin $lt $lte $gt $gte $exists $all $size $and $or $not`. `$where` and `$regex` are rejected at load, because a workflow file is a repo file a pull request can edit.
 
 ### Executors: the coding agent is a hook
 
-Landrace ships no coding agent. `defineExecutor` registers one, either as `{ id, run }` directly or as `{ id, create(ctx) }` — a factory the runtime calls once at startup, with `ctx` the same `RuntimeContext` every hook gets plus `dir` (the workflow directory, for finding the repository) and `redact` (secrets a run's own setup discovers, such as an MCP server's `env`, that the configuration never named). A factory that cannot start — a bad `agent.*` key, a server `.mcp.json` does not define — throws, and `landrace validate` reports it under the `executor` rule, one problem per line.
+The engine runs no coding agent of its own: `agent.adapter` names a hook. `defineExecutor` registers one, either as `{ id, run }` directly or as `{ id, create(ctx) }` — a factory the runtime calls once at startup, with `ctx` the same `RuntimeContext` every hook gets plus `dir` (the workflow directory, for finding the repository), `redact` (secrets a run's own setup discovers, such as an MCP server's `env`, that the configuration never named) and `steps` (the workflow's steps, by path, so a factory can refuse what a step asks of it before the step runs). A factory that cannot start — a bad `agent.*` key, a server `.mcp.json` does not define, a step's effort it has no level for — throws, and `landrace validate` reports it under the `executor` rule, one problem per line.
 
 **The engine hands every run:**
 - the rendered prompt;
@@ -511,7 +518,65 @@ A hook reads `agent:` only when `agent.adapter` names it, because `agent:` belon
 
 The engine checks a read-only step's worktree afterwards whatever the executor claims — a backstop, not a licence to skip the rest.
 
-`.landrace/hooks/claude.ts` is the worked example, built with `defineExecutor({ id, create(ctx) })` so it can read its own settings out of `agent:` and register its secrets for redaction before the first step runs. A project on another agent copies the shape, not the file.
+#### The kit, and the agents landrace ships
+
+Every rule above but the vendor's words is the same for every agent, so it is written once: `BaseExecutor`, from `landrace/kit`. It is a factory that brands itself, so an integration is an executor hook as it stands, and this repository's is two lines:
+
+```ts
+// .landrace/hooks/claude.ts
+import { Claude } from "landrace/integrations/claude";
+export const claude = new Claude();
+```
+
+The kit starts the agent with no shell and none of landrace's environment, checks every value before it reaches argv and the directory it runs in, refuses a capability it cannot enforce, resolves `agent.mcp` from `.mcp.json`, reads and shape-checks `agent.sandbox`, kills the whole process group at the limit or on abort, re-checks the abort after the integration's own preparation and before it spawns, and refuses at startup an `agent.*` key nobody reads and a step's effort the agent has no level for. An integration says only what is its agent's:
+
+| Hook | What it says |
+|---|---|
+| `argv(plan)` | The command line for a run the kit has decided and checked: its tier (`screen`, `read` or `write`), model, effort, session, servers and the tools allowed on each |
+| `readEvent(event, cwd)` | What one line of the agent's JSON output means: a message or a tool call for the ticket panel, the session id, the answer, the end, or a failure |
+| `handoffArgv(plan)` | The command a person runs to pair |
+| `prepare(plan)` | Optional. Whatever must be in place before the agent starts — Claude brings a resumed session into the directory it runs in |
+| `readExtras(agent)` | Optional. The integration's own `agent:` keys — Claude's `plugins` |
+| `sandboxProblems(sandbox)` | Optional. The `agent.sandbox` settings its agent cannot keep, refused at startup |
+| `mcpFile(root)` | Where `agent.mcp`'s servers are defined; `.mcp.json` unless overridden |
+
+and declares `efforts` (the levels it takes), `pairings` (`take` a fresh session, `continue` the agent's, `fork` for Finish) and `envKeys` (variables the agent needs, never a credential). To change one piece, subclass and override that method. `integrations/` imports nothing but `landrace/kit`, `landrace/hooks` and `node:*`, so a third integration is written exactly as these two are.
+
+#### Codex
+
+`landrace/integrations/codex` runs OpenAI's `codex exec --json`, written against codex-cli 0.154:
+
+```ts
+// .landrace/hooks/codex.ts
+import { Codex } from "landrace/integrations/codex";
+export const codex = new Codex();
+```
+
+```yaml
+agent:
+  adapter: codex
+  model: gpt-5.1-codex
+  sandbox: { deny: [] }
+```
+
+| Run | Sandbox | Also |
+|---|---|---|
+| no `repo:write` (read-only) | `read-only` | |
+| `repo:write` | `workspace-write`, with the network off | `$TMPDIR` and `/tmp` not writable: `$TMPDIR` holds every other ticket's worktree, landrace's locks and the screener's directory |
+| the screener | `read-only` | every built-in tool off — the shell, web search, the image viewer, connectors and plugins, the browser, sub-agents, hooks — no server, and run in a directory of its own that only you can write, rather than your checkout |
+
+Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `config.toml` — whose servers include landrace's operator server — and your execpolicy rules do not load; runs with `approval_policy="never"`, since nobody is there to ask; gets `agent.mcp`'s servers per run as `-c mcp_servers.<name>.*`, a listed server's tools as its `enabled_tools`, so nothing is written for a worktree to shadow; takes the prompt on stdin; and has `CODEX_HOME` passed on, nothing else of landrace's environment. The session is `thread.started`'s id, the answer the last `agent_message`, and a `turn.failed` fails the run with codex's own reason.
+
+What codex cannot do is refused rather than run without. At startup, and by `validate`:
+
+- **`agent.sandbox.hosts`.** Its sandbox has the network on or off, with no list of hosts, so list none: a write step then has no network, and cannot install or push.
+- **`agent.sandbox.deny`.** It cannot keep a command from reading a path under your home, and every step and conversation turn — read-only ones too, whose answer is posted to the ticket — has a shell to run one. The default list applies when `deny` is not written, so write `deny: []` to accept that every step and turn can read those paths.
+- **An effort outside `none`, `low`, `medium`, `high`, `xhigh`.** The shipped `spec` step asks for `max`, and `validate` names it.
+- **`agent.plugins`**, which is Claude's.
+
+And before a run starts: a project `.codex/config.toml` or `.codex/hooks.json` anywhere from the run's directory up to the repository root — either would load beside the run, and a step could commit one — and a server, variable or header name a `-c` key path cannot carry (one with a `.`).
+
+**Pairing.** Codex names every session it starts itself, so none can start under the id landrace gives a pairing. It pairs only by carrying on the agent's own session on the stage: that session's file under `CODEX_HOME/sessions` is copied under the pairing's id, and the person runs `codex resume <that id>`, seeded with the step. Finish forks it with `codex exec fork`. A pairing on a stage the agent has not run yet is refused, saying why — release it, and pair once the agent has run the step.
 
 ### `.landrace/steps/*.md` — the work
 
@@ -535,9 +600,9 @@ Write the spec for #{node.id}: {node.title}…
 
 | Key | Meaning |
 |---|---|
-| `capabilities` | What the agent may do — `repo:read`, `repo:write`, `tickets:create`. The first two are enforced by diffing the worktree afterwards, the third by which MCP tool the executor hands the agent — not by the flags the Claude hook hands its agent, which another executor never sees. An unenforceable capability refuses the step rather than pretending |
+| `capabilities` | What the agent may do — `repo:read`, `repo:write`, `tickets:create`. The first two are enforced by diffing the worktree afterwards, the third by which MCP tool the executor hands the agent — not by the flags an integration hands its agent, which another executor never sees. An unenforceable capability refuses the step rather than pretending |
 | `model` | Overrides `agent.model` for this step. A cheap step should say so |
-| `effort` | Overrides `agent.effort` for this step, and its conversation turns. The executor checks the level; the Claude hook refuses one it does not know |
+| `effort` | Overrides `agent.effort` for this step, and its conversation turns. The level is the agent's own word: an integration built on the kit refuses one it has no level for at startup, and `validate` names the step |
 | `timeout` | Overrides `budget.stepTimeout` for this step, e.g. `120m`. A step that writes code can need hours where a classifier needs minutes |
 | `output.discriminator` | The field whose value picks the shape |
 | `output.shapes` | What each value of the discriminator must look like. Output that matches none is a hard fail, recorded, never retried |
@@ -671,8 +736,8 @@ session to have happened already, not the deep link itself.
 - Predicate operators are allowlisted structurally, before a condition reaches the evaluator.
 - Everything a step writes is escaped before posting, so an agent cannot emit Landrace's own control tokens.
 - `src/core/` is provably pure — no I/O, no clock, no randomness — enforced by lint and by test.
-- A step declares what it may do, and the declaration is enforced by diffing its worktree before and after — not by the flags the Claude hook hands its agent, which another executor never sees. A conversation turn is held to the same declaration as the step it continues.
-- Under the Claude hook, a step or turn gets exactly the MCP servers `agent.mcp` allows, strictly. The hook refuses Landrace's own operator server at startup by name, and by its command line in the common spellings — a best-effort check on operator-trusted config, so do not allowlist a wrapper that runs it. Keeping that server from a step is part of every executor's contract, not this hook's alone.
+- A step declares what it may do, and the declaration is enforced by diffing its worktree before and after — not by the flags an integration hands its agent, which another executor never sees. A conversation turn is held to the same declaration as the step it continues.
+- Under either shipped integration, a step or turn gets exactly the MCP servers `agent.mcp` allows, strictly. The kit refuses Landrace's own operator server at startup by name, and by its command line in the common spellings — a best-effort check on operator-trusted config, so do not allowlist a wrapper that runs it. Keeping that server from a step is part of every executor's contract, not the kit's alone.
 - Every agent invocation is screened first, including a turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it. A step the screener refuses is recorded as a refusal, not a broken contract, and lands in `screened` for a person to read. An `ok` counts only when it carries the nonce that screening's prompt was marked with, so a verdict planted in the screened text, or the template restated, fails closed. A reply that fails closed is logged whole in `screen.blocked` (its last 2,000 characters, redacted like any log line) and never posted: the ticket shows the reason alone.
 - The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workflow directory before it is imported, both ends compared after `realpath`.
 - A comment carries control state only because Landrace's own account wrote it. The account is resolved from the token at startup and verified against any configured override; the process refuses to run rather than guess, because a login it cannot resolve would make its own records read as a stranger's.
