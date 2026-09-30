@@ -1,4 +1,4 @@
-import { AGENT_BY, ENTRY_KIND, MALFORMED_KIND, OUTPUT_KIND, PAIR_KIND, REFUSED_KIND, RELEASE_KIND } from "#conventions.js";
+import { AGENT_BY, CLEAR_KIND, ENTRY_KIND, MALFORMED_KIND, OUTPUT_KIND, PAIR_KIND, REFUSED_KIND, RELEASE_KIND } from "#conventions.js";
 import type { Entry, Run, StageRounds } from "#namespace.js";
 
 /**
@@ -203,6 +203,18 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   if (gotoStage !== stage) goto = null;
 
   /*
+   * A clearance holds from when it is written until anyone writes after it:
+   * a comment made later reaches the cleared round's prompt, and a person
+   * cleared only what they had read. Position, not timestamps, for the reason
+   * the goto above gives.
+   */
+  let cleared: Run["cleared"] = null;
+  for (const e of ordered) {
+    if (!e.byAgent) cleared = null;
+    else if (e.kind === CLEAR_KIND) cleared = { stage: e.stage, round: e.round };
+  }
+
+  /*
    * Only the current stage's own entry record answers "where did it come
    * from". A stage that writes none — every stage where it is a person's
    * turn — would otherwise read the `from` of whatever step ran before it,
@@ -280,6 +292,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     lastOutputValid,
     lastRefused,
     goto,
+    cleared,
     previousStage,
     failedStages,
     failedStage,

@@ -168,6 +168,13 @@ export interface Run {
    */
   goto: string | null;
   /**
+   * The round a person cleared of the security check, and its stage: the
+   * latest clearance record, while nobody has written since — anything
+   * written after it would reach that round's prompt unscreened. Null
+   * otherwise. The round it names is the only one it covers.
+   */
+  cleared: { stage: string; round: number } | null;
+  /**
    * The stage the ticket left to enter the current one, read off the current
    * stage's own entry record. Null when the current stage records no entry,
    * or was entered as a fresh ticket: an older stage's answer would be a
@@ -1059,7 +1066,7 @@ export type EventName =
   | "snapshot.built" | "snapshot.failed"
   | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
   | "lock.acquired" | "lock.released" | "lock.denied" | "lock.stolen"
-  | "screen.passed" | "screen.blocked"
+  | "screen.passed" | "screen.blocked" | "screen.cleared"
   | "display.failed"
   | "wake.failed"
   | "notify.sent" | "notify.failed";

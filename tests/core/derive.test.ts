@@ -311,6 +311,46 @@ describe("run.goto, derived from records and consumed by entering a stage", () =
   });
 });
 
+/*
+ * A person clearing a step the security check refused: one round of one
+ * stage runs without the screener. Whatever anyone writes after the
+ * clearance reaches that round's prompt, so it voids it — new text is
+ * never waved through unread.
+ */
+describe("run.cleared, a person's clearance of the security check", () => {
+  const clearing = (stage: string, round: number): Entry => ({ stage, kind: "cleared", round, at: at(), byAgent: true });
+
+  it("names the stage and round the latest clearance covers", () => {
+    const entries = [entered("spec", 1), refused("spec", 1), clearing("spec", 2), entered("spec", 2)];
+    expect(deriveRun(entries, "spec").cleared).toEqual({ stage: "spec", round: 2 });
+  });
+
+  it("is void once anyone writes after it", () => {
+    expect(deriveRun([refused("spec", 1), clearing("spec", 2), human()], "screened").cleared).toBeNull();
+  });
+
+  it("survives what was written before it — the message it was cleared after", () => {
+    expect(deriveRun([refused("triage", 1), human(), clearing("triage", 2)], "screened").cleared)
+      .toEqual({ stage: "triage", round: 2 });
+  });
+
+  it("is ignored when a person wrote it", () => {
+    expect(deriveRun([{ ...clearing("spec", 2), byAgent: false }], "screened").cleared).toBeNull();
+  });
+
+  it("orders a clearance and a comment that share a second by the order they were listed in", () => {
+    const same = "2026-02-01T00:00:00.000Z";
+    const c = { ...clearing("spec", 2), at: same };
+    const h = { ...human(), at: same };
+    expect(deriveRun([c, h], "screened").cleared).toBeNull();
+    expect(deriveRun([h, c], "screened").cleared).toEqual({ stage: "spec", round: 2 });
+  });
+
+  it("is null when nothing was cleared", () => {
+    expect(deriveRun([entered("spec", 1), refused("spec", 1)], "screened").cleared).toBeNull();
+  });
+});
+
 describe("run.previousStage, from the current stage's own entry record", () => {
   const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
 

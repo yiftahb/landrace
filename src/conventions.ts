@@ -280,6 +280,16 @@ export function durationMs(text: string): number | null {
 export const GOTO_KIND = "goto";
 
 /**
+ * The kind of the record a person's security clearance is written under: one
+ * round of one stage, named on the record, runs without the prompt screener.
+ * Written only from the operator plane — the board, `landrace_clear` — never
+ * read out of a comment: a reply is text anyone can write, and an injection
+ * that could clear itself would make the screener decoration. #39's spec was
+ * refused twice for its own template's wording, with no way to overrule it.
+ */
+export const CLEAR_KIND = "cleared";
+
+/**
  * The trigger name a goto transition is logged under. A workflow's own
  * trigger may not use it (`landrace validate`), so the board can tell from
  * an event alone that a ticket was sent back.

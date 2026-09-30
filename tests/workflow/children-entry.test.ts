@@ -12,7 +12,7 @@ const FIXTURE = "tests/fixtures/children";
 
 const run = (o: object = {}) => ({
   stage: null, counters: {}, outputs: {}, lastOutputValid: null, lastRefused: null, failedStages: [], rounds: {},
-  lastEvent: { actor: null, at: null }, lastHuman: null, unblockedAt: 0, goto: null, previousStage: null,
+  lastEvent: { actor: null, at: null }, lastHuman: null, unblockedAt: 0, goto: null, cleared: null, previousStage: null,
   failedStage: null, pairing: null, lastOutputBy: null, ...o,
 });
 /**

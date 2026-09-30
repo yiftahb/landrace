@@ -314,6 +314,37 @@ describe("runStep", () => {
     expect((r as { reason: string }).reason).toMatch(/exfiltration/);
   });
 
+  /*
+   * A person's clearance covers exactly one round of one stage. The screener
+   * here refuses everything, so a step that runs was never screened; one that
+   * is refused was.
+   */
+  describe("with a person's clearance of the security check", () => {
+    const refusing: Executor = {
+      id: "screen",
+      run: async () => ({ text: '```json\n{"verdict":"suspicious","reason":"template wording"}\n```', sessionId: null }),
+    };
+    const cleared = (c: { stage: string; round: number }) =>
+      ({ ...snapshot, run: { counters: {}, cleared: c } }) as unknown as Snapshot;
+    const runAt = (stageId: string, round: number, events: string[] = []) => runStep({
+      ticket: "39", step: { prompt: "go" }, stageId, round, snapshot: cleared({ stage: "spec", round: 2 }),
+      executor: agent("free text"), signal: new AbortController().signal,
+      screen: { executor: refusing, model: "haiku" }, log: (name) => events.push(name),
+    });
+
+    it("runs the round it names without screening it, and says so in the log", async () => {
+      const events: string[] = [];
+      expect(await runAt("spec", 2, events)).toMatchObject({ ok: true });
+      expect(events).toContain("screen.cleared");
+      expect(events).not.toContain("screen.blocked");
+    });
+
+    it("still screens any other round of that stage, and any other stage", async () => {
+      expect(await runAt("spec", 3)).toMatchObject({ ok: false, kind: "refused" });
+      expect(await runAt("build", 2)).toMatchObject({ ok: false, kind: "refused" });
+    });
+  });
+
   // #33: with tickets screened side by side, a reply nobody can attribute
   // explains nothing.
   it("logs a reply that failed closed with the ticket, stage and round it was screening", async () => {

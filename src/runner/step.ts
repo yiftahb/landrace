@@ -247,7 +247,13 @@ export async function runStep(opts: {
   if (!start.ok) return { ok: false, kind: "refused", reason: start.reason };
   const before = start.before;
 
-  if (opts.screen) {
+  // A person cleared exactly this round of this stage after reading what the
+  // screener refused (`run.cleared`, void once anyone wrote since). Any other
+  // round is screened as ever.
+  const cleared = snapshot.run?.cleared;
+  if (opts.screen && cleared?.stage === stageId && cleared.round === round) {
+    log?.("screen.cleared", { stage: stageId, round });
+  } else if (opts.screen) {
     // Screen the rendered prompt, never the template: the template is the
     // workflow author's own words and carries nothing an attacker wrote, but
     // the snapshot substituted into it does (an issue body, a comment) — and
