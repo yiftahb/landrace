@@ -114,7 +114,7 @@ export async function startUi(
  */
 export function gotoFor(deps: GotoDeps): GotoPath | undefined {
   if (!deps.dispatcher.handlerFor(RECORD_EFFECT)) return undefined;
-  return { send: (ticket, target) => sendTo(deps, ticket, target) };
+  return { send: (ticket, target, opts) => sendTo(deps, ticket, target, opts) };
 }
 
 /**

@@ -120,6 +120,30 @@ describe("boardView: which rows offer a Retry", () => {
   });
 });
 
+// A clearance waives the screener, so only a ticket a security check stopped
+// is offered one — and only where a Retry would be.
+describe("boardView: which rows offer Clear & retry", () => {
+  const rowFor = (labels: string[], opts: Partial<Parameters<typeof boardView>[0]> = {}) =>
+    view(graph([ticket("7", {}, ["go", ...labels])]), opts).rows[0];
+
+  it("offers it on a screened ticket, as the path to post to", () => {
+    expect(rowFor(["lr:stage:screened", "lr:blocked", "lr:screened"])?.clear).toBe("/tickets/7/clear");
+  });
+
+  it.each([
+    ["blocked for a broken contract", ["lr:stage:blocked", "lr:blocked"]],
+    ["waiting on you", ["lr:stage:spec-human-review", "lr:awaiting"]],
+    ["working", ["lr:stage:build", "lr:working"]],
+  ])("offers none on a ticket %s", (_, labels) => {
+    expect(rowFor(labels)?.clear).toBeNull();
+  });
+
+  it("offers none while an agent is running on it", () => {
+    const running = new Map<string, Running>([["7", { stage: "spec", round: 2, model: null, effort: null, since: 1 }]]);
+    expect(rowFor(["lr:stage:screened", "lr:blocked", "lr:screened"], { running })?.clear).toBeNull();
+  });
+});
+
 /*
  * "Go to step…" is offered wherever a person's turn might be: the board holds
  * labels, not records, so it cannot tell a judge whose round is settled from
@@ -408,7 +432,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
+      "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
       "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "title",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");

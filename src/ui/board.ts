@@ -22,6 +22,9 @@ const stopped = (row: StatusRow): boolean => row.note === BLOCKED_NOTE || row.no
 /** The path the page posts a Retry to — built here, from an id already checked, never by the page. */
 const retryPath = (id: string): string | null => (isTicketId(id) ? `/tickets/${id}/retry` : null);
 
+/** And a Clear & retry, which only a screened ticket is offered: `sendTo` refuses it anywhere else. */
+const clearPath = (id: string): string | null => (isTicketId(id) ? `/tickets/${id}/clear` : null);
+
 /**
  * Where the page posts a "Go to step…" — one path per step the ticket's
  * stage may send it to, built here from an id already checked and a stage
@@ -143,7 +146,7 @@ export function boardView(input: {
       system: link ? systemOf(link) : null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, round: null, model: null, effort: null,
-      chat: null, screened: false, stale: false, retry: null, goto: [], panel: null, children: [],
+      chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null, children: [],
     };
     const s = status.get(node.id);
     if (node.kind !== TICKET_KIND || !s) return base;
@@ -196,7 +199,9 @@ export function boardView(input: {
     // The status row's own verdict, not the labels read a second time; the
     // note is the page's wording of the same fact.
     if (s.note === SCREENED_NOTE) {
-      return { ...ticket, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry, goto };
+      return {
+        ...ticket, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry, clear: clearPath(node.id), goto,
+      };
     }
     return { ...ticket, badge: laneOf(s, input.workflow), retry, goto };
   };

@@ -471,6 +471,27 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
     expect(g.calls).toEqual([["19", null]]);
   });
 
+  it("sends a Clear & retry as a clearing goto with no step named, and says so", async () => {
+    const calls: unknown[][] = [];
+    const goto = { send: async (ticket: string, target: string | null, o?: { clear?: boolean }) => {
+      calls.push([ticket, target, o]);
+      return { to: "spec" };
+    } };
+    server = await serveBoard({ port: 0, view: async () => empty, goto });
+    const res = await get(server.port, "/tickets/39/clear", { method: "POST", headers: ours("clear") });
+    expect(res.status).toBe(202);
+    expect(res.body).toBe("cleared #39 of the security check and sent it back to spec");
+    expect(calls).toEqual([["39", null, { clear: true }]]);
+  });
+
+  it("refuses a Clear & retry that names itself as anything else", async () => {
+    const g = going();
+    server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
+    const res = await get(server.port, "/tickets/39/clear", { method: "POST", headers: ours("retry") });
+    expect(res.status).toBe(403);
+    expect(g.calls).toEqual([]);
+  });
+
   it("sends a goto to the step in its path", async () => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });

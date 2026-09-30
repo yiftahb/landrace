@@ -34,6 +34,9 @@ const ACTION_HEADER = "x-landrace-action";
 /** Where the page's Retry posts: one ticket, named in the path. */
 const RETRY_PATH = /^\/tickets\/([^/]+)\/retry$/;
 
+/** Where the page's Clear & retry posts: one ticket, named in the path. */
+const CLEAR_PATH = /^\/tickets\/([^/]+)\/clear$/;
+
 /** Where the page's "Go to step…" posts: one ticket, and the step it names. */
 const GOTO_PATH = /^\/tickets\/([^/]+)\/goto\/([^/]+)$/;
 
@@ -256,10 +259,13 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
 
     // The page's ticket writes, guarded the same way as /tick, and answered
     // in short sentences the page shows beside the item that asked. A Retry
-    // is a goto with no step named: the stage that last failed.
+    // is a goto with no step named: the stage that last failed. A Clear &
+    // retry is a Retry that also clears that step's next round of the
+    // security check — `sendTo` alone decides whether the ticket was screened.
     const retrying = RETRY_PATH.exec(path);
-    const going = retrying ? null : GOTO_PATH.exec(path);
-    const writing = retrying ?? going;
+    const clearing = retrying ? null : CLEAR_PATH.exec(path);
+    const going = retrying || clearing ? null : GOTO_PATH.exec(path);
+    const writing = retrying ?? clearing ?? going;
     if (writing) {
       if (!opts.goto) {
         send(res, 404, "text/plain; charset=utf-8", "not found");
@@ -269,7 +275,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         send(res, 405, "text/plain; charset=utf-8", "method not allowed");
         return;
       }
-      const foreign = foreignWrite(req, retrying ? "retry" : "goto", port);
+      const foreign = foreignWrite(req, retrying ? "retry" : clearing ? "clear" : "goto", port);
       if (foreign) {
         send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
@@ -283,7 +289,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         // A Retry's path names only a ticket, so a malformed `%` there can
         // only be a bad ticket id; a goto's path names both, and decoding
         // does not say which one broke.
-        send(res, 400, "text/plain; charset=utf-8", retrying ? "that is not a ticket id" : "that is not a ticket and a step");
+        send(res, 400, "text/plain; charset=utf-8", going ? "that is not a ticket and a step" : "that is not a ticket id");
         return;
       }
       const problem = ticketIdProblem(ticket);
@@ -303,7 +309,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         return;
       }
       const goto = opts.goto;
-      Promise.resolve().then(() => goto.send(ticket, target)).then(
+      Promise.resolve().then(() => (clearing ? goto.send(ticket, target, { clear: true }) : goto.send(ticket, target))).then(
         (r) => {
           if ("refused" in r) {
             send(res, 409, "text/plain; charset=utf-8", r.refused);
@@ -312,7 +318,9 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
           // The person is waiting on the ticket they just sent back: the
           // pass that picks it up runs now, not when the countdown comes round.
           opts.tick?.();
-          send(res, 202, "text/plain; charset=utf-8", `sent #${ticket} back to ${r.to}`);
+          send(res, 202, "text/plain; charset=utf-8", clearing
+            ? `cleared #${ticket} of the security check and sent it back to ${r.to}`
+            : `sent #${ticket} back to ${r.to}`);
         },
         (e: unknown) => {
           // Logged in full for the operator; the page gets a fixed sentence,

@@ -1826,6 +1826,12 @@ export interface BoardRow {
    */
   retry: string | null;
   /**
+   * Where the page's Clear & retry posts, for a ticket a security check
+   * stopped, where a Retry is offered too; null everywhere else. The server
+   * re-reads the ticket, so this is an offer, never a clearance.
+   */
+  clear: string | null;
+  /**
    * The steps this ticket's stage may send it back to, each with the path
    * the page posts to — built by the server. Empty unless the ticket is
    * open, its agent is not running, and its stage lists a goto target; the
@@ -2011,7 +2017,7 @@ export interface PairFinished {
 
 /** How the page's writes reach a ticket. `target` null is a Retry: `run.failedStage`, the failure that put the ticket where it is. */
 export interface GotoPath {
-  send(ticket: string, target: string | null): Promise<GotoResult>;
+  send(ticket: string, target: string | null, opts?: { clear?: boolean }): Promise<GotoResult>;
 }
 
 export interface UiServer {
