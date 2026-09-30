@@ -12,13 +12,14 @@
  * forge's own name.
  */
 import {
-  effectBranch, neutraliseMarkers, parseMarker, PULL_REQUEST_KIND, renderMarker, sameLogin, stripMarker,
+  BRANCH_PUSH_EFFECT, effectBranch, hasPullFrom, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_OPEN_EFFECT,
+  PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, RELATIONS, renderMarker, sameLogin, stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
-import { createdAtOf, MAX_COMMENT_CHARS, wroteIt } from "#kit/tracker.js";
+import { createdAtOf, MAX_COMMENT_CHARS, nodesCloseSatisfied, stillOpen, wroteIt } from "#kit/tracker.js";
 import type {
-  ChangedFile, Effect, Finding, HistoryItem, Node, PullRecord, Reply, ReviewThread, Snapshot, SnapshotComment, ThreadComment,
-  ThreadCounts,
+  BranchHeads, BriefTable, ChangedFile, Effect, EffectTable, Finding, Graph, HistoryItem, HookContext, Node, PullRecord,
+  RelationDecl, Relationship, Reply, ReviewThread, RuntimeContext, Snapshot, SnapshotComment, ThreadComment, ThreadCounts,
 } from "#namespace.js";
 
 export type { ChangedFile, Finding, Reply, ReviewThread, ThreadComment, ThreadCounts } from "#namespace.js";
@@ -351,4 +352,315 @@ export function pushSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   const { local, remote } = headsOf(snapshot);
   const head = headIn(local, branch);
   return head === undefined || headIn(remote, branch) === head;
+}
+
+/**
+ * Every ticket a pull request names: the ones its own text does (`Closes #n`)
+ * and the one a `landrace/{ticket}` head is for. A branch named any other way
+ * — `api/{ticket}`, a fork's — names nothing: anybody can call a branch
+ * after any ticket, and only our own head convention is ours.
+ */
+export function ticketsNamedBy(pull: Pick<PullRecord, "branch" | "tickets">): Set<string> {
+  const named = new Set(pull.tickets);
+  const ours = prBranch("");
+  if (pull.branch?.startsWith(ours) && pull.branch.length > ours.length) named.add(pull.branch.slice(ours.length));
+  return named;
+}
+
+/** The pull request number a `pr-{n}` node id stands for. */
+const pullNumber = (id: string): number => {
+  const n = /^pr-([1-9][0-9]*)$/.exec(id)?.[1];
+  if (n === undefined) throw new Error(`"${id}" is not a pull request node`);
+  return Number(n);
+};
+
+const isOpen = (pull: PullRecord): boolean => !pull.merged && !pull.closed;
+
+/**
+ * A forge integration: its vendor's calls, and nothing else.
+ *
+ * An integration extends this and writes the abstract methods, answered in
+ * the plain shapes of `src/namespace.ts`. What is here is everything else a
+ * forge does: which ticket each pull request implements and the thread counts
+ * the review loop gates on, the branch heads a push is judged by, the three
+ * publishing effects and its half of `nodes.close`, the `threads` and `diff`
+ * briefings, and the review threads' place in the ticket's history.
+ * `compose` makes the hooks out of it.
+ *
+ * To change one piece, subclass and override it: an effect by spreading
+ * `super.effects()`, a briefing by spreading `super.briefs()`.
+ */
+export abstract class BaseForge {
+  /** The login we post as here: whose turn a review thread is, by its last word. */
+  abstract login(ctx: RuntimeContext): Promise<string>;
+  /** Every open pull request, and any closed one the board should still show. */
+  abstract pulls(ctx: RuntimeContext): Promise<PullRecord[]>;
+  /** Every pull request tied to a ticket — from its `landrace/{ticket}` head, or naming it — merged and closed ones too. */
+  abstract pullsNaming(ticket: string, ctx: RuntimeContext): Promise<PullRecord[]>;
+  /** Every review thread on a pull request, resolved or not, every page — or a refusal, never a short list. */
+  abstract threads(pull: number, ctx: RuntimeContext): Promise<ReviewThread[]>;
+  /** What a pull request changes, file by file. */
+  abstract changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFile[]>;
+  /** The body of every review posted on a pull request: its marker is what says a round is already there. */
+  abstract reviews(pull: number, ctx: RuntimeContext): Promise<string[]>;
+  /** Propose `branch` for `ticket`, naming the ticket in the forge's own way. */
+  abstract openPull(pull: { ticket: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void>;
+  /** Close a pull request without merging it. */
+  abstract closePull(pull: number, ctx: RuntimeContext): Promise<void>;
+  /**
+   * Post one review round: `files` as threads on their files, `lines` as
+   * line threads inside the review, then the review itself with `body` —
+   * last, because its marker is what says the round is on the forge.
+   */
+  abstract postReview(
+    pull: number,
+    review: {
+      body: string;
+      lines: Array<{ path: string; line: number; body: string }>;
+      files: Array<{ path: string; body: string }>;
+      head: string;
+    },
+    ctx: RuntimeContext,
+  ): Promise<void>;
+  abstract reply(thread: string, body: string, ctx: RuntimeContext): Promise<void>;
+  abstract resolve(thread: string, ctx: RuntimeContext): Promise<void>;
+  /** This checkout's branch heads, local and origin's, as `branchHeads` reads them. */
+  abstract heads(ctx: RuntimeContext): Promise<BranchHeads>;
+  /** Publish a branch to origin, with whatever credential the forge trusts it with — `pushBranch`, usually. */
+  abstract push(branch: string, ticket: string, ctx: HookContext): Promise<void>;
+
+  /** Run once at startup, before anything is paid for. */
+  check?(ctx: RuntimeContext): Promise<void>;
+
+  relations(): RelationDecl[] {
+    return [{ type: RELATIONS.implements, singular: true }];
+  }
+
+  /** Exactly what `observe` puts in the snapshot. */
+  provides(): string[] {
+    return ["git", "git.local", "git.remote"];
+  }
+
+  /** The branch heads, read once a pass: `satisfied()` cannot ask git whether a push has landed. */
+  async observe(ctx: HookContext): Promise<Record<string, unknown>> {
+    return { git: await this.heads(ctx) };
+  }
+
+  /** A pull request as the node the engine routes on. */
+  protected node(pull: PullRecord, threads?: ThreadCounts): Node {
+    return pullNode(pull, threads);
+  }
+
+  /**
+   * The pull requests tied to the listed tickets. One naming two tickets, or
+   * one the list does not carry, is left out: the first is an ambiguity `read`
+   * of either ticket halts on, and the second would be an edge that dangles.
+   */
+  async list(tickets: ReadonlySet<string>, ctx: RuntimeContext): Promise<Graph> {
+    const nodes: Node[] = [];
+    const relationships: Relationship[] = [];
+    for (const pull of await this.pulls(ctx)) {
+      const [only, ...more] = ticketsNamedBy(pull);
+      if (only === undefined || more.length > 0 || !tickets.has(only)) continue;
+      const node = this.node(pull);
+      nodes.push(node);
+      relationships.push({ from: node.id, to: only, type: RELATIONS.implements });
+    }
+    return { nodes, relationships };
+  }
+
+  /**
+   * Every pull request tied to any of these tickets, merged and closed ones
+   * included — "every pull request is merged" is a count over all of them.
+   * One tied to two tickets halts: which it implements is not a guess.
+   *
+   * Only an open one's threads are counted. A thread left on a merged or
+   * abandoned one is nothing a fix round can act on, and counting it would
+   * loop the ticket through review for ever — so a closed one is zero, not
+   * absent, which keeps "no thread awaits a fix" readable once all are merged.
+   */
+  async read(tickets: string[], ctx: RuntimeContext): Promise<Graph> {
+    const nodes = new Map<number, Node>();
+    const relationships: Relationship[] = [];
+    for (const ticket of tickets) {
+      for (const pull of await this.pullsNaming(ticket, ctx)) {
+        const named = ticketsNamedBy(pull);
+        if (named.size > 1) {
+          throw new Error(
+            `pull request #${pull.number} is tied to ${[...named].map((t) => `#${t}`).join(" and ")}; a pull request implements one ticket`,
+          );
+        }
+        if (nodes.has(pull.number) || !named.has(ticket)) continue;
+        const threads = isOpen(pull)
+          ? threadCounts(await this.threads(pull.number, ctx), await this.login(ctx))
+          : { openThreads: 0, awaitingFix: 0 };
+        const node = this.node(pull, threads);
+        nodes.set(pull.number, node);
+        relationships.push({ from: node.id, to: ticket, type: RELATIONS.implements });
+      }
+    }
+    return { nodes: [...nodes.values()], relationships };
+  }
+
+  effects(): EffectTable {
+    return {
+      [BRANCH_PUSH_EFFECT]: {
+        satisfied: pushSatisfied,
+        apply: (effect, ctx) => this.push(effectBranch(effect), ctx.ticket, ctx),
+      },
+      [PULL_OPEN_EFFECT]: {
+        satisfied: (snapshot, effect) =>
+          hasPullFrom(snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect)),
+        apply: async (effect, ctx) => {
+          const branch = effectBranch(effect);
+          // Asked of the checkout first: a branch that is nowhere has nothing
+          // to propose, and a forge's own answer to it names neither the
+          // ticket nor why.
+          const { local, remote } = headsOf(ctx.snapshot);
+          if (headIn(local, branch) === undefined && headIn(remote, branch) === undefined) {
+            throw new Error(
+              `cannot open a pull request for #${ctx.ticket} from ${branch}: this checkout has no such branch, ` +
+              "so no step has committed anything to it",
+            );
+          }
+          const title = (ctx.snapshot.node as Node | undefined)?.title ?? `#${ctx.ticket}`;
+          await this.openPull({ ticket: ctx.ticket, branch, title }, ctx);
+        },
+      },
+      [PULL_REVIEW_EFFECT]: {
+        // Asked of the forge by apply() itself, by the review's marker: the
+        // snapshot carries no reviews, and a step's route effect is planned
+        // once, right after its step.
+        satisfied: (_snapshot, effect) => {
+          effectBranch(effect);
+          return false;
+        },
+        apply: (effect, ctx) => this.review(effect, ctx),
+      },
+      [NODES_CLOSE_EFFECT]: {
+        satisfied: nodesCloseSatisfied,
+        apply: async (effect, ctx) => {
+          for (const id of stillOpen(ctx.snapshot, effect)) await this.closePull(pullNumber(id), ctx);
+        },
+      },
+    };
+  }
+
+  /** `threads`, what is left to address on the ticket's open pull requests, and `diff`, what they change. */
+  briefs(): BriefTable {
+    const open = async (ctx: HookContext): Promise<PullRecord[]> => (await this.pullsNaming(ctx.ticket, ctx)).filter(isOpen);
+    return {
+      threads: async (ctx) => {
+        const pulls = await open(ctx);
+        const read = new Map<number, ReviewThread[]>();
+        for (const pull of pulls) read.set(pull.number, await this.threads(pull.number, ctx));
+        return threadsBrief(pulls.map((p) => p.number), read, await this.login(ctx));
+      },
+      diff: async (ctx) => {
+        const changed: Array<{ number: number; files: ChangedFile[] }> = [];
+        for (const pull of await open(ctx)) changed.push({ number: pull.number, files: await this.changedFiles(pull.number, ctx) });
+        return diffBrief(changed);
+      },
+    };
+  }
+
+  /** Every review thread on every pull request tied to the ticket, for the history's one timeline. */
+  async history(ctx: HookContext): Promise<HistoryItem[]> {
+    const bot = await this.login(ctx);
+    const items: HistoryItem[] = [];
+    for (const pull of await this.pullsNaming(ctx.ticket, ctx)) {
+      const state = pull.merged ? "merged" : pull.closed ? "closed" : "open";
+      for (const thread of await this.threads(pull.number, ctx)) {
+        items.push({ at: thread.at ?? "", text: `On PR #${pull.number} (${state}): ${threadLine(thread, bot)}` });
+      }
+    }
+    return items;
+  }
+
+  /**
+   * `pull.review`: a step's replies on the threads they name, a thread per
+   * finding, its prose as one review, and the reviewer's own threads it lists
+   * as addressed resolved.
+   *
+   * The step is told apart by its route's marker — `fix:{round}` for a fix
+   * round, `review:{round}` for a review — and that kind is what each reply
+   * ends in: a `fix` one hands the thread to the person, any other puts it
+   * back to awaiting a fix. A fix round resolves nothing; a review resolves
+   * only its own findings. Each reply is idempotent by its own marker, and the
+   * review by the round's, checked on the forge itself: the one way it runs
+   * twice is a crash before the record, which re-runs the step at its round.
+   */
+  protected async review(effect: Effect, ctx: HookContext): Promise<void> {
+    const { snapshot, log } = ctx;
+    const branch = effectBranch(effect);
+    const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown; replies?: unknown };
+    const findings = Array.isArray(out.findings) ? out.findings : [];
+    const replies = Array.isArray(out.replies) ? out.replies.filter(isReply) : [];
+    const stage = String(effect.stage ?? "review");
+    const round = Number(effect.round ?? 0);
+    const marker = String(effect.marker ?? `review:${stage}:${round}`);
+    const kind = marker.split(":")[0] || "review";
+    const resolved = kind === FIX_KIND || !Array.isArray(out.resolved)
+      ? []
+      : out.resolved.filter((id): id is string => typeof id === "string");
+    const fromBranch = ((snapshot.graph as Graph | undefined)?.nodes ?? []).filter(
+      (node) => node.kind === PULL_REQUEST_KIND && node.state.branch === branch,
+    );
+    const pr = fromBranch.find((node) => node.closed === null);
+    if (!pr) {
+      // Merged or closed while the review ran — or a clean review with no
+      // pull request left to put it on — is nothing to fix, and halting would
+      // hold the ticket back from done. No pull request from the branch at
+      // all is a route naming the wrong branch, and that is said.
+      if ((findings.length === 0 && resolved.length === 0 && replies.length === 0) || fromBranch.length > 0) {
+        log("forge.review.nowhere", { branch, findings: findings.length, why: "no open pull request from the branch" });
+        return;
+      }
+      throw new Error(`there is no open pull request from ${branch} to put the review on`);
+    }
+    const number = pullNumber(pr.id);
+
+    const threads = replies.length > 0 || resolved.length > 0
+      ? new Map((await this.threads(number, ctx)).map((t) => [t.id, t]))
+      : new Map<string, ReviewThread>();
+
+    // Replies first, the review last: its marker says the round is posted.
+    const bot = replies.length > 0 ? await this.login(ctx) : "";
+    for (const reply of replies) {
+      const thread = threads.get(reply.thread);
+      if (!thread) {
+        log("forge.review.unrepliable", { thread: reply.thread, why: "no such thread on the pull request" });
+        continue;
+      }
+      const said = `${kind}:${stage}:${round}:${thread.id}`;
+      const last = thread.last;
+      if (typeof last?.author === "string" && sameLogin(last.author, bot) && parseMarker(last.body)?.marker === said) continue;
+      await this.reply(
+        thread.id,
+        neutraliseMarkers(cut(reply.body.trim(), MAX_COMMENT_CHARS - 1_000)) + renderMarker({ stage, kind, round, marker: said }),
+        ctx,
+      );
+    }
+
+    const posted = (await this.reviews(number, ctx)).some((body) => parseMarker(body)?.marker === marker);
+    if (!posted) {
+      const { onLines, onFiles, unplaced } = placeFindings(findings, await this.changedFiles(number, ctx), stage, round);
+      const listed = unplaced.length === 0 ? "" : `\n\nFindings that cannot be placed on this pull request's diff:\n\n${unplaced.join("\n")}`;
+      const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, MAX_COMMENT_CHARS - 1_000) +
+        renderMarker({ stage, kind, round, marker });
+      const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
+      await this.postReview(number, { body, lines: onLines, files: onFiles, head }, ctx);
+    }
+
+    for (const id of resolved) {
+      const thread = threads.get(id);
+      if (!thread || parseMarker(thread.first?.body ?? "")?.kind !== FINDING_KIND) {
+        // A person's thread is theirs to close, and an id not on the pull
+        // request is a mistake worth seeing: said, never silently dropped.
+        log("forge.review.unresolvable", { thread: id, why: thread ? "a person raised it" : "no such thread on the pull request" });
+        continue;
+      }
+      if (!thread.resolved) await this.resolve(id, ctx);
+    }
+  }
 }

@@ -8,8 +8,10 @@
  * opens stay with the integration.
  */
 import { createHash } from "node:crypto";
-import { DOCUMENT_KIND } from "#conventions.js";
-import type { Effect, Node, Snapshot } from "#namespace.js";
+import { DOCUMENT_KIND, RELATIONS } from "#conventions.js";
+import type {
+  BriefTable, Effect, EffectTable, Graph, HookContext, Node, RelationDecl, RuntimeContext, Snapshot,
+} from "#namespace.js";
 
 /**
  * The artifact a docs hook owns, and the effect type it answers. One name,
@@ -93,3 +95,87 @@ export const specNode = (ticket: string, link: string): Node => ({
   origin: null,
   state: {},
 });
+
+/**
+ * A docs integration: its vendor's calls, and nothing else.
+ *
+ * An integration extends this and writes where a ticket's spec page lives,
+ * how it is read and written, and the link a person opens. What is here is
+ * the rest: the artifact's state (`artifacts.spec`, `{ exists, hash, url }`),
+ * the publish that is a no-op when the page already says it, the page's text
+ * for a step's prompt, and the page as a document beside its ticket.
+ * `compose` makes the `spec` artifact hook out of it.
+ */
+export abstract class BaseDocs {
+  /** A ticket's spec page, or null when there is none. A failed read throws: "no spec" and "unreadable" are different things to a build. */
+  abstract page(ticket: string, ctx: RuntimeContext): Promise<string | null>;
+  abstract publish(ticket: string, content: string, ctx: RuntimeContext): Promise<void>;
+  /** Where a person opens the ticket's page. */
+  abstract link(ticket: string, ctx: RuntimeContext): Promise<string>;
+  /** Which tickets have a page, from one listing — or a throw when the listing cannot be had whole. */
+  abstract published(ctx: RuntimeContext): Promise<Set<string>>;
+
+  /** Run once at startup, before anything is paid for. */
+  check?(ctx: RuntimeContext): Promise<void>;
+
+  relations(): RelationDecl[] {
+    return [{ type: RELATIONS.documents, singular: true }];
+  }
+
+  /** `artifacts.spec`: presence is what a precondition reads, and the hash is what makes a republish a no-op. */
+  async observe(ctx: HookContext): Promise<Record<string, unknown>> {
+    const content = await this.page(ctx.ticket, ctx);
+    return { exists: content !== null, hash: content === null ? null : hashOf(content), url: await this.link(ctx.ticket, ctx) };
+  }
+
+  effects(): EffectTable {
+    return {
+      [PUBLISH]: {
+        satisfied: publishSatisfied,
+        apply: async (effect, ctx) => {
+          mine(effect);
+          const content = contentOf(effect);
+          // Read before writing, not from the snapshot: the step that
+          // produced this ran minutes ago. Identical content is then a no-op
+          // at the cost of one read, rather than a write per tick.
+          if ((await this.page(ctx.ticket, ctx)) === content) return;
+          await this.publish(ctx.ticket, content, ctx);
+        },
+      },
+    };
+  }
+
+  /** `{brief.spec.content}`: the page's own text, never a link to fetch. */
+  briefs(): BriefTable {
+    return { content: async (ctx) => (await this.page(ctx.ticket, ctx)) ?? NO_SPEC };
+  }
+
+  /**
+   * Each listed ticket's page, as a document beside it. Display only, so
+   * nothing about it may fail the tick: a listing that cannot be had costs
+   * this tick its documents and a log line saying why.
+   */
+  async list(tickets: ReadonlySet<string>, ctx: RuntimeContext): Promise<Graph> {
+    let paged: Set<string>;
+    try {
+      paged = await this.published(ctx);
+    } catch (e) {
+      ctx.log("docs.skipped", {
+        reason: `the pages could not be listed, so none is reported this tick: ${e instanceof Error ? e.message : String(e)}`,
+      });
+      return { nodes: [], relationships: [] };
+    }
+    return this.documents([...tickets].filter((t) => paged.has(t)), ctx);
+  }
+
+  /** The ticket's own page, by one read: that is all `rel.documents` counts. */
+  async read(ticket: string, ctx: RuntimeContext): Promise<Graph> {
+    return this.documents((await this.page(ticket, ctx)) === null ? [] : [ticket], ctx);
+  }
+
+  private async documents(tickets: string[], ctx: RuntimeContext): Promise<Graph> {
+    const nodes: Node[] = [];
+    for (const ticket of tickets) nodes.push(specNode(ticket, await this.link(ticket, ctx)));
+    return { nodes, relationships: tickets.map((t) => ({ from: `spec-${t}`, to: t, type: RELATIONS.documents })) };
+  }
+}

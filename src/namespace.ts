@@ -24,6 +24,9 @@ import type { runtimeConfigSchema } from "#config/schema.js";
 import type { stepFrontMatterSchema } from "#workflow/schema.js";
 import type { HOOK_KINDS } from "#hooks/contracts.js";
 import type { CHAT_TARGET_KEYS } from "#ui/chat.js";
+import type { BaseDocs } from "#kit/docs.js";
+import type { BaseForge } from "#kit/forge.js";
+import type { BaseTracker } from "#kit/tracker.js";
 
 /* ------------------------------------------------------------------ core -- */
 
@@ -958,6 +961,28 @@ export type EffectTable = Record<string, EffectHandler>;
 /** Briefing key → what reads it: `{brief.project.<key>}`, or `{brief.spec.<key>}` for docs. */
 export type BriefTable = Record<string, (ctx: HookContext) => Promise<string>>;
 
+/** What `compose` builds a project's hooks from: a tracker always, and a forge and a docs integration when the project has them. */
+export interface Roles {
+  tracker: BaseTracker;
+  forge?: BaseForge | undefined;
+  docs?: BaseDocs | undefined;
+}
+
+/**
+ * What `compose` hands back, for a hook file to export as it stands: one of
+ * each ticket-side kind under the id `project`, and the docs role's artifact
+ * as `spec` — which also sorts it after `pre`, and the loader files a
+ * module's exports in name order.
+ */
+export interface ComposedHooks {
+  preflight: Preflight;
+  source: Source;
+  operator: Operator;
+  pre: PreHook;
+  post: PostHook;
+  spec?: ArtifactHook;
+}
+
 /** What a pull request node says of its threads: how many are unresolved, and how many of those await a fix. */
 export interface ThreadCounts {
   openThreads: number;
@@ -1535,12 +1560,12 @@ export interface ExternalPull {
  * over a fake HTTP boundary, which is the only honest way to test *them*. This is what a workflow author has before any integration exists: a
  * place for the labels, the records and the human turns to live, so the graph
  * can be driven and its loops watched.
+ *
+ * Its hooks are `compose`'s, over the in-memory tracker, forge and docs.
  */
-export interface ExternalState {
-  pre: PreHook;
-  post: PostHook;
-  source: Source;
-  operator: Operator;
+export interface ExternalState extends ComposedHooks {
+  /** The in-memory docs role's spec page: published, read back and briefed like any docs integration's. */
+  spec: ArtifactHook;
   /**
    * Open a pull request implementing `ticket`; returns its node id, `pr-<n>`, numbered from 1 in creation order.
    * `awaitingFix` defaults to `openThreads`: a thread nobody has answered awaits a fix.
