@@ -28,6 +28,7 @@
   "scripts": {
     "build": "tsup",
     "css": "node --experimental-strip-types scripts/build-css.mjs",
+    "parity": "node --experimental-strip-types scripts/github-parity.mjs",
     "test": "jest && node --experimental-vm-modules ./node_modules/jest/bin/jest.js -c jest.esm.config.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests .landrace integrations",
