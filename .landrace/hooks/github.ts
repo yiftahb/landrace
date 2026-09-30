@@ -82,13 +82,13 @@ import {
   MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nodesCloseSatisfied, priorityFromLabels, statusSatisfied, THREAD_PAGE,
   TICKET_PAGE, ticketNode,
   // the forge's
-  cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief, isReply, placeFindings, prBranch, pullNode, pushSatisfied,
-  threadCounts, threadsBrief, ticketOfBranch,
+  BRIEF_COMMENTS, BRIEF_HISTORY_THREADS, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, isReply, newest,
+  placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadLine, threadsBrief, ticketOfBranch,
   // the docs'
   briefPage, contentOf, hashOf, mine, PUBLISH, publishSatisfied, SPEC, specNode,
   // git's
   branchHeads, gitIn, headIn, headsOf, nothingCommitted, originPushUrl, ownGit, pushBranch, repositoryOf,
-  type ChangedFile, type Git, type ReviewThread, type ThreadComment, type ThreadCounts,
+  type ChangedFile, type Git, type ReviewThread, type SnapshotComment, type ThreadComment, type ThreadCounts,
 } from "landrace/kit";
 /*
  * `landrace/hooks` and `landrace/kit` resolve here by Node's package
@@ -1806,9 +1806,45 @@ async function briefTicket(gh: Client, repo: string, ticket: string, snapshot: S
   for (const pull of open) changed.push({ number: pull.number, files: (await gh.pullFiles(pull.number)).map(changedFile) });
   return {
     threads: threadsBrief(open.map((p) => p.number), read, bot),
-    history: historyBrief(commentsOf(snapshot), pulls, read, bot),
+    history: historyOf(commentsOf(snapshot), pulls, read, bot),
     diff: diffBrief(changed),
   };
+}
+
+/**
+ * The ticket's whole history in two halves, each item as the kit renders it:
+ * every comment in order, then every review thread on every pull request
+ * tied to it, under one heading each. The kit's `historyBrief` is the one
+ * timeline a composed hook briefs; this hook keeps its halves until it is
+ * built on the kit's bases.
+ */
+function historyOf(
+  comments: SnapshotComment[],
+  pulls: Array<{ number: number; state: string }>,
+  read: Map<number, ReviewThread[]>,
+  bot: string,
+): string {
+  const said = newest(comments, BRIEF_COMMENTS, "comments", (c) => commentLine(c, bot));
+  const conversation = said.kept.length === 0
+    ? "No comments on the ticket."
+    : said.left + said.kept.map((k) => k.text).join("\n\n");
+
+  const ordered = [...pulls].sort((a, b) => a.number - b.number);
+  const raised = newest(
+    ordered.flatMap((pull) => (read.get(pull.number) ?? []).map((thread) => ({ pull: pull.number, thread }))),
+    BRIEF_HISTORY_THREADS,
+    "threads",
+    ({ thread }) => threadLine(thread, bot),
+  );
+  let n = 0;
+  const reviews = ordered.length === 0
+    ? "No pull request was opened on this ticket."
+    : raised.left + ordered.map((pull) => {
+      const listed = raised.kept.filter((r) => r.item.pull === pull.number).map((r) => `${++n}. ${r.text}`);
+      return `### PR #${pull.number} (${pull.state.toLowerCase()})\n\n${listed.length === 0 ? "Nothing listed." : listed.join("\n\n")}`;
+    }).join("\n\n");
+
+  return `## Ticket conversation\n\n${conversation}\n\n## Review threads\n\n${reviews}`;
 }
 
 /**

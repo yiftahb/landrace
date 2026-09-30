@@ -892,7 +892,71 @@ export interface ReviewThread {
   last: ThreadComment | null;
   /** How many comments the thread has: more than one means somebody replied. */
   comments: number;
+  /** When it was opened, ISO 8601: where it sits in the ticket's history. Absent where the forge does not say. */
+  at?: string | undefined;
 }
+
+/**
+ * A ticket as a tracker integration reads it: `ticketNode`'s fields, and the
+ * ticket it is a child of. `priority` is set by a tracker with a priority
+ * field of its own (Jira's, the in-memory one's), and then wins over any
+ * `P0`..`P9` label; absent, the labels say.
+ */
+export interface TicketRecord {
+  id: string;
+  title: string;
+  link: string;
+  closed: Closed;
+  labels: string[];
+  assignees: string[];
+  body: string;
+  author: string | undefined;
+  /** Who last edited the body, or undefined if nobody has since it was opened. */
+  editor: string | undefined;
+  createdAt: string | undefined;
+  parent: string | null;
+  priority?: number | null | undefined;
+}
+
+/**
+ * A pull request as a forge integration reads it: `pullNode`'s fields, and
+ * the tickets it names in its own text — `Closes #n` — beside the one its
+ * `landrace/{ticket}` head is for. `branch` is undefined for a fork's.
+ */
+export interface PullRecord {
+  number: number;
+  title: string;
+  link: string;
+  merged: boolean;
+  closed: boolean;
+  headSha: string;
+  branch: string | undefined;
+  createdAt: string | undefined;
+  tickets: string[];
+}
+
+/**
+ * One entry in a ticket's history, rendered by the role it came from: a
+ * comment by the tracker, a review thread by the forge. `at` is ISO 8601 and
+ * orders the one timeline; an entry whose time is unknown carries "" and
+ * sorts first.
+ */
+export interface HistoryItem {
+  at: string;
+  text: string;
+}
+
+/** One effect type's two halves, side by side, as a role's `effects()` table carries them. */
+export interface EffectHandler {
+  satisfied(snapshot: Snapshot, effect: Effect): boolean;
+  apply(effect: Effect, ctx: HookContext): Promise<void>;
+}
+
+/** Effect type → its handler. A role's own, which a subclass extends by spreading `super.effects()`. */
+export type EffectTable = Record<string, EffectHandler>;
+
+/** Briefing key → what reads it: `{brief.project.<key>}`, or `{brief.spec.<key>}` for docs. */
+export type BriefTable = Record<string, (ctx: HookContext) => Promise<string>>;
 
 /** What a pull request node says of its threads: how many are unresolved, and how many of those await a fix. */
 export interface ThreadCounts {

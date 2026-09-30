@@ -17,7 +17,8 @@ import {
 import { headIn, headsOf } from "#kit/git.js";
 import { createdAtOf, MAX_COMMENT_CHARS, wroteIt } from "#kit/tracker.js";
 import type {
-  ChangedFile, Effect, Finding, Node, Reply, ReviewThread, Snapshot, SnapshotComment, ThreadComment, ThreadCounts,
+  ChangedFile, Effect, Finding, HistoryItem, Node, PullRecord, Reply, ReviewThread, Snapshot, SnapshotComment, ThreadComment,
+  ThreadCounts,
 } from "#namespace.js";
 
 export type { ChangedFile, Finding, Reply, ReviewThread, ThreadComment, ThreadCounts } from "#namespace.js";
@@ -139,19 +140,7 @@ export const ticketOfBranch = (head: string): string | null => /^landrace\/([1-9
  * repository and could carry any name — ours included — and so stand in for
  * the one we would open.
  */
-export function pullNode(
-  pull: {
-    number: number;
-    title: string;
-    link: string;
-    merged: boolean;
-    closed: boolean;
-    headSha: string;
-    branch: string | undefined;
-    createdAt: string | undefined;
-  },
-  threads?: ThreadCounts,
-): Node {
+export function pullNode(pull: Omit<PullRecord, "tickets">, threads?: ThreadCounts): Node {
   return {
     id: `pr-${pull.number}`,
     kind: PULL_REQUEST_KIND,
@@ -188,13 +177,15 @@ export const BRIEF_BODY_CHARS = 1000;
  */
 export const BRIEF_COMMENTS = 60;
 export const BRIEF_HISTORY_THREADS = 40;
+/** And of the one timeline both roles' entries share: the two bounds together. */
+export const BRIEF_HISTORY_ITEMS = BRIEF_COMMENTS + BRIEF_HISTORY_THREADS;
 
 /**
  * And what each of its two halves may spend. The engine cuts a hook's whole
  * briefing at 32 KB from the end, which on a long history would drop the
  * newest comments and every review thread first — the opposite of what the
  * retro needs. Two halves this size, and the short `threads` beside them
- * when the review has settled, stay inside it.
+ * when the review has settled, stay inside it; the timeline spends both.
  */
 export const BRIEF_HISTORY_HALF_CHARS = 14_000;
 
@@ -209,16 +200,18 @@ export const where = (thread: Pick<ReviewThread, "path" | "line">): string =>
 
 /**
  * The newest of a list, rendered, oldest first: at most `keep` of them and
- * no more text than one half of the history may spend — and the line saying
- * how many earlier ones were left out.
+ * no more text than `budget` — one half of the history, unless said — and
+ * the line saying how many earlier ones were left out.
  */
-export function newest<T>(all: T[], keep: number, what: string, render: (item: T) => string): { kept: Array<{ item: T; text: string }>; left: string } {
+export function newest<T>(
+  all: T[], keep: number, what: string, render: (item: T) => string, budget = BRIEF_HISTORY_HALF_CHARS,
+): { kept: Array<{ item: T; text: string }>; left: string } {
   const kept: Array<{ item: T; text: string }> = [];
   let spent = 0;
   for (let i = all.length - 1; i >= 0 && kept.length < keep; i--) {
     const item = all[i] as T;
     const text = render(item);
-    if (spent + text.length > BRIEF_HISTORY_HALF_CHARS) break;
+    if (spent + text.length > budget) break;
     spent += text.length;
     kept.push({ item, text });
   }
@@ -303,60 +296,49 @@ export function diffBrief(open: Array<{ number: number; files: ChangedFile[] }>)
   return parts.join("\n\n") + tail;
 }
 
+const briefText = (body: string | null | undefined): string => cut((body ?? "").trim(), BRIEF_BODY_CHARS);
+
 /**
- * The ticket's whole history, for the retro: every comment on it in order,
- * then every review thread on every pull request tied to it — resolved or
- * not, merged or not, because a correction that was argued and settled is
- * exactly what a retro learns from.
- *
- * A comment is Landrace's by the test `entriesFromComments` applies — our
- * login *and* our marker — so a person's reply the board posted as the bot
- * reads as that person's turn, not as a record. Each body is cut here, and
- * the engine bounds the whole on the way in.
+ * One ticket comment as the history shows it. Landrace's by the test
+ * `entriesFromComments` applies — our login *and* our marker — so a person's
+ * reply the board posted as the bot reads as that person's turn, not as a
+ * record. The body is cut here; the engine bounds the whole on the way in.
  */
-export function historyBrief(
-  comments: SnapshotComment[],
-  pulls: Array<{ number: number; state: string }>,
-  read: Map<number, ReviewThread[]>,
-  bot: string,
-): string {
+export function commentLine(c: SnapshotComment, bot: string): string {
+  const marker = wroteIt(c, bot) ? parseMarker(c.body ?? "") : null;
+  return marker
+    ? `Landrace [${marker.marker ?? marker.kind}]: ${briefText(stripMarker(c.body ?? ""))}`
+    : `@${c.user?.login ?? "ghost"}: ${briefText(c.body)}`;
+}
+
+/** One review thread as the history shows it: where, who raised it, whether it is settled, what it said, and its last reply. */
+export function threadLine(thread: ReviewThread, bot: string): string {
   const ours = (login: string | null | undefined): boolean => typeof login === "string" && sameLogin(login, bot);
-  const text = (body: string | null | undefined): string => cut((body ?? "").trim(), BRIEF_BODY_CHARS);
+  const opening = thread.first;
+  const last = thread.last;
+  const by = ours(opening?.author) ? "Landrace's reviewer" : `@${opening?.author ?? "ghost"}`;
+  const reply = thread.comments > 1 && last
+    ? `\nLast reply, from ${ours(last.author) ? "Landrace" : `@${last.author ?? "ghost"}`}: ${briefText(last.body)}`
+    : "";
+  return `${where(thread)}raised by ${by} — ${thread.resolved ? "resolved" : "open"}\n${briefText(opening?.body)}${reply}`;
+}
 
-  const said = newest(comments, BRIEF_COMMENTS, "comments", (c) => {
-    const marker = wroteIt(c, bot) ? parseMarker(c.body ?? "") : null;
-    return marker
-      ? `Landrace [${marker.marker ?? marker.kind}]: ${text(stripMarker(c.body ?? ""))}`
-      : `@${c.user?.login ?? "ghost"}: ${text(c.body)}`;
-  });
-  const conversation = said.kept.length === 0
-    ? "No comments on the ticket."
-    : said.left + said.kept.map((k) => k.text).join("\n\n");
-
-  const ordered = [...pulls].sort((a, b) => a.number - b.number);
-  const raised = newest(
-    ordered.flatMap((pull) => (read.get(pull.number) ?? []).map((thread) => ({ pull: pull.number, thread }))),
-    BRIEF_HISTORY_THREADS,
-    "threads",
-    ({ thread }) => {
-      const opening = thread.first;
-      const last = thread.last;
-      const by = ours(opening?.author) ? "Landrace's reviewer" : `@${opening?.author ?? "ghost"}`;
-      const reply = thread.comments > 1 && last
-        ? `\nLast reply, from ${ours(last.author) ? "Landrace" : `@${last.author ?? "ghost"}`}: ${text(last.body)}`
-        : "";
-      return `${where(thread)}raised by ${by} — ${thread.resolved ? "resolved" : "open"}\n${text(opening?.body)}${reply}`;
-    },
-  );
-  let n = 0;
-  const reviews = ordered.length === 0
-    ? "No pull request was opened on this ticket."
-    : raised.left + ordered.map((pull) => {
-      const listed = raised.kept.filter((r) => r.item.pull === pull.number).map((r) => `${++n}. ${r.text}`);
-      return `### PR #${pull.number} (${pull.state.toLowerCase()})\n\n${listed.length === 0 ? "Nothing listed." : listed.join("\n\n")}`;
-    }).join("\n\n");
-
-  return `## Ticket conversation\n\n${conversation}\n\n## Review threads\n\n${reviews}`;
+/**
+ * The ticket's whole history, for the retro: every entry each role rendered —
+ * the tracker's comments, the forge's review threads, resolved or not, merged
+ * or not, because a correction that was argued and settled is exactly what a
+ * retro learns from — as one timeline, oldest first, the newest kept.
+ */
+export function historyBrief(items: HistoryItem[]): string {
+  if (items.length === 0) return "Nothing has been said on this ticket, and no review thread was raised on its pull requests.";
+  const at = (item: HistoryItem): number => {
+    const ms = Date.parse(item.at);
+    return Number.isNaN(ms) ? 0 : ms;
+  };
+  // Stable, so entries at one moment keep the order their roles gave them.
+  const ordered = [...items].sort((a, b) => at(a) - at(b));
+  const { kept, left } = newest(ordered, BRIEF_HISTORY_ITEMS, "entries", (item) => item.text, 2 * BRIEF_HISTORY_HALF_CHARS);
+  return left + kept.map((k) => k.text).join("\n\n");
 }
 
 /**

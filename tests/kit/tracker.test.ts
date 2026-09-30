@@ -138,4 +138,12 @@ describe("ticketNode", () => {
     expect(ticketNode({ ...fields, editor: BOT }, BOT).origin).toEqual(origin);
     expect(ticketNode({ ...fields, author: "someone" }, BOT).origin).toBeNull();
   });
+
+  // Jira's priority field, and the in-memory tracker's: a tracker that has
+  // one says so, and its P labels are then only labels.
+  it("takes a tracker's own priority over the P labels, and its absence of one too", () => {
+    expect(ticketNode({ ...fields, priority: 3 }, BOT).priority).toBe(3);
+    expect(ticketNode({ ...fields, priority: null }, BOT).priority).toBeNull();
+    expect(ticketNode({ ...fields, priority: undefined }, BOT).priority).toBe(1);
+  });
 });

@@ -13,7 +13,7 @@
 import {
   allClosed, LABELS, labelsOf, parseMarker, parseOrigin, sameLogin, TICKET_KIND,
 } from "#conventions.js";
-import type { Closed, Effect, Graph, Node, Snapshot, SnapshotComment } from "#namespace.js";
+import type { Effect, Graph, Node, Snapshot, SnapshotComment, TicketRecord } from "#namespace.js";
 
 export type { SnapshotComment } from "#namespace.js";
 
@@ -173,31 +173,17 @@ export function createdAtOf(at: string | undefined): { createdAt?: number } {
 /**
  * The one mapping from a ticket, as an integration reads its tracker's, to a
  * ticket node. `bot` is the login we post as: an origin counts only in a body
- * we wrote, because a re-run closes whatever claims it. `editor` is who last
- * edited the body, or undefined if nobody has since it was opened.
+ * we wrote, because a re-run closes whatever claims it. The parent is an
+ * edge, not a field, so it is not asked for here.
  */
-export function ticketNode(
-  ticket: {
-    id: string;
-    title: string;
-    link: string;
-    closed: Closed;
-    labels: string[];
-    assignees: string[];
-    body: string;
-    author: string | undefined;
-    editor: string | undefined;
-    createdAt: string | undefined;
-  },
-  bot: string,
-): Node {
+export function ticketNode(ticket: Omit<TicketRecord, "parent">, bot: string): Node {
   return {
     id: ticket.id,
     kind: TICKET_KIND,
     title: ticket.title,
     link: ticket.link,
     closed: ticket.closed,
-    priority: priorityFromLabels(ticket.labels).priority,
+    priority: ticket.priority !== undefined ? ticket.priority : priorityFromLabels(ticket.labels).priority,
     // Nobody but us may have touched the body since: a person keeps the
     // bot's authorship when they edit it, and could otherwise rewrite the
     // marker to claim another stage or round.
