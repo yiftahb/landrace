@@ -32,7 +32,7 @@ integrations/     the integrations landrace ships — the coding agents on the k
 
 ### Ambiguity halts. Never resolve it by ordering
 
-Two stages whose identity predicates both match, two triggers that both fire, two post hooks claiming one effect type — all stop the ticket and say so. An engine that quietly picks the first one is worse than one that admits it cannot tell. There is no "first match wins" anywhere in this codebase.
+Two stages whose identity predicates both match, two triggers that both fire, two post hooks claiming one effect type — all stop the ticket and say so. An engine that quietly picks the first one is worse than one that admits it cannot tell. There is no "first match wins" anywhere in this codebase, and no "first seen wins" either: `list` sees every ticket, `read` only one ticket's neighbourhood, so a clash judged against what a read happens to know halts on one ticket and silently picks on the other. Every read that can meet the clash halts on it.
 
 ### State is derived, never stored
 
