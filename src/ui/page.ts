@@ -36,6 +36,10 @@ const RUNNING_DOT =
 const BUTTON =
   "rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800";
 
+// The composer's one primary action: filled, so Reply reads as the thing to do.
+const PRIMARY_BUTTON =
+  "rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-400";
+
 const ICON_BUTTON =
   "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800";
 
@@ -64,7 +68,7 @@ const PANEL = `
 <div id="panel-composer" hidden class="border-t border-neutral-100 px-4 py-3 dark:border-neutral-800">
 <textarea id="panel-message" rows="3" aria-label="Message" placeholder="Write to the step…" class="block w-full resize-y rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500"></textarea>
 <div class="mt-2 flex flex-wrap items-center gap-2">
-<button id="panel-reply" type="button" class="${BUTTON}">Reply</button>
+<button id="panel-reply" type="button" title="Reply (Ctrl+Enter or ⌘+Enter)" aria-keyshortcuts="Control+Enter Meta+Enter" class="${PRIMARY_BUTTON}">Reply</button>
 <button id="panel-ask" type="button" class="${BUTTON}">Ask the step</button>
 <button id="panel-resolve" type="button" class="${BUTTON}">Resolve</button>
 </div>
@@ -269,6 +273,40 @@ let openMenuKey = null;
 const writeNotes = new Map();
 const writing = new Set();
 
+// Tickets a write just went through for, by id: the lane the server had each
+// in, when, and the ticks armed since. The server moves a ticket only once a
+// tick lists the tracker again — up to a whole interval after the click, and
+// a Reply wakes no tick at all — so until then the page shows it in Waiting.
+// ponytail: top-level rows only; a child's lane is its root's, and stays put.
+const moves = new Map();
+
+function moved(id) {
+  const row = lastView && lastView.rows.find((r) => r.id === id);
+  // No tick scheduled, nothing will move it: Waiting would be a lie.
+  if (row && lastView.nextTickAt !== null) moves.set(id, { lane: row.lane, next: lastView.nextTickAt, ticks: 0, at: Date.now() });
+}
+
+// A fresh view with each moving ticket in Waiting, until the server moves it
+// itself or two ticks have been armed since — one came and went and left it
+// where it was, so the server's word stands again.
+function withMoves(view, moves) {
+  for (const [id, m] of moves) {
+    if (view.nextTickAt !== m.next) { m.ticks += 1; m.next = view.nextTickAt; }
+    const row = view.rows.find((r) => r.id === id);
+    if (!row || row.lane !== m.lane || m.ticks >= 2 || view.nextTickAt === null) moves.delete(id);
+  }
+  if (moves.size === 0) return view;
+  return {
+    ...view,
+    rows: view.rows.map((r) => {
+      const m = moves.get(r.id);
+      // Nothing left to click: the server has taken one write, and would
+      // judge a second against the state the first is leaving.
+      return m ? { ...r, lane: "waiting", badge: "waiting", note: "Sent — moves on the next tick", since: m.at, retry: null, clear: null, goto: [] } : r;
+    }),
+  };
+}
+
 function menuKeyOf(id) { return id + ":menu"; }
 function triggerKeyOf(id) { return id + ":trigger"; }
 // Escaped: a node id is whatever the source called it, and a quote in one
@@ -412,6 +450,7 @@ function send(w) {
     .then((problem) => {
       writing.delete(w.key);
       if (problem === null) {
+        moved(w.id);
         closeMenu({ returnFocus: true });
         schedulePoll(0);
         return;
@@ -427,7 +466,7 @@ function writesOf(row) {
   const items = [];
   if (row.retry) {
     items.push(writeItem({
-      key: row.id + ":retry", label: "Retry", busy: "Retrying…", path: row.retry, action: "retry",
+      id: row.id, key: row.id + ":retry", label: "Retry", busy: "Retrying…", path: row.retry, action: "retry",
       ask: "Retry #" + row.id + "? This sends it back to the step that failed and re-runs a paid step.",
     }));
   }
@@ -436,7 +475,7 @@ function writesOf(row) {
   // decides; this is only its offer.
   if (row.clear) {
     items.push(writeItem({
-      key: row.id + ":clear", label: "Clear & retry", busy: "Clearing…", path: row.clear, action: "clear",
+      id: row.id, key: row.id + ":clear", label: "Clear & retry", busy: "Clearing…", path: row.clear, action: "clear",
       ask: "Retry #" + row.id + " without the security check? Its next round runs once unscreened — only if you have " +
         "read what was refused and trust it. Anything written on the ticket after this voids it.",
     }));
@@ -448,7 +487,7 @@ function writesOf(row) {
     items.push(caption);
     for (const g of targets) {
       items.push(writeItem({
-        key: row.id + ":goto:" + g.stage, label: g.stage, busy: "Sending…", path: g.path, action: "goto",
+        id: row.id, key: row.id + ":goto:" + g.stage, label: g.stage, busy: "Sending…", path: g.path, action: "goto",
         ask: "Send #" + row.id + " back to " + g.stage + "? This re-runs a paid step.",
       }));
     }
@@ -1121,7 +1160,7 @@ async function pollOnce() {
     // Renders unconditionally, menu open or not: render() itself restores
     // the open menu and the focused control by key (see its own comment),
     // so a poll landing mid-read costs nothing — no held view, no freeze.
-    render(await res.json());
+    render(withMoves(await res.json(), moves));
     // After the render, so a click on a notification opens a panel over the
     // board it was raised from — which render() just kept as lastView.
     const now = needingYou(lastView.rows, new Map(), neededYou);
@@ -1640,6 +1679,7 @@ function panelWrite(kind) {
     .then(({ ok, body }) => {
       panelBusy = false;
       asking = null;
+      if (ok && kind !== "ask") moved(id);
       // The answer belongs to its ticket, not to whether the panel is open:
       // closed mid-Ask, it is there when the ticket is reopened, rather than
       // "Asking the step…" for good. Only another ticket's panel is left alone.
@@ -1864,6 +1904,13 @@ wideButton.addEventListener("click", () => {
   showPanel(panelId);
 });
 replyButton.addEventListener("click", () => panelWrite("reply"));
+// Ctrl/⌘+Enter replies, as in any chat; a plain or Shift+Enter is a new line.
+function onMessageKey(e) {
+  if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  panelWrite("reply");
+}
+messageBox.addEventListener("keydown", onMessageKey);
 askButton.addEventListener("click", () => panelWrite("ask"));
 resolveButton.addEventListener("click", () => panelWrite("resolve"));
 window.addEventListener("hashchange", () => showPanel(ticketOfHash(location.hash)));

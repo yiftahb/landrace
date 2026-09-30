@@ -671,9 +671,10 @@ describe("a stopped ticket's Retry", () => {
 
   /** The menu for a row, with the world a click reaches stood in for and written down. */
   const menuFor = (r: ReturnType<typeof row>, world: { confirm?: boolean; response?: { ok: boolean; text: string } | "down" } = {}) => {
-    const seen = { confirms: [] as string[], posts: [] as Array<[string, unknown]>, closed: [] as unknown[], polls: [] as number[], renders: 0 };
+    const seen = { confirms: [] as string[], posts: [] as Array<[string, unknown]>, closed: [] as unknown[], polls: [] as number[], renders: 0, moved: [] as string[] };
     const context = {
       ROW: r, document: doc, navigator: {}, seen, lastView: {},
+      moved: (id: string) => { seen.moved.push(id); },
       confirm: (text: string) => { seen.confirms.push(text); return world.confirm ?? true; },
       fetch: (url: string, init: unknown) => {
         seen.posts.push([url, init]);
@@ -753,6 +754,18 @@ describe("a stopped ticket's Retry", () => {
     expect(seen.posts).toEqual([["/tickets/19/retry", { method: "POST", headers: { "x-landrace-action": "retry" } }]]);
     expect(seen.closed).toEqual([{ returnFocus: true }]);
     expect(seen.polls).toEqual([0]);
+  });
+
+  // The server moves it only when a tick lists the tracker again; until then the page shows it moving.
+  it("marks the ticket moving once the server took the write, and not when it refused", async () => {
+    const taken = menuFor(row("/tickets/19/retry", BACK));
+    gotoOf(taken.menu, "build")?.listeners.get("click")?.();
+    await settle();
+    expect(taken.seen.moved).toEqual(["19"]);
+    const refused = menuFor(row("/tickets/19/retry"), { response: { ok: false, text: "nope" } });
+    retryOf(refused.menu)?.listeners.get("click")?.();
+    await settle();
+    expect(refused.seen.moved).toEqual([]);
   });
 
   it("keeps the menu open and says what the server said when it refuses", async () => {
@@ -1155,7 +1168,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the ticket panel's and pairing's, and the bell's — no more, no less", () => {
+  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the ticket panel's and pairing's, the message box's shortcut, and the bell's — no more, no less", () => {
     // Pins the count deliberately: the tick button, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
     // button (each wired once, outside anything a render rebuilds), the
@@ -1173,9 +1186,9 @@ describe("the page", () => {
     // row menu's Pairing…, the panel header's ⋯ and its Pairing… item, and
     // one for every button of its Pairing section (defined once, in
     // pairingSectionOf). And the bell's: its own click, and a notification's
-    // (defined once, in notifyOf).
+    // (defined once, in notifyOf). And the message box's Ctrl/⌘+Enter.
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(27);
+    expect(listeners).toHaveLength(28);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -1231,7 +1244,7 @@ describe("the page", () => {
     expect(APP_JS).toContain("let openMenuKey = null;");
     expect(APP_JS).not.toContain("pendingView");
     // No stashed view: pollOnce() renders unconditionally now.
-    expect(APP_JS).toMatch(/render\(await res\.json\(\)\)/);
+    expect(APP_JS).toContain("render(withMoves(await res.json(), moves));");
   });
 
   it("keys every trigger and its menu by node id (data-key), so the live element is always one lookup away", () => {
@@ -1627,7 +1640,7 @@ describe("the ticket panel's writes", () => {
     /** The person closes the panel while the post is in flight. */
     closes?: boolean;
   } = {}) => {
-    const seen = { confirms: [] as string[], posts: [] as Array<[string, unknown]>, notes: [] as string[], conversations: 0, polls: [] as number[] };
+    const seen = { confirms: [] as string[], posts: [] as Array<[string, unknown]>, notes: [] as string[], conversations: 0, polls: [] as number[], moved: [] as string[] };
     const box = new Box();
     box.value = world.text ?? "EU only";
     const context: Record<string, unknown> = {
@@ -1644,6 +1657,7 @@ describe("the ticket panel's writes", () => {
       syncComposer: () => {}, renderPanel: () => {}, pollPanel: () => {},
       loadConversation: () => { seen.conversations++; },
       schedulePoll: (ms: number) => { seen.polls.push(ms); },
+      moved: (id: string) => { seen.moved.push(id); },
     };
     runInNewContext(`${fnSource("parseJson")}${fnSource("panelWrite")} panelWrite(KIND)`, context);
     await new Promise((r) => setTimeout(r, 0));
@@ -1711,6 +1725,107 @@ describe("the ticket panel's writes", () => {
   it("says landrace is not responding when the post never lands", async () => {
     const { seen } = await write("reply", { response: "down" });
     expect(seen.notes.at(-1)).toMatch(/not responding/);
+  });
+
+  // A Reply or a Resolve hands the ticket on; an Ask is a turn beside it and moves nothing.
+  it("marks the ticket moving after a Reply or a Resolve the server took, even from another ticket's panel", async () => {
+    expect((await write("reply")).seen.moved).toEqual(["12"]);
+    expect((await write("resolve", { text: "", closes: true })).seen.moved).toEqual(["12"]);
+    expect((await write("ask")).seen.moved).toEqual([]);
+    expect((await write("reply", { response: { ok: false, text: "nope" } })).seen.moved).toEqual([]);
+  });
+});
+
+/*
+ * The lag between a click and the board moving: the server moves a ticket
+ * only when a tick lists the tracker again, up to a whole interval later, and
+ * a Reply wakes no tick at all. So the page shows it in Waiting until then.
+ */
+describe("a ticket a write just went through for", () => {
+  type Move = { lane: string; next: number | null; ticks: number; at: number };
+  const move = (lane: string): Move => ({ lane, next: 1000, ticks: 0, at: 5 });
+  const view = (lane: string, nextTickAt: number | null = 1000) => ({
+    nextTickAt,
+    rows: [
+      { id: "19", lane, badge: lane, note: "blocked: needs a human", since: 1, retry: "/tickets/19/retry", clear: "/tickets/19/clear", goto: [{ stage: "spec", path: "/tickets/19/goto/spec" }], children: [] },
+      { id: "20", lane: "needs-you", badge: "needs-you", note: "waiting on you", since: 1, retry: null, clear: null, goto: [], children: [] },
+    ],
+  });
+  type Drawn = ReturnType<typeof view>;
+  const drawn = (v: Drawn, moves: Map<string, Move>): Drawn =>
+    runInNewContext(`${fnSource("withMoves")} withMoves(VIEW, MOVES)`, { VIEW: v, MOVES: moves }) as Drawn;
+
+  it("shows it in Waiting, with nothing left to click, while the server still has it where it was", () => {
+    const moves = new Map([["19", move("needs-you")]]);
+    const [sent, other] = drawn(view("needs-you"), moves).rows;
+    expect(sent).toMatchObject({ id: "19", lane: "waiting", badge: "waiting", since: 5, retry: null, clear: null });
+    expect(sent?.goto).toHaveLength(0);
+    expect(sent?.note).toMatch(/next tick/);
+    expect(other).toMatchObject({ id: "20", lane: "needs-you", badge: "needs-you" });
+  });
+
+  it("lets go once the server moves it, and draws the server's own row", () => {
+    const moves = new Map([["19", move("needs-you")]]);
+    expect(drawn(view("running"), moves).rows[0]).toMatchObject({ lane: "running", retry: "/tickets/19/retry" });
+    expect(moves.size).toBe(0);
+  });
+
+  // A tick came and went and nothing moved it: the server's word stands again.
+  it("lets go once two ticks have been armed since, moved or not", () => {
+    const moves = new Map([["19", move("needs-you")]]);
+    expect(drawn(view("needs-you", 2000), moves).rows[0]?.lane).toBe("waiting");
+    expect(drawn(view("needs-you", 3000), moves).rows[0]?.lane).toBe("needs-you");
+    expect(moves.size).toBe(0);
+  });
+
+  it("lets go of a ticket gone from the board, and of any once no tick is scheduled", () => {
+    const gone = new Map([["7", move("needs-you")]]);
+    drawn(view("needs-you"), gone);
+    expect(gone.size).toBe(0);
+    const stopped = new Map([["19", move("needs-you")]]);
+    expect(drawn(view("needs-you", null), stopped).rows[0]?.lane).toBe("needs-you");
+    expect(stopped.size).toBe(0);
+  });
+
+  it("remembers where the server had it and when, and only on a board a tick will move", () => {
+    const remember = (v: Drawn) => {
+      const moves = new Map<string, Move>();
+      runInNewContext(`${fnSource("moved")} moved("19"); moved("7");`, { lastView: v, moves, Date: { now: () => 5 } });
+      return [...moves];
+    };
+    expect(remember(view("needs-you"))).toEqual([["19", { lane: "needs-you", next: 1000, ticks: 0, at: 5 }]]);
+    expect(remember(view("needs-you", null))).toEqual([]);
+  });
+});
+
+describe("the composer's Reply", () => {
+  it("is the one filled, blue button, and says its shortcut", () => {
+    const reply = /<button id="panel-reply"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(reply).toMatch(/\bbg-blue-600\b/);
+    expect(reply).toMatch(/\btext-white\b/);
+    expect(reply).not.toMatch(/\bborder\b/);
+    expect(reply).toContain('aria-keyshortcuts="Control+Enter Meta+Enter"');
+    expect(/<button id="panel-ask"[^>]*>/.exec(PAGE_HTML)?.[0]).not.toMatch(/bg-blue-600/);
+  });
+
+  const press = (e: { key: string; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+    const seen = { writes: [] as string[], prevented: 0 };
+    runInNewContext(`${fnSource("onMessageKey")} onMessageKey(EVENT)`, {
+      EVENT: { ctrlKey: false, metaKey: false, shiftKey: false, ...e, preventDefault: () => { seen.prevented++; } },
+      panelWrite: (kind: string) => { seen.writes.push(kind); },
+    });
+    return seen;
+  };
+
+  it("is sent by Ctrl+Enter or ⌘+Enter from the message box", () => {
+    expect(press({ key: "Enter", ctrlKey: true })).toEqual({ writes: ["reply"], prevented: 1 });
+    expect(press({ key: "Enter", metaKey: true })).toEqual({ writes: ["reply"], prevented: 1 });
+    expect(APP_JS).toContain('messageBox.addEventListener("keydown", onMessageKey);');
+  });
+
+  it("leaves a plain or Shift+Enter a new line", () => {
+    expect(press({ key: "Enter" })).toEqual({ writes: [], prevented: 0 });
+    expect(press({ key: "Enter", shiftKey: true })).toEqual({ writes: [], prevented: 0 });
   });
 });
 
