@@ -128,7 +128,7 @@ async function enter(deps: PairDeps, ticket: string, snapshot: Snapshot, from: S
   await apply(deps, ticket, snapshot, reconcile(snapshot, planned, deps.dispatcher.satisfied));
 }
 
-async function screened(deps: PairDeps, prompt: string, what: string): Promise<void> {
+async function screened(deps: PairDeps, prompt: Parameters<typeof screenPrompt>[0], what: string): Promise<void> {
   if (!deps.screen) return;
   const verdict = await screenPrompt(prompt, {
     executor: deps.screen.executor, model: deps.screen.model,
@@ -210,7 +210,7 @@ export function startPair(deps: PairDeps, ticket: string, stageId: string): Prom
 
     const briefing = await buildBriefing([...(deps.artifacts ?? []), deps.source], { ...deps.ctx, ticket, snapshot }, step.prompt);
     const prompt = PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing);
-    await screened(deps, prompt, "this pairing");
+    await screened(deps, (quote) => PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing, quote), "this pairing");
 
     if (open === null) {
       await apply(deps, ticket, snapshot, [{

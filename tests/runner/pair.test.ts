@@ -3,6 +3,7 @@ import { lstat, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { markOf } from "#agent/screen.js";
 import { worktreeState } from "#agent/worktree.js";
 import { parseMarker, renderMarker } from "#conventions.js";
 import { decide } from "#core/index.js";
@@ -309,6 +310,18 @@ describe("starting a pairing", () => {
     await expect(startPair(deps, "29", "spec")).rejects.toThrow(/screening blocked/);
     expect(records(tracker, "pair")).toHaveLength(0);
     expect(await worktreesOf(repo)).toHaveLength(0);
+  });
+
+  // #44: the preamble and the template are this engine's words; only the ticket's are fenced.
+  it("screens the seeded prompt with only what the snapshot filled in fenced", async () => {
+    const seen: string[] = [];
+    const spy: Executor = { id: "screen", run: async (prompt) => { seen.push(prompt); return { text: verdictFor(prompt, "ok"), sessionId: null }; } };
+    const { deps } = owed(agent().executor, { screen: { executor: spy, model: "haiku" } });
+    await startPair(deps, "29", "spec");
+    const mark = markOf(seen[0] ?? "");
+    expect(seen[0]).toContain(`You are pairing with a person`);
+    expect(seen[0]).toContain(`Write the spec for [untrusted ${mark}]Pairing[/untrusted ${mark}].`);
+    expect(seen[0]).not.toContain(`[untrusted ${mark}]You are pairing`);
   });
 });
 
