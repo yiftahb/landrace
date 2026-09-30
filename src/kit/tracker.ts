@@ -176,6 +176,12 @@ export function createdAtOf(at: string | undefined): { createdAt?: number } {
   return Number.isNaN(ms) ? {} : { createdAt: ms };
 }
 
+/** The board's lane order, from when the tracker says the ticket last changed: absent, not NaN, likewise. */
+export function updatedAtOf(at: string | undefined): { updatedAt?: number } {
+  const ms = at === undefined ? NaN : Date.parse(at);
+  return Number.isNaN(ms) ? {} : { updatedAt: ms };
+}
+
 /**
  * The one mapping from a ticket, as an integration reads its tracker's, to a
  * ticket node. `bot` is the login we post as: an origin counts only in a body
@@ -202,6 +208,7 @@ export function ticketNode(ticket: Omit<TicketRecord, "parent">, bot: string): N
     // instance instead of none.
     state: { labels: ticket.labels, assignees: ticket.assignees },
     ...createdAtOf(ticket.createdAt),
+    ...updatedAtOf(ticket.updatedAt),
   };
 }
 

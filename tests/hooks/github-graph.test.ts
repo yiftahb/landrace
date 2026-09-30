@@ -133,6 +133,21 @@ describe("the GitHub source", () => {
     }
   });
 
+  // The board orders its lanes by it, and GitHub's list already answers it: no call of its own.
+  it("stamps an issue and a pull request with when GitHub says each last changed, in every query that reads one", async () => {
+    const gh = createFakeTracker([{ number: 7, updatedAt: "2026-09-29T08:00:00Z" }]);
+    gh.openPull({ number: 20, head: "landrace/7", headSha: "a", merged: false, threads: [], updatedAt: "2026-09-29T09:15:00Z" });
+    for (const g of [await sourceOf(gh).read("7", ctx(gh)), await sourceOf(gh).list(ctx(gh))]) {
+      expect(g.nodes.find((n) => n.id === "7")?.updatedAt).toBe(Date.parse("2026-09-29T08:00:00Z"));
+      expect(g.nodes.find((n) => n.id === "pr-20")?.updatedAt).toBe(Date.parse("2026-09-29T09:15:00Z"));
+    }
+    for (const name of ["LandraceTicket", "LandraceIssues", "LandracePulls"]) {
+      const sent = operations(gh, name);
+      expect(sent.length).toBeGreaterThan(0);
+      for (const q of sent) expect(q.query).toContain("updatedAt");
+    }
+  });
+
   describe("recently closed tickets, for the board's Done lane", () => {
     const daysAgo = (d: number): string => new Date(Date.now() - d * 86_400_000).toISOString();
     const closed = (number: number, days: number, labels: string[] = ["lr:stage:build"]): Partial<FakeIssue> =>
@@ -197,6 +212,7 @@ describe("the GitHub source", () => {
     const gh = createFakeTracker([{ number: 7 }]);
     const g = await sourceOf(gh).read("7", ctx(gh));
     expect(g.nodes.find((n) => n.id === "7")).not.toHaveProperty("createdAt");
+    expect(g.nodes.find((n) => n.id === "7")).not.toHaveProperty("updatedAt");
   });
 
   /*

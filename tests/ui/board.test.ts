@@ -192,8 +192,9 @@ describe("boardView: a ticket's panel", () => {
     const rows = view(graph([
       ticket("7"), ticket("8"), ticket("9", {}, ["go", "lr:stage:blocked", "lr:blocked"]), ticket("10", { closed: "done" }),
     ]), { running }).rows;
-    expect(rows.map((r) => r.panel?.reply)).toEqual(["/tickets/7/reply", "/tickets/8/reply", "/tickets/9/reply", "/tickets/10/reply"]);
-    expect(rows[0]?.panel).toEqual(PATHS);
+    // Drawn lane by lane: needs you, running, waiting, done.
+    expect(rows.map((r) => r.panel?.reply)).toEqual(["/tickets/9/reply", "/tickets/8/reply", "/tickets/7/reply", "/tickets/10/reply"]);
+    expect(rows.find((r) => r.id === "7")?.panel).toEqual(PATHS);
   });
 
   it("gives an artifact none, and a ticket whose id is not one none", () => {
@@ -221,11 +222,18 @@ describe("conversationOf", () => {
   });
 });
 
-describe("boardView: when a row's node was created", () => {
+describe("boardView: when a row's node was created, and last changed", () => {
   it("carries the source's creation time onto the row, and null where the source gave none", () => {
     const rows = flatten(view(graph([ticket("1"), pr("pr-2", { createdAt: 42 })], [edge("pr-2", "1", "implements")])).rows);
     expect(rows.find((r) => r.id === "pr-2")?.createdAt).toBe(42);
     expect(rows.find((r) => r.id === "1")?.createdAt).toBeNull();
+  });
+
+  it("carries the source's last update time onto the row, and null where the source gave none", () => {
+    const rows = flatten(view(graph([ticket("1", { updatedAt: 7 }), pr("pr-2", { updatedAt: 43 }), ticket("3")], [
+      edge("pr-2", "1", "implements"),
+    ])).rows);
+    expect(rows.map((r) => [r.id, r.updatedAt])).toEqual([["1", 7], ["pr-2", 43], ["3", null]]);
   });
 });
 
@@ -269,13 +277,13 @@ describe("boardView: the tree", () => {
     expect(flatten(view(graph([ticket("1"), ticket("1")])).rows).map((r) => r.id)).toEqual(["1"]);
   });
 
-  it("orders siblings by priority, unprioritised last, then by id as a number would", () => {
+  it("orders undated siblings in a waiting branch by id as a number would, whatever their priority", () => {
     const g = graph([ticket("10"), ticket("9"), ticket("3", { priority: 2 }), ticket("4", { priority: 0 })]);
-    expect(view(g).rows.map((r) => r.id)).toEqual(["4", "3", "9", "10"]);
+    expect(view(g).rows.map((r) => r.id)).toEqual(["3", "4", "9", "10"]);
     const kids = graph([ticket("1"), ticket("12"), ticket("11", { priority: 1 }), ticket("2")], [
       edge("12", "1"), edge("11", "1"), edge("2", "1"),
     ]);
-    expect(view(kids).rows[0]?.children.map((r) => r.id)).toEqual(["11", "2", "12"]);
+    expect(view(kids).rows[0]?.children.map((r) => r.id)).toEqual(["2", "11", "12"]);
   });
 
   it("keeps a closed or dropped node, marked so the page can grey it", () => {
@@ -370,6 +378,85 @@ describe("boardView: lanes", () => {
   });
 });
 
+/*
+ * Needs you is a queue: the most urgent first, and within a priority whoever
+ * has waited longest. Every other lane is a feed: whatever moved last on top,
+ * priority ignored. A branch reads like its lane at every depth, and a row
+ * with no update time has no place in time, so it goes last.
+ */
+describe("boardView: the order within a lane", () => {
+  const blocked = ["go", "lr:blocked"];
+  const ids = (rows: Rows): string[] => rows.map((r) => r.id);
+
+  it("puts Needs you in priority order, P0 first and unprioritised last, whatever their update times", () => {
+    const g = graph([
+      ticket("1", { updatedAt: 1 }, blocked), ticket("2", { priority: 1, updatedAt: 5 }, blocked),
+      ticket("3", { priority: 0, updatedAt: 9 }, blocked),
+    ]);
+    expect(ids(view(g).rows)).toEqual(["3", "2", "1"]);
+  });
+
+  it("puts the least recently updated first within a priority in Needs you, and the undated below both", () => {
+    const g = graph([
+      ticket("4", { priority: 1, updatedAt: 30 }, blocked), ticket("5", { priority: 1 }, blocked),
+      ticket("6", { priority: 1, updatedAt: 10 }, blocked), ticket("7", { updatedAt: 2 }, blocked), ticket("8", {}, blocked),
+    ]);
+    expect(ids(view(g).rows)).toEqual(["6", "4", "5", "7", "8"]);
+  });
+
+  const held = (id: string): Held => ({ ticket: id, holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" });
+  const run: Running = { stage: "spec", round: 1, model: null, effort: null, since: 5 };
+  it.each([
+    ["Agent running", "running", [], {}, { running: new Map([["1", run], ["2", run], ["3", run]]) }],
+    ["Held elsewhere", "elsewhere", [], {}, { elsewhere: new Map(["1", "2", "3"].map((id): [string, Held] => [id, held(id)])) }],
+    ["Waiting", "waiting", [], {}, {}],
+    ["Not admitted", "not-admitted", null, {}, {}],
+    ["Done", "discharged", [], { closed: "done" }, {}],
+  ] as const)("puts %s newest first, priority ignored, the undated last", (_, lane, labels, over, opts) => {
+    const at = (id: string, fields: Partial<Node>) => ticket(id, { ...over, ...fields }, labels === null ? [] : ["go", ...labels]);
+    const g = graph([at("1", { priority: 0, updatedAt: 10 }), at("2", { updatedAt: 30 }), at("3", { priority: 1 })]);
+    const rows = view(g, opts).rows;
+    expect(rows.map((r) => [r.id, r.lane])).toEqual([["2", lane], ["1", lane], ["3", lane]]);
+  });
+
+  it("breaks a tie on equal keys by id as a number would, in every lane", () => {
+    expect(ids(view(graph([ticket("10", { updatedAt: 5 }), ticket("9", { updatedAt: 5 })])).rows)).toEqual(["9", "10"]);
+    expect(ids(view(graph([ticket("10"), ticket("9")])).rows)).toEqual(["9", "10"]);
+    const needs = graph([ticket("10", { priority: 2, updatedAt: 5 }, blocked), ticket("9", { priority: 2, updatedAt: 5 }, blocked)]);
+    expect(ids(view(needs).rows)).toEqual(["9", "10"]);
+  });
+
+  it("orders a Waiting branch's children newest first at every depth, priority ignored", () => {
+    const g = graph([
+      ticket("1", { updatedAt: 100 }), ticket("2", { priority: 0, updatedAt: 10 }), ticket("3", { updatedAt: 30 }),
+      ticket("4", { priority: 1 }), pr("pr-5", { updatedAt: 1 }), ticket("6", { priority: 0, updatedAt: 2 }),
+    ], [edge("2", "1"), edge("3", "1"), edge("4", "1"), edge("pr-5", "3", "implements"), edge("6", "3")]);
+    expect(shape(view(g).rows)).toEqual([["1", [["3", ["6", "pr-5"]], "2", "4"]]]);
+  });
+
+  it("orders a Needs you branch's children by priority, then oldest first, at every depth", () => {
+    const g = graph([
+      ticket("1", {}, blocked), ticket("2", { priority: 1, updatedAt: 10 }), ticket("3", { priority: 0, updatedAt: 50 }),
+      ticket("4", { priority: 1, updatedAt: 5 }), ticket("5", { updatedAt: 1 }),
+      ticket("6", { updatedAt: 9 }), ticket("7", { priority: 3, updatedAt: 99 }),
+    ], [edge("2", "1"), edge("3", "1"), edge("4", "1"), edge("5", "1"), edge("6", "3"), edge("7", "3")]);
+    expect(shape(view(g).rows)).toEqual([["1", [["3", ["7", "6"]], "4", "2", "5"]]]);
+  });
+
+  it("places a root a child lifted into Needs you by the root's own priority and update time, not the child's", () => {
+    const g = graph([
+      ticket("10", { priority: 2, updatedAt: 1 }), ticket("2", { priority: 0, updatedAt: 0 }, blocked),
+      ticket("3", { priority: 1, updatedAt: 100 }, blocked), ticket("4", { priority: 2, updatedAt: 50 }, blocked),
+    ], [edge("2", "10")]);
+    expect(view(g).rows.map((r) => [r.id, r.lane])).toEqual([["3", "needs-you"], ["10", "needs-you"], ["4", "needs-you"]]);
+  });
+
+  it("draws the lanes most urgent first, whatever their rows' update times", () => {
+    const g = graph([ticket("1", { closed: "done", updatedAt: 99 }), ticket("2", { updatedAt: 50 }), ticket("3", { updatedAt: 1 }, blocked)]);
+    expect(view(g).rows.map((r) => [r.id, r.lane])).toEqual([["3", "needs-you"], ["2", "waiting"], ["1", "discharged"]]);
+  });
+});
+
 describe("boardView: rows", () => {
   it("notes a closed ticket as closed or dropped, not as whatever its stale labels last said", () => {
     const g = graph([ticket("2", { closed: "done" }, ["go", "lr:blocked"]), ticket("3", { closed: "dropped" }, ["go", "lr:blocked"])]);
@@ -433,7 +520,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
-      "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "title",
+      "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "title", "updatedAt",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });

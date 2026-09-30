@@ -150,6 +150,8 @@ export interface IssueNode {
   editor: { login: string } | null;
   /** ISO 8601. Optional because a reading without it draws no age, never NaN. */
   createdAt?: string;
+  /** ISO 8601, when it last changed: the board's lane order. Optional likewise; null where GitHub answers none. */
+  updatedAt?: string | null;
 }
 
 /**
@@ -158,7 +160,7 @@ export interface IssueNode {
  * too: a parent counting its children by stage reads their labels.
  */
 export const ISSUE_FIELDS = `
-  number title url state stateReason createdAt
+  number title url state stateReason createdAt updatedAt
   labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
   body author { login } editor { login }`;
@@ -173,7 +175,7 @@ export const ISSUE_FIELDS = `
  * reading is the one kept.
  */
 const SUB_ISSUE_FIELDS = `
-  number title url state stateReason createdAt
+  number title url state stateReason createdAt updatedAt
   labels(first: 20) { nodes { name } }
   assignees(first: 5) { nodes { login } }
   body author { login } editor { login }`;
@@ -1063,7 +1065,7 @@ const RELATION_DECLS: RelationDecl[] = [
  * a fix round moves. No thread in it — see THREADS_QUERY — and no body.
  */
 const PULL_FIELDS = `
-  number title url state merged headRefName headRefOid isCrossRepository createdAt
+  number title url state merged headRefName headRefOid isCrossRepository createdAt updatedAt
   closingIssuesReferences(first: 20) { nodes { number } }`;
 
 /**
@@ -1090,7 +1092,7 @@ query LandraceClosed($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issues(states: CLOSED, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { ${ISSUE_FIELDS} closedAt updatedAt parent { number } }
+      nodes { ${ISSUE_FIELDS} closedAt parent { number } }
     }
   }
 }`;
@@ -1124,7 +1126,7 @@ query LandraceClosedPulls($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: [MERGED, CLOSED], first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { ${PULL_FIELDS} updatedAt }
+      nodes { ${PULL_FIELDS} }
     }
   }
 }`;
@@ -1220,6 +1222,8 @@ interface PullNode {
   closingIssuesReferences: { nodes: Array<{ number: number }> };
   /** ISO 8601. Optional for the same reason as IssueNode's. */
   createdAt?: string;
+  /** As IssueNode's. */
+  updatedAt?: string | null;
 }
 
 interface ListedIssue extends IssueNode {
@@ -1322,6 +1326,7 @@ export function nodeOfIssue(issue: IssueNode, bot: string): Node {
     author: issue.author?.login,
     editor: issue.editor?.login,
     createdAt: issue.createdAt,
+    updatedAt: issue.updatedAt ?? undefined,
   }, bot);
 }
 
@@ -1336,6 +1341,7 @@ function pullNodeOf(pull: PullNode, threads?: ThreadCounts): Node {
     headSha: pull.headRefOid,
     branch: pull.isCrossRepository ? undefined : pull.headRefName,
     createdAt: pull.createdAt,
+    updatedAt: pull.updatedAt ?? undefined,
   }, threads);
 }
 
