@@ -296,9 +296,20 @@ describe("buildWorkspaceRuntime", () => {
     expect(JSON.stringify(page)).not.toContain(TOKEN);
   });
 
+  // The page's panel reads the workspace's one log, the one every workflow's steps write to.
+  it("hands the page the one activity log every workflow writes to", async () => {
+    const { dir } = await fixture();
+    await withFast(dir);
+    const rt = await buildWorkspaceRuntime(dir, {});
+    expect(rt.activity).toBeDefined();
+    expect(rt.workflows.map((w) => w.deps.activity === rt.activity)).toEqual([true, true]);
+  });
+
   it("keeps no activity for a runtime built only to read", async () => {
     const { dir } = await fixture();
-    expect((await buildMain(dir, { readOnly: true })).deps.activity).toBeUndefined();
+    const rt = await buildMain(dir, { readOnly: true });
+    expect(rt.deps.activity).toBeUndefined();
+    expect(rt.activity).toBeUndefined();
   });
 
   /**

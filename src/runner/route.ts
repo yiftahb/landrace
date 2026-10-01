@@ -1,6 +1,6 @@
 import { compareIds, ITEM_KIND } from "#conventions.js";
-import type { Claims, EditRoute, Graph, Ownership, PreHook, ReadRoute, WorkspaceListing } from "#namespace.js";
-import { andList, claimedBy, reportedBy, turnedAway } from "#runner/tick.js";
+import type { Claims, EditRoute, Graph, ListedWorkflow, Ownership, PreHook, ReadRoute, WorkspaceListing } from "#namespace.js";
+import { andList, claimedBy, claimsOf, listingFailures, reportedBy, turnedAway } from "#runner/tick.js";
 
 /*
  * Which workflow an action on an item by id goes through, judged from a
@@ -126,3 +126,42 @@ export function sharedPre(each: ReadonlyArray<readonly PreHook[]>): PreHook[] | 
 export const noSharedPre = (item: string, workflows: readonly string[]): string =>
   `#${item} cannot be read here: the workflows reading its source, ${andList([...workflows].sort(compareIds))}, ` +
   "load no pre hook in common, and a read with none would leave out what each of them reads";
+
+/**
+ * What the page is shown of each listing. A source that could not list is
+ * shown as it last listed: one tracker blip must not empty the board, and
+ * `board.list` forgets every id it is not handed. Claims are judged again
+ * over what is shown, for the page's reads to route by — never its writes
+ * (see `writeOwnerOf`), and never a tick's work, which is only ever judged
+ * from the fresh listing. Null while a source that failed has never listed
+ * at all: the page keeps the view it has.
+ */
+export function displayOf(workflows: readonly ListedWorkflow[]): (listing: WorkspaceListing) => WorkspaceListing | null {
+  // By source index, which every listing of one runtime shares.
+  const lastGood = new Map<number, Graph>();
+  return (listing) => {
+    for (const [index, graph] of listing.graphs.entries()) if (!listing.failed.has(index)) lastGood.set(index, graph);
+    if (listing.failed.size === 0) return listing;
+    const graphs: Graph[] = [];
+    for (const index of listing.graphs.keys()) {
+      const graph = lastGood.get(index);
+      if (!graph) return null;
+      graphs.push(graph);
+    }
+    return { ...listing, graphs, claims: claimsOf(workflows, listing.sourceOf, graphs) };
+  };
+}
+
+/**
+ * Whose `item` is for a write from the page: the one owner by the last
+ * fresh listing — never by what the page is shown, whose failed source is
+ * its last good listing and may be stale. Refused before the first listing,
+ * and while any source could not list: an item the others list as one
+ * workflow's may be a clash the missing source would report.
+ */
+export function writeOwnerOf(fresh: WorkspaceListing | undefined, item: string): Ownership {
+  if (!fresh) return { refused: `#${item} has not been listed yet; act on it after the first tick` };
+  const failures = listingFailures(fresh);
+  if (failures.length) return { refused: `#${item} is not written to until every source lists again: ${failures.join("; ")}` };
+  return writeRoute(fresh, item) ?? { refused: `#${item} is not an item the last tick listed` };
+}

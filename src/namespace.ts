@@ -1895,6 +1895,12 @@ export interface WorkspaceRuntime {
   /** The one logger every workflow logs through; its `scrub` is the one redaction set. */
   log: RedactingLogger;
   ctx: RuntimeContext;
+  /**
+   * What each step's agent is doing, for the page's item panel: one log for
+   * the workspace, keyed by item, and the one every workflow's deps carry.
+   * Absent for a runtime built only to read, which writes nothing.
+   */
+  activity?: ActivityLog;
   /** Present when telemetry is on. `runStart` shuts it down on the way out, flushing what is queued. */
   telemetry?: { shutdown(): Promise<void> };
 }

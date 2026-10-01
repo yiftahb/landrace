@@ -12,14 +12,20 @@ import type {
 
 /**
  * Every listed graph as one, for the one page: each node once by id, each
- * edge once. An id two sources report is a clash nobody works; which of its
- * two nodes is drawn is display only.
+ * edge once. An id one source has open and another closed is drawn from the
+ * open node: claims are for open items, so that is the node its owner was
+ * judged by — the closed one said "closed" over an agent running on it. An
+ * id two sources both have open is a clash nobody works; which of its two
+ * nodes is drawn is display only, and its row says it is a clash.
  */
 function unionOf(graphs: readonly Graph[]): Graph {
   const nodes = new Map<string, Node>();
   const edges = new Map<string, Relationship>();
   for (const graph of graphs) {
-    for (const node of graph.nodes) if (!nodes.has(node.id)) nodes.set(node.id, node);
+    for (const node of graph.nodes) {
+      const drawn = nodes.get(node.id);
+      if (!drawn || (drawn.closed !== null && node.closed === null)) nodes.set(node.id, node);
+    }
     for (const edge of graph.relationships) edges.set(JSON.stringify([edge.from, edge.to, edge.type]), edge);
   }
   return { nodes: [...nodes.values()], relationships: [...edges.values()] };
@@ -330,8 +336,12 @@ const unlisted = (item: string): Ownership => ({ refused: `#${item} has not been
  * The stateful shell around boardView. Holds only what the process already
  * knew — the last listing and which agents are running — so losing it loses
  * nothing: the next tick rebuilds it. Nothing here ever feeds a decision:
- * whose an item is was settled by the claims that listing came with, and a
- * write the page routes by it is judged afresh where it lands.
+ * whose an item is was settled by the claims that listing came with. Only
+ * some of what the page routes by it is judged again where it lands: a
+ * Retry, a Clear or a Go to, and a pairing's start and hand-in, re-read the
+ * item through `gotoOrigin`, which refuses one closed, turned away by the
+ * workflow it was routed to, or unplaceable. A reply, an Ask, a Resolve and
+ * a release go to that workflow on the listing's word alone.
  */
 export function createBoard(opts: {
   workflows: ReadonlyArray<{ id: string; workflow: Workflow }>;

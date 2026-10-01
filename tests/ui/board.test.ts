@@ -803,6 +803,19 @@ describe("the board over several workflows", () => {
     ]);
   });
 
+  /*
+   * An id one tracker has closed and another has open is the open one's: the
+   * claims gave it to the workflow that tracker serves, and a row drawn from
+   * the closed node said "closed" over an agent running on it.
+   */
+  it("draws an item open in one tracker and closed in another from the open one, as its owner places it", () => {
+    const run: Running = { stage: "spec", round: 1, model: null, effort: null, since: 5 };
+    const [row] = several(graph([item("3", { closed: "done" }, ["lr:auto"])]), graph([item("3", {}, ["lr:auto", "lr:stage:spec"])]), {
+      running: new Map([["3", run]]),
+    }).rows;
+    expect(row).toMatchObject({ id: "3", closed: null, workflow: "gl", badge: "running", note: "agent running" });
+  });
+
   it("files an id two trackers both report under Needs you, naming the workflows reading each, with nothing to act on", () => {
     const [row] = several(graph([item("5", {}, screened(["lr:auto"]))]), graph([item("5", {}, screened(["lr:auto"]))])).rows;
     expect(row).toMatchObject({

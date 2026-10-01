@@ -17,7 +17,6 @@ import type {
   ExecutorContext,
   GotoDeps,
   GotoPath,
-  Graph,
   LandraceEvent,
   LoadedWorkflow,
   Ownership,
@@ -56,8 +55,8 @@ import { runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { oneLine } from "#runner/status.js";
-import { noSharedPre, sharedPre } from "#runner/route.js";
-import { claimsOf, listingFailures, listWorkspace, sourcesOf, tickWorkspace } from "#runner/tick.js";
+import { displayOf, noSharedPre, sharedPre, writeOwnerOf } from "#runner/route.js";
+import { listingFailures, listWorkspace, sourcesOf, tickWorkspace } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
@@ -589,6 +588,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     running: new Map(),
     log,
     ctx,
+    ...(activity ? { activity } : {}),
     ...(telemetry ? { telemetry } : {}),
   };
 }
@@ -726,30 +726,6 @@ export function createSchedule(opts: {
       arm();
       return "started";
     },
-  };
-}
-
-/**
- * What the page is shown of each listing. A source that could not list is
- * shown as it last listed: one tracker blip must not empty the board, and
- * `board.list` forgets every id it is not handed. Claims are judged again
- * over what is shown, for the page to route by — a tick's work is only ever
- * judged from the fresh listing. Null while a source that failed has never
- * listed at all: the page keeps the view it has.
- */
-export function displayOf(workflows: readonly WorkflowRuntime[]): (listing: WorkspaceListing) => WorkspaceListing | null {
-  // By source index, which every listing of one runtime shares.
-  const lastGood = new Map<number, Graph>();
-  return (listing) => {
-    for (const [index, graph] of listing.graphs.entries()) if (!listing.failed.has(index)) lastGood.set(index, graph);
-    if (listing.failed.size === 0) return listing;
-    const graphs: Graph[] = [];
-    for (const index of listing.graphs.keys()) {
-      const graph = lastGood.get(index);
-      if (!graph) return null;
-      graphs.push(graph);
-    }
-    return { ...listing, graphs, claims: claimsOf(workflows, listing.sourceOf, graphs) };
   };
 }
 
@@ -940,16 +916,13 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   });
   boardRef.current = board;
 
-  // A write needs the last listing to have judged the item itself: what a
-  // failed source is shown as is its last good listing, which may be stale.
+  // A write by the fresh listing alone; its refusal quotes a source's
+  // failure, which can carry what the log would redact.
   const writeOwner = (item: string): Ownership => {
-    const owner = board.ownerOf(item);
-    const failures = last.fresh ? listingFailures(last.fresh) : [];
-    if ("refused" in owner || failures.length === 0) return owner;
-    return { refused: rt.log.scrub(`#${item} is not written to until every source lists again: ${failures.join("; ")}`) };
+    const owner = writeOwnerOf(last.fresh, item);
+    return "refused" in owner ? { refused: rt.log.scrub(owner.refused) } : owner;
   };
-  // One log for the workspace, handed to every workflow alike.
-  const activity = rt.workflows.find((w) => w.deps.activity)?.deps.activity;
+  const { activity } = rt;
   // An unowned item's reads, by the index its source has in every listing.
   const sources = sourceReaders(rt.workflows, rt.ctx);
   const ui = await startUi({
