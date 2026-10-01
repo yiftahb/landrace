@@ -104,7 +104,7 @@ Malformed output halts the ticket with the reason. It is never retried and never
 
 ### Abstain rather than guess
 
-Where a validation rule cannot analyse a graph — a trigger that could fire from anywhere — it abstains for the whole graph instead of reporting a possibly-wrong result. A validator that flags healthy workflows gets switched off, and one that silently stops checking is worse than none. Nothing compared is not a pass: an input a check could not read — it threw, the API ran out partway — was not checked, so the check counts it beside its verdict and fails when it compared nothing, in every loop it makes, not only the first.
+Where a validation rule cannot analyse a graph — a trigger that could fire from anywhere — it abstains for the whole graph instead of reporting a possibly-wrong result. A validator that flags healthy workflows gets switched off, and one that silently stops checking is worse than none. Nothing compared is not a pass, and not found is not missing: an input a check did not read — it threw, the API ran out partway, a paged list stopped before its last page however large the page — was not checked, so the check counts it beside its verdict, fails when it compared nothing, and calls a thing absent only from a list read to its end, in every loop it makes, not only the first.
 
 ### Untrusted text cannot forge control state
 
