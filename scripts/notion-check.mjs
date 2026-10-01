@@ -7,9 +7,9 @@
  * Imports `landrace/integrations/notion` by package self-reference, which
  * resolves to dist/ — hence the build. In order: `check`; a first publish,
  * read back; the same text again, which must be satisfied and write nothing;
- * changed text — over a hundred blocks, an emoji astride a piece boundary, a
- * table — and that read back exactly, its body counted and its ticket
- * listed. Each step prints `ok` or why not; exits 1 when one failed or
+ * changed text — over a hundred blocks, an emoji astride a piece boundary,
+ * 60,000 characters, a fence, a table, an item with 120 children — and that
+ * read back exactly, its body counted and its ticket listed. Each step prints `ok` or why not; exits 1 when one failed or
  * nothing was checked.
  *
  * ponytail: each run publishes a fresh `check-<time>` row and leaves it, so
@@ -53,12 +53,18 @@ const publish = notion.effects()["artifact.publish"];
 const effect = (body) => ({ type: "artifact.publish", artifact: "spec", body });
 
 const first = "# Notion check\n\nA first publish, with `inline code` and [a link](https://example.com).\n\n- one\n  - one, nested\n- two\n";
+// Over 25 pieces of Source, which only the property item endpoint reads
+// whole; an item with more children than one append takes; and 125
+// top-level blocks in all.
 const changed = [
   "# Notion check, changed",
-  `${"a".repeat(1_999)}😀 sits astride the first piece boundary of Source.`,
+  `${"a".repeat(1_999)}😀 sits astride the first piece boundary of Source. ${"b".repeat(58_000)}`,
+  "```typescript\nconst spec: string = \"fenced\";\n```",
   "| a table | stays |\n|---|---|\n| as | written |",
+  ["- an item with 120 children", ...Array.from({ length: 120 }, (_, i) => `  - child ${i + 1}`)].join("\n"),
   ...Array.from({ length: 120 }, (_, i) => `Paragraph ${i + 1}.`),
 ].join("\n\n");
+const BLOCKS = 125;
 
 async function readsBack(text) {
   const page = await notion.page(ticket, ctx);
@@ -89,7 +95,7 @@ const steps = [
     const row = /([0-9a-f]{32})$/.exec(await notion.link(ticket, ctx))?.[1];
     if (!row) throw new Error("the link is not to a row");
     const blocks = await client.all("GET", `/blocks/${row}/children`);
-    if (blocks.length !== 123) throw new Error(`the body has ${blocks.length} blocks, not 123`);
+    if (blocks.length !== BLOCKS) throw new Error(`the body has ${blocks.length} top-level blocks, not ${BLOCKS}`);
     if (!(await notion.published(ctx)).has(ticket)) throw new Error("the ticket is not listed as published");
   }],
 ];

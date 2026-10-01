@@ -238,8 +238,9 @@ export class Notion extends BaseDocs {
     const source = pieces(content);
     if (source.length > MAX_ITEMS) {
       throw new Error(
-        `the spec is ${content.length.toLocaleString("en")} characters, and a Notion text property holds at most ` +
-        `${(MAX_ITEMS * MAX_TEXT).toLocaleString("en")}`,
+        `the spec is ${content.length.toLocaleString("en")} characters, ${source.length} pieces of at most ` +
+        `${MAX_TEXT.toLocaleString("en")}, and a Notion text property holds ${MAX_ITEMS} — about ` +
+        `${(MAX_ITEMS * MAX_TEXT).toLocaleString("en")} characters`,
       );
     }
     const notion = this.notion(ctx);
