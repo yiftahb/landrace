@@ -35,8 +35,6 @@ interface Row {
 interface Database {
   id: string;
   dataSource: string;
-  /** Whether this process made it, which is what decides the check's probe write. */
-  created: boolean;
 }
 
 /** What a client has learned: the database, and each looked-up ticket's row link (null for no row). */
@@ -69,14 +67,14 @@ function rowOf(page: unknown): Row {
  * sources, and the rows are one's. Ours is made with one; a person who added
  * a second has made "which one" a guess.
  */
-function databaseOf(answer: unknown, created: boolean): Database {
+function databaseOf(answer: unknown): Database {
   const db = answer as { id?: unknown; data_sources?: unknown } | null;
   const sources = Array.isArray(db?.data_sources) ? (db.data_sources as Array<{ id?: unknown } | null>) : [];
   const [source] = sources;
   if (typeof db?.id !== "string" || sources.length !== 1 || typeof source?.id !== "string") {
     throw new Error(`"${TITLE}" has ${sources.length} data sources; landrace keeps specs in a database with exactly one`);
   }
-  return { id: db.id, dataSource: source.id, created };
+  return { id: db.id, dataSource: source.id };
 }
 
 const duplicate = (ticket: string, rows: Row[]): Error =>
@@ -172,7 +170,7 @@ export class Notion extends BaseDocs {
         parent: { type: "page_id", page_id: this.parent },
         title: titled,
         initial_data_source: { properties: { [TICKET]: { title: {} }, [SOURCE]: { rich_text: {} } } },
-      }), true))
+      })))
       .catch((e: unknown) => {
         state.database = undefined;
         throw e;
@@ -188,7 +186,7 @@ export class Notion extends BaseDocs {
       throw new Error(`the parent page holds ${found.length} databases titled "${TITLE}"; landrace writes to one, so rename or remove the others`);
     }
     const [existing] = found;
-    return existing ? databaseOf(await notion.call("GET", `/databases/${String(existing.id)}`), false) : null;
+    return existing ? databaseOf(await notion.call("GET", `/databases/${String(existing.id)}`)) : null;
   }
 
   private async rows(notion: Client, ticket?: string): Promise<Row[]> {
@@ -297,10 +295,11 @@ export class Notion extends BaseDocs {
 
   /**
    * The parent is shared, and the integration can write in it: the database
-   * is made there, or — already there — has its title rewritten unchanged,
-   * which is the one write the check makes. An integration's capabilities
-   * cannot be asked, only tried, and a token that could read but not write
-   * would otherwise fail its first publish after the spec step was paid for.
+   * is made there when missing, and its title rewritten unchanged either way.
+   * An integration's capabilities cannot be asked, only tried — making the
+   * database tries "Insert content", the rewrite "Update content" — and a
+   * token without both would otherwise fail its first publish after the spec
+   * step was paid for.
    */
   async check(ctx: RuntimeContext): Promise<void> {
     const notion = this.notion(ctx);
@@ -312,8 +311,8 @@ export class Notion extends BaseDocs {
         : e);
     }
     try {
-      const db = await this.made(notion);
-      if (!db.created) await notion.call("PATCH", `/databases/${db.id}`, { title: titled });
+      const { id } = await this.made(notion);
+      await notion.call("PATCH", `/databases/${id}`, { title: titled });
     } catch (e) {
       if (statusOf(e) === 403) {
         throw new Error(`the integration cannot write in the parent page ${this.parent} — give it the "Insert content" and "Update content" capabilities`);

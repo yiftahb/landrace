@@ -34,11 +34,19 @@ const textOf = (items: Array<Record<string, unknown>>): string => items.map((i) 
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
 describe("check, before landrace start pays for anything", () => {
-  it("creates the Landrace specs database in the parent page", async () => {
+  it("creates the Landrace specs database in the parent page, then rewrites its title unchanged", async () => {
     const { fake, notion } = world();
     await notion.check(ctx);
+    const [db] = fake.databases();
     expect(fake.databases().map((d) => d.title)).toEqual(["Landrace specs"]);
-    expect(writes(fake).map((r) => `${r.method} ${r.path}`)).toEqual(["POST /databases"]);
+    expect(writes(fake).map((r) => `${r.method} ${r.path}`)).toEqual(["POST /databases", `PATCH /databases/${db?.id}`]);
+  });
+
+  it("refuses an integration that can insert but not update, on the start that creates the database", async () => {
+    const { fake, notion } = world();
+    fake.failOn((r) => r.method === "PATCH" && r.path.startsWith("/databases/"), 403);
+    await expect(notion.check(ctx)).rejects.toThrow(/"Insert content" and "Update content" capabilities/);
+    expect(fake.databases().map((d) => d.title)).toEqual(["Landrace specs"]);
   });
 
   it("finds the database already there and rewrites its title unchanged, which proves the token can write", async () => {
