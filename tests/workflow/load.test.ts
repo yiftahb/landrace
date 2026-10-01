@@ -254,4 +254,11 @@ describe("a step file that extends another", () => {
     await expect(loadWorkflow(join(ws, "workflows/dupc"), new Map(), { workspace: ws }))
       .rejects.toThrow(/steps\/a\.md has two "## Rules" sections/);
   });
+
+  it("loads a standalone step that repeats a heading, since nothing merges it", async () => {
+    put("workflows/solo/steps/a.md", "---\nmodel: opus\n---\n## Finding\n\na\n\n## Finding\n\nb\n");
+    flow("solo", "steps/a.md");
+    const { steps } = await loadWorkflow(join(ws, "workflows/solo"), new Map(), { workspace: ws });
+    expect(steps.get("steps/a.md")?.prompt).toContain("## Finding");
+  });
 });

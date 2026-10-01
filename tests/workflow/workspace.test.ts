@@ -33,6 +33,24 @@ describe("loadWorkspace", () => {
     await writeFile(join(ws, "workflow.yaml"), "version: 1\n");
     await expect(loadWorkspace(ws)).rejects.toThrow(/workflow\.yaml.*workflows\/main\/workflow\.yaml/);
   });
+  it("names the other edits the old layout needs: hook paths, description and admit", async () => {
+    const ws = await workspaceWith({ main: { name: "Main" } });
+    await writeFile(join(ws, "workflow.yaml"), "version: 1\n");
+    await expect(loadWorkspace(ws)).rejects.toThrow(/\.\.\/\.\.\/hooks\/<module>\.ts.*description:.*admit:/);
+  });
+  it("told a workflow folder, says it is one workflow and names the workspace", async () => {
+    const ws = await workspaceWith({ main: { name: "Main" } });
+    const one = join(ws, "workflows", "main");
+    await expect(loadWorkspace(one)).rejects.toThrow(`${one} is one workflow of the workspace ${ws}; run with --workspace ${ws}`);
+  });
+  it("refuses workflows/ itself being a symbolic link", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "lr-ws-"));
+    const real = await workspaceWith({ main: { name: "Main" } });
+    await symlink(join(real, "workflows"), join(ws, "workflows"));
+    await expect(loadWorkspace(ws)).rejects.toMatchObject({
+      rule: "layout", message: "workflows is a symbolic link; workflows must be a real folder inside the workspace",
+    });
+  });
   it("refuses a workspace with no workflows", async () => {
     const ws = await mkdtemp(join(tmpdir(), "lr-ws-"));
     await expect(loadWorkspace(ws)).rejects.toThrow(/no workflows.*workflows\/<id>\/workflow\.yaml/);

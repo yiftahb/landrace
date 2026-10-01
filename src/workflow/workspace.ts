@@ -1,5 +1,5 @@
-import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readdir, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { LoadFailure, LoadedWorkflow, Workspace, WorkspaceRead } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { idleVars, loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
@@ -33,10 +33,22 @@ export async function loadWorkspace(dir: string, vars: ReadonlyMap<string, strin
  */
 export async function readWorkspace(dir: string, vars: ReadonlyMap<string, string> = new Map(), order?: readonly string[]): Promise<WorkspaceRead> {
   if (await exists(join(dir, "workflow.yaml"))) {
+    // Pointed at a workflow folder, as `--workflow <dir>` once was, the fix is
+    // the flag; the move advice would nest the folder inside itself.
+    if (basename(dirname(dir)) === "workflows") {
+      const workspace = dirname(dirname(dir));
+      throw new WorkflowLoadError("layout", `${dir} is one workflow of the workspace ${workspace}; run with --workspace ${workspace}`);
+    }
     throw new WorkflowLoadError("layout",
-      `${join(dir, "workflow.yaml")} is the layout before workspaces; move it to ${join(dir, "workflows", "main", "workflow.yaml")}, with its steps/ beside it`);
+      `${join(dir, "workflow.yaml")} is the layout before workspaces; move it to ${join(dir, "workflows", "main", "workflow.yaml")}, with its steps/ beside it, ` +
+      "then give each hook path a leading ../../ (../../hooks/<module>.ts), add the required description:, and add admit: with the labels a started item gets");
   }
   const root = join(dir, "workflows");
+  // readdir follows a linked workflows/ silently, and its steps then fail a
+  // containment check with a message about a step path nobody wrote.
+  if ((await lstat(root).catch(() => null))?.isSymbolicLink()) {
+    throw new WorkflowLoadError("layout", "workflows is a symbolic link; workflows must be a real folder inside the workspace");
+  }
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
   const ids: string[] = [];
   for (const e of entries) {

@@ -366,10 +366,25 @@ describe("landrace validate, and what a workflow admits", () => {
     expect(await check(flow("admit: [lr:auto]", LABEL_RULE))).toEqual([]);
   });
 
-  it("abstains when a rule reads anything but the labels, or nothing is admitted", async () => {
-    const mixed = `${LABEL_RULE}\n  - { when: { "node.state.assignees": { $in: ["ann"] } }, else: "not ann's" }`;
-    expect(await check(flow("admit: [lr:fast]", mixed))).toEqual([]);
+  it("judges each labels-only rule on its own, skipping only the rules that read more", async () => {
+    const other = '  - { when: { "node.state.assignees": { $in: ["ann"] } }, else: "not ann\'s" }';
+    // The labels rule fails on its own, whatever the assignee rule says.
+    expect(await check(flow("admit: [lr:fast]", `${LABEL_RULE}\n${other}`))).toEqual([{
+      rule: "admit",
+      message: 'workflow "fastlane" admits [lr:fast] but its eligible rule "no lr:auto label" does not accept those labels',
+    }]);
+    // A rule reading labels and another path at once cannot be answered from labels.
+    const both = '  - { when: { "node.state.labels": { $in: ["lr:auto"] }, "node.state.assignees": { $in: ["ann"] } }, else: "both" }';
+    expect(await check(flow("admit: [lr:fast]", both))).toEqual([]);
     expect(await check(flow("", LABEL_RULE))).toEqual([]);
+  });
+
+  it("refuses an admit label the engine writes itself", async () => {
+    const rule = '  - { when: { "node.state.labels": { $in: ["lr:working", "lr:stage:build"] } }, else: "x" }';
+    expect((await check(flow("admit: [lr:stage:build, lr:working]", rule))).map((p) => p.message)).toEqual([
+      'workflow "fastlane" admits "lr:stage:build", a label the engine writes itself',
+      'workflow "fastlane" admits "lr:working", a label the engine writes itself',
+    ]);
   });
 });
 

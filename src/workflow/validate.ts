@@ -11,6 +11,7 @@ import {
   retiredPlaceholder,
   unknownCapabilities,
 } from "#conventions.js";
+import { LABELS, STAGE_LABEL_PREFIX } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
 import { fillTemplate } from "#core/index.js";
 import { identityOf } from "#core/locate.js";
@@ -989,17 +990,23 @@ const LABELS_PATH = "node.state.labels";
  * labels, and one its rule turns away is skipped as ineligible on the next
  * tick: filed, reported started, and never worked.
  *
- * Asked only where every rule is a check of the labels alone, through the
- * compiler `decide` gates eligibility with, against a node carrying exactly
- * the admitted labels. A rule reading anything else — an assignee, a counter
- * — cannot be answered from labels, so the whole check abstains rather than
- * report a guess; so does a workflow that admits nothing.
+ * Each rule that is a check of the labels alone is asked, through the compiler
+ * `decide` gates eligibility with, against a node carrying exactly the admitted
+ * labels. All rules must pass, so one such rule they fail is a definite
+ * failure whatever the others say. A rule reading anything else — an assignee,
+ * a counter — cannot be answered from labels and is skipped rather than
+ * guessed at; a workflow that admits nothing is not asked at all.
+ *
+ * An admitted label may not be one the engine writes itself: a stage or
+ * working label there would put an item into a state nothing put it in.
  */
 export function admitProblems(id: string, w: Workflow): Problem[] {
   const admit = w.admit ?? [];
-  const rules = w.eligible ?? [];
   if (admit.length === 0) return [];
-  if (!rules.every((r) => Object.keys(r.when).length === 1 && LABELS_PATH in r.when)) return [];
+  const reserved: Problem[] = admit
+    .filter((l) => l.startsWith(STAGE_LABEL_PREFIX) || (Object.values(LABELS) as unknown[]).includes(l))
+    .map((l) => ({ rule: "admit", message: `workflow "${id}" admits "${l}", a label the engine writes itself` }));
+  const rules = (w.eligible ?? []).filter((r) => Object.keys(r.when).length === 1 && LABELS_PATH in r.when);
   const snapshot = { node: { state: { labels: [...admit] } } } as unknown as Snapshot;
   let refused: typeof rules;
   try {
@@ -1007,12 +1014,12 @@ export function admitProblems(id: string, w: Workflow): Problem[] {
   } catch {
     // An operator outside the allowlist: the structural rules report it, and
     // a rule that cannot be compiled cannot be asked anything.
-    return [];
+    return reserved;
   }
-  return refused.map((r) => ({
+  return [...reserved, ...refused.map((r) => ({
     rule: "admit",
     message: `workflow "${id}" admits [${admit.join(", ")}] but its eligible rule "${r.else}" does not accept those labels`,
-  }));
+  }))];
 }
 
 export function validate(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {

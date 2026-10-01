@@ -237,6 +237,7 @@ export async function loadWorkflow(
     const chain: ParsedStep[] = [];
     const visited: string[] = [];
     const shown: string[] = [];
+    const names: string[] = [];
     let name = posix.normalize(posix.join(base, stage.step));
     let from = base;
     let ref: string = stage.step;
@@ -266,11 +267,8 @@ export async function loadWorkflow(
         // workflow has five step files and the loader read them in graph order.
         throw new WorkflowLoadError("schema", `step ${chain.length === 0 ? stage.step : name}: ${messageOf(e)}`);
       }
-      const twice = splitSections(parsedStep.body).duplicates[0];
-      if (twice !== undefined) {
-        throw new WorkflowLoadError("schema", `${name} has two "## ${twice}" sections; a merge cannot tell which one to replace`);
-      }
       chain.push(parsedStep);
+      names.push(name);
       const next = parsedStep.front.extends;
       if (next === undefined) break;
       if (typeof next !== "string" || next === "") {
@@ -279,6 +277,17 @@ export async function loadWorkflow(
       from = posix.dirname(name);
       ref = next;
       name = posix.normalize(posix.join(from, next));
+    }
+
+    // Only a merge needs one heading to mean one section; a step nothing
+    // extends and that extends nothing is read whole, repeats and all.
+    if (chain.length > 1) {
+      chain.forEach((link, i) => {
+        const twice = splitSections(link.body).duplicates[0];
+        if (twice !== undefined) {
+          throw new WorkflowLoadError("schema", `${names[i]} has two "## ${twice}" sections; a merge cannot tell which one to replace`);
+        }
+      });
     }
 
     try {

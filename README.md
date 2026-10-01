@@ -63,6 +63,18 @@ After upgrading, rebuild, restart `landrace start`, reconnect the MCP client (`/
 - **Hook authors:** `ctx.ticket` is `ctx.item`, `NotifyEvent.ticket` is `NotifyEvent.item`, `Operator.createTicket` and `updateTicket` are `createItem` and `updateItem`, `BaseTracker`'s `tickets()` and `ticket()` are `items()` and `item()`, `TicketRecord` is `ItemRecord`, `TicketPatch` is `ItemPatch`, and `ticketNode` is `itemNode`.
 - **Notion:** the database column stays named `Ticket`, so existing databases keep working.
 
+### Upgrading to workspaces
+
+`.landrace/` is now a workspace of `workflows/<id>/` folders, each with its own `workflow.yaml` and `steps/`. To move an existing project:
+
+- Move `.landrace/workflow.yaml` and `.landrace/steps/` to `.landrace/workflows/main/`.
+- Hook paths in `hooks:` gain `../../`, since they are relative to the workflow's folder: `../../hooks/github.ts`.
+- Add `description:`, which is required.
+- Add `admit: [lr:auto]` (or the label your project uses). Without it `landrace_create_item` with `start` is refused, and child items created by an `items:create` step get no admission labels and are never worked.
+- `--workflow <dir>` became `--workspace <dir>`, and `next --workflow` now takes a workflow id.
+
+Then rebuild, restart `landrace start`, and reconnect the MCP client (`/mcp` in Claude Code).
+
 ## Quick start
 
 ```bash
@@ -227,7 +239,7 @@ How agents run and where items live. Portable workflows keep none of this.
 | `security.model` | — | The model the screening run asks for. No default: absent, the screening executor's own default decides |
 | `log.redact` | `[]` | Secret names whose values must never be logged |
 | `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
-| `workflows` | the folders, alphabetically | The order the workflows are shown and run in. It must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
+| `workflows` | by workflow `name` (character-code order), then folder id | The order the workflows are listed in; display only. It must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
 | `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |
 | `notify.on` | — | The events to tell a person about. One exists: `needs-you` |
 | `notify.via` | — | Notifier ids, each registered by a hook with `defineNotifier`. This repository's is `slack`, shipped as `landrace/integrations/slack` and re-exported by `.landrace/hooks/slack.ts`. An id no loaded notifier answers to is refused by `start` and reported by `validate` |
@@ -403,7 +415,7 @@ Beside `stages`, the file's header says what the workflow is and what it admits:
 
 | Key | Meaning |
 |---|---|
-| `name` | The display title, shown on the board and in `status` |
+| `name` | The display title |
 | `description` | Required. What the workflow is for, in a sentence; it is what an agent sees when it chooses where to start an item |
 | `admit` | The labels an item gets when it is started into this workflow, by `landrace_create_item` or as the child an `items:create` step files. The engine names none of its own. `validate` checks them against `eligible` when that rule is label-only, so a workflow cannot admit an item it would then skip |
 | `hooks` | Paths of the hook modules, in the order pre hooks run |
@@ -501,7 +513,7 @@ A step that declares `capabilities: [items:create]` — the fixture's `breakdown
 
 Re-running `breakdown` — after a revision, or after a crash mid-round — first drops, as not planned, every sub-item an earlier round of this stage created and every pull request open on them; anything already finished is left closed as it was. A sub-item a person opened under the parent by hand is never touched, this round or any other. The parent itself only reaches `done` once every sub-item still counted is closed as completed — one still open, or one an earlier round made that a person is still working, keeps the parent at `children-running`.
 
-The child MCP server reads `.landrace/.env` from the workflow directory itself, exactly as `landrace start` does — a token exported only in the shell that ran `landrace start` never reaches this subprocess, by design, so it has to be set in `.env` or no child can ever be created. On GitHub, closing a dropped child's pull request needs the token's `Pull requests` permission to be `Read and write`, not the read-only level threads alone would need — see [Token permissions](#token-permissions).
+The child MCP server reads `.landrace/.env` from the workspace itself, exactly as `landrace start` does — a token exported only in the shell that ran `landrace start` never reaches this subprocess, by design, so it has to be set in `.env` or no child can ever be created. On GitHub, closing a dropped child's pull request needs the token's `Pull requests` permission to be `Read and write`, not the read-only level threads alone would need — see [Token permissions](#token-permissions).
 
 ### `.landrace/hooks/*.ts` — the integrations
 
@@ -671,7 +683,7 @@ To check it against a real workspace, `pnpm build && NOTION_TOKEN=… NOTION_PAR
 
 ### Executors: the coding agent is a hook
 
-The engine runs no coding agent of its own: `agent.adapter` names a hook. `defineExecutor` registers one, either as `{ id, run }` directly or as `{ id, create(ctx) }` — a factory the runtime calls once at startup, with `ctx` the same `RuntimeContext` every hook gets plus `dir` (the workflow directory, for finding the repository), `redact` (secrets a run's own setup discovers, such as an MCP server's `env`, that the configuration never named) and `steps` (the workflow's steps, by path, so a factory can refuse what a step asks of it before the step runs). A factory that cannot start — a bad `agent.*` key, a server `.mcp.json` does not define, a step's effort it has no level for — throws, and `landrace validate` reports it under the `executor` rule, one problem per line.
+The engine runs no coding agent of its own: `agent.adapter` names a hook. `defineExecutor` registers one, either as `{ id, run }` directly or as `{ id, create(ctx) }` — a factory the runtime calls once at startup, with `ctx` the same `RuntimeContext` every hook gets plus `dir` (the workspace, for finding the repository), `redact` (secrets a run's own setup discovers, such as an MCP server's `env`, that the configuration never named) and `steps` (the workflow's steps, by path, so a factory can refuse what a step asks of it before the step runs). A factory that cannot start — a bad `agent.*` key, a server `.mcp.json` does not define, a step's effort it has no level for — throws, and `landrace validate` reports it under the `executor` rule, one problem per line.
 
 **The engine hands every run:**
 - the rendered prompt;
@@ -817,6 +829,8 @@ Both schemas are strict: an unknown key fails to load rather than being ignored.
 | `goto` | A `goto` target that is not a stage, is named twice, or records no `enter` naming `{round}` — its entry record is what consumes a goto; a route sending items somewhere its stage does not list |
 | `trigger-name` | A trigger named `goto`, the name a goto transition is logged under |
 | `reserved-field` | A `goto` or `from` field in an `on_enter` effect or a route's effect — fields only the engine writes |
+| `admit` | A label a workflow admits items with that one of its own `eligible` rules (a check of labels alone) turns away, so the item would be started and never worked; an admitted label the engine writes itself (`lr:working`, `lr:stage:…`) |
+| `layout` | A workspace that is not one: the pre-workspace `workflow.yaml` at its root, no workflows, a workflow id that is not usable, a `workflows` folder or a workflow folder that is a symbolic link, a `workflows:` order in `landrace.yaml` that does not name exactly the folders |
 
 Every rule runs on every workflow. An earlier version abstained where a trigger
 could fire from anywhere, which turned out to mean *always* — the entry trigger
@@ -937,7 +951,7 @@ session to have happened already, not the deep link itself.
 - A step declares what it may do, and the declaration is enforced by diffing its worktree before and after — not by the flags an integration hands its agent, which another executor never sees. A conversation turn is held to the same declaration as the step it continues.
 - Under either shipped integration, a step or turn gets exactly the MCP servers `agent.mcp` allows, strictly. The kit refuses Landrace's own operator server at startup by name, and by its command line in the common spellings — a best-effort check on operator-trusted config, so do not allowlist a wrapper that runs it. Keeping that server from a step is part of every executor's contract, not the kit's alone.
 - Every agent that can act is screened first — every step declaring a capability, and every turn typed through the MCP: the place an operator pastes text someone sent them is not a place to start trusting it. A step declaring none is not screened (`screen.skipped`): it runs with no tool and no repository, and the one such step shipped, `triage`, answers from a closed set a comment could already argue for in plain words. Screening it only refused people's approvals for the judge template's own wording, on #39 and #41, and a clearance then re-judged the approval at the halt, where it changes nothing. A step the screener refuses is recorded as a refusal, not a broken contract, and lands in `screened` for a person to read. An `ok` counts only when it carries the nonce that screening's prompt was marked with, so a verdict planted in the screened text, or the template restated, fails closed. A reply that fails closed is logged whole in `screen.blocked` (its last 2,000 characters, redacted like any log line) and never posted: the item shows the reason alone.
-- The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workflow directory before it is imported, both ends compared after `realpath`.
+- The engine ships no integrations, and `src/` contains no vendor code at all — a test fails on the offending file and line. A hook module must resolve inside the workspace (`.landrace/`) before it is imported, both ends compared after `realpath`.
 - A comment carries control state only because Landrace's own account wrote it. The account is resolved from the token at startup and verified against any configured override; the process refuses to run rather than guess, because a login it cannot resolve would make its own records read as a stranger's.
 
 ## Development
