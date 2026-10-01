@@ -546,9 +546,10 @@ describe("boardView: rows", () => {
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
 
+  // At a stage that waits on you: without the override, the row would be needs-you.
   it("puts an item with an agent running in `running`, over whatever its labels say", () => {
     const running = new Map<string, Running>([["1", { stage: "spec", round: 2, model: "opus", effort: "high", since: 40 }]]);
-    const row = view(graph([item("1", {}, ["go", "lr:awaiting"])]), { running }).rows[0];
+    const row = view(graph([item("1", {}, ["go", "lr:stage:spec-human-review"])]), { running }).rows[0];
     expect(row).toMatchObject({ badge: "running", round: 2, model: "opus", effort: "high", since: 40, note: "agent running" });
   });
 

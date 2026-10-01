@@ -35,6 +35,42 @@ const admitting = (admit?: string[]): Workflow => ({
   stages: [{ id: "spec", step: "spec", triggers: [] }],
 });
 
+/**
+ * A workflow where it is a person's turn at two stages: one an item is moved
+ * to and labelled, one it is placed at by its own labels alone.
+ */
+const turns: Workflow = {
+  version: 1, name: "t", description: "test", admit: ["lr:auto"],
+  eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+  stages: [
+    { id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] },
+    { id: "questions", waits: "person", triggers: [{ when: { "run.stage": "spec" } }] },
+    { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["needs-my-review"] } },
+      triggers: [{ when: { "run.stage": "spec" } }] },
+    { id: "blocked", triggers: [{ when: { "run.lastOutputValid": false } }] },
+    { id: "done", terminal: true, triggers: [{ when: { "run.stage": "questions" } }] },
+  ],
+};
+
+const TURNS_SEED: Array<Partial<FakeIssue>> = [
+  // At a stage that waits on a person, with no lr:awaiting on it.
+  { number: 1, labels: ["lr:auto", "lr:stage:questions"] },
+  // lr:awaiting at a stage that runs a step: not read.
+  { number: 2, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] },
+  // Placed by its own labels alone, at a stage that waits.
+  { number: 3, labels: ["lr:auto", "needs-my-review"] },
+  { number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] },
+  // Its label and an identity disagree: halted, so a person's to settle.
+  { number: 5, labels: ["lr:auto", "lr:stage:spec", "needs-my-review"] },
+  { number: 6, labels: ["lr:auto", "lr:stage:done"] },
+  { number: 7, labels: ["needs-my-review"] },
+];
+
+const turnsWorld = (seed: Array<Partial<FakeIssue>> = TURNS_SEED) => {
+  const tracker = createFakeTracker(seed);
+  return { tracker, tools: createTools([hooked(tracker.registry, loaded(turns, spec.steps))], tracker.ctx, { lock: { root: lockRoot } }) };
+};
+
 const world = (seed: Array<Partial<FakeIssue>> = []) => {
   const tracker = createFakeTracker(seed);
   return { tracker, tools: createTools([hooked(tracker.registry, loaded(admitting(["lr:auto"])))], tracker.ctx) };
@@ -119,32 +155,7 @@ describe("mcp tools", () => {
    * readers of "who is waiting on you" is how a list and a page disagree.
    */
   it("lists exactly the board's Needs you, read from the stage each item is at", async () => {
-    const turns: Workflow = {
-      version: 1, name: "t", description: "test", admit: ["lr:auto"],
-      eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
-      stages: [
-        { id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] },
-        { id: "questions", waits: "person", triggers: [{ when: { "run.stage": "spec" } }] },
-        { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["needs-my-review"] } },
-          triggers: [{ when: { "run.stage": "spec" } }] },
-        { id: "blocked", triggers: [{ when: { "run.lastOutputValid": false } }] },
-        { id: "done", terminal: true, triggers: [{ when: { "run.stage": "questions" } }] },
-      ],
-    };
-    const tracker = createFakeTracker([
-      // At a stage that waits on a person, with no lr:awaiting on it.
-      { number: 1, labels: ["lr:auto", "lr:stage:questions"] },
-      // lr:awaiting at a stage that runs a step: not read.
-      { number: 2, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] },
-      // Placed by its own labels alone, at a stage that waits.
-      { number: 3, labels: ["lr:auto", "needs-my-review"] },
-      { number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] },
-      // Its label and an identity disagree: halted, so a person's to settle.
-      { number: 5, labels: ["lr:auto", "lr:stage:spec", "needs-my-review"] },
-      { number: 6, labels: ["lr:auto", "lr:stage:done"] },
-      { number: 7, labels: ["needs-my-review"] },
-    ]);
-    const tools = createTools([hooked(tracker.registry, loaded(turns, spec.steps))], tracker.ctx, { lock: { root: lockRoot } });
+    const { tracker, tools } = turnsWorld();
 
     const waiting = await tools.waiting();
     expect(waiting).toEqual([
@@ -165,13 +176,32 @@ describe("mcp tools", () => {
     expect(waiting.map((w) => w.item)).toEqual([...needsYou].sort(compareIds));
   });
 
-  it("does not list a closed item as waiting, whatever labels it kept", async () => {
-    const { tools } = world([
+  it("does not list a closed item as waiting, whatever stage it was left at", async () => {
+    const { tools } = turnsWorld([
       { number: 1, labels: ["lr:auto"] },
-      // Listed because it is a sub-issue of an open one; closed, so nobody's turn.
-      { number: 2, parent: 1, state: "closed", stateReason: "COMPLETED", labels: ["lr:auto", "lr:awaiting"] },
+      // Listed because it is a sub-issue of an open one; left at a stage that
+      // waits on a person, and closed, so nobody's turn.
+      { number: 2, parent: 1, state: "closed", stateReason: "COMPLETED", labels: ["lr:auto", "lr:stage:questions"] },
     ]);
     expect(await tools.waiting()).toEqual([]);
+  });
+
+  /*
+   * One answer to "is this waiting on you", wherever it is asked: an item
+   * `landrace_status` says waits on you is one `landrace_waiting` lists, at
+   * the stage the board places it — by its label or by its own state.
+   */
+  it("says in landrace_status where each item is and whether it waits on you, as landrace_waiting does", async () => {
+    const { tools } = turnsWorld();
+    const waiting = (await tools.waiting()).map((w) => w.item);
+    for (const item of ["1", "2", "3", "4", "5", "6", "7"]) {
+      expect([item, ((await tools.status(item)) as { waitingOnYou: unknown }).waitingOnYou]).toEqual([item, waiting.includes(item)]);
+    }
+    expect(await tools.status("1")).toMatchObject({ stage: "questions", waitingOnYou: true, blocked: false });
+    expect(await tools.status("3")).toMatchObject({ stage: "reviewing", waitingOnYou: true });
+    expect(await tools.status("2")).toMatchObject({ stage: "spec", waitingOnYou: false });
+    expect(await tools.status("4")).toMatchObject({ stage: "blocked", waitingOnYou: true, blocked: true });
+    expect(await tools.status("5")).toMatchObject({ stage: null, waitingOnYou: true, problem: "cannot place the item: spec, reviewing all match" });
   });
 
   // A closed item is no workflow's: it is read through the one source that

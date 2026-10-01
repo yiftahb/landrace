@@ -1,5 +1,5 @@
 import { compareIds, isOpenItem, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
-import { locateNode } from "#core/index.js";
+import { cannotPlace, locateNode } from "#core/index.js";
 import type { Lane, ListedWorkflow, Node, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
 import { claimedBy, eligibilityOf, reportedBy, turnedAway } from "#runner/tick.js";
 
@@ -126,13 +126,14 @@ export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
     if (ambiguous) return { ...row, stage: null, note: `halted: more than one lr:stage:* label (${found.join(", ")})` };
     const where = locateNode(workflow, node);
     // In decide's own words, since it halts on the same fact.
-    if (where.kind === "ambiguous") return { ...row, stage: null, note: `halted: cannot place the item: ${where.ids.join(", ")} all match` };
+    if (where.kind === "ambiguous") return { ...row, stage: null, note: `halted: ${cannotPlace(where.ids)}` };
     const stage = where.kind === "at" ? where.stage : null;
 
     // Screened before blocked: a screened item wears both, and the more
-    // specific reason is the one a person can act on. A stage that waits on
-    // a person before lr:working, which a crash between a stage's status and
-    // its label effect can leave behind from the stage before.
+    // specific reason is the one a person can act on. A stage that waits on a
+    // person is asked about before lr:working, because a crash between a
+    // stage's status and its label effect can leave the previous stage's
+    // lr:working on an item that is now waiting on you.
     const note = labels.includes(LABELS.screened)
       ? SCREENED_NOTE
       : labels.includes(LABELS.blocked)

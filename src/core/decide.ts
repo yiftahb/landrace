@@ -2,7 +2,7 @@ import { GOTO_TRIGGER } from "#conventions.js";
 import { assess } from "#core/assess.js";
 import { checkEligible } from "#core/eligible.js";
 import { gotoDeclined, gotoNotListed } from "#core/goto.js";
-import { locate } from "#core/locate.js";
+import { cannotPlace, locate } from "#core/locate.js";
 import { compile } from "#core/predicate.js";
 import type { Decision, Run, Snapshot, Stage, Workflow } from "#namespace.js";
 
@@ -78,7 +78,7 @@ export function decide(w: Workflow, s: Snapshot): Decision {
 
   const where = locate(w, s);
   if (where.kind === "ambiguous") {
-    return { action: "halt", why: `cannot place the item: ${where.ids.join(", ")} all match` };
+    return { action: "halt", why: cannotPlace(where.ids) };
   }
   if (where.kind === "none") {
     const entries = w.stages.filter((x) => x.entry);

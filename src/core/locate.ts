@@ -10,6 +10,13 @@ import type { Location, Node, Run, Snapshot, Stage, Workflow } from "#namespace.
  */
 export const identityOf = (stage: Stage) => stage.identity ?? { "run.stage": stage.id };
 
+/**
+ * Why an item several stages match cannot be placed, in the words every
+ * surface says it in: decide's halt, a status row, `landrace_status`. Two
+ * wordings of one halt is how an operator comes to think they are two.
+ */
+export const cannotPlace = (ids: readonly string[]): string => `cannot place the item: ${ids.join(", ")} all match`;
+
 export function locate(w: Workflow, s: Snapshot): Location {
   const matches = w.stages.filter((stage) => compile(identityOf(stage))(s));
   if (matches.length > 1) return { kind: "ambiguous", ids: matches.map((m) => m.id) };

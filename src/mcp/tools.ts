@@ -10,7 +10,7 @@ import {
   isOpenItem,
   ITEM_KIND,
 } from "#conventions.js";
-import { checkEligible } from "#core/index.js";
+import { cannotPlace, checkEligible, locateNode } from "#core/index.js";
 import type { Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, WorkspaceListing } from "#namespace.js";
 import type { Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
@@ -20,7 +20,7 @@ import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { editRoute, noSharedPre, readRoute, sharedPre, unownedWhy, writeRoute } from "#runner/route.js";
 import { buildSnapshot } from "#runner/snapshot.js";
-import { laneOf, workspaceStatusRows } from "#runner/status.js";
+import { laneOf, statusRows, workspaceStatusRows } from "#runner/status.js";
 import { claimsOf, listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
 
 /**
@@ -248,11 +248,14 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
    * nothing, so a source that could not list stops none — but an id no
    * working source showed could be in the one that did not.
    */
-  const reader = async (item: string): Promise<{ hands: ToolHands } | { source: Source; pre: PreHook[]; why: string | null }> => {
+  const reader = async (item: string): Promise<
+    { hands: ToolHands; claims: Claims } | { source: Source; pre: PreHook[]; why: string | null; claims: Claims }
+  > => {
     const listing = await about(item);
     const route = readRoute(listing, item) ?? { refused: [unlisted(item), ...listingFailures(listing)].join("; ") };
     if ("refused" in route) throw new Refusal(route.refused);
-    if ("workflow" in route) return { hands: ours(item, route.workflow) };
+    const { claims } = listing;
+    if ("workflow" in route) return { hands: ours(item, route.workflow), claims };
     if (opts.scope !== undefined && listing.sourceOf.get(opts.scope) !== route.source) {
       throw new Refusal(`#${item} is not listed by ${opts.scope}'s source; this server acts for ${opts.scope} alone`);
     }
@@ -261,7 +264,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
     const on = [...hands.values()].filter((h) => h.deps.source === source);
     const pre = sharedPre(on.map((h) => h.deps.pre));
     if (!pre) throw new Refusal(noSharedPre(item, on.map((h) => h.workflow.id)));
-    return { source, pre, why: unownedWhy(listing.claims, item) };
+    return { source, pre, why: unownedWhy(claims, item), claims };
   };
 
   /**
@@ -379,8 +382,18 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       const snapshot = await snapshotIn("hands" in route ? route.hands.deps : route, item);
       const node = snapshot.node as Node;
       const labels = labelsOf(node);
-      const { stage, ambiguous, found } = stageFromLabels(labels);
+      const { stage: labelled, ambiguous, found } = stageFromLabels(labels);
       const run = snapshot.run;
+      // Where it is and whether it waits on you, from the row the board and
+      // `landrace_waiting` read — the stage its owner's stages place it at,
+      // and that stage's `waits` — never a second reading of its labels free
+      // to disagree with them. An item no one workflow owns is placed by none
+      // of their stages: its label is all there is to show.
+      const owned = "hands" in route ? statusRows(route.hands.deps.workflow, [node])[0] : undefined;
+      const row: StatusRow = owned && "hands" in route
+        ? { ...owned, workflow: route.hands.workflow.id }
+        : { item, title: node.title, stage: labelled, note: "" };
+      const where = "hands" in route && !ambiguous ? locateNode(route.hands.deps.workflow, node) : null;
 
       return {
         item,
@@ -392,12 +405,12 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
         // is null, a closed item says whether it was finished or dropped.
         closed: node.closed,
         labels,
-        stage,
+        stage: row.stage,
         // Which ones: taking one of them off is the fix, and the engine now
         // halts on this same fact rather than picking one and paying for it.
         ...(ambiguous
           ? { problem: `more than one lr:stage:* label (${found.join(", ")}) — the item cannot be placed` }
-          : {}),
+          : where?.kind === "ambiguous" ? { problem: cannotPlace(where.ids) } : {}),
         // The workflow's own rule, asked of the snapshot `decide` would gate
         // on — not a label name: the engine names none. An open item no one
         // workflow owns is worked by none, and says why; a closed one is no
@@ -405,7 +418,9 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
         ...("hands" in route
           ? { eligible: checkEligible(route.hands.deps.workflow, snapshot).eligible }
           : node.closed === null ? { eligible: false, ...(route.why === null ? {} : { why: route.why }) } : {}),
-        waitingOnYou: labels.includes(LABELS.awaiting),
+        // Exactly when `landrace_waiting` lists it: the board's Needs you — a
+        // person's turn, a block or a halt. `blocked` says whether it is a block.
+        waitingOnYou: laneIn(row, route.claims) === "needs-you",
         blocked: labels.includes(LABELS.blocked),
         rounds: run?.counters ?? {},
         lastEvent: run?.lastEvent ?? null,

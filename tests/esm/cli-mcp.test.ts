@@ -61,7 +61,7 @@ export const source = brand("source", {
   relations: [],
   list: async (ctx: { config: { tracker: { order: string } } }): Promise<unknown> => {
     await appendFile(ctx.config.tracker.order, JSON.stringify({ list: true }) + "\\n");
-    return { nodes: [itemNode(["lr:auto", "lr:awaiting"])], relationships: [] };
+    return { nodes: [itemNode(["lr:auto", "lr:stage:asked"])], relationships: [] };
   },
   read: async (): Promise<unknown> => ({ nodes: [itemNode(["lr:auto", "lr:stage:spec"])], relationships: [] }),
 });
@@ -203,6 +203,10 @@ stages:
     entry: true
     terminal: true
     step: steps/spec.md
+  - id: asked
+    waits: person
+    triggers:
+      - when: { "run.stage": spec }
 `,
   );
   if (opts.fast) {
@@ -484,11 +488,11 @@ describe("buildMcpTools over a workspace of several workflows", () => {
   it("serves every workflow, and finds an item's by its claim", async () => {
     const { dir } = await fixture({ screen: false, fast: true });
     const tools = await buildMcpTools(dir);
-    // None needs you: the item wears lr:awaiting, but main's one stage runs a
-    // step, and whose turn it is is a stage's `waits`, not that label.
+    // The item main lists is at its stage that waits on a person, with no
+    // lr:awaiting: main's to count, and fast has nothing to.
     expect(await tools.workflows()).toEqual([
       { id: "fast", name: "fastlane", description: "the fast one", creates: false, claimed: 0, needsYou: 0 },
-      { id: "main", name: "mcp", description: "test", creates: false, claimed: 1, needsYou: 0 },
+      { id: "main", name: "mcp", description: "test", creates: false, claimed: 1, needsYou: 1 },
     ]);
     expect(await tools.status(ITEM)).toMatchObject({ item: ITEM, workflow: "main" });
   });
