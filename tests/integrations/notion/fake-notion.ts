@@ -92,7 +92,10 @@ const dashed = (hex: string): string => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-
 const newId = (): string => flat(randomUUID());
 const urlOf = (id: string): string => `https://www.notion.so/${id}`;
 
-/** A rich text array, refused as Notion refuses one. */
+/**
+ * A rich text array, refused as Notion refuses one — and stored as Notion
+ * stores it, as UTF-8, where half a surrogate pair is U+FFFD.
+ */
 function checkRich(value: unknown, where: string): Rich[] {
   if (!Array.isArray(value)) return bad(`${where} should be an array.`);
   if (value.length > MAX_ARRAY) return bad(`${where}.length should be ≤ \`${MAX_ARRAY}\`, instead was \`${value.length}\`.`);
@@ -107,7 +110,10 @@ function checkRich(value: unknown, where: string): Rich[] {
       if (typeof url !== "string" || !/^https?:\/\//i.test(url) || !URL.canParse(url)) bad(`Invalid URL for link.`);
     }
   });
-  return value as Rich[];
+  return (value as Rich[]).map((item) => {
+    const text = item.text as Json;
+    return { ...item, text: { ...text, content: Buffer.from(text.content as string, "utf8").toString("utf8") } };
+  });
 }
 
 /** A rich text object as Notion answers it, rather than as it was written. */
