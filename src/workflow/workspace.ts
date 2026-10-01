@@ -1,7 +1,8 @@
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { LoadedWorkflow, Workspace } from "#namespace.js";
-import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
+import type { LoadFailure, LoadedWorkflow, Workspace, WorkspaceRead } from "#namespace.js";
+import { messageOf } from "#runner/errors.js";
+import { idleVars, loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
 
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 // Not localeCompare: the order must not depend on the machine's locale.
@@ -12,8 +13,25 @@ const exists = (p: string) => stat(p).then(() => true, () => false);
  * Every workflow under `<dir>/workflows/<id>/`, loaded and ordered. One layout
  * only: a `workflow.yaml` at the root is the layout before workspaces, and
  * loading it beside the new one would be two answers to "what runs here".
+ *
+ * Refused if any workflow will not load, with every failure named by its
+ * folder: a command that runs a workflow must not run beside one it could
+ * not read.
  */
 export async function loadWorkspace(dir: string, vars: ReadonlyMap<string, string> = new Map(), order?: readonly string[]): Promise<Workspace> {
+  const { workflows, failures } = await readWorkspace(dir, vars, order);
+  const [first] = failures;
+  if (first) throw new WorkflowLoadError(first.rule, failures.map((f) => f.message).join("; "));
+  return { dir, workflows };
+}
+
+/**
+ * The workspace as far as it will load: what is wrong with the layout is
+ * thrown, since nothing in it can be read; what is wrong with one workflow is
+ * a failure beside the ones that loaded, so `validate` can report it and still
+ * check the rest. Every workflow is tried, in id order, whatever came before.
+ */
+export async function readWorkspace(dir: string, vars: ReadonlyMap<string, string> = new Map(), order?: readonly string[]): Promise<WorkspaceRead> {
   if (await exists(join(dir, "workflow.yaml"))) {
     throw new WorkflowLoadError("layout",
       `${join(dir, "workflow.yaml")} is the layout before workspaces; move it to ${join(dir, "workflows", "main", "workflow.yaml")}, with its steps/ beside it`);
@@ -30,12 +48,7 @@ export async function loadWorkspace(dir: string, vars: ReadonlyMap<string, strin
     ids.push(e.name);
   }
   if (ids.length === 0) throw new WorkflowLoadError("layout", `${dir} has no workflows: create ${join(dir, "workflows", "<id>", "workflow.yaml")}`);
-
-  const workflows: LoadedWorkflow[] = [];
-  for (const id of ids) {
-    const wdir = join(root, id);
-    workflows.push({ id, dir: wdir, ...(await loadWorkflow(wdir, vars, { workspace: dir })) });
-  }
+  ids.sort(byCodePoint);
 
   if (order) {
     // indexOf would silently take the first of two; ambiguity halts.
@@ -49,11 +62,31 @@ export async function loadWorkspace(dir: string, vars: ReadonlyMap<string, strin
         extra.length ? `landrace.yaml workflows: names ${extra.map((x) => `"${x}"`).join(", ")}, which has no folder under workflows/` : "",
       ].filter(Boolean).join("; "));
     }
+  }
+
+  const workflows: LoadedWorkflow[] = [];
+  const failures: LoadFailure[] = [];
+  const used = new Set<string>();
+  for (const id of ids) {
+    const wdir = join(root, id);
+    try {
+      workflows.push({ id, dir: wdir, ...(await loadWorkflow(wdir, vars, { workspace: dir, used })) });
+    } catch (e) {
+      failures.push({ rule: e instanceof WorkflowLoadError ? e.rule : "schema", message: `workflows/${id}: ${messageOf(e)}` });
+    }
+  }
+  // `vars` is the workspace's, so whether anything reads one is asked of
+  // every workflow at once — and not at all while one would not load, since
+  // what that one reads is unknown and calling its var unread would be a guess.
+  const idle = failures.length ? [] : idleVars(vars, used);
+  if (idle.length) failures.push({ rule: "vars", message: idle.join("; ") });
+
+  if (order) {
     workflows.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   } else {
     workflows.sort((a, b) => byCodePoint(a.workflow.name, b.workflow.name) || byCodePoint(a.id, b.id));
   }
-  return { dir, workflows };
+  return { dir, workflows, ids, failures };
 }
 
 /**

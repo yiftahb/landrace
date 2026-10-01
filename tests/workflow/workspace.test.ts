@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WorkflowLoadError } from "#workflow/load.js";
 import { loadWorkspace, onlyWorkflow } from "#workflow/workspace.js";
 
 async function workspaceWith(map: Record<string, { name: string }>): Promise<string> {
@@ -78,5 +79,72 @@ describe("onlyWorkflow", () => {
     const ws = await loadWorkspace(await workspaceWith({ main: { name: "Main" }, fastlane: { name: "Fastlane" } }));
     expect(() => onlyWorkflow(ws, "start"))
       .toThrow(`landrace start runs one workflow at a time; ${ws.dir}/workflows has 2 (fastlane, main)`);
+  });
+});
+
+/** A workspace of the given workflow.yaml texts, by id. */
+async function workspaceOfYaml(map: Record<string, string>): Promise<string> {
+  const ws = await mkdtemp(join(tmpdir(), "lr-ws-"));
+  for (const [id, yaml] of Object.entries(map)) {
+    await mkdir(join(ws, "workflows", id), { recursive: true });
+    await writeFile(join(ws, "workflows", id, "workflow.yaml"), yaml);
+  }
+  return ws;
+}
+
+const flow = (name: string, extra = ""): string =>
+  `version: 1\nname: ${name}\ndescription: "d"\n${extra}stages:\n  - { id: a, entry: true, terminal: true }\n`;
+
+/*
+ * `vars` is the workspace's, in landrace.yaml beside every workflow, so "is
+ * anything reading this" is asked of all of them together: a var only main
+ * reads is not fastlane's typo, and one nobody reads is one problem, not one
+ * per workflow.
+ */
+describe("loadWorkspace and the workspace's vars", () => {
+  const who = new Map([["who", "ann"]]);
+
+  it("loads a var only one of its workflows reads", async () => {
+    const ws = await workspaceOfYaml({ main: flow("Main", 'admit: ["for:{vars.who}"]\n'), fastlane: flow("Fastlane") });
+    const loaded = await loadWorkspace(ws, who);
+    expect(loaded.workflows.find((w) => w.id === "main")?.workflow.admit).toEqual(["for:ann"]);
+  });
+
+  it("refuses a var no workflow reads, once", async () => {
+    const ws = await workspaceOfYaml({ main: flow("Main"), fastlane: flow("Fastlane") });
+    const err = await loadWorkspace(ws, who).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WorkflowLoadError);
+    expect((err as WorkflowLoadError).rule).toBe("vars");
+    expect((err as Error).message.match(/vars entry "who" is declared and nothing references it/g)).toHaveLength(1);
+  });
+
+  it("still says which workflow a var nothing defines is used in", async () => {
+    const ws = await workspaceOfYaml({ main: flow("Main", 'admit: ["for:{vars.nobody}"]\n'), fastlane: flow("Fastlane") });
+    await expect(loadWorkspace(ws, new Map())).rejects.toThrow(/^workflows\/main: workflow\.yaml .*uses \{vars\.nobody\}, which no vars entry defines/);
+  });
+});
+
+/*
+ * A workflow that will not load is a fact about that folder, and the others
+ * are still worth reading: every one is tried, each failure says which folder
+ * it is in, and the workspace is refused once they all have been.
+ */
+describe("loadWorkspace and a workflow that will not load", () => {
+  const DUPLICATE = "version: 1\nname: Main\ndescription: d\nstages:\n  - { id: a, entry: true, terminal: true }\n  - { id: a, terminal: true }\n";
+  const MISSING_STEP = "version: 1\nname: Fastlane\ndescription: d\nstages:\n  - { id: a, entry: true, terminal: true, step: steps/nope.md }\n";
+
+  it("tries every workflow, and names the folder of each failure", async () => {
+    const ws = await workspaceOfYaml({ main: DUPLICATE, fastlane: MISSING_STEP });
+    const err = await loadWorkspace(ws).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WorkflowLoadError);
+    // The first failure's rule, in id order: fastlane before main.
+    expect((err as WorkflowLoadError).rule).toBe("missing-step");
+    expect((err as Error).message).toMatch(/^workflows\/fastlane: stage "a" names a step file that does not exist: steps\/nope\.md/);
+    expect((err as Error).message).toContain('; workflows/main: duplicate stage id "a"');
+  });
+
+  it("names the folder when it is the only workflow, too", async () => {
+    const ws = await workspaceOfYaml({ main: DUPLICATE });
+    await expect(loadWorkspace(ws)).rejects.toThrow('workflows/main: duplicate stage id "a"');
   });
 });

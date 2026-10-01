@@ -14,8 +14,8 @@ import {
 import { gotoTargetsOf } from "#core/goto.js";
 import { fillTemplate } from "#core/index.js";
 import { identityOf } from "#core/locate.js";
-import { assertAllowedOperators, pathsIn } from "#core/predicate.js";
-import type { Condition, Problem, Stage, Step, Workflow } from "#namespace.js";
+import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
+import type { Condition, Problem, Snapshot, Stage, Step, Workflow } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 
 export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
@@ -767,7 +767,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   // returns no effects at all for a step with none). A stage like this is
   // therefore unreachable-past: decide() invokes it, forever, on every
   // single pass, no matter how many times it runs. This was live in
-  // .landrace/workflow.yaml for build, code-review and fix-review — 30 paid
+  // .landrace/workflows/main/workflow.yaml for build, code-review and fix-review — 30 paid
   // opus invocations in one converge() call, then the same again on the
   // next poll.
   //
@@ -978,6 +978,41 @@ export function branchIsolationProblems(w: Workflow, isolation: string): Problem
       "where a step's worktree is checked out, and without worktree isolation there is none, so the agent would " +
       "commit wherever this checkout is. Set agent.isolation: worktree, or drop the branch",
   }]);
+}
+
+/** The one path an admission label can satisfy a rule through. */
+const LABELS_PATH = "node.state.labels";
+
+/**
+ * Whether what workflow `id` admits an item with is what its own eligibility
+ * accepts. An item `landrace_create_item` starts there carries exactly those
+ * labels, and one its rule turns away is skipped as ineligible on the next
+ * tick: filed, reported started, and never worked.
+ *
+ * Asked only where every rule is a check of the labels alone, through the
+ * compiler `decide` gates eligibility with, against a node carrying exactly
+ * the admitted labels. A rule reading anything else — an assignee, a counter
+ * — cannot be answered from labels, so the whole check abstains rather than
+ * report a guess; so does a workflow that admits nothing.
+ */
+export function admitProblems(id: string, w: Workflow): Problem[] {
+  const admit = w.admit ?? [];
+  const rules = w.eligible ?? [];
+  if (admit.length === 0) return [];
+  if (!rules.every((r) => Object.keys(r.when).length === 1 && LABELS_PATH in r.when)) return [];
+  const snapshot = { node: { state: { labels: [...admit] } } } as unknown as Snapshot;
+  let refused: typeof rules;
+  try {
+    refused = rules.filter((r) => !compile(r.when)(snapshot));
+  } catch {
+    // An operator outside the allowlist: the structural rules report it, and
+    // a rule that cannot be compiled cannot be asked anything.
+    return [];
+  }
+  return refused.map((r) => ({
+    rule: "admit",
+    message: `workflow "${id}" admits [${admit.join(", ")}] but its eligible rule "${r.else}" does not accept those labels`,
+  }));
 }
 
 export function validate(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {

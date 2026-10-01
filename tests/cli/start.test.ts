@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
@@ -107,6 +107,17 @@ describe("buildRuntime", () => {
    * a second is refused, not ignored: running whichever sorted first would be
    * an item worked by a workflow nobody chose for it.
    */
+  // `validate` reports it, so `start` refuses it: every item create_item
+  // starts there would be skipped as ineligible on the next tick.
+  it("refuses a workflow that admits labels its own eligible rule turns away, and still lets status read", async () => {
+    const dir = await fixture();
+    const yaml = join(workflowIn(dir), "workflow.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("description: test\n",
+      'description: test\nadmit: [lr:fast]\neligible:\n  - { when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }\n'));
+    await expect(buildRuntime(dir, {})).rejects.toThrow(/admit: workflow "main" admits \[lr:fast\] but its eligible rule "no lr:auto label"/);
+    await expect(buildRuntime(dir, { readOnly: true })).rejects.toThrow(/no source hook/);
+  });
+
   it("refuses a workspace with two workflows, naming both, for start and for status alike", async () => {
     const dir = await fixture();
     await workspaceOf({ fastlane: "tests/fixtures/minimal" }, dir);

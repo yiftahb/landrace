@@ -158,6 +158,13 @@ export function parseStep(source: string): Step {
   return validateStep(readStep(source));
 }
 
+/** One sentence per declared var nothing in `used` reads. */
+export function idleVars(vars: ReadonlyMap<string, string>, used: ReadonlySet<string>): string[] {
+  return [...vars.keys()].filter((name) => !used.has(name)).map((name) =>
+    `vars entry "${name}" is declared and nothing references it; ` +
+    "a variable nothing reads is usually the same typo as one nothing defines");
+}
+
 /**
  * The graph and its steps, with every `{vars.x}` already filled in.
  *
@@ -172,11 +179,15 @@ export function parseStep(source: string): Step {
  *
  * Callers with no vars pass none, and a workflow with no references loads
  * exactly as it did before.
+ *
+ * `used`, when given, collects the names of the vars this workflow reads, and
+ * the caller judges the ones nothing reads: `vars` belongs to the workspace,
+ * so a var only one of its workflows reads is not the others' typo.
  */
 export async function loadWorkflow(
   dir: string,
   vars: ReadonlyMap<string, string> = new Map(),
-  opts: { workspace?: string } = {},
+  opts: { workspace?: string; used?: Set<string> } = {},
 ): Promise<{ workflow: Workflow; steps: Map<string, Step> }> {
   const raw = parse(await readFile(join(dir, "workflow.yaml"), "utf8"));
   const parsed = workflowSchema.safeParse(raw);
@@ -280,15 +291,14 @@ export async function loadWorkflow(
   }
 
   const declared = [...vars.keys()];
-  const idle = declared.filter((name) => !used.has(name));
+  for (const name of used) opts.used?.add(name);
+  const idle = opts.used ? [] : idleVars(vars, used);
   if (unresolved.length || idle.length) {
     throw new WorkflowLoadError("vars", [
       ...unresolved.map((where) =>
         `${where}, which no vars entry defines` +
         `${declared.length ? ` — declared vars: ${declared.join(", ")}` : " — no vars are declared"}`),
-      ...idle.map((name) =>
-        `vars entry "${name}" is declared and nothing references it; ` +
-        "a variable nothing reads is usually the same typo as one nothing defines"),
+      ...idle,
     ].join("; "));
   }
 

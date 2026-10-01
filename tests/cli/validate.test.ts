@@ -119,6 +119,32 @@ describe("landrace validate, over a workspace", () => {
     expect(r.problems.filter((p) => p.message.startsWith("main: "))).toEqual([]);
   });
 
+  /*
+   * One workflow that will not load does not hide the others: its load
+   * problem names its folder, and the rest are still checked.
+   */
+  it("reports a workflow that will not load, and still checks the others", async () => {
+    const DUPLICATE = "version: 1\nname: Main\ndescription: test\nstages:\n  - { id: a, entry: true, terminal: true }\n  - { id: a, terminal: true }\n";
+    const r = await runValidate(await workspace({ main: DUPLICATE, fastlane: NO_ENTRY.replace("name: Main", "name: Fastlane") }));
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContainEqual({ rule: "duplicate-id", message: 'workflows/main: duplicate stage id "a"' });
+    expect(r.problems).toContainEqual(expect.objectContaining({ message: expect.stringMatching(/^fastlane: .*entry/) }));
+  });
+
+  /*
+   * A check of the configuration and the hooks every workflow shares is one
+   * problem, however many workflows meet it: the same sentence once per
+   * folder reads as several things to fix.
+   */
+  it("reports a configuration problem the workflows share once", async () => {
+    const ws = await workspace({ main: SOUND("Main"), fastlane: SOUND("Fastlane") });
+    await writeFile(join(ws, "landrace.yaml"), "version: 1\nagent: { adapter: claude }\nnotify: { on: [needs-you], via: [slack] }\n");
+    const r = await runValidate(ws);
+    expect(r.problems.filter((p) => p.rule === "notify")).toEqual([
+      { rule: "notify", message: 'notify.via names "slack", which no notifier registers: the loaded hooks register none' },
+    ]);
+  });
+
   it("reports the layout before workspaces, saying where to move it, and the command exits 1", async () => {
     // tests/fixtures/minimal is a workflow folder: workflow.yaml at its root.
     expect(await runValidate("tests/fixtures/minimal")).toEqual({
@@ -305,6 +331,45 @@ describe("landrace next", () => {
     expect(r.decision.action).toBe("transition");
     expect(r.effects[0]).toMatchObject({ body: "ann is writing the spec, round 1." });
     delete process.env.LR_E2E_ASSIGNEE;
+  });
+});
+
+/*
+ * What a workflow admits an item with has to be something its own eligibility
+ * rule accepts, or every item landrace_create_item starts there is skipped as
+ * ineligible on the next tick. Asked only where the rule is a check of labels
+ * alone; a rule reading anything else cannot be answered from labels, and the
+ * check abstains rather than guesses.
+ */
+describe("landrace validate, and what a workflow admits", () => {
+  const flow = (admit: string, eligible: string): string => [
+    "version: 1", "name: Fastlane", "description: test", admit, "eligible:", eligible, "stages:",
+    "  - id: a", "    entry: true", "    terminal: true", "    triggers:", '      - { when: { "run.stage": null } }', "",
+  ].filter((l) => l !== "").join("\n");
+  const LABEL_RULE = '  - { when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }';
+
+  const check = async (yaml: string) => {
+    const ws = await mkdtemp(join(tmpdir(), "landrace-validate-admit-"));
+    await mkdir(workflowIn(ws, "fastlane"), { recursive: true });
+    await writeFile(join(workflowIn(ws, "fastlane"), "workflow.yaml"), yaml);
+    return (await runValidate(ws)).problems;
+  };
+
+  it("reports labels its own eligible rule does not accept", async () => {
+    expect(await check(flow("admit: [lr:fast]", LABEL_RULE))).toEqual([{
+      rule: "admit",
+      message: 'workflow "fastlane" admits [lr:fast] but its eligible rule "no lr:auto label" does not accept those labels',
+    }]);
+  });
+
+  it("is clean when the rule accepts them", async () => {
+    expect(await check(flow("admit: [lr:auto]", LABEL_RULE))).toEqual([]);
+  });
+
+  it("abstains when a rule reads anything but the labels, or nothing is admitted", async () => {
+    const mixed = `${LABEL_RULE}\n  - { when: { "node.state.assignees": { $in: ["ann"] } }, else: "not ann's" }`;
+    expect(await check(flow("admit: [lr:fast]", mixed))).toEqual([]);
+    expect(await check(flow("", LABEL_RULE))).toEqual([]);
   });
 });
 

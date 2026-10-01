@@ -200,7 +200,12 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       if (start) {
         if (!opts.workflow) throw new Error("cannot start an item: this process was not given the workflow");
         if (admit.length === 0) {
-          throw new Error(`workflow "${opts.workflow.name}" admits nothing: add admit: [<labels>] to its workflow.yaml, or create with start: false`);
+          // The folder to edit, by its id: the display name is not a path.
+          const id = opts.workflowId;
+          throw new Error(
+            `workflow "${id ?? opts.workflow.name}" admits nothing: add admit: [<labels>] to ` +
+            `${id === undefined ? "its workflow.yaml" : `workflows/${id}/workflow.yaml`}, or create with start: false`,
+          );
         }
       }
       const wanted = [...new Set([...labels, ...(start ? admit : [])])];

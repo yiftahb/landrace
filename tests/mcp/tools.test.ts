@@ -68,9 +68,9 @@ describe("mcp tools", () => {
 
   it("refuses to start an item in a workflow that admits nothing, and creates nothing", async () => {
     const tracker = createFakeTracker();
-    const tools = createTools(tracker.registry, tracker.ctx, { workflow: admitting() });
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: admitting(), workflowId: "fastlane" });
     await expect(tools.createItem({ title: "Hotfix" })).rejects.toThrow(
-      'workflow "t" admits nothing: add admit: [<labels>] to its workflow.yaml, or create with start: false',
+      'workflow "fastlane" admits nothing: add admit: [<labels>] to workflows/fastlane/workflow.yaml, or create with start: false',
     );
     expect(tracker.issues.size).toBe(0);
     // Filing it without starting it needs no admission label at all.

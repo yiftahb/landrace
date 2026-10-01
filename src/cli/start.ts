@@ -50,7 +50,7 @@ import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
-import { branchIsolationProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, validate } from "#workflow/validate.js";
 import { loadWorkspace, onlyWorkflow } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
@@ -405,7 +405,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   // workflow, until the loop can claim items for several; `readOnly` is
   // `landrace status` (see BuildOptions), and the refusal names the command.
   const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
-  const { dir: workflowDir, workflow, steps } = onlyWorkflow(ws, opts.readOnly ? "status" : "start");
+  const { id, dir: workflowDir, workflow, steps } = onlyWorkflow(ws, opts.readOnly ? "status" : "start");
 
   // A workflow that cannot be proved sound must not be run against a live
   // repository: every problem validate reports is one an operator would
@@ -417,11 +417,11 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
     );
   };
 
-  // The isolation rule only where a step can run: `landrace status` reads,
-  // and a workflow it cannot run is still one it can describe.
+  // The isolation and admission rules only where the loop runs: `landrace
+  // status` reads, and a workflow it cannot run is still one it can describe.
   const problems = [
     ...validate(workflow, steps),
-    ...(opts.readOnly ? [] : branchIsolationProblems(workflow, loaded.config.agent.isolation)),
+    ...(opts.readOnly ? [] : [...branchIsolationProblems(workflow, loaded.config.agent.isolation), ...admitProblems(id, workflow)]),
   ];
   if (problems.length) refuse(problems);
 

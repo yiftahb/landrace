@@ -445,6 +445,23 @@ export interface Workspace {
   workflows: LoadedWorkflow[];
 }
 
+/** Why a workflow, or the workspace's vars, would not load: a load error's rule and its sentence. */
+export interface LoadFailure {
+  rule: LoadFailureRule;
+  message: string;
+}
+
+/**
+ * A workspace as far as it would load: the workflows that did, and a failure
+ * for each that did not. `ids` is every workflow folder, loaded or not.
+ * `validate` reads this to report every failure and still check the rest;
+ * every command that runs a workflow refuses on any failure instead.
+ */
+export interface WorkspaceRead extends Workspace {
+  ids: string[];
+  failures: LoadFailure[];
+}
+
 /** One tree with every `{vars.x}` filled in, what it took to fill it, and what it could not. */
 export interface VarSubstitution {
   value: unknown;
@@ -1703,6 +1720,11 @@ export interface ToolOptions {
    * turn rather than running it unconstrained.
    */
   workflow?: Workflow;
+  /**
+   * The workflow's id, its folder under `workflows/`: what a refusal names
+   * when the fix is an edit to that workflow's file.
+   */
+  workflowId?: string;
   steps?: Map<string, Step>;
   sandbox?: { root: string };
   /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */

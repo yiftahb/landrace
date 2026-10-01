@@ -267,7 +267,7 @@ describe("converge", () => {
   });
 
   // C1 — the worst defect the review found, live in the shipped
-  // .landrace/workflow.yaml: a stage whose step declares no output can never
+  // .landrace/workflows/main/workflow.yaml: a stage whose step declares no output can never
   // be marked complete by assess(), so decide() invokes it again on every
   // single pass with no memory that it just ran. Measured against the real
   // file: 30 paid opus invocations in one converge() call, then cap, then

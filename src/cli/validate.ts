@@ -9,9 +9,9 @@ import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { WorkflowLoadError } from "#workflow/load.js";
-import { branchIsolationProblems, validate } from "#workflow/validate.js";
-import { loadWorkspace } from "#workflow/workspace.js";
-import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Step, Workspace } from "#namespace.js";
+import { admitProblems, branchIsolationProblems, validate } from "#workflow/validate.js";
+import { readWorkspace } from "#workflow/workspace.js";
+import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Step, Workspace, WorkspaceRead } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -147,32 +147,54 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    */
   if (loaded?.missingVars.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))] };
 
-  // A workspace that fails to load is itself the thing `validate` exists to
-  // report — §11.1-§11.2 — so a load failure must become a Problem here
-  // rather than propagate as an unhandled rejection past this function.
-  let ws: Workspace;
+  // A workspace whose layout cannot be read is itself the thing `validate`
+  // exists to report — §11.1-§11.2 — so a load failure must become a Problem
+  // here rather than propagate as an unhandled rejection past this function.
+  let ws: WorkspaceRead;
   try {
-    ws = await loadWorkspace(dir, loaded?.vars, loaded?.config.workflows);
+    ws = await readWorkspace(dir, loaded?.vars, loaded?.config.workflows);
   } catch (e) {
     const rule = e instanceof WorkflowLoadError ? e.rule : "schema";
     return { ok: false, problems: [...problems, { rule, message: messageOf(e) }, ...(await exposedEnv(dir))] };
   }
+  // A workflow that would not load is reported in its folder's name, and the
+  // others are still checked: one broken file does not hide the rest.
+  problems.push(...ws.failures);
 
-  // Every workflow, each as it would run. With more than one, a problem that
-  // did not say which it is in would send the reader through every folder.
-  const named = ws.workflows.length > 1;
+  // Every workflow that loaded, each as it would run. With more than one, a
+  // problem that did not say which it is in would send the reader through
+  // every folder.
+  const named = ws.ids.length > 1;
+  // What the workflows share — the configuration, the executors it names,
+  // the notifiers — is one problem however many of them meet it, said once
+  // and attributed only when not every workflow does.
+  const shared = new Map<string, { problem: Problem; ids: string[] }>();
   for (const wf of ws.workflows) {
     const found = await workflowProblems(ws, wf, loaded);
-    problems.push(...(named ? found.map((p) => ({ ...p, message: `${wf.id}: ${p.message}` })) : found));
+    problems.push(...(named ? found.own.map((p) => ({ ...p, message: `${wf.id}: ${p.message}` })) : found.own));
+    for (const p of found.shared) {
+      const key = `${p.rule}\n${p.message}`;
+      const seen = shared.get(key);
+      if (seen) seen.ids.push(wf.id);
+      else shared.set(key, { problem: p, ids: [wf.id] });
+    }
+  }
+  for (const { problem, ids } of shared.values()) {
+    problems.push(named && ids.length < ws.ids.length ? { ...problem, message: `${ids.join(", ")}: ${problem.message}` } : problem);
   }
 
   problems.push(...(await exposedEnv(dir)));
   return { ok: problems.length === 0, problems };
 }
 
-async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: LoadedConfig | null): Promise<Problem[]> {
+/**
+ * One workflow's problems: its `own`, about its graph, its steps and its
+ * hooks' coverage of it; and those `shared` with every workflow built against
+ * the same configuration — the executors and the notifiers it names.
+ */
+async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: LoadedConfig | null): Promise<{ own: Problem[]; shared: Problem[] }> {
   const { workflow, steps } = wf;
-  const problems: Problem[] = [];
+  const own: Problem[] = [];
 
   /*
    * Everything answerable from the files alone, first and on its own.
@@ -189,22 +211,25 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
   let registry: Registry | null = null;
   if (graph.length === 0) {
     const result = await coverage(ws, wf);
-    problems.push(...result.problems);
+    own.push(...result.problems);
     registry = result.registry;
   } else {
-    problems.push(...graph);
+    own.push(...graph);
   }
   // What `start` refuses about the workflow against its runtime, said here
   // too: validate passing what start will refuse is the two disagreeing.
-  if (loaded) problems.push(...branchIsolationProblems(workflow, loaded.config.agent.isolation));
+  if (loaded) own.push(...branchIsolationProblems(workflow, loaded.config.agent.isolation));
+  own.push(...admitProblems(wf.id, workflow));
 
   // The executors the configuration names, built exactly as `start` builds
   // them: an executor's own setup can read files outside the workflow, so a
   // configuration mistake there is `validate`'s business too. Only once the
   // hooks are known to have loaded — a workflow already found unsound, or
   // whose hooks would not import, has no registry to build one against.
-  if (loaded && registry) problems.push(...(await executorProblems(ws.dir, loaded, registry, steps)), ...notifyProblems(loaded.config, registry));
-  return problems;
+  const shared = loaded && registry
+    ? [...(await executorProblems(ws.dir, loaded, registry, steps)), ...notifyProblems(loaded.config, registry)]
+    : [];
+  return { own, shared };
 }
 
 /**

@@ -32,7 +32,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
   const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
-  const { dir: workflowDir, workflow, steps } = onlyWorkflow(ws, "mcp");
+  const { id: workflowId, dir: workflowDir, workflow, steps } = onlyWorkflow(ws, "mcp");
   const registry = await loadHooks({ dir: workflowDir, modules: workflow.hooks ?? [], workspace: ws.dir });
 
   // stdout carries the MCP protocol, so anything we have to say goes to
@@ -144,6 +144,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     executor,
     ...screen,
     workflow,
+    workflowId,
     steps,
     ...(sandbox === null ? {} : { sandbox }),
     // A turn asked here runs in this process, and the loop's page reads its
