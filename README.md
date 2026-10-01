@@ -533,6 +533,48 @@ For an installed landrace, hook modules are imported at runtime with no build st
 
 Conditions are MongoDB-style documents over snapshot paths, evaluated with a **closed operator allowlist** — `$eq $ne $in $nin $lt $lte $gt $gte $exists $all $size $and $or $not`. `$where` and `$regex` are rejected at load, because a workflow file is a repo file a pull request can edit.
 
+#### Jira
+
+`landrace/integrations/jira` is one Jira Cloud project's issues as the tracker, on `BaseTracker`, over REST v3. A hook file composes it beside whatever forge and docs the project has:
+
+```ts
+// .landrace/hooks/project.ts
+import { compose } from "landrace/kit";
+import { Jira } from "landrace/integrations/jira";
+export const { preflight, source, operator, pre, post } = compose({
+  tracker: new Jira({ project: "KEY" }),
+});
+```
+
+```yaml
+# .landrace/landrace.yaml
+log:
+  redact: [jiraEmail, jiraToken]
+secrets:
+  jiraBaseUrl: $JIRA_BASE_URL   # https://<site>.atlassian.net, and nothing else
+  jiraEmail: $JIRA_EMAIL        # the account landrace posts as
+  jiraToken: $JIRA_TOKEN        # that account's API token
+```
+
+| Option | Default | What it is |
+|---|---|---|
+| `project` | — | The project's key. Only its `KEY-<n>` issues are tickets |
+| `issueType` | `"Task"` | What a ticket with no parent is created as |
+| `childType` | `"Subtask"` | What a child is created as, under its parent |
+| `transitions.done` | `"Done"` | The transition that closes a ticket as done |
+| `transitions.dropped` | `"Won't Do"` | The transition that closes one as dropped; a closed issue whose status or resolution has this name reads as dropped |
+
+Basic auth carries the account's own token, so `jiraBaseUrl` must be an `https://<site>.atlassian.net` site, and nothing is asked of it before `GET /myself` says who the account is. Logins are `accountId`s, unique and stable: a ticket's author is its creator, since the reporter can be edited, and its editor whoever last changed the description, read from the changelog, so a child's origin a person edited reads as nobody's. An id is the project's `KEY-<n>` or it is refused before any request is built, and an issue Jira answers under another key has moved and is refused too. A tick lists the project's open issues, and, for the board's Done lane, those carrying an `lr:stage:*` label that closed inside the window. Position is a stage label, as on any tracker; Jira's status moves only to close a ticket, through the named transition, or reopen one, through the first transition into a To Do status — a transition the issue does not offer fails, naming the ones it does. An issue is closed once its status is in Jira's done category: dropped if the status or the resolution is named `transitions.dropped`, done otherwise, so a closure nobody named still counts. Comments and descriptions are ADF, never v2's wiki markup, which reads the `\\` and `{x}` in a marker's JSON as its own syntax: a paragraph per blank-line block and a hard break per line, the text verbatim, so the `<!-- landrace … -->` marker shows as the comment's last paragraph and reads back exactly. A body over Jira's 32,767 characters is refused before the request. A new issue's priority is the project's own, landrace's 0–9 as an index into its list, past its last the lowest; times are read as UTC. The preflight names each permission the account lacks on the project (`BROWSE_PROJECTS`, `CREATE_ISSUES`, `EDIT_ISSUES`, `TRANSITION_ISSUES`, `ADD_COMMENTS`), each issue type the project does not have and each without a labels field, and writes nothing, since Jira shows every write.
+
+To check it against a live project — it creates a ticket and a child there, comments, labels, drops the child and closes the ticket, printing each check:
+
+```sh
+pnpm build && JIRA_BASE_URL=https://<site>.atlassian.net JIRA_EMAIL=… JIRA_TOKEN=… JIRA_PROJECT=KEY \
+  node scripts/jira-check.mjs
+```
+
+`JIRA_OPTIONS` takes the options above as JSON, `{"transitions":{"dropped":"Cancelled"}}`. It exits 1 on any failed check, and when none passed.
+
 ### Executors: the coding agent is a hook
 
 The engine runs no coding agent of its own: `agent.adapter` names a hook. `defineExecutor` registers one, either as `{ id, run }` directly or as `{ id, create(ctx) }` — a factory the runtime calls once at startup, with `ctx` the same `RuntimeContext` every hook gets plus `dir` (the workflow directory, for finding the repository), `redact` (secrets a run's own setup discovers, such as an MCP server's `env`, that the configuration never named) and `steps` (the workflow's steps, by path, so a factory can refuse what a step asks of it before the step runs). A factory that cannot start — a bad `agent.*` key, a server `.mcp.json` does not define, a step's effort it has no level for — throws, and `landrace validate` reports it under the `executor` rule, one problem per line.
