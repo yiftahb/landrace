@@ -1,5 +1,6 @@
 version: 1
 name: assigned
+description: test
 
 # The multi-developer filter, and it is an ordinary eligibility rule: the var
 # is substituted at load, so what the validator and the engine both see is a

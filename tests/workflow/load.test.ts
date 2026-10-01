@@ -43,9 +43,26 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
     dirs.push(dir);
     return dir;
   };
-  const graph = (extra: string) => `version: 1\nname: t\n${extra}stages:\n  - id: a\n    entry: true\n`;
+  const graph = (extra: string) => `version: 1\nname: t\ndescription: test\n${extra}stages:\n  - id: a\n    entry: true\n`;
 
   afterEach(() => { while (dirs.length) rmSync(dirs.pop() as string, { recursive: true, force: true }); });
+
+  // JSON is YAML, so the helper's string form takes an object unchanged.
+  const wf = (extra: Record<string, unknown>): string =>
+    workflowDir(JSON.stringify({ version: 1, name: "Main", stages: [{ id: "a", entry: true, terminal: true }], ...extra }));
+
+  it("requires a description", async () => {
+    await expect(loadWorkflow(wf({}))).rejects.toThrow(/description/);
+  });
+
+  it("reads name as the display title, description and admit", async () => {
+    const { workflow } = await loadWorkflow(wf({ name: "Technical Support", description: "Support items assigned to me.", admit: ["lr:support"] }));
+    expect(workflow).toMatchObject({ name: "Technical Support", description: "Support items assigned to me.", admit: ["lr:support"] });
+  });
+
+  it("refuses an empty admit label", async () => {
+    await expect(loadWorkflow(wf({ description: "d", admit: [""] }))).rejects.toThrow(/admit/);
+  });
 
   it("refuses a step declaring skills: plugins come from agent.plugins for every step, never from front matter", () => {
     expect(() => parseStep("---\nskills: [superpowers:brainstorming]\n---\nbody"))
@@ -77,13 +94,13 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
   });
 
   it("refuses a stage key the engine does not read, such as the on_exit that must never exist", async () => {
-    await expect(loadWorkflow(workflowDir("version: 1\nname: t\nstages:\n  - id: a\n    entry: true\n    on_exit: []\n")))
+    await expect(loadWorkflow(workflowDir("version: 1\nname: t\ndescription: test\nstages:\n  - id: a\n    entry: true\n    on_exit: []\n")))
       .rejects.toThrow(/on_exit/);
   });
 
   it("reads a goto list written once and repeated by YAML reference, and refuses a key a goto entry does not have", async () => {
     const yaml = [
-      "version: 1", "name: t", "stages:",
+      "version: 1", "name: t", "description: test", "stages:",
       "  - id: a", "    entry: true",
       "  - id: b", "    goto: &back", "      - a", '      - { stage: a, when: { "run.counters.a": { $lt: 3 } } }',
       "  - id: c", "    goto: *back", "",
@@ -113,7 +130,7 @@ describe("a stage's branch", () => {
     writeFileSync(join(dir, "steps", "build.md"), "---\ncapabilities: [repo:read, repo:write]\n---\nbuild\n");
     writeFileSync(join(dir, "workflow.yaml"), [
       "version: 1",
-      "name: t",
+      "name: t", "description: test",
       "stages:",
       "  - id: build",
       "    entry: true",

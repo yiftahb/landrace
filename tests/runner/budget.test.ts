@@ -4,7 +4,7 @@ import type { Workflow } from "#namespace.js";
 describe("the step timeout", () => {
   const workflow = (budget?: Record<string, unknown>): Workflow => ({
     version: 1,
-    name: "t",
+    name: "t", description: "test",
     stages: [{ id: "a", entry: true }],
     ...(budget === undefined ? {} : { budget: budget as NonNullable<Workflow["budget"]> }),
   });

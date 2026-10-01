@@ -19,6 +19,7 @@ async function fixture(step: string, link: (dir: string, outside: string) => Pro
   await writeFile(join(base, "outside-secret.md"), `---\ncapabilities: []\n---\n${SECRET}\n`);
   await writeFile(join(dir, "workflow.yaml"), `version: 1
 name: linked
+description: test
 stages:
   - id: spec
     entry: true
@@ -70,6 +71,7 @@ describe("a symlink cannot smuggle a file into an agent's prompt", () => {
     await symlink(join(dir, "real", "spec.md"), join(dir, "spec.md"));
     await writeFile(join(dir, "workflow.yaml"), `version: 1
 name: inside
+description: test
 stages:
   - id: spec
     entry: true
@@ -93,6 +95,7 @@ describe("a malformed step path is reported as a path problem, not a missing fil
     const dir = await mkdtemp(join(tmpdir(), "landrace-badpath-"));
     await writeFile(join(dir, "workflow.yaml"), `version: 1
 name: bad
+description: test
 stages:
   - id: spec
     entry: true

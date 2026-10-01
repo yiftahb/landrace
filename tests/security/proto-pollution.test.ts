@@ -14,7 +14,7 @@ const BOT = "landrace-bot";
 
 const wf: Workflow = {
   version: 1,
-  name: "t",
+  name: "t", description: "test",
   stages: [
     { id: "triage", entry: true, step: "steps/triage.md", triggers: [{ name: "fresh", when: { "run.stage": null } }] },
     { id: "build", step: "steps/build.md", triggers: [{ name: "triaged", when: { "run.outputs.triage": { $exists: true } } }] },
@@ -50,7 +50,7 @@ describe("a marker cannot reach an object's prototype", () => {
   it("rejects a workflow that declares one of those stage ids", () => {
     const problems = validateStructure({
       version: 1,
-      name: "t",
+      name: "t", description: "test",
       stages: [{ id: "__proto__", entry: true }],
     });
     expect(problems).toContainEqual(

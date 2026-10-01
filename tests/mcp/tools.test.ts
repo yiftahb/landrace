@@ -20,7 +20,7 @@ beforeEach(async () => { lockRoot = await mkdtemp(join(tmpdir(), "lr-tools-")); 
  * drives a turn has to say what the step was, the same as the loop does.
  */
 const spec: { workflow: Workflow; steps: Map<string, Step> } = {
-  workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", triggers: [] }] },
+  workflow: { version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", triggers: [] }] },
   steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
 };
 
@@ -153,7 +153,7 @@ describe("mcp tools", () => {
 });
 
 describe("landrace_goto", () => {
-  const workflow: Workflow = { version: 1, name: "t", stages: [
+  const workflow: Workflow = { version: 1, name: "t", description: "test", stages: [
     { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
       triggers: [{ when: { "run.stage": null } }] },
     { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
@@ -202,7 +202,7 @@ describe("landrace_goto", () => {
  * refused step may run once without the screener. Never a reply's to make.
  */
 describe("landrace_clear", () => {
-  const workflow: Workflow = { version: 1, name: "t", stages: [
+  const workflow: Workflow = { version: 1, name: "t", description: "test", stages: [
     { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
       triggers: [{ when: { "run.stage": null } }] },
     { id: "screened", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
@@ -237,7 +237,7 @@ describe("landrace_clear", () => {
  * throw wrote nothing a pass could pick up.
  */
 describe("waking the loop", () => {
-  const workflow: Workflow = { version: 1, name: "t", stages: [
+  const workflow: Workflow = { version: 1, name: "t", description: "test", stages: [
     { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
       triggers: [{ when: { "run.stage": null } }] },
     { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },

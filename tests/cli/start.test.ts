@@ -98,7 +98,7 @@ describe("buildRuntime", () => {
     // Schema-valid and unsound: no entry stage, so nothing can ever begin.
     await writeFile(
       join(dir, "workflow.yaml"),
-      "version: 1\nname: broken\nstages:\n  - id: only\n    triggers: [{ when: { \"run.stage\": null } }]\n",
+      "version: 1\nname: broken\ndescription: test\nstages:\n  - id: only\n    triggers: [{ when: { \"run.stage\": null } }]\n",
     );
     await expect(buildRuntime(dir, {})).rejects.toThrow(/does not validate[\s\S]*entry/);
   });
@@ -428,7 +428,7 @@ describe("repoWorkspace", () => {
 // Starts a real server on 127.0.0.1: skipped only where a sandbox forbids that.
 describeLoopback("startUi", () => {
   const board = () =>
-    createBoard({ workflow: { version: 1, name: "t", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    createBoard({ workflow: { version: 1, name: "t", description: "test", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
 
   it("serves nothing with --no-ui", async () => {
     expect(await startUi({ board: board(), ui: false, once: false, port: 0 })).toBeNull();
@@ -578,7 +578,7 @@ describeLoopback("startUi", () => {
   });
 });
 
-const WF: Workflow = { version: 1, name: "t", stages: [
+const WF: Workflow = { version: 1, name: "t", description: "test", stages: [
   { id: "spec", entry: true, step: "steps/spec.md",
     on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
     triggers: [{ when: { "run.stage": null } }] },
@@ -616,7 +616,7 @@ describe("the page's Retry and Go to step", () => {
  * page writes is what the next tick re-derives.
  */
 describe("the item panel", () => {
-  const SPEC: Workflow = { version: 1, name: "t", stages: [{ id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] }] };
+  const SPEC: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] }] };
 
   const panelWorld = async (run: Executor["run"] = async () => ({ text: "Understood.\n```json\n{ \"blocking\": false }\n```", sessionId: "sid-2" })) => {
     const tracker = createFakeTracker([{ number: 12, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] }]);

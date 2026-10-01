@@ -91,6 +91,7 @@ describe("landrace validate", () => {
 describe("landrace validate, and the vars a workflow is substituted with", () => {
   const GRAPH = `version: 1
 name: t
+description: test
 eligible:
   - when: { "item.assignees": { $in: ["{vars.assignee}"] } }
     else: "assigned to somebody else"
@@ -178,7 +179,7 @@ describe("landrace validate, and the notify block", () => {
   const dirFor = async (config: string): Promise<string> => {
     const dir = await mkdtemp(join(tmpdir(), "landrace-validate-notify-"));
     await writeFile(join(dir, "workflow.yaml"), [
-      "version: 1", "name: t", "stages:",
+      "version: 1", "name: t", "description: test", "stages:",
       "  - id: a", "    entry: true", "    terminal: true", "    triggers:", '      - { when: { "run.stage": null } }', "",
     ].join("\n"));
     await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude }\n${config}`);
@@ -266,6 +267,7 @@ describe("landrace validate, a stage's branch, and worktree isolation", () => {
     await mkdir(join(dir, "steps"), { recursive: true });
     await writeFile(join(dir, "workflow.yaml"), `version: 1
 name: t
+description: test
 stages:
   - id: build
     entry: true

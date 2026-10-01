@@ -127,6 +127,7 @@ describe("loadWorkflow substitutes vars into the graph and the steps", () => {
 
   const GRAPH = `version: 1
 name: t
+description: test
 eligible:
   - when: { "item.assignees": { $in: ["{vars.assignee}"] } }
     else: "assigned to somebody else"
@@ -198,6 +199,7 @@ Write the spec for {item.title}, for the {vars.team} team.
   it("loads a var whose value is itself YAML without letting it reshape the document", async () => {
     const graph = `version: 1
 name: t
+description: test
 eligible:
   - { when: { "item.labels": { $in: ["lr:auto"] } }, else: "{vars.note}" }
 stages:
@@ -211,7 +213,7 @@ stages:
   });
 
   it("loads a workflow with no vars at all exactly as before", async () => {
-    const plain = `version: 1\nname: t\nstages:\n  - id: a\n    entry: true\n`;
+    const plain = `version: 1\nname: t\ndescription: test\nstages:\n  - id: a\n    entry: true\n`;
     const { workflow } = await loadWorkflow(workflowDir(plain));
     expect(workflow.stages).toHaveLength(1);
   });

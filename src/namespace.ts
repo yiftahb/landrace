@@ -280,7 +280,12 @@ export interface EligibilityRule {
 
 export interface Workflow {
   version: number;
+  /** The display title. */
   name: string;
+  /** What a person or agent choosing a workflow reads. */
+  description: string;
+  /** Labels a started item is given; the engine names none itself. */
+  admit?: string[] | undefined;
   stages: Stage[];
   eligible?: EligibilityRule[];
   /** The one budget the engine reads; every cap lives in the trigger that enforces it. */

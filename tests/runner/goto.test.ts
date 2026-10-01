@@ -15,7 +15,7 @@ beforeEach(async () => {
 });
 
 const ENTER = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
-const workflow: Workflow = { version: 1, name: "t", stages: [
+const workflow: Workflow = { version: 1, name: "t", description: "test", stages: [
   { id: "spec", entry: true, step: "steps/spec.md", on_enter: [ENTER], triggers: [{ when: { "run.stage": null } }] },
   { id: "build", step: "steps/build.md", on_enter: [ENTER], triggers: [{ when: { "run.stage": "spec" } }] },
   { id: "blocked", goto: ["spec", { stage: "build", when: { "run.counters.build": { $lt: 3 } } }],
@@ -252,7 +252,7 @@ describe("sending an item back to a step", () => {
   it("names every stage it matches, rather than refusing to place it at all", async () => {
     // Two stages whose identity both read the one label an item may carry:
     // ambiguous, and locate() already says which — the refusal should too.
-    const ambiguous: Workflow = { version: 1, name: "t", stages: [
+    const ambiguous: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "blocked", identity: { "run.stage": "blocked" }, goto: ["spec"] },
       { id: "blocked-too", identity: { "run.stage": "blocked" }, goto: ["spec"] },
       { id: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] },
@@ -271,7 +271,7 @@ describe("sending an item back to a step", () => {
   it("refuses a goto at a stage matched only by a custom identity foreign to the label", async () => {
     // deriveRun scopes a goto record to the *label* stage, never locate()'s —
     // writing one here would be silently dropped on the very next read.
-    const custom: Workflow = { version: 1, name: "t", stages: [
+    const custom: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "weird", identity: { "node.priority": 5 }, goto: ["spec"] },
       { id: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] },
     ] };
@@ -288,7 +288,7 @@ describe("sending an item back to a step", () => {
   });
 
   it("refuses a goto at a stage whose own precondition does not hold", async () => {
-    const gated: Workflow = { version: 1, name: "t", stages: [
+    const gated: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "blocked", requires: { "run.unblockedAt": { $gt: 0 } }, goto: ["spec"] },
       { id: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] },
     ] };

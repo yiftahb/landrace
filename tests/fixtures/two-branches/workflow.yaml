@@ -1,5 +1,6 @@
 version: 1
 name: two-branches
+description: test
 
 # One item, two branches: the API and the UI are built, pushed and proposed
 # separately, each on the branch its own stage names. Nothing in the engine

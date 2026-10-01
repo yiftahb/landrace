@@ -1,5 +1,6 @@
 version: 1
 name: landrace
+description: "The full flow: a spec a person approves, a build, a review loop, and a pull request a person merges."
 
 # Integrations are imported by path, not named by id. Every path is relative to
 # this directory and must stay inside it, and the order is the order pre hooks

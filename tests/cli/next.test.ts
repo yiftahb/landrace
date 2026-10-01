@@ -18,7 +18,7 @@ describe("landrace next, from the command line", () => {
     await mkdir(join(dir, "steps"));
     await writeFile(join(dir, "workflow.yaml"), [
       "version: 1",
-      "name: nx",
+      "name: nx", "description: test",
       "stages:",
       "  - id: b",
       "    entry: true",

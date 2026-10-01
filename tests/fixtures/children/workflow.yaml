@@ -1,5 +1,6 @@
 version: 1
 name: children
+description: test
 
 # The engine's child-item feature, end to end: an approved spec is either
 # built as one piece of work or split into sub-items that are each built and

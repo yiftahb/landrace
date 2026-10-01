@@ -104,6 +104,7 @@ const EXECUTOR = `export const executor = brand("executor", {
 
 const workflowReading = (path?: string, budget?: string): string => `version: 1
 name: e2e
+description: test
 hooks: [hooks/fake.ts, hooks/claude.ts]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }

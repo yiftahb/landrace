@@ -75,7 +75,7 @@ function world() {
 }
 
 const workflow: Workflow = {
-  version: 1, name: "t",
+  version: 1, name: "t", description: "test",
   stages: [
     { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "a" }] },
     { id: "b", terminal: true, triggers: [{ when: { "run.stage": "a" } }], on_enter: [{ type: "tracker.status", value: "b" }] },
@@ -127,7 +127,7 @@ describe("converge", () => {
 
   it("stops at a wait rather than spinning", async () => {
     const waiting: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "a" }] },
         { id: "b", triggers: [{ when: { "run.stage": "a", "node.state.labels": { $in: ["never"] } } }] },
@@ -139,7 +139,7 @@ describe("converge", () => {
 
   it("stops at the pass cap and says so, rather than looping forever", async () => {
     const flipflop: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }, { when: { "run.stage": "b" } }], on_enter: [{ type: "tracker.status", value: "a" }] },
         { id: "b", triggers: [{ when: { "run.stage": "a" } }], on_enter: [{ type: "tracker.status", value: "b" }] },
@@ -187,7 +187,7 @@ describe("converge", () => {
       data: { marker: "m" }, at: new Date(0).toISOString(), byAgent: true,
     });
     const twoEffects: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "a", entry: true, terminal: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -212,7 +212,7 @@ describe("converge", () => {
   // passes as though "halt" were just another kind of "keep going".
   it("stops immediately on a halt decision, without exceeding one pass past it", async () => {
     const ambiguousTriggers: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "a" }] },
         { id: "b", triggers: [{ name: "one", when: { "run.stage": "a" } }] },
@@ -231,7 +231,7 @@ describe("converge", () => {
     const w = world();
     let invocations = 0;
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         {
           id: "spec", step: "spec", entry: true,
@@ -280,7 +280,7 @@ describe("converge", () => {
     const w = world();
     let invocations = 0;
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         {
           id: "spec", step: "spec", entry: true,
@@ -311,7 +311,7 @@ describe("converge", () => {
   it("posts a durable record when the invoked-set guard trips, not just a log line", async () => {
     const w = world();
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -334,7 +334,7 @@ describe("converge", () => {
   // call's non-event forever.
   describe("a step that never ran does not permanently block the stage it was trying to leave", () => {
     const stepWorkflowFor = (): Workflow => ({
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         {
           id: "spec", step: "spec", entry: true,
@@ -427,7 +427,7 @@ describe("converge", () => {
     });
     const pre = definePreHook({ id: "w", run: () => ({ entries: [] }) });
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -460,7 +460,7 @@ describe("converge", () => {
   it("posts a durable record when a stage names a step that was never loaded", async () => {
     const w = world();
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -485,7 +485,7 @@ describe("converge", () => {
     const w = world();
     const hugeShape = "s".repeat(5000);
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -519,7 +519,7 @@ describe("converge", () => {
   // referencing the whole log stream.
   it("says why it settled at a wait: a fixed point after a transition, distinct from a genuine wait on a trigger", async () => {
     const noOnEnter: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{ id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] }],
     };
     const fixedPoint = await converge("1", deps(world(), { workflow: noOnEnter }));
@@ -527,7 +527,7 @@ describe("converge", () => {
     expect(fixedPoint.why).toMatch(/nothing left to apply|fixed point/i);
 
     const waiting: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "a" }] },
         { id: "b", triggers: [{ when: { "run.stage": "a", "node.state.labels": { $in: ["never"] } } }] },
@@ -591,7 +591,7 @@ describe("converge", () => {
      */
     describe("a run aborted while its step ran writes nothing to the item", () => {
       const oneStep: Workflow = {
-        version: 1, name: "t",
+        version: 1, name: "t", description: "test",
         stages: [{
           id: "spec", step: "spec", entry: true,
           triggers: [{ when: { "run.stage": null } }],
@@ -712,7 +712,7 @@ describe("converge", () => {
     let screenerCalls = 0;
     let agentCalls = 0;
     const screenedWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         {
           id: "spec", step: "spec", entry: true,
@@ -760,7 +760,7 @@ describe("converge", () => {
    */
   describe("the record a rejection leaves", () => {
     const oneStep: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -812,7 +812,7 @@ describe("converge", () => {
   it("redacts a secret out of the screening executor's own error text before posting it", async () => {
     const w = world();
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -853,7 +853,7 @@ describe("converge", () => {
   it("redacts a secret whose configured value has surrounding whitespace, matching its bare form", async () => {
     const w = world();
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -896,7 +896,7 @@ describe("converge", () => {
   it("redacts a value an executor registered through redact out of a malformed record body", async () => {
     const w = world();
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -929,7 +929,7 @@ describe("converge", () => {
   it("redacts a declared secret whole when the logger's set holds a prefix of it", async () => {
     const w = world();
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -971,7 +971,7 @@ describe("converge", () => {
  */
 describe("an artifact's briefing is built for the step, not for the pass", () => {
   const stepWorkflow: Workflow = {
-    version: 1, name: "t",
+    version: 1, name: "t", description: "test",
     stages: [
       {
         id: "a", entry: true, step: "s.md",
@@ -1072,7 +1072,7 @@ describe("the evaluation event carries the stage the item moved to", () => {
 
 describe("step.started and step.finished", () => {
   const specWorkflow: Workflow = {
-    version: 1, name: "t",
+    version: 1, name: "t", description: "test",
     stages: [
       {
         id: "spec", step: "spec", entry: true,
@@ -1193,7 +1193,7 @@ describe("a stage that creates children", () => {
   } as unknown as RuntimeContext;
 
   const workflow: Workflow = {
-    version: 1, name: "t",
+    version: 1, name: "t", description: "test",
     stages: [
       {
         id: "breakdown", entry: true, step: "steps/breakdown.md",
@@ -1220,7 +1220,7 @@ describe("a stage that creates children", () => {
 
   /** Same shape as `workflow`, but its `nodes.close` names no relationship types to follow. */
   const brokenWorkflow: Workflow = {
-    version: 1, name: "t",
+    version: 1, name: "t", description: "test",
     stages: [{
       id: "breakdown", entry: true, step: "steps/breakdown.md",
       on_enter: [{ type: "nodes.close", follow: [] }, { type: "tracker.status", value: "breakdown" }],
@@ -1348,7 +1348,7 @@ describe("the step timeout budget", () => {
       run: async (_p, o) => { seen.push(o.timeoutMs); return { text: "free text", sessionId: null }; },
     };
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -1380,7 +1380,7 @@ describe("the engine's own item server", () => {
       run: async (_p, o) => { seen.push(o.child); return { text: "free text", sessionId: null }; },
     };
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{
         id: "spec", step: "spec", entry: true,
         triggers: [{ when: { "run.stage": null } }],
@@ -1409,7 +1409,7 @@ describe("a stage a person is pairing on", () => {
     const events: LandraceEvent[] = [];
     let ran = 0;
     const stepWorkflow: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [{ id: "spec", step: "spec", entry: true, triggers: [{ when: { "run.stage": null } }] }],
     };
     const r = await converge("1", deps(w, {

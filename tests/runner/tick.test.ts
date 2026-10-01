@@ -19,7 +19,7 @@ import { statusLines } from "#runner/status.js";
  */
 const workflow: Workflow = {
   version: 1,
-  name: "t",
+  name: "t", description: "test",
   eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
   stages: [{ id: "a", entry: true, terminal: true, triggers: [{ when: { "run.stage": null } }] }],
 };
@@ -580,7 +580,7 @@ describe("eligibilityOf", () => {
   });
 
   it("treats a workflow with no eligibility rule as taking every item", () => {
-    const open: Workflow = { version: 1, name: "t", stages: workflow.stages };
+    const open: Workflow = { version: 1, name: "t", description: "test", stages: workflow.stages };
     expect(eligibilityOf(open, itemNode("1", []))).toEqual({ eligible: true });
   });
 });

@@ -17,6 +17,7 @@ async function dirWithBreakdown(): Promise<string> {
     join(dir, "workflow.yaml"),
     `version: 1
 name: test
+description: test
 hooks: []
 stages:
   - id: spec

@@ -4,7 +4,7 @@ import { boardView, conversationOf, createBoard } from "#ui/board.js";
 import { laneOf } from "#runner/status.js";
 
 const workflow: Workflow = {
-  version: 1, name: "t",
+  version: 1, name: "t", description: "test",
   eligible: [{ when: { "node.state.labels": { $in: ["go"] } }, else: "no go label" }],
   stages: [
     { id: "spec", entry: true, step: "steps/spec.md", goto: ["spec"], triggers: [{ when: { "run.stage": null } }] },

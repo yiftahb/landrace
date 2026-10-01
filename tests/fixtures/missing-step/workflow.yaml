@@ -1,5 +1,6 @@
 version: 1
 name: missing-step
+description: test
 stages:
   - id: spec
     entry: true

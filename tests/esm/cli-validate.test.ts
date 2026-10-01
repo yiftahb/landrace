@@ -245,7 +245,7 @@ export const { claude } = await import(pathToFileURL(${JSON.stringify(join(proce
     return dir;
   }
   await writeFile(join(dir, "workflow.yaml"), [
-    "version: 1", "name: t", "hooks: [hooks/claude.ts]", "stages:",
+    "version: 1", "name: t", "description: test", "hooks: [hooks/claude.ts]", "stages:",
     "  - id: a", "    entry: true", "    terminal: true", "    triggers:",
     "      - name: fresh", '        when: { "run.stage": null }', "",
   ].join("\n"));
@@ -258,7 +258,7 @@ async function workflowDir(module: string, opts: { entry?: boolean; reads?: stri
   await writeFile(join(dir, "hook.ts"), module);
   await writeFile(join(dir, "workflow.yaml"), [
     "version: 1",
-    "name: hooked",
+    "name: hooked", "description: test",
     "hooks: [hook.ts]",
     "stages:",
     "  - id: spec",

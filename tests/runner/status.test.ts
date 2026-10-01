@@ -3,7 +3,7 @@ import { statusRows } from "#runner/status.js";
 
 const workflow: Workflow = {
   version: 1,
-  name: "t",
+  name: "t", description: "test",
   // Deliberately not `lr:auto`: a status line reports the workflow's own rule,
   // and a hard-coded label name here would look right against the shipped
   // workflow and be wrong against every other one.

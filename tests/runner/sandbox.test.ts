@@ -271,7 +271,7 @@ describe("a step that exceeds what it declared", () => {
 /* --------------------------------------------------------------- converge -- */
 
 const stepWorkflow: Workflow = {
-  version: 1, name: "t",
+  version: 1, name: "t", description: "test",
   stages: [
     {
       id: "spec", step: "spec", entry: true,
@@ -613,7 +613,7 @@ describe("converge and a stage's branch", () => {
     const root = await repo();
     const made: string[] = [];
     const twoBranches: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       stages: [
         {
           id: "api", step: "api", entry: true, branch: "api/{item}",

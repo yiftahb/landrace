@@ -1,5 +1,6 @@
 version: 1
 name: absolute-step
+description: test
 stages:
   - id: spec
     entry: true

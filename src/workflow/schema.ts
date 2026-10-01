@@ -32,7 +32,9 @@ export const stageSchema = z.object({
 
 export const workflowSchema = z.object({
   version: z.literal(1),
-  name: z.string().min(1),
+  name: z.string().min(1), // the display title ("Technical Support")
+  description: z.string().min(1), // what landrace_workflows shows an agent
+  admit: z.array(z.string().min(1)).optional(), // labels a started item gets; the engine names none itself
   stages: z.array(stageSchema).min(1),
   eligible: z.array(z.object({ when: condition, else: z.string().min(1) }).strict()).optional(),
   /**

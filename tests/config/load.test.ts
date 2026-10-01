@@ -20,6 +20,17 @@ async function fixture(env: string | null, extra = ""): Promise<string> {
   return dir;
 }
 
+describe("the workflows order", () => {
+  it("reads the order the sidebar lists workflows in", async () => {
+    const { config } = await loadConfig(await fixture("", "workflows: [main, fastlane]\n"));
+    expect(config.workflows).toEqual(["main", "fastlane"]);
+  });
+
+  it("refuses an empty name", async () => {
+    await expect(loadConfig(await fixture("", 'workflows: [""]\n'))).rejects.toThrow(/workflows/);
+  });
+});
+
 describe("the notify block", () => {
   it("reads which events notify, and through which notifiers", async () => {
     const { config } = await loadConfig(await fixture("", "notify: { on: [needs-you], via: [slack] }\n"));

@@ -11,7 +11,7 @@ const stages: Stage[] = [
     triggers: [{ name: "spec done", when: { "outputs.spec": { $exists: true } } }] },
   { id: "blocked", triggers: [{ name: "rejected", when: { "run.lastOutputValid": false } }] },
 ];
-const wf: Workflow = { version: 1, name: "t", stages };
+const wf: Workflow = { version: 1, name: "t", description: "test", stages };
 
 describe("decide", () => {
   it("skips an ineligible item with the reason", () => {
@@ -84,12 +84,12 @@ describe("decide", () => {
   });
 
   it("waits when nothing matches", () => {
-    const only: Workflow = { version: 1, name: "t", stages: [{ id: "spec", entry: true }] };
+    const only: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "spec", entry: true }] };
     expect(decide(only, snap({ run: run({ stage: "spec" }) })).action).toBe("wait");
   });
 
   it("halts on two matching triggers rather than taking the first", () => {
-    const ambiguous: Workflow = { version: 1, name: "t", stages: [
+    const ambiguous: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "spec", entry: true },
       { id: "a", triggers: [{ name: "a", when: { "x": 1 } }] },
       { id: "b", triggers: [{ name: "b", when: { "x": 1 } }] },
@@ -100,7 +100,7 @@ describe("decide", () => {
   });
 
   it("halts when the item cannot be placed", () => {
-    const both: Workflow = { version: 1, name: "t", stages: [
+    const both: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, identity: { x: 1 } },
       { id: "b", identity: { x: 1 } },
     ] };
@@ -108,7 +108,7 @@ describe("decide", () => {
   });
 
   it("halts when a precondition is unmet instead of running a step on nothing", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "review", entry: true, step: "s.md", requires: { "outputs.spec": { $exists: true } } },
     ] };
     const d = decide(w, snap({ run: run({ stage: "review" }) }));
@@ -129,7 +129,7 @@ describe("decide", () => {
       triggers: [{ name: "child from a breakdown", when: { ...fresh, "rel.child-of.out.total": 1 } }] };
     const review: Stage = { id: "review", step: "steps/review.md",
       triggers: [{ name: "built", when: { "run.stage": "build", "run.outputs.build": { $exists: true } } }] };
-    const multi: Workflow = { version: 1, name: "t", stages: [top, child, review] };
+    const multi: Workflow = { version: 1, name: "t", description: "test", stages: [top, child, review] };
     const withParents = (n: number, o: object = {}) =>
       snap({ rel: { "child-of": { out: { total: n }, in: { total: 0 } } }, run: run({ stage: null, ...o }) });
 
@@ -194,7 +194,7 @@ describe("decide", () => {
     // single-entry rule never read them, and must not start now.
     const loopOnly: Stage = { id: "a", entry: true, step: "steps/a.md",
       triggers: [{ name: "handed back", when: { "run.stage": "b" } }] };
-    const w: Workflow = { version: 1, name: "t", stages: [loopOnly, { id: "b", terminal: true, triggers: [{ when: { x: 1 } }] }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [loopOnly, { id: "b", terminal: true, triggers: [{ when: { x: 1 } }] }] };
     expect(decide(w, snap({ run: run({ stage: null }) }))).toMatchObject({
       action: "transition", to: loopOnly, trigger: "entry", round: 1,
     });
@@ -210,7 +210,7 @@ describe("a pending goto", () => {
       triggers: [{ name: "never", when: { "run.stage": "nowhere" } }] },
     { id: "done", terminal: true, triggers: [{ name: "reviewed", when: { "run.stage": "review", "reviewed": true } }] },
   ];
-  const w: Workflow = { version: 1, name: "t", stages };
+  const w: Workflow = { version: 1, name: "t", description: "test", stages };
   const at = (stage: string, o: object = {}, top: object = {}) => snap({ ...top, run: run({ stage, ...o }) });
 
   it("sends the item to a target its stage lists, at the target's next round", () => {
@@ -257,7 +257,7 @@ describe("a pending goto", () => {
       { id: "a", triggers: [{ name: "a", when: { "run.stage": "review" } }] },
       { id: "b", triggers: [{ name: "b", when: { "run.stage": "review" } }] },
     ];
-    const aw: Workflow = { version: 1, name: "t", stages: ambiguous };
+    const aw: Workflow = { version: 1, name: "t", description: "test", stages: ambiguous };
     const d = decide(aw, at("review", { goto: "build", counters: { build: 3 } }));
     expect(d).toMatchObject({ action: "halt" });
     expect(d.why).toMatch(/ambiguous triggers/);

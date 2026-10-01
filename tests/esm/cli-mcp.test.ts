@@ -190,6 +190,7 @@ Write the spec.
     join(dir, "workflow.yaml"),
     `version: 1
 name: mcp
+description: test
 hooks: [hooks/fake.ts, hooks/claude.ts]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }

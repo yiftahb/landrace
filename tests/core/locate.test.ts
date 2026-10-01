@@ -4,7 +4,7 @@ import { assess } from "#core/assess.js";
 import type { Workflow, Snapshot, Stage } from "#namespace.js";
 
 const wf = (stages: Stage[], eligible?: Workflow["eligible"]): Workflow =>
-  ({ version: 1, name: "t", stages, ...(eligible ? { eligible } : {}) });
+  ({ version: 1, name: "t", description: "test", stages, ...(eligible ? { eligible } : {}) });
 
 const snap = (o: object): Snapshot => o as Snapshot;
 

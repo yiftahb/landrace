@@ -60,7 +60,7 @@ describe("mcp server over a real transport", () => {
     const plain: Executor = { id: "plain", run: async () => ({ text: "", sessionId: null }) };
     const { client, gh } = await connect([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }], {
       executor: plain,
-      workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", entry: true, triggers: [] }] } as Workflow,
+      workflow: { version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", entry: true, triggers: [] }] } as Workflow,
       steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
       sandbox: { root: process.cwd() },
     });
@@ -144,7 +144,7 @@ describe("mcp server over a real transport", () => {
         lock: { root },
         // A turn is held to what its step declared, so the conversation has to
         // be told what that is — as the loop tells it.
-        workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", triggers: [] }] } as Workflow,
+        workflow: { version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", triggers: [] }] } as Workflow,
         steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
       },
     );

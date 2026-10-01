@@ -12,7 +12,7 @@ const BOT = "landrace-bot";
 
 const wf: Workflow = {
   version: 1,
-  name: "t",
+  name: "t", description: "test",
   stages: [
     { id: "triage", entry: true, step: "steps/triage.md", triggers: [{ name: "fresh", when: { "run.stage": null } }] },
     { id: "build", step: "steps/build.md", triggers: [{ name: "triaged", when: { "run.outputs.triage": { $exists: true } } }] },

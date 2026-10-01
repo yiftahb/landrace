@@ -65,7 +65,7 @@ const screener = (verdict: "ok" | "suspicious", seen?: (candidate: string) => vo
  * declared is a turn nobody can hold to it, and `ask` refuses to run one.
  */
 const spec = (over: Partial<Step> = {}): Pick<ConversationDeps, "workflow" | "steps"> => ({
-  workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", triggers: [] }] },
+  workflow: { version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", triggers: [] }] },
   steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"], ...over }]]),
 });
 
@@ -686,7 +686,7 @@ describe("a conversation turn is held to what its step declared", () => {
     };
 
     await world(seeded(), committer, {}, undefined, {
-      workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", branch: "landrace/{item}", triggers: [] }] },
+      workflow: { version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", branch: "landrace/{item}", triggers: [] }] },
       steps: new Map<string, Step>([["spec", { prompt: "write", capabilities: ["repo:read", "repo:write"] }]]),
       sandbox: { root: checkout },
     }).ask("1", "carry on");

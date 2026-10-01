@@ -4,7 +4,7 @@ import { createNotify, notifyProblems } from "#runner/notify.js";
 import type { Node, Notifier, NotifyEvent, RuntimeConfig, RuntimeContext, Workflow } from "#namespace.js";
 
 const workflow: Workflow = {
-  version: 1, name: "t",
+  version: 1, name: "t", description: "test",
   eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
   stages: [
     { id: "spec-questions", triggers: [{ when: { "run.stage": null } }] },

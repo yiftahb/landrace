@@ -30,7 +30,7 @@ const ENTER = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{
 const status = (value: string) => ({ type: "tracker.status", value });
 
 const workflow: Workflow = {
-  version: 1, name: "t",
+  version: 1, name: "t", description: "test",
   stages: [
     { id: "spec", step: "spec", entry: true, on_enter: [ENTER, status("spec")], triggers: [{ when: { "run.stage": null } }] },
     {

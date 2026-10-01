@@ -9,7 +9,7 @@ const rules = (w: Workflow, steps = noSteps, provided?: string[]) =>
 
 describe("semantic validation", () => {
   it("flags a loop with no counter bound", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
       { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
     ] };
@@ -22,7 +22,7 @@ describe("semantic validation", () => {
    * shape, and a round cap on them only cut a real conversation short.
    */
   it("accepts a loop one of whose edges waits for a person to write", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
       { id: "b", triggers: [{ when: { "run.stage": "a", "run.lastEvent.actor": "human" } }] },
     ] };
@@ -31,7 +31,7 @@ describe("semantic validation", () => {
 
   it("still flags a loop whose actor check is anything but a person, exactly", () => {
     for (const actor of [{ $ne: "human" }, "agent", { $in: ["human", "agent"] }]) {
-      const w: Workflow = { version: 1, name: "t", stages: [
+      const w: Workflow = { version: 1, name: "t", description: "test", stages: [
         { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
         { id: "b", triggers: [{ when: { "run.stage": "a", "run.lastEvent.actor": actor } }] },
       ] };
@@ -40,7 +40,7 @@ describe("semantic validation", () => {
   });
 
   it("accepts a loop bounded by a counter comparison", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "b", "run.counters.a": { $lt: 3 } } }] },
       { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
     ] };
@@ -55,7 +55,7 @@ describe("semantic validation", () => {
     const entryRecord = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
 
     const looping = (aOnEnter: Effect[]): Workflow => ({
-      version: 1, name: "t", stages: [
+      version: 1, name: "t", description: "test", stages: [
         { id: "a", entry: true, step: "s.md", on_enter: aOnEnter,
           triggers: [{ when: { "run.stage": "b", "run.counters.a": { $lt: 3 } } }] },
         { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
@@ -87,7 +87,7 @@ describe("semantic validation", () => {
     });
 
     it("does not ask a stage with no step to record anything", () => {
-      const w: Workflow = { version: 1, name: "t", stages: [
+      const w: Workflow = { version: 1, name: "t", description: "test", stages: [
         { id: "a", entry: true, triggers: [{ when: { "run.stage": "b", "run.counters.a": { $lt: 3 } } }] },
         { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
       ] };
@@ -104,7 +104,7 @@ describe("semantic validation", () => {
      * than none.
      */
     it("asks a stage on no cycle at all, because whether it is on one is not reliably knowable", () => {
-      const w: Workflow = { version: 1, name: "t", stages: [
+      const w: Workflow = { version: 1, name: "t", description: "test", stages: [
         { id: "a", entry: true, step: "s.md", triggers: [{ when: { "run.stage": null } }] },
         { id: "b", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
       ] };
@@ -112,7 +112,7 @@ describe("semantic validation", () => {
     });
 
     it("still checks a graph no other rule will look at", () => {
-      const w: Workflow = { version: 1, name: "t", stages: [
+      const w: Workflow = { version: 1, name: "t", description: "test", stages: [
         { id: "a", entry: true, step: "s.md",
           triggers: [{ when: { $or: [{ "run.stage": "b" }], "run.counters.a": { $lt: 3 } } }] },
         { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
@@ -128,7 +128,7 @@ describe("semantic validation", () => {
       output: { discriminator: "kind", shapes: { spec: {}, questions: {} },
                 routes: [{ when: { kind: "spec" }, effect: { type: "x" } }] },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, step: "s.md" }] };
     expect(rules(w, steps)).toContain("totality");
   });
 
@@ -150,7 +150,7 @@ describe("semantic validation", () => {
       output: { discriminator: "kind", shapes: { spec: { ["__proto__"]: "string", title: "string" } },
                 routes: [{ when: { kind: "spec" }, effect: { type: "x" } }] },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, step: "s.md" }] };
     expect(rules(w, steps)).toContain("shape-field");
   });
 
@@ -160,12 +160,12 @@ describe("semantic validation", () => {
       output: { discriminator: "kind", shapes: { spec: { title: "string" } },
                 routes: [{ when: { kind: "spec" }, effect: { type: "x" } }] },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, step: "s.md" }] };
     expect(rules(w, steps)).not.toContain("shape-field");
   });
 
   it("flags two stages whose identities can both hold", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, identity: { "run.stage": "a" } },
       { id: "b", identity: { "run.stage": "a" } },
     ] };
@@ -173,7 +173,7 @@ describe("semantic validation", () => {
   });
 
   it("flags a non-terminal stage nothing leads away from", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "z" } }] },
       { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
     ] };
@@ -181,14 +181,14 @@ describe("semantic validation", () => {
   });
 
   it("flags a predicate path nothing provides", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "item.nonsense": 1 } }] },
     ] };
     expect(rules(w, noSteps, ["item.labels", "run.stage"])).toContain("path-coverage");
   });
 
   it("points a retired `ticket` path at its new name", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "ticket.labels": "x" } }] },
     ] };
     const messages = validateSemantics(w, noSteps, ["item.labels", "run.stage"])
@@ -209,7 +209,7 @@ describe("semantic validation", () => {
    */
   it("flags an eligibility rule reading a path nothing provides", () => {
     const w: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       eligible: [{ when: { "item.assignee": "ann" }, else: "not yours" }],
       stages: [{ id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] }],
     };
@@ -218,7 +218,7 @@ describe("semantic validation", () => {
 
   it("says nothing about an eligibility rule reading a path a hook does provide", () => {
     const w: Workflow = {
-      version: 1, name: "t",
+      version: 1, name: "t", description: "test",
       eligible: [{ when: { "item.assignees": { $in: ["ann"] } }, else: "not yours" }],
       stages: [{ id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] }],
     };
@@ -226,7 +226,7 @@ describe("semantic validation", () => {
   });
 
   it("checks no paths when no hook declares what it provides", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "item.nonsense": 1 } }] },
     ] };
     expect(rules(w, noSteps, undefined)).not.toContain("path-coverage");
@@ -243,7 +243,7 @@ describe("semantic validation", () => {
     // a <-> b is a genuinely unbounded loop written with plain anchors. Stage
     // c's hidden edges can only *add* cycles to the graph, never remove this
     // one, so reporting it is not a guess about the part that cannot be seen.
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
       { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
       { id: "c", triggers: [{ when: { $or: [{ "run.stage": "a" }, { "run.stage": "b" }] } }] },
@@ -254,7 +254,7 @@ describe("semantic validation", () => {
   it("does not credit a hidden trigger with being a way out of the stage that owns it", () => {
     // decide() never evaluates the current stage's own triggers, so whatever
     // c's condition hides, it is not an edge *from* c — and c is a dead end.
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
       { id: "b", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
       { id: "c", triggers: [{ when: { $or: [{ "run.stage": "a" }] } }] },
@@ -266,7 +266,7 @@ describe("semantic validation", () => {
     // `blocked` in the shipped workflow: `{ "run.lastOutputValid": false }`
     // says nothing about position, so it can fire wherever the item is.
     // Counting it as no edge at all reported `a` as having no way out.
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [
         { when: { "run.stage": null } },
         { when: { "run.stage": "blocked", "run.counters.a": { $lt: 3 } } },
@@ -282,7 +282,7 @@ describe("semantic validation", () => {
   });
 
   it("fully analyses a graph whose triggers use only plain top-level run.stage anchors", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "b" } }] },
       { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
     ] };
@@ -290,7 +290,7 @@ describe("semantic validation", () => {
   });
 
   it("reports a three-stage cycle exactly once regardless of which stage the DFS starts from", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": "c" } }] },
       { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
       { id: "c", triggers: [{ when: { "run.stage": "b" } }] },
@@ -305,7 +305,7 @@ describe("semantic validation", () => {
     // bounded anywhere. Both loops pass through "hub", so a whole-component
     // SCC check would let the bounded loop silence the unbounded one; this
     // must still report the c/d loop as unbounded.
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "hub", entry: true, triggers: [
         { when: { "run.stage": "b", "run.counters.hub": { $lt: 5 } } },
         { when: { "run.stage": "d" } },
@@ -337,7 +337,7 @@ describe("semantic validation", () => {
       entry: i === 0,
       triggers: ids.filter((other) => other !== id).map((other) => ({ when: { "run.stage": other } })),
     }));
-    const w: Workflow = { version: 1, name: "t", stages };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages };
 
     expect(fastest(() => validateSemantics(w, noSteps))).toBeLessThan(2000);
     const cycleProblems = validateSemantics(w, noSteps).filter((p) => p.rule === "cycle-bound");
@@ -347,7 +347,7 @@ describe("semantic validation", () => {
   });
 
   it("recognizes a counter bound nested under $and, not just at the top level", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [
         { when: { "run.stage": "b", $and: [{ "run.counters.a": { $lt: 3 } }] } },
       ] },
@@ -365,7 +365,7 @@ describe("semantic validation", () => {
   // unreachable-past, so it belongs with the other reachability rules.
   it("flags a stage whose step declares no output, since assess() can never mark it complete", () => {
     const steps = new Map<string, Step>([["s.md", { prompt: "go" }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, step: "s.md", triggers: [{ when: { "run.outputs.a": { $exists: true } } }] },
     ] };
     expect(rules(w, steps)).toContain("step-output-required");
@@ -376,12 +376,12 @@ describe("semantic validation", () => {
       prompt: "go",
       output: { discriminator: "kind", shapes: { done: {} }, routes: [{ when: { kind: "done" }, effect: { type: "x" } }] },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, step: "s.md" }] };
     expect(rules(w, steps)).not.toContain("step-output-required");
   });
 
   it("does not flag a stage with no step at all", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, terminal: true }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, terminal: true }] };
     expect(rules(w)).not.toContain("step-output-required");
   });
 
@@ -401,7 +401,7 @@ describe("semantic validation", () => {
         routes: [{ when: { kind: "done" }, effect: { type: "tracker.comment", kind: "note" } }],
       },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, step: "s.md" }] };
     expect(rules(w, steps)).toContain("step-output-required");
   });
 
@@ -421,7 +421,7 @@ describe("semantic validation", () => {
         routes: [{ when: { kind: "spec" }, effect: { type: "artifact.publish", artifact: "spec", kind: "note" } }],
       },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, step: "s.md" }] };
     expect(rules(w, steps)).not.toContain("step-output-required");
   });
 
@@ -434,7 +434,7 @@ describe("semantic validation", () => {
         routes: [{ when: { kind: "done" }, effect: { type: "tracker.comment", stage: "elsewhere" } }],
       },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, step: "s.md" }] };
     expect(rules(w, steps)).toContain("step-output-required");
   });
 
@@ -452,14 +452,14 @@ describe("semantic validation", () => {
         ],
       },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [{ id: "a", entry: true, step: "s.md" }] };
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [{ id: "a", entry: true, step: "s.md" }] };
     expect(rules(w, steps)).not.toContain("step-output-required");
   });
 
   it("flags a stage that is structurally connected but unreachable from the entry stage", () => {
     // b and c point at each other, but nothing (not even indirectly) leads
     // to either of them from the entry stage a.
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, terminal: true },
       { id: "b", triggers: [{ when: { "run.stage": "c" } }] },
       { id: "c", triggers: [{ when: { "run.stage": "b" } }] },
@@ -468,7 +468,7 @@ describe("semantic validation", () => {
   });
 
   it("counts a stage reachable from any entry stage as reachable", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, triggers: [{ when: { "run.stage": null, "rel.child-of.out.total": 0 } }] },
       { id: "b", entry: true, triggers: [{ when: { "run.stage": null, "rel.child-of.out.total": 1 } }] },
       // Only b leads here.
@@ -479,7 +479,7 @@ describe("semantic validation", () => {
   });
 
   it("still flags a stage no entry stage reaches, naming them all", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, terminal: true, triggers: [{ when: { "run.stage": null, x: 0 } }] },
       { id: "b", entry: true, terminal: true, triggers: [{ when: { "run.stage": null, x: 1 } }] },
       { id: "island", terminal: true, triggers: [{ when: { "run.stage": "island2" } }] },
@@ -556,7 +556,7 @@ describe("every declared output shape has somewhere to go next", () => {
   }]]);
 
   it("names the shape nothing routes away from", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "s", entry: true, step: "s.md" },
       { id: "next", terminal: true, triggers: [{ when: { "run.stage": "s", "run.outputs.s.kind": "a" } }] },
     ] };
@@ -566,7 +566,7 @@ describe("every declared output shape has somewhere to go next", () => {
   });
 
   it("accepts a trigger from the stage that does not care which shape arrived", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "s", entry: true, step: "s.md" },
       { id: "next", terminal: true, triggers: [{ when: { "run.stage": "s" } }] },
     ] };
@@ -574,7 +574,7 @@ describe("every declared output shape has somewhere to go next", () => {
   });
 
   it("accepts a trigger that names the shape without naming the stage it comes from", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "s", entry: true, step: "s.md" },
       { id: "x", terminal: true, triggers: [{ when: { "run.stage": "s", "run.outputs.s.kind": "a" } }] },
       { id: "y", terminal: true, triggers: [{ when: { "run.outputs.s.kind": "b" } }] },
@@ -583,7 +583,7 @@ describe("every declared output shape has somewhere to go next", () => {
   });
 
   it("does not credit the stage's own trigger, which decide() never evaluates", () => {
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "s", entry: true, step: "s.md", triggers: [{ when: { "run.stage": "s", "run.outputs.s.kind": "b" } }] },
       { id: "next", terminal: true, triggers: [{ when: { "run.stage": "s", "run.outputs.s.kind": "a" } }] },
     ] };
@@ -618,7 +618,7 @@ describe("children", () => {
   const breakdownStep = { prompt: "p", capabilities: ["items:create"] } as Step;
   const stepsWith = (s: Step) => new Map([["steps/b.md", s]]);
   const wf = (on_enter: Effect[]): Workflow => ({
-    version: 1, name: "t",
+    version: 1, name: "t", description: "test",
     stages: [
       { id: "b", entry: true, step: "steps/b.md", on_enter },
       { id: "done", terminal: true, triggers: [{ when: { "run.stage": "b" } }] },
@@ -677,7 +677,7 @@ describe("children", () => {
 describe("goto edges", () => {
   const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
   const loop = (goto: NonNullable<Workflow["stages"][number]["goto"]>): Workflow => ({
-    version: 1, name: "t", stages: [
+    version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, on_enter: [enter], triggers: [{ when: { "run.stage": null } }] },
       { id: "b", goto, triggers: [{ when: { "run.stage": "a" } }] },
     ],
@@ -706,7 +706,7 @@ describe("goto edges", () => {
         routes: [{ when: { i: "back" }, goto: "a", effect: { type: "tracker.comment", marker: "i:{round}" } }],
       },
     }]]);
-    const w: Workflow = { version: 1, name: "t", stages: [
+    const w: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, step: "s.md", on_enter: [enter], goto: [{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }],
         triggers: [{ when: { "run.stage": null } }] },
       { id: "z", terminal: true, triggers: [{ when: { "run.stage": "a", "run.outputs.a.i": "never" } }] },

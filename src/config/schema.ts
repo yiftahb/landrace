@@ -38,6 +38,7 @@ export const runtimeConfigSchema = z.object({
   security: z
     .object({ screen: z.boolean().default(true), adapter: z.string().min(1).optional(), model: z.string().min(1).optional() })
     .default({}),
+  workflows: z.array(z.string().min(1)).optional(), // the sidebar's order; must name exactly the folders
   log: z.object({ redact: z.array(z.string()).default([]) }).default({}),
   secrets: z.record(z.string()).default({}),
   /**

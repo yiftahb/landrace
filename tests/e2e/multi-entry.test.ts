@@ -7,7 +7,7 @@ const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{
 
 const workflow: Workflow = {
   version: 1,
-  name: "multi-entry",
+  name: "multi-entry", description: "test",
   stages: [
     { id: "spec", entry: true, step: "steps/spec.md",
       triggers: [{ name: "top-level item", when: { "run.stage": null, "rel.child-of.out.total": 0 } }],
