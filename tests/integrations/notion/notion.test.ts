@@ -174,7 +174,6 @@ describe("publishing a ticket's spec", () => {
 
   it("refuses a spec longer than Source holds before writing anything", async () => {
     const { fake, notion } = world();
-    fake.seedDatabase();
     await expect(apply(notion, "x".repeat(200_001))).rejects.toThrow(/200,000/);
     expect(writes(fake)).toEqual([]);
     expect(fake.rows()).toEqual([]);
@@ -217,6 +216,21 @@ describe("publishing a ticket's spec", () => {
 });
 
 describe("reading which tickets have a page", () => {
+  /*
+   * `landrace status` only reads, and says so. A read that made the database
+   * would make it on a project whose start never ran — and there is nothing
+   * to read in a database that is not there.
+   */
+  it("writes nothing when the parent holds no database yet: no page, none published, the parent linked", async () => {
+    const { fake, notion } = world();
+    expect(await notion.page("12", ctx)).toBeNull();
+    expect(await notion.published(ctx)).toEqual(new Set());
+    expect(await notion.link("12", ctx)).toBe(`https://www.notion.so/${fake.parent}`);
+    expect(await notion.observe(at("13"))).toEqual({ exists: false, hash: null, url: `https://www.notion.so/${fake.parent}` });
+    expect(writes(fake)).toEqual([]);
+    expect(fake.databases()).toEqual([]);
+  });
+
   it("has no page, and links the parent, for a ticket with no row", async () => {
     const { fake, notion } = world();
     fake.seedDatabase();

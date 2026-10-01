@@ -64,6 +64,21 @@ function rowOf(page: unknown): Row {
   };
 }
 
+/**
+ * A database as Notion answers it. Since 2025-09-03 a database holds data
+ * sources, and the rows are one's. Ours is made with one; a person who added
+ * a second has made "which one" a guess.
+ */
+function databaseOf(answer: unknown, created: boolean): Database {
+  const db = answer as { id?: unknown; data_sources?: unknown } | null;
+  const sources = Array.isArray(db?.data_sources) ? (db.data_sources as Array<{ id?: unknown } | null>) : [];
+  const [source] = sources;
+  if (typeof db?.id !== "string" || sources.length !== 1 || typeof source?.id !== "string") {
+    throw new Error(`"${TITLE}" has ${sources.length} data sources; landrace keeps specs in a database with exactly one`);
+  }
+  return { id: db.id, dataSource: source.id, created };
+}
+
 const duplicate = (ticket: string, rows: Row[]): Error =>
   new Error(`${rows.length} rows are ticket ${ticket} in "${TITLE}" (${rows.map((r) => r.url).join(", ")}); remove all but one`);
 
@@ -132,21 +147,40 @@ export class Notion extends BaseDocs {
   }
 
   /**
-   * The specs database, found among the parent's children or created there:
-   * once per client, and shared by every caller asking meanwhile, so two
-   * tickets read side by side never create two. A failure is not kept.
+   * The specs database, or null while the parent holds none. A read never
+   * makes one: `landrace status` only reads, and a database that is not there
+   * holds no page.
+   */
+  private async found(notion: Client): Promise<Database | null> {
+    const state = this.state(notion);
+    if (state.database) return state.database;
+    const db = await this.lookup(notion);
+    if (db) state.database ??= Promise.resolve(db);
+    return db;
+  }
+
+  /**
+   * The specs database, made in the parent when it holds none: once per
+   * client, and shared by every caller asking meanwhile, so the check and a
+   * publish side by side never make two. A failure is not kept.
    */
   // ponytail: kept for the process's lifetime — a database deleted or replaced under a running landrace shows after a restart.
-  private database(notion: Client): Promise<Database> {
+  private made(notion: Client): Promise<Database> {
     const state = this.state(notion);
-    state.database ??= this.findOrCreate(notion).catch((e: unknown) => {
-      state.database = undefined;
-      throw e;
-    });
+    state.database ??= this.lookup(notion)
+      .then(async (db) => db ?? databaseOf(await notion.call("POST", "/databases", {
+        parent: { type: "page_id", page_id: this.parent },
+        title: titled,
+        initial_data_source: { properties: { [TICKET]: { title: {} }, [SOURCE]: { rich_text: {} } } },
+      }), true))
+      .catch((e: unknown) => {
+        state.database = undefined;
+        throw e;
+      });
     return state.database;
   }
 
-  private async findOrCreate(notion: Client): Promise<Database> {
+  private async lookup(notion: Client): Promise<Database | null> {
     type Child = { id?: unknown; type?: unknown; child_database?: { title?: unknown } };
     const found = (await notion.all<Child>("GET", `/blocks/${this.parent}/children`))
       .filter((b) => b.type === "child_database" && b.child_database?.title === TITLE);
@@ -154,28 +188,14 @@ export class Notion extends BaseDocs {
       throw new Error(`the parent page holds ${found.length} databases titled "${TITLE}"; landrace writes to one, so rename or remove the others`);
     }
     const [existing] = found;
-    const db = (existing
-      ? await notion.call("GET", `/databases/${String(existing.id)}`)
-      : await notion.call("POST", "/databases", {
-        parent: { type: "page_id", page_id: this.parent },
-        title: titled,
-        initial_data_source: { properties: { [TICKET]: { title: {} }, [SOURCE]: { rich_text: {} } } },
-      })) as { id?: unknown; data_sources?: unknown } | null;
-    // Since 2025-09-03 a database holds data sources and the rows are one's.
-    // Ours is made with one; a person who added a second has made "which
-    // one" a guess.
-    const sources = Array.isArray(db?.data_sources) ? (db.data_sources as Array<{ id?: unknown } | null>) : [];
-    const [source] = sources;
-    if (typeof db?.id !== "string" || sources.length !== 1 || typeof source?.id !== "string") {
-      throw new Error(`"${TITLE}" has ${sources.length} data sources; landrace keeps specs in a database with exactly one`);
-    }
-    return { id: db.id, dataSource: source.id, created: !existing };
+    return existing ? databaseOf(await notion.call("GET", `/databases/${String(existing.id)}`), false) : null;
   }
 
   private async rows(notion: Client, ticket?: string): Promise<Row[]> {
-    const { dataSource } = await this.database(notion);
+    const db = await this.found(notion);
+    if (db === null) return [];
     const filter = ticket === undefined ? {} : { filter: { property: TICKET, title: { equals: ticket } } };
-    return (await notion.all<unknown>("POST", `/data_sources/${dataSource}/query`, filter)).map(rowOf);
+    return (await notion.all<unknown>("POST", `/data_sources/${db.dataSource}/query`, filter)).map(rowOf);
   }
 
   /** The ticket's row, or null. Two halt: which of them is the spec is not a guess. */
@@ -223,7 +243,7 @@ export class Notion extends BaseDocs {
       );
     }
     const notion = this.notion(ctx);
-    const { dataSource } = await this.database(notion);
+    const { dataSource } = await this.made(notion);
     let row = await this.row(notion, ticket);
     if (row === null) {
       row = rowOf(await notion.call("POST", "/pages", {
@@ -291,7 +311,7 @@ export class Notion extends BaseDocs {
         : e);
     }
     try {
-      const db = await this.database(notion);
+      const db = await this.made(notion);
       if (!db.created) await notion.call("PATCH", `/databases/${db.id}`, { title: titled });
     } catch (e) {
       if (statusOf(e) === 403) {
