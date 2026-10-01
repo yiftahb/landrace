@@ -55,15 +55,17 @@ const effect = (body) => ({ type: "artifact.publish", artifact: "spec", body });
 const first = "# Notion check\n\nA first publish, with `inline code` and [a link](https://example.com).\n\n- one\n  - one, nested\n- two\n";
 // Over 25 pieces of Source, which only the property item endpoint reads
 // whole; an item with more children than one append takes; and 125
-// top-level blocks in all.
+// top-level blocks in all. The emoji's paragraph comes first, so it sits
+// astride the first cut of Source and of the paragraph's own text alike.
 const changed = [
-  "# Notion check, changed",
   `${"a".repeat(1_999)}😀 sits astride the first piece boundary of Source. ${"b".repeat(58_000)}`,
+  "# Notion check, changed",
   "```typescript\nconst spec: string = \"fenced\";\n```",
   "| a table | stays |\n|---|---|\n| as | written |",
   ["- an item with 120 children", ...Array.from({ length: 120 }, (_, i) => `  - child ${i + 1}`)].join("\n"),
   ...Array.from({ length: 120 }, (_, i) => `Paragraph ${i + 1}.`),
 ].join("\n\n");
+if (changed.indexOf("😀") !== 1_999) throw new Error("notion-check: the emoji is no longer astride Source's first piece boundary");
 const BLOCKS = 125;
 
 async function readsBack(text) {
