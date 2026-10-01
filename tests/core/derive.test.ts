@@ -1,6 +1,7 @@
-import { deriveRun } from "#core/derive.js";
+import { deriveRun, locatedRun } from "#core/derive.js";
 import { assess } from "#core/assess.js";
-import type { Entry, Snapshot, Stage } from "#namespace.js";
+import { stageFromLabels } from "#conventions.js";
+import type { Entry, Node, Snapshot, Stage, Workflow } from "#namespace.js";
 
 let t = 0;
 const at = () => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)).toISOString();
@@ -516,5 +517,97 @@ describe("who produced the latest output", () => {
 
   it("is null before anything has produced one", () => {
     expect(deriveRun([entered("spec", 1)], "spec").lastOutputBy).toBeNull();
+  });
+});
+
+/*
+ * deriveRun scopes a pending goto, the current stage's failure and refusal,
+ * its unblock and the stage it was entered from to the position it is handed.
+ * A snapshot hands it the label's, and an item a custom identity places
+ * carries none: every one of those read as though it were nowhere, so a goto
+ * written where it stood was never read back, and a refusal there was nobody's.
+ */
+describe("locatedRun, the run read from where the item is", () => {
+  const mine = { "node.state.labels": { $in: ["needs-my-review"] } };
+  const flow = (review: Stage): Workflow => ({
+    version: 1, name: "t", description: "test",
+    stages: [
+      { id: "build", entry: true, step: "steps/build.md" },
+      review,
+      { id: "stuck", identity: { "node.state.labels": { $in: ["stuck"] } } },
+    ],
+  });
+  const w = flow({ id: "review", identity: mine, step: "steps/review.md" });
+  const node = (labels: string[]): Node => ({
+    id: "1", kind: "item", title: "t", link: "", closed: null, priority: null, origin: null, state: { labels, assignees: [] },
+  });
+  /** What buildSnapshot hands over: the run its label reads, as it always has been. */
+  const snap = (labels: string[], entries: Entry[]): Snapshot =>
+    ({ node: node(labels), entries, run: deriveRun(entries, stageFromLabels(labels).stage) }) as Snapshot;
+  const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
+  const going = (stage: string, to: string): Entry => ({ stage, kind: "goto", round: 0, goto: to, at: at(), byAgent: true });
+
+  it("reads a refused round at the stage an identity places the item at as that stage's own", () => {
+    const entries = [from("review", 1, "build"), refused("review", 1)];
+    const run = locatedRun(w, snap(["needs-my-review"], entries));
+    expect(run).toMatchObject({ stage: "review", lastOutputValid: false, lastRefused: true, failedStages: ["review"] });
+    // Exactly what a label naming review would have read: the item is there.
+    expect(run).toEqual(deriveRun(entries, "review"));
+  });
+
+  it("reads a goto written there as pending there, and the stage it was entered from", () => {
+    const entries = [from("review", 1, "build"), going("review", "build")];
+    expect(locatedRun(w, snap(["needs-my-review"], entries)))
+      .toMatchObject({ stage: "review", goto: "build", previousStage: "build" });
+  });
+
+  it("names the failure that put it at a halt an identity places it at, past a question sent home from there", () => {
+    const unblocked: Entry = { stage: "stuck", kind: "unblocked", round: 2, at: at(), byAgent: true };
+    const entries = [entered("build", 1), malformed("build", 1), human(), from("review", 1, "stuck"), out("review", 1), unblocked];
+    expect(locatedRun(w, snap(["stuck"], entries))).toMatchObject({ stage: "stuck", failedStage: "build", unblockedAt: 2 });
+  });
+
+  it("leaves a labelled item's run exactly as its label reads it", () => {
+    const s = snap(["lr:stage:build"], [entered("build", 1), refused("build", 1), going("build", "review")]);
+    expect(locatedRun(w, s)).toBe(s.run);
+  });
+
+  /*
+   * A label naming one stage while an identity places the item at another is
+   * a contradiction, and resolving it is not this function's to do: the
+   * label's reading stays, as it always has.
+   */
+  it("does not reconcile a label naming another stage with the identity that places the item", () => {
+    const s = snap(["lr:stage:stuck", "needs-my-review"], [from("review", 1, "build"), going("review", "build")]);
+    expect(locatedRun(w, s)).toBe(s.run);
+  });
+
+  it("leaves an item carrying two stage labels as unplaced as it is", () => {
+    const s = snap(["lr:stage:build", "lr:stage:stuck", "needs-my-review"], [from("review", 1, "build"), going("review", "build")]);
+    expect(locatedRun(w, s)).toBe(s.run);
+  });
+
+  it("is the label's reading where no stage, or more than one, places the item", () => {
+    const nowhere = snap([], [going("review", "build")]);
+    expect(locatedRun(w, nowhere)).toBe(nowhere.run);
+    const twice = flow({ id: "review", identity: { "node.state.labels": { $in: ["stuck"] } }, step: "steps/review.md" });
+    const both = snap(["stuck"], [going("stuck", "build")]);
+    expect(locatedRun(twice, both)).toBe(both.run);
+  });
+
+  /*
+   * An identity can read the run itself. One that holds only while the item
+   * has no position would place it at review read from its label, and
+   * nowhere read from review — and a tick deciding on the second while the
+   * board shows the first would act on an item it cannot place. The label's
+   * reading, the one that does place it, stays.
+   */
+  it("keeps the label's reading when reading from the identity's stage would move the item off it", () => {
+    const unanchored = flow({ id: "review", identity: { "run.stage": null, ...mine }, step: "steps/review.md" });
+    const s = snap(["needs-my-review"], [from("review", 1, "build"), going("review", "build")]);
+    expect(locatedRun(unanchored, s)).toBe(s.run);
+    // Nor when it would move it on to another stage.
+    const onward: Workflow = { ...unanchored, stages: [...unanchored.stages, { id: "after", identity: { "run.stage": "review" } }] };
+    expect(locatedRun(onward, s)).toBe(s.run);
   });
 });

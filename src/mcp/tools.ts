@@ -11,7 +11,7 @@ import {
   ITEM_KIND,
 } from "#conventions.js";
 import { cannotPlace, checkEligible, locateNode } from "#core/index.js";
-import type { Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, WorkspaceListing } from "#namespace.js";
+import type { Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, Workflow, WorkspaceListing } from "#namespace.js";
 import type { Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -95,7 +95,8 @@ export async function postReply(deps: ReplyDeps, item: string, message: string):
   const tooLong = recordBodyProblem(message);
   if (tooLong) throw new Error(`cannot reply: the message ${tooLong}`);
 
-  const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
+  // Null: a reply decides nothing, and its snapshot only reaches the hook that writes it.
+  const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow: null, ctx: { ...deps.ctx, item } });
   await deps.dispatcher.apply(
     { type: RECORD_EFFECT, body: neutraliseMarkers(message) },
     { ...deps.ctx, item, snapshot },
@@ -285,8 +286,9 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
     return one;
   };
 
-  const snapshotIn = (deps: { source: Source; pre: PreHook[] }, item: string): Promise<Snapshot> =>
-    buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...ctx, item } });
+  /** Read for its owner's workflow, which places it; an item no one workflow owns is placed by its label alone. */
+  const snapshotIn = (deps: { source: Source; pre: PreHook[] }, workflow: Workflow | null, item: string): Promise<Snapshot> =>
+    buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow, ctx: { ...ctx, item } });
 
   const summarise = (n: Node) => ({ item: n.id, title: n.title, url: n.link, labels: labelsOf(n) });
 
@@ -379,7 +381,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       // The same snapshot the tick builds, from the same pre hooks in the same
       // order, so what an operator is shown is what the engine would decide
       // on — not a second derivation free to drift from it.
-      const snapshot = await snapshotIn("hands" in route ? route.hands.deps : route, item);
+      const snapshot = await ("hands" in route ? snapshotIn(route.hands.deps, route.hands.deps.workflow, item) : snapshotIn(route, null, item));
       const node = snapshot.node as Node;
       const labels = labelsOf(node);
       const { stage: labelled, ambiguous, found } = stageFromLabels(labels);
@@ -519,7 +521,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       const route = await reader(item);
       if ("hands" in route) return pairingView(route.hands.deps, item);
       // An item no one workflow owns is no one's to pair on; only a pairing left open on it is said.
-      return { open: (await snapshotIn(route, item)).run?.pairing ?? null, offers: [] };
+      return { open: (await snapshotIn(route, null, item)).run?.pairing ?? null, offers: [] };
     },
 
     async pair(item, stage) {

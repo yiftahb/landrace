@@ -37,9 +37,10 @@ const WAIT_FOR_TICK_MS = 3_000;
  * the item there with the goto it wrote already consumed.
  *
  * Locating the item can also find a stage a goto must not be written
- * against: `locate` may match one only by a custom `identity`, foreign to
- * the label `deriveRun` scopes the record to, and a goto recorded there
- * would be silently dropped on the very next read rather than ever taken.
+ * against: `locate` may match one only by a custom `identity` while a label
+ * names another stage, and the run — a goto record with it — is read from
+ * the label then, so a goto recorded there would be silently dropped on the
+ * very next read rather than ever taken.
  *
  * Under the item's lock, the one a tick converges under, like
  * `landrace_resolve`: this reads, decides and writes, and that is what the
@@ -85,8 +86,9 @@ export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, item: string)
   const from = where.stage;
 
   // `deriveRun` reads a goto record back only while its own `stage` still
-  // equals the item's *label* — never whatever locate() matched by a
-  // custom identity. Writing one against a stage the label disagrees with
+  // equals `run.stage`: the item's label, or, where it carries none, the
+  // stage an identity places it at (`locatedRun`) — never a stage a label
+  // contradicts. Writing one against a stage `run.stage` disagrees with
   // would be a write nothing ever reads.
   const label = snapshot.run?.stage ?? null;
   if (from.id !== label) {
@@ -103,7 +105,7 @@ export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, item: string)
 }
 
 async function sendAt(deps: GotoDeps, item: string, target: string | null, clear: boolean): Promise<GotoResult> {
-  const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
+  const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow: deps.workflow, ctx: { ...deps.ctx, item } });
   const origin = gotoOrigin(deps.workflow, snapshot, item);
   if ("refused" in origin) return origin;
   const { from } = origin;

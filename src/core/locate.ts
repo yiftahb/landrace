@@ -28,11 +28,13 @@ export function locate(w: Workflow, s: Snapshot): Location {
  * Where a listed node is, asked of the node alone — what a status row, the
  * board and a notification can know without building a snapshot per item.
  *
- * `run.stage` is the label's stage, which is what a snapshot derives it from,
- * so every default identity places an item exactly as `locate` would; an
- * identity reading the node places it whatever its labels say. Both are
- * asked, and two matches — a label saying one stage while an identity says
- * another — are ambiguous, as they are to `locate`: neither is believed.
+ * `run.stage` is the label's stage, which is what a snapshot derives it from
+ * — read again from an identity's stage only where the item has no label and
+ * that leaves it where it was (`locatedRun`) — so every default identity
+ * places an item exactly as `locate` would; an identity reading the node
+ * places it whatever its labels say. Both are asked, and two matches — a
+ * label saying one stage while an identity says another — are ambiguous, as
+ * they are to `locate`: neither is believed.
  *
  * An identity reading anything else — a step's output, a counter, a
  * relation — cannot be judged here, so it abstains rather than guesses. It

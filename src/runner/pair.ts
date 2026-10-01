@@ -112,7 +112,7 @@ function locked<T>(deps: PairDeps, item: string, what: string, fn: () => Promise
 }
 
 const snapshotOf = (deps: PairDeps, item: string): Promise<Snapshot> =>
-  buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
+  buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow: deps.workflow, ctx: { ...deps.ctx, item } });
 
 async function apply(deps: PairDeps, item: string, snapshot: Snapshot, effects: Effect[]): Promise<void> {
   for (const effect of effects) await deps.dispatcher.apply(effect, { ...deps.ctx, item, snapshot });

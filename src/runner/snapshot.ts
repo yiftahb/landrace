@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { deriveRel, deriveRun, hashSnapshot } from "#core/index.js";
-import type { Entry, Graph, HookContext, Node, PreHook, Snapshot, Source } from "#namespace.js";
+import { deriveRel, deriveRun, hashSnapshot, locatedRun } from "#core/index.js";
+import type { Entry, Graph, HookContext, Node, PreHook, Snapshot, Source, Workflow } from "#namespace.js";
 import { labelsOf, stageFromLabels } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 import { graphProblem } from "#runner/graph.js";
@@ -83,6 +83,14 @@ export async function buildSnapshot(opts: {
   item: string;
   source: Source;
   hooks: PreHook[];
+  /**
+   * The workflow the item is read for, whose stages say where it is; null
+   * for a read that decides nothing and is no one workflow's — its records,
+   * an open pairing — which the label alone places, as it always did. Not
+   * optional: a caller that acts and forgot it would read an item a custom
+   * identity places as though it were nowhere.
+   */
+  workflow: Workflow | null;
   ctx: Omit<HookContext, "snapshot">;
   now?: number;
   digest?: (input: string) => string;
@@ -119,23 +127,26 @@ export async function buildSnapshot(opts: {
   }
 
   const entries = (snapshot.entries as Entry[] | undefined) ?? [];
-  const run = deriveRun(entries, stageFromLabels(labelsOf(node)).stage);
+  const labelled = deriveRun(entries, stageFromLabels(labelsOf(node)).stage);
   // A child an earlier round of its stage created no longer counts once the
-  // stage is entered again (core/rel.ts).
-  const entered = Object.fromEntries(Object.entries(run.rounds).map(([stage, r]) => [stage, r.entered]));
+  // stage is entered again (core/rel.ts). Rounds are every stage's, never
+  // scoped to the one the item is at, so they are the same however the run
+  // is read below.
+  const entered = Object.fromEntries(Object.entries(labelled.rounds).map(([stage, r]) => [stage, r.entered]));
   const rel = deriveRel(graph, opts.item, opts.source.relations.map((r) => r.type), entered);
   if (!rel.ok) throw new Error(`source "${opts.source.id}": ${rel.why}`);
 
   // Time enters here and nowhere else: core may not read a clock.
-  const withRun: Snapshot = {
+  const read: Snapshot = {
     ...snapshot,
     // Set after the hooks: position is the engine's reading of the source's
     // node, and the counts are the engine's reading of its graph, so a pre
     // hook returning its own `node` or `rel` must not move either.
     graph, node, rel: rel.rel,
     now: opts.now ?? Date.now(),
-    run,
+    run: labelled,
   };
+  const withRun: Snapshot = opts.workflow === null ? read : { ...read, run: locatedRun(opts.workflow, read) };
 
   // Recorded, not yet used: the decision cache reads it later. Computed after
   // every hook has contributed, over canonicalised input with volatile fields

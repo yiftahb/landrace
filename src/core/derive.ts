@@ -1,5 +1,41 @@
-import { AGENT_BY, CLEAR_KIND, ENTRY_KIND, MALFORMED_KIND, OUTPUT_KIND, PAIR_KIND, REFUSED_KIND, RELEASE_KIND } from "#conventions.js";
-import type { Entry, Run, StageRounds } from "#namespace.js";
+import {
+  AGENT_BY, CLEAR_KIND, ENTRY_KIND, MALFORMED_KIND, OUTPUT_KIND, PAIR_KIND, REFUSED_KIND, RELEASE_KIND, labelsOf, stageFromLabels,
+} from "#conventions.js";
+import { locate } from "#core/locate.js";
+import type { Entry, Node, Run, Snapshot, StageRounds, Workflow } from "#namespace.js";
+
+/**
+ * The run read from the stage the item is at, given the snapshot whose run
+ * its label reads.
+ *
+ * `deriveRun` scopes the pending goto, the current stage's failure, refusal
+ * and unblock, and the stage it was entered from, to the position it is
+ * handed. The label's is the position for every item a label places. An item
+ * a custom identity places carries none, and read from no position a goto
+ * written where it stands was never read back and a round refused there was
+ * nobody's. So such an item's run is read again, from the stage it is at.
+ *
+ * Only where no `lr:stage:` label says anything. A label naming one stage
+ * while an identity places the item at another is a contradiction, and
+ * choosing between them is not done here: the label's reading stays, as it
+ * always has. Two labels are an item the engine halts on before it decides.
+ *
+ * Read again only if it leaves the item where it was found. An identity may
+ * read the run itself, and one that holds only while the item has no
+ * position would place it at a stage read from its label and nowhere read
+ * from that stage — and the board, which places it with `run.stage` read
+ * from its label, would show it where the tick could not find it. The
+ * reading that places it is kept.
+ */
+export function locatedRun(w: Workflow, s: Snapshot): Run {
+  const labelled = s.run as Run;
+  if (stageFromLabels(labelsOf(s.node as Node | undefined)).found.length > 0) return labelled;
+  const where = locate(w, s);
+  if (where.kind !== "at") return labelled;
+  const placed = deriveRun(s.entries ?? [], where.stage.id);
+  const again = locate(w, { ...s, run: placed });
+  return again.kind === "at" && again.stage.id === where.stage.id ? placed : labelled;
+}
 
 /**
  * Everything the engine knows about an item's progress, computed from entries.

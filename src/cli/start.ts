@@ -184,7 +184,8 @@ export function panelFor(
 
 /** An item's records as the panel reads them, through `source` and `pre` alone. */
 async function conversationIn(deps: { source: Source; pre: PreHook[]; ctx: RuntimeContext }, item: string): Promise<ConversationLine[]> {
-  const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
+  // Its records alone, which no stage scopes: no workflow is asked where it is.
+  const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow: null, ctx: { ...deps.ctx, item } });
   return conversationOf(snapshot.entries ?? []);
 }
 
@@ -200,7 +201,7 @@ export function sourceReader(deps: { source: Source; pre: PreHook[]; ctx: Runtim
   return {
     conversation: (item) => conversationIn(deps, item),
     pairing: async (item) => {
-      const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
+      const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow: null, ctx: { ...deps.ctx, item } });
       return { open: snapshot.run?.pairing ?? null, offers: [] };
     },
   };

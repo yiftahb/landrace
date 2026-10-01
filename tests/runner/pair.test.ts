@@ -101,7 +101,7 @@ function world(labels: string[], executor: Executor | null, over: Partial<PairDe
     workflow, steps, executor, sandbox: { root: repo }, lock: { root: lockRoot }, ...over,
   };
   const run = async () =>
-    (await buildSnapshot({ item: "29", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "29" } })).run;
+    (await buildSnapshot({ item: "29", source, hooks: tracker.registry.pre, workflow, ctx: { ...tracker.ctx, item: "29" } })).run;
   return { tracker, deps, run };
 }
 
@@ -135,7 +135,7 @@ function built(executor: Executor | null) {
 }
 
 const snapshotOf = (deps: PairDeps) =>
-  buildSnapshot({ item: "29", source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item: "29" } });
+  buildSnapshot({ item: "29", source: deps.source, hooks: deps.pre, workflow: deps.workflow, ctx: { ...deps.ctx, item: "29" } });
 
 describe("what may be paired on", () => {
   it("is the stage's own step while its round is owed", async () => {

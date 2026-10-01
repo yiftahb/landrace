@@ -151,7 +151,7 @@ async function converging(
     // CLAUDE.md says errors report, they do not crash.
     let snapshot: Snapshot;
     try {
-      snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: deps.ctx });
+      snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow: deps.workflow, ctx: deps.ctx });
     } catch (e) {
       const reason = messageOf(e);
       deps.log("snapshot.failed", { item, reason });

@@ -26,14 +26,18 @@ const workflow: Workflow = {
 };
 
 /**
- * An identity predicate the allowlist refuses. locate() compiles every stage's
- * identity on every decision, and converge does not wrap decide() — so this is
- * a throw the tick itself has to catch rather than one converge turns into a
- * result.
+ * An entry trigger the allowlist refuses. decide() compiles every entry
+ * stage's triggers to choose between several, and converge does not wrap
+ * decide() — so this is a throw the tick itself has to catch rather than one
+ * converge turns into a result. Not an identity: those are also asked while
+ * the snapshot is built, which converge does wrap.
  */
 const exploding: Workflow = {
   ...workflow,
-  stages: [{ id: "a", entry: true, terminal: true, identity: { $where: "1" } }],
+  stages: [
+    { id: "a", entry: true, terminal: true, triggers: [{ when: { $where: "1" } }] },
+    { id: "b", entry: true, terminal: true, triggers: [{ when: { "run.stage": null } }] },
+  ],
 };
 
 const itemNode = (id: string, labels: string[] = ["lr:auto"], assignees: string[] = [], priority: number | null = null): Node => ({

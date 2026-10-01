@@ -636,7 +636,7 @@ describe("the page's Retry and Go to step", () => {
 
     // A record the next tick actually reads, not just an answer this call
     // happened to return.
-    const snapshot = await buildSnapshot({ item: "19", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "19" } });
+    const snapshot = await buildSnapshot({ item: "19", source, hooks: tracker.registry.pre, workflow: WF, ctx: { ...tracker.ctx, item: "19" } });
     expect(snapshot.run?.goto).toBe("spec");
   });
 });

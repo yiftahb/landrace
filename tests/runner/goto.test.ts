@@ -33,7 +33,7 @@ const world = (labels: string[]) => {
     lock: { root },
   };
   const run = async () =>
-    (await buildSnapshot({ item: "3", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "3" } })).run;
+    (await buildSnapshot({ item: "3", source, hooks: tracker.registry.pre, workflow, ctx: { ...tracker.ctx, item: "3" } })).run;
   const failed = (stage: string, round: number) =>
     tracker.say(3, `broken${renderMarker({ stage, kind: "malformed", round })}`);
   const settled = (stage: string, round: number) => {

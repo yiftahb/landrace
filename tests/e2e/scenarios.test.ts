@@ -1440,7 +1440,7 @@ describe("revising a split item drops the first round's children and their pull 
     expect(state.pull(pr).closed).toBe("dropped");
     expect(byTitle("Everything")?.closed).toBeNull();
 
-    const snap = await buildSnapshot({ item: "1", hooks: [state.pre], source: state.source, ctx: { ...ctx, item: "1" } });
+    const snap = await buildSnapshot({ item: "1", hooks: [state.pre], source: state.source, workflow: null, ctx: { ...ctx, item: "1" } });
     expect((snap.rel as Rel)["child-of"]?.in.total).toBe(1);
   });
 });

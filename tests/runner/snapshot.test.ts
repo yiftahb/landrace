@@ -1,8 +1,10 @@
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
-import { deriveRun } from "#core/index.js";
+import { decide, deriveRun } from "#core/index.js";
+import { GOTO_TRIGGER, stageFromLabels } from "#conventions.js";
 import { definePreHook } from "#hooks/contracts.js";
 import { createExternalState, staticSource } from "#testing/index.js";
-import type { HookContext, Node, Rel, Run, RuntimeConfig } from "#namespace.js";
+import { loadShipped } from "#tests/support/shipped.js";
+import type { Entry, HookContext, Node, Rel, Run, RuntimeConfig, Workflow } from "#namespace.js";
 
 const ctx = (): Omit<HookContext, "snapshot"> => ({
   item: "1",
@@ -33,7 +35,7 @@ describe("buildSnapshot reads the graph first", () => {
       seenByHook = { node: snapshot.node, graph: snapshot.graph, rel: snapshot.rel };
       return {};
     } });
-    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre, peek], ctx: ctxFor("1") });
+    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre, peek], workflow: null, ctx: ctxFor("1") });
     expect((s.node as Node).id).toBe("1");
     expect(seenByHook.node).toEqual(s.node);
     expect(seenByHook.graph).toEqual(s.graph);
@@ -45,19 +47,19 @@ describe("buildSnapshot reads the graph first", () => {
 
   it("fails the snapshot, naming the source, when its graph is not one to decide from", async () => {
     const broken = staticSource({ nodes: [], relationships: [] });
-    await expect(buildSnapshot({ item: "1", source: broken, hooks: [], ctx: ctxFor("1") }))
+    await expect(buildSnapshot({ item: "1", source: broken, hooks: [], workflow: null, ctx: ctxFor("1") }))
       .rejects.toThrow(/source "static".*"1" is not in the graph/);
   });
 
   it("names the source when its read throws", async () => {
     const failing = { ...lone(), read: async () => { throw new Error("rate limited"); } };
-    await expect(buildSnapshot({ item: "1", source: failing, hooks: [], ctx: ctxFor("1") }))
+    await expect(buildSnapshot({ item: "1", source: failing, hooks: [], workflow: null, ctx: ctxFor("1") }))
       .rejects.toThrow(/source "static" could not read "1": rate limited/);
   });
 
   it("does not let a pre hook move the item by returning a node of its own", async () => {
     const liar = definePreHook({ id: "liar", provides: [], run: () => ({ node: itemNode("1", ["lr:stage:done"]) }) });
-    const s = await buildSnapshot({ item: "1", source: lone(["lr:stage:spec"]), hooks: [liar], ctx: ctxFor("1") });
+    const s = await buildSnapshot({ item: "1", source: lone(["lr:stage:spec"]), hooks: [liar], workflow: null, ctx: ctxFor("1") });
     expect((s.run as Run).stage).toBe("spec");
     expect(labelsIn(s.node)).toEqual(["lr:stage:spec"]);
   });
@@ -68,7 +70,7 @@ describe("buildSnapshot's rel", () => {
     const state = createExternalState({ items: [{ id: "1", labels: ["lr:stage:build"] }] });
     state.openPull("1");
     const liar = definePreHook({ id: "liar", provides: [], run: () => ({ rel: { implements: { in: { total: 0 } } } }) });
-    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre, liar], ctx: ctxFor("1") });
+    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre, liar], workflow: null, ctx: ctxFor("1") });
     expect((s.rel as Rel)["implements"]?.in.total).toBe(1);
   });
 
@@ -86,7 +88,7 @@ describe("buildSnapshot's rel", () => {
       await post.apply({ type: "tracker.comment", kind: "enter", stage: "breakdown", round, marker: `enter:breakdown:${round}`, body: "in" }, { ...ctxFor("1"), snapshot: {} });
     }
 
-    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre], ctx: ctxFor("1") });
+    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre], workflow: null, ctx: ctxFor("1") });
 
     expect((s.run as Run).rounds["breakdown"]?.entered).toBe(2);
     expect((s.rel as Rel)["child-of"]?.in).toMatchObject({ total: 1, not: { closed: 1 } });
@@ -104,6 +106,7 @@ describe("buildSnapshot", () => {
         definePreHook({ id: "a", run: () => ({ x: 1, shared: "first" }) }),
         definePreHook({ id: "b", run: () => ({ y: 2, shared: "second" }) }),
       ],
+      workflow: null,
       ctx: ctx(),
     });
     expect(s).toMatchObject({ x: 1, y: 2, shared: "second" });
@@ -120,6 +123,7 @@ describe("buildSnapshot", () => {
           run: ({ snapshot }) => ({ doubled: ((snapshot as { base: number }).base ?? 0) * 2 }),
         }),
       ],
+      workflow: null,
       ctx: ctx(),
     });
     expect(s.doubled).toBe(4);
@@ -138,13 +142,14 @@ describe("buildSnapshot", () => {
           }),
         }),
       ],
+      workflow: null,
       ctx: ctx(),
     });
     expect(s.run).toMatchObject({ stage: "spec", counters: { spec: 1 } });
   });
 
   it("carries the clock in, so core never reads it", async () => {
-    const s = await buildSnapshot({ item: "1", source: lone(), hooks: [], ctx: ctx(), now: 1234 });
+    const s = await buildSnapshot({ item: "1", source: lone(), hooks: [], workflow: null, ctx: ctx(), now: 1234 });
     expect(s.now).toBe(1234);
   });
 
@@ -154,6 +159,7 @@ describe("buildSnapshot", () => {
         item: "1",
         source: lone(),
         hooks: [definePreHook({ id: "flaky", run: () => { throw new Error("no network"); } })],
+        workflow: null,
         ctx: ctx(),
       }),
     ).rejects.toThrow(/pre hook "flaky".*no network/);
@@ -170,6 +176,7 @@ describe("buildSnapshot", () => {
         item: "1",
         source: lone(),
         hooks: [definePreHook({ id: "flaky", run: () => { throw null; } })],
+        workflow: null,
         ctx: ctx(),
       }),
     ).rejects.toThrow(/pre hook "flaky"/);
@@ -177,15 +184,15 @@ describe("buildSnapshot", () => {
 
   it("records the snapshot hash, which the decision cache reads later", async () => {
     const s = await buildSnapshot({
-      item: "1", source: lone(), hooks: [], ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
+      item: "1", source: lone(), hooks: [], workflow: null, ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
     });
     expect(String(s.hash)).toMatch(/^len:\d+$/);
   });
 
   it("gives the same hash for the same inputs at different times", async () => {
     const digest = (input: string) => `len:${input.length}`;
-    const a = await buildSnapshot({ item: "1", source: lone(), hooks: [], ctx: ctx(), now: 1, digest });
-    const b = await buildSnapshot({ item: "1", source: lone(), hooks: [], ctx: ctx(), now: 999, digest });
+    const a = await buildSnapshot({ item: "1", source: lone(), hooks: [], workflow: null, ctx: ctx(), now: 1, digest });
+    const b = await buildSnapshot({ item: "1", source: lone(), hooks: [], workflow: null, ctx: ctx(), now: 999, digest });
     expect(a.hash).toBe(b.hash);
   });
 
@@ -194,9 +201,75 @@ describe("buildSnapshot", () => {
       item: "1",
       source: lone(["lr:auto"]),
       hooks: [definePreHook({ id: "t", run: () => ({ item: { body: "" } }) })],
+      workflow: null,
       ctx: ctx(),
     });
     expect(s.run).toMatchObject({ stage: null });
+  });
+});
+
+/*
+ * A stage a custom identity places an item at, with no `lr:stage:` label to
+ * say so, is where its run is read from: the goto written there, the round
+ * refused there. Read from the label — none — both belonged to nobody, and
+ * the tick decided as though neither had happened.
+ */
+describe("buildSnapshot reads the run from the stage the item is at", () => {
+  const w: Workflow = {
+    version: 1, name: "t", description: "test",
+    stages: [
+      { id: "build", entry: true, step: "steps/build.md" },
+      { id: "review", identity: { "node.state.labels": { $in: ["needs-my-review"] } }, waits: "person", goto: ["build"] },
+      { id: "check", identity: { "node.state.labels": { $in: ["check"] } }, step: "steps/check.md" },
+    ],
+  };
+  const records = (entries: Entry[]) => definePreHook({ id: "records", run: () => ({ entries }) });
+  const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+  const read = (labels: string[], entries: Entry[], workflow: Workflow | null) =>
+    buildSnapshot({ item: "1", source: lone(labels), hooks: [records(entries)], workflow, ctx: ctxFor("1"), now: 7 });
+
+  it("reads a goto written at a stage an identity places the item at as pending there, and the tick takes it", async () => {
+    const s = await read(["needs-my-review"], [
+      { stage: "review", kind: "enter", round: 1, from: "build", at: at(1), byAgent: true },
+      { stage: "review", kind: "goto", round: 0, goto: "build", at: at(2), byAgent: true },
+    ], w);
+    expect(s.run).toMatchObject({ stage: "review", goto: "build", previousStage: "build" });
+    expect(decide(w, s)).toMatchObject({ action: "transition", stage: { id: "review" }, to: { id: "build" }, trigger: GOTO_TRIGGER });
+  });
+
+  it("reads a round refused there as that stage's refusal", async () => {
+    const s = await read(["check"], [
+      { stage: "check", kind: "enter", round: 1, from: "build", at: at(1), byAgent: true },
+      { stage: "check", kind: "refused", round: 1, at: at(2), byAgent: true },
+    ], w);
+    expect(s.run).toMatchObject({ stage: "check", lastOutputValid: false, lastRefused: true, failedStages: ["check"] });
+  });
+
+  /*
+   * Main places every item by its label, so for main this is the derivation
+   * it always was — run and hash alike — wherever the item is, and wherever
+   * it cannot be placed.
+   */
+  it("reads main's items exactly as their labels always have", async () => {
+    const { workflow } = await loadShipped();
+    const entries: Entry[] = [
+      { stage: "spec", kind: "enter", round: 1, at: at(1), byAgent: true },
+      { stage: "spec", kind: "output", round: 1, data: { kind: "spec" }, at: at(2), byAgent: true },
+      { stage: "build", kind: "enter", round: 1, from: "triage", at: at(3), byAgent: true },
+      { stage: "build", kind: "refused", round: 1, at: at(4), byAgent: true },
+      { stage: "blocked", kind: "goto", round: 0, goto: "build", at: at(5), byAgent: true },
+      { stage: "blocked", kind: "unblocked", round: 1, at: at(6), byAgent: true },
+    ];
+    for (const labels of [
+      ["lr:auto", "lr:stage:build"],
+      ["lr:auto", "lr:stage:blocked", "lr:blocked"],
+      ["lr:auto"],
+      ["lr:auto", "lr:stage:build", "lr:stage:blocked"],
+    ]) {
+      const [located, labelled] = await Promise.all([read(labels, entries, workflow), read(labels, entries, null)]);
+      expect({ labels, run: located.run }).toEqual({ labels, run: deriveRun(entries, stageFromLabels(labels).stage) });
+      expect({ labels, snapshot: located }).toEqual({ labels, snapshot: labelled });
+    }
   });
 });
 

@@ -27,7 +27,7 @@ describe("an item written before the rename", () => {
     for (const body of COMMENTS) tracker.say(7, body);
     tracker.openPull({ head: BRANCH });
     const source = tracker.registry.source as Source;
-    return { tracker, source, snapshot: await buildSnapshot({ item: "7", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "7" } }) };
+    return { tracker, source, snapshot: await buildSnapshot({ item: "7", source, hooks: tracker.registry.pre, workflow: null, ctx: { ...tracker.ctx, item: "7" } }) };
   };
 
   it("keeps its stage, rounds and outputs", async () => {

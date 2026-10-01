@@ -368,7 +368,7 @@ describe("landrace_goto", () => {
     // The title's claim, checked: the next tick would read this same snapshot.
     const snapshot = await buildSnapshot({
       item: "4", source: tracker.registry.source as Source,
-      hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "4" },
+      hooks: tracker.registry.pre, workflow, ctx: { ...tracker.ctx, item: "4" },
     });
     expect(snapshot.run?.goto).toBe("spec");
   });
@@ -411,7 +411,7 @@ describe("landrace_clear", () => {
     return tracker;
   };
   const runOf = async (tracker: ReturnType<typeof refused>) => (await buildSnapshot({
-    item: "4", source: tracker.registry.source as Source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "4" },
+    item: "4", source: tracker.registry.source as Source, hooks: tracker.registry.pre, workflow, ctx: { ...tracker.ctx, item: "4" },
   })).run;
 
   it("clears the refused step's next round and sends the item back to it", async () => {
