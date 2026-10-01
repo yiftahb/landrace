@@ -655,7 +655,7 @@ The engine runs no coding agent of its own: `agent.adapter` names a hook. `defin
 - its model and effort;
 - a time limit. At the limit the engine aborts the run's signal but keeps waiting for the run, so an executor that honours neither holds its item until the process dies;
 - the session to resume;
-- for a `items:create` step, the engine's own item server, ready to start.
+- for an `items:create` step, the engine's own item server, ready to start.
 
 It gets back the agent's text and a session id. Beyond `agent.adapter` and `agent.isolation`, the rest of the `agent:` block is opaque to the engine and passed on to the executor unread — a second agent is a hook file, never a change to `src/`.
 
