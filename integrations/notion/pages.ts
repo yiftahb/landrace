@@ -296,10 +296,11 @@ export class Notion extends BaseDocs {
   /**
    * The parent is shared, and the integration can write in it: the database
    * is made there when missing, and its title rewritten unchanged either way.
-   * An integration's capabilities cannot be asked, only tried — making the
-   * database tries "Insert content", the rewrite "Update content" — and a
-   * token without both would otherwise fail its first publish after the spec
-   * step was paid for.
+   * An integration's capabilities cannot be asked, only tried — the rewrite
+   * tries "Update content" on every start, and a token without it would
+   * otherwise fail its first publish after the spec step was paid for.
+   * "Insert content" is tried only when the database is made: once it
+   * exists, a token without it still starts, and its publishes fail on 403.
    */
   async check(ctx: RuntimeContext): Promise<void> {
     const notion = this.notion(ctx);
