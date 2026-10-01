@@ -436,6 +436,13 @@ describe("the preflight", () => {
     );
     expect(fake.calls.every((c) => c.method === "GET")).toBe(true);
   });
+
+  it("reads every page of issue types and fields before calling one missing", async () => {
+    const { fake, jira, ctx } = setup({ issueType: "Bug" });
+    fake.pageSize = 2;
+    fake.issueTypes.find((t) => t.name === "Bug")?.fields.push("labels");
+    await jira.check?.(ctx);
+  });
 });
 
 describe("composed with a forge and docs", () => {

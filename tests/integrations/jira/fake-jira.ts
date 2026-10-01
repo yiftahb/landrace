@@ -351,21 +351,23 @@ export function createFakeJira(project = "KEY") {
 
     if (method === "GET" && (m = /^\/rest\/api\/3\/issue\/createmeta\/([^/]+)\/issuetypes(?:\/([^/]+))?$/.exec(path))) {
       if (m[1] !== project) return errors(404, ["No project could be found with key or id '" + m[1] + "'."]);
+      const startAt = Number(q.get("startAt") ?? 0);
+      const maxResults = Math.min(Number(q.get("maxResults") ?? 50), fake.pageSize);
       if (m[2] === undefined) {
-        const issueTypes = fake.issueTypes.map((t) => ({
+        const issueTypes = fake.issueTypes.slice(startAt, startAt + maxResults).map((t) => ({
           self: `${SITE}/rest/api/3/issuetype/${t.id}`, id: t.id, description: "", iconUrl: `${SITE}/icon.svg`,
           name: t.name, untranslatedName: t.name, subtask: t.subtask, hierarchyLevel: t.subtask ? -1 : 0,
         }));
-        return json({ maxResults: 50, startAt: 0, total: issueTypes.length, issueTypes });
+        return json({ maxResults, startAt, total: fake.issueTypes.length, issueTypes });
       }
       const type = fake.issueTypes.find((t) => t.id === m?.[2]);
       if (!type) return errors(404, ["Issue type with id '" + m[2] + "' does not exist."]);
-      const fields = type.fields.map((id) => ({
+      const fields = type.fields.slice(startAt, startAt + maxResults).map((id) => ({
         required: id === "summary" || id === "issuetype" || id === "project",
         schema: { type: id === "labels" ? "array" : "string", system: id },
         name: id[0]?.toUpperCase() + id.slice(1), key: id, fieldId: id, hasDefaultValue: false, operations: ["set"],
       }));
-      return json({ maxResults: 50, startAt: 0, total: fields.length, fields });
+      return json({ maxResults, startAt, total: type.fields.length, fields });
     }
 
     if (method === "GET" && path === `/rest/api/3/project/${project}`) {

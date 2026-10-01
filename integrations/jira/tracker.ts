@@ -73,6 +73,24 @@ interface Transition { id: string; name: string; to?: Status }
 const same = (a: string | undefined, b: string): boolean => a?.trim().toLowerCase() === b.trim().toLowerCase();
 
 /**
+ * Every page of a create-metadata list: an issue type or a labels field past
+ * the first page is there all the same. Documented as `issueTypes` and
+ * `fields`; `values` read too, in case the site answers the other spelling.
+ */
+async function everyPage<T>(jira: Client, path: string): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
+    const res = await jira.call<{ issueTypes?: T[]; fields?: T[]; values?: T[]; total?: number; isLast?: boolean }>(
+      "GET", `${path}?startAt=${all.length}&maxResults=200`,
+    );
+    const batch = res.issueTypes ?? res.fields ?? res.values ?? [];
+    all.push(...batch);
+    if (batch.length === 0 || (res.isLast ?? all.length >= (res.total ?? 0))) return all;
+  }
+  throw new Error(`${path} has more than ${MAX_ISSUE_PAGES} pages; what it lacks cannot be read`);
+}
+
+/**
  * ISO 8601 in UTC. Jira answers in the site's offset — `+0300` — and the
  * engine orders `at` as strings, so two offsets would sort by wall clock
  * rather than by when.
@@ -466,23 +484,16 @@ export class Jira extends BaseTracker {
     }
     // Create metadata answers only an account that may browse the project and create in it.
     if (permissions.BROWSE_PROJECTS?.havePermission === true && permissions.CREATE_ISSUES?.havePermission === true) {
-      type Named = { id?: string; name?: string };
-      type Field = { fieldId?: string };
-      // Documented as `issueTypes` and `fields`; `values` read too, in case the site answers the other spelling.
-      const page = await jira.call<{ issueTypes?: Named[]; values?: Named[] }>(
-        "GET", `/rest/api/3/issue/createmeta/${this.project}/issuetypes?maxResults=200`,
-      );
-      const types = page.issueTypes ?? page.values ?? [];
+      const path = `/rest/api/3/issue/createmeta/${this.project}/issuetypes`;
+      const types = await everyPage<{ id?: string; name?: string }>(jira, path);
       for (const wanted of new Set([this.issueType, this.childType])) {
         const type = types.find((t) => t.name === wanted);
         if (!type?.id) {
           problems.push(`${this.project} has no issue type "${wanted}"; it has ${types.map((t) => `"${t.name}"`).join(", ") || "none"}`);
           continue;
         }
-        const meta = await jira.call<{ fields?: Field[]; values?: Field[] }>(
-          "GET", `/rest/api/3/issue/createmeta/${this.project}/issuetypes/${encodeURIComponent(type.id)}?maxResults=200`,
-        );
-        if (!(meta.fields ?? meta.values ?? []).some((f) => f.fieldId === "labels")) {
+        const fields = await everyPage<{ fieldId?: string }>(jira, `${path}/${encodeURIComponent(type.id)}`);
+        if (!fields.some((f) => f.fieldId === "labels")) {
           problems.push(`${this.project}'s "${wanted}" issues have no labels field, and a ticket's position is a label`);
         }
       }
