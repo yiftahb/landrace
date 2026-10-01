@@ -108,6 +108,7 @@ function checkRich(value: unknown, where: string): Rich[] {
     if (link != null) {
       const url = link.url;
       if (typeof url !== "string" || !/^https?:\/\//i.test(url) || !URL.canParse(url)) bad(`Invalid URL for link.`);
+      if ((url as string).length > MAX_TEXT) bad(`${where}[${i}].text.link.url.length should be ≤ \`${MAX_TEXT}\`.`);
     }
   });
   return (value as Rich[]).map((item) => {

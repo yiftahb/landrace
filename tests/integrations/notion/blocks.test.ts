@@ -123,6 +123,21 @@ describe("the body", () => {
     ]);
   });
 
+  /*
+   * Notion takes at most 100 rich text objects a block. A paragraph of sixty
+   * code spans is 120 of them, refused on every tick — and a republish has
+   * already cleared the old Source by then — so it is shown as written.
+   */
+  it("shows a line with more inline pieces than a block takes as the text it was", async () => {
+    const line = Array.from({ length: 60 }, (_, i) => `touch \`src/f${i}.ts\``).join(" ");
+    expect(await bodyOf(line)).toEqual([block("paragraph", [text(line)])]);
+  });
+
+  it("leaves a link Notion would refuse for its length as the text it was", async () => {
+    const markdown = `[long](https://example.com/${"a".repeat(2_000)})`;
+    expect(await bodyOf(markdown)).toEqual([block("paragraph", [text(markdown.slice(0, 2_000)), text(markdown.slice(2_000))])]);
+  });
+
   it("splits text longer than one rich text object holds", async () => {
     expect(await bodyOf("x".repeat(4_500))).toEqual([
       block("paragraph", [text("x".repeat(2_000)), text("x".repeat(2_000)), text("x".repeat(500))]),

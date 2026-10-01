@@ -50,12 +50,19 @@ const rich = (content: string, { link, code }: { link?: string; code?: boolean }
 const block = (type: string, richText: RichText[], extra: Record<string, unknown> = {}): Block =>
   ({ object: "block", type, [type]: { rich_text: richText, ...extra } });
 
-/** Notion refuses a link that is not an absolute URL, so only http(s) ones are made links. */
-const linkable = (url: string): boolean => /^https?:\/\//i.test(url) && URL.canParse(url);
+/** Notion refuses a link that is not an absolute URL, or is longer than its text, so only http(s) ones that fit are made links. */
+const linkable = (url: string): boolean => /^https?:\/\//i.test(url) && URL.canParse(url) && url.length <= MAX_TEXT;
+
+/** The most rich text objects one block takes. */
+const MAX_PIECES = 100;
 
 const INLINE = /`([^`\n]+)`|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
 
-/** A line's inline code and links; everything else is its literal text. */
+/**
+ * A line's inline code and links; everything else is its literal text. A
+ * line with more pieces than a block takes is all literal text: refused, it
+ * would fail the publish on every tick.
+ */
 function inline(line: string): RichText[] {
   const out: RichText[] = [];
   let plain = "";
@@ -80,7 +87,7 @@ function inline(line: string): RichText[] {
   }
   plain += line.slice(at);
   flush();
-  return out;
+  return out.length > MAX_PIECES ? rich(line) : out;
 }
 
 /** Every language Notion's code block takes; any other fence tag is plain text. */
