@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createClient, GitLab } from "landrace/integrations/gitlab";
-import { branchHeads, gitIn } from "landrace/kit";
-import type { Git, HookContext } from "#namespace.js";
+import { branchHeads, compose, gitIn } from "landrace/kit";
+import { PULL_REQUEST_KIND } from "#conventions.js";
+import type { Effect, Git, Graph, HookContext, Snapshot } from "#namespace.js";
+import { MemoryTracker } from "#testing/external-state.js";
 import { BASE, createFakeGitLab, type FakeGitLab, PROJECT, TOKEN } from "#tests/integrations/gitlab/fake-gitlab.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 
@@ -401,6 +403,94 @@ describe("push", () => {
     await pushed(gitIn(root));
     expect(await commitAt(origin, "refs/heads/landrace/1")).toBe(sha);
     expect((await branchHeads(gitIn(root))).remote["landrace/1"]).toBe(sha);
+  });
+});
+
+/*
+ * What a GitLab project gets: the forge made into hooks by `compose`, beside
+ * the in-memory tracker, driven through the effects a workflow plans — the
+ * merge request opened, a review round's findings threaded, the fixer's
+ * reply, the reviewer's resolve — with the counts the review loop gates on
+ * read back from the graph after each.
+ */
+describe("GitLab composed as a project's forge", () => {
+  const DIFF = "@@ -1,2 +1,3 @@\n line one\n+line two\n line three\n";
+  const project = () => {
+    const gl = createFakeGitLab();
+    gl.diffsFor("landrace/7", [{ new_path: "src/a.ts", diff: DIFF }]);
+    // The checkout a build left: the ticket's branch committed, not yet on origin.
+    const git: Git = async (args) => (args[0] === "for-each-ref" ? `refs/heads/landrace/7\0${"a".repeat(40)}\n` : "");
+    const hooks = compose({
+      tracker: new MemoryTracker({ tickets: [{ id: "7", title: "Add a thing" }] }),
+      forge: new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git }),
+    });
+    const ctx = gl.ctx();
+    const snapshot = async (): Promise<Snapshot> => {
+      const graph = await hooks.source.read("7", ctx);
+      const base: Snapshot = { graph, node: graph.nodes.find((n) => n.id === "7") };
+      return { ...base, ...(await hooks.pre.run({ ...ctx, ticket: "7", snapshot: base })) };
+    };
+    const apply = async (effect: Effect): Promise<void> => hooks.post.apply(effect, { ...ctx, ticket: "7", snapshot: await snapshot() });
+    const counts = async (): Promise<unknown[]> => {
+      const pr = ((await snapshot()).graph as Graph).nodes.find((n) => n.kind === PULL_REQUEST_KIND);
+      return [pr?.id, pr?.state.openThreads, pr?.state.awaitingFix];
+    };
+    return { gl, hooks, snapshot, apply, counts };
+  };
+
+  const round = (marker: string, output: unknown): Effect => {
+    const [kind = "", n = "0"] = marker.split(":");
+    return { type: "pull.review", branch: "landrace/7", marker, stage: kind === "fix" ? "fix-review" : "code-review", round: Number(n), body: `Round ${marker}.`, output };
+  };
+
+  it("opens the ticket's merge request, once", async () => {
+    const { gl, hooks, snapshot, apply } = project();
+    const open: Effect = { type: "pull.open", branch: "landrace/7" };
+    expect(hooks.post.satisfied(await snapshot(), open)).toBe(false);
+    await apply(open);
+    expect(hooks.post.satisfied(await snapshot(), open)).toBe(true);
+    expect([...gl.mrs.values()]).toEqual([expect.objectContaining({ source_branch: "landrace/7", target_branch: "main", title: "Add a thing" })]);
+  });
+
+  it("threads findings on the lines the diff shows, and one off its hunks on the file", async () => {
+    const { gl, apply } = project();
+    await apply({ type: "pull.open", branch: "landrace/7" });
+    await apply(round("review:1", {
+      findings: [{ file: "src/a.ts", line: 2, body: "added" }, { file: "src/a.ts", line: 3, body: "context" }, { file: "src/a.ts", line: 40, body: "off" }],
+      resolved: [],
+    }));
+    const placed = gl.mrs.get(1)?.discussions.map((d) => [d.notes[0]?.position?.position_type, d.notes[0]?.position?.new_line, d.notes[0]?.position?.old_line]);
+    expect(placed).toEqual([["file", undefined, undefined], ["text", 2, undefined], ["text", 3, 2], [undefined, undefined, undefined]]);
+  });
+
+  it("gates on the counts: 1/1 raised, 1/0 answered, 0/0 resolved — and 0/0 once closed with a thread open", async () => {
+    const { gl, apply, counts } = project();
+    await apply({ type: "pull.open", branch: "landrace/7" });
+
+    await apply(round("review:1", { findings: [{ file: "src/a.ts", line: 2, body: "breaks on empty input" }], resolved: [] }));
+    expect(await counts()).toEqual(["pr-1", 1, 1]);
+    const thread = gl.mrs.get(1)?.discussions[0]?.id ?? "";
+
+    await apply(round("fix:1", { replies: [{ thread, body: "Handled the empty case." }] }));
+    expect(await counts()).toEqual(["pr-1", 1, 0]);
+
+    await apply(round("review:2", { findings: [], resolved: [thread] }));
+    expect(await counts()).toEqual(["pr-1", 0, 0]);
+
+    await apply(round("review:3", { findings: [{ file: "src/a.ts", line: 3, body: "still wrong" }], resolved: [] }));
+    expect(await counts()).toEqual(["pr-1", 1, 1]);
+    await apply({ type: "nodes.close", ids: ["pr-1"] });
+    expect(gl.mrs.get(1)?.state).toBe("closed");
+    expect(await counts()).toEqual(["pr-1", 0, 0]);
+  });
+
+  it("never posts one round twice", async () => {
+    const { gl, apply } = project();
+    await apply({ type: "pull.open", branch: "landrace/7" });
+    const effect = round("review:1", { findings: [{ file: "src/a.ts", line: 2, body: "x" }], resolved: [] });
+    await apply(effect);
+    await apply(effect);
+    expect(gl.mrs.get(1)?.discussions).toHaveLength(2);
   });
 });
 
