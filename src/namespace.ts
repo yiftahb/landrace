@@ -1282,6 +1282,7 @@ export type EventName =
   | "lock.acquired" | "lock.released" | "lock.denied" | "lock.stolen"
   | "screen.passed" | "screen.blocked" | "screen.cleared" | "screen.skipped"
   | "display.failed"
+  | "source.failed"
   | "wake.failed"
   | "notify.sent" | "notify.failed";
 
@@ -1448,38 +1449,56 @@ export interface ConvergeResult {
 
 export interface StatusRow {
   item: string;
+  /** The workflow that owns it; absent for an item no one workflow owns. */
+  workflow?: string;
   title: string;
   stage: string | null;
   note: string;
 }
 
-export interface TickOptions {
+/**
+ * One converge in flight, by item id. Shared across ticks, which overlap: the
+ * tick that lists an item closed, turned away, or claimed by some other
+ * workflow stops the run an earlier tick started.
+ */
+export interface RunningItem {
+  controller: AbortController;
+  /** The workflow it runs under, so the next listing can tell whether that is still the item's owner. */
+  workflow: string;
   /**
-   * Where the work comes from. Not a pre hook: a pre hook is handed the item
-   * it describes, and a tick has to enumerate items before it has one.
+   * Settles once the converge has unwound and let go of the item's lock. A
+   * tick that moved the item to another workflow waits on it, so the new
+   * owner works it in that same tick and never beside the old one.
    */
-  source: Source;
-  /** Without a source of its own: converge reads the tick's, so one tick cannot enumerate from one source and decide from another. */
-  deps: Omit<ConvergeDeps, "ctx" | "source"> & { ctx: RuntimeContext };
-  concurrency?: number;
+  done: Promise<void>;
+}
+
+/** Every distinct source, listed once per tick, and who owns what it listed. */
+export interface WorkspaceListing {
+  /** One per distinct source, by identity; a source whose `list` failed has an empty graph here and an entry in `failed`. */
+  graphs: Graph[];
+  /** Workflow id → the index of its source's graph. */
+  sourceOf: Map<string, number>;
+  claims: Claims;
+  /** Source index → why its `list` failed. Its items are neither worked nor stopped that tick: nothing is known about them. */
+  failed: Map<number, string>;
+}
+
+export interface WorkspaceTickOptions {
+  runtime: WorkspaceRuntime;
   lock?: LockOptions;
   /**
-   * Each item being converged, by id, with the controller that stops it.
-   * Shared across ticks, which overlap: the tick that lists an item closed,
-   * or no longer eligible, stops the run an earlier tick started. Absent,
-   * nothing is stopped but by `ctx.signal`.
+   * Everything the tick listed, eligible or not, and the claims made of it.
+   * For a display: handing over what the tick already fetched costs nothing,
+   * and asking the sources again would double the tracker traffic of every tick.
    */
-  running?: Map<string, AbortController>;
-  /**
-   * Every node the source returned this tick, eligible or not. For a
-   * display: handing over what the tick already fetched costs nothing, and
-   * asking the source again would double the tracker traffic of every tick.
-   */
-  onList?: (graph: Graph) => void;
+  onList?: (listing: WorkspaceListing) => void;
 }
 
 export interface TickRow {
   item: string;
+  /** The workflow that worked it; absent for an item no one workflow owns. */
+  workflow?: string;
   outcome: string;
 }
 
@@ -1766,20 +1785,33 @@ export interface Reexec {
   env: NodeJS.ProcessEnv;
 }
 
-/** Everything the loop needs, assembled once, so a tick is only a call. */
-export interface Runtime {
-  /** Where the work comes from. Required: a loop with nothing to enumerate can never do anything. */
+/** One workflow of the workspace, assembled: what a converge of an item it owns is handed. */
+export interface WorkflowRuntime {
+  /** Its folder under `workflows/`. */
+  id: string;
+  name: string;
+  description: string;
+  /** Where its items come from. Two workflows loading one hook module share this object, and the tick lists it once. */
   source: Source;
-  /**
-   * Assembled by `buildRuntime` but deliberately not run by it: `landrace
-   * status` builds a Runtime the same way to enumerate items, and must
-   * never make the one write a preflight can make while only trying to read.
-   * Only `runStart` runs these, before the first tick.
-   */
-  preflights: Preflight[];
   /** `scrub` required here: the rows `landrace start` prints go through it too. */
   deps: Omit<ConvergeDeps, "ctx" | "scrub"> & { ctx: RuntimeContext; scrub: (text: string, extra?: readonly string[]) => string };
+}
+
+/** Everything the loop needs, assembled once, so a tick is only a call. */
+export interface WorkspaceRuntime {
+  dir: string;
+  /** In the workspace's order. */
+  workflows: WorkflowRuntime[];
+  /**
+   * Assembled by `buildWorkspaceRuntime` but deliberately not run by it:
+   * `landrace status` builds a runtime the same way to enumerate items, and
+   * must never make the one write a preflight can make while only trying to
+   * read. Only `runStart` runs these, before the first tick. One each, by
+   * identity: two workflows loading one module share its preflight.
+   */
+  preflights: Preflight[];
   intervalMs: number;
+  /** Workspace-wide: one pool for every workflow's items. */
   concurrency: number;
   /**
    * Ctrl-C. The same signal every hook and executor is handed, so aborting it
@@ -1787,8 +1819,11 @@ export interface Runtime {
    * each item unwind through the lock it holds.
    */
   stop: AbortController;
-  /** See TickOptions.running: one map for the life of the loop, so every tick sees every run. */
-  running: Map<string, AbortController>;
+  /** One map for the life of the loop, so every tick sees every run, whichever workflow it is under. */
+  running: Map<string, RunningItem>;
+  /** The one logger every workflow logs through; its `scrub` is the one redaction set. */
+  log: RedactingLogger;
+  ctx: RuntimeContext;
   /** Present when telemetry is on. `runStart` shuts it down on the way out, flushing what is queued. */
   telemetry?: { shutdown(): Promise<void> };
 }

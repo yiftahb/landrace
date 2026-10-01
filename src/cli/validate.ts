@@ -107,7 +107,7 @@ async function executorProblems(dir: string, loaded: LoadedConfig, registry: Reg
   };
   try {
     // Screener before executor, the same order `start` builds them in:
-    // `buildRuntime` resolves its screener before it ever reaches the object
+    // `buildWorkspaceRuntime` resolves its screener before it ever reaches the object
     // literal that awaits `executorFor` for the step — so a configuration
     // broken both ways is reported over the same one `start` would actually
     // meet first.
@@ -202,7 +202,7 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
    * §11.8's path coverage is the one rule that needs the hooks — the union of
    * what the integrations declare is its other half — and importing a hook
    * module runs whatever is at its top level. So a workflow that is already
-   * unsound never gets that far, the same ordering `buildRuntime` keeps and
+   * unsound never gets that far, the same ordering `buildWorkspaceRuntime` keeps and
    * for the same reason: the engine has already decided not to run this
    * workflow, and running the user's code against it anyway would be a
    * surprise nobody asked for.

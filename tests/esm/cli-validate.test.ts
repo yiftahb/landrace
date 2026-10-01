@@ -183,7 +183,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
   });
 
   /**
-   * The ordering `buildRuntime` already pins, now that `validate` imports hook
+   * The ordering `buildWorkspaceRuntime` already pins, now that `validate` imports hook
    * modules too: importing one runs whatever is at its top level, and a
    * workflow that has already been found unsound must not get that far. A
    * command whose whole job is to check would be a strange place to run a

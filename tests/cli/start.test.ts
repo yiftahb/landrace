@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { renderMarker } from "#conventions.js";
-import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Runtime, Schedule, Source, WakeResult, Workflow } from "#namespace.js";
+import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Schedule, Source, WakeResult, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -17,7 +17,7 @@ import { describeLoopback } from "#tests/support/loopback.js";
 import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
 import {
   boardSink,
-  buildRuntime,
+  buildWorkspaceRuntime,
   childServerCommand,
   createInterrupt,
   executorFor,
@@ -42,7 +42,7 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
 const exec = promisify(execFile);
 
 /**
- * A workflow directory on disk, because that is the only thing `buildRuntime`
+ * A workflow directory on disk, because that is the only thing `buildWorkspaceRuntime`
  * takes: every failure it exists to report is a file a person can go and edit,
  * and a fixture built out of objects would prove nothing about reading them.
  *
@@ -91,7 +91,7 @@ describe("parseInterval", () => {
   });
 });
 
-describe("buildRuntime", () => {
+describe("buildWorkspaceRuntime", () => {
   it("refuses to start when the workflow does not validate", async () => {
     const dir = await fixture();
     // Schema-valid and unsound: no entry stage, so nothing can ever begin.
@@ -99,14 +99,9 @@ describe("buildRuntime", () => {
       join(workflowIn(dir), "workflow.yaml"),
       "version: 1\nname: broken\ndescription: test\nstages:\n  - id: only\n    triggers: [{ when: { \"run.stage\": null } }]\n",
     );
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/does not validate[\s\S]*entry/);
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/does not validate[\s\S]*entry/);
   });
 
-  /*
-   * Until the loop can run several workflows, it runs the one there is — and
-   * a second is refused, not ignored: running whichever sorted first would be
-   * an item worked by a workflow nobody chose for it.
-   */
   // `validate` reports it, so `start` refuses it: every item create_item
   // starts there would be skipped as ineligible on the next tick.
   it("refuses a workflow that admits labels its own eligible rule turns away, and still lets status read", async () => {
@@ -114,15 +109,24 @@ describe("buildRuntime", () => {
     const yaml = join(workflowIn(dir), "workflow.yaml");
     await writeFile(yaml, (await readFile(yaml, "utf8")).replace("description: test\n",
       'description: test\nadmit: [lr:fast]\neligible:\n  - { when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }\n'));
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/admit: workflow "main" admits \[lr:fast\] but its eligible rule "no lr:auto label"/);
-    await expect(buildRuntime(dir, { readOnly: true })).rejects.toThrow(/no source hook/);
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/admit: workflow "main" admits \[lr:fast\] but its eligible rule "no lr:auto label"/);
+    await expect(buildWorkspaceRuntime(dir, { readOnly: true })).rejects.toThrow(/no source hook/);
   });
 
-  it("refuses a workspace with two workflows, naming both, for start and for status alike", async () => {
+  /*
+   * Every workflow is proved sound before any hook is imported, and the one
+   * that is not is named by its folder: two workflows are run together now,
+   * so "the workflow" no longer says which file to open.
+   */
+  it("names the one of two workflows that does not validate, for start and for status alike", async () => {
     const dir = await fixture();
     await workspaceOf({ fastlane: "tests/fixtures/minimal" }, dir);
-    await expect(buildRuntime(dir, {})).rejects.toThrow(`landrace start runs one workflow at a time; ${dir}/workflows has 2 (fastlane, main)`);
-    await expect(buildRuntime(dir, { readOnly: true })).rejects.toThrow(/^landrace status runs one workflow at a time/);
+    await writeFile(
+      join(workflowIn(dir, "fastlane"), "workflow.yaml"),
+      "version: 1\nname: broken\ndescription: test\nstages:\n  - id: only\n    triggers: [{ when: { \"run.stage\": null } }]\n",
+    );
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/does not validate[\s\S]*workflows\/fastlane: .*entry/);
+    await expect(buildWorkspaceRuntime(dir, { readOnly: true })).rejects.toThrow(/workflows\/fastlane: .*entry/);
   });
 
   // Matched on the missing-secret wording, not just the name: an unresolved
@@ -132,7 +136,7 @@ describe("buildRuntime", () => {
   it("refuses to start when a secret does not resolve", async () => {
     const dir = await fixture();
     await writeFile(join(dir, ".env"), "\n");
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/secret "githubToken" does not resolve/);
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/secret "githubToken" does not resolve/);
   });
 
   /**
@@ -142,27 +146,27 @@ describe("buildRuntime", () => {
    * and trusts the log. Startup is the only place this can still be caught.
    */
   it("refuses to start when log.redact names a secret nothing declares", async () => {
-    await expect(buildRuntime(await fixture({ log: "slackToken" }), {})).rejects.toThrow(/slackToken/);
+    await expect(buildWorkspaceRuntime(await fixture({ log: "slackToken" }), {})).rejects.toThrow(/slackToken/);
   });
 
   it("refuses to start when a redacted secret is too short to redact by", async () => {
     const dir = await fixture();
     await writeFile(join(dir, ".env"), "LR_TEST_TOKEN=x\n");
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/githubToken/);
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/githubToken/);
   });
 
   it("refuses a notify.via no loaded notifier answers to, naming what is registered", async () => {
     const dir = await fixture({ extra: "notify: { on: [needs-you], via: [slack] }\n" });
-    await expect(buildRuntime(dir, {})).rejects.toThrow('notify.via names "slack", which no notifier registers: the loaded hooks register none');
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow('notify.via names "slack", which no notifier registers: the loaded hooks register none');
   });
 
   it("refuses a notify block naming an event there is none of, saying where", async () => {
     const dir = await fixture({ extra: "notify: { on: [done], via: [slack] }\n" });
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/landrace\.yaml: notify\.on\.0: .*"needs-you"/);
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/landrace\.yaml: notify\.on\.0: .*"needs-you"/);
   });
 
   it("refuses to start when no hook module provides a source to enumerate", async () => {
-    await expect(buildRuntime(await fixture(), {})).rejects.toThrow(/source/);
+    await expect(buildWorkspaceRuntime(await fixture(), {})).rejects.toThrow(/source/);
   });
 
   /*
@@ -173,7 +177,7 @@ describe("buildRuntime", () => {
    */
   it("refuses to start when a var does not resolve", async () => {
     const dir = await fixture({ extra: "vars: { assignee: $LR_TEST_NOBODY }\n" });
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/assignee[\s\S]*does not resolve/);
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/assignee[\s\S]*does not resolve/);
   });
 
   /**
@@ -185,28 +189,28 @@ describe("buildRuntime", () => {
    */
   it("refuses to start when a var resolves to a value a secret also holds", async () => {
     const dir = await fixture({ extra: "vars: { leaked: $LR_TEST_TOKEN }\n" });
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/leaked[\s\S]*secret/);
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/leaked[\s\S]*secret/);
   });
 
   it("refuses an --otel key it does not read", async () => {
-    await expect(buildRuntime(await fixture(), { otel: ["OTEL_TRACES_EXPORTER=otlp"] })).rejects.toThrow(/--otel OTEL_TRACES_EXPORTER/);
+    await expect(buildWorkspaceRuntime(await fixture(), { otel: ["OTEL_TRACES_EXPORTER=otlp"] })).rejects.toThrow(/--otel OTEL_TRACES_EXPORTER/);
   });
 
   it("refuses grpc from .env rather than downgrading it", async () => {
     const dir = await fixture();
     await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\nLANDRACE_ENABLE_TELEMETRY=1\nOTEL_EXPORTER_OTLP_PROTOCOL=grpc\n`);
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/grpc is not supported/);
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/grpc is not supported/);
   });
 
   // In order: the second proves the counter sees a load, so the first's zero
   // means the SDK was never loaded rather than that the mock missed it.
   it("never loads the OpenTelemetry SDK with telemetry off", async () => {
-    await expect(buildRuntime(await fixture(), {})).rejects.toThrow(/source/);
+    await expect(buildWorkspaceRuntime(await fixture(), {})).rejects.toThrow(/source/);
     expect(mockSdkLoads).toBe(0);
   });
 
   it("loads it once telemetry is on", async () => {
-    await expect(buildRuntime(await fixture(), { otel: ["LANDRACE_ENABLE_TELEMETRY=1", "OTEL_LOGS_EXPORTER=console"] }))
+    await expect(buildWorkspaceRuntime(await fixture(), { otel: ["LANDRACE_ENABLE_TELEMETRY=1", "OTEL_LOGS_EXPORTER=console"] }))
       .rejects.toThrow(/source/);
     expect(mockSdkLoads).toBe(1);
   });
@@ -703,7 +707,7 @@ describe("the item panel", () => {
  * a stray Ctrl-C would otherwise leave held.
  */
 describe("loop", () => {
-  const fakeRuntime = (stop: AbortController): Runtime => ({ stop }) as unknown as Runtime;
+  const fakeRuntime = (stop: AbortController): { stop: AbortController } => ({ stop });
 
   it("starts the schedule, stops it once asked to stop, and calls nothing further", async () => {
     const schedule: Schedule = {

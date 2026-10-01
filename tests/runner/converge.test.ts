@@ -1332,7 +1332,7 @@ describe("a stage that creates children", () => {
 
 /**
  * `deps.stepTimeoutMs` is the workflow's own `budget.stepTimeout`, resolved
- * once by `buildRuntime` — converge's own job is only to forward it as
+ * once by `buildWorkspaceRuntime` — converge's own job is only to forward it as
  * `runStep`'s `defaultTimeoutMs`, for a step that names no `timeout` of its
  * own. Nothing else in this file names it, so a caller wiring it up wrong
  * (or a future refactor dropping the spread) would ship silently: every
@@ -1364,7 +1364,7 @@ describe("the step timeout budget", () => {
 });
 
 /**
- * `deps.childServer` is how `buildRuntime` tells converge to start this
+ * `deps.childServer` is how `buildWorkspaceRuntime` tells converge to start this
  * process again as `landrace mcp`; converge's own job is only to forward it
  * into runStep as its `childServer` option. Nothing else in this file names
  * it, the same reason `stepTimeoutMs` has its own describe above: every other

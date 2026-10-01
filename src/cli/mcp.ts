@@ -68,7 +68,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     log: (event, data) => events(event as EventName, data),
   };
   // An executor factory's own two members, beyond what every hook gets: see
-  // the same construction in `buildRuntime`.
+  // the same construction in `buildWorkspaceRuntime`.
   const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact, steps };
 
   // Before anything else the hooks might do, including the very next check

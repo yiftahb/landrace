@@ -9,7 +9,7 @@ import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { sendTo } from "#runner/goto.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
-import { tick } from "#runner/tick.js";
+import { tick } from "#tests/support/tick.js";
 import { createExternalState, createHarness } from "#testing/index.js";
 import { gitIn } from "landrace/kit";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
@@ -432,7 +432,7 @@ describe("several instances over one repository, each taking its own items", () 
     // about *either* of them would pass the line above and be broken.
     expect(about(1).length).toBeGreaterThan(0);
     expect(rows).toEqual([
-      { item: "1", outcome: expect.stringMatching(/^terminal/) },
+      { item: "1", workflow: "main", outcome: expect.stringMatching(/^terminal/) },
       { item: "2", outcome: "skipped: assigned to somebody else" },
     ]);
   });

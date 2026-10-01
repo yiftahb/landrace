@@ -3,24 +3,24 @@ import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { buildRuntime, childServerCommand, runStart } from "#cli/start.js";
+import { buildWorkspaceRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
-import type { LandraceEvent } from "#namespace.js";
+import type { BuildOptions, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
 import { createActivityLog } from "#runner/activity.js";
 import { acquire, release } from "#runner/lock.js";
 import { sandboxRoot } from "#sandbox.js";
-import { tick } from "#runner/tick.js";
+import { tickWorkspace } from "#runner/tick.js";
 import { touchWake, wakePath } from "#wake.js";
-import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
+import { workflowIn } from "#tests/support/workspace.js";
 
 /**
- * `buildRuntime` over a hook module that is a real file on disk, imported the
+ * `buildWorkspaceRuntime` over a hook module that is a real file on disk, imported the
  * way the CLI imports one.
  *
  * This file runs in the second jest pass (see jest.esm.config.mjs): the
  * default pass rewrites `await import(url)` onto jest's own resolver, which
  * cannot resolve a `file:` URL, so the loader's one dynamic moment — and
- * therefore everything `buildRuntime` assembles out of it — is unreachable
+ * therefore everything `buildWorkspaceRuntime` assembles out of it — is unreachable
  * there.
  */
 const ITEM = "4242";
@@ -36,7 +36,10 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * `tracker.record` — tracker config is opaque to the engine and handed to
  * hooks as it stands, so this also pins that the config reaches them.
  */
-const hookSource = (provides?: string[], preflight?: "pass" | "throw", preFails?: string): string => `import { appendFile } from "node:fs/promises";
+const hookSource = (
+  provides?: string[], preflight?: "pass" | "throw", preFails?: string,
+  items: Array<{ id: string; labels: string[] }> = [{ id: ITEM, labels: ["lr:auto"] }], listFails?: string,
+): string => `import { appendFile } from "node:fs/promises";
 
 const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
@@ -45,17 +48,19 @@ const brand = (kind: string, value: object): object =>
 interface Ctx { item: string; config: { tracker: { record: string } } }
 
 const graph = {
-  nodes: [{
-    id: "${ITEM}", kind: "item", title: "Add export", link: "u/${ITEM}", closed: null, priority: null,
-    origin: null, state: { labels: ["lr:auto"], assignees: [] },
-  }],
+  nodes: ${JSON.stringify(items.map(({ id, labels }) => ({
+    id, kind: "item", title: "Add export", link: `u/${id}`, closed: null, priority: null, origin: null, state: { labels, assignees: [] },
+  })))},
   relationships: [],
 };
 
 export const source = brand("source", {
   id: "fake",
   relations: [],
-  list: async (): Promise<unknown> => graph,
+  list: async (): Promise<unknown> => {
+    ${listFails === undefined ? "" : `throw new Error(${JSON.stringify(listFails)});`}
+    return graph;
+  },
   read: async (): Promise<unknown> => graph,
 });
 
@@ -155,6 +160,10 @@ async function fixture(
     hookExtra?: string;
     /** More of `landrace.yaml`, after everything else in it. */
     configExtra?: string;
+    /** The items the fake source lists; one `lr:auto` item by default. */
+    items?: Array<{ id: string; labels: string[] }>;
+    /** A message the source's `list` fails with. */
+    listFails?: string;
   } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
@@ -162,7 +171,7 @@ async function fixture(
   const dir = join(root, ".landrace");
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
-  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight, opts.preFails) + (opts.hookExtra ?? ""));
+  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight, opts.preFails, opts.items, opts.listFails) + (opts.hookExtra ?? ""));
   // The project's own coding agent, by the path this repository's workflow
   // loads it from: the engine ships none. A dynamic import with a computed
   // specifier — the loader's own `import(pathToFileURL(path).href)` pattern —
@@ -194,6 +203,14 @@ ${opts.configExtra ?? ""}`,
   return { dir, record };
 }
 
+/** The workspace runtime with its workflow `main` beside it: every fixture here has that one, and most only that. */
+async function buildMain(dir: string, opts: BuildOptions): Promise<WorkspaceRuntime & WorkflowRuntime> {
+  const rt = await buildWorkspaceRuntime(dir, opts);
+  const main = rt.workflows.find((w) => w.id === "main");
+  if (!main) throw new Error("the fixture's workspace has no main workflow");
+  return { ...rt, ...main };
+}
+
 const applied = async (record: string): Promise<unknown[]> =>
   (await readFile(record, "utf8").catch(() => ""))
     .split("\n")
@@ -204,10 +221,10 @@ afterEach(async () => {
   await release(ITEM);
 });
 
-describe("buildRuntime", () => {
+describe("buildWorkspaceRuntime", () => {
   it("assembles a runnable loop out of the config, the workflow and the hook modules", async () => {
     const { dir } = await fixture();
-    const rt = await buildRuntime(dir, {});
+    const rt = await buildMain(dir, {});
 
     expect(rt.intervalMs).toBe(30_000);
     expect(rt.concurrency).toBe(2);
@@ -219,26 +236,26 @@ describe("buildRuntime", () => {
 
   /**
    * An `items:create` step's item server is this fact, and nothing built
-   * `buildRuntime`'s own `deps.childServer` was ever read back: a typo here
+   * `buildWorkspaceRuntime`'s own `deps.childServer` was ever read back: a typo here
    * would only ever surface, days later, as a step refusing create_child
    * against a real repository.
    */
   it("hands converge how to start its own item server, as this process on this workflow directory", async () => {
     const { dir } = await fixture();
-    const rt = await buildRuntime(dir, {});
+    const rt = await buildMain(dir, {});
     expect(rt.deps.childServer).toEqual(childServerCommand(dir, "main"));
   });
 
   /**
    * The workflow's own `budget.stepTimeout`, not the engine's 10-minute
    * default: the shipped workflow happens to name 10m too, so a fixture that
-   * left `deps.stepTimeoutMs` off `buildRuntime`'s returned deps entirely
+   * left `deps.stepTimeoutMs` off `buildWorkspaceRuntime`'s returned deps entirely
    * would still pass every other test here — this is the one case where the
    * two numbers disagree, and the only thing standing between them.
    */
   it("hands converge the workflow's own step timeout, not the engine's default", async () => {
     const { dir } = await fixture({ budget: "7m" });
-    const rt = await buildRuntime(dir, {});
+    const rt = await buildMain(dir, {});
     expect(rt.deps.stepTimeoutMs).toBe(420_000);
   });
 
@@ -251,7 +268,7 @@ describe("buildRuntime", () => {
   it("hands the loop a logger that redacts the resolved secret", async () => {
     const seen: LandraceEvent[] = [];
     const { dir } = await fixture();
-    const rt = await buildRuntime(dir, { sink: (e) => seen.push(e) });
+    const rt = await buildMain(dir, { sink: (e) => seen.push(e) });
 
     rt.deps.log("step.invoked", { cmd: `curl -H "Authorization: Bearer ${TOKEN}"` });
     rt.deps.ctx.log("tracker.request", { url: `https://x.invalid/?t=${TOKEN}` });
@@ -266,7 +283,7 @@ describe("buildRuntime", () => {
    */
   it("hands converge an activity log under this repository's root that keeps the secret off disk", async () => {
     const { dir } = await fixture();
-    const rt = await buildRuntime(dir, {});
+    const rt = await buildMain(dir, {});
     rt.deps.activity?.record(ITEM, "spec", 1, { kind: "tool", text: `Bash curl -H "Authorization: Bearer ${TOKEN}"`, at: 1 });
     const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(ITEM, 0);
     expect(page).toMatchObject({ stage: "spec", round: 1, total: 1 });
@@ -275,7 +292,7 @@ describe("buildRuntime", () => {
 
   it("keeps no activity for a runtime built only to read", async () => {
     const { dir } = await fixture();
-    expect((await buildRuntime(dir, { readOnly: true })).deps.activity).toBeUndefined();
+    expect((await buildMain(dir, { readOnly: true })).deps.activity).toBeUndefined();
   });
 
   /**
@@ -294,7 +311,7 @@ describe("buildRuntime", () => {
     );
     await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW.replace("    entry: true\n", ""));
 
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/does not validate/);
+    await expect(buildMain(dir, {})).rejects.toThrow(/does not validate/);
     await expect(readFile(ran, "utf8")).rejects.toThrow();
   });
 
@@ -315,9 +332,9 @@ describe("buildRuntime", () => {
       .replace("    terminal: true\n", "    step: steps/build.md\n    branch: \"landrace/{item}\"\n")
       .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
 
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/branch: stage "spec"[\s\S]*agent\.isolation[\s\S]*"none"/);
+    await expect(buildMain(dir, {})).rejects.toThrow(/branch: stage "spec"[\s\S]*agent\.isolation[\s\S]*"none"/);
     // Reading does not run a step, so `status` still works on it.
-    await expect(buildRuntime(dir, { readOnly: true })).resolves.toBeDefined();
+    await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
   });
 
   // `validate` names it, and `start` refuses it before the first step runs.
@@ -333,7 +350,7 @@ describe("buildRuntime", () => {
       .replace("    terminal: true\n", "    step: steps/build.md\n")
       .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
 
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/steps\/build\.md asks for effort "extreme", which the claude executor does not take/);
+    await expect(buildMain(dir, {})).rejects.toThrow(/steps\/build\.md asks for effort "extreme", which the claude executor does not take/);
   });
 
   /**
@@ -356,7 +373,7 @@ describe("buildRuntime", () => {
       reads: "artifacts.pr.number",
     });
 
-    await expect(buildRuntime(dir, {})).rejects.toThrow(
+    await expect(buildMain(dir, {})).rejects.toThrow(
       /path-coverage: stage "spec" reads artifacts\.pr\.number, which no hook provides/,
     );
   });
@@ -367,12 +384,12 @@ describe("buildRuntime", () => {
       reads: "artifacts.pr.number",
     });
 
-    expect((await buildRuntime(dir, {})).source.id).toBe("fake");
+    expect((await buildMain(dir, {})).source.id).toBe("fake");
   });
 
   it("screens prompts when the config says to", async () => {
     const { dir } = await fixture({ screen: true });
-    expect((await buildRuntime(dir, {})).deps.screen).toBeDefined();
+    expect((await buildMain(dir, {})).deps.screen).toBeDefined();
   });
 
   /**
@@ -386,7 +403,7 @@ describe("buildRuntime", () => {
     await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
 ${EXECUTOR}`);
 
-    const rt = await buildRuntime(dir, {});
+    const rt = await buildMain(dir, {});
     expect(rt.deps.executor.id).toBe("fake");
     expect(rt.deps.screen?.executor).toBe(rt.deps.executor);
     expect(rt.deps.screen?.model).toBe("fake-small");
@@ -397,7 +414,7 @@ ${EXECUTOR}`);
     await writeFile(join(dir, "hooks", "fake.ts"), `${HOOK}
 ${EXECUTOR}`);
 
-    const rt = await buildRuntime(dir, {});
+    const rt = await buildMain(dir, {});
     expect(rt.deps.executor.id).toBe("claude");
     expect(rt.deps.screen?.executor.id).toBe("fake");
     expect(rt.deps.screen?.model).toBe("fake-small");
@@ -410,7 +427,7 @@ ${EXECUTOR}`);
    */
   it("refuses to start when steps are to be isolated and there is no repository to isolate from", async () => {
     const { dir } = await fixture({ git: false });
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/not inside a git repository/);
+    await expect(buildMain(dir, {})).rejects.toThrow(/not inside a git repository/);
   });
 
   /**
@@ -420,39 +437,68 @@ ${EXECUTOR}`);
    */
   it("refuses an agent.adapter no executor answers to, naming what it could have used", async () => {
     const { dir } = await fixture({ agent: "gpt-9" });
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/gpt-9[\s\S]*claude/);
+    await expect(buildMain(dir, {})).rejects.toThrow(/gpt-9[\s\S]*claude/);
   });
 
   it("refuses two notifiers under one id, naming both", async () => {
     const { dir } = await fixture({ hookExtra: `${notifierSource("one", "slack")}${notifierSource("two", "slack")}` });
-    await expect(buildRuntime(dir, {})).rejects.toThrow('two notifiers share the id "slack": "../../hooks/fake.ts" and "../../hooks/fake.ts"');
+    await expect(buildMain(dir, {})).rejects.toThrow('two notifiers share the id "slack": "../../hooks/fake.ts" and "../../hooks/fake.ts"');
   });
 
   it("refuses a notify.via the loaded notifiers do not answer to, naming the ones they do", async () => {
     const { dir } = await fixture({
       hookExtra: notifierSource("chat", "chat"), configExtra: "notify: { on: [needs-you], via: [slack] }\n",
     });
-    await expect(buildRuntime(dir, {})).rejects.toThrow('notify.via names "slack", which no notifier registers: the loaded hooks register "chat"');
+    await expect(buildMain(dir, {})).rejects.toThrow('notify.via names "slack", which no notifier registers: the loaded hooks register "chat"');
   });
 
   it("hands converge a notify when notify is configured, and none to a runtime built only to read", async () => {
     const { dir } = await fixture({
       hookExtra: notifierSource("chat", "chat"), configExtra: "notify: { on: [needs-you], via: [chat] }\n",
     });
-    expect(typeof (await buildRuntime(dir, {})).deps.notify).toBe("function");
-    expect((await buildRuntime(dir, { readOnly: true })).deps.notify).toBeUndefined();
+    expect(typeof (await buildMain(dir, {})).deps.notify).toBe("function");
+    expect((await buildMain(dir, { readOnly: true })).deps.notify).toBeUndefined();
   });
 
   /**
    * `agent:` is opaque past `adapter` and `isolation`: everything else is the
    * executor's own vocabulary, and the claude hook refuses a key it does not
    * read rather than silently ignoring it. Reached only once the hook's
-   * `create` actually runs, which is why this is `buildRuntime` and not a unit
+   * `create` actually runs, which is why this is `buildWorkspaceRuntime` and not a unit
    * test of `readClaudeSettings` — the wiring is what could still be wrong.
    */
+  /*
+   * Two workflows loading one hook module get its one set of objects: the
+   * source the tick lists once, the preflight `runStart` runs once. What is
+   * each workflow's own stays its own — the child server bound to its id, and
+   * the steps a shared executor factory is built against, so an effort only
+   * the second workflow's step asks for is still refused at startup.
+   */
+  it("builds each workflow its own deps, sharing by identity what one hook module exports", async () => {
+    const { dir } = await fixture({ preflight: "pass" });
+    await withFast(dir);
+    const rt = await buildWorkspaceRuntime(dir, {});
+
+    expect(rt.workflows.map((w) => w.id)).toEqual(["main", "fast"]);
+    expect(rt.workflows[0]?.source).toBe(rt.workflows[1]?.source);
+    expect(rt.preflights).toHaveLength(1);
+    expect(rt.workflows.map((w) => w.deps.childServer)).toEqual([childServerCommand(dir, "main"), childServerCommand(dir, "fast")]);
+
+    await mkdir(join(workflowIn(dir, "fast"), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir, "fast"), "steps", "build.md"), [
+      "---", "capabilities: [repo:read]", "effort: extreme", "output:", "  discriminator: kind", "  shapes: { done: {} }",
+      "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+      "---", "", "build", "",
+    ].join("\n"));
+    await writeFile(join(workflowIn(dir, "fast"), "workflow.yaml"), WORKFLOW.replace("name: e2e", "name: fast").replaceAll("lr:auto", "lr:fast")
+      .replace("    terminal: true\n", "    step: steps/build.md\n")
+      .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/steps\/build\.md asks for effort "extreme"/);
+  });
+
   it("refuses to start when the claude hook cannot use its settings, naming the executor and the key", async () => {
     const { dir } = await fixture({ agentKeys: "plugin: [p@m]" });
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/executor "claude" could not start: agent\.plugin is not a setting/);
+    await expect(buildMain(dir, {})).rejects.toThrow(/executor "claude" could not start: agent\.plugin is not a setting/);
   });
 
   /*
@@ -470,7 +516,7 @@ ${EXECUTOR}`);
       agentKeys: "plugins: [superpowers@claude-plugins-official], mcp: [{ name: codebase-memory-mcp, tools: [search_graph, trace_path] }]",
       mcpJson: { mcpServers: { "codebase-memory-mcp": memory, landrace: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });
-    const rt = await buildRuntime(dir, {});
+    const rt = await buildMain(dir, {});
 
     const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
     await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
@@ -526,17 +572,17 @@ ${EXECUTOR}`);
  * `runStart` reaches it — a unit test of `runPreflights` alone would prove
  * nothing about whether `landrace start` actually calls it.
  *
- * `buildRuntime` deliberately does *not* run it: `landrace status` builds a
- * Runtime the same way, only to read, and a preflight can make a real write
+ * `buildWorkspaceRuntime` deliberately does *not* run it: `landrace status` builds a
+ * runtime the same way, only to read, and a preflight can make a real write
  * (the GitHub hook's blob probe) that a read-only diagnostic must never make
  * and must never be refused for either — the token being *diagnosed* is
  * exactly the one most likely to fail a preflight. Only `runStart` runs
- * `rt.preflights`, once `buildRuntime` has handed them back unrun.
+ * `rt.preflights`, once `buildWorkspaceRuntime` has handed them back unrun.
  */
 describe("the startup preflight", () => {
-  it("does not run when only buildRuntime is used — the write belongs to runStart alone", async () => {
+  it("does not run when only buildWorkspaceRuntime is used — the write belongs to runStart alone", async () => {
     const { dir, record } = await fixture({ preflight: "pass" });
-    await buildRuntime(dir, {});
+    await buildMain(dir, {});
     expect(await applied(record)).toEqual([]);
   });
 
@@ -556,21 +602,67 @@ describe("the startup preflight", () => {
   });
 });
 
-describe("runStart --once", () => {
-  /*
-   * One workflow at a time until the loop can claim items for several: a
-   * second folder is refused by name, before any hook is imported, any
-   * preflight writes or any item is touched — never run as whichever sorted
-   * first.
-   */
-  it("refuses a workspace with two workflows, naming both, and touches nothing", async () => {
-    const { dir, record } = await fixture({ preflight: "pass" });
-    await workspaceOf({ fastlane: "tests/fixtures/minimal" }, dir);
-    await expect(runStart(dir, { once: true }))
-      // In the workspace's own order: by name, and this fixture's main is "e2e".
-      .rejects.toThrow(`landrace start runs one workflow at a time; ${dir}/workflows has 2 (main, fastlane)`);
+/** A second workflow, `fast`, beside the fixture's `main`: the same hook modules, so the same source and preflight objects, and its own label. */
+async function withFast(dir: string): Promise<void> {
+  await mkdir(workflowIn(dir, "fast"), { recursive: true });
+  await writeFile(join(workflowIn(dir, "fast"), "workflow.yaml"), WORKFLOW.replace("name: e2e", "name: fast").replaceAll("lr:auto", "lr:fast"));
+}
+
+/** What `fn` printed to stdout, line by line. ESM mode has no `jest` global to spy with. */
+async function stdoutOf(fn: () => Promise<unknown>): Promise<string[]> {
+  const printed: string[] = [];
+  const wrote = console.log;
+  console.log = (line: unknown): void => {
+    printed.push(String(line));
+  };
+  try {
+    await fn();
+  } finally {
+    console.log = wrote;
+  }
+  return printed;
+}
+
+describe("runStart --once over two workflows", () => {
+  it("works each item under the workflow that claims it, running the shared preflight once", async () => {
+    const { dir, record } = await fixture({ preflight: "pass", items: [{ id: ITEM, labels: ["lr:auto"] }, { id: "4343", labels: ["lr:fast"] }] });
+    await withFast(dir);
+
+    const printed = await stdoutOf(() => runStart(dir, { once: true }));
+
+    expect(printed.filter((l) => l.startsWith("#"))).toEqual([
+      `#${ITEM} [main] terminal after 1 pass(es)`,
+      "#4343 [fast] terminal after 1 pass(es)",
+    ]);
+    const writes = await applied(record);
+    expect(writes.filter((w) => JSON.stringify(w).includes("preflight"))).toEqual([{ preflight: true }]);
+    expect(writes.filter((w) => !JSON.stringify(w).includes("preflight"))).toEqual(expect.arrayContaining([
+      { item: ITEM, type: "tracker.comment" }, { item: "4343", type: "tracker.comment" },
+    ]));
+  });
+
+  it("works neither workflow's way an item both claim, and says so", async () => {
+    const { dir, record } = await fixture({ items: [{ id: ITEM, labels: ["lr:auto", "lr:fast"] }] });
+    await withFast(dir);
+
+    const printed = await stdoutOf(() => runStart(dir, { once: true }));
+
+    expect(printed.filter((l) => l.startsWith("#"))).toEqual([`#${ITEM} claimed by fast and main`]);
     expect(await applied(record)).toEqual([]);
   });
+
+  /*
+   * One shot, one answer: a source that could not list is the tick's
+   * failure, said by the exit code, naming the workflows it serves.
+   */
+  it("fails, naming the workflows, when a source cannot list", async () => {
+    const { dir } = await fixture({ listFails: "GET /issues → 401" });
+    await withFast(dir);
+    await expect(stdoutOf(() => runStart(dir, { once: true }))).rejects.toThrow("could not list the source of fast and main: GET /issues → 401");
+  });
+});
+
+describe("runStart --once", () => {
 
   it("enumerates, locks, builds a snapshot, decides and applies, then releases the lock", async () => {
     const { dir, record } = await fixture();
@@ -588,7 +680,7 @@ describe("runStart --once", () => {
       console.log = wrote;
     }
 
-    expect(printed.filter((l) => l.startsWith("#"))).toEqual([`#${ITEM} terminal after 1 pass(es)`]);
+    expect(printed.filter((l) => l.startsWith("#"))).toEqual([`#${ITEM} [main] terminal after 1 pass(es)`]);
     expect(await applied(record)).toEqual([{ item: ITEM, type: "tracker.comment" }]);
     // Nothing is left holding the item: the next run is free to take it.
     expect(await acquire(ITEM, "tick")).toBe(true);
@@ -619,7 +711,7 @@ describe("runStart --once", () => {
     }
 
     const rows = printed.filter((l) => l.startsWith("#"));
-    expect(rows).toEqual([expect.stringMatching(new RegExp(`^#${ITEM} halt after 1 pass\\(es\\): .*\\[redacted\\]`))]);
+    expect(rows).toEqual([expect.stringMatching(new RegExp(`^#${ITEM} \\[main\\] halt after 1 pass\\(es\\): .*\\[redacted\\]`))]);
     expect(printed.join("\n")).not.toContain("env-secret-value");
   });
 
@@ -654,7 +746,7 @@ describe("runStart --once", () => {
   it("leaves an ordinary word that happens to be a header value in the log", async () => {
     const seen: LandraceEvent[] = [];
     const { dir } = await fixture();
-    const rt = await buildRuntime(dir, {
+    const rt = await buildMain(dir, {
       sink: (e) => seen.push(e),
       otel: ["LANDRACE_ENABLE_TELEMETRY=1", "OTEL_LOGS_EXPORTER=console", "OTEL_EXPORTER_OTLP_HEADERS=x-scope-orgid=production"],
     });
@@ -704,10 +796,10 @@ describe("runStart --once", () => {
    */
   it("stops the work in flight and releases the lock when the runtime is asked to stop", async () => {
     const { dir, record } = await fixture();
-    const rt = await buildRuntime(dir, {});
+    const rt = await buildMain(dir, {});
     rt.stop.abort();
 
-    const rows = await tick({ source: rt.source, deps: rt.deps, concurrency: rt.concurrency });
+    const rows = await tickWorkspace({ runtime: rt });
 
     expect(rows[0]?.outcome).toMatch(/aborted/);
     expect(await applied(record)).toEqual([]);
@@ -731,7 +823,7 @@ describe("an allowlisted server's env and headers", () => {
         remote: { type: "http", url: "https://mcp.example.invalid", headers: { Authorization: "Bearer header-secret" } },
       } },
     });
-    const rt = await buildRuntime(dir, { sink: (e) => seen.push(e) });
+    const rt = await buildMain(dir, { sink: (e) => seen.push(e) });
 
     const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
     await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
@@ -763,6 +855,19 @@ describe("an allowlisted server's env and headers", () => {
 });
 
 describe("runStatus", () => {
+  it("prints each item with the workflow that claims it, and an item two claim with both", async () => {
+    const { dir } = await fixture({ items: [{ id: ITEM, labels: ["lr:auto"] }, { id: "4343", labels: ["lr:fast"] }, { id: "4444", labels: ["lr:auto", "lr:fast"] }] });
+    await withFast(dir);
+
+    const lines = await runStatus(dir);
+
+    expect(lines).toEqual([
+      expect.stringMatching(new RegExp(`^#${ITEM} \\[main\\] .*Add export.*queued$`)),
+      expect.stringMatching(/^#4343 \[fast\] .*Add export.*queued$/),
+      expect.stringMatching(/^#4444 .*Add export.*halted: claimed by fast and main$/),
+    ]);
+  });
+
   it("prints one line per item, from the same source the loop enumerates", async () => {
     const { dir } = await fixture();
     const lines = await runStatus(dir);
@@ -775,18 +880,18 @@ describe("runStatus", () => {
    * `status` never runs a step, so what a step would be handed is none of its
    * business: a fresh clone nobody has run `agsync sync` in yet is exactly
    * where someone asks what landrace thinks of their items. `start` still
-   * refuses the same checkout — the buildRuntime tests pin that.
+   * refuses the same checkout — the buildWorkspaceRuntime tests pin that.
    */
   it("reads the items with agent.mcp set and no .mcp.json at all", async () => {
     const { dir } = await fixture({ agentKeys: "mcp: [codebase-memory-mcp]" });
-    await expect(buildRuntime(dir, {})).rejects.toThrow(/\.mcp\.json does not exist/);
+    await expect(buildMain(dir, {})).rejects.toThrow(/\.mcp\.json does not exist/);
 
     const lines = await runStatus(dir);
     expect(lines[0]).toMatch(new RegExp(`#${ITEM}.*Add export.*queued`));
 
     // And what it built can read and nothing more: a step run without the
     // servers its configuration names would be a step run bare.
-    const rt = await buildRuntime(dir, { readOnly: true });
+    const rt = await buildMain(dir, { readOnly: true });
     await expect(rt.deps.executor.run("x", { round: 1, capabilities: ["repo:read"], signal: new AbortController().signal }))
       .rejects.toThrow(/not to run steps/);
   });

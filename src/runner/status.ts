@@ -1,6 +1,6 @@
-import { compareIds, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
-import type { Lane, Node, StatusRow, Workflow } from "#namespace.js";
-import { eligibilityOf } from "#runner/tick.js";
+import { compareIds, isOpenItem, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
+import type { Lane, Node, StatusRow, Workflow, WorkflowRuntime, WorkspaceListing } from "#namespace.js";
+import { claimedBy, eligibilityOf, reportedBy, turnedAway } from "#runner/tick.js";
 
 /** Stands in for an item that has no position yet, so the column still lines up. */
 const NO_STAGE = "—";
@@ -56,15 +56,17 @@ const clip = (text: string, width: number): string =>
  */
 export function statusLines(rows: StatusRow[]): string[] {
   const stageOf = (row: StatusRow): string => row.stage ?? NO_STAGE;
+  // The workflow beside the id, `#12 [fast]`, as `landrace start` prints it.
+  const itemOf = (row: StatusRow): string => `${row.item}${row.workflow === undefined ? "" : ` [${row.workflow}]`}`;
   const titles = rows.map((row) => clip(oneLine(row.title), TITLE_WIDTH));
 
-  const itemWidth = Math.max(0, ...rows.map((row) => String(row.item).length));
+  const itemWidth = Math.max(0, ...rows.map((row) => itemOf(row).length));
   const stageWidth = Math.max(0, ...rows.map((row) => stageOf(row).length));
   const titleWidth = Math.max(0, ...titles.map((title) => title.length));
 
   return rows.map(
     (row, i) =>
-      `#${String(row.item).padEnd(itemWidth)}  ${stageOf(row).padEnd(stageWidth)}  ` +
+      `#${itemOf(row).padEnd(itemWidth)}  ${stageOf(row).padEnd(stageWidth)}  ` +
       `${(titles[i] ?? "").padEnd(titleWidth)}  ${oneLine(row.note)}`,
   );
 }
@@ -120,5 +122,34 @@ export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
             ? "working"
             : "queued";
     return { ...row, stage, note };
+  });
+}
+
+/**
+ * One row per open item every workflow's source listed: an owned item as its
+ * owner's `statusRows` places it, with the workflow beside it; one two
+ * workflows claim, or two sources report, halted and naming them; one every
+ * workflow turned away skipped, with each reason once.
+ */
+export function workspaceStatusRows(workflows: readonly WorkflowRuntime[], listing: WorkspaceListing): StatusRow[] {
+  const listed = new Map<string, Node[]>();
+  for (const node of listing.graphs.flatMap((g) => g.nodes)) {
+    if (isOpenItem(node)) listed.set(node.id, [...(listed.get(node.id) ?? []), node]);
+  }
+  const { claims } = listing;
+  return [...listed].sort(([a], [b]) => compareIds(a, b)).flatMap(([item, nodes]): StatusRow[] => {
+    const [node] = nodes;
+    if (!node) return [];
+    const owner = claims.owner.get(item);
+    const workflow = owner === undefined ? undefined : workflows.find((w) => w.id === owner);
+    if (owner !== undefined && workflow) return statusRows(workflow.deps.workflow, [node]).map((row) => ({ ...row, workflow: owner }));
+    // Two sources' nodes may be two different items: each title, once.
+    const title = [...new Set(nodes.map((n) => n.title))].join(" | ");
+    const clash = claims.clashes.get(item);
+    if (clash) return [{ item, title, stage: null, note: `halted: ${reportedBy(clash)}` }];
+    const conflict = claims.conflicts.get(item);
+    if (conflict) return [{ item, title, stage: null, note: `halted: ${claimedBy(conflict)}` }];
+    const reasons = claims.unclaimed.get(item) ?? [];
+    return [{ item, title, stage: stageFromLabels(labelsOf(node)).stage, note: `skipped: ${turnedAway(reasons)}` }];
   });
 }

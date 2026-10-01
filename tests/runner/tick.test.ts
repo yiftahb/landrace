@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LandraceEvent, Step, TickOptions, Workflow } from "#namespace.js";
+import type { LandraceEvent, RunningItem, Step, Workflow } from "#namespace.js";
 import { definePreHook, defineSource } from "#hooks/contracts.js";
 import type { Executor, Graph, HookContext, Node, RuntimeContext } from "#namespace.js";
 import { createExternalState, staticSource } from "#testing/index.js";
@@ -9,7 +9,8 @@ import { loadWorkflow } from "#workflow/load.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { acquire, held, release } from "#runner/lock.js";
-import { eligibilityOf, tick } from "#runner/tick.js";
+import { eligibilityOf } from "#runner/tick.js";
+import { tick, type TickOptions } from "#tests/support/tick.js";
 import { statusLines } from "#runner/status.js";
 
 /**
@@ -446,7 +447,7 @@ describe("an item stopped while its step runs", () => {
       },
     };
     const events: LandraceEvent[] = [];
-    const running = new Map<string, AbortController>();
+    const running = new Map<string, RunningItem>();
     const stop = new AbortController();
     const once = (source = state.source) => tick({
       source, running, lock: { root },
