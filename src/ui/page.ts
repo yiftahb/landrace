@@ -68,7 +68,7 @@ const PANEL = `
 <div id="panel-composer" hidden class="border-t border-neutral-100 px-4 py-3 dark:border-neutral-800">
 <textarea id="panel-message" rows="3" aria-label="Message" placeholder="Write to the step…" class="block w-full resize-y rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500"></textarea>
 <div class="mt-2 flex flex-wrap items-center gap-2">
-<button id="panel-reply" type="button" title="Reply (Ctrl+Enter or ⌘+Enter)" aria-keyshortcuts="Control+Enter Meta+Enter" class="${PRIMARY_BUTTON}">Reply</button>
+<button id="panel-reply" type="button" title="Reply (Ctrl+Enter or ⌘+Enter)" aria-keyshortcuts="Control+Enter Meta+Enter" class="${PRIMARY_BUTTON}">Reply <kbd id="panel-reply-keys" aria-hidden="true" class="ml-1 font-sans opacity-80"></kbd></button>
 <button id="panel-ask" type="button" class="${BUTTON}">Ask the step</button>
 <button id="panel-resolve" type="button" class="${BUTTON}">Resolve</button>
 </div>
@@ -410,9 +410,35 @@ function onKeydown(e) {
     toggleAll.click();
     return;
   }
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.ctrlKey && !e.metaKey && !e.altKey && openMenuKey === null && onBoard(document.activeElement)) {
+    e.preventDefault();
+    stepFocus(e.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
   if (openMenuKey !== null) resetIdleTimer();
 }
 document.addEventListener("keydown", onKeydown);
+
+// Where an arrow walks the list: nothing focused, or anything on the board
+// that is not a field. The panel's own keys stay its own.
+function onBoard(el) {
+  if (!el || el === document.body) return true;
+  return !isTypingTarget(el) && typeof el.closest === "function" && el.closest("main") !== null;
+}
+
+// The ticket titles on screen, in the order drawn — a closed lane's or a
+// search-hidden one's take no focus — and the one a step lands on: the next
+// or previous from the row focus is in, the first or last from none.
+function stepFocus(by) {
+  const titles = [...document.querySelectorAll('[data-key$=":open"]')].filter((t) => t.getClientRects().length > 0);
+  if (!titles.length) return;
+  const active = document.activeElement;
+  const here = active && typeof active.closest === "function" ? active.closest('[role="treeitem"]') : null;
+  const at = here ? titles.findIndex((t) => t.closest('[role="treeitem"]') === here) : -1;
+  const next = titles[at === -1 ? (by > 0 ? 0 : titles.length - 1) : Math.min(titles.length - 1, Math.max(0, at + by))];
+  next.focus();
+  next.scrollIntoView({ block: "nearest" });
+}
 
 function menuItem(tag) {
   const node = el(tag, "flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800");
@@ -862,7 +888,9 @@ function shieldMark() {
 }
 
 function treeItem(row, depth, cls, open) {
-  const li = el("li", cls + " " + indentOf(depth) + (row.closed === "dropped" ? " opacity-50" : ""));
+  // The chosen row stands out: focused, or open in the panel (aria-selected).
+  const chosen = " focus-within:bg-neutral-100 dark:focus-within:bg-neutral-800 aria-selected:bg-neutral-100 dark:aria-selected:bg-neutral-800";
+  const li = el("li", cls + " " + indentOf(depth) + chosen + (row.closed === "dropped" ? " opacity-50" : ""));
   li.setAttribute("role", "treeitem");
   // The tree is drawn flat, one <li> per visible node, so depth is told to
   // assistive tech here rather than by nesting.
@@ -1124,6 +1152,7 @@ function render(view) {
   renderNext();
   // The panel's top half is this row, so every board poll redraws it too.
   renderPanel();
+  markSelected();
 
   // Restore the open menu by key, on the freshly built elements — or drop it
   // if that node is no longer in this view (nothing left to point at).
@@ -1872,11 +1901,21 @@ function showPanel(id) {
     loadPairing();
   }
   panelMode = null;
+  markSelected();
   const open = id !== null;
   panelEl.hidden = !open;
   document.body.classList.toggle("sm:pr-[28rem]", open && !panelWide);
   if (!open) { stopPanelPoll(); return; }
   renderPanel();
+}
+
+// The panel's ticket, marked on its own row of the list — looked up by key,
+// since a render replaces every row.
+function markSelected() {
+  for (const li of document.querySelectorAll('[role="treeitem"][aria-selected="true"]')) li.removeAttribute("aria-selected");
+  const title = panelId === null ? null : byKey(panelId + ":open");
+  const li = title ? title.closest('[role="treeitem"]') : null;
+  if (li) li.setAttribute("aria-selected", "true");
 }
 
 // A row click: pushed onto the hash, so Back closes the panel and a reload
@@ -1904,6 +1943,11 @@ wideButton.addEventListener("click", () => {
   showPanel(panelId);
 });
 replyButton.addEventListener("click", () => panelWrite("reply"));
+// On the button, so the shortcut is seen, not only known.
+function shortcutLabel(platform) {
+  return /mac|iphone|ipad/i.test(platform) ? "⌘↵" : "Ctrl ↵";
+}
+document.getElementById("panel-reply-keys").textContent = shortcutLabel((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
 // Ctrl/⌘+Enter replies, as in any chat; a plain or Shift+Enter is a new line.
 function onMessageKey(e) {
   if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;

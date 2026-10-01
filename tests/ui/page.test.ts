@@ -479,6 +479,101 @@ describe("the 'c' keyboard shortcut for Collapse all / Expand all", () => {
   });
 });
 
+describe("the arrow keys on the board", () => {
+  type Active = { tagName?: string; inMain?: boolean } | "body" | null;
+  const press = (key: string, opts: { active?: Active; menuOpen?: boolean; altKey?: boolean; metaKey?: boolean } = {}) => {
+    const seen = { steps: [] as number[], prevented: 0 };
+    const body = { tagName: "BODY" };
+    const active = opts.active === "body" ? body : opts.active === undefined || opts.active === null ? null
+      : { tagName: opts.active.tagName ?? "BUTTON", closest: (sel: string) => (sel === "main" && opts.active !== "body" && opts.active?.inMain ? {} : null) };
+    runInNewContext(`${fnSource("isTypingTarget")}${fnSource("onBoard")}${fnSource("onKeydown")}onKeydown(EVENT)`, {
+      openMenuKey: opts.menuOpen ? "19:menu" : null, panelId: null,
+      toggleAll: { click: () => {} }, closeMenu: () => {}, closePanel: () => {}, resetIdleTimer: () => {},
+      stepFocus: (by: number) => { seen.steps.push(by); },
+      document: { activeElement: active, body },
+      EVENT: { key, ctrlKey: false, metaKey: opts.metaKey ?? false, altKey: opts.altKey ?? false, preventDefault: () => { seen.prevented++; } },
+    });
+    return seen;
+  };
+
+  it("moves focus a ticket down or up from the board, and keeps the page from scrolling", () => {
+    expect(press("ArrowDown", { active: "body" })).toEqual({ steps: [1], prevented: 1 });
+    expect(press("ArrowUp", { active: { inMain: true } })).toEqual({ steps: [-1], prevented: 1 });
+  });
+
+  it("leaves a field, the panel, an open menu and a modified arrow alone", () => {
+    expect(press("ArrowDown", { active: { tagName: "INPUT", inMain: true } }).steps).toEqual([]);
+    expect(press("ArrowDown", { active: { inMain: false } }).steps).toEqual([]);
+    expect(press("ArrowDown", { active: "body", menuOpen: true }).steps).toEqual([]);
+    expect(press("ArrowDown", { active: "body", altKey: true }).steps).toEqual([]);
+    expect(press("ArrowDown", { active: "body", metaKey: true }).steps).toEqual([]);
+  });
+
+  // Only titles on screen: a closed lane's or a search-hidden one's take no focus.
+  describe("stepping between ticket titles", () => {
+    const title = (id: string, shown = true) => {
+      const li = { id };
+      return { id, li, focused: 0, getClientRects: () => (shown ? [{}] : []), closest: () => li, focus() { this.focused++; }, scrollIntoView: () => {} };
+    };
+    const step = (by: number, titles: Array<ReturnType<typeof title>>, active: unknown) => {
+      runInNewContext(`${fnSource("stepFocus")} stepFocus(BY)`, {
+        BY: by, document: { activeElement: active, querySelectorAll: () => titles },
+      });
+      return titles.filter((t) => t.focused > 0).map((t) => t.id);
+    };
+
+    it("starts at the first title going down and the last going up, from nowhere on the list", () => {
+      expect(step(1, [title("1"), title("2"), title("3")], null)).toEqual(["1"]);
+      expect(step(-1, [title("1"), title("2"), title("3")], null)).toEqual(["3"]);
+    });
+
+    it("goes to the next or previous title from anywhere in a row, and stops at either end", () => {
+      const t = [title("1"), title("2"), title("3")];
+      const inRow = (n: number) => ({ closest: () => t[n]?.li });
+      expect(step(1, t, inRow(1))).toEqual(["3"]);
+      const u = [title("1"), title("2"), title("3")];
+      expect(step(1, u, { closest: () => u[2]?.li })).toEqual(["3"]);
+      const v = [title("1"), title("2"), title("3")];
+      expect(step(-1, v, { closest: () => v[0]?.li })).toEqual(["1"]);
+    });
+
+    it("skips a title that is not on screen", () => {
+      const t = [title("1"), title("2", false), title("3")];
+      expect(step(1, t, { closest: () => t[0]?.li })).toEqual(["3"]);
+    });
+  });
+});
+
+describe("the chosen row", () => {
+  it("has its own background while focused or open in the panel, in light and dark", () => {
+    const li = runInNewContext(`${constSource("INDENT")}${constSource("indentOf")}${["el", "treeItem"].map(fnSource).join("")}
+      treeItem({ children: [] }, 0, "", false)`, { document: fakeDocument }) as FakeElement;
+    for (const cls of ["focus-within:bg-neutral-100", "dark:focus-within:bg-neutral-800", "aria-selected:bg-neutral-100", "dark:aria-selected:bg-neutral-800"]) {
+      expect(li.className.split(" ")).toContain(cls);
+    }
+  });
+
+  it("is the panel's ticket, marked on its row alone", () => {
+    const stale = { attrs: new Map([["aria-selected", "true"]]), removeAttribute(k: string) { this.attrs.delete(k); }, setAttribute(k: string, v: string) { this.attrs.set(k, v); } };
+    const chosen = { attrs: new Map<string, string>(), removeAttribute(k: string) { this.attrs.delete(k); }, setAttribute(k: string, v: string) { this.attrs.set(k, v); } };
+    const mark = (panelId: string | null) => runInNewContext(`${fnSource("markSelected")} markSelected()`, {
+      panelId, document: { querySelectorAll: () => [stale] },
+      byKey: (key: string) => (key === "12:open" ? { closest: () => chosen } : null),
+    });
+    mark("12");
+    expect(stale.attrs.has("aria-selected")).toBe(false);
+    expect(chosen.attrs.get("aria-selected")).toBe("true");
+    chosen.attrs.clear();
+    mark(null);
+    expect(chosen.attrs.size).toBe(0);
+  });
+
+  it("is marked after every board render and every change of panel", () => {
+    expect(fnSource("render")).toContain("markSelected();");
+    expect(fnSource("showPanel")).toContain("markSelected();");
+  });
+});
+
 describe("a collapsible lane under a search", () => {
   interface Details { dataset: { lane: string }; open: boolean }
   const load = () => runInNewContext(`
@@ -1370,7 +1465,7 @@ describe("the ticket panel's markup", () => {
         TO: to, openMenuKey: "panel", closeMenu: () => closed.push("panel"),
         panelHeld: "7", pairingOnOpen: null, panelWide: false, messageBox: {}, setPanelNote: () => {},
         panelEl: {}, document: { body: { classList: { toggle: () => {} } } },
-        stopPanelPoll: () => {}, renderPanel: () => {}, loadPairing: () => {},
+        stopPanelPoll: () => {}, renderPanel: () => {}, loadPairing: () => {}, markSelected: () => {},
       });
       expect(closed).toEqual(["panel"]);
     }
@@ -1379,7 +1474,7 @@ describe("the ticket panel's markup", () => {
   it("has a labelled message box and Reply, Ask the step and Resolve, outside anything a poll redraws", () => {
     expect(PAGE_HTML).toMatch(/<textarea id="panel-message"[^>]*aria-label="Message"/);
     for (const [id, label] of [["panel-reply", "Reply"], ["panel-ask", "Ask the step"], ["panel-resolve", "Resolve"]]) {
-      expect(PAGE_HTML).toMatch(new RegExp(`<button id="${id}" type="button"[^>]*>${label}</button>`));
+      expect(PAGE_HTML).toMatch(new RegExp(`<button id="${id}" type="button"[^>]*>${label}( <kbd[^>]*></kbd>)?</button>`));
     }
     // Not a <form>: the CSP's form-action 'none' would refuse a submit, and
     // Enter in a field must never try one.
@@ -1799,6 +1894,14 @@ describe("a ticket a write just went through for", () => {
 });
 
 describe("the composer's Reply", () => {
+  it("shows its shortcut on the button: ⌘↵ on a Mac, Ctrl ↵ elsewhere", () => {
+    const label = (platform: string) => runInNewContext(`${fnSource("shortcutLabel")} shortcutLabel(P)`, { P: platform });
+    expect([label("MacIntel"), label("macOS"), label("iPad")]).toEqual(["⌘↵", "⌘↵", "⌘↵"]);
+    expect([label("Win32"), label("Windows"), label("Linux x86_64"), label("")]).toEqual(["Ctrl ↵", "Ctrl ↵", "Ctrl ↵", "Ctrl ↵"]);
+    expect(PAGE_HTML).toMatch(/<button id="panel-reply"[^>]*>Reply <kbd id="panel-reply-keys" aria-hidden="true"[^>]*><\/kbd><\/button>/);
+    expect(APP_JS).toContain('document.getElementById("panel-reply-keys").textContent = shortcutLabel(');
+  });
+
   it("is the one filled, blue button, and says its shortcut", () => {
     const reply = /<button id="panel-reply"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
     expect(reply).toMatch(/\bbg-blue-600\b/);
