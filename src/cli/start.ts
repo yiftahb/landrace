@@ -56,6 +56,7 @@ import { runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { oneLine } from "#runner/status.js";
+import { sharedPre } from "#runner/route.js";
 import { claimsOf, listingFailures, listWorkspace, sourcesOf, tickWorkspace } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
@@ -934,8 +935,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const activity = rt.workflows.find((w) => w.deps.activity)?.deps.activity;
   // A closed item's reads, by the index its source has in every listing.
   const sources = new Map(sourcesOf(rt.workflows).sources.map((source, index) => {
-    const on = rt.workflows.filter((w) => w.source === source);
-    const pre = [...new Set(on.flatMap((w) => w.deps.pre))].filter((hook) => on.every((w) => w.deps.pre.includes(hook)));
+    const pre = sharedPre(rt.workflows.filter((w) => w.source === source).map((w) => w.deps.pre));
     return [index, sourceReader({ source, pre, ctx: rt.ctx })];
   }));
   const ui = await startUi({

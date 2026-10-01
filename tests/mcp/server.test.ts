@@ -4,12 +4,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OUTPUT_KIND, renderMarker } from "#conventions.js";
-import { loaded } from "#tests/support/loaded.js";
-import type { Executor, Step, ToolOptions, Workflow } from "#namespace.js";
+import { hooked, loaded } from "#tests/support/loaded.js";
+import type { Executor, Step, Tools, Workflow } from "#namespace.js";
 import { createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
 import { held } from "#runner/lock.js";
-import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
+import { createFakeTracker, type FakeIssue, type FakeTracker } from "#tests/support/fake-tracker.js";
 
 /** Wait for a fact rather than for a number of milliseconds. */
 async function until(done: () => Promise<boolean>, what: string): Promise<void> {
@@ -20,9 +20,12 @@ async function until(done: () => Promise<boolean>, what: string): Promise<void> 
   throw new Error(`timed out waiting for ${what}`);
 }
 
-async function connect(seed: Array<Partial<FakeIssue>> = [], opts: ToolOptions = {}) {
+async function connect(
+  seed: Array<Partial<FakeIssue>> = [],
+  make: (gh: FakeTracker) => Tools = (gh) => createTools([hooked(gh.registry)], gh.ctx),
+) {
   const gh = createFakeTracker(seed);
-  const server = createMcpServer(createTools(gh.registry, gh.ctx, opts));
+  const server = createMcpServer(make(gh));
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
   await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
@@ -41,6 +44,7 @@ describe("mcp server over a real transport", () => {
       "landrace_create_item",
       "landrace_finish",
       "landrace_goto",
+      "landrace_items",
       "landrace_pair",
       "landrace_release",
       "landrace_reply",
@@ -48,6 +52,7 @@ describe("mcp server over a real transport", () => {
       "landrace_status",
       "landrace_update_item",
       "landrace_waiting",
+      "landrace_workflows",
     ]);
     await client.close();
   });
@@ -59,12 +64,10 @@ describe("mcp server over a real transport", () => {
    */
   it("offers no pairing with an executor that cannot hand a session over, and refuses one asked for", async () => {
     const plain: Executor = { id: "plain", run: async () => ({ text: "", sessionId: null }) };
-    const { client, gh } = await connect([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }], {
-      executor: plain,
-      workflow: loaded({ version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", entry: true, triggers: [] }] } as Workflow,
+    const { client, gh } = await connect([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }], (t) => createTools([hooked(t.registry,
+      loaded({ version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", entry: true, triggers: [] }] } as Workflow,
         new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]])),
-      sandbox: { root: process.cwd() },
-    });
+      { executor: plain })], t.ctx, { sandbox: { root: process.cwd() } }));
     const view = await client.callTool({ name: "landrace_pair", arguments: { item: 1 } });
     expect(JSON.parse(textOf(view))).toEqual({ open: null, offers: [] });
 
@@ -77,7 +80,7 @@ describe("mcp server over a real transport", () => {
 
   it("creates an item end to end through the protocol", async () => {
     const workflow: Workflow = { version: 1, name: "t", description: "test", admit: ["lr:auto"], stages: [{ id: "spec", entry: true, terminal: true }] };
-    const { client, gh } = await connect([], { workflow: loaded(workflow) });
+    const { client, gh } = await connect([], (t) => createTools([hooked(t.registry, loaded(workflow))], t.ctx));
     const r = await client.callTool({ name: "landrace_create_item", arguments: { title: "Add CSV export" } });
     expect(JSON.parse(textOf(r))).toMatchObject({ item: "1", started: true });
     expect(gh.issues.get(1)?.title).toBe("Add CSV export");
@@ -88,7 +91,7 @@ describe("mcp server over a real transport", () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { item: 99 } });
     expect((r as { isError?: boolean }).isError).toBe(true);
-    expect(textOf(r)).toMatch(/error: .*#99 is not an issue/);
+    expect(textOf(r)).toMatch(/error: .*#99 is not an item any source lists/);
     await client.close();
   });
 
@@ -103,14 +106,14 @@ describe("mcp server over a real transport", () => {
   it("still accepts a numeric item id, for clients written before ids were strings", async () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { item: 99 } });
-    expect(textOf(r)).toMatch(/#99 is not an issue/); // reached the tool
+    expect(textOf(r)).toMatch(/#99 is not an item any source lists/); // reached the tool
     await client.close();
   });
 
   it("accepts a string item id", async () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { item: "99" } });
-    expect(textOf(r)).toMatch(/#99 is not an issue/); // reached the tool, as the same item
+    expect(textOf(r)).toMatch(/#99 is not an item any source lists/); // reached the tool, as the same item
     await client.close();
   });
 
@@ -119,7 +122,7 @@ describe("mcp server over a real transport", () => {
     const r = await client.callTool({ name: "landrace_status", arguments: { item: "../x" } });
     expect((r as { isError?: boolean }).isError).toBe(true);
     expect(textOf(r)).toMatch(/item id/);
-    expect(textOf(r)).not.toMatch(/404|not an issue/);
+    expect(textOf(r)).not.toMatch(/404|not an item/);
     await client.close();
   });
 
@@ -141,14 +144,12 @@ describe("mcp server over a real transport", () => {
     };
     const { client, gh } = await connect(
       [{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }],
-      {
-        executor: hanging,
-        lock: { root },
-        // A turn is held to what its step declared, so the conversation has to
-        // be told what that is — as the loop tells it.
-        workflow: loaded({ version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", triggers: [] }] } as Workflow,
+      // A turn is held to what its step declared, so the conversation has to
+      // be told what that is — as the loop tells it.
+      (t) => createTools([hooked(t.registry,
+        loaded({ version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", triggers: [] }] } as Workflow,
           new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]])),
-      },
+        { executor: hanging })], t.ctx, { lock: { root } }),
     );
     gh.say(
       1,
@@ -178,5 +179,41 @@ describe("mcp server over a real transport", () => {
     expect(JSON.parse(textOf(r))).toMatchObject({ started: false });
     expect(gh.labelsOf(1)).not.toContain("lr:auto");
     await client.close();
+  });
+
+  /*
+   * The workspace's tools, through the protocol: what reaches a tool is only
+   * what its schema names, so a `workflow` the schema forgot would be dropped
+   * on the way in and every call would read as one that named none.
+   */
+  describe("over two workflows", () => {
+    const flow = (id: string, label: string): Workflow => ({
+      version: 1, name: id, description: `the ${id} flow`, admit: [label],
+      eligible: [{ when: { "node.state.labels": { $in: [label] } }, else: `no ${label} label` }],
+      stages: [{ id: "spec", entry: true, terminal: true }],
+    });
+    const both = (t: FakeTracker): Tools => createTools([
+      hooked(t.registry, loaded(flow("main", "lr:auto"))),
+      hooked(t.registry, loaded(flow("fast", "lr:fast"), new Map(), "fast")),
+    ], t.ctx);
+
+    it("lists the workflows, and one workflow's items", async () => {
+      const { client } = await connect([{ number: 1, labels: ["lr:auto"] }, { number: 2, labels: ["lr:fast"] }], both);
+      const workflows = await client.callTool({ name: "landrace_workflows", arguments: {} });
+      expect((JSON.parse(textOf(workflows)) as Array<{ id: string }>).map((w) => w.id)).toEqual(["main", "fast"]);
+      const items = await client.callTool({ name: "landrace_items", arguments: { workflow: "fast" } });
+      expect(JSON.parse(textOf(items))).toEqual([{ item: "2", title: "issue 2", workflow: "fast", stage: null, lane: "waiting" }]);
+      const waiting = await client.callTool({ name: "landrace_waiting", arguments: { workflow: "nope" } });
+      expect(textOf(waiting)).toMatch(/error: no workflow "nope"/);
+      await client.close();
+    });
+
+    it("creates an item in the workflow the call names", async () => {
+      const { client, gh } = await connect([], both);
+      const r = await client.callTool({ name: "landrace_create_item", arguments: { workflow: "fast", title: "Hotfix" } });
+      expect(JSON.parse(textOf(r))).toMatchObject({ item: "1", workflow: "fast", started: true });
+      expect(gh.labelsOf(1)).toEqual(["lr:fast"]);
+      await client.close();
+    });
   });
 });

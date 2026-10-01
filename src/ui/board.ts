@@ -1,11 +1,12 @@
 import { compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, stageFromLabels } from "#conventions.js";
 import { claimItems, gotoTargetsOf } from "#core/index.js";
 import { BLOCKED_NOTE, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
-import { claimedBy, reportedBy, turnedAway } from "#runner/tick.js";
+import { haltOf, readRoute, writeRoute } from "#runner/route.js";
+import { turnedAway } from "#runner/tick.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
-  Board, BoardRow, BoardView, Claims, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
+  Board, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
   PanelPaths, ReadRoute, Relationship, Running, Stage, StatusRow, Workflow, WorkspaceListing,
 } from "#namespace.js";
 
@@ -150,42 +151,6 @@ function parentsOf(graph: Graph, nodes: ReadonlyMap<string, Node>, nest: Readonl
   }
   return parent;
 }
-
-/**
- * Why an open item is worked by neither of the workflows that want it: two
- * claiming it, or two trackers reporting its id. A halt a person has to
- * settle, in the tick's own words; null for any other item.
- */
-function haltOf(claims: Claims, item: string): string | null {
-  const conflict = claims.conflicts.get(item);
-  if (conflict) return claimedBy(conflict);
-  const clash = claims.clashes.get(item);
-  return clash ? reportedBy(clash) : null;
-}
-
-/**
- * Whose open `item` is by `claims`, or the sentence refusing to act on it.
- * Never the first of two claimants. Null when no listing showed it open.
- */
-function ownership(claims: Claims, item: string): Ownership | null {
-  const owner = claims.owner.get(item);
-  if (owner !== undefined) return { workflow: owner };
-  const conflict = claims.conflicts.get(item);
-  if (conflict) return { refused: `#${item} is ${claimedBy(conflict)}; act on it after one workflow alone claims it` };
-  const clash = claims.clashes.get(item);
-  if (clash) return { refused: `#${item} is ${reportedBy(clash)}; act on it after one source alone reports it` };
-  const reasons = claims.unclaimed.get(item);
-  if (reasons) return { refused: `#${item} is claimed by no workflow: ${turnedAway(reasons)}` };
-  return null;
-}
-
-/** The sources, by index, that list `item` as an item: closed in each, when no listing showed it open. */
-const listedIn = (graphs: readonly Graph[], item: string): number[] =>
-  [...graphs.entries()].filter(([, g]) => g.nodes.some((n) => n.id === item && n.kind === ITEM_KIND)).map(([index]) => index);
-
-/** The workflows reading the sources at `indices`, in id order. */
-const readingAny = (sourceOf: ReadonlyMap<string, number>, indices: readonly number[]): string[] =>
-  [...sourceOf].filter(([, index]) => indices.includes(index)).map(([id]) => id).sort(compareIds);
 
 export function boardView(input: {
   workflows: ReadonlyArray<{ id: string; workflow: Workflow }>;
@@ -445,21 +410,11 @@ export function createBoard(opts: {
     },
     ownerOf(item): Ownership {
       if (!listing) return unlisted(item);
-      return ownership(listing.claims, item) ?? {
-        refused: listedIn(listing.graphs, item).length ? `#${item} is closed, so nothing is written to it` : `#${item} is not an item the last tick listed`,
-      };
+      return writeRoute(listing, item) ?? { refused: `#${item} is not an item the last tick listed` };
     },
     readerOf(item): ReadRoute {
       if (!listing) return unlisted(item);
-      const open = ownership(listing.claims, item);
-      if (open) return open;
-      // Closed, and so no workflow's: read through the one source that lists
-      // it. Two that do may be two different items under one id, and which
-      // one was meant is not for the board to pick.
-      const [only, ...more] = listedIn(listing.graphs, item);
-      if (only === undefined) return { refused: `#${item} is not an item the last tick listed` };
-      if (more.length === 0) return { source: only };
-      return { refused: `#${item} is ${reportedBy(readingAny(listing.sourceOf, [only, ...more]))}; read it in its own tracker` };
+      return readRoute(listing, item) ?? { refused: `#${item} is not an item the last tick listed` };
     },
     async view(): Promise<BoardView> {
       // Open items only: nothing else can be held, and a closed item's

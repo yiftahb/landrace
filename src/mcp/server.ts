@@ -41,28 +41,50 @@ const item = z
     if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
   });
 
+/** A workflow by its folder name, as `landrace_workflows` lists it; left out, every workflow. */
+const workflow = z.string().min(1).optional();
+
 export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   const server = new McpServer({ name: "landrace", version });
 
   server.tool(
-    "landrace_waiting",
-    "List the items currently waiting on a human.",
+    "landrace_workflows",
+    "List the workspace's workflows: each one's id, name and description, how many open items it claims, " +
+      "and how many of those need you.",
     {},
-    guard(() => tools.waiting()),
+    guard(() => tools.workflows()),
+  );
+
+  server.tool(
+    "landrace_items",
+    "List every open item a workflow claims, with its workflow, stage and lane. With `workflow`, that " +
+      "workflow's alone; without it, also every item no one workflow may work — claimed by two, or " +
+      "reported by two trackers — with why.",
+    { workflow },
+    guard(({ workflow: w }) => tools.items({ workflow: w })),
+  );
+
+  server.tool(
+    "landrace_waiting",
+    "List the items currently waiting on a human, each with the workflow that claims it; with `workflow`, that workflow's alone.",
+    { workflow },
+    guard(({ workflow: w }) => tools.waiting({ workflow: w })),
   );
 
   server.tool(
     "landrace_status",
-    "Show an item's workflow position, which rounds have run, and whose turn it is.",
+    "Show an item's workflow and position in it, which rounds have run, and whose turn it is.",
     { item },
     guard(({ item: n }) => tools.status(n)),
   );
 
   server.tool(
     "landrace_create_item",
-    "Open a new item. By default it is given the labels its workflow admits, so the orchestrator " +
-      "picks it up on its next tick and starts work — pass start: false to file it without starting anything.",
+    "Open a new item in a workflow. By default it is given the labels that workflow admits, so the orchestrator " +
+      "picks it up on its next tick and starts work — pass start: false to file it without starting anything. " +
+      "Name the workflow (landrace_workflows lists them) when more than one can create items.",
     {
+      workflow,
       title: z.string().min(1),
       body: z.string().optional(),
       labels: z.array(z.string()).optional(),
@@ -73,8 +95,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
 
   server.tool(
     "landrace_update_item",
-    "Change an item: its title, body, open/closed state, or its labels. Adding the " +
-      "eligibility label starts the orchestrator on it; removing it stops further work.",
+    "Change an item a workflow claims: its title, body, open/closed state, or its labels. Removing the " +
+      "label its workflow admits it with stops further work.",
     {
       item,
       title: z.string().optional(),

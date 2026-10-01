@@ -10,14 +10,17 @@ import {
   isOpenItem,
 } from "#conventions.js";
 import { checkEligible } from "#core/index.js";
-import type { Node, PairDeps, ReplyDeps, Snapshot, Source } from "#namespace.js";
-import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
+import type { ItemSummary, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, WaitingItem, WorkspaceListing } from "#namespace.js";
+import type { Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
-import { messageOf } from "#runner/errors.js";
+import { messageOf, Refusal } from "#runner/errors.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
+import { haltOf, readRoute, sharedPre, writeRoute } from "#runner/route.js";
 import { buildSnapshot } from "#runner/snapshot.js";
+import { laneOf, workspaceStatusRows } from "#runner/status.js";
+import { listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
 
 /**
  * Position is a label, so an `lr:` label from the editor is not a label at
@@ -53,11 +56,13 @@ function requireOperator(operator: Operator | null, what: string): Operator {
 /**
  * A source is optional here as an operator is, so what needs one reports its
  * absence when asked — not at startup, where a process with no source can
- * still create an item.
+ * still create an item. Stood in for by one that refuses, so the listing
+ * that meets it names the workflow that has none.
  */
 const noSource = (): never => {
   throw new Error("no source hook is configured, so there is nothing to enumerate");
 };
+const sourceless = (): Source => ({ id: "none", relations: [], list: async () => noSource(), read: async () => noSource() });
 
 /**
  * A person's reply on an item, posted as the operator: what `landrace_reply`
@@ -96,36 +101,131 @@ export async function postReply(deps: ReplyDeps, item: string, message: string):
   );
 }
 
-export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolOptions = {}): Tools {
-  const dispatcher = createDispatcher(registry.post);
-  const source = (): Source => registry.source ?? noSource();
+/**
+ * The operator tools, over every workflow of the workspace.
+ *
+ * An item is acted on through the one workflow that claims it, found the way
+ * a tick finds it: every distinct source listed once and every open item
+ * judged against every workflow's `eligible`. The loop's process asks its
+ * last tick's listing; this one lists on demand. An item two workflows claim,
+ * two sources report, or none claims is refused with the reason — never
+ * routed through whichever workflow comes first.
+ */
+export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeContext, opts: ToolOptions = {}): Tools {
+  const hands = new Map(workflows.map((w): [string, ToolHands] => {
+    const source = w.registry.source ?? sourceless();
+    // The tick's own pre hooks and the tick's own dispatcher, handed over rather
+    // than rebuilt beside them: a conversation that read or wrote through a
+    // second path would be writing state the tick cannot re-derive.
+    const shared = {
+      source, pre: w.registry.pre, dispatcher: createDispatcher(w.registry.post), ctx, executor: w.executor ?? null,
+      // A turn is an agent invocation, so §15's screening reaches it the same
+      // way it reaches a step — through the same option, carried rather than
+      // accepted and dropped.
+      ...(w.screen ? { screen: w.screen } : {}),
+      ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
+      ...(opts.lock ? { lock: opts.lock } : {}),
+      // And for the same reason, the step's own declaration: a turn is held to
+      // the capabilities and the model of the step it continues, which the
+      // conversation can only read if the workflow reaches it. Carried rather
+      // than loaded again here — a second read of the same directory is a second
+      // answer, free to differ from the one the loop is actually running.
+      workflow: w.workflow,
+      steps: w.steps,
+    };
+    return [w.id, {
+      workflow: w,
+      deps: { ...shared, artifacts: w.registry.artifacts, ...(w.server ? { server: w.server, childServer: w.server } : {}) },
+      conversation: createConversation({ ...shared, ...(opts.activity ? { activity: opts.activity } : {}) }),
+    }];
+  }));
+  // What a listing asks of each workflow: the same the loop's runtime gives it.
+  const listedAs: ListedWorkflow[] = [...hands.values()].map((h) => ({ id: h.workflow.id, source: h.deps.source, deps: { workflow: h.deps.workflow } }));
+  const ids = (): string => workflows.map((w) => w.id).join(", ");
 
-  // The tick's own pre hooks and the tick's own dispatcher, handed over rather
-  // than rebuilt beside them: a conversation that read or wrote through a
-  // second path would be writing state the tick cannot re-derive.
-  const conversation = createConversation({
-    source: registry.source ?? { id: "none", relations: [], list: async () => noSource(), read: async () => noSource() },
-    pre: registry.pre,
-    dispatcher,
-    ctx,
-    executor: opts.executor ?? null,
-    // A turn is an agent invocation, so §15's screening reaches it the same
-    // way it reaches a step — through the same option, carried rather than
-    // accepted and dropped.
-    ...(opts.screen ? { screen: opts.screen } : {}),
-    ...(opts.lock ? { lock: opts.lock } : {}),
-    // And for the same reason, the step's own declaration: a turn is held to
-    // the capabilities and the model of the step it continues, which the
-    // conversation can only read if the workflow reaches it. Carried rather
-    // than loaded again here — a second read of the same directory is a second
-    // answer, free to differ from the one the loop is actually running.
-    ...(opts.workflow ? { workflow: opts.workflow.workflow, steps: opts.workflow.steps } : {}),
-    ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
-    ...(opts.activity ? { activity: opts.activity } : {}),
-  });
+  const handsOf = (id: string): ToolHands => {
+    const found = hands.get(id);
+    if (!found) throw new Refusal(`no workflow "${id}"; the workspace has ${ids()}`);
+    return found;
+  };
 
-  const snapshotOf = (item: string): Promise<Snapshot> =>
-    buildSnapshot({ item, source: source(), hooks: registry.pre, ctx: { ...ctx, item } });
+  /**
+   * Every source listed once and every open item claimed, as a tick does. A
+   * source that could not list fails the call by name, as `landrace status`
+   * does: an id the others list may be one it reports too, and a list
+   * missing its items would read as a workspace with none.
+   */
+  const listed = async (): Promise<WorkspaceListing> => {
+    const listing = await listWorkspace({ workflows: listedAs, ctx, log: ctx.log });
+    const failures = listingFailures(listing);
+    if (failures.length) throw new Error(failures.join("; "));
+    return listing;
+  };
+
+  /**
+   * The workflow a listing or a create is about: the one named, checked, or
+   * this server's own when it is bound to one; undefined for every workflow.
+   */
+  const within = (workflow: string | undefined): string | undefined => {
+    if (workflow !== undefined) handsOf(workflow);
+    if (opts.scope === undefined) return workflow;
+    if (workflow !== undefined && workflow !== opts.scope) throw new Refusal(`this server acts for ${opts.scope} alone, not ${workflow}`);
+    return opts.scope;
+  };
+
+  /** A claiming workflow's hands, unless this server is bound to another. */
+  const ours = (item: string, id: string): ToolHands => {
+    if (opts.scope !== undefined && id !== opts.scope) throw new Refusal(`#${item} belongs to ${id}; this server acts for ${opts.scope} alone`);
+    return handsOf(id);
+  };
+
+  const unlisted = (item: string): string => `#${item} is not an item any source lists`;
+
+  /** For a write: the hands of the one workflow that claims `item`. */
+  const owner = async (item: string): Promise<ToolHands> => {
+    const route = writeRoute(await listed(), item) ?? { refused: unlisted(item) };
+    if ("refused" in route) throw new Refusal(route.refused);
+    return ours(item, route.workflow);
+  };
+
+  /**
+   * For a read: as `owner`, and a closed item — which no workflow claims —
+   * through the one source that lists it, with the pre hooks every workflow
+   * on that source loads.
+   */
+  const reader = async (item: string): Promise<{ hands: ToolHands } | { source: Source; pre: PreHook[] }> => {
+    const listing = await listed();
+    const route = readRoute(listing, item) ?? { refused: unlisted(item) };
+    if ("refused" in route) throw new Refusal(route.refused);
+    if ("workflow" in route) return { hands: ours(item, route.workflow) };
+    if (opts.scope !== undefined && listing.sourceOf.get(opts.scope) !== route.source) {
+      throw new Refusal(`#${item} is not listed by ${opts.scope}'s source; this server acts for ${opts.scope} alone`);
+    }
+    const source = sourcesOf(listedAs).sources[route.source];
+    if (!source) throw new Refusal(unlisted(item));
+    return { source, pre: sharedPre([...hands.values()].filter((h) => h.deps.source === source).map((h) => h.deps.pre)) };
+  };
+
+  /**
+   * The workflow a new item is started in: the one named, or the one that can
+   * create items at all. Two that can is a question for the caller, never the
+   * first of them: an item started there is worked by a workflow nobody chose.
+   */
+  const creator = (workflow: string | undefined): ToolHands => {
+    const named = within(workflow);
+    if (named !== undefined) return handsOf(named);
+    const able = [...hands.values()].filter((h) => h.workflow.registry.operator !== null);
+    if (able.length > 1) {
+      throw new Refusal(`which workflow? ${able.map((h) => h.workflow.id).join(", ")}: more than one can create items, so name one`);
+    }
+    // None able: any one says there is no operator, in requireOperator's words.
+    const [one] = able.length ? able : [...hands.values()];
+    if (!one) throw new Error("cannot create an item: the workspace has no workflow");
+    return one;
+  };
+
+  const snapshotIn = (deps: { source: Source; pre: PreHook[] }, item: string): Promise<Snapshot> =>
+    buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...ctx, item } });
 
   const summarise = (n: Node) => ({ item: n.id, title: n.title, url: n.link, labels: labelsOf(n) });
 
@@ -142,21 +242,59 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
   };
 
   return {
-    async waiting() {
+    async workflows() {
+      const listing = await listed();
+      const rows = workspaceStatusRows(listedAs, listing);
+      return workflows.filter((w) => opts.scope === undefined || w.id === opts.scope).map((w) => {
+        const mine = rows.filter((row) => row.workflow === w.id);
+        return {
+          id: w.id, name: w.workflow.name, description: w.workflow.description, claimed: mine.length,
+          // In the board's own lanes, so the count and the page agree.
+          needsYou: mine.filter((row) => laneOf(row, w.workflow) === "needs-you").length,
+        };
+      });
+    },
+
+    async items({ workflow } = {}) {
+      const only = within(workflow);
+      const listing = await listed();
+      // `landrace status`'s own rows, so an agent is told what the table says.
+      return workspaceStatusRows(listedAs, listing).flatMap((row): ItemSummary[] => {
+        if (row.workflow !== undefined) {
+          if (only !== undefined && row.workflow !== only) return [];
+          return [{ item: row.item, title: row.title, workflow: row.workflow, stage: row.stage, lane: laneOf(row, handsOf(row.workflow).deps.workflow) }];
+        }
+        // In no one workflow's list. Asked for all of them, a halt is still
+        // something a person has to settle; an item every workflow turned
+        // away is not anyone's to list.
+        if (only !== undefined || haltOf(listing.claims, row.item) === null) return [];
+        return [{ item: row.item, title: row.title, workflow: null, stage: row.stage, lane: "needs-you", why: row.note }];
+      });
+    },
+
+    async waiting({ workflow } = {}) {
+      const only = within(workflow);
+      const listing = await listed();
       // Filtered here, not in the hook: whose turn it is is the engine's own
       // vocabulary, and a source that had to know it would be a source that
       // had to know the workflow. Labels ride along on an item node precisely
       // so this costs no snapshot per item.
-      return (await source().list(ctx)).nodes
-        .filter((n) => isOpenItem(n) && labelsOf(n).includes(LABELS.awaiting))
-        .map((n) => ({ item: n.id, title: n.title, url: n.link }));
+      const nodes = new Map<string, Node>();
+      for (const node of listing.graphs.flatMap((g) => g.nodes)) if (isOpenItem(node) && !nodes.has(node.id)) nodes.set(node.id, node);
+      return workspaceStatusRows(listedAs, listing).flatMap((row): WaitingItem[] => {
+        const node = nodes.get(row.item);
+        if (!node || !labelsOf(node).includes(LABELS.awaiting)) return [];
+        if (only !== undefined && row.workflow !== only) return [];
+        return [{ item: row.item, title: row.title, url: node.link, workflow: row.workflow ?? null, ...(row.workflow === undefined ? { why: row.note } : {}) }];
+      });
     },
 
     async status(item) {
+      const route = await reader(item);
       // The same snapshot the tick builds, from the same pre hooks in the same
       // order, so what an operator is shown is what the engine would decide
       // on — not a second derivation free to drift from it.
-      const snapshot = await snapshotOf(item);
+      const snapshot = await snapshotIn("hands" in route ? route.hands.deps : route, item);
       const node = snapshot.node as Node;
       const labels = labelsOf(node);
       const { stage, ambiguous, found } = stageFromLabels(labels);
@@ -164,6 +302,8 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
 
       return {
         item,
+        // Null for a closed item: no workflow claims one.
+        workflow: "hands" in route ? route.hands.workflow.id : null,
         title: node.title,
         url: node.link,
         // The one piece of lifecycle every source reports the same way: open
@@ -177,9 +317,9 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
           ? { problem: `more than one lr:stage:* label (${found.join(", ")}) — the item cannot be placed` }
           : {}),
         // The workflow's own rule, asked of the snapshot `decide` would gate
-        // on — not a label name: the engine names none. A process not given
-        // the workflow cannot say, so it does not.
-        ...(opts.workflow ? { eligible: checkEligible(opts.workflow.workflow, snapshot).eligible } : {}),
+        // on — not a label name: the engine names none. A closed item is no
+        // workflow's, so none is asked.
+        ...("hands" in route ? { eligible: checkEligible(route.hands.deps.workflow, snapshot).eligible } : {}),
         waitingOnYou: labels.includes(LABELS.awaiting),
         blocked: labels.includes(LABELS.blocked),
         rounds: run?.counters ?? {},
@@ -188,37 +328,39 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       };
     },
 
-    async createItem({ title, body = "", labels = [], start = true }) {
-      const operator = requireOperator(registry.operator, "create an item");
+    async createItem({ workflow, title, body = "", labels = [], start = true }) {
+      const { workflow: w } = creator(workflow);
+      const operator = requireOperator(w.registry.operator, "create an item");
       refuseEngineLabels(labels, "set");
       // `start` is the one exception, and it is ours to set, not the caller's:
       // the labels the workflow admits with, which the engine names none of.
       // Refused before anything is written, never filed unstarted instead —
       // the caller asked for it to be worked, and would be told it is.
-      const admit = opts.workflow?.workflow.admit ?? [];
-      if (start) {
-        if (!opts.workflow) throw new Error("cannot start an item: this process was not given the workflow");
-        if (admit.length === 0) {
-          // The folder to edit, by its id: the display name is not a path.
-          throw new Error(
-            `workflow "${opts.workflow.id}" admits nothing: add admit: [<labels>] to ` +
-            `workflows/${opts.workflow.id}/workflow.yaml, or create with start: false`,
-          );
-        }
+      const admit = w.workflow.admit ?? [];
+      if (start && admit.length === 0) {
+        // The folder to edit, by its id: the display name is not a path.
+        throw new Error(
+          `workflow "${w.id}" admits nothing: add admit: [<labels>] to ` +
+          `workflows/${w.id}/workflow.yaml, or create with start: false`,
+        );
       }
       const wanted = [...new Set([...labels, ...(start ? admit : [])])];
       // A marker pasted into a body would read back as something we wrote.
       const created = await operator.createItem({ title, body: neutraliseMarkers(body), labels: wanted }, ctx);
       wakeLoop();
-      return { ...summarise(created), started: admit.length > 0 && admit.every((l) => wanted.includes(l)) };
+      return { ...summarise(created), workflow: w.id, started: admit.length > 0 && admit.every((l) => wanted.includes(l)) };
     },
 
     async updateItem(item, { title, body, state, addLabels = [], removeLabels = [] }) {
-      const operator = requireOperator(registry.operator, "update an item");
+      // Before any listing: with no operator anywhere, there is nothing to
+      // find the item's for.
+      if (!workflows.some((w) => w.registry.operator !== null)) requireOperator(null, "update an item");
       // Both lists are checked before anything is written, so a rejected call
       // leaves the item exactly as it was.
       refuseEngineLabels(addLabels, "add");
       refuseEngineLabels(removeLabels, "remove");
+      const { workflow: w } = await owner(item);
+      const operator = requireOperator(w.registry.operator, "update an item");
 
       const updated = await operator.updateItem(
         item,
@@ -232,97 +374,72 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
         ctx,
       );
       wakeLoop();
-      return summarise(updated);
+      return { ...summarise(updated), workflow: w.id };
     },
 
     async reply(item, message) {
-      await postReply({ source: source(), pre: registry.pre, dispatcher, ctx }, item, message);
+      await postReply((await owner(item)).deps, item, message);
       wakeLoop();
       return { item, posted: true };
     },
 
     async goto(item, stage) {
-      // The workflow is what says where a stage may send an item; guessing
-      // it here would be a second answer free to differ from the loop's.
-      if (!opts.workflow) throw new Error("cannot send an item back: this process was not given the workflow");
-      // And the lock this process was told the tick takes, as the
-      // conversation is: a goto has to wait on the tick that would take it.
-      const r = await sendTo(
-        { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
-        item,
-        stage,
-      );
+      // The claiming workflow is what says where a stage may send an item,
+      // and its deps carry the lock this process was told the tick takes, as
+      // the conversation's do: a goto has to wait on the tick that would take it.
+      const r = await sendTo((await owner(item)).deps, item, stage);
       if ("refused" in r) throw new Error(r.refused);
       wakeLoop();
       return { item, to: r.to, posted: true };
     },
 
     async clear(item, stage) {
-      if (!opts.workflow) throw new Error("cannot clear a step: this process was not given the workflow");
-      const r = await sendTo(
-        { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
-        item,
-        stage ?? null,
-        { clear: true },
-      );
+      const r = await sendTo((await owner(item)).deps, item, stage ?? null, { clear: true });
       if ("refused" in r) throw new Error(r.refused);
       wakeLoop();
       return { item, to: r.to, cleared: true, posted: true };
     },
 
     async ask(item, message, askOpts) {
-      const answered = await conversation.ask(item, message, askOpts);
+      const answered = await (await owner(item)).conversation.ask(item, message, askOpts);
       wakeLoop();
       return answered;
     },
 
     async resolve(item, why) {
-      const resolved = await conversation.resolve(item, why);
+      const resolved = await (await owner(item)).conversation.resolve(item, why);
       wakeLoop();
       return resolved;
     },
 
     async pairing(item) {
-      return pairingView(pairDeps(), item);
+      const route = await reader(item);
+      if ("hands" in route) return pairingView(route.hands.deps, item);
+      // A closed item has nothing to pair on; only a pairing left open on it is said.
+      return { open: (await snapshotIn(route, item)).run?.pairing ?? null, offers: [] };
     },
 
     async pair(item, stage) {
-      const started = await startPair(pairDeps(), item, stage);
+      const started = await startPair((await owner(item)).deps, item, stage);
       wakeLoop();
       return started;
     },
 
     async finish(item, note) {
+      const { deps } = await owner(item);
       // Woken whichever way it ends: a refused hand-in has written the
       // rejected round, and the loop is what halts the item on it.
       try {
-        return await finishPair(pairDeps(), item, note);
+        return await finishPair(deps, item, note);
       } finally {
         wakeLoop();
       }
     },
 
     async release(item) {
-      const released = await releasePair(pairDeps(), item);
+      const released = await releasePair((await owner(item)).deps, item);
       wakeLoop();
       return released;
     },
   };
-
-  /**
-   * Pairing's needs, from what this process was handed. The workflow says
-   * which steps may be paired on and what each declared, so without it a
-   * pairing is refused rather than guessed at.
-   */
-  function pairDeps(): PairDeps {
-    if (!opts.workflow) throw new Error("cannot pair: this process was not given the workflow");
-    return {
-      source: source(), pre: registry.pre, dispatcher, ctx,
-      workflow: opts.workflow.workflow, steps: opts.workflow.steps, executor: opts.executor ?? null, artifacts: registry.artifacts,
-      ...(opts.screen ? { screen: opts.screen } : {}),
-      ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
-      ...(opts.lock ? { lock: opts.lock } : {}),
-      ...(opts.server ? { server: opts.server, childServer: opts.server } : {}),
-    };
-  }
 }

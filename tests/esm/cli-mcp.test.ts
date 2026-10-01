@@ -149,6 +149,8 @@ async function fixture(opts: {
   committed?: Record<string, string>;
   /** The `.mcp.json` left at the root after the commit — the operator's own, which no worktree sees. */
   mcpJson?: unknown;
+  /** A second workflow, `fast`, on the same hooks and eligible on `lr:fast`. */
+  fast?: boolean;
 }): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-mcp-"));
   const dir = join(root, ".landrace");
@@ -203,6 +205,25 @@ stages:
     step: steps/spec.md
 `,
   );
+  if (opts.fast) {
+    const fast = join(dir, "workflows", "fast");
+    await mkdir(join(fast, "steps"), { recursive: true });
+    await copyFile(join(main, "steps", "spec.md"), join(fast, "steps", "spec.md"));
+    await writeFile(join(fast, "workflow.yaml"), `version: 1
+name: fastlane
+description: the fast one
+hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]
+admit: [lr:fast]
+eligible:
+  - when: { "node.state.labels": { $in: ["lr:fast"] } }
+    else: "no lr:fast label"
+stages:
+  - id: spec
+    entry: true
+    terminal: true
+    step: steps/spec.md
+`);
+  }
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
@@ -451,6 +472,40 @@ describe("buildMcpTools and the servers a turn is handed", () => {
       mcpJson: { mcpServers: { items: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });
     await expect(buildMcpTools(dir)).rejects.toThrow(/"items"[\s\S]*operator tools must never reach a step agent/);
+  });
+});
+
+/*
+ * One MCP for the whole workspace: `landrace mcp` no longer runs one workflow
+ * at a time. The item the fixture's source lists carries `lr:auto`, so `main`
+ * claims it and `fast` turns it away.
+ */
+describe("buildMcpTools over a workspace of several workflows", () => {
+  it("serves every workflow, and finds an item's by its claim", async () => {
+    const { dir } = await fixture({ screen: false, fast: true });
+    const tools = await buildMcpTools(dir);
+    expect(await tools.workflows()).toEqual([
+      { id: "fast", name: "fastlane", description: "the fast one", claimed: 0, needsYou: 0 },
+      { id: "main", name: "mcp", description: "test", claimed: 1, needsYou: 1 },
+    ]);
+    expect(await tools.status(ITEM)).toMatchObject({ item: ITEM, workflow: "main" });
+  });
+
+  /*
+   * `--workflow` without `--child` is the server a pairing hands the person's
+   * session, for the workflow of the item they paired on: it acts for that
+   * workflow alone.
+   */
+  it("acts for the workflow it is started for alone", async () => {
+    const { dir } = await fixture({ screen: false, fast: true });
+    const tools = await buildMcpTools(dir, "fast");
+    expect((await tools.workflows()).map((w) => w.id)).toEqual(["fast"]);
+    await expect(tools.status(ITEM)).rejects.toThrow(`#${ITEM} belongs to main; this server acts for fast alone`);
+  });
+
+  it("refuses a workflow the workspace does not have, naming those it does", async () => {
+    const { dir } = await fixture({ screen: false, fast: true });
+    await expect(buildMcpTools(dir, "nope")).rejects.toThrow(/no workflow "nope" in .*; it has fast, main/);
   });
 });
 

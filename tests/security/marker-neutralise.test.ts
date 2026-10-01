@@ -1,5 +1,6 @@
 import { neutraliseMarkers, parseMarker, renderMarker, stripMarker } from "#conventions.js";
 import { createTools } from "#mcp/tools.js";
+import { hooked } from "#tests/support/loaded.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { fastest } from "#tests/support/timing.js";
 
@@ -136,7 +137,7 @@ describe("neutraliseMarkers converges, so nesting cannot outlast the passes", ()
 describe("a relayed payload cannot come back as a record we wrote", () => {
   it.each([1, 2, 3])("survives a %i-level payload relayed through landrace_reply", async (layers) => {
     const tracker = createFakeTracker([{ number: 6 }]);
-    const tools = createTools(tracker.registry, tracker.ctx);
+    const tools = createTools([hooked(tracker.registry)], tracker.ctx);
 
     await tools.reply("6", `please look at this: ${nested(layers)}`);
 

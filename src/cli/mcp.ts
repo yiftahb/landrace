@@ -2,7 +2,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { mayCreateItems, itemIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
-import type { ChildBinding, ChildTool, ExecutorContext, RuntimeContext, Tools } from "#namespace.js";
+import type { ChildBinding, ChildTool, ExecutorContext, LoadedWorkflow, Registry, RuntimeContext, Tools, ToolWorkflow } from "#namespace.js";
 import { createChildMcpServer, createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
 import { createActivityLog } from "#runner/activity.js";
@@ -11,7 +11,7 @@ import { createLogger, scrubberOf } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
-import { loadWorkspace, onlyWorkflow, workflowById } from "#workflow/workspace.js";
+import { loadWorkspace, workflowById } from "#workflow/workspace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
 import { childServerCommand, executorFor, sandboxFor, screenerFor } from "#cli/start.js";
@@ -22,19 +22,22 @@ import { childServerCommand, executorFor, sandboxFor, screenerFor } from "#cli/s
  * Separate from `runMcp` so the assembly can be driven without stdio: what it
  * puts together — which executor answers, and whether a turn is screened at
  * all — is exactly the part that used to be untestable and therefore unpinned.
+ *
+ * Every workflow of the workspace, as `landrace start` runs every one: an item
+ * is acted on through the workflow that claims it, which only judging every
+ * workflow's claim can say. `scope` is `--workflow`, the server a pairing hands
+ * the person's session, which acts for that one workflow alone.
  */
-export async function buildMcpTools(dir: string): Promise<Tools> {
+export async function buildMcpTools(dir: string, scope?: string): Promise<Tools> {
   const loaded = await loadConfig(dir);
   // The same refusal the loop makes, from the same place: a conversation turn
   // runs the same workflow under the same configuration.
   assertConfigUsable(dir, loaded);
 
-  // The hooks list lives in the workflow, not in landrace.yaml: which
-  // integrations are needed is part of the workflow that needs them.
   const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
-  const loadedWorkflow = onlyWorkflow(ws, "mcp");
-  const { dir: workflowDir, workflow, steps } = loadedWorkflow;
-  const registry = await loadHooks({ dir: workflowDir, modules: workflow.hooks ?? [], workspace: ws.dir });
+  // By name, before any hook module is imported: a server bound to a workflow
+  // the workspace does not have is one nobody can use.
+  if (scope !== undefined) workflowById(ws, scope);
 
   // stdout carries the MCP protocol, so anything we have to say goes to
   // stderr — which is what the client that spawned us shows. What an
@@ -48,6 +51,15 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   if (otel?.exporter === "console") {
     throw new Error("OTEL_LOGS_EXPORTER=console would write into the MCP protocol on stdout; use otlp, or turn telemetry off");
   }
+
+  // The hooks list lives in the workflow, not in landrace.yaml: which
+  // integrations are needed is part of the workflow that needs them. Two
+  // workflows loading one module are handed the same objects, and share them.
+  const hooked: Array<{ w: LoadedWorkflow; registry: Registry }> = [];
+  for (const w of ws.workflows) {
+    hooked.push({ w, registry: await loadHooks({ dir: w.dir, modules: w.workflow.hooks ?? [], workspace: ws.dir }) });
+  }
+
   const telemetry = otel ? await createOtelSink(otel) : undefined;
   const events = createLogger({
     redactValues: redactionValues(loaded),
@@ -67,18 +79,17 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     // engine's EventName union.
     log: (event, data) => events(event as EventName, data),
   };
-  // An executor factory's own two members, beyond what every hook gets: see
-  // the same construction in `buildWorkspaceRuntime`.
-  const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact, steps };
 
   // Before anything else the hooks might do, including the very next check
   // below: a permission problem has to stop this process before it proves the
   // source works, connects over stdio, or lets an agent run — not after the
-  // first paid step 403s with nothing durable recorded to show for it.
-  await runPreflights(registry.preflights, ctx);
+  // first paid step 403s with nothing durable recorded to show for it. Each
+  // once, by identity, as `landrace start` runs them.
+  await runPreflights([...new Set(hooked.flatMap(({ registry }) => registry.preflights))], ctx);
 
   /*
-   * Prove the integration works before telling a client we are ready.
+   * Prove the integration works before telling a client we are ready — each
+   * distinct source, once.
    *
    * This used to be `await tracker.botLogin()`, back when the engine knew what
    * a login was; it does not any more, and it must not learn again. What is
@@ -91,39 +102,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * stranger's, the engine believes no step has ever run, and every paid step
    * is invoked again on every tick.
    */
-  if (registry.source) await registry.source.list(ctx);
-
-  /*
-   * The same executor the loop invokes steps with, resolved the same way and
-   * refused at startup for the same reason: `landrace_ask` resumes a session
-   * the loop started, so the two processes have to agree about what an agent
-   * is. They coordinate through the per-item lock, and it is the default one
-   * — the same $TMPDIR path the loop takes — because the entire mechanism is
-   * two processes finding the same file.
-   *
-   * Built from the same configuration the loop's own step invocation is, so a
-   * turn carries the same plugins and the same allowlisted servers without
-   * this process ever naming them: that resolution belongs to the executor
-   * factory itself, which this call reaches exactly as `start` does.
-   */
-  const executor = await executorFor(loaded.config, registry, ectx);
-
-  /*
-   * And the screener, resolved exactly as the loop's runtime resolves it. §15 screens every agent
-   * invocation before it runs, and a conversation turn is one: a person's
-   * message reaching an agent that holds repository capabilities. "It came
-   * through the MCP" is not evidence that it is safe — the MCP is where an
-   * operator pastes text they were sent, and the client typing into it is
-   * itself a model.
-   *
-   * `landrace_reply` is deliberately not screened here, and that is not the
-   * same omission: it invokes no agent. The words it posts do reach one, but
-   * through the next step's rendered prompt, where runStep screens them with
-   * the frame they will be read in — which is the screening §15 describes and
-   * the only kind the screener's own prompt is written to do.
-   */
-  const screener = await screenerFor(loaded.config, registry, ectx);
-  const screen = screener ? { screen: screener } : {};
+  for (const source of new Set(hooked.flatMap(({ registry }) => (registry.source ? [registry.source] : [])))) await source.list(ctx);
 
   /*
    * And where a turn runs, resolved exactly as the loop resolves it.
@@ -141,10 +120,50 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    */
   const sandbox = await sandboxFor(loaded.config, dir);
 
-  return createTools(registry, ctx, {
-    executor,
-    ...screen,
-    workflow: loadedWorkflow,
+  const workflows: ToolWorkflow[] = [];
+  for (const { w, registry } of hooked) {
+    // An executor factory's own members, beyond what every hook gets — and
+    // this workflow's steps, against which it is built: see the same
+    // construction in `buildWorkspaceRuntime`.
+    const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact, steps: w.steps };
+    /*
+     * The same executor the loop invokes steps with, resolved the same way and
+     * refused at startup for the same reason: `landrace_ask` resumes a session
+     * the loop started, so the two processes have to agree about what an agent
+     * is. They coordinate through the per-item lock, and it is the default one
+     * — the same $TMPDIR path the loop takes — because the entire mechanism is
+     * two processes finding the same file.
+     *
+     * Built from the same configuration the loop's own step invocation is, so a
+     * turn carries the same plugins and the same allowlisted servers without
+     * this process ever naming them: that resolution belongs to the executor
+     * factory itself, which this call reaches exactly as `start` does.
+     */
+    const executor = await executorFor(loaded.config, registry, ectx);
+    /*
+     * And the screener, resolved exactly as the loop's runtime resolves it. §15 screens every agent
+     * invocation before it runs, and a conversation turn is one: a person's
+     * message reaching an agent that holds repository capabilities. "It came
+     * through the MCP" is not evidence that it is safe — the MCP is where an
+     * operator pastes text they were sent, and the client typing into it is
+     * itself a model.
+     *
+     * `landrace_reply` is deliberately not screened here, and that is not the
+     * same omission: it invokes no agent. The words it posts do reach one, but
+     * through the next step's rendered prompt, where runStep screens them with
+     * the frame they will be read in — which is the screening §15 describes and
+     * the only kind the screener's own prompt is written to do.
+     */
+    const screener = await screenerFor(loaded.config, registry, ectx);
+    workflows.push({
+      ...w, registry, executor,
+      ...(screener ? { screen: screener } : {}),
+      // This same server bound to this workflow, for a pairing's session to reach Landrace by.
+      server: childServerCommand(dir, w.id),
+    });
+  }
+
+  return createTools(workflows, ctx, {
     ...(sandbox === null ? {} : { sandbox }),
     // A turn asked here runs in this process, and the loop's page reads its
     // progress from the same directory the loop's own steps write to.
@@ -153,13 +172,12 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     // the file `landrace start` watches. Here only: the child server an agent
     // is handed gets no wake, so an agent cannot drive the loop.
     wake: () => touchWake(wakePath(dir)),
-    // This same server, for a pairing's session to reach Landrace by.
-    server: childServerCommand(dir, loadedWorkflow.id),
+    ...(scope === undefined ? {} : { scope }),
   });
 }
 
-export async function runMcp(dir: string): Promise<void> {
-  const server = createMcpServer(await buildMcpTools(dir));
+export async function runMcp(dir: string, scope?: string): Promise<void> {
+  const server = createMcpServer(await buildMcpTools(dir, scope));
   await server.connect(new StdioServerTransport());
 }
 

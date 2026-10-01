@@ -9,6 +9,7 @@ import { OUTPUT_KIND, renderMarker } from "#conventions.js";
 import type { ConversationDeps, Executor, LockOptions, Source, Step } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createTools } from "#mcp/tools.js";
+import { hooked } from "#tests/support/loaded.js";
 import { createDispatcher } from "#runner/effects.js";
 import { acquire, held, release } from "#runner/lock.js";
 import { runStep } from "#runner/step.js";
@@ -822,7 +823,7 @@ describe("prose a conversation turn puts on the item", () => {
 
   it("refuses an operator's reply that a record cannot carry", async () => {
     const tracker = seeded();
-    const tools = createTools(tracker.registry, tracker.ctx, { lock: { root } });
+    const tools = createTools([hooked(tracker.registry)], tracker.ctx, { lock: { root } });
     await expect(tools.reply("1", long(40_000))).rejects.toThrow(/characters/);
     expect(bodies(tracker).some((b) => b.includes("Here is what I found."))).toBe(false);
   });

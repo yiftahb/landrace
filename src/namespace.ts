@@ -1694,12 +1694,50 @@ export type Verdict = { verdict?: unknown; nonce?: unknown; reason?: unknown };
 
 /* ------------------------------------------------------------------- mcp -- */
 
+/** One workflow of the workspace, as `landrace_workflows` says it. */
+export interface WorkflowSummary {
+  id: string;
+  name: string;
+  description: string;
+  /** The open items it alone claims. */
+  claimed: number;
+  /** Of those, the ones in the Needs you lane. */
+  needsYou: number;
+}
+
+/**
+ * One open item as `landrace_items` lists it: the workflow that claims it, or
+ * null with why for one no single workflow may work — claimed by two, or
+ * reported by two sources — in `landrace status`'s words.
+ */
+export interface ItemSummary {
+  item: string;
+  title: string;
+  workflow: string | null;
+  stage: string | null;
+  lane: Lane;
+  why?: string;
+}
+
+/** An item waiting on a person, with the workflow that claims it — or null, and why. */
+export interface WaitingItem {
+  item: string;
+  title: string;
+  url: string;
+  workflow: string | null;
+  why?: string;
+}
+
 export interface Tools {
-  waiting(): Promise<Array<{ item: string; title: string; url: string }>>;
-  status(item: string): Promise<unknown>;
+  workflows(): Promise<WorkflowSummary[]>;
   // `| undefined` is explicit because exactOptionalPropertyTypes is on and these
   // are fed straight from Zod, whose optional output includes it.
+  items(input?: { workflow?: string | undefined }): Promise<ItemSummary[]>;
+  waiting(input?: { workflow?: string | undefined }): Promise<WaitingItem[]>;
+  status(item: string): Promise<unknown>;
   createItem(input: {
+    /** Which workflow to start it in; needed when more than one can create items. */
+    workflow?: string | undefined;
     title: string;
     body?: string | undefined;
     labels?: string[] | undefined;
@@ -1734,34 +1772,45 @@ export interface ChildTool {
 }
 
 /**
- * What the MCP plane needs beyond the registry to hold a conversation: an
- * executor to resume a step's session with, a screener to judge the turn
- * before it runs, and where the per-item locks live. All optional — without
- * an executor the conversation tools report that none is configured rather
- * than crashing, exactly as the operator hook's absence is reported, and
- * screening is the operator's `security.screen` to switch off.
+ * One workflow of the workspace as the MCP tools are handed it: its folder,
+ * its definition, the hooks it loads, and what holds a turn on its steps.
+ *
+ * The executor and the screener are its own because a factory is built
+ * against the steps of the workflow it serves (see `executorFor`). Both are
+ * optional — without an executor the conversation tools report that none is
+ * configured rather than crashing, exactly as the operator hook's absence is
+ * reported, and screening is the operator's `security.screen` to switch off.
  */
-export interface ToolOptions {
+export interface ToolWorkflow extends LoadedWorkflow {
+  registry: Registry;
   executor?: Executor;
   screen?: Screener;
-  lock?: LockOptions;
   /**
-   * Carried straight through to the conversation, which needs all three to
-   * hold a turn to what its step declared. Optional for the same reason they
-   * are optional there: a process that assembles tools without an executor
-   * holds no turn, and one that has an executor and not these refuses the
-   * turn rather than running it unconstrained.
-   */
-  workflow?: LoadedWorkflow;
-  sandbox?: { root: string };
-  /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
-  activity?: ActivityLog;
-  /**
-   * How to start `landrace mcp` on this workflow: a pairing hands it to the
-   * person's session, and a hand-in on an `items:create` step binds its
+   * How to start `landrace mcp` bound to this workflow: a pairing hands it to
+   * the person's session, and a hand-in on an `items:create` step binds its
    * item server from it. Absent, a pairing's session gets no server.
    */
   server?: ServerCommand;
+}
+
+/**
+ * One workflow's own hands in `landrace mcp`: what an action on an item it
+ * claims goes through — its source, pre hooks and dispatcher, the stages and
+ * steps a goto or a pairing is held to, and the conversation a turn is.
+ */
+export interface ToolHands {
+  workflow: ToolWorkflow;
+  deps: PairDeps;
+  conversation: Conversation;
+}
+
+/** What the MCP plane shares across every workflow it serves. */
+export interface ToolOptions {
+  /** Where the per-item locks live: the loop's, so the two processes find the same file. */
+  lock?: LockOptions;
+  sandbox?: { root: string };
+  /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
+  activity?: ActivityLog;
   /**
    * Told after each write a person makes through the tools succeeds, so a
    * running loop picks it up now rather than on its next scheduled tick.
@@ -1769,6 +1818,13 @@ export interface ToolOptions {
    * is handed gets none.
    */
   wake?: () => void;
+  /**
+   * `landrace mcp --workflow <id>`: the one workflow this server acts for —
+   * the server a pairing hands the person's session. Claims are still judged
+   * over every workflow; an item another workflow claims is refused, and a
+   * create names this workflow unasked.
+   */
+  scope?: string;
 }
 
 /* ------------------------------------------------------------------- cli -- */
@@ -1799,6 +1855,13 @@ export interface WorkflowRuntime {
   /** `scrub` required here: the rows `landrace start` prints go through it too. */
   deps: Omit<ConvergeDeps, "ctx" | "scrub"> & { ctx: RuntimeContext; scrub: (text: string, extra?: readonly string[]) => string };
 }
+
+/**
+ * What listing a workspace, and judging who owns what it lists, asks of each
+ * workflow: its id, its source and its rules. `landrace mcp` lists through the
+ * same functions the loop does with no more than this.
+ */
+export type ListedWorkflow = Pick<WorkflowRuntime, "id" | "source"> & { deps: Pick<WorkflowRuntime["deps"], "workflow"> };
 
 /** Everything the loop needs, assembled once, so a tick is only a call. */
 export interface WorkspaceRuntime {
@@ -1938,9 +2001,9 @@ export interface ConversationDeps {
    * A turn is an agent invocation on the same session, so it is held to the
    * same limits — a turn that were less constrained than the step it continues
    * is a way to ask an agent through conversation for exactly what the
-   * workflow forbade it in the step. Optional on the type because `createTools`
-   * assembles a conversation for processes that may never hold one; `ask`
-   * refuses rather than running a turn it cannot constrain.
+   * workflow forbade it in the step. Optional on the type, so a conversation
+   * assembled without it is possible; `ask` then refuses rather than running
+   * a turn it cannot constrain.
    */
   workflow?: Workflow;
   steps?: Map<string, Step>;

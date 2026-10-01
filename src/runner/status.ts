@@ -1,5 +1,5 @@
 import { compareIds, isOpenItem, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
-import type { Lane, Node, StatusRow, Workflow, WorkflowRuntime, WorkspaceListing } from "#namespace.js";
+import type { Lane, ListedWorkflow, Node, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
 import { claimedBy, eligibilityOf, reportedBy, turnedAway } from "#runner/tick.js";
 
 /** Stands in for an item that has no position yet, so the column still lines up. */
@@ -131,7 +131,7 @@ export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
  * workflows claim, or two sources report, halted and naming them; one every
  * workflow turned away skipped, with each reason once.
  */
-export function workspaceStatusRows(workflows: readonly WorkflowRuntime[], listing: WorkspaceListing): StatusRow[] {
+export function workspaceStatusRows(workflows: readonly ListedWorkflow[], listing: Pick<WorkspaceListing, "graphs" | "claims">): StatusRow[] {
   const listed = new Map<string, Node[]>();
   for (const node of listing.graphs.flatMap((g) => g.nodes)) {
     if (isOpenItem(node)) listed.set(node.id, [...(listed.get(node.id) ?? []), node]);

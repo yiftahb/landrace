@@ -4,7 +4,10 @@ import type {
   ConvergeResult,
   Graph,
   HookContext,
+  ListedWorkflow,
+  Logger,
   Node,
+  RuntimeContext,
   Source,
   TickRow,
   WorkflowRuntime,
@@ -45,7 +48,7 @@ const workflowsOn = (sourceOf: ReadonlyMap<string, number>, index: number): stri
  * Who owns what, judged over these graphs: one per distinct source, at the
  * index `sourceOf` gives each workflow.
  */
-export function claimsOf(workflows: readonly WorkflowRuntime[], sourceOf: ReadonlyMap<string, number>, graphs: Graph[]): Claims {
+export function claimsOf(workflows: readonly ListedWorkflow[], sourceOf: ReadonlyMap<string, number>, graphs: Graph[]): Claims {
   return claimItems(workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow, source: sourceOf.get(w.id) ?? -1 })), graphs);
 }
 
@@ -92,7 +95,7 @@ export function sourcesOf(workflows: ReadonlyArray<Pick<WorkflowRuntime, "id" | 
  * fails is an empty graph here and an entry in `failed`, and what it would have
  * listed is unknown this tick — so its items are neither worked nor stopped.
  */
-export async function listWorkspace(runtime: Pick<WorkspaceRuntime, "workflows" | "ctx" | "log">): Promise<WorkspaceListing> {
+export async function listWorkspace(runtime: { workflows: readonly ListedWorkflow[]; ctx: RuntimeContext; log: Logger }): Promise<WorkspaceListing> {
   const { sources, sourceOf } = sourcesOf(runtime.workflows);
 
   // Through a promise first: a source is a hook, and one that throws before

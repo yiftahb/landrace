@@ -16,11 +16,20 @@ The arguments name the idea. When they are empty or brief, the idea is the
 one this conversation has been working on: take what was agreed, not
 everything that was said.
 
+## Which workflow
+
+An item is started in one workflow, and each works it differently. Call
+`landrace_workflows` to list them. When there is more than one and neither
+the arguments nor the conversation name one, ask the person which — show
+each one's id, name and description — and wait for the answer. Never pick
+one yourself. Pass the chosen id as `workflow`; with a single workflow,
+pass nothing.
+
 ## The body
 
-The body is the item's whole brief. The `spec` step reads it cold, with
-none of this conversation, and writes the spec from it. Write it for that
-reader:
+The body is the item's whole brief. The workflow's first step — `spec`, in
+`main` — reads it cold, with none of this conversation, and works from it.
+Write it for that reader:
 
 - **Goal**: one or two sentences saying what changes for the person using it.
 - **Why**: the problem, with the concrete case that exposed it (an item
@@ -46,6 +55,6 @@ cannot support it. Say which of these applied.
 
 ## Afterwards
 
-Report the item's id and link from the tool's answer, and whether it was
-started. If the tool refuses, show its message and stop. Do not retry
+Report the item's id, link and workflow from the tool's answer, and
+whether it was started. If the tool refuses, show its message and stop. Do not retry
 through another route.
