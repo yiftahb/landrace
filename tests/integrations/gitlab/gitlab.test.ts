@@ -1,6 +1,24 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { createClient, GitLab } from "landrace/integrations/gitlab";
-import type { Git } from "#namespace.js";
+import { branchHeads, gitIn } from "landrace/kit";
+import type { Git, HookContext } from "#namespace.js";
 import { BASE, createFakeGitLab, type FakeGitLab, PROJECT, TOKEN } from "#tests/integrations/gitlab/fake-gitlab.js";
+import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
+
+/* Real git in the push tests: see tests/agent/worktree.test.ts for why a minute. */
+jest.setTimeout(60_000);
+
+const exec = promisify(execFile);
+const made: string[] = [];
+afterAll(async () => {
+  while (made.length) await rm(made.pop() as string, { recursive: true, force: true });
+  await removeRepos();
+});
 
 /** A checkout with no branches at all: enough for every test that never pushes. */
 const noGit: Git = async () => "";
@@ -296,5 +314,125 @@ describe("reply and resolve", () => {
     await expect(forge.reply("f".repeat(40), "x", ctx)).rejects.toThrow(/no merge request read so far has the discussion f{40}/);
     await expect(forge.resolve("f".repeat(40), ctx)).rejects.toThrow(/no merge request read so far/);
     expect(gl.requests.length).toBe(asked);
+  });
+});
+
+describe("push", () => {
+  /** GitLab's own basic credential for a token, the way git would carry it. */
+  const BASIC = Buffer.from(`oauth2:${TOKEN}`).toString("base64");
+
+  type Call = { args: string[]; env: Record<string, string> };
+
+  /** git reporting `url` as origin's push URL and a branch to push, with every call written down and nothing sent. */
+  const scripted = (url: string, push: () => Promise<string> = async () => ""): { git: Git; calls: Call[] } => {
+    const calls: Call[] = [];
+    const git: Git = async (args, env = {}) => {
+      calls.push({ args, env });
+      if (args[0] === "remote") return `${url}\n`;
+      if (args[0] === "for-each-ref") return args.includes("refs/heads") ? `refs/heads/landrace/1\0${"a".repeat(40)}\n` : "";
+      if (args[0] === "push") return push();
+      throw new Error(`the script has no answer for git ${args.join(" ")}`);
+    };
+    return { git, calls };
+  };
+
+  /** The configuration the push handed git through its environment. */
+  const configOf = (calls: Call[]): Array<[string, string]> => {
+    const env = calls.find((c) => c.args[0] === "push")?.env ?? {};
+    return Object.keys(env).filter((k) => k.startsWith("GIT_CONFIG_KEY_"))
+      .map((k) => [env[k] ?? "", env[k.replace("KEY", "VALUE")] ?? ""] as [string, string]);
+  };
+
+  const pushed = async (git: Git): Promise<void> => {
+    const gl = createFakeGitLab();
+    const ctx: HookContext = { ...gl.ctx(), ticket: "1", snapshot: {} };
+    await new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git }).push("landrace/1", "1", ctx);
+  };
+
+  it.each([`${BASE}/${PROJECT}`, `${BASE}/${PROJECT}.git`])("hands git the token for the project's own URL, %s, in its environment", async (url) => {
+    const { git, calls } = scripted(url);
+    await pushed(git);
+    expect(configOf(calls)).toContainEqual([`http.${url}.extraheader`, `AUTHORIZATION: basic ${BASIC}`]);
+    for (const call of calls) for (const secret of [TOKEN, BASIC]) expect(call.args.join(" ")).not.toContain(secret);
+  });
+
+  it.each([
+    `${BASE}/${PROJECT}-evil.git`,
+    `${BASE}/other/app.git`,
+    `${BASE}/${PROJECT}.git/`,
+    `${BASE}/GROUP/app.git`,
+    "https://gitlab.com/group/app.git",
+    "https://user@gitlab.example.com/group/app.git",
+    "git@gitlab.example.com:group/app.git",
+  ])("hands git no token for any other URL: %s", async (url) => {
+    const { git, calls } = scripted(url);
+    await pushed(git);
+    expect(configOf(calls).map(([key]) => key).filter((key) => key.includes("extraheader"))).toEqual([]);
+    for (const secret of [TOKEN, BASIC]) expect(JSON.stringify(calls)).not.toContain(secret);
+  });
+
+  it("keeps the token and its base64 out of the error when git's own output quotes them", async () => {
+    const { git } = scripted(`${BASE}/${PROJECT}.git`, async () => {
+      throw new Error(`fatal: unable to access: header AUTHORIZATION: basic ${BASIC} (token ${TOKEN})`);
+    });
+    const failure = await pushed(git).then(() => "", (e: unknown) => String(e));
+    expect(failure).toMatch(/could not push landrace\/1/);
+    expect(failure).not.toContain(TOKEN);
+    expect(failure).not.toContain(BASIC);
+  });
+
+  /* Asked of git itself: the header reaches the project's URL and what git fetches under it, and nothing beside it. */
+  it("scopes the header so git sends it to that URL alone", async () => {
+    const url = `${BASE}/${PROJECT}.git`;
+    const { git, calls } = scripted(url);
+    await pushed(git);
+    const env = calls.find((c) => c.args[0] === "push")?.env ?? {};
+    const header = (at: string): Promise<string | null> =>
+      exec("git", ["config", "--get-urlmatch", "http.extraheader", at], { env: { ...process.env, ...env } })
+        .then((r) => r.stdout.trim(), () => null);
+    expect(await header(`${url}/info/refs`)).toBe(`AUTHORIZATION: basic ${BASIC}`);
+    expect(await header(`${BASE}/${PROJECT}-evil.git`)).toBeNull();
+    expect(await header(`${BASE}/other/app.git`)).toBeNull();
+  });
+
+  it("publishes the branch to origin, fast-forward, and reads back as landed", async () => {
+    const { root, origin } = await gitRepoWithOrigin();
+    const sha = await commitOn(root, "landrace/1", "built.ts");
+    await pushed(gitIn(root));
+    expect(await commitAt(origin, "refs/heads/landrace/1")).toBe(sha);
+    expect((await branchHeads(gitIn(root))).remote["landrace/1"]).toBe(sha);
+  });
+});
+
+/*
+ * Where the forge runs git when nobody hands it one: the repository of the
+ * file that constructed it — never the directory the process was started from.
+ */
+describe("the checkout the forge works in", () => {
+  const readsThisRepository = async (forge: GitLab): Promise<void> => {
+    const root = (await exec("git", ["rev-parse", "--show-toplevel"])).stdout.trim();
+    const back = process.cwd();
+    const away = await mkdtemp(join(tmpdir(), "lr-away-"));
+    made.push(away);
+    process.chdir(away);
+    try {
+      expect(await forge.heads()).toEqual(await branchHeads(gitIn(root)));
+    } finally {
+      process.chdir(back);
+    }
+  };
+
+  it("is the repository of the file that constructs it, whatever the working directory", async () => {
+    await readsThisRepository(new GitLab({ project: PROJECT }));
+  });
+
+  it("is the constructing file's repository when the forge is a subclass defined elsewhere", async () => {
+    const lib = await mkdtemp(join(tmpdir(), "lr-lib-"));
+    made.push(lib);
+    const file = join(lib, "forges.cjs");
+    await writeFile(file, "module.exports = (Base) => class Explicit extends Base { constructor(opts) { super(opts); } };\n");
+    type Forge = new (opts: ConstructorParameters<typeof GitLab>[0]) => GitLab;
+    const Explicit = (createRequire(__filename)(file) as (base: typeof GitLab) => Forge)(GitLab);
+    await readsThisRepository(new Explicit({ project: PROJECT }));
   });
 });

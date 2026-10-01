@@ -4,9 +4,10 @@
  * push URL it trusts with a token. Everything else a forge does is
  * `BaseForge`'s.
  */
-import { type RuntimeContext, sameLogin } from "landrace/hooks";
+import { type HookContext, type RuntimeContext, sameLogin } from "landrace/hooks";
 import {
-  BaseForge, DONE_WINDOW_MS, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, prBranch, TICKET_PAGE,
+  BaseForge, branchHeads, DONE_WINDOW_MS, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
+  repositoryOf, TICKET_PAGE,
   type BranchHeads, type ChangedFile, type Git, type PullRecord, type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, PER_PAGE, statusOf, tokenRejected } from "./client.js";
@@ -140,6 +141,60 @@ function oldLineOf(diff: string, line: number): number | null {
   return null;
 }
 
+/**
+ * Publish one branch to origin, fast-forward only — `pushBranch`, to the one
+ * push URL `originPushUrl` allows.
+ *
+ * The token rides only to the project's own URL on `gitlabBaseUrl`, matched
+ * as the very string git will use — `{gitlabBaseUrl}/{project}`, with or
+ * without `.git` — never a parsed reading of it, which a second parser could
+ * read another way. Any other origin is pushed with the operator's own
+ * credentials and no token at all.
+ *
+ * With the token, it rides in git's environment as an `oauth2:` basic header
+ * scoped to that exact URL, never on the command line; an empty value first
+ * clears one some other tool configured, and credential helpers and askpass
+ * are cleared so nothing git starts sees it. Whatever git says back is
+ * scrubbed of the token and its base64 before it becomes an error.
+ */
+async function push(git: Git, { token, baseUrl, project }: Client, branch: string, ticket: string, signal: AbortSignal): Promise<void> {
+  const basic = Buffer.from(`oauth2:${token}`).toString("base64");
+  const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
+  const url = await originPushUrl(git, branch, signal);
+  const header = `http.${url}.extraheader`;
+  const auth: Array<[string, string]> = url === `${baseUrl}/${project}` || url === `${baseUrl}/${project}.git`
+    ? [[header, ""], [header, `AUTHORIZATION: basic ${basic}`], ["credential.helper", ""], ["core.askPass", ""]]
+    : [];
+  try {
+    await pushBranch(git, branch, ticket, signal, auth);
+  } catch (e) {
+    throw new Error(scrub(e instanceof Error ? e.message : String(e)));
+  }
+}
+
+/**
+ * The file that said `new`: past this module's own frames, and past the
+ * constructors of any subclass, wherever those are defined — a subclass in a
+ * shared package is still constructed by the project's hook file. The file
+ * name V8 records for a frame is a path under jest and a file: URL under
+ * node; `repositoryOf` takes either.
+ */
+function constructedIn(): string | null {
+  const saved = Error.prepareStackTrace;
+  try {
+    Error.prepareStackTrace = (_error, frames) => frames;
+    const frames = (new Error().stack as unknown as NodeJS.CallSite[] | undefined) ?? [];
+    const here = frames[0]?.getFileName();
+    const caller = frames.find((f) => {
+      const file = f.getFileName();
+      return !!file && file !== here && !file.startsWith("node:") && !f.isConstructor();
+    });
+    return caller?.getFileName() ?? null;
+  } finally {
+    Error.prepareStackTrace = saved;
+  }
+}
+
 /** A refusal past a paging bound, said as one: a count over part of a list is a number known to be short. */
 const tooMany = (what: string): Error =>
   new Error(`${what}, more than one read carries — reporting what was read would be reporting a number known to be short`);
@@ -163,7 +218,15 @@ export class GitLab extends BaseForge {
     super();
     this.project = project;
     this.fetchImpl = fetchImpl;
-    this.git = git ?? (async () => "");
+    if (git) {
+      this.git = git;
+    } else {
+      const file = constructedIn();
+      this.git = ownGit(async () => {
+        if (file === null) throw new Error("the GitLab forge cannot tell which file constructed it, so it cannot find its repository; hand it git");
+        return repositoryOf(file);
+      });
+    }
   }
 
   private gl(ctx: RuntimeContext): Client {
@@ -313,11 +376,11 @@ export class GitLab extends BaseForge {
   }
 
   async heads(): Promise<BranchHeads> {
-    throw new Error("not yet");
+    return branchHeads(this.git);
   }
 
-  async push(): Promise<void> {
-    throw new Error("not yet");
+  async push(branch: string, ticket: string, ctx: HookContext): Promise<void> {
+    await push(this.git, this.gl(ctx), branch, ticket, ctx.signal);
   }
 
   /**
