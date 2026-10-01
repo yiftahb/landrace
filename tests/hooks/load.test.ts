@@ -147,3 +147,21 @@ describe("an import failure says what to do about it", () => {
     expect(importFailure("hooks/x.ts", Object.create(null)).message).toContain('hook module "hooks/x.ts"');
   });
 });
+
+describe("loadHooks inside a workspace", () => {
+  it("refuses a module that climbs out of the workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "landrace-wshooks-"));
+    const dir = join(root, "workflows", "main");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(root, "x.ts"), "export const x = 1;\n");
+    await expect(loadHooks({ dir, modules: ["../../../x.ts"], workspace: root })).rejects.toThrow(/hook module "\.\.\/\.\.\/\.\.\/x\.ts"/);
+  });
+
+  it("still refuses a climb out of the workflow when no workspace is given", async () => {
+    const root = await mkdtemp(join(tmpdir(), "landrace-wshooks-"));
+    const dir = join(root, "workflows", "main");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(root, "x.ts"), "export const x = 1;\n");
+    await expect(loadHooks({ dir, modules: ["../../x.ts"] })).rejects.toThrow(/hook module/);
+  });
+});

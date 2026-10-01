@@ -1,5 +1,6 @@
+import { posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { containedPath } from "#workflow/load.js";
+import { containedPath, workspacePath } from "#workflow/load.js";
 import { artifactPreHook } from "#runner/artifacts.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf } from "#runner/errors.js";
@@ -191,8 +192,11 @@ export function importFailure(specifier: string, error: unknown): Error {
  * containment the step files get — the same helper, both ends compared after
  * `fs.realpath`, because git tracks symlinks and a lexical check does not
  * survive one.
+ *
+ * With `workspace`, the bound is the workspace root instead, so every workflow
+ * can name the one hooks directory beside `workflows/`.
  */
-export async function loadHooks(opts: { dir: string; modules: string[] }): Promise<Registry> {
+export async function loadHooks(opts: { dir: string; modules: string[]; workspace?: string }): Promise<Registry> {
   // Every path is resolved before any module is imported. Importing as we go
   // would have already run the first module's top-level code by the time the
   // second one turns out to point outside the directory — and the whole reason
@@ -201,7 +205,9 @@ export async function loadHooks(opts: { dir: string; modules: string[] }): Promi
   const resolved: Array<{ specifier: string; path: string }> = [];
 
   for (const specifier of opts.modules) {
-    const where = await containedPath(opts.dir, specifier);
+    const where = opts.workspace === undefined
+      ? await containedPath(opts.dir, specifier)
+      : await workspacePath(opts.workspace, relative(opts.workspace, opts.dir).split(sep).join(posix.sep) || ".", specifier);
     if (!where.ok) throw new Error(`hook module "${specifier}" ${where.reason}`);
 
     // Caught here rather than left to surface as "two pre hooks share the id":

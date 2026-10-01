@@ -64,3 +64,13 @@ describe("hook modules are imported from disk and classified by their brand", ()
     expect(registry.operator?.id).toBe("project");
   });
 });
+
+describe("loadHooks with a workspace", () => {
+  it("loads a module from above the workflow directory, and one file is one module however it is reached", async () => {
+    const a = await loadHooks({ dir: "tests/fixtures/hooks", modules: ["alpha.ts"], workspace: "tests/fixtures" });
+    const b = await loadHooks({ dir: "tests/fixtures", modules: ["hooks/alpha.ts"], workspace: "tests/fixtures" });
+    const c = await loadHooks({ dir: "tests/fixtures/hooks", modules: ["../hooks/alpha.ts"], workspace: "tests/fixtures" });
+    expect(a.pre[0]).toBe(b.pre[0]);
+    expect(a.pre[0]).toBe(c.pre[0]);
+  });
+});

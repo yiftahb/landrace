@@ -429,7 +429,21 @@ export interface Step extends StepFrontMatter {
  * shape as every other problem, instead of pattern-matching an error message
  * after the fact.
  */
-export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path" | "vars" | "branch";
+export type LoadFailureRule = "schema" | "duplicate-id" | "missing-step" | "step-path" | "vars" | "branch" | "layout";
+
+/** One workflow of a workspace: its folder name is its id. */
+export interface LoadedWorkflow {
+  id: string;
+  dir: string;
+  workflow: Workflow;
+  steps: Map<string, Step>;
+}
+
+/** Every workflow under `<dir>/workflows/`, in the order they are shown and run. */
+export interface Workspace {
+  dir: string;
+  workflows: LoadedWorkflow[];
+}
 
 /** One tree with every `{vars.x}` filled in, what it took to fill it, and what it could not. */
 export interface VarSubstitution {
