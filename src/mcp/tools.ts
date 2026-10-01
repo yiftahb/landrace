@@ -418,9 +418,11 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
         ...("hands" in route
           ? { eligible: checkEligible(route.hands.deps.workflow, snapshot).eligible }
           : node.closed === null ? { eligible: false, ...(route.why === null ? {} : { why: route.why }) } : {}),
-        // Exactly when `landrace_waiting` lists it: the board's Needs you — a
-        // person's turn, a block or a halt. `blocked` says whether it is a block.
-        waitingOnYou: laneIn(row, route.claims) === "needs-you",
+        // Exactly when `landrace_waiting` lists it: an open item in the board's
+        // Needs you — a person's turn, a block or a halt. `blocked` says whether
+        // it is a block. Open asked of the node read here, not of the routing:
+        // an item closed since is Done on the board, whatever stage it was at.
+        waitingOnYou: node.closed === null && laneIn(row, route.claims) === "needs-you",
         blocked: labels.includes(LABELS.blocked),
         rounds: run?.counters ?? {},
         lastEvent: run?.lastEvent ?? null,

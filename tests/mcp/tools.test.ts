@@ -64,6 +64,8 @@ const TURNS_SEED: Array<Partial<FakeIssue>> = [
   { number: 5, labels: ["lr:auto", "lr:stage:spec", "needs-my-review"] },
   { number: 6, labels: ["lr:auto", "lr:stage:done"] },
   { number: 7, labels: ["needs-my-review"] },
+  // Closed, left at a stage that waits: listed under its open parent, and nobody's turn.
+  { number: 8, parent: 1, state: "closed", stateReason: "COMPLETED", labels: ["lr:auto", "lr:stage:questions"] },
 ];
 
 const turnsWorld = (seed: Array<Partial<FakeIssue>> = TURNS_SEED) => {
@@ -194,7 +196,7 @@ describe("mcp tools", () => {
   it("says in landrace_status where each item is and whether it waits on you, as landrace_waiting does", async () => {
     const { tools } = turnsWorld();
     const waiting = (await tools.waiting()).map((w) => w.item);
-    for (const item of ["1", "2", "3", "4", "5", "6", "7"]) {
+    for (const item of ["1", "2", "3", "4", "5", "6", "7", "8"]) {
       expect([item, ((await tools.status(item)) as { waitingOnYou: unknown }).waitingOnYou]).toEqual([item, waiting.includes(item)]);
     }
     expect(await tools.status("1")).toMatchObject({ stage: "questions", waitingOnYou: true, blocked: false });
@@ -202,6 +204,28 @@ describe("mcp tools", () => {
     expect(await tools.status("2")).toMatchObject({ stage: "spec", waitingOnYou: false });
     expect(await tools.status("4")).toMatchObject({ stage: "blocked", waitingOnYou: true, blocked: true });
     expect(await tools.status("5")).toMatchObject({ stage: null, waitingOnYou: true, problem: "cannot place the item: spec, reviewing all match" });
+    expect(waiting).not.toContain("8");
+    expect(await tools.status("8")).toMatchObject({ closed: "done", waitingOnYou: false });
+  });
+
+  /*
+   * Closed between the read that routes it — open, so its workflow's — and
+   * the read its snapshot is built from. The board files a closed item under
+   * Done and `landrace_waiting` lists none, so nor does this say it waits.
+   */
+  it("does not say an item closed since it was routed waits on you, at a stage that waits", async () => {
+    const tracker = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:questions"] }]);
+    const { source } = tracker.registry;
+    if (!source) throw new Error("the fake tracker registers no source");
+    let reads = 0;
+    const closing = Object.create(source) as Source;
+    closing.read = async (item, ctx) => {
+      const graph = await source.read(item, ctx);
+      reads += 1;
+      return reads === 1 ? graph : { ...graph, nodes: graph.nodes.map((n) => (n.id === item ? { ...n, closed: "done" as const } : n)) };
+    };
+    const tools = createTools([hooked({ ...tracker.registry, source: closing }, loaded(turns, spec.steps))], tracker.ctx, { lock: { root: lockRoot } });
+    expect(await tools.status("1")).toMatchObject({ workflow: "main", closed: "done", stage: "questions", waitingOnYou: false });
   });
 
   // A closed item is no workflow's: it is read through the one source that
