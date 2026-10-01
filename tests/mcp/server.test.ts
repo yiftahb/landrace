@@ -208,6 +208,21 @@ describe("mcp server over a real transport", () => {
       await client.close();
     });
 
+    // An agent holding a bound server is told so before it calls anything.
+    it("says in every tool's description when it acts for one workflow alone", async () => {
+      const bound = (t: FakeTracker): Tools => createTools([
+        hooked(t.registry, loaded(flow("main", "lr:auto"))),
+        hooked(t.registry, loaded(flow("fast", "lr:fast"), new Map(), "fast")),
+      ], t.ctx, { scope: "fast" });
+      for (const [make, said] of [[bound, true], [both, false]] as const) {
+        const { client } = await connect([], make);
+        const { tools } = await client.listTools();
+        expect(tools.map((t) => [t.name, t.description?.includes("This server acts for workflow fast alone.")]))
+          .toEqual(tools.map((t) => [t.name, said]));
+        await client.close();
+      }
+    });
+
     it("creates an item in the workflow the call names", async () => {
       const { client, gh } = await connect([], both);
       const r = await client.callTool({ name: "landrace_create_item", arguments: { workflow: "fast", title: "Hotfix" } });

@@ -485,8 +485,8 @@ describe("buildMcpTools over a workspace of several workflows", () => {
     const { dir } = await fixture({ screen: false, fast: true });
     const tools = await buildMcpTools(dir);
     expect(await tools.workflows()).toEqual([
-      { id: "fast", name: "fastlane", description: "the fast one", claimed: 0, needsYou: 0 },
-      { id: "main", name: "mcp", description: "test", claimed: 1, needsYou: 1 },
+      { id: "fast", name: "fastlane", description: "the fast one", creates: false, claimed: 0, needsYou: 0 },
+      { id: "main", name: "mcp", description: "test", creates: false, claimed: 1, needsYou: 1 },
     ]);
     expect(await tools.status(ITEM)).toMatchObject({ item: ITEM, workflow: "main" });
   });

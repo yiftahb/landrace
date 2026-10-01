@@ -19,11 +19,12 @@ everything that was said.
 ## Which workflow
 
 An item is started in one workflow, and each works it differently. Call
-`landrace_workflows` to list them. When there is more than one and neither
-the arguments nor the conversation name one, ask the person which — show
-each one's id, name and description — and wait for the answer. Never pick
-one yourself. Pass the chosen id as `workflow`; with a single workflow,
-pass nothing.
+`landrace_workflows` to list them; only those with `creates: true` can take
+a new item, so offer no other. When more than one can and neither the
+arguments nor the conversation name one, ask the person which — show each
+one's id, name and description — and wait for the answer. Never pick one
+yourself. Pass the chosen id as `workflow`; when only one can, pass
+nothing.
 
 ## The body
 

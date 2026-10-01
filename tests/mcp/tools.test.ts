@@ -407,8 +407,8 @@ describe("over a workspace of two workflows", () => {
 
   it("lists each workflow with how many items it claims and how many need you", async () => {
     expect(await two().tools.workflows()).toEqual([
-      { id: "main", name: "Main", description: "the Main flow", claimed: 2, needsYou: 1 },
-      { id: "fast", name: "Fastlane", description: "the Fastlane flow", claimed: 2, needsYou: 2 },
+      { id: "main", name: "Main", description: "the Main flow", creates: true, claimed: 2, needsYou: 1 },
+      { id: "fast", name: "Fastlane", description: "the Fastlane flow", creates: true, claimed: 2, needsYou: 2 },
     ]);
   });
 
@@ -422,9 +422,11 @@ describe("over a workspace of two workflows", () => {
     ]);
   });
 
-  it("lists one workflow's items alone when asked, and refuses a workflow it does not have, naming those it does", async () => {
+  // A halt fast is party to is fast's to see: the conflict on #3 names it.
+  it("lists one workflow's items and the halts it is party to when asked, and refuses a workflow it does not have", async () => {
     const { tools } = two();
-    expect((await tools.items({ workflow: "fast" })).map((i) => i.item)).toEqual(["2", "5"]);
+    expect((await tools.items({ workflow: "fast" })).map((i) => i.item)).toEqual(["2", "3", "5"]);
+    expect((await tools.items({ workflow: "main" })).map((i) => i.item)).toEqual(["1", "3", "6"]);
     await expect(tools.items({ workflow: "nope" })).rejects.toThrow('no workflow "nope"; the workspace has main, fast');
   });
 
@@ -434,8 +436,8 @@ describe("over a workspace of two workflows", () => {
       { item: "2", title: "issue 2", url: expect.stringContaining("/2"), workflow: "fast" },
       { item: "3", title: "issue 3", url: expect.stringContaining("/3"), workflow: null, why: "halted: claimed by fast and main" },
     ]);
-    expect((await tools.waiting({ workflow: "fast" })).map((w) => w.item)).toEqual(["2"]);
-    expect(await tools.waiting({ workflow: "main" })).toEqual([]);
+    expect((await tools.waiting({ workflow: "fast" })).map((w) => w.item)).toEqual(["2", "3"]);
+    expect((await tools.waiting({ workflow: "main" })).map((w) => w.item)).toEqual(["3"]);
   });
 
   it("refuses to create an item without a workflow when two can create, naming them, and creates nothing", async () => {
@@ -458,8 +460,9 @@ describe("over a workspace of two workflows", () => {
     expect(tracker.issues.size).toBe(SEED.length);
   });
 
-  it("creates in the one workflow that can when none is named", async () => {
+  it("creates in the one workflow that can when none is named, and says which can", async () => {
     const { tools } = two({ mainRegistry: (r) => ({ ...r, operator: null }) });
+    expect(await tools.workflows()).toEqual([expect.objectContaining({ id: "main", creates: false }), expect.objectContaining({ id: "fast", creates: true })]);
     expect(await tools.createItem({ title: "Hotfix" })).toMatchObject({ workflow: "fast", labels: expect.arrayContaining(["lr:fast"]) });
   });
 
@@ -556,10 +559,23 @@ describe("over a workspace of two workflows", () => {
    * every workflow, so an item fast shares with main is refused here too.
    */
   describe("bound to one workflow", () => {
-    it("lists that workflow alone", async () => {
+    // A pairing's session sees a conflict its own workflow is party to.
+    it("lists that workflow alone, and the halts it is party to", async () => {
       const { tools } = two({ scope: "fast" });
       expect((await tools.workflows()).map((w) => w.id)).toEqual(["fast"]);
-      expect((await tools.items()).map((i) => i.item)).toEqual(["2", "5"]);
+      expect((await tools.items()).map((i) => i.item)).toEqual(["2", "3", "5"]);
+      expect((await tools.items()).find((i) => i.item === "3")).toMatchObject({ workflow: null, why: "halted: claimed by fast and main" });
+      expect((await tools.waiting()).map((w) => w.item)).toEqual(["2", "3"]);
+    });
+
+    it("does not list a halt it is no party to", async () => {
+      const tracker = createFakeTracker([
+        { number: 1, labels: ["lr:auto", "lr:slow", "lr:awaiting"] },
+        { number: 2, labels: ["lr:fast", "lr:slow", "lr:awaiting"] },
+      ]);
+      const tools = createTools([hooked(tracker.registry, MAIN), hooked(tracker.registry, FAST), hooked(tracker.registry, flow("slow", "Slow", "lr:slow", []))],
+        tracker.ctx, { lock: { root: lockRoot }, scope: "fast" });
+      expect((await tools.items()).map((i) => [i.item, i.why])).toEqual([["2", "halted: claimed by fast and slow"]]);
       expect((await tools.waiting()).map((w) => w.item)).toEqual(["2"]);
     });
 
@@ -568,6 +584,25 @@ describe("over a workspace of two workflows", () => {
       await expect(tools.status("1")).rejects.toThrow("#1 belongs to main; this server acts for fast alone");
       await expect(tools.reply("3", "go ahead")).rejects.toThrow("#3 is claimed by fast and main");
       expect(await tools.status("2")).toMatchObject({ workflow: "fast" });
+    });
+
+    const writes: Array<[string, (t: Tools, item: string) => Promise<unknown>]> = [
+      ["landrace_update_item", (t, i) => t.updateItem(i, { title: "Renamed", addLabels: ["bug"] })],
+      ["landrace_reply", (t, i) => t.reply(i, "go ahead")],
+      ["landrace_goto", (t, i) => t.goto(i, "spec")],
+      ["landrace_clear", (t, i) => t.clear(i, "spec")],
+      ["landrace_ask", (t, i) => t.ask(i, "carry on")],
+      ["landrace_resolve", (t, i) => t.resolve(i)],
+      ["landrace_pair", (t, i) => t.pair(i, "spec")],
+      ["landrace_finish", (t, i) => t.finish(i)],
+      ["landrace_release", (t, i) => t.release(i)],
+    ];
+
+    it.each(writes)("%s refuses an item main claims, and writes nothing", async (_name, call) => {
+      const { tracker, tools } = two({ scope: "fast" });
+      await expect(call(tools, "6")).rejects.toThrow("#6 belongs to main; this server acts for fast alone");
+      expect(tracker.comments.get(6) ?? []).toEqual([]);
+      expect(tracker.issues.get(6)).toMatchObject({ title: "issue 6", labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] });
     });
 
     // A closed item is no workflow's, so it is its source that says whose it is to read.

@@ -10,14 +10,14 @@ import {
   isOpenItem,
 } from "#conventions.js";
 import { checkEligible } from "#core/index.js";
-import type { ItemSummary, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, WaitingItem, WorkspaceListing } from "#namespace.js";
+import type { Claims, ItemSummary, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, WorkspaceListing } from "#namespace.js";
 import type { Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
-import { haltOf, readRoute, sharedPre, writeRoute } from "#runner/route.js";
+import { readRoute, sharedPre, writeRoute } from "#runner/route.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { laneOf, workspaceStatusRows } from "#runner/status.js";
 import { listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
@@ -241,14 +241,31 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
     }
   };
 
+  /** The workflows a halt on `item` names — two claiming it, or two sources' — or null for any other item. */
+  const partiesTo = (claims: Claims, item: string): string[] | null => claims.conflicts.get(item) ?? claims.clashes.get(item) ?? null;
+
+  /**
+   * Whether `row` belongs in `only`'s list: an item it claims, or a halt it
+   * is party to — a pairing's session has to see the conflict its own
+   * workflow is in. Every row when no workflow is asked for.
+   */
+  const shows = (only: string | undefined, row: StatusRow, claims: Claims): boolean =>
+    only === undefined || row.workflow === only || (row.workflow === undefined && (partiesTo(claims, row.item)?.includes(only) ?? false));
+
   return {
+    // Said in every tool's description, so an agent holding this server knows before it asks.
+    scope: opts.scope ?? null,
+
     async workflows() {
       const listing = await listed();
       const rows = workspaceStatusRows(listedAs, listing);
       return workflows.filter((w) => opts.scope === undefined || w.id === opts.scope).map((w) => {
         const mine = rows.filter((row) => row.workflow === w.id);
         return {
-          id: w.id, name: w.workflow.name, description: w.workflow.description, claimed: mine.length,
+          id: w.id, name: w.workflow.name, description: w.workflow.description,
+          // Whether `landrace_create_item` can start an item in it at all.
+          creates: w.registry.operator !== null,
+          claimed: mine.length,
           // In the board's own lanes, so the count and the page agree.
           needsYou: mine.filter((row) => laneOf(row, w.workflow) === "needs-you").length,
         };
@@ -260,14 +277,13 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       const listing = await listed();
       // `landrace status`'s own rows, so an agent is told what the table says.
       return workspaceStatusRows(listedAs, listing).flatMap((row): ItemSummary[] => {
+        if (!shows(only, row, listing.claims)) return [];
         if (row.workflow !== undefined) {
-          if (only !== undefined && row.workflow !== only) return [];
           return [{ item: row.item, title: row.title, workflow: row.workflow, stage: row.stage, lane: laneOf(row, handsOf(row.workflow).deps.workflow) }];
         }
-        // In no one workflow's list. Asked for all of them, a halt is still
-        // something a person has to settle; an item every workflow turned
-        // away is not anyone's to list.
-        if (only !== undefined || haltOf(listing.claims, row.item) === null) return [];
+        // A halt is something a person has to settle; an item every workflow
+        // turned away is not anyone's to list.
+        if (partiesTo(listing.claims, row.item) === null) return [];
         return [{ item: row.item, title: row.title, workflow: null, stage: row.stage, lane: "needs-you", why: row.note }];
       });
     },
@@ -283,8 +299,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       for (const node of listing.graphs.flatMap((g) => g.nodes)) if (isOpenItem(node) && !nodes.has(node.id)) nodes.set(node.id, node);
       return workspaceStatusRows(listedAs, listing).flatMap((row): WaitingItem[] => {
         const node = nodes.get(row.item);
-        if (!node || !labelsOf(node).includes(LABELS.awaiting)) return [];
-        if (only !== undefined && row.workflow !== only) return [];
+        if (!node || !labelsOf(node).includes(LABELS.awaiting) || !shows(only, row, listing.claims)) return [];
         return [{ item: row.item, title: row.title, url: node.link, workflow: row.workflow ?? null, ...(row.workflow === undefined ? { why: row.note } : {}) }];
       });
     },

@@ -1699,6 +1699,8 @@ export interface WorkflowSummary {
   id: string;
   name: string;
   description: string;
+  /** Whether it loads an operator, so `landrace_create_item` can start an item in it. */
+  creates: boolean;
   /** The open items it alone claims. */
   claimed: number;
   /** Of those, the ones in the Needs you lane. */
@@ -1708,7 +1710,8 @@ export interface WorkflowSummary {
 /**
  * One open item as `landrace_items` lists it: the workflow that claims it, or
  * null with why for one no single workflow may work — claimed by two, or
- * reported by two sources — in `landrace status`'s words.
+ * reported by two sources — in `landrace status`'s words. A list of one
+ * workflow's items carries the halts that workflow is party to.
  */
 export interface ItemSummary {
   item: string;
@@ -1729,6 +1732,8 @@ export interface WaitingItem {
 }
 
 export interface Tools {
+  /** The one workflow this server acts for (`--workflow`), or null for every workflow. */
+  readonly scope: string | null;
   workflows(): Promise<WorkflowSummary[]>;
   // `| undefined` is explicit because exactOptionalPropertyTypes is on and these
   // are fed straight from Zod, whose optional output includes it.
