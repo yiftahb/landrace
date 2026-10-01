@@ -129,6 +129,8 @@ export function createFakeJira(project = "KEY") {
 
   const issues = new Map<string, FakeIssue>();
   const moved = new Map<string, string>();
+  /** Issues search has not indexed yet: it finds them only when asked to reconcile them. */
+  const unindexed = new Set<string>();
   const calls: Array<{ method: string; path: string; body: unknown }> = [];
 
   const fake = {
@@ -138,6 +140,11 @@ export function createFakeJira(project = "KEY") {
     me: BOT as FakeUser | null,
     /** The page Jira cuts every list at, whatever was asked for. */
     pageSize: 100,
+    /**
+     * Search is eventually consistent: on, an issue created through the API
+     * is missing from `search/jql` until a search names it in `reconcileIssues`.
+     */
+    indexLag: false,
     permissions: Object.fromEntries(Object.keys(PERMISSION_NAMES).map((k) => [k, true])) as Record<string, boolean>,
     issueTypes: [
       { id: "10001", name: "Task", subtask: false, fields: ["summary", "issuetype", "project", "description", "labels", "priority"] },
@@ -256,6 +263,13 @@ export function createFakeJira(project = "KEY") {
         id: issue.priority,
       },
       issuetype: { id: "10001", name: issue.issuetype, subtask: issue.issuetype === "Subtask" },
+      // Read off the issue itself, so never behind the way search can be.
+      subtasks: [...issues.values()]
+        .filter((s) => s.parent === issue.key && fake.issueTypes.some((t) => t.name === s.issuetype && t.subtask))
+        .map((s) => ({
+          id: s.id, key: s.key, self: `${SITE}/rest/api/3/issue/${s.id}`,
+          fields: { summary: s.summary, status: statusJson(s.status), issuetype: { name: s.issuetype, subtask: true } },
+        })),
       ...(issue.parent === null ? {} : {
         parent: {
           id: issues.get(issue.parent)?.id ?? "99999",
@@ -371,9 +385,14 @@ export function createFakeJira(project = "KEY") {
       const matches = typeof b.jql === "string" ? matcher(b.jql) : null;
       if (!matches) return errors(400, [`Error in the JQL Query: ${String(b.jql)}`]);
       const fields = Array.isArray(b.fields) ? (b.fields as string[]) : [];
+      const reconcile = b.reconcileIssues ?? [];
+      if (!Array.isArray(reconcile) || reconcile.length > 50 || !reconcile.every((n) => typeof n === "number")) {
+        return errors(400, ["reconcileIssues takes at most 50 issue ids, as numbers"]);
+      }
+      const indexed = (i: FakeIssue): boolean => !unindexed.has(i.key) || reconcile.includes(Number(i.id));
       const [, field = "created", direction = "ASC"] = /ORDER BY (created|updated) (ASC|DESC)$/.exec(String(b.jql)) ?? [];
       const at = (i: FakeIssue): number => Date.parse(field === "updated" ? i.updated : i.created);
-      const found = [...issues.values()].filter(matches)
+      const found = [...issues.values()].filter((i) => indexed(i) && matches(i))
         .sort((x, y) => (direction === "DESC" ? -1 : 1) * (at(x) - at(y)) || Number(x.id) - Number(y.id));
       const { items, next } = page(found, b.nextPageToken, b.maxResults);
       return json({ issues: items.map((i) => issueJson(i, fields)), ...(next === null ? {} : { nextPageToken: next }), isLast: next === null });
@@ -426,6 +445,7 @@ export function createFakeJira(project = "KEY") {
         parent: parent ?? null,
         priority: priority ?? "3",
       });
+      if (fake.indexLag) unindexed.add(issue.key);
       return json({ id: issue.id, key: issue.key, self: `${SITE}/rest/api/3/issue/${issue.id}` }, 201);
     }
 

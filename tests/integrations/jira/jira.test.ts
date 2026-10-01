@@ -199,6 +199,15 @@ describe("reading tickets", () => {
       .toEqual([["KEY-2", "KEY-1", null], ["KEY-3", "KEY-1", "done"]]);
   });
 
+  it("reads a child created a moment ago, before Jira's search has indexed it", async () => {
+    // A graph short a child just made routes as if the split never happened.
+    const { fake, jira, ctx } = setup();
+    fake.indexLag = true;
+    const parent = fake.add();
+    const child = await jira.create({ title: "Just made", body: "", parent: parent.key, priority: undefined }, ctx);
+    expect((await jira.children(parent.key, ctx)).map((c) => c.id)).toEqual([child]);
+  });
+
   it("refuses a ticket with more children than one read carries", async () => {
     const { fake, jira, ctx } = setup();
     fake.pageSize = 20;
@@ -302,6 +311,16 @@ describe("writing", () => {
     await jira.close(b.key, "dropped", ctx);
     expect([a.status, b.status]).toEqual(["Done", "Won't Do"]);
     expect([(await jira.ticket(a.key, ctx)).closed, (await jira.ticket(b.key, ctx)).closed]).toEqual(["done", "dropped"]);
+  });
+
+  it("leaves an issue already closed as it is, whatever the graph it was planned from said", async () => {
+    // Search lags, so a graph can still show open an issue a person has just
+    // closed as done; closing it again as dropped would overrule them.
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add({ status: "Done", resolution: "Done" });
+    await jira.close(issue.key, "dropped", ctx);
+    expect(issue.status).toBe("Done");
+    expect(fake.writes()).toEqual([]);
   });
 
   it("takes the transitions' names from its options", async () => {

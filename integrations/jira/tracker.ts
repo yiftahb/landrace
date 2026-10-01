@@ -139,13 +139,19 @@ export class Jira extends BaseTracker {
     return this.jira(ctx).myself();
   }
 
-  /** Every issue a query finds, page by page — and whether the pages ran out before it did. */
-  private async search(jira: Client, jql: string): Promise<{ issues: Issue[]; complete: boolean }> {
+  /**
+   * Every issue a query finds, page by page — and whether the pages ran out
+   * before it did. Search is eventually consistent; the ids in `reconcile`
+   * (at most 50) are read as they are now rather than as the index has them.
+   */
+  private async search(jira: Client, jql: string, reconcile: number[] = []): Promise<{ issues: Issue[]; complete: boolean }> {
     const issues: Issue[] = [];
     let nextPageToken: string | undefined;
     for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
       const res = await jira.call<{ issues?: Issue[]; nextPageToken?: string | null }>("POST", "/rest/api/3/search/jql", {
-        jql, fields: FIELDS, maxResults: ISSUE_PAGE, ...(nextPageToken === undefined ? {} : { nextPageToken }),
+        jql, fields: FIELDS, maxResults: ISSUE_PAGE,
+        ...(reconcile.length === 0 ? {} : { reconcileIssues: reconcile }),
+        ...(nextPageToken === undefined ? {} : { nextPageToken }),
       });
       issues.push(...(res.issues ?? []));
       if (!res.nextPageToken) return { issues, complete: true };
@@ -284,11 +290,22 @@ export class Jira extends BaseTracker {
     return record;
   }
 
-  /** Closed ones too: "every child closed" counts all of them. Past one read's worth, refused rather than short. */
+  /**
+   * Closed ones too: "every child closed" counts all of them. Past one read's
+   * worth, refused rather than short.
+   *
+   * A breakdown's children are read straight after it made them, and search
+   * may not have them yet — a graph short a child routes as if the split
+   * never happened. The parent's own sub-tasks, read off the issue, are
+   * never behind, so the search is asked to reconcile them.
+   */
   async children(id: string, ctx: RuntimeContext): Promise<TicketRecord[]> {
     const key = this.keyOf(id);
     const jira = this.jira(ctx);
-    const found = await this.search(jira, `project = "${this.project}" AND parent = "${key}" ORDER BY created ASC`);
+    const parent = await jira.call<{ fields?: { subtasks?: Array<{ id?: string }> } }>("GET", `/rest/api/3/issue/${key}?fields=subtasks`);
+    const subtasks = (parent.fields?.subtasks ?? []).flatMap((s) => (s.id === undefined ? [] : [Number(s.id)]));
+    if (subtasks.length > TICKET_PAGE) throw new Error(`${key} has more than the ${TICKET_PAGE} children one read carries`);
+    const found = await this.search(jira, `project = "${this.project}" AND parent = "${key}" ORDER BY created ASC`, subtasks);
     if (!found.complete || found.issues.length > TICKET_PAGE) {
       throw new Error(`${key} has more than the ${TICKET_PAGE} children one read carries`);
     }
@@ -341,15 +358,24 @@ export class Jira extends BaseTracker {
     await jira.call("POST", `/rest/api/3/issue/${key}/transitions`, { transition: { id: to.id } });
   }
 
+  /** Whether the issue is closed now, read off the issue rather than the search index, which lags. */
+  private async isClosed(jira: Client, key: string): Promise<boolean> {
+    const { fields } = await jira.call<Issue>("GET", `/rest/api/3/issue/${key}?fields=status`);
+    return fields?.status?.statusCategory?.key === "done";
+  }
+
   /**
-   * Through the transition named for `how`. Missing, it says which ones the
-   * issue offers; two of one name halt rather than pick one; and one into a
-   * status Jira does not count as done is refused, since it would close
-   * nothing and the close would be planned again on every tick.
+   * Through the transition named for `how`, unless it is closed already: the
+   * graph a close was planned from came from search, and a ticket a person
+   * closed a moment ago must not be closed again over them. Missing, the
+   * transition says which ones the issue offers; two of one name halt rather
+   * than pick one; and one into a status Jira does not count as done is
+   * refused, since it would close nothing and be planned again every tick.
    */
   async close(id: string, how: "done" | "dropped", ctx: RuntimeContext): Promise<void> {
     const key = this.keyOf(id);
     const jira = this.jira(ctx);
+    if (await this.isClosed(jira, key)) return;
     const name = how === "done" ? this.done : this.dropped;
     const offered = await this.offered(jira, key);
     const named = offered.filter((t) => same(t.name, name));
@@ -413,9 +439,8 @@ export class Jira extends BaseTracker {
     const jira = this.jira(ctx);
     if (Object.keys(fields).length > 0) await jira.call("PUT", `/rest/api/3/issue/${key}`, { fields });
     if (state === undefined) return;
-    const { closed } = await this.ticket(key, ctx);
-    if ((state === "closed") === (closed !== null)) return;
     if (state === "closed") return this.close(key, "done", ctx);
+    if (!(await this.isClosed(jira, key))) return;
     const offered = await this.offered(jira, key);
     const reopen = offered.find((t) => t.to?.statusCategory?.key === "new");
     if (!reopen) throw new Error(`${key} offers no transition into a To Do status; it offers ${offeredList(offered)}`);
