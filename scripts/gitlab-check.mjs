@@ -90,7 +90,10 @@ try {
   const before = Buffer.from(readme.content, "base64").toString("utf8");
   const text = before.endsWith("\n") || before === "" ? before : `${before}\n`;
   const lines = text === "" ? 0 : text.split("\n").length - 1;
-  expect(lines > 0, "README.md is empty, so there is no context line to put a finding on");
+  // A last line with no newline is changed by the append — the diff shows it
+  // removed and added — so the unchanged line above the new one is before it.
+  const context = before.endsWith("\n") ? lines : lines - 1;
+  expect(context > 0, "README.md has no line the diff would show unchanged, to put a context finding on");
   const commit = await api("POST", "/repository/commits", {
     branch, start_branch: info.default_branch, commit_message: `gitlab-check ${n}`,
     actions: [{ action: "update", file_path: "README.md", content: `${text}landrace gitlab-check ${n}\n` }],
@@ -122,16 +125,16 @@ try {
   await apply(round("review:1", {
     findings: [
       { file: "README.md", line: lines + 1, body: "gitlab-check: a finding on the added line" },
-      { file: "README.md", line: lines, body: "gitlab-check: a finding on the context line" },
+      { file: "README.md", line: context, body: "gitlab-check: a finding on the context line" },
     ],
     resolved: [],
   }));
   const threads = await forge.threads(iid, ctx);
   const placed = threads.map((t) => `${t.path}:${t.line}`).sort();
-  expect(JSON.stringify(placed) === JSON.stringify([`README.md:${lines}`, `README.md:${lines + 1}`].sort()),
-    `expected line threads on README.md:${lines} and :${lines + 1}, read ${placed.join(", ") || "none"}`);
+  expect(JSON.stringify(placed) === JSON.stringify([`README.md:${context}`, `README.md:${lines + 1}`].sort()),
+    `expected line threads on README.md:${context} and :${lines + 1}, read ${placed.join(", ") || "none"}`);
   expect((await counts()) === "2/2", `expected 2/2 open/awaiting a fix, read ${await counts()}`);
-  ok(`findings threaded on README.md:${lines + 1} (added) and :${lines} (context); counts 2/2`);
+  ok(`findings threaded on README.md:${lines + 1} (added) and :${context} (context); counts 2/2`);
   expect((await forge.reviews(iid, ctx)).some((body) => body.includes("review:1")), "the review's note is not among our notes");
   ok("review posted as our note, and not counted");
 
@@ -148,12 +151,16 @@ try {
   console.error(`FAIL ${step}: ${e instanceof Error ? e.message : String(e)}`);
   process.exitCode = 1;
 } finally {
-  try {
-    if (iid !== null) await forge.closePull(iid, ctx);
-    if (branchMade) await api("DELETE", `/repository/branches/${encodeURIComponent(branch)}`);
-    if (iid !== null || branchMade) ok(`cleaned up: ${iid === null ? "" : `!${iid} closed, `}${branch} deleted`);
-  } catch (e) {
-    console.error(`FAIL cleanup — close !${iid} and delete ${branch} by hand: ${e instanceof Error ? e.message : String(e)}`);
-    process.exitCode = 1;
-  }
+  // Each on its own, so a close that fails still leaves the branch deleted.
+  const cleanup = async (what, run) => {
+    try {
+      await run();
+      ok(`cleaned up: ${what}`);
+    } catch (e) {
+      console.error(`FAIL cleanup — ${what} by hand: ${e instanceof Error ? e.message : String(e)}`);
+      process.exitCode = 1;
+    }
+  };
+  if (iid !== null) await cleanup(`close !${iid}`, () => forge.closePull(iid, ctx));
+  if (branchMade) await cleanup(`delete ${branch}`, () => api("DELETE", `/repository/branches/${encodeURIComponent(branch)}`));
 }

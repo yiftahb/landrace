@@ -68,7 +68,16 @@ export function createClient(opts: GitLabClientOptions) {
 
   // Which account we post as is what tells our markers from a stranger's, so
   // it is asked once and kept: it cannot change under a fixed token.
-  let login = "";
+  let me: { id: number; username: string; admin: boolean } | undefined;
+  const user = async (): Promise<{ id: number; username: string; admin: boolean }> => {
+    if (me) return me;
+    const answer = await request<{ id?: unknown; username?: unknown; is_admin?: unknown } | null>("GET", "/user");
+    if (typeof answer?.username !== "string" || answer.username.trim() === "" || typeof answer.id !== "number") {
+      throw new Error("GitLab's /user answered with no user");
+    }
+    me = { id: answer.id, username: answer.username.trim(), admin: answer.is_admin === true };
+    return me;
+  };
 
   return {
     project,
@@ -76,13 +85,9 @@ export function createClient(opts: GitLabClientOptions) {
     /** For the one place it goes besides a request: the push's own header, and scrubbing it from what git says. */
     token,
 
-    login: async (): Promise<string> => {
-      if (login) return login;
-      const user = await request<{ username?: unknown } | null>("GET", "/user");
-      if (typeof user?.username !== "string" || user.username.trim() === "") throw new Error("GitLab's /user answered with no username");
-      login = user.username.trim();
-      return login;
-    },
+    /** The token's own user: its id, the login we post as, and whether it administers the instance. */
+    user,
+    login: async (): Promise<string> => (await user()).username,
 
     /** The scopes the token itself holds — a personal, project or group access token's. */
     scopes: async (): Promise<string[]> => {

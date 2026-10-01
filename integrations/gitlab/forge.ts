@@ -4,7 +4,7 @@
  * push URL it trusts with a token. Everything else a forge does is
  * `BaseForge`'s.
  */
-import { type HookContext, type RuntimeContext, sameLogin } from "landrace/hooks";
+import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
   repositoryOf, TICKET_PAGE,
@@ -118,6 +118,18 @@ const fileOf = (d: Diff): ChangedFile => {
     patch: rows.length === 0 ? undefined : rows.join("\n"),
   };
 };
+
+/**
+ * Text GitLab will not run as a quick action. GitLab carries out `/close`,
+ * `/merge`, `/approve` at the start of a line in any note it is handed, as
+ * the account that posted it — ours, with Developer access — and what we
+ * post is an agent's text, which can quote the code under review. A
+ * backslash before the slash renders as the slash alone.
+ *
+ * ponytail: inside a code fence too, where GitLab would not run it and the
+ * backslash shows; skip fences if that ever reads badly.
+ */
+const inert = (body: string): string => body.replace(/^([ \t]*)\//gm, "$1\\/");
 
 /** The old-side number of a new-side line the patch shows unchanged, or null for an added line or one it does not show. */
 function oldLineOf(diff: string, line: number): number | null {
@@ -327,6 +339,11 @@ export class GitLab extends BaseForge {
    * GitLab places a line by both sides where both exist: a context line
    * given only its new number is refused, and a renamed file is named by its
    * old path beside its new one.
+   *
+   * GitLab takes one finding per request, where GitHub takes a review's in
+   * one, so a round cut off partway — a 500, a rate limit — leaves some on
+   * the merge request. Applied again, a finding whose marker already opens
+   * a discussion of ours is not posted twice.
    */
   async postReview(
     pull: number,
@@ -343,20 +360,28 @@ export class GitLab extends BaseForge {
       if (typeof base_sha !== "string" || typeof start_sha !== "string" || typeof head_sha !== "string") {
         throw new Error(`merge request !${pull} has no diff yet for GitLab to place findings on`);
       }
+      const bot = await gl.login();
+      const posted = new Set((await this.threads(pull, ctx)).flatMap((t) => {
+        const marker = t.first?.author != null && sameLogin(t.first.author, bot) ? parseMarker(t.first.body)?.marker : undefined;
+        return marker === undefined ? [] : [marker];
+      }));
+      const fresh = <T extends { body: string }>(list: T[]): T[] => list.filter((f) => !posted.has(parseMarker(f.body)?.marker ?? ""));
       const diffs = new Map((await this.diffs(pull, ctx)).map((d) => [d.new_path, d]));
       const at = (path: string) => ({ base_sha, start_sha, head_sha, old_path: diffs.get(path)?.old_path ?? path, new_path: path });
-      for (const f of files) await gl.post(on, { body: f.body, position: { position_type: "file", ...at(f.path) } });
-      for (const c of lines) {
+      for (const f of fresh(files)) await gl.post(on, { body: inert(f.body), position: { position_type: "file", ...at(f.path) } });
+      for (const c of fresh(lines)) {
         const old = oldLineOf(diffs.get(c.path)?.diff ?? "", c.line);
-        await gl.post(on, { body: c.body, position: { position_type: "text", ...at(c.path), new_line: c.line, ...(old === null ? {} : { old_line: old }) } });
+        await gl.post(on, {
+          body: inert(c.body), position: { position_type: "text", ...at(c.path), new_line: c.line, ...(old === null ? {} : { old_line: old }) },
+        });
       }
     }
-    await gl.post(`/merge_requests/${pull}/notes`, { body });
+    await gl.post(`/merge_requests/${pull}/notes`, { body: inert(body) });
   }
 
   /** Checked, not assumed: an answer with no note is a reply that did not land. */
   async reply(thread: string, body: string, ctx: RuntimeContext): Promise<void> {
-    const note = await this.gl(ctx).post<{ id?: unknown } | null>(`${this.discussion(thread)}/notes`, { body });
+    const note = await this.gl(ctx).post<{ id?: unknown } | null>(`${this.discussion(thread)}/notes`, { body: inert(body) });
     if (typeof note?.id !== "number") throw new Error(`GitLab did not post the reply on discussion ${thread}`);
   }
 
@@ -385,8 +410,8 @@ export class GitLab extends BaseForge {
 
   /**
    * The `api` scope, then the project: one the token cannot see is a 404,
-   * and below Developer it can read merge requests but open none. Each
-   * refusal names which of the two is missing. Writes nothing.
+   * and without Developer membership it can read merge requests but open
+   * none. Each refusal names which is missing. Writes nothing.
    */
   async check(ctx: RuntimeContext): Promise<void> {
     const gl = this.gl(ctx);
@@ -403,22 +428,30 @@ export class GitLab extends BaseForge {
       throw new Error(`token needs the "api" scope; it has ${scopes.length === 0 ? "none" : scopes.join(", ")}`);
     }
 
-    let info: { permissions?: { project_access?: { access_level?: unknown } | null; group_access?: { access_level?: unknown } | null } | null };
     try {
-      info = await gl.get("");
+      await gl.get("");
     } catch (e) {
       if (statusOf(e) === 404) {
         throw new Error(`token cannot see the project ${this.project}; give its user Developer access to it`);
       }
       throw failed(`the project check on ${this.project}`, e);
     }
-    // The higher of the two, as GitLab grants it. Neither named — an
-    // administrator's, say — is no level to judge, and is let through.
-    const levels = [info.permissions?.project_access?.access_level, info.permissions?.group_access?.access_level]
-      .filter((l): l is number => typeof l === "number");
-    const level = Math.max(...levels);
-    if (levels.length > 0 && level < DEVELOPER) {
-      throw new Error(`token needs Developer access on ${this.project}; it has ${LEVELS[level] ?? `level ${level}`}`);
+
+    // The role GitLab grants the token's user here, inherited and invited
+    // ones included. A public project answers a stranger too, and the
+    // project's own `permissions` names neither an inherited nor an invited
+    // role, so seeing it says nothing. An administrator needs no membership.
+    let level: unknown;
+    try {
+      const me = await gl.user();
+      if (me.admin) return;
+      level = (await gl.get<{ access_level?: unknown } | null>(`/members/all/${me.id}`))?.access_level;
+    } catch (e) {
+      if (statusOf(e) === 404) throw new Error(`token's user is not a member of ${this.project}; it needs Developer access`);
+      throw failed(`the membership check on ${this.project}`, e);
+    }
+    if (typeof level !== "number" || level < DEVELOPER) {
+      throw new Error(`token needs Developer access on ${this.project}; it has ${typeof level === "number" ? LEVELS[level] ?? `level ${level}` : "none GitLab names"}`);
     }
   }
 }

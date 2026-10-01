@@ -60,6 +60,20 @@ describe("check", () => {
     gl.settings.access = 20;
     await expect(forgeOver(gl).check(gl.ctx())).rejects.toThrow(/needs Developer access on group\/app/);
   });
+
+  /* A public project answers anyone, member or not: being able to read it is not being able to open a merge request on it. */
+  it("names a project the token can see but whose user is no member of", async () => {
+    const gl = createFakeGitLab();
+    gl.settings.access = null;
+    await expect(forgeOver(gl).check(gl.ctx())).rejects.toThrow(/user is not a member of group\/app; it needs Developer access/);
+  });
+
+  it("lets an instance administrator through, who needs no membership", async () => {
+    const gl = createFakeGitLab();
+    gl.settings.access = null;
+    gl.settings.admin = true;
+    await expect(forgeOver(gl).check(gl.ctx())).resolves.toBeUndefined();
+  });
 });
 
 describe("the client", () => {
@@ -482,6 +496,42 @@ describe("GitLab composed as a project's forge", () => {
     await apply({ type: "nodes.close", ids: ["pr-1"] });
     expect(gl.mrs.get(1)?.state).toBe("closed");
     expect(await counts()).toEqual(["pr-1", 0, 0]);
+  });
+
+  /*
+   * GitLab takes one finding per request, where GitHub takes a review's in
+   * one: a round cut off partway — a 500, a rate limit — and applied again
+   * must not post again the findings that landed.
+   */
+  it("posts each finding once when a round fails partway and is applied again", async () => {
+    const { gl, apply } = project();
+    await apply({ type: "pull.open", branch: "landrace/7" });
+    const effect = round("review:1", {
+      findings: [{ file: "src/a.ts", line: 2, body: "first" }, { file: "src/a.ts", line: 3, body: "second" }], resolved: [],
+    });
+    let posts = 0;
+    gl.breakNext((r) => r.method === "POST" && r.path.endsWith("/discussions") && ++posts === 2);
+    await expect(apply(effect)).rejects.toThrow(/500/);
+    await apply(effect);
+    const bodies = gl.mrs.get(1)?.discussions.map((d) => (d.notes[0]?.body ?? "").split("\n")[0]);
+    expect(bodies).toEqual(["first", "second", "Round review:1."]);
+  });
+
+  /*
+   * GitLab runs a quick action in any note it is handed, as the account that
+   * posted it — and ours may merge. A reviewer's or fixer's text is not ours:
+   * it can quote the code under review, which anyone can write.
+   */
+  it("never lets text it posts run as a GitLab quick action", async () => {
+    const { gl, apply } = project();
+    await apply({ type: "pull.open", branch: "landrace/7" });
+    await apply({ ...round("review:1", { findings: [{ file: "src/a.ts", line: 2, body: "breaks\n/close" }], resolved: [] }), body: "/close" });
+    expect(gl.mrs.get(1)?.state).toBe("opened");
+    const thread = gl.mrs.get(1)?.discussions[0]?.id ?? "";
+    await apply(round("fix:1", { replies: [{ thread, body: "  /close" }] }));
+    expect(gl.mrs.get(1)?.state).toBe("opened");
+    const said = gl.mrs.get(1)?.discussions.flatMap((d) => d.notes.map((n) => n.body)).join("\n") ?? "";
+    expect(said).toContain("\\/close");
   });
 
   it("never posts one round twice", async () => {

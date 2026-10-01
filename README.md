@@ -531,7 +531,7 @@ And `landrace.yaml` gives it its token, redacted, and — off gitlab.com — the
 ```yaml
 secrets:
   gitlabToken: $GITLAB_TOKEN
-  gitlabBaseUrl: $GITLAB_BASE_URL   # optional; https://gitlab.com when absent
+  # gitlabBaseUrl: $GITLAB_BASE_URL   # only off gitlab.com — a declared secret whose variable is unset refuses to start
 log:
   redact: [gitlabToken]
 agent:
@@ -539,7 +539,9 @@ agent:
     hosts: [gitlab.com, registry.npmjs.org]   # your instance's host, so a write step can fetch and push
 ```
 
-The token — personal, project or group — needs the `api` scope, and its user Developer access to the project. `landrace start` refuses one without either, naming which, and names a missing `gitlabToken` too.
+The token — personal, project or group — needs the `api` scope, and its user Developer access to the project, direct, inherited or through a group the project is shared with. `landrace start` refuses one without either, naming which, and names a missing `gitlabToken` too. The forge needs GitLab 16.4 or later, for a finding on a file.
+
+Everything it posts is made inert to GitLab's quick actions first — a line starting `/close` or `/merge` in a finding or a reply is an agent's text, which can quote the code under review, and GitLab would run it as the token's user — by a backslash before the slash, which renders as the slash alone.
 
 A ticket's work is a merge request from `landrace/{ticket}` into the project's default branch, its node `pr-{iid}`; a fork's merge request is never a ticket's, whatever its branch is called. A review's findings become diff discussions — on an added line by its new number, on a context line by both, and on the file when the line is outside every hunk — and its prose a plain note, which nobody can resolve and no count includes. Only a resolvable discussion somebody started is a thread: GitLab's own system notes and plain notes never are. A round's note is told posted by our login and its marker both, so a marker pasted into somebody else's note cannot skip one. The forge pushes as GitHub's does, in the repository of the file that constructs it: the token goes as an `oauth2:` basic header only when origin's push URL is exactly `{gitlabBaseUrl}/{project}`, with or without `.git`; any other origin is pushed with your own credentials, and git's own words are scrubbed of the token before they reach an error.
 

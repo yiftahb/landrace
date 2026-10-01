@@ -80,6 +80,8 @@ export interface FakeSettings {
   visible: boolean;
   /** The project's default branch, which a merge request is proposed into. */
   defaultBranch: string;
+  /** Whether the token's user administers the instance: GitLab names no membership for one. */
+  admin: boolean;
 }
 
 export interface FakeGitLab {
@@ -99,6 +101,8 @@ export interface FakeGitLab {
   }): FakeDiscussion;
   /** The context a hook is handed, with these secrets. */
   ctx(secrets?: Record<string, string>): RuntimeContext;
+  /** Answer the next request `match` picks with `status`, once — a 500, a 429, a dropped connection. */
+  breakNext(match: (r: { method: string; path: string }) => boolean, status?: number): void;
 }
 
 /** A merge request as the API shows one: its diff and discussions are endpoints of their own. */
@@ -133,7 +137,8 @@ function sides(patch: string): Map<number, number | null> {
 }
 
 export function createFakeGitLab(): FakeGitLab {
-  const settings: FakeSettings = { scopes: ["api"], access: 30, visible: true, defaultBranch: "main" };
+  const settings: FakeSettings = { scopes: ["api"], access: 30, visible: true, defaultBranch: "main", admin: false };
+  let broken: { match: (r: { method: string; path: string }) => boolean; status: number } | null = null;
   const mrs = new Map<number, FakeMr>();
   const branchDiffs = new Map<string, FakeDiff[]>();
   const requests: FakeGitLab["requests"] = [];
@@ -223,10 +228,16 @@ export function createFakeGitLab(): FakeGitLab {
     const path = url.pathname.slice("/api/v4".length);
     requests.push({ method, path, query: url.searchParams, body });
 
+    if (broken?.match({ method, path })) {
+      const { status } = broken;
+      broken = null;
+      return json({ message: `${status} the fake broke here` }, status);
+    }
+
     const auth = new Headers(init?.headers).get("authorization");
     if (auth !== `Bearer ${TOKEN}`) return json({ message: "401 Unauthorized" }, 401);
 
-    if (path === "/user" && method === "GET") return json({ id: 7, username: BOT });
+    if (path === "/user" && method === "GET") return json({ id: 7, username: BOT, ...(settings.admin ? { is_admin: true } : {}) });
     if (path === "/personal_access_tokens/self" && method === "GET") {
       return json({ id: 3, name: "landrace", active: true, revoked: false, scopes: settings.scopes });
     }
@@ -240,6 +251,13 @@ export function createFakeGitLab(): FakeGitLab {
         id: PROJECT_ID, path_with_namespace: PROJECT, default_branch: settings.defaultBranch,
         permissions: { project_access: settings.access === null ? null : { access_level: settings.access }, group_access: null },
       });
+    }
+
+    // A user's effective role, inherited and invited ones included; no membership at all is a 404.
+    if (rest === "/members/all/7" && method === "GET") {
+      return settings.access === null
+        ? json({ message: "404 Not found" }, 404)
+        : json({ id: 7, username: BOT, access_level: settings.access });
     }
 
     if (rest === "/merge_requests" && method === "GET") {
@@ -278,6 +296,9 @@ export function createFakeGitLab(): FakeGitLab {
     }
     if (sub === "/diffs" && method === "GET") return page(mr.diffs, url.searchParams);
     if (sub === "/discussions" && method === "GET") return page(mr.discussions, url.searchParams);
+    // GitLab runs the quick actions in every note it is handed, whoever wrote
+    // the text: `/close` alone on a line closes the merge request.
+    if (method === "POST" && /^\/close\b/m.test(String(body.body ?? ""))) mr.state = "closed";
     if (sub === "/discussions" && method === "POST") {
       const position = body.position as Partial<FakePosition> | undefined;
       if (position && !placeable(mr, position)) return badPosition();
@@ -321,6 +342,9 @@ export function createFakeGitLab(): FakeGitLab {
       branchDiffs.set(branch, diffs.map((d) => ({
         old_path: d.old_path ?? d.new_path, new_file: false, renamed_file: false, deleted_file: false, ...d,
       })));
+    },
+    breakNext: (match, status = 500) => {
+      broken = { match, status };
     },
     ctx: (secrets = { gitlabToken: TOKEN, gitlabBaseUrl: BASE }) => ({
       config: {} as RuntimeConfig,
