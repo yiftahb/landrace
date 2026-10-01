@@ -1,4 +1,4 @@
-import { compile, missingPaths } from "#core/predicate.js";
+import { compile, missingPaths, pathsIn } from "#core/predicate.js";
 import type { Eligibility, Node, Snapshot, Workflow } from "#namespace.js";
 
 /**
@@ -51,4 +51,17 @@ export function eligibilityOfNode(workflow: Workflow, node: Node): Eligibility {
   const snapshot = nodeSnapshot(node);
   const unanswerable = (workflow.eligible ?? []).some((rule) => missingPaths(rule.when, snapshot).length > 0);
   return unanswerable ? { eligible: true } : checkEligible(workflow, snapshot);
+}
+
+/**
+ * The paths `workflow`'s eligibility reads that no listed node can ever
+ * carry: anything outside `node`, since `eligibilityOfNode` asks a snapshot
+ * of the node alone. Any one of them makes it abstain for every node, so a
+ * workflow reading one claims every item its source lists — as one with no
+ * rule at all does. A path under `node` may or may not be there, and is not
+ * listed: whether it is depends on the node.
+ */
+export function pathsNoNodeCarries(workflow: Workflow): string[] {
+  const paths = (workflow.eligible ?? []).flatMap((rule) => pathsIn(rule.when));
+  return [...new Set(paths)].filter((path) => path.split(".")[0] !== "node");
 }

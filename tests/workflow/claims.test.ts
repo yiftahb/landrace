@@ -37,9 +37,37 @@ describe("claimProblems: two workflows over one source", () => {
     expect(claimProblems(ws, () => "")).toEqual([]);
   });
 
-  it("abstains for a workflow that admits nothing or states no eligible rule", () => {
+  it("abstains for a workflow that admits nothing", () => {
     expect(claimProblems(space(flow("main", [], [rule(["lr:auto"], "no")]), flow("fast", ["lr:fast"], [rule(["lr:auto", "lr:fast"], "no")])), oneSource)).toEqual([]);
-    expect(claimProblems(space(flow("main", ["lr:auto"], undefined), flow("fast", ["lr:fast"], undefined)), oneSource)).toEqual([]);
+  });
+
+  /*
+   * Certain, not unknown: a workflow with no eligible rule claims every item
+   * its source lists, so it claims every item the other starts too.
+   */
+  it("names both workflows when the other states no eligible rule, and so claims everything", () => {
+    expect(claimProblems(space(flow("main", ["lr:auto"], [rule(["lr:auto"], "no")]), flow("fast", ["lr:fast"], undefined)), oneSource)).toEqual([{
+      rule: "claims",
+      message: "workflows main and fast both claim an item started in main (fast states no eligible rule, so it claims every item)",
+    }]);
+    expect(claimProblems(space(flow("main", ["lr:auto"], undefined), flow("fast", ["lr:fast"], undefined)), oneSource).map((p: { message: string }) => p.message)).toEqual([
+      "workflows main and fast both claim an item started in main (fast states no eligible rule, so it claims every item)",
+      "workflows fast and main both claim an item started in fast (main states no eligible rule, so it claims every item)",
+    ]);
+  });
+
+  /*
+   * A listed node carries itself and nothing else, so a rule reading a run's
+   * counters can never be answered from one: the claim abstains to eligible
+   * for every item, and that, too, is certain.
+   */
+  it("names both workflows when the other's eligible reads what no listed item carries, and so claims everything", () => {
+    const counters = [rule(["lr:fast"], "no"), { when: { "run.counters.spec": { $lt: 3 } }, else: "too many rounds" }];
+    expect(claimProblems(space(flow("main", ["lr:auto"], [rule(["lr:auto"], "no")]), flow("fast", ["lr:fast"], counters)), oneSource)).toEqual([{
+      rule: "claims",
+      message: "workflows main and fast both claim an item started in main " +
+        "(fast's eligible reads run.counters.spec, which no listed item carries, so it claims every item)",
+    }]);
   });
 
   it("checks both directions, one problem per pair and direction", () => {

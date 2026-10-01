@@ -13,10 +13,10 @@ import {
 } from "#conventions.js";
 import { LABELS, STAGE_LABEL_PREFIX } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
-import { fillTemplate } from "#core/index.js";
+import { fillTemplate, pathsNoNodeCarries } from "#core/index.js";
 import { identityOf } from "#core/locate.js";
 import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
-import type { Condition, EligibilityRule, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
+import type { Condition, EligibilityRule, LoadedWorkflow, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 
 export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
@@ -993,6 +993,30 @@ const acceptsLabels = (r: EligibilityRule, labels: string[]): boolean =>
   compile(r.when)({ node: { state: { labels: [...labels] } } } as unknown as Snapshot);
 
 /**
+ * Why `b` certainly claims an item carrying exactly `admit`, or null when
+ * that is not certain. Certain where `b` claims every item — it states no
+ * eligible rule, or one reads what no listed item carries — and where its
+ * eligibility is wholly a check of labels (every rule, and at least one)
+ * that `admit` passes. Anything else could refuse what labels alone accept,
+ * so the check abstains rather than guess.
+ */
+function claimsAdmitted(b: LoadedWorkflow, admit: string[]): string | null {
+  const all = b.workflow.eligible ?? [];
+  if (all.length === 0) return `${b.id} states no eligible rule, so it claims every item`;
+  const unread = pathsNoNodeCarries(b.workflow);
+  if (unread.length) {
+    return `${b.id}'s eligible reads ${unread.join(", ")}, which no listed item carries, so it claims every item`;
+  }
+  const rules = labelRules(b.workflow);
+  if (rules.length !== all.length) return null;
+  try {
+    return rules.every((r) => acceptsLabels(r, admit)) ? `admit [${admit.join(", ")}] satisfies ${b.id}'s eligible` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Two workflows over one source cannot both claim an item one of them
  * admits: `landrace_create_item` would start it in `a` and the next tick
  * would halt it, claimed twice.
@@ -1000,9 +1024,7 @@ const acceptsLabels = (r: EligibilityRule, labels: string[]): boolean =>
  * `sourceOf` names the source a workflow reads from, "" when that is not
  * known; two workflows are compared only when they name the same one — by
  * identity of the loaded source object, which is what the tick's own claims
- * go by. Compared only where `b`'s eligibility is wholly a check of labels
- * (every rule, and at least one): a rule reading anything else could refuse
- * what labels alone accept, so the check abstains rather than guess.
+ * go by. Reported only where `b`'s claim is certain (see `claimsAdmitted`).
  */
 export function claimProblems(ws: Workspace, sourceOf: (id: string) => string): Problem[] {
   const problems: Problem[] = [];
@@ -1012,17 +1034,8 @@ export function claimProblems(ws: Workspace, sourceOf: (id: string) => string): 
     if (admit.length === 0 || source === "") continue;
     for (const b of ws.workflows) {
       if (b === a || sourceOf(b.id) !== source) continue;
-      const rules = labelRules(b.workflow);
-      if (rules.length === 0 || rules.length !== (b.workflow.eligible ?? []).length) continue;
-      try {
-        if (!rules.every((r) => acceptsLabels(r, admit))) continue;
-      } catch {
-        continue;
-      }
-      problems.push({
-        rule: "claims",
-        message: `workflows ${a.id} and ${b.id} both claim an item started in ${a.id} (admit [${admit.join(", ")}] satisfies ${b.id}'s eligible)`,
-      });
+      const why = claimsAdmitted(b, admit);
+      if (why !== null) problems.push({ rule: "claims", message: `workflows ${a.id} and ${b.id} both claim an item started in ${a.id} (${why})` });
     }
   }
   return problems;

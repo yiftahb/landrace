@@ -3,7 +3,7 @@
 export { compile, assertAllowedOperators, pathsIn, missingPaths, ALLOWED_OPERATORS } from "#core/predicate.js";
 export { deriveRun } from "#core/derive.js";
 export { canonicalize, hashSnapshot } from "#core/normalize.js";
-export { checkEligible, eligibilityOfNode } from "#core/eligible.js";
+export { checkEligible, eligibilityOfNode, pathsNoNodeCarries } from "#core/eligible.js";
 export { locate } from "#core/locate.js";
 export { assess } from "#core/assess.js";
 export { decide } from "#core/decide.js";

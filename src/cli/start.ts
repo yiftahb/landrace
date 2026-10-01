@@ -61,7 +61,7 @@ import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
-import { admitProblems, branchIsolationProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, validate } from "#workflow/validate.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
@@ -509,6 +509,19 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
       );
     }
     hooked.push({ loaded: w, registry, source: registry.source });
+  }
+
+  // Between workflows, so only once every hook is loaded: two share a source
+  // when they share the loaded object, which is what the tick's claims go
+  // by. `validate` reports the same, and a daemon that checked less would
+  // start an item in one workflow and halt it, claimed by two, a tick later.
+  // Only where the loop runs, as admission is.
+  if (!opts.readOnly) {
+    const { sourceOf } = sourcesOf(hooked.map((h) => ({ id: h.loaded.id, source: h.source })));
+    const twice = claimProblems(ws, (id) => String(sourceOf.get(id) ?? ""));
+    if (twice.length) {
+      throw new Error(`the workspace in ${dir} does not validate; run \`landrace validate ${dir}\`:\n${twice.map((p) => `  ${p.rule}: ${p.message}`).join("\n")}`);
+    }
   }
 
   const stop = new AbortController();

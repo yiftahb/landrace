@@ -333,6 +333,26 @@ describe("buildWorkspaceRuntime", () => {
   });
 
   /*
+   * `validate` reports it and `start` refuses it: an item started in main
+   * carries main's admit labels, fast claims every item, and the next tick
+   * would halt it claimed twice. The two share a source because they load
+   * one hook module. `status` only reads, and still describes them.
+   */
+  it("refuses two workflows over one source that both claim what one starts, and still lets status read", async () => {
+    const { dir } = await fixture();
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW.replace("description: test\n", "description: test\nadmit: [lr:auto]\n"));
+    const eligible = 'eligible:\n  - when: { "node.state.labels": { $in: ["lr:auto"] } }\n    else: "no lr:auto label"\n';
+    expect(WORKFLOW).toContain(eligible);
+    await mkdir(workflowIn(dir, "fast"), { recursive: true });
+    await writeFile(join(workflowIn(dir, "fast"), "workflow.yaml"), WORKFLOW.replace("name: e2e", "name: fast").replace(eligible, ""));
+
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(
+      "claims: workflows main and fast both claim an item started in main (fast states no eligible rule, so it claims every item)",
+    );
+    expect((await buildWorkspaceRuntime(dir, { readOnly: true })).workflows.map((w) => w.id)).toEqual(["main", "fast"]);
+  });
+
+  /*
    * `validate` reports it and `start` refuses it, in the same words: a stage
    * that names a branch, with no worktree for the branch to be checked out
    * in, would have its agent commit wherever this checkout happens to be.
@@ -729,7 +749,7 @@ describe("runStart --once", () => {
     }
 
     const rows = printed.filter((l) => l.startsWith("#"));
-    expect(rows).toEqual([expect.stringMatching(new RegExp(`^#${ITEM} \\[main\\] halt after 1 pass\\(es\\): .*\\[redacted\\]`))]);
+    expect(rows).toEqual([expect.stringMatching(new RegExp(`^#${ITEM} halt after 1 pass\\(es\\): .*\\[redacted\\]`))]);
     expect(printed.join("\n")).not.toContain("env-secret-value");
   });
 
