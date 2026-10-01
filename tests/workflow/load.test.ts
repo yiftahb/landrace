@@ -222,4 +222,36 @@ describe("a step file that extends another", () => {
     await expect(loadWorkflow(join(ws, "workflows/typo"), new Map(), { workspace: ws }))
       .rejects.toThrow(/steps\/build\.md.*effortt/);
   });
+
+  it("follows a two-hop chain, each extends relative to its own folder", async () => {
+    put("shared/c.md", "---\nmodel: opus\n---\nLead.\n\n## Rules\n\nR.\n\n## Other\n\nO.\n");
+    put("workflows/mid/b.md", "---\nextends: ../../shared/c.md\neffort: high\n---\n## Rules\n\nB rules.\n");
+    put("workflows/top/steps/a.md", "---\nextends: ../../mid/b.md\n---\n## Other\n\nA other.\n");
+    flow("top", "steps/a.md");
+    const step = (await loadWorkflow(join(ws, "workflows/top"), new Map(), { workspace: ws })).steps.get("steps/a.md");
+    expect(step).toMatchObject({ model: "opus", effort: "high" });
+    expect(step?.prompt).toContain("B rules.");
+    expect(step?.prompt).toContain("A other.");
+    expect(step?.prompt).not.toContain("R.\n");
+  });
+
+  it("refuses an extends target that does not exist, naming the child file", async () => {
+    put("workflows/gone/steps/a.md", "---\nextends: nope.md\n---\nA\n");
+    flow("gone", "steps/a.md");
+    await expect(loadWorkflow(join(ws, "workflows/gone"), new Map(), { workspace: ws }))
+      .rejects.toMatchObject({ rule: "missing-step", message: expect.stringMatching(/workflows\/gone\/steps\/a\.md.*nope\.md/) });
+  });
+
+  it("refuses a heading twice in one file, parent or child", async () => {
+    put("workflows/main/steps/p.md", "---\nmodel: opus\n---\n## Rules\n\na\n\n## Rules\n\nb\n");
+    put("workflows/dupp/steps/a.md", "---\nextends: ../../main/steps/p.md\n---\nX\n");
+    flow("dupp", "steps/a.md");
+    await expect(loadWorkflow(join(ws, "workflows/dupp"), new Map(), { workspace: ws }))
+      .rejects.toThrow(/workflows\/main\/steps\/p\.md has two "## Rules" sections/);
+    put("workflows/main/steps/ok.md", "---\nmodel: opus\n---\n## Rules\n\na\n");
+    put("workflows/dupc/steps/a.md", "---\nextends: ../../main/steps/ok.md\n---\n## Rules\n\nx\n\n## Rules\n\ny\n");
+    flow("dupc", "steps/a.md");
+    await expect(loadWorkflow(join(ws, "workflows/dupc"), new Map(), { workspace: ws }))
+      .rejects.toThrow(/steps\/a\.md has two "## Rules" sections/);
+  });
 });

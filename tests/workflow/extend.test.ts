@@ -34,3 +34,23 @@ describe("splitSections", () => {
     expect(splitSections(body).sections.map((s) => s.heading)).toEqual(["Procedure", "Rules"]);
   });
 });
+
+describe("CRLF, fences and duplicates", () => {
+  const crlf = (s: string): string => s.replace(/\n/g, "\r\n");
+  it("merges a CRLF parent and child exactly as their LF equivalents", () => {
+    const child = { front: {}, body: "## What to build\n\nThe item.\n" };
+    const want = mergeSteps(parent, child);
+    const got = mergeSteps({ front: parent.front, body: crlf(parent.body) }, { front: {}, body: crlf(child.body) });
+    expect(got).toEqual(want);
+  });
+  it("closes a fence only with the same character, at least as long", () => {
+    const body = "~~~\n```\n## x\n~~~\n## Real\n";
+    expect(splitSections(body).sections.map((s) => s.heading)).toEqual(["Real"]);
+    const long = "````\n```\n## x\n````\n## Real\n";
+    expect(splitSections(long).sections.map((s) => s.heading)).toEqual(["Real"]);
+  });
+  it("reports a heading that appears twice", () => {
+    expect(splitSections("## Rules\n\na\n\n## Rules\n\nb\n").duplicates).toEqual(["Rules"]);
+    expect(splitSections("## A\n## B\n").duplicates).toEqual([]);
+  });
+});

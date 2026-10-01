@@ -4,7 +4,7 @@ import { parse } from "yaml";
 import type { z } from "zod";
 import type { ContainedPath, LoadFailureRule, ParsedStep, Step, Workflow } from "#namespace.js";
 import { stageBranch } from "#core/index.js";
-import { mergeSteps } from "#workflow/extend.js";
+import { mergeSteps, splitSections } from "#workflow/extend.js";
 import { stepFrontMatterSchema, workflowSchema } from "#workflow/schema.js";
 import { substituteVars } from "#workflow/vars.js";
 import { messageOf } from "#runner/errors.js";
@@ -254,6 +254,10 @@ export async function loadWorkflow(
         // Named, because "front matter is not valid" is unactionable when a
         // workflow has five step files and the loader read them in graph order.
         throw new WorkflowLoadError("schema", `step ${chain.length === 0 ? stage.step : name}: ${messageOf(e)}`);
+      }
+      const twice = splitSections(parsedStep.body).duplicates[0];
+      if (twice !== undefined) {
+        throw new WorkflowLoadError("schema", `${name} has two "## ${twice}" sections; a merge cannot tell which one to replace`);
       }
       chain.push(parsedStep);
       const next = parsedStep.front.extends;
