@@ -95,6 +95,21 @@ describe("mcp tools", () => {
     expect(tracker.issues.get(4)?.state).toBe("closed");
   });
 
+  /*
+   * An operator's edit is a person's, as on the tracker — not a move through
+   * the workflow's stages — so an item no workflow claims is edited through
+   * the operator, as long as there is only one it could be edited through.
+   */
+  it("edits an item filed unstarted, which no workflow claims, and closes and reopens it", async () => {
+    const { tracker, tools } = world();
+    const { item } = (await tools.createItem({ title: "Later", start: false })) as { item: string };
+    expect(await tools.updateItem(item, { title: "Sooner" })).toMatchObject({ item, title: "Sooner", workflow: null });
+    await tools.updateItem(item, { state: "closed" });
+    expect(tracker.issues.get(Number(item))?.state).toBe("closed");
+    expect(await tools.updateItem(item, { state: "open", addLabels: ["bug"] })).toMatchObject({ item, workflow: null });
+    expect(tracker.issues.get(Number(item))).toMatchObject({ state: "open", labels: ["bug"] });
+  });
+
   it("lists only the items waiting on a human", async () => {
     const { tools } = world([
       { number: 1, labels: ["lr:auto", "lr:awaiting"] },
@@ -142,10 +157,51 @@ describe("mcp tools", () => {
    * Eligible by the workflow's own rule, the one `decide` gates on, and not by
    * a label name the engine used to hard-code: it names none now.
    */
-  it("reports eligibility by the workflow's own rule, and refuses an item it turns away with its reason", async () => {
+  // Reads decide nothing: an item the workflow turns away is still shown, as no workflow's and why.
+  it("reports eligibility by the workflow's own rule, and an item it turns away as no workflow's, with its reason", async () => {
     const { tools } = world([{ number: 3, labels: ["lr:auto"] }, { number: 4, labels: ["lr:fast"] }]);
     expect(await tools.status("3")).toMatchObject({ eligible: true });
-    await expect(tools.status("4")).rejects.toThrow("#4 is claimed by no workflow: no lr:auto label");
+    expect(await tools.status("4")).toMatchObject({
+      item: "4", workflow: null, closed: null, eligible: false, why: "claimed by no workflow: no lr:auto label",
+    });
+  });
+
+  /*
+   * A closed item no open parent keeps in the listing is past its window, and
+   * one tracker is the only place it can be: it is read there.
+   */
+  it("reports a closed item the tracker no longer lists, through the workspace's one source", async () => {
+    const { tools } = world([{ number: 5, state: "closed", stateReason: "COMPLETED", labels: ["lr:auto"] }]);
+    const closed = await tools.status("5");
+    expect(closed).toMatchObject({ item: "5", closed: "done", workflow: null });
+    expect(closed).not.toHaveProperty("eligible");
+  });
+
+  /*
+   * Claims are per id, so one tracker's item read alone is claimed exactly as
+   * a listing of every item would claim it — and a call about one item costs
+   * one read, not the whole repository.
+   */
+  it("acts on an item by reading it alone, never listing the workspace's one tracker", async () => {
+    const tracker = createFakeTracker([{ number: 3, labels: ["lr:auto"] }, { number: 4, labels: [] }]);
+    const source = tracker.registry.source;
+    if (!source) throw new Error("the fake tracker has a source");
+    let lists = 0;
+    const counted: Source = {
+      id: source.id, relations: source.relations, read: (id, ctx) => source.read(id, ctx),
+      list: async (ctx) => { lists += 1; return source.list(ctx); },
+    };
+    const tools = createTools([hooked({ ...tracker.registry, source: counted }, loaded(admitting(["lr:auto"])))], tracker.ctx, { lock: { root: lockRoot } });
+
+    expect(await tools.status("3")).toMatchObject({ workflow: "main", eligible: true });
+    expect(await tools.status("4")).toMatchObject({ workflow: null, eligible: false });
+    expect(await tools.pairing("3")).toMatchObject({ open: null });
+    await tools.reply("3", "go ahead");
+    await expect(tools.reply("4", "go ahead")).rejects.toThrow("#4 is claimed by no workflow: no lr:auto label");
+    expect(lists).toBe(0);
+    // What is about every item still lists them.
+    await tools.items();
+    expect(lists).toBe(1);
   });
 
   it("flags an item carrying two stage labels instead of guessing", async () => {
@@ -194,7 +250,7 @@ describe("mcp tools", () => {
   });
 
   it("surfaces a missing item as an error rather than empty state", async () => {
-    await expect(world().tools.status("99")).rejects.toThrow("#99 is not an item any source lists");
+    await expect(world().tools.status("99")).rejects.toThrow(/could not read "99"/);
   });
 });
 
@@ -481,8 +537,17 @@ describe("over a workspace of two workflows", () => {
     expect(tracker.comments.get(8) ?? []).toEqual([]);
   });
 
-  it("refuses an id no source lists", async () => {
-    await expect(two().tools.status("99")).rejects.toThrow("#99 is not an item any source lists");
+  // Two trackers, and neither lists it: either could be the one it is in.
+  it("refuses an id no source lists, where there are two it could be in", async () => {
+    const github = createFakeTracker([{ number: 1, labels: ["lr:auto"] }]);
+    const other = createFakeTracker([{ number: 2, labels: ["lr:fast"] }]);
+    const tools = createTools([hooked(github.registry, MAIN), hooked(other.registry, FAST)], github.ctx, { lock: { root: lockRoot } });
+    await expect(tools.status("99")).rejects.toThrow("#99 is not an item any source lists");
+    await expect(tools.pairing("99")).rejects.toThrow("#99 is not an item any source lists");
+  });
+
+  it("refuses an id its one tracker cannot read, with the tracker's reason", async () => {
+    await expect(two().tools.status("99")).rejects.toThrow(/could not read "99"/);
   });
 
   // Main's blocked stage sends nowhere and fast's sends to spec: which one
@@ -498,32 +563,94 @@ describe("over a workspace of two workflows", () => {
     expect(await tools.ask("2", "B2B only")).toMatchObject({ reply: "from fast" });
   });
 
-  const calls: Array<[string, (t: Tools, item: string) => Promise<unknown>]> = [
+  /** What reads an item: refused only where two trackers report it. */
+  const reads: Array<[string, (t: Tools, item: string) => Promise<unknown>]> = [
     ["landrace_status", (t, i) => t.status(i)],
-    ["landrace_update_item", (t, i) => t.updateItem(i, { title: "Renamed" })],
+    ["landrace_pair without a stage", (t, i) => t.pairing(i)],
+  ];
+  /** What writes the workflow's own state: its owner's alone, and only while every source lists. */
+  const stateWrites: Array<[string, (t: Tools, item: string) => Promise<unknown>]> = [
     ["landrace_reply", (t, i) => t.reply(i, "go ahead")],
     ["landrace_goto", (t, i) => t.goto(i, "spec")],
     ["landrace_clear", (t, i) => t.clear(i)],
     ["landrace_ask", (t, i) => t.ask(i, "carry on")],
     ["landrace_resolve", (t, i) => t.resolve(i)],
-    ["landrace_pair without a stage", (t, i) => t.pairing(i)],
     ["landrace_pair", (t, i) => t.pair(i, "spec")],
     ["landrace_finish", (t, i) => t.finish(i)],
     ["landrace_release", (t, i) => t.release(i)],
   ];
+  const calls: Array<[string, (t: Tools, item: string) => Promise<unknown>]> = [
+    ...reads, ["landrace_update_item", (t, i) => t.updateItem(i, { title: "Renamed" })], ...stateWrites,
+  ];
 
-  it.each(calls)("%s refuses an item two workflows claim, naming both, and writes nothing", async (_name, call) => {
+  it.each(stateWrites)("%s refuses an item two workflows claim, naming both, and writes nothing", async (_name, call) => {
     const { tracker, tools } = two();
     await expect(call(tools, "3")).rejects.toThrow("#3 is claimed by fast and main; act on it after one workflow alone claims it");
     expect(tracker.comments.get(3) ?? []).toEqual([]);
     expect(tracker.issues.get(3)).toMatchObject({ title: "issue 3", labels: ["lr:auto", "lr:fast", "lr:awaiting"] });
   });
 
-  it.each(calls)("%s refuses an item no workflow claims, with each workflow's reason, and writes nothing", async (_name, call) => {
+  it.each(stateWrites)("%s refuses an item no workflow claims, with each workflow's reason, and writes nothing", async (_name, call) => {
     const { tracker, tools } = two();
     await expect(call(tools, "4")).rejects.toThrow("#4 is claimed by no workflow: no lr:auto label; no lr:fast label");
     expect(tracker.comments.get(4) ?? []).toEqual([]);
     expect(tracker.issues.get(4)).toMatchObject({ title: "issue 4", labels: [] });
+  });
+
+  // Reads decide nothing: an item one tracker lists is read there, whoever claims it.
+  it("reads an item two workflows claim, and one none claims, through the one source that lists it, as no workflow's", async () => {
+    const { tools } = two();
+    expect(await tools.status("3")).toMatchObject({ item: "3", workflow: null, eligible: false, why: "claimed by fast and main", waitingOnYou: true });
+    expect(await tools.status("4")).toMatchObject({ item: "4", workflow: null, eligible: false, why: "claimed by no workflow: no lr:auto label; no lr:fast label" });
+    expect(await tools.pairing("3")).toEqual({ open: null, offers: [] });
+    expect(await tools.pairing("4")).toEqual({ open: null, offers: [] });
+  });
+
+  /*
+   * Both workflows load one hook module, so they edit through one operator:
+   * an edit of an item neither owns goes through it, and is no pick.
+   */
+  it("edits an item two workflows claim, and one none claims, through the one operator they share", async () => {
+    const { tracker, tools } = two();
+    expect(await tools.updateItem("3", { title: "Split in two", addLabels: ["bug"] })).toMatchObject({ item: "3", title: "Split in two", workflow: null });
+    expect(tracker.issues.get(3)?.labels).toEqual(["lr:auto", "lr:fast", "lr:awaiting", "bug"]);
+    expect(await tools.updateItem("4", { title: "Renamed" })).toMatchObject({ item: "4", title: "Renamed", workflow: null });
+    expect(await tools.updateItem("8", { state: "open" })).toMatchObject({ item: "8", workflow: null });
+    expect(tracker.issues.get(8)?.state).toBe("open");
+  });
+
+  it("refuses to edit an item no one workflow owns where its workflows edit through different operators, naming them", async () => {
+    const { tracker, tools } = two({
+      mainRegistry: (r) => {
+        const shared = r.operator;
+        if (!shared) throw new Error("the fake tracker has an operator");
+        return { ...r, operator: { id: "own", createItem: (i, c) => shared.createItem(i, c), updateItem: (n, i, c) => shared.updateItem(n, i, c) } };
+      },
+    });
+    for (const id of ["3", "4"]) {
+      await expect(tools.updateItem(id, { title: "Renamed" })).rejects.toThrow(`and fast and main edit items through different operators; edit it in its tracker`);
+    }
+    await expect(tools.updateItem("4", { title: "Renamed" })).rejects.toThrow(
+      "#4 is claimed by no workflow: no lr:auto label; no lr:fast label, and fast and main edit items through different operators; edit it in its tracker",
+    );
+    expect(tracker.issues.get(4)?.title).toBe("issue 4");
+    // An owned item is its owner's operator's to edit, as it always was.
+    expect(await tools.updateItem("1", { title: "Renamed" })).toMatchObject({ item: "1", workflow: "main" });
+  });
+
+  /*
+   * A read through a source, rather than through one workflow, is made with
+   * the pre hooks every workflow on it loads. Two that share none would read
+   * it with nothing — an empty history said as if it were the item's.
+   */
+  it("refuses to read through a source whose workflows share no pre hook, naming them", async () => {
+    const other = { id: "other", run: () => ({}) };
+    const { tools } = two({ mainRegistry: (r) => ({ ...r, pre: [other] }) });
+    await expect(tools.status("4")).rejects.toThrow(
+      "#4 cannot be read here: the workflows reading its source, fast and main, load no pre hook in common, and a read with none would leave out what each of them reads",
+    );
+    // Its owner's own pre hooks read an owned item, as they always have.
+    expect(await tools.status("2")).toMatchObject({ workflow: "fast" });
   });
 
   it.each(calls)("%s refuses an id two sources both report, naming the workflows reading them, and writes nothing", async (_name, call) => {
@@ -531,7 +658,7 @@ describe("over a workspace of two workflows", () => {
     const other = createFakeTracker([{ number: 7, labels: ["lr:fast"] }]);
     const tools = createTools([hooked(github.registry, MAIN, { executor: says("main") }), hooked(other.registry, FAST, { executor: says("fast") })],
       github.ctx, { lock: { root: lockRoot } });
-    await expect(call(tools, "7")).rejects.toThrow("#7 is reported by the sources of fast and main; act on it after one source alone reports it");
+    await expect(call(tools, "7")).rejects.toThrow("#7 is reported by the sources of fast and main");
     for (const t of [github, other]) {
       expect(t.comments.get(7) ?? []).toEqual([]);
       expect(t.issues.get(7)?.title).toBe("issue 7");
@@ -550,7 +677,25 @@ describe("over a workspace of two workflows", () => {
     const tools = createTools([hooked(tracker.registry, MAIN), hooked({ ...tracker.registry, source: down }, FAST)], tracker.ctx, { lock: { root: lockRoot } });
     await expect(tools.items()).rejects.toThrow("could not list the source of fast: tracker down");
     await expect(tools.reply("1", "go ahead")).rejects.toThrow("could not list the source of fast: tracker down");
+    await expect(tools.updateItem("1", { title: "Renamed" })).rejects.toThrow("could not list the source of fast: tracker down");
     expect(tracker.comments.get(1) ?? []).toEqual([]);
+    expect(tracker.issues.get(1)?.title).toBe("issue 1");
+  });
+
+  /*
+   * Reads decide nothing, so they still go where the sources that did list
+   * say — but an id none of them showed could be in the one that did not.
+   */
+  it("still reads what a working source lists while another cannot list, and nothing it did not", async () => {
+    const tracker = createFakeTracker(SEED);
+    const down: Source = {
+      id: "down", relations: [],
+      list: async () => { throw new Error("tracker down"); },
+      read: async () => { throw new Error("tracker down"); },
+    };
+    const tools = createTools([hooked(tracker.registry, MAIN), hooked({ ...tracker.registry, source: down }, FAST)], tracker.ctx, { lock: { root: lockRoot } });
+    expect(await tools.status("1")).toMatchObject({ item: "1", workflow: "main" });
+    await expect(tools.status("99")).rejects.toThrow("#99 is not an item any source lists; could not list the source of fast: tracker down");
   });
 
   /*
@@ -586,6 +731,14 @@ describe("over a workspace of two workflows", () => {
       expect(await tools.status("2")).toMatchObject({ workflow: "fast" });
     });
 
+    // Its own operator edits what no workflow claims; what another claims is not its to touch.
+    it("edits an item no workflow claims, and refuses one another workflow claims too", async () => {
+      const { tracker, tools } = two({ scope: "fast" });
+      expect(await tools.updateItem("4", { title: "Renamed" })).toMatchObject({ item: "4", workflow: null });
+      await expect(tools.updateItem("3", { title: "Renamed" })).rejects.toThrow("#3 is claimed by fast and main; act on it after one workflow alone claims it");
+      expect(tracker.issues.get(3)?.title).toBe("issue 3");
+    });
+
     const writes: Array<[string, (t: Tools, item: string) => Promise<unknown>]> = [
       ["landrace_update_item", (t, i) => t.updateItem(i, { title: "Renamed", addLabels: ["bug"] })],
       ["landrace_reply", (t, i) => t.reply(i, "go ahead")],
@@ -612,6 +765,8 @@ describe("over a workspace of two workflows", () => {
       const tools = createTools([hooked(github.registry, MAIN), hooked(other.registry, FAST)], github.ctx, { lock: { root: lockRoot }, scope: "fast" });
       await expect(tools.status("8")).rejects.toThrow("#8 is not listed by fast's source; this server acts for fast alone");
       await expect(tools.pairing("8")).rejects.toThrow("#8 is not listed by fast's source");
+      await expect(tools.updateItem("8", { state: "open" })).rejects.toThrow("#8 is not listed by fast's source; this server acts for fast alone");
+      expect(github.issues.get(8)?.state).toBe("closed");
       expect(await tools.status("9")).toMatchObject({ item: "9", closed: "done", workflow: null });
     });
 

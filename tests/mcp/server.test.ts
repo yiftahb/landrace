@@ -91,7 +91,7 @@ describe("mcp server over a real transport", () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { item: 99 } });
     expect((r as { isError?: boolean }).isError).toBe(true);
-    expect(textOf(r)).toMatch(/error: .*#99 is not an item any source lists/);
+    expect(textOf(r)).toMatch(/error: .*could not read "99"/);
     await client.close();
   });
 
@@ -106,14 +106,14 @@ describe("mcp server over a real transport", () => {
   it("still accepts a numeric item id, for clients written before ids were strings", async () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { item: 99 } });
-    expect(textOf(r)).toMatch(/#99 is not an item any source lists/); // reached the tool
+    expect(textOf(r)).toMatch(/could not read "99"/); // reached the tool
     await client.close();
   });
 
   it("accepts a string item id", async () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { item: "99" } });
-    expect(textOf(r)).toMatch(/#99 is not an item any source lists/); // reached the tool, as the same item
+    expect(textOf(r)).toMatch(/could not read "99"/); // reached the tool, as the same item
     await client.close();
   });
 

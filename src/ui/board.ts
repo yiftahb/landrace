@@ -63,7 +63,9 @@ const gotoPaths = (id: string, stage: Stage | undefined): BoardRow["goto"] =>
 /**
  * Where an item's panel reads and writes — built here, from an id already
  * checked, never by the page. Only an item one workflow owns is written to,
- * so only its panel names the writes; every other item's only reads.
+ * so only its panel names the writes; every other item's only reads — and an
+ * id two trackers report not even that: its reads refuse it, in the sentence
+ * the page shows.
  */
 const panelPaths = (id: string, writes: boolean): PanelPaths | null => {
   if (!isItemId(id)) return null;

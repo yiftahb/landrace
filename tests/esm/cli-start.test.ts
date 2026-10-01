@@ -1033,13 +1033,14 @@ describeLoopback("runStart's page over two workflows", () => {
       });
 
       const sentence = "#4444 is claimed by fast and main; act on it after one workflow alone claims it";
-      for (const [path, action, body] of [["retry", "retry"], ["goto/spec", "goto"], ["reply", "reply", "hi"], ["conversation", "conversation"]] as const) {
-        const res = await fetch(`${url}items/4444/${path}`, {
-          method: action === "conversation" ? "GET" : "POST", headers: { "x-landrace-action": action }, ...(body === undefined ? {} : { body }),
-        });
+      for (const [path, action, body] of [["retry", "retry"], ["goto/spec", "goto"], ["reply", "reply", "hi"]] as const) {
+        const res = await fetch(`${url}items/4444/${path}`, { method: "POST", headers: { "x-landrace-action": action }, ...(body === undefined ? {} : { body }) });
         expect([path, res.status, await res.text()]).toEqual([path, 409, sentence]);
       }
       expect((await applied(record)).filter((w) => JSON.stringify(w).includes("4444"))).toEqual([]);
+      // Reads decide nothing: its conversation is read through the one source that lists it.
+      const conflicted = await fetch(`${url}items/4444/conversation`, { headers: { "x-landrace-action": "conversation" } });
+      expect([conflicted.status, await conflicted.json()]).toEqual([200, []]);
 
       // A closed item is no workflow's, but its conversation is read through
       // the one source that lists it; nothing is written to it.

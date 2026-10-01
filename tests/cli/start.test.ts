@@ -28,6 +28,7 @@ import {
   parseInterval,
   parsePort,
   repoWorkspace,
+  sourceReaders,
   startUi,
 } from "#cli/start.js";
 
@@ -695,6 +696,39 @@ describe("the item panel", () => {
     const failed = await panel.ask("12", "EU only").then(() => null, (e: Error) => e.message);
     expect(failed).toMatch(/agent exited 1/);
     expect(failed).not.toContain(TOKEN);
+  });
+});
+
+/*
+ * An item no one workflow owns is read through its source, with the pre hooks
+ * every workflow on that source loads — and not read at all where they share
+ * none: a read with none is an empty history said as if it were the item's.
+ */
+describe("reading an item through its source", () => {
+  /** `main` and `fast` on one tracker, each loading what `pres` makes of the tracker's own pre hooks. */
+  const readersOf = (pres: (own: Registry["pre"]) => { main: Registry["pre"]; fast: Registry["pre"] }) => {
+    const tracker = createFakeTracker([{ number: 4, labels: [] }]);
+    tracker.say(4, `Which markets?${renderMarker({ stage: "spec", kind: "output", round: 1 })}`);
+    const source = tracker.registry.source as Source;
+    const { main, fast } = pres(tracker.registry.pre);
+    return sourceReaders([{ id: "main", source, deps: { pre: main } }, { id: "fast", source, deps: { pre: fast } }], tracker.ctx);
+  };
+
+  it("reads with the pre hooks both workflows load", async () => {
+    const reads = readersOf((own) => ({ main: own, fast: own })).get(0);
+    expect(await reads?.conversation("4")).toMatchObject([{ byAgent: true, text: "Which markets?" }]);
+  });
+
+  it("refuses, naming the workflows, when they load no pre hook in common", async () => {
+    const reads = readersOf((own) => ({ main: own, fast: [{ id: "other", run: () => ({}) }] })).get(0);
+    const sentence = "#4 cannot be read here: the workflows reading its source, fast and main, load no pre hook in common, " +
+      "and a read with none would leave out what each of them reads";
+    await expect(reads?.conversation("4")).rejects.toThrow(sentence);
+    await expect(reads?.pairing("4")).rejects.toThrow(sentence);
+  });
+
+  it("reads with none where no workflow on the source loads any", async () => {
+    expect(await readersOf(() => ({ main: [], fast: [] })).get(0)?.conversation("4")).toEqual([]);
   });
 });
 

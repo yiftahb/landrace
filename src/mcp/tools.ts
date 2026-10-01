@@ -8,19 +8,20 @@ import {
   recordBodyProblem,
   stageFromLabels,
   isOpenItem,
+  ITEM_KIND,
 } from "#conventions.js";
 import { checkEligible } from "#core/index.js";
-import type { Claims, ItemSummary, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, WorkspaceListing } from "#namespace.js";
+import type { Claims, Graph, ItemSummary, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, WorkspaceListing } from "#namespace.js";
 import type { Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
-import { readRoute, sharedPre, writeRoute } from "#runner/route.js";
+import { editRoute, noSharedPre, readRoute, sharedPre, unownedWhy, writeRoute } from "#runner/route.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { laneOf, workspaceStatusRows } from "#runner/status.js";
-import { listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
+import { claimsOf, listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
 
 /**
  * Position is a label, so an `lr:` label from the editor is not a label at
@@ -104,12 +105,13 @@ export async function postReply(deps: ReplyDeps, item: string, message: string):
 /**
  * The operator tools, over every workflow of the workspace.
  *
- * An item is acted on through the one workflow that claims it, found the way
- * a tick finds it: every distinct source listed once and every open item
- * judged against every workflow's `eligible`. The loop's process asks its
- * last tick's listing; this one lists on demand. An item two workflows claim,
- * two sources report, or none claims is refused with the reason — never
- * routed through whichever workflow comes first.
+ * An item's workflow state is written through the one workflow that claims
+ * it, found the way a tick finds it: every open item judged against every
+ * workflow's `eligible`. The loop's process asks its last tick's listing;
+ * this one judges on demand. An item two workflows claim, two sources
+ * report, or none claims is refused with the reason — never routed through
+ * whichever workflow comes first. Reads decide nothing, so they are refused
+ * only where two sources report the id.
  */
 export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeContext, opts: ToolOptions = {}): Tools {
   const hands = new Map(workflows.map((w): [string, ToolHands] => {
@@ -149,17 +151,45 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
     return found;
   };
 
+  // Every distinct source, at the index each listing of these workflows gives it.
+  const { sources: distinct } = sourcesOf(listedAs);
+
   /**
-   * Every source listed once and every open item claimed, as a tick does. A
-   * source that could not list fails the call by name, as `landrace status`
-   * does: an id the others list may be one it reports too, and a list
-   * missing its items would read as a workspace with none.
+   * A listing whose every source listed. One that could not fails the call
+   * by name, as `landrace status` does: an id the others list may be one it
+   * reports too, and a list missing its items would read as a workspace with
+   * none.
    */
-  const listed = async (): Promise<WorkspaceListing> => {
-    const listing = await listWorkspace({ workflows: listedAs, ctx, log: ctx.log });
+  const whole = (listing: WorkspaceListing): WorkspaceListing => {
     const failures = listingFailures(listing);
     if (failures.length) throw new Error(failures.join("; "));
     return listing;
+  };
+
+  /** Every source listed once and every open item claimed, as a tick does. */
+  const listed = async (): Promise<WorkspaceListing> => whole(await listWorkspace({ workflows: listedAs, ctx, log: ctx.log }));
+
+  /**
+   * What an action on one item is judged from; what could not list is left
+   * in it, for the caller to judge. With one distinct source, that item read
+   * alone: claims are per id, so a listing of every item would claim it
+   * exactly the same, and one tracker has no other to clash with — listing
+   * the whole repository to act on one item is paying for an answer already
+   * known. With more, every source listed: a clash is between what two of
+   * them list, and a read of one sees only its own.
+   */
+  const about = async (item: string): Promise<WorkspaceListing> => {
+    const [only, ...more] = distinct;
+    if (only === undefined || more.length > 0) return listWorkspace({ workflows: listedAs, ctx, log: ctx.log });
+    let read: Graph;
+    try {
+      read = await only.read(item, ctx);
+    } catch (e) {
+      throw new Error(`source "${only.id}" could not read "${item}": ${messageOf(e)}`);
+    }
+    const graphs: Graph[] = [{ nodes: read.nodes.filter((n) => n.id === item && n.kind === ITEM_KIND), relationships: [] }];
+    const sourceOf = new Map(listedAs.map((w) => [w.id, 0]));
+    return { graphs, sourceOf, claims: claimsOf(listedAs, sourceOf, graphs), failed: new Map() };
   };
 
   /**
@@ -181,29 +211,57 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
 
   const unlisted = (item: string): string => `#${item} is not an item any source lists`;
 
-  /** For a write: the hands of the one workflow that claims `item`. */
+  /** For a write to its workflow state: the hands of the one workflow that claims `item`, judged while every source lists. */
   const owner = async (item: string): Promise<ToolHands> => {
-    const route = writeRoute(await listed(), item) ?? { refused: unlisted(item) };
+    const route = writeRoute(whole(await about(item)), item) ?? { refused: unlisted(item) };
     if ("refused" in route) throw new Refusal(route.refused);
     return ours(item, route.workflow);
   };
 
   /**
-   * For a read: as `owner`, and a closed item — which no workflow claims —
-   * through the one source that lists it, with the pre hooks every workflow
-   * on that source loads.
+   * For an operator's edit, judged while every source lists: the owner's
+   * operator, or the one operator every workflow that could own `item`
+   * shares (see `editRoute`). A server bound to one workflow edits only what
+   * no other claims, and only what its own source lists.
    */
-  const reader = async (item: string): Promise<{ hands: ToolHands } | { source: Source; pre: PreHook[] }> => {
-    const listing = await listed();
-    const route = readRoute(listing, item) ?? { refused: unlisted(item) };
+  const editor = async (item: string): Promise<{ operator: Operator | null; workflow: string | null }> => {
+    const listing = whole(await about(item));
+    const route = editRoute(listing, item, (id) => handsOf(id).workflow.registry.operator);
+    if ("refused" in route) throw new Refusal(route.refused);
+    if ("workflow" in route) return { operator: ours(item, route.workflow).workflow.registry.operator, workflow: route.workflow };
+    if (opts.scope !== undefined) {
+      // Two claiming it are always one more than this server acts for.
+      const conflict = writeRoute(listing, item);
+      if (listing.claims.conflicts.has(item) && conflict && "refused" in conflict) throw new Refusal(conflict.refused);
+      if (!route.workflows.includes(opts.scope)) {
+        throw new Refusal(`#${item} is not listed by ${opts.scope}'s source; this server acts for ${opts.scope} alone`);
+      }
+    }
+    const [any] = route.workflows;
+    return { operator: any === undefined ? null : handsOf(any).workflow.registry.operator, workflow: null };
+  };
+
+  /**
+   * For a read: an owned item through its owner, as `owner`; any other item
+   * through the one source that lists it, with the pre hooks every workflow
+   * on that source loads, and why no workflow works it. Reads decide
+   * nothing, so a source that could not list stops none — but an id no
+   * working source showed could be in the one that did not.
+   */
+  const reader = async (item: string): Promise<{ hands: ToolHands } | { source: Source; pre: PreHook[]; why: string | null }> => {
+    const listing = await about(item);
+    const route = readRoute(listing, item) ?? { refused: [unlisted(item), ...listingFailures(listing)].join("; ") };
     if ("refused" in route) throw new Refusal(route.refused);
     if ("workflow" in route) return { hands: ours(item, route.workflow) };
     if (opts.scope !== undefined && listing.sourceOf.get(opts.scope) !== route.source) {
       throw new Refusal(`#${item} is not listed by ${opts.scope}'s source; this server acts for ${opts.scope} alone`);
     }
-    const source = sourcesOf(listedAs).sources[route.source];
+    const source = distinct[route.source];
     if (!source) throw new Refusal(unlisted(item));
-    return { source, pre: sharedPre([...hands.values()].filter((h) => h.deps.source === source).map((h) => h.deps.pre)) };
+    const on = [...hands.values()].filter((h) => h.deps.source === source);
+    const pre = sharedPre(on.map((h) => h.deps.pre));
+    if (!pre) throw new Refusal(noSharedPre(item, on.map((h) => h.workflow.id)));
+    return { source, pre, why: unownedWhy(listing.claims, item) };
   };
 
   /**
@@ -317,7 +375,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
 
       return {
         item,
-        // Null for a closed item: no workflow claims one.
+        // Null for an item no one workflow owns: closed, claimed twice, or turned away.
         workflow: "hands" in route ? route.hands.workflow.id : null,
         title: node.title,
         url: node.link,
@@ -332,9 +390,12 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
           ? { problem: `more than one lr:stage:* label (${found.join(", ")}) — the item cannot be placed` }
           : {}),
         // The workflow's own rule, asked of the snapshot `decide` would gate
-        // on — not a label name: the engine names none. A closed item is no
-        // workflow's, so none is asked.
-        ...("hands" in route ? { eligible: checkEligible(route.hands.deps.workflow, snapshot).eligible } : {}),
+        // on — not a label name: the engine names none. An open item no one
+        // workflow owns is worked by none, and says why; a closed one is no
+        // workflow's, so nothing is asked.
+        ...("hands" in route
+          ? { eligible: checkEligible(route.hands.deps.workflow, snapshot).eligible }
+          : node.closed === null ? { eligible: false, ...(route.why === null ? {} : { why: route.why }) } : {}),
         waitingOnYou: labels.includes(LABELS.awaiting),
         blocked: labels.includes(LABELS.blocked),
         rounds: run?.counters ?? {},
@@ -374,8 +435,8 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       // leaves the item exactly as it was.
       refuseEngineLabels(addLabels, "add");
       refuseEngineLabels(removeLabels, "remove");
-      const { workflow: w } = await owner(item);
-      const operator = requireOperator(w.registry.operator, "update an item");
+      const edit = await editor(item);
+      const operator = requireOperator(edit.operator, "update an item");
 
       const updated = await operator.updateItem(
         item,
@@ -389,7 +450,8 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
         ctx,
       );
       wakeLoop();
-      return { ...summarise(updated), workflow: w.id };
+      // Null for an item no one workflow owns: its edit went through no workflow.
+      return { ...summarise(updated), workflow: edit.workflow };
     },
 
     async reply(item, message) {
@@ -430,7 +492,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
     async pairing(item) {
       const route = await reader(item);
       if ("hands" in route) return pairingView(route.hands.deps, item);
-      // A closed item has nothing to pair on; only a pairing left open on it is said.
+      // An item no one workflow owns is no one's to pair on; only a pairing left open on it is said.
       return { open: (await snapshotIn(route, item)).run?.pairing ?? null, offers: [] };
     },
 

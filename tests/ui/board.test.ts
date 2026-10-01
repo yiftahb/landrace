@@ -846,23 +846,43 @@ describe("the board over several workflows", () => {
     });
 
     /*
-     * A closed item is no workflow's — claims are for open items — but what
-     * was said on it is still worth reading: through the one source that
-     * lists it, never one of the workflows reading that source picked first.
+     * Reads decide nothing, so only an id two trackers report is refused: which
+     * of the two items was meant is not the reader's to pick. Any other item
+     * one source lists — owned, claimed twice, turned away by every workflow,
+     * or closed — reads through that source; an owned one through its owner.
      */
-    it("reads an open item through its owner, and a closed one through the one source that lists it", () => {
+    it("reads an open item through its owner, and any other item through the one source that lists it", () => {
       const b = board();
       b.list(across(graph([
-        item("1", {}, ["lr:auto"]), item("4", {}, ["lr:auto", "lr:fast"]), item("7", { closed: "done" }, ["lr:auto"]),
-        item("9", { closed: "done" }, ["lr:auto"]), pr("pr-8"),
-      ]), graph([item("10", { closed: "dropped" }, ["lr:auto"]), item("9", { closed: "done" }, ["lr:auto"])])));
+        item("1", {}, ["lr:auto"]), item("4", {}, ["lr:auto", "lr:fast"]), item("6", {}, []), item("7", { closed: "done" }, ["lr:auto"]),
+        item("9", { closed: "done" }, ["lr:auto"]), item("11", {}, ["lr:auto"]), pr("pr-8"),
+      ]), graph([item("10", { closed: "dropped" }, ["lr:auto"]), item("9", { closed: "done" }, ["lr:auto"]), item("11", {}, ["lr:auto"])])));
 
       expect(b.readerOf("1")).toEqual({ workflow: "main" });
-      expect(b.readerOf("4")).toEqual({ refused: "#4 is claimed by fast and main; act on it after one workflow alone claims it" });
+      expect(b.readerOf("4")).toEqual({ source: 0 });
+      expect(b.readerOf("6")).toEqual({ source: 0 });
       expect(b.readerOf("7")).toEqual({ source: 0 });
       expect(b.readerOf("10")).toEqual({ source: 1 });
       expect(b.readerOf("9")).toEqual({ refused: "#9 is reported by the sources of fast, gl and main; read it in its own tracker" });
+      expect(b.readerOf("11")).toEqual({ refused: "#11 is reported by the sources of fast, gl and main; read it in its own tracker" });
+      // Two trackers, and neither listed it: either could be the one it is in.
       for (const id of ["pr-8", "99"]) expect(b.readerOf(id)).toEqual({ refused: `#${id} is not an item the last tick listed` });
+    });
+
+    /*
+     * One tracker has no one to clash with: an id its listing did not show —
+     * a closed item past the window it lists — can only be in it.
+     */
+    it("reads an id the last listing did not show through the workspace's one source", () => {
+      const b = createBoard({ workflows: WORKFLOWS.slice(0, 2), held: async () => null, folder: "f", workspace: "/w", nest: [] });
+      const only = graph([item("1", {}, ["lr:auto"])]);
+      b.list({
+        graphs: [only], sourceOf: new Map([["main", 0], ["fast", 0]]),
+        claims: claimItems(WORKFLOWS.slice(0, 2).map((w) => ({ ...w, source: 0 })), [only]),
+      });
+      expect(b.readerOf("99")).toEqual({ source: 0 });
+      // Writes are still the owner's alone, and an id no listing showed has none.
+      expect(b.ownerOf("99")).toEqual({ refused: "#99 is not an item the last tick listed" });
     });
 
     it("follows the latest listing: an item relabelled is its new workflow's", () => {

@@ -85,7 +85,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   server.tool(
     "landrace_status",
     said(
-      "Show an item's workflow and position in it, which rounds have run, and whose turn it is.",
+      "Show an item's workflow and position in it, which rounds have run, and whose turn it is. An item no one " +
+        "workflow claims is shown too, with workflow null and why.",
     ),
     { item },
     guard(({ item: n }) => tools.status(n)),
@@ -111,8 +112,9 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   server.tool(
     "landrace_update_item",
     said(
-      "Change an item a workflow claims: its title, body, open/closed state, or its labels. Removing the " +
-        "label its workflow admits it with stops further work.",
+      "Change an item's title, body, open/closed state, or its labels, as you would on the tracker — through " +
+        "the operator of the workflow that claims it, or, for an item no one workflow claims, the one operator " +
+        "every workflow that could claim it shares. Removing the label its workflow admits it with stops further work.",
     ),
     {
       item,

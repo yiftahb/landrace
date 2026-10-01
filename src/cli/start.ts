@@ -56,7 +56,7 @@ import { runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { oneLine } from "#runner/status.js";
-import { sharedPre } from "#runner/route.js";
+import { noSharedPre, sharedPre } from "#runner/route.js";
 import { claimsOf, listingFailures, listWorkspace, sourcesOf, tickWorkspace } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
@@ -190,12 +190,12 @@ async function conversationIn(deps: { source: Source; pre: PreHook[]; ctx: Runti
 }
 
 /**
- * A closed item's panel reads, through the source that lists it rather than
- * through any one workflow: no workflow claims a closed item, and choosing
- * one of the several that read a source would be the first match by another
- * name. It reads with the pre hooks every workflow on that source loads, so
- * no one workflow's own is picked over another's. A closed item has nothing
- * to pair on; only a pairing left open on it is said.
+ * The panel reads of an item no one workflow owns — closed, claimed twice,
+ * or turned away — through the source that lists it rather than through any
+ * one workflow: choosing one of the several that read a source would be the
+ * first match by another name. It reads with the pre hooks every workflow
+ * on that source loads, so no one workflow's own is picked over another's.
+ * Such an item is no one's to pair on; only a pairing left open on it is said.
  */
 export function sourceReader(deps: { source: Source; pre: PreHook[]; ctx: RuntimeContext }): ItemReads {
   return {
@@ -205,6 +205,23 @@ export function sourceReader(deps: { source: Source; pre: PreHook[]; ctx: Runtim
       return { open: snapshot.run?.pairing ?? null, offers: [] };
     },
   };
+}
+
+/**
+ * Each source's reads, by the index it has in every listing. Where the
+ * workflows on a source load no pre hook in common, its reads refuse, naming
+ * them, rather than read the item with none.
+ */
+export function sourceReaders(
+  workflows: ReadonlyArray<Pick<WorkflowRuntime, "id" | "source"> & { deps: { pre: PreHook[] } }>, ctx: RuntimeContext,
+): Map<number, ItemReads> {
+  return new Map(sourcesOf(workflows).sources.map((source, index): [number, ItemReads] => {
+    const on = workflows.filter((w) => w.source === source);
+    const pre = sharedPre(on.map((w) => w.deps.pre));
+    if (pre) return [index, sourceReader({ source, pre, ctx })];
+    const refuse = (item: string): Promise<never> => Promise.reject(new Refusal(noSharedPre(item, on.map((w) => w.id))));
+    return [index, { conversation: refuse, pairing: refuse }];
+  }));
 }
 
 /**
@@ -757,8 +774,8 @@ export function gotoByClaim(ownerOf: (item: string) => Ownership, paths: Readonl
 
 /**
  * The item panel, each item's through its owning workflow's: a read by
- * `read`, which sends a closed item's to the reader of the one source that
- * lists it, and a write by `write`. A refusal is a `Refusal`, which the
+ * `read`, which sends an item no one workflow owns to the reader of the one
+ * source that lists it, and a write by `write`. A refusal is a `Refusal`, which the
  * page's routes answer with its own sentence. Activity is one log for the
  * workspace, keyed by item: what a step did stays readable whoever claims
  * the item now.
@@ -933,11 +950,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   };
   // One log for the workspace, handed to every workflow alike.
   const activity = rt.workflows.find((w) => w.deps.activity)?.deps.activity;
-  // A closed item's reads, by the index its source has in every listing.
-  const sources = new Map(sourcesOf(rt.workflows).sources.map((source, index) => {
-    const pre = sharedPre(rt.workflows.filter((w) => w.source === source).map((w) => w.deps.pre));
-    return [index, sourceReader({ source, pre, ctx: rt.ctx })];
-  }));
+  // An unowned item's reads, by the index its source has in every listing.
+  const sources = sourceReaders(rt.workflows, rt.ctx);
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
     tick: schedule.wake,

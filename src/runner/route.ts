@@ -1,6 +1,6 @@
 import { compareIds, ITEM_KIND } from "#conventions.js";
-import type { Claims, Graph, Ownership, PreHook, ReadRoute, WorkspaceListing } from "#namespace.js";
-import { claimedBy, reportedBy, turnedAway } from "#runner/tick.js";
+import type { Claims, EditRoute, Graph, Ownership, PreHook, ReadRoute, WorkspaceListing } from "#namespace.js";
+import { andList, claimedBy, reportedBy, turnedAway } from "#runner/tick.js";
 
 /*
  * Which workflow an action on an item by id goes through, judged from a
@@ -22,19 +22,28 @@ export function haltOf(claims: Claims, item: string): string | null {
 }
 
 /**
+ * Why an open item one source lists is worked by no workflow: two claim it,
+ * or each turned it away, with its reasons. Null for any other item.
+ */
+export function unownedWhy(claims: Claims, item: string): string | null {
+  const conflict = claims.conflicts.get(item);
+  if (conflict) return claimedBy(conflict);
+  const reasons = claims.unclaimed.get(item);
+  return reasons ? `claimed by no workflow: ${turnedAway(reasons)}` : null;
+}
+
+/**
  * Whose open `item` is by `claims`, or the sentence refusing to act on it.
  * Never the first of two claimants. Null when no listing showed it open.
  */
 function ownership(claims: Claims, item: string): Ownership | null {
   const owner = claims.owner.get(item);
   if (owner !== undefined) return { workflow: owner };
-  const conflict = claims.conflicts.get(item);
-  if (conflict) return { refused: `#${item} is ${claimedBy(conflict)}; act on it after one workflow alone claims it` };
   const clash = claims.clashes.get(item);
   if (clash) return { refused: `#${item} is ${reportedBy(clash)}; act on it after one source alone reports it` };
-  const reasons = claims.unclaimed.get(item);
-  if (reasons) return { refused: `#${item} is claimed by no workflow: ${turnedAway(reasons)}` };
-  return null;
+  const why = unownedWhy(claims, item);
+  if (why === null) return null;
+  return { refused: claims.conflicts.has(item) ? `#${item} is ${why}; act on it after one workflow alone claims it` : `#${item} is ${why}` };
 }
 
 /** The sources, by index, that list `item` as an item: closed in each, when no listing showed it open. */
@@ -57,23 +66,63 @@ export function writeRoute(listing: Pick<WorkspaceListing, "graphs" | "claims">,
 }
 
 /**
- * For a read: as `writeRoute`, and a closed item through the one source that
- * lists it. Two that do may be two different items under one id, and which
- * one was meant is not for the reader to pick. Null when unlisted.
+ * For an operator's edit — a title, a body, labels that are not the
+ * workflow's, open or closed: a person's edit, as on the tracker, never a
+ * move through any workflow's stages. The owner's operator when one workflow
+ * owns `item`. Otherwise the workflows that could be its — those whose source
+ * lists it, or every one when no listing shows it — when they all edit
+ * through one operator, which is then no pick; refused, naming them, when
+ * they do not. Never an id two sources report: which item was meant is
+ * not the editor's to pick.
  */
-export function readRoute(listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">, item: string): ReadRoute | null {
-  const open = ownership(listing.claims, item);
-  if (open) return open;
-  const [only, ...more] = listedIn(listing.graphs, item);
-  if (only === undefined) return null;
-  if (more.length === 0) return { source: only };
-  return { refused: `#${item} is ${reportedBy(readingAny(listing.sourceOf, [only, ...more]))}; read it in its own tracker` };
+export function editRoute(
+  listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">, item: string, operatorOf: (workflow: string) => unknown,
+): EditRoute {
+  const owner = listing.claims.owner.get(item);
+  if (owner !== undefined) return { workflow: owner };
+  const indices = listedIn(listing.graphs, item);
+  if (indices.length > 1) {
+    return { refused: `#${item} is ${reportedBy(readingAny(listing.sourceOf, indices))}; act on it after one source alone reports it` };
+  }
+  const candidates = indices.length ? readingAny(listing.sourceOf, indices) : [...listing.sourceOf.keys()].sort(compareIds);
+  if (new Set(candidates.map(operatorOf)).size === 1) return { workflows: candidates };
+  const why = unownedWhy(listing.claims, item) ?? (indices.length ? "closed" : "listed by no source");
+  return { refused: `#${item} is ${why}, and ${andList(candidates)} edit items through different operators; edit it in its tracker` };
 }
 
 /**
- * The pre hooks a closed item is read with: those every workflow on its
- * source loads, so no one workflow's own is picked over another's.
+ * For a read: an owned item through its owner, and any other item through
+ * the one source that lists it — claimed twice, turned away, or closed alike,
+ * because a read decides nothing. Two sources that list it may be two
+ * different items under one id, and which one was meant is not for the
+ * reader to pick. An id no listing shows — a closed item past the window a
+ * tracker lists — is the one source's when the workspace has one, since it
+ * can be nowhere else; null with more, where it could be in any of them.
  */
-export function sharedPre(each: ReadonlyArray<readonly PreHook[]>): PreHook[] {
-  return [...new Set(each.flat())].filter((hook) => each.every((pre) => pre.includes(hook)));
+export function readRoute(listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">, item: string): ReadRoute | null {
+  const owner = listing.claims.owner.get(item);
+  if (owner !== undefined) return { workflow: owner };
+  const indices = listedIn(listing.graphs, item);
+  const [only, ...more] = indices;
+  if (more.length > 0) return { refused: `#${item} is ${reportedBy(readingAny(listing.sourceOf, indices))}; read it in its own tracker` };
+  if (only !== undefined) return { source: only };
+  return listing.graphs.length === 1 ? { source: 0 } : null;
 }
+
+/**
+ * The pre hooks an item read through its source, rather than through one
+ * workflow, is read with: those every workflow on that source loads, so no
+ * one workflow's own is picked over another's. Null when they share none
+ * while some load any: the read would come back with less than any of them
+ * sees — an empty history said as if it were the item's — and nothing
+ * compared is not a pass.
+ */
+export function sharedPre(each: ReadonlyArray<readonly PreHook[]>): PreHook[] | null {
+  const shared = [...new Set(each.flat())].filter((hook) => each.every((pre) => pre.includes(hook)));
+  return shared.length === 0 && each.some((pre) => pre.length > 0) ? null : shared;
+}
+
+/** Why `item` is not read through a source whose `workflows` share no pre hook. */
+export const noSharedPre = (item: string, workflows: readonly string[]): string =>
+  `#${item} cannot be read here: the workflows reading its source, ${andList([...workflows].sort(compareIds))}, ` +
+  "load no pre hook in common, and a read with none would leave out what each of them reads";

@@ -749,20 +749,78 @@ describeLoopback("the page's routes follow the item's workflow", () => {
     ["the last listing never saw", "99", "#99 is not an item the last tick listed"],
   ] as const;
 
-  it.each(refusals)("refuses every write and read of an item %s with 409 and the board's sentence, reaching no workflow", async (_, id, sentence) => {
+  const writes = [
+    ["retry", "retry"], ["clear", "clear"], ["goto/spec", "goto"],
+    ["reply", "reply", "hi"], ["ask", "ask", "hi"], ["resolve", "resolve"], ["pair", "pair", "spec"], ["finish", "finish"], ["release", "release"],
+  ] as const;
+
+  it.each(refusals)("refuses every write to an item %s with 409 and the board's sentence, reaching no workflow", async (_, id, sentence) => {
     const { calls, tick } = await serve();
-    for (const [path, action, body] of [
-      ["retry", "retry"], ["clear", "clear"], ["goto/spec", "goto"], ["conversation", "conversation"], ["pairing", "pairing"],
-      ["reply", "reply", "hi"], ["ask", "ask", "hi"], ["resolve", "resolve"], ["pair", "pair", "spec"], ["finish", "finish"], ["release", "release"],
-    ] as const) {
-      const reading = action === "conversation" || action === "pairing";
-      const res = await get(server.port, `/items/${id}/${path}`, {
-        ...(reading ? {} : { method: "POST" }), headers: ours(action), ...(body === undefined ? {} : { body }),
-      });
+    for (const [path, action, body] of writes) {
+      const res = await get(server.port, `/items/${id}/${path}`, { method: "POST", headers: ours(action), ...(body === undefined ? {} : { body }) });
       expect([path, res.status, res.body]).toEqual([path, 409, sentence]);
     }
     expect(calls).toEqual([]);
     expect(tick).not.toHaveBeenCalled();
+  });
+
+  /*
+   * Reads decide nothing: only an id two trackers report — two items, maybe,
+   * and which was meant is not the page's to pick — or one no listing showed
+   * while there are two trackers it could be in, is refused.
+   */
+  it.each([
+    ["two trackers report", "5", "#5 is reported by the sources of fast, gl and main; read it in its own tracker"],
+    ["the last listing never saw", "99", "#99 is not an item the last tick listed"],
+  ] as const)("refuses to read an item %s with 409 and the board's sentence, reaching no reader", async (_, id, sentence) => {
+    const { calls } = await serve();
+    for (const action of ["conversation", "pairing"] as const) {
+      const res = await get(server.port, `/items/${id}/${action}`, { headers: ours(action) });
+      expect([action, res.status, res.body]).toEqual([action, 409, sentence]);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it.each([["two workflows claim", "4"], ["no workflow claims", "6"]] as const)(
+    "reads an item %s through the one source that lists it, never one of its workflows",
+    async (_, id) => {
+      const { calls } = await serve();
+      expect((await get(server.port, `/items/${id}/conversation`, { headers: ours("conversation") })).status).toBe(200);
+      expect((await get(server.port, `/items/${id}/pairing`, { headers: ours("pairing") })).status).toBe(200);
+      expect(calls).toEqual([["source 0", "conversation", id], ["source 0", "pairing", id]]);
+    },
+  );
+
+  /*
+   * One workflow on one tracker, as this repository runs: a Not admitted
+   * row's conversation is read, and so is an id the listing's window left
+   * out — one tracker is the only place it can be.
+   */
+  it("reads a Not admitted item, and an id the listing did not show, through a one-tracker workspace's source", async () => {
+    const main = { id: "main", workflow: flow("Main", "lr:auto", "spec") };
+    const only = [main];
+    const listed: Graph = { nodes: [item("1", ["lr:auto"]), item("6", [])], relationships: [] };
+    const board = createBoard({ workflows: only, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    board.list({ graphs: [listed], sourceOf: new Map([["main", 0]]), claims: claimItems([{ ...main, source: 0 }], [listed]) });
+    const read: string[] = [];
+    const none: ItemPanel = {
+      activity: async () => ({ stage: null, round: null, lines: [], total: 0 }),
+      conversation: async () => { throw new Error("read through the workflow"); }, pairing: async () => { throw new Error("read through the workflow"); },
+      reply: async () => {}, ask: async () => ({ reply: "", resolved: false }), resolve: async () => ({ alreadyResolved: false }),
+      pair: async () => { throw new Error("no"); }, finish: async () => { throw new Error("no"); }, release: async () => { throw new Error("no"); },
+    };
+    server = await serveBoard({
+      port: 0, view: () => board.view(),
+      panel: panelByClaim({
+        read: (i) => board.readerOf(i), write: (i) => board.ownerOf(i),
+        activity: { begin: () => {}, record: () => {}, read: async () => ({ stage: null, round: null, lines: [], total: 0 }) },
+        panels: new Map([["main", none]]),
+        sources: new Map([[0, { conversation: async (i) => { read.push(i); return []; }, pairing: async () => ({ open: null, offers: [] }) }]]),
+      }),
+    });
+    expect((await get(server.port, "/items/6/conversation", { headers: ours("conversation") })).status).toBe(200);
+    expect((await get(server.port, "/items/42/conversation", { headers: ours("conversation") })).status).toBe(200);
+    expect(read).toEqual(["6", "42"]);
   });
 
   /*

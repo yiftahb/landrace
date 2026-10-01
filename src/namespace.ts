@@ -2262,11 +2262,19 @@ export interface BoardView {
 export type Ownership = { workflow: string } | { refused: string };
 
 /**
- * Where a read of an item goes: the workflow that owns it, or — for a closed
- * item, which no workflow claims — the one source that lists it, by its
- * index in the listing; or the sentence refusing the read.
+ * Where a read of an item goes: the workflow that owns it, or — for an item
+ * no one workflow owns: closed, claimed twice, or turned away — the one
+ * source that lists it, by its index in the listing; or the sentence
+ * refusing the read.
  */
 export type ReadRoute = Ownership | { source: number };
+
+/**
+ * Where an operator's edit of an item goes: the workflow that owns it, or —
+ * for an item no one workflow owns — the workflows that could be its, which
+ * all edit through one operator; or the sentence refusing the edit.
+ */
+export type EditRoute = Ownership | { workflows: string[] };
 
 export interface Board {
   observe(e: LandraceEvent): void;
@@ -2274,7 +2282,12 @@ export interface Board {
   list(listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">): void;
   /** For a write, by the last listing: never a guess at an item two workflows claim, two sources report, or none claims. */
   ownerOf(item: string): Ownership;
-  /** For a read, by the last listing: as `ownerOf`, and a closed item through the one source that lists it. */
+  /**
+   * For a read, by the last listing: an owned item through its owner, any
+   * other item through the one source that lists it, and an id no listing
+   * showed through the workspace's one source when it has one. Refused for
+   * an id two sources report.
+   */
   readerOf(item: string): ReadRoute;
   view(): Promise<BoardView>;
 }
