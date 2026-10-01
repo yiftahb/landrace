@@ -245,11 +245,13 @@ describe("one tick over every workflow", () => {
   });
 
   /*
-   * Review focus 3: one tracker down is not every workflow down. What its
-   * source would have listed is unknown this tick, so its items are neither
-   * worked nor stopped — and the event says whose source it was.
+   * Review focus 3, as ruled: one tracker down stops nothing that runs, but
+   * with two sources nothing is worked while one cannot list — whether it
+   * also reports an id the other lists, a clash, is unknown until it does.
+   * The event still says whose source it was, and the next tick that lists
+   * both works as before.
    */
-  it("works the other workflows' items when one source fails to list, and neither works nor stops the failed one's", async () => {
+  it("works no item and stops no run while one of two sources cannot list, and works again once both list", async () => {
     const one = createExternalState({ items: [{ id: "10", labels: ["lr:auto"] }] });
     const two = createExternalState({ items: [{ id: "20", labels: ["lr:fast"] }] });
     let failing = false;
@@ -267,12 +269,16 @@ describe("one tick over every workflow", () => {
     const first = w.once();
     await until(() => a.runs.some((r) => r.workflow === "fast"), "fast's step to start");
     await until(async () => one.stage("10") === "done" && (await held("10", { root })) === null, "main's item to finish");
+    const comments = one.comments("10");
     failing = true;
 
     const second = await w.once();
 
-    // Converged again, as every listed item is each tick: at rest at done, so nothing more to do.
-    expect(second).toEqual([{ item: "10", workflow: "main", outcome: expect.stringMatching(/ after 1 pass\(es\)/) }]);
+    expect(second).toEqual([{ item: "10", outcome: "whether the source of fast also reports #10 is unknown: GET /issues → 502" }]);
+    expect(w.named("item.skipped")).toEqual([
+      expect.objectContaining({ item: "10", reason: "whether the source of fast also reports #10 is unknown: GET /issues → 502" }),
+    ]);
+    expect(one.comments("10")).toEqual(comments);
     expect(w.named("item.aborted")).toEqual([]);
     expect(w.runtime.running.get("20")?.controller.signal.aborted).toBe(false);
     expect(w.named("source.failed")).toEqual([expect.objectContaining({ workflows: ["fast"], reason: expect.stringContaining("502") })]);
@@ -284,5 +290,63 @@ describe("one tick over every workflow", () => {
       { item: "20", workflow: "fast", outcome: expect.stringMatching(/^terminal/) },
     ]);
     expect(a.runs.filter((r) => r.workflow === "fast")).toEqual([{ workflow: "fast", stopped: false }]);
+
+    failing = false;
+    expect(await w.once()).toEqual([
+      { item: "10", workflow: "main", outcome: expect.stringMatching(/ after 1 pass\(es\)/) },
+      { item: "20", workflow: "fast", outcome: expect.stringMatching(/ after 1 pass\(es\)/) },
+    ]);
+  });
+
+  /*
+   * The probe that found it: #12 is a clash while both sources list, and
+   * must not become main's to work the tick fast's source fails to.
+   */
+  it("does not settle a clash in favour of the source that still lists while the other cannot", async () => {
+    const one = createExternalState({ items: [{ id: "12", labels: ["lr:auto"] }] });
+    const two = createExternalState({ items: [{ id: "12", labels: ["lr:fast"] }] });
+    let failing = false;
+    const flaky: Source = { ...two.source, list: async (ctx) => {
+      if (failing) throw new Error("GET /issues → 502");
+      return two.source.list(ctx);
+    } };
+    const a = agents();
+    const w = world([["main", "lr:auto", one, one.source, a.agent("main")], ["fast", "lr:fast", two, flaky, a.agent("fast")]]);
+
+    expect(await w.once()).toEqual([{ item: "12", outcome: "reported by the sources of fast and main" }]);
+    failing = true;
+
+    expect(await w.once()).toEqual([{ item: "12", outcome: "whether the source of fast also reports #12 is unknown: GET /issues → 502" }]);
+    expect(a.runs).toEqual([]);
+    expect([one.comments("12"), two.comments("12")]).toEqual([[], []]);
+    expect(one.item("12").labels).toEqual(["lr:auto"]);
+  });
+
+  it("stops a run whose id a second source now reports too, and works it under neither", async () => {
+    const one = createExternalState({ items: [{ id: "12", labels: ["lr:auto"] }] });
+    const two = createExternalState({ items: [{ id: "12", labels: ["lr:fast"] }] });
+    let reported = false;
+    const late: Source = { ...two.source, list: async (ctx) => {
+      const graph = await two.source.list(ctx);
+      return reported ? graph : { ...graph, nodes: graph.nodes.filter((n) => n.id !== "12") };
+    } };
+    const a = agents();
+    const finish = gate();
+    const w = world([
+      ["main", "lr:auto", one, one.source, a.agent("main", () => finish.wait)],
+      ["fast", "lr:fast", two, late, a.agent("fast")],
+    ]);
+
+    const first = w.once();
+    await until(() => a.runs.length === 1, "main's step to start");
+    reported = true;
+
+    expect(await w.once()).toEqual([{ item: "12", outcome: "reported by the sources of fast and main" }]);
+    expect(w.named("item.aborted")).toEqual([
+      expect.objectContaining({ item: "12", workflow: "main", reason: "reported by the sources of fast and main" }),
+    ]);
+    expect((await first)[0]?.outcome).toMatch(/^halt .*aborted/);
+    expect(a.runs).toEqual([{ workflow: "main", stopped: true }]);
+    expect(two.comments("12")).toEqual([]);
   });
 });

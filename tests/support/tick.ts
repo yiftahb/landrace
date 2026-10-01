@@ -19,7 +19,10 @@ export interface TickOptions {
  * One workflow's tick, as a workspace of one: the tests written before
  * workspaces drive the shipped `tickWorkspace` through the shape they were
  * written against. A source that cannot list is this tick's failure, as it
- * is `landrace start --once`'s.
+ * is `landrace start --once`'s, and `onList` is not called for it, as the old
+ * tick threw before it had anything to hand over. What the page shows of a
+ * failed list is not this wrapper's: it is pinned through `runStart` in
+ * tests/esm/cli-start.test.ts.
  */
 export async function tick(opts: TickOptions): Promise<TickRow[]> {
   const { deps } = opts;

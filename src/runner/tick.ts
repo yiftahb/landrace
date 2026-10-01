@@ -1,6 +1,5 @@
 import { claimItems, eligibilityOfNode } from "#core/index.js";
 import type {
-  ClaimInput,
   Claims,
   ConvergeResult,
   Graph,
@@ -42,6 +41,24 @@ export const turnedAway = (reasons: readonly string[]): string => [...new Set(re
 const workflowsOn = (sourceOf: ReadonlyMap<string, number>, index: number): string[] =>
   [...sourceOf].filter(([, s]) => s === index).map(([id]) => id).sort(compareIds);
 
+/**
+ * Who owns what, judged over these graphs: one per distinct source, at the
+ * index `sourceOf` gives each workflow.
+ */
+export function claimsOf(workflows: readonly WorkflowRuntime[], sourceOf: ReadonlyMap<string, number>, graphs: Graph[]): Claims {
+  return claimItems(workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow, source: sourceOf.get(w.id) ?? -1 })), graphs);
+}
+
+/**
+ * Why an item a working source listed is not worked while another source
+ * could not list: a clash needs both sources' answers, and one of them is
+ * unknown this tick.
+ */
+export function unknownClash(listing: WorkspaceListing, item: string): string {
+  return [...listing.failed].map(([index, reason]) =>
+    `whether the source of ${andList(workflowsOn(listing.sourceOf, index))} also reports #${item} is unknown: ${oneLine(reason)}`).join("; ");
+}
+
 /** One sentence per source whose `list` failed, naming the workflows it serves. Empty when every source listed. */
 export function listingFailures(listing: WorkspaceListing): string[] {
   return [...listing.failed].map(([index, reason]) =>
@@ -63,12 +80,9 @@ export function listingFailures(listing: WorkspaceListing): string[] {
 export async function listWorkspace(runtime: Pick<WorkspaceRuntime, "workflows" | "ctx" | "log">): Promise<WorkspaceListing> {
   const sources: Source[] = [];
   const sourceOf = new Map<string, number>();
-  const inputs: ClaimInput[] = [];
   for (const w of runtime.workflows) {
     const known = sources.indexOf(w.source);
-    const index = known === -1 ? sources.push(w.source) - 1 : known;
-    sourceOf.set(w.id, index);
-    inputs.push({ id: w.id, workflow: w.deps.workflow, source: index });
+    sourceOf.set(w.id, known === -1 ? sources.push(w.source) - 1 : known);
   }
 
   // Through a promise first: a source is a hook, and one that throws before
@@ -86,7 +100,7 @@ export async function listWorkspace(runtime: Pick<WorkspaceRuntime, "workflows" 
     failed.set(index, reason);
     runtime.log("source.failed", { source: sources[index]?.id, workflows: workflowsOn(sourceOf, index), reason });
   }
-  return { graphs, sourceOf, claims: claimItems(inputs, graphs), failed };
+  return { graphs, sourceOf, claims: claimsOf(runtime.workflows, sourceOf, graphs), failed };
 }
 
 /** Why an open item is worked by nobody, as an event's reason and a row's outcome; null when one workflow owns it. */
@@ -209,6 +223,14 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
 
   const moved = stopStopped(runtime, listing);
 
+  // With two sources or more, one that could not list leaves every clash
+  // unjudged: an id the others list may be one it reports too. Nothing is
+  // worked until it lists again, rather than settling a clash for whichever
+  // source answered. Runs are not stopped for it — what stops one is judged
+  // above, and a clash would only stop it too. One source has no one to clash
+  // with, and its own items are simply absent.
+  const unjudged = listing.failed.size > 0 && listing.graphs.length > 1;
+
   const workflows = new Map(runtime.workflows.map((w) => [w.id, w]));
   const rows: TickRow[] = [];
   const work: Array<{ node: Node; workflow: WorkflowRuntime }> = [];
@@ -230,6 +252,12 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
     }
     const owner = listing.claims.owner.get(item);
     const workflow = owner === undefined ? undefined : workflows.get(owner);
+    if (workflow && unjudged) {
+      const reason = unknownClash(listing, item);
+      log("item.skipped", { item, reason });
+      rows.push({ item, outcome: reason });
+      continue;
+    }
     if (workflow) {
       work.push({ node, workflow });
       continue;
@@ -248,7 +276,10 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   await pool(work, runtime.concurrency, async ({ node, workflow: w }) => {
     const item = node.id;
     // Moved here from another workflow this tick: its stopped run lets go of
-    // the item first, so the new owner works it now and never beside the old.
+    // the item first, so the new owner works it in this same tick and never
+    // beside the old. The wait holds a pool slot, deliberately — the handoff
+    // is this slot's work — and is bounded by the old run honouring the abort
+    // it was just sent, as Ctrl-C's own wait for every run is.
     await moved.get(item);
     let settle!: () => void;
     const done = new Promise<void>((resolve) => {

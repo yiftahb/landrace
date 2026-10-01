@@ -53,7 +53,7 @@ import { runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { oneLine } from "#runner/status.js";
-import { claimedBy, listingFailures, listWorkspace, reportedBy, tickWorkspace, turnedAway } from "#runner/tick.js";
+import { claimedBy, claimsOf, listingFailures, listWorkspace, reportedBy, tickWorkspace, turnedAway } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
@@ -704,6 +704,30 @@ export function unionOf(graphs: readonly Graph[]): Graph {
 }
 
 /**
+ * What the page is shown of each listing. A source that could not list is
+ * shown as it last listed: one tracker blip must not empty the board, and
+ * `board.list` forgets every id it is not handed. Claims are judged again
+ * over what is shown, for the page to route by — a tick's work is only ever
+ * judged from the fresh listing. Null while a source that failed has never
+ * listed at all: the page keeps the view it has.
+ */
+export function displayOf(workflows: readonly WorkflowRuntime[]): (listing: WorkspaceListing) => WorkspaceListing | null {
+  // By source index, which every listing of one runtime shares.
+  const lastGood = new Map<number, Graph>();
+  return (listing) => {
+    for (const [index, graph] of listing.graphs.entries()) if (!listing.failed.has(index)) lastGood.set(index, graph);
+    if (listing.failed.size === 0) return listing;
+    const graphs: Graph[] = [];
+    for (const index of listing.graphs.keys()) {
+      const graph = lastGood.get(index);
+      if (!graph) return null;
+      graphs.push(graph);
+    }
+    return { ...listing, graphs, claims: claimsOf(workflows, listing.sourceOf, graphs) };
+  };
+}
+
+/**
  * The workflow the last listing gave `item` to, or the sentence refusing to
  * act on it. An item claimed twice, reported by two sources, turned away by
  * every workflow or not listed at all is refused — never routed to whichever
@@ -744,8 +768,16 @@ function gotoByClaim(rt: WorkspaceRuntime, ownerOf: (item: string) => WorkflowRu
   };
 }
 
-/** The item panel, each item's through its owning workflow's deps. Undefined for a runtime that keeps no activity. */
-function panelByClaim(rt: WorkspaceRuntime, ownerOf: (item: string) => WorkflowRuntime | { refused: string }): ItemPanel | undefined {
+/**
+ * The item panel, each item's through its owning workflow's deps: a read by
+ * `readOwner`, a write by `writeOwner`. Undefined for a runtime that keeps no
+ * activity.
+ */
+function panelByClaim(
+  rt: WorkspaceRuntime,
+  readOwner: (item: string) => WorkflowRuntime | { refused: string },
+  writeOwner: (item: string) => WorkflowRuntime | { refused: string },
+): ItemPanel | undefined {
   const panels = new Map<string, ItemPanel>();
   // One log for the workspace, handed to every workflow alike and keyed by
   // item: what a step did stays readable whoever claims the item now.
@@ -766,22 +798,25 @@ function panelByClaim(rt: WorkspaceRuntime, ownerOf: (item: string) => WorkflowR
   }
   const log = activity;
   if (!log) return undefined;
-  const routed = <T>(item: string, fn: (panel: ItemPanel) => Promise<T>): Promise<T> => {
-    const owner = ownerOf(item);
-    if ("refused" in owner) return Promise.reject(new Error(owner.refused));
-    const panel = panels.get(owner.id);
-    return panel ? fn(panel) : Promise.reject(new Error(`#${item} belongs to ${owner.id}, which keeps no panel`));
-  };
+  const via = (ownerOf: (item: string) => WorkflowRuntime | { refused: string }) =>
+    <T>(item: string, fn: (panel: ItemPanel) => Promise<T>): Promise<T> => {
+      const owner = ownerOf(item);
+      if ("refused" in owner) return Promise.reject(new Error(owner.refused));
+      const panel = panels.get(owner.id);
+      return panel ? fn(panel) : Promise.reject(new Error(`#${item} belongs to ${owner.id}, which keeps no panel`));
+    };
+  const read = via(readOwner);
+  const write = via(writeOwner);
   return {
     activity: (item, after) => log.read(item, after),
-    conversation: (item) => routed(item, (p) => p.conversation(item)),
-    reply: (item, message) => routed(item, (p) => p.reply(item, message)),
-    ask: (item, message) => routed(item, (p) => p.ask(item, message)),
-    resolve: (item) => routed(item, (p) => p.resolve(item)),
-    pairing: (item) => routed(item, (p) => p.pairing(item)),
-    pair: (item, stage) => routed(item, (p) => p.pair(item, stage)),
-    finish: (item, note) => routed(item, (p) => p.finish(item, note)),
-    release: (item) => routed(item, (p) => p.release(item)),
+    conversation: (item) => read(item, (p) => p.conversation(item)),
+    pairing: (item) => read(item, (p) => p.pairing(item)),
+    reply: (item, message) => write(item, (p) => p.reply(item, message)),
+    ask: (item, message) => write(item, (p) => p.ask(item, message)),
+    resolve: (item) => write(item, (p) => p.resolve(item)),
+    pair: (item, stage) => write(item, (p) => p.pair(item, stage)),
+    finish: (item, note) => write(item, (p) => p.finish(item, note)),
+    release: (item) => write(item, (p) => p.release(item)),
   };
 }
 
@@ -792,14 +827,13 @@ function panelByClaim(rt: WorkspaceRuntime, ownerOf: (item: string) => WorkflowR
  * worked: `--once` reports it by its exit code, and the loop says it on
  * stderr and carries on.
  */
-async function pass(rt: WorkspaceRuntime, board?: Board, last?: { current?: WorkspaceListing }): Promise<void> {
+async function pass(rt: WorkspaceRuntime, seen?: (listing: WorkspaceListing) => void): Promise<void> {
   let failures: string[] = [];
   const rows = await tickWorkspace({
     runtime: rt,
     onList: (listing) => {
       failures = listingFailures(listing);
-      if (last) last.current = listing;
-      board?.list(unionOf(listing.graphs));
+      seen?.(listing);
     },
   });
   // Printed beside the log, not through it: an outcome quotes a hook's or an
@@ -816,11 +850,11 @@ async function pass(rt: WorkspaceRuntime, board?: Board, last?: { current?: Work
  * would need a person to notice and start the daemon again.
  */
 function trackedRun(
-  rt: WorkspaceRuntime, board: { current?: Board }, last: { current?: WorkspaceListing }, inFlight: Set<Promise<void>>,
+  rt: WorkspaceRuntime, seen: (listing: WorkspaceListing) => void, inFlight: Set<Promise<void>>,
 ): () => Promise<void> {
   return () => {
     if (rt.stop.signal.aborted) return Promise.resolve();
-    const running = pass(rt, board.current, last).catch((e: unknown) => {
+    const running = pass(rt, seen).catch((e: unknown) => {
       console.error(`landrace: tick failed: ${oneLine(messageOf(e))}`);
     });
     inFlight.add(running);
@@ -883,16 +917,25 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // this write while only trying to read.
   await runPreflights(rt.preflights, rt.ctx);
 
-  // The last listing a tick or a Refresh made: what the page's actions find
-  // an item's workflow by.
-  const last: { current?: WorkspaceListing } = {};
+  // The last listing a tick or a Refresh made, and what the page was shown
+  // of it: the page's actions find an item's workflow by the second, and
+  // write only when the first judged it.
+  const last: { fresh?: WorkspaceListing; shown?: WorkspaceListing } = {};
+  const display = displayOf(rt.workflows);
+  const seen = (listing: WorkspaceListing): void => {
+    last.fresh = listing;
+    const shown = display(listing);
+    if (!shown) return;
+    last.shown = shown;
+    boardRef.current?.list(unionOf(shown.graphs));
+  };
 
   // Built before the board and the page, which both need to reach into it —
   // the board reads schedule.nextAt for the countdown, the page's writes and
   // the wake file call schedule.wake. `--once` never starts it: one tick and
   // no page means nothing here is ever armed.
   const inFlight = new Set<Promise<void>>();
-  const schedule = createSchedule({ intervalMs: rt.intervalMs, run: trackedRun(rt, boardRef, last, inFlight) });
+  const schedule = createSchedule({ intervalMs: rt.intervalMs, run: trackedRun(rt, seen, inFlight) });
 
   const { folder, workspace } = await repoWorkspace(dir);
   // `loadWorkspace` refuses a workspace with none, so this is never undefined.
@@ -908,21 +951,28 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   });
   boardRef.current = board;
 
-  const ownerOf = (item: string): WorkflowRuntime | { refused: string } => ownerIn(rt, last.current, item);
+  const readOwner = (item: string): WorkflowRuntime | { refused: string } => ownerIn(rt, last.shown, item);
+  // A write needs the last listing to have judged the item itself: what a
+  // failed source is shown as is its last good listing, which may be stale.
+  const writeOwner = (item: string): WorkflowRuntime | { refused: string } => {
+    const owner = readOwner(item);
+    const failures = last.fresh ? listingFailures(last.fresh) : [];
+    if ("refused" in owner || failures.length === 0) return owner;
+    return { refused: rt.log.scrub(`#${item} is not written to until every source lists again: ${failures.join("; ")}`) };
+  };
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
     tick: schedule.wake,
-    goto: gotoByClaim(rt, ownerOf),
+    goto: gotoByClaim(rt, writeOwner),
     // Re-list every source and reload the board from it: no converge, no
     // step, no agent — the page's Refresh button.
     refresh: async () => {
       const listing = await listWorkspace(rt);
-      last.current = listing;
-      board.list(unionOf(listing.graphs));
+      seen(listing);
       const failures = listingFailures(listing);
       if (failures.length) throw new Error(rt.log.scrub(failures.join("; ")));
     },
-    panel: panelByClaim(rt, ownerOf),
+    panel: panelByClaim(rt, readOwner, writeOwner),
   });
   if (ui) {
     console.error(`landrace: triage page at ${ui.url}`);
@@ -936,7 +986,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   try {
     // A single tick reports its own failure by throwing: one shot, one answer,
     // and the exit code is what a script that ran it will read.
-    await (opts.once ? pass(rt, board, last) : loop(rt, schedule, inFlight));
+    await (opts.once ? pass(rt, seen) : loop(rt, schedule, inFlight));
   } finally {
     unwatch?.();
     off();

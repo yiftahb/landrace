@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { buildWorkspaceRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
-import type { BuildOptions, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
+import type { BoardView, BuildOptions, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
 import { createActivityLog } from "#runner/activity.js";
 import { acquire, release } from "#runner/lock.js";
 import { sandboxRoot } from "#sandbox.js";
 import { tickWorkspace } from "#runner/tick.js";
 import { touchWake, wakePath } from "#wake.js";
+import { describeLoopback } from "#tests/support/loopback.js";
 import { workflowIn } from "#tests/support/workspace.js";
 
 /**
@@ -39,7 +40,9 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
 const hookSource = (
   provides?: string[], preflight?: "pass" | "throw", preFails?: string,
   items: Array<{ id: string; labels: string[] }> = [{ id: ITEM, labels: ["lr:auto"] }], listFails?: string,
-): string => `import { appendFile } from "node:fs/promises";
+  listFailsWhen?: string,
+): string => `import { existsSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 
 const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
@@ -59,6 +62,7 @@ export const source = brand("source", {
   relations: [],
   list: async (): Promise<unknown> => {
     ${listFails === undefined ? "" : `throw new Error(${JSON.stringify(listFails)});`}
+    ${listFailsWhen === undefined ? "" : `if (existsSync(${JSON.stringify(listFailsWhen)})) throw new Error("GET /issues → 502");`}
     return graph;
   },
   read: async (): Promise<unknown> => graph,
@@ -164,6 +168,8 @@ async function fixture(
     items?: Array<{ id: string; labels: string[] }>;
     /** A message the source's `list` fails with. */
     listFails?: string;
+    /** A file whose presence makes the source's `list` fail, for a test to switch the tracker off mid-run. */
+    listFailsWhen?: string;
   } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
@@ -171,7 +177,7 @@ async function fixture(
   const dir = join(root, ".landrace");
   const record = join(root, "applied.jsonl");
   await mkdir(join(dir, "hooks"), { recursive: true });
-  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight, opts.preFails, opts.items, opts.listFails) + (opts.hookExtra ?? ""));
+  await writeFile(join(dir, "hooks", "fake.ts"), hookSource(opts.provides, opts.preflight, opts.preFails, opts.items, opts.listFails, opts.listFailsWhen) + (opts.hookExtra ?? ""));
   // The project's own coding agent, by the path this repository's workflow
   // loads it from: the engine ships none. A dynamic import with a computed
   // specifier — the loader's own `import(pathToFileURL(path).href)` pattern —
@@ -930,4 +936,58 @@ describe("runStart and the wake file", () => {
       console.error = said;
     }
   }, 20_000);
+});
+
+/*
+ * The page through the daemon's own path. A tracker blip used to hand the
+ * board an empty graph, and `board.list` forgets every id it is not handed:
+ * one failed list emptied the page and refused every action on it until the
+ * next good tick. A source that cannot list is shown as it last listed, and
+ * nothing is written to an item the failed listing could not judge.
+ */
+describeLoopback("runStart's page while a source cannot list", () => {
+  const until = async (cond: () => boolean | Promise<boolean>, what: string, ms = 10_000): Promise<void> => {
+    const end = Date.now() + ms;
+    while (!(await cond())) {
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
+
+  it("keeps the items it last listed on the board, and refuses to write to one until the source lists again", async () => {
+    const flag = join(await mkdtemp(join(tmpdir(), "lr-flag-")), "down");
+    const { dir, record } = await fixture({ listFailsWhen: flag });
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => {
+      said.push(String(line));
+    };
+    const running = runStart(dir, { uiPort: 0 });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
+      const listed = async (): Promise<string[]> => ((await (await fetch(`${url}board.json`)).json()) as BoardView).rows.map((r) => r.id);
+      const post = (path: string, action: string): Promise<Response> =>
+        fetch(`${url}${path}`, { method: "POST", headers: { "x-landrace-action": action } });
+      await until(async () => (await applied(record)).length === 1 && (await listed()).includes(ITEM), "the first tick to work the item");
+
+      await writeFile(flag, "");
+      expect((await post("refresh", "refresh")).status).toBe(502);
+      expect(await listed()).toEqual([ITEM]);
+
+      touchWake(wakePath(dir));
+      await until(() => said.some((l) => l.includes("tick failed: could not list the source of main")), "a tick that cannot list");
+      expect(await listed()).toEqual([ITEM]);
+
+      const retried = await post(`items/${ITEM}/retry`, "retry");
+      expect(retried.status).toBe(409);
+      expect(await retried.text()).toMatch(/could not list the source of main: GET \/issues → 502/);
+      expect(await applied(record)).toEqual([{ item: ITEM, type: "tracker.comment" }]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
 });
