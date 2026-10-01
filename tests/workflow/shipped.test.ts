@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { outputValueProblem } from "#conventions.js";
 import { decide } from "#core/decide.js";
-import type { Snapshot } from "#namespace.js";
+import type { Node, Snapshot } from "#namespace.js";
+import { laneOf, statusRows } from "#runner/status.js";
 import { renderPrompt } from "#runner/step.js";
 import { loadShipped } from "#tests/support/shipped.js";
 import { loadWorkspace } from "#workflow/workspace.js";
@@ -57,6 +58,39 @@ describe("the shipped workspace", () => {
  * example, and where the feature is tested — so none of it may creep back in
  * here by way of a copied stage.
  */
+/*
+ * Needs you reads the stage an item is at, not `lr:awaiting`, so main's three
+ * person's turns say so on the stage — and an item there is filed exactly
+ * where it always was. Main still writes `lr:awaiting`; nothing reads it.
+ */
+describe("the shipped workflow puts an item in Needs you where it is a person's turn", () => {
+  const node = (labels: string[]): Node => ({
+    id: "7", kind: "item", title: "t", link: "", closed: null, priority: null, origin: null, state: { labels, assignees: [] },
+  });
+
+  it("waits on a person at spec-questions, spec-human-review and pr-human-review, and nowhere else", async () => {
+    const { workflow } = await loadShipped();
+    expect(workflow.stages.filter((s) => s.waits === "person").map((s) => s.id))
+      .toEqual(["spec-questions", "spec-human-review", "pr-human-review"]);
+  });
+
+  it.each([
+    [["lr:auto", "lr:stage:spec-human-review", "lr:awaiting"], "needs-you"],
+    [["lr:auto", "lr:stage:spec-questions", "lr:awaiting"], "needs-you"],
+    [["lr:auto", "lr:stage:pr-human-review", "lr:awaiting"], "needs-you"],
+    // Before the label effect has landed: the stage alone says whose turn it is.
+    [["lr:auto", "lr:stage:pr-human-review", "lr:working"], "needs-you"],
+    [["lr:auto", "lr:stage:blocked", "lr:blocked"], "needs-you"],
+    [["lr:auto", "lr:stage:build", "lr:working"], "waiting"],
+    [["lr:auto", "lr:stage:triage", "lr:working"], "waiting"],
+    [["lr:auto", "lr:stage:done"], "discharged"],
+  ])("files %j under %s", async (labels, lane) => {
+    const { workflow } = await loadShipped();
+    const [row] = statusRows(workflow, [node(labels)]);
+    expect(row && laneOf(row, workflow)).toBe(lane);
+  });
+});
+
 describe("the shipped workflow is a single flow", () => {
   const fresh = (origin: boolean): Snapshot => ({
     node: { id: "7", kind: "item", title: "t", link: "", closed: null, priority: null,

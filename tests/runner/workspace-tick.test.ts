@@ -363,8 +363,8 @@ describe("a notifier two workflows share", () => {
   const ASKING: Workflow = {
     version: 1, name: "asking", description: "test",
     stages: [{
-      id: "ask", entry: true, triggers: [{ when: { "run.stage": null } }],
-      on_enter: [{ type: "tracker.status", value: "ask" }, { type: "tracker.label", add: ["lr:awaiting"] }],
+      id: "ask", entry: true, waits: "person", triggers: [{ when: { "run.stage": null } }],
+      on_enter: [{ type: "tracker.status", value: "ask" }],
     }],
   };
 

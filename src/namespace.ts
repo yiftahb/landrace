@@ -258,6 +258,14 @@ export interface Stage {
   branch?: string;
   entry?: boolean;
   terminal?: boolean;
+  /**
+   * Whose turn it is while an item rests here: `person` files it under Needs
+   * you — on the board, in a notification, in `landrace status` and in
+   * `landrace_waiting`. Read off the stage the item is located at, never off a
+   * label, so a workflow that writes nothing to its tracker can still say an
+   * item waits on someone. `| undefined`: fed from Zod.
+   */
+  waits?: "person" | undefined;
   identity?: Condition;
   requires?: Condition;
   triggers?: Trigger[];

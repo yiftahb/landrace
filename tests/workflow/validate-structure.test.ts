@@ -242,6 +242,29 @@ describe("structural validation", () => {
     const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
     expect(validateStructure(w, steps).map((p) => p.rule)).toContain("operator");
   });
+
+  // A person's turn runs no agent: a stage saying both would put an item in
+  // Needs you while a paid step runs on it.
+  it("refuses a stage that waits on a person and runs a step, naming it", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "ask", step: "ask.md", waits: "person", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "ask" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "waits")).toEqual([{
+      rule: "waits",
+      message: 'stage "ask" waits on a person and runs step ask.md: a person\'s turn runs no agent, so it cannot do both',
+    }]);
+  });
+
+  it("accepts a stage that waits on a person and runs no step", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "ask", waits: "person", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "ask" } }] },
+    ]);
+    expect(validateStructure(w)).toEqual([]);
+  });
 });
 
 /*

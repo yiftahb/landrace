@@ -95,6 +95,17 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     }
   }
 
+  // A person's turn runs no agent: a stage saying both would file an item
+  // under Needs you while a paid step ran on it.
+  for (const stage of w.stages) {
+    if (stage.waits === "person" && stage.step !== undefined) {
+      problems.push({
+        rule: "waits",
+        message: `stage "${stage.id}" waits on a person and runs step ${stage.step}: a person's turn runs no agent, so it cannot do both`,
+      });
+    }
+  }
+
   // decide() skips a candidate stage equal to the current stage — a trigger
   // anchored on its own stage can therefore never fire, no matter how it
   // looks on paper. A workflow that relies on one deadlocks silently instead

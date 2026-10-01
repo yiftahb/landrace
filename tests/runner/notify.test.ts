@@ -7,7 +7,7 @@ const workflow: Workflow = {
   version: 1, name: "Fastlane", description: "test",
   eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
   stages: [
-    { id: "spec-questions", triggers: [{ when: { "run.stage": null } }] },
+    { id: "spec-questions", waits: "person", triggers: [{ when: { "run.stage": null } }] },
     { id: "build", triggers: [{ when: { "run.stage": "spec-questions" } }] },
   ],
 };
@@ -16,7 +16,8 @@ const node = (labels: string[], title = "Add export"): Node => ({
   id: "29", kind: "item", title, link: "https://tracker.example/29", closed: null, priority: null, origin: null,
   state: { labels: ["lr:auto", ...labels] },
 });
-const waiting = { node: node(["lr:stage:spec-questions", "lr:awaiting"]) };
+// No lr:awaiting: whose turn it is is the stage's to say.
+const waiting = { node: node(["lr:stage:spec-questions"]) };
 
 const config = (notify?: unknown): RuntimeConfig =>
   runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, ...(notify == null ? {} : { notify }) });
@@ -73,7 +74,7 @@ describe("createNotify", () => {
   });
 
   // The board files a closed item under Done whatever its labels still say.
-  it("says nothing about a closed item still wearing lr:awaiting", async () => {
+  it("says nothing about a closed item, whatever stage it was left at", async () => {
     const { sent, notifier } = recorder("chat");
     harness([notifier]).fire({ node: { ...waiting.node, closed: "done" } });
     await settle();
@@ -109,7 +110,7 @@ describe("createNotify", () => {
 
   it("flattens a title onto one line", async () => {
     const { sent, notifier } = recorder("chat");
-    harness([notifier]).fire({ node: node(["lr:stage:spec-questions", "lr:awaiting"], "Add\nexport\u001b[2J") });
+    harness([notifier]).fire({ node: node(["lr:stage:spec-questions"], "Add\nexport\u001b[2J") });
     await settle();
     expect(sent[0]?.title).toBe("Add export [2J");
   });

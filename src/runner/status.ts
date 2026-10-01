@@ -1,4 +1,5 @@
 import { compareIds, isOpenItem, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
+import { locateNode } from "#core/index.js";
 import type { Lane, ListedWorkflow, Node, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
 import { claimedBy, eligibilityOf, reportedBy, turnedAway } from "#runner/tick.js";
 
@@ -80,14 +81,20 @@ export function statusLines(rows: StatusRow[], opts: { several?: boolean } = {})
 }
 
 /**
- * One row per item node, answered from the labels the source already carried
- * back — no snapshot per item, which would mean reading every issue in the
+ * One row per item node, answered from what the source already carried back
+ * — no snapshot per item, which would mean reading every issue in the
  * repository to print a table.
  *
  * The order the questions are asked in is the tick's own: eligibility first,
  * because an item the workflow does not claim is not ours to have an opinion
- * about, and then position — where two stage labels means the item cannot be
- * placed at all.
+ * about, and then position — where two stage labels, or a label and an
+ * identity naming two stages, means the item cannot be placed at all.
+ *
+ * Position is the stage `locateNode` finds, not only the label: a stage can
+ * place an item by its own state, and whose turn it is is that stage's
+ * `waits`, never `lr:awaiting` — a workflow that writes nothing still says an
+ * item is waiting on you. Blocked and screened are still read off the labels
+ * the engine writes as it moves an item to either.
  *
  * This used to say that naming the first of the two "would print a position
  * the engine itself refuses to believe". The engine believed it and spent
@@ -107,29 +114,35 @@ export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
   return [...items].sort((a, b) => compareIds(a.id, b.id)).map((node) => {
     const eligibility = eligibilityOf(workflow, node);
     const labels = labelsOf(node);
-    const { stage, ambiguous, found } = stageFromLabels(labels);
+    const { stage: labelled, ambiguous, found } = stageFromLabels(labels);
     const row = { item: node.id, title: node.title };
 
     // The workflow's own `else`, never a label name of this file's choosing:
     // what "eligible" means belongs to the workflow, and a second copy of that
     // rule here is how a status table and an engine come to disagree.
-    if (!eligibility.eligible) return { ...row, stage, note: `skipped: ${eligibility.reason}` };
+    if (!eligibility.eligible) return { ...row, stage: labelled, note: `skipped: ${eligibility.reason}` };
     // Which ones, because taking one of them off is the fix and an operator
     // reading a table cannot see the labels from here.
     if (ambiguous) return { ...row, stage: null, note: `halted: more than one lr:stage:* label (${found.join(", ")})` };
+    const where = locateNode(workflow, node);
+    // In decide's own words, since it halts on the same fact.
+    if (where.kind === "ambiguous") return { ...row, stage: null, note: `halted: cannot place the item: ${where.ids.join(", ")} all match` };
+    const stage = where.kind === "at" ? where.stage : null;
 
     // Screened before blocked: a screened item wears both, and the more
-    // specific reason is the one a person can act on.
+    // specific reason is the one a person can act on. A stage that waits on
+    // a person before lr:working, which a crash between a stage's status and
+    // its label effect can leave behind from the stage before.
     const note = labels.includes(LABELS.screened)
       ? SCREENED_NOTE
       : labels.includes(LABELS.blocked)
         ? BLOCKED_NOTE
-        : labels.includes(LABELS.awaiting)
+        : stage?.waits === "person"
           ? "waiting on you"
           : labels.includes(LABELS.working)
             ? "working"
             : "queued";
-    return { ...row, stage, note };
+    return { ...row, stage: stage?.id ?? null, note };
   });
 }
 

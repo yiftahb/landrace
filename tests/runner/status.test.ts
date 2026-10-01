@@ -1,5 +1,5 @@
 import type { Node, Workflow } from "#namespace.js";
-import { statusRows } from "#runner/status.js";
+import { laneOf, statusRows } from "#runner/status.js";
 
 const workflow: Workflow = {
   version: 1,
@@ -69,7 +69,6 @@ describe("statusRows", () => {
 
   it("says whose turn it is", () => {
     expect(noteFor(["go", "lr:blocked"])).toMatch(/blocked/);
-    expect(noteFor(["go", "lr:awaiting"])).toMatch(/waiting on you/);
     expect(noteFor(["go", "lr:working"])).toBe("working");
     expect(noteFor(["go"])).toBe("queued");
   });
@@ -77,5 +76,69 @@ describe("statusRows", () => {
   it("prints items in id order, whatever order the source listed them in", () => {
     const rows = statusRows(workflow, [candidate(["go"], [], "10"), candidate(["go"], [], "9"), candidate(["go"], [], "2")]);
     expect(rows.map((r) => r.item)).toEqual(["2", "9", "10"]);
+  });
+});
+
+/*
+ * Whose turn it is belongs to the stage, not to a label: `waits: person` on
+ * the stage the item is located at — which a read-only workflow can place by
+ * the item's own state, writing nothing. `lr:awaiting` is still written by a
+ * workflow that writes it, and is no longer what Needs you reads.
+ */
+describe("statusRows, read from where the item is", () => {
+  const turns: Workflow = {
+    version: 1, name: "t", description: "test",
+    eligible: [{ when: { "node.state.labels": { $in: ["go"] } }, else: "no go label" }],
+    stages: [
+      { id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] },
+      { id: "questions", waits: "person", triggers: [{ when: { "run.stage": "spec" } }] },
+      // Placed by the item's own labels: nothing ever writes lr:stage:reviewing.
+      { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["needs-my-review"] } },
+        triggers: [{ when: { "run.stage": "spec" } }] },
+      { id: "done", terminal: true, triggers: [{ when: { "run.stage": "questions" } }] },
+    ],
+  };
+  const rowFor = (labels: string[]) => statusRows(turns, [candidate(labels)])[0];
+  const laneFor = (labels: string[]) => {
+    const row = rowFor(labels);
+    return row ? laneOf(row, turns) : undefined;
+  };
+
+  it("says an item at a stage that waits on a person is waiting on you, with no lr:awaiting label", () => {
+    expect(rowFor(["go", "lr:stage:questions"])).toMatchObject({ stage: "questions", note: "waiting on you" });
+    expect(laneFor(["go", "lr:stage:questions"])).toBe("needs-you");
+  });
+
+  it("does not read lr:awaiting: an item at a stage that runs a step is not waiting on you", () => {
+    expect(rowFor(["go", "lr:stage:spec", "lr:awaiting"])).toMatchObject({ stage: "spec", note: "queued" });
+    expect(laneFor(["go", "lr:stage:spec", "lr:awaiting"])).toBe("waiting");
+  });
+
+  // A crash between a stage's status and its label effect leaves the old
+  // stage's lr:working behind: the stage, not that label, says whose turn it is.
+  it("says waiting on you at a stage that waits, whatever lr:working a crash left behind", () => {
+    expect(rowFor(["go", "lr:stage:questions", "lr:working"])?.note).toBe("waiting on you");
+  });
+
+  it("still says blocked first, at a stage that waits on a person", () => {
+    expect(rowFor(["go", "lr:stage:questions", "lr:blocked"])?.note).toBe("blocked: needs a human");
+    expect(rowFor(["go", "lr:stage:questions", "lr:blocked", "lr:screened"])?.note).toBe("blocked by a security check");
+  });
+
+  it("reports an item placed by its stage's identity alone, with no lr:stage: label, at that stage", () => {
+    expect(rowFor(["go", "needs-my-review"])).toMatchObject({ stage: "reviewing", note: "waiting on you" });
+    expect(laneFor(["go", "needs-my-review"])).toBe("needs-you");
+  });
+
+  it("reports a terminal stage an item is located at as discharged", () => {
+    expect(laneFor(["go", "lr:stage:done"])).toBe("discharged");
+  });
+
+  // Ambiguity halts: the label says one stage and an identity another, and
+  // the row names both rather than believing either.
+  it("halts an item whose label and a stage's identity disagree, naming both", () => {
+    const row = rowFor(["go", "lr:stage:spec", "needs-my-review"]);
+    expect(row).toMatchObject({ stage: null, note: "halted: cannot place the item: spec, reviewing all match" });
+    expect(laneFor(["go", "lr:stage:spec", "needs-my-review"])).toBe("needs-you");
   });
 });

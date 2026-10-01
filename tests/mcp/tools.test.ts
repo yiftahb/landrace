@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createTools } from "#mcp/tools.js";
-import { renderMarker } from "#conventions.js";
+import { compareIds, renderMarker } from "#conventions.js";
 import type { Executor, LoadedWorkflow, Registry, Source, Step, Tools, Workflow } from "#namespace.js";
 import { acquire, release } from "#runner/lock.js";
 import { buildSnapshot } from "#runner/snapshot.js";
+import { listWorkspace } from "#runner/tick.js";
+import { boardView } from "#ui/board.js";
 import { hooked, loaded } from "#tests/support/loaded.js";
 import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
 
@@ -110,14 +112,57 @@ describe("mcp tools", () => {
     expect(tracker.issues.get(Number(item))).toMatchObject({ state: "open", labels: ["bug"] });
   });
 
-  it("lists only the items waiting on a human", async () => {
-    const { tools } = world([
-      { number: 1, labels: ["lr:auto", "lr:awaiting"] },
-      { number: 2, labels: ["lr:auto"] },
+  /*
+   * Whose turn it is is the stage's to say (`waits: person`), on the stage
+   * each item is located at — by its label or by its own state — and the
+   * list is the board's Needs you exactly, halts and blocks included: two
+   * readers of "who is waiting on you" is how a list and a page disagree.
+   */
+  it("lists exactly the board's Needs you, read from the stage each item is at", async () => {
+    const turns: Workflow = {
+      version: 1, name: "t", description: "test", admit: ["lr:auto"],
+      eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+      stages: [
+        { id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] },
+        { id: "questions", waits: "person", triggers: [{ when: { "run.stage": "spec" } }] },
+        { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["needs-my-review"] } },
+          triggers: [{ when: { "run.stage": "spec" } }] },
+        { id: "blocked", triggers: [{ when: { "run.lastOutputValid": false } }] },
+        { id: "done", terminal: true, triggers: [{ when: { "run.stage": "questions" } }] },
+      ],
+    };
+    const tracker = createFakeTracker([
+      // At a stage that waits on a person, with no lr:awaiting on it.
+      { number: 1, labels: ["lr:auto", "lr:stage:questions"] },
+      // lr:awaiting at a stage that runs a step: not read.
+      { number: 2, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] },
+      // Placed by its own labels alone, at a stage that waits.
+      { number: 3, labels: ["lr:auto", "needs-my-review"] },
+      { number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] },
+      // Its label and an identity disagree: halted, so a person's to settle.
+      { number: 5, labels: ["lr:auto", "lr:stage:spec", "needs-my-review"] },
+      { number: 6, labels: ["lr:auto", "lr:stage:done"] },
+      { number: 7, labels: ["needs-my-review"] },
     ]);
-    expect(await tools.waiting()).toEqual([
+    const tools = createTools([hooked(tracker.registry, loaded(turns, spec.steps))], tracker.ctx, { lock: { root: lockRoot } });
+
+    const waiting = await tools.waiting();
+    expect(waiting).toEqual([
       { item: "1", title: "issue 1", url: expect.stringContaining("/1"), workflow: "main" },
+      { item: "3", title: "issue 3", url: expect.stringContaining("/3"), workflow: "main" },
+      { item: "4", title: "issue 4", url: expect.stringContaining("/4"), workflow: "main" },
+      { item: "5", title: "issue 5", url: expect.stringContaining("/5"), workflow: "main" },
     ]);
+
+    const { source } = tracker.registry;
+    if (!source) throw new Error("the fake tracker registers no source");
+    const listing = await listWorkspace({ workflows: [{ id: "main", source, deps: { workflow: turns } }], ctx: tracker.ctx, log: () => {} });
+    const board = boardView({
+      workflows: [{ id: "main", workflow: turns }], listing, nest: new Set(), running: new Map(), elsewhere: new Map(),
+      now: 0, pid: 1, nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
+    });
+    const needsYou = board.rows.filter((row) => row.badge === "needs-you").map((row) => row.id);
+    expect(waiting.map((w) => w.item)).toEqual([...needsYou].sort(compareIds));
   });
 
   it("does not list a closed item as waiting, whatever labels it kept", async () => {
@@ -431,6 +476,7 @@ describe("over a workspace of two workflows", () => {
     stages: [
       { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
         triggers: [{ when: { "run.stage": null } }] },
+      { id: "questions", waits: "person", triggers: [{ when: { "run.stage": "spec", "run.outputs.spec.kind": "questions" } }] },
       { id: "blocked", goto: sends, triggers: [{ when: { "run.lastOutputValid": false } }] },
     ],
   }, spec.steps, id);
@@ -442,7 +488,7 @@ describe("over a workspace of two workflows", () => {
 
   const SEED: Array<Partial<FakeIssue>> = [
     { number: 1, labels: ["lr:auto", "lr:stage:spec"] },
-    { number: 2, labels: ["lr:fast", "lr:stage:spec", "lr:awaiting"] },
+    { number: 2, labels: ["lr:fast", "lr:stage:questions"] },
     { number: 3, labels: ["lr:auto", "lr:fast", "lr:awaiting"] },
     { number: 4, labels: [] },
     { number: 5, labels: ["lr:fast", "lr:stage:blocked", "lr:blocked"] },
@@ -471,7 +517,7 @@ describe("over a workspace of two workflows", () => {
   it("lists every claimed item with its workflow, stage and lane, and every halt with why", async () => {
     expect(await two().tools.items()).toEqual([
       { item: "1", title: "issue 1", workflow: "main", stage: "spec", lane: "waiting" },
-      { item: "2", title: "issue 2", workflow: "fast", stage: "spec", lane: "needs-you" },
+      { item: "2", title: "issue 2", workflow: "fast", stage: "questions", lane: "needs-you" },
       { item: "3", title: "issue 3", workflow: null, stage: null, lane: "needs-you", why: "halted: claimed by fast and main" },
       { item: "5", title: "issue 5", workflow: "fast", stage: "blocked", lane: "needs-you" },
       { item: "6", title: "issue 6", workflow: "main", stage: "blocked", lane: "needs-you" },
@@ -486,14 +532,17 @@ describe("over a workspace of two workflows", () => {
     await expect(tools.items({ workflow: "nope" })).rejects.toThrow('no workflow "nope"; the workspace has main, fast');
   });
 
+  // Every item the board files under Needs you: a person's turn, a halt and a block.
   it("lists what waits on you with each item's workflow, and one workflow's alone when asked", async () => {
     const { tools } = two();
     expect(await tools.waiting()).toEqual([
       { item: "2", title: "issue 2", url: expect.stringContaining("/2"), workflow: "fast" },
       { item: "3", title: "issue 3", url: expect.stringContaining("/3"), workflow: null, why: "halted: claimed by fast and main" },
+      { item: "5", title: "issue 5", url: expect.stringContaining("/5"), workflow: "fast" },
+      { item: "6", title: "issue 6", url: expect.stringContaining("/6"), workflow: "main" },
     ]);
-    expect((await tools.waiting({ workflow: "fast" })).map((w) => w.item)).toEqual(["2", "3"]);
-    expect((await tools.waiting({ workflow: "main" })).map((w) => w.item)).toEqual(["3"]);
+    expect((await tools.waiting({ workflow: "fast" })).map((w) => w.item)).toEqual(["2", "3", "5"]);
+    expect((await tools.waiting({ workflow: "main" })).map((w) => w.item)).toEqual(["3", "6"]);
   });
 
   it("refuses to create an item without a workflow when two can create, naming them, and creates nothing", async () => {
@@ -524,7 +573,7 @@ describe("over a workspace of two workflows", () => {
 
   it("reads an item through the workflow that claims it", async () => {
     const { tools } = two();
-    expect(await tools.status("2")).toMatchObject({ item: "2", workflow: "fast", eligible: true, stage: "spec" });
+    expect(await tools.status("2")).toMatchObject({ item: "2", workflow: "fast", eligible: true, stage: "questions" });
     expect(await tools.status("1")).toMatchObject({ item: "1", workflow: "main", eligible: true });
   });
 
@@ -710,7 +759,7 @@ describe("over a workspace of two workflows", () => {
       expect((await tools.workflows()).map((w) => w.id)).toEqual(["fast"]);
       expect((await tools.items()).map((i) => i.item)).toEqual(["2", "3", "5"]);
       expect((await tools.items()).find((i) => i.item === "3")).toMatchObject({ workflow: null, why: "halted: claimed by fast and main" });
-      expect((await tools.waiting()).map((w) => w.item)).toEqual(["2", "3"]);
+      expect((await tools.waiting()).map((w) => w.item)).toEqual(["2", "3", "5"]);
     });
 
     it("does not list a halt it is no party to", async () => {

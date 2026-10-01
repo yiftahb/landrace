@@ -1,7 +1,7 @@
 import { checkEligible } from "#core/eligible.js";
-import { locate } from "#core/locate.js";
+import { locate, locateNode } from "#core/locate.js";
 import { assess } from "#core/assess.js";
-import type { Workflow, Snapshot, Stage } from "#namespace.js";
+import type { Node, Workflow, Snapshot, Stage } from "#namespace.js";
 
 const wf = (stages: Stage[], eligible?: Workflow["eligible"]): Workflow =>
   ({ version: 1, name: "t", description: "test", stages, ...(eligible ? { eligible } : {}) });
@@ -41,6 +41,70 @@ describe("locate", () => {
       { id: "b", identity: { "x": 1 } },
     ];
     expect(locate(wf(both), snap({ x: 1 }))).toEqual({ kind: "ambiguous", ids: ["a", "b"] });
+  });
+});
+
+/*
+ * Where a listed node is, asked of the node alone — what status rows, the
+ * board and notifications can know without a snapshot per item. The label's
+ * stage stands in for `run.stage`, which is what the snapshot would derive
+ * from it, so a default identity places the item exactly as `locate` does.
+ */
+describe("locateNode", () => {
+  const node = (labels: string[]): Node => ({
+    id: "1", kind: "item", title: "t", link: "", closed: null, priority: null, origin: null, state: { labels, assignees: [] },
+  });
+  const mine = { "node.state.labels": { $in: ["needs-my-review"] } };
+
+  it("places a labelled item at its label's stage, as locate would", () => {
+    const stages: Stage[] = [{ id: "spec", entry: true }, { id: "build" }];
+    expect(locateNode(wf(stages), node(["lr:stage:build"]))).toEqual({ kind: "at", stage: stages[1] });
+    expect(locateNode(wf(stages), node([]))).toEqual({ kind: "none" });
+  });
+
+  it("places an item by an identity that reads the node, with no stage label", () => {
+    const stages: Stage[] = [{ id: "spec", entry: true }, { id: "reviewing", identity: mine }];
+    expect(locateNode(wf(stages), node(["needs-my-review"]))).toEqual({ kind: "at", stage: stages[1] });
+  });
+
+  it("halts rather than choosing when the label and an identity both match", () => {
+    const stages: Stage[] = [{ id: "spec", entry: true }, { id: "reviewing", identity: mine }];
+    expect(locateNode(wf(stages), node(["lr:stage:spec", "needs-my-review"]))).toEqual({ kind: "ambiguous", ids: ["spec", "reviewing"] });
+  });
+
+  it("halts on two stage labels, naming them, as the engine does", () => {
+    const stages: Stage[] = [{ id: "spec", entry: true }, { id: "build" }];
+    expect(locateNode(wf(stages), node(["lr:stage:spec", "lr:stage:build"]))).toEqual({ kind: "ambiguous", ids: ["spec", "build"] });
+  });
+
+  /*
+   * An identity reading what no node carries — a step's output, a counter —
+   * cannot be judged here. It is not a match, and not a miss either: it
+   * gives way to an identity that can be judged and matches, and where none
+   * does, the label's stage is all a node can say.
+   */
+  it("lets an identity it cannot judge give way to one that matches", () => {
+    const stages: Stage[] = [
+      { id: "spec", entry: true, identity: { "run.outputs.spec.kind": "spec" } },
+      { id: "reviewing", identity: mine },
+    ];
+    expect(locateNode(wf(stages), node(["needs-my-review"]))).toEqual({ kind: "at", stage: stages[1] });
+  });
+
+  it("falls back to the label's stage when its identity cannot be judged and nothing else matches", () => {
+    const stages: Stage[] = [
+      { id: "spec", entry: true },
+      { id: "review", identity: { "run.stage": "review", "run.outputs.review.kind": "ready" } },
+    ];
+    expect(locateNode(wf(stages), node(["lr:stage:review"]))).toEqual({ kind: "at", stage: stages[1] });
+  });
+
+  it("does not fall back to a label's stage whose own identity says no", () => {
+    const stages: Stage[] = [
+      { id: "spec", entry: true, identity: { "node.state.labels": { $in: ["drafting"] } } },
+      { id: "review", identity: { "run.counters.review": { $lt: 3 } } },
+    ];
+    expect(locateNode(wf(stages), node(["lr:stage:spec"]))).toEqual({ kind: "none" });
   });
 });
 

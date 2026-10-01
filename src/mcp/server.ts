@@ -75,8 +75,9 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   server.tool(
     "landrace_waiting",
     said(
-      "List the items currently waiting on a human, each with the workflow that claims it; with `workflow`, " +
-        "that workflow's and the halts it is party to.",
+      "List the items currently waiting on a human — the board's Needs you: at a stage that waits on a person, " +
+        "blocked, or halted — each with the workflow that claims it; with `workflow`, that workflow's and the " +
+        "halts it is party to.",
     ),
     { workflow },
     guard(({ workflow: w }) => tools.waiting({ workflow: w })),

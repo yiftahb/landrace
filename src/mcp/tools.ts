@@ -11,7 +11,7 @@ import {
   ITEM_KIND,
 } from "#conventions.js";
 import { checkEligible } from "#core/index.js";
-import type { Claims, Graph, ItemSummary, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, WorkspaceListing } from "#namespace.js";
+import type { Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, WorkspaceListing } from "#namespace.js";
 import type { Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -310,6 +310,17 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
   const shows = (only: string | undefined, row: StatusRow, claims: Claims): boolean =>
     only === undefined || row.workflow === only || (row.workflow === undefined && (partiesTo(claims, row.item)?.includes(only) ?? false));
 
+  /**
+   * The board's lane for `row`, or null for an item every workflow turned
+   * away, which is not anyone's to list. A halt is a person's to settle. The
+   * one answer `items` and `waiting` both give, so neither list can disagree
+   * with the other or with the page.
+   */
+  const laneIn = (row: StatusRow, claims: Claims): Lane | null => {
+    if (row.workflow !== undefined) return laneOf(row, handsOf(row.workflow).deps.workflow);
+    return partiesTo(claims, row.item) === null ? null : "needs-you";
+  };
+
   return {
     // Said in every tool's description, so an agent holding this server knows before it asks.
     scope: opts.scope ?? null,
@@ -335,14 +346,12 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       const listing = await listed();
       // `landrace status`'s own rows, so an agent is told what the table says.
       return workspaceStatusRows(listedAs, listing).flatMap((row): ItemSummary[] => {
-        if (!shows(only, row, listing.claims)) return [];
-        if (row.workflow !== undefined) {
-          return [{ item: row.item, title: row.title, workflow: row.workflow, stage: row.stage, lane: laneOf(row, handsOf(row.workflow).deps.workflow) }];
-        }
-        // A halt is something a person has to settle; an item every workflow
-        // turned away is not anyone's to list.
-        if (partiesTo(listing.claims, row.item) === null) return [];
-        return [{ item: row.item, title: row.title, workflow: null, stage: row.stage, lane: "needs-you", why: row.note }];
+        const lane = laneIn(row, listing.claims);
+        if (lane === null || !shows(only, row, listing.claims)) return [];
+        return [{
+          item: row.item, title: row.title, workflow: row.workflow ?? null, stage: row.stage, lane,
+          ...(row.workflow === undefined ? { why: row.note } : {}),
+        }];
       });
     },
 
@@ -350,14 +359,14 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       const only = within(workflow);
       const listing = await listed();
       // Filtered here, not in the hook: whose turn it is is the engine's own
-      // vocabulary, and a source that had to know it would be a source that
-      // had to know the workflow. Labels ride along on an item node precisely
-      // so this costs no snapshot per item.
+      // vocabulary — the `waits` of the stage an item is at — and a source
+      // that had to know it would be a source that had to know the workflow.
+      // The board's Needs you, exactly: the same rows, in the same lane.
       const nodes = new Map<string, Node>();
       for (const node of listing.graphs.flatMap((g) => g.nodes)) if (isOpenItem(node) && !nodes.has(node.id)) nodes.set(node.id, node);
       return workspaceStatusRows(listedAs, listing).flatMap((row): WaitingItem[] => {
         const node = nodes.get(row.item);
-        if (!node || !labelsOf(node).includes(LABELS.awaiting) || !shows(only, row, listing.claims)) return [];
+        if (!node || laneIn(row, listing.claims) !== "needs-you" || !shows(only, row, listing.claims)) return [];
         return [{ item: row.item, title: row.title, url: node.link, workflow: row.workflow ?? null, ...(row.workflow === undefined ? { why: row.note } : {}) }];
       });
     },

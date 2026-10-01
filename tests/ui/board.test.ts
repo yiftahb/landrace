@@ -10,6 +10,7 @@ const workflow: Workflow = {
   stages: [
     { id: "spec", entry: true, step: "steps/spec.md", goto: ["spec"], triggers: [{ when: { "run.stage": null } }] },
     { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+    { id: "spec-human-review", waits: "person", triggers: [{ when: { "run.stage": "spec" } }] },
     { id: "done", terminal: true, triggers: [{ when: { "run.stage": "spec" } }] },
   ],
 };

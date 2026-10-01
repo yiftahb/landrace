@@ -65,8 +65,11 @@ budget:
 # `kind: questions` — two triggers, an ambiguity halt, and the item left
 # wearing lr:working at a stage nothing would ever run again.
 #
-# And one for a person's turn. Wherever it is theirs, a reply goes to
-# `triage`, which reads it into one closed set of answers; `triage` sends the
+# And one for a person's turn. A stage where it is theirs says `waits:
+# person`, and that — not the `lr:awaiting` its on_enter still writes, for
+# whoever reads the issue — is what files the item under Needs you. Wherever
+# it is theirs, a reply goes to `triage`, which reads it into one closed set
+# of answers; `triage` sends the
 # item on, or back to where the reply was made when the answer changes
 # nothing there — `run.previousStage`, which the engine reads off triage's
 # own entry record. The same stages list, under `goto`, the steps a person may
@@ -114,6 +117,7 @@ stages:
   # back to, and how many rounds each may run in all, a goto-driven one
   # counting like any other. The two halts list more, and say why.
   - id: spec-questions
+    waits: person
     goto: &goto
       - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
@@ -145,6 +149,7 @@ stages:
   # it, and build takes it. Every trigger in here that leaves spec reads
   # `run.lastOutputBy: agent`, the negation of build's.
   - id: spec-human-review
+    waits: person
     goto: *goto
     requires: { "run.outputs.spec.kind": spec, "run.lastOutputBy": agent }
     triggers:
@@ -382,6 +387,7 @@ stages:
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
   - id: pr-human-review
+    waits: person
     goto: *goto
     triggers:
       # The retro's trigger, negated: the two can never match together.

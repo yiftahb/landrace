@@ -484,9 +484,11 @@ describe("buildMcpTools over a workspace of several workflows", () => {
   it("serves every workflow, and finds an item's by its claim", async () => {
     const { dir } = await fixture({ screen: false, fast: true });
     const tools = await buildMcpTools(dir);
+    // None needs you: the item wears lr:awaiting, but main's one stage runs a
+    // step, and whose turn it is is a stage's `waits`, not that label.
     expect(await tools.workflows()).toEqual([
       { id: "fast", name: "fastlane", description: "the fast one", creates: false, claimed: 0, needsYou: 0 },
-      { id: "main", name: "mcp", description: "test", creates: false, claimed: 1, needsYou: 1 },
+      { id: "main", name: "mcp", description: "test", creates: false, claimed: 1, needsYou: 0 },
     ]);
     expect(await tools.status(ITEM)).toMatchObject({ item: ITEM, workflow: "main" });
   });
