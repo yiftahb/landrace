@@ -1,5 +1,5 @@
 import { readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, posix, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import type { z } from "zod";
 import type { ContainedPath, LoadFailureRule, Step, Workflow } from "#namespace.js";
@@ -34,13 +34,13 @@ const inside = (p: string, root: string): boolean =>
  * resolution so each is reported as what it is rather than surfacing later as
  * "that file does not exist" — a misdescription an operator would chase.
  */
-function shapeProblem(p: string): string | null {
+function shapeProblem(p: string, options: { parent?: boolean } = {}): string | null {
   if (p.trim() === "") return "is empty";
   if (isAbsolute(p) || p.startsWith("/")) return "is absolute";
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(p)) return "is a URL or a drive path, not a relative path";
   if (p.includes("\\")) return "contains a backslash";
   if (p.includes("%")) return "is percent-encoded";
-  const dotted = p.split("/").find((seg) => /^\.{2,}$/.test(seg));
+  const dotted = p.split("/").find((seg) => /^\.{2,}$/.test(seg) && !(options.parent === true && seg === ".."));
   if (dotted !== undefined) return `contains a "${dotted}" segment`;
   return null;
 }
@@ -80,6 +80,25 @@ export async function containedPath(root: string, relative: string): Promise<Con
   return inside(real, realRoot)
     ? { ok: true, path: real }
     : { ok: false, kind: "unsafe", reason: "is a link to something outside the directory" };
+}
+
+/**
+ * A path a workflow names — a hook, a step, a step it extends — resolved
+ * against the folder that names it and held inside the workspace. `..` is
+ * allowed here, unlike containedPath, because a workflow reaching the shared
+ * `hooks/` or another workflow's step is the point of a workspace; where the
+ * path lands is what is judged, after normalising, and then again by
+ * realpath inside containedPath, because a symlink can escape where text
+ * cannot.
+ */
+export async function workspacePath(workspace: string, base: string, relative: string): Promise<ContainedPath> {
+  const shape = shapeProblem(relative, { parent: true });
+  if (shape) return { ok: false, kind: "unsafe", reason: shape };
+  const fromRoot = posix.normalize(posix.join(base, relative));
+  if (fromRoot === ".." || fromRoot.startsWith("../")) {
+    return { ok: false, kind: "unsafe", reason: "resolves outside the workspace" };
+  }
+  return containedPath(workspace, fromRoot);
 }
 
 /**
