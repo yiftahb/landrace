@@ -25,7 +25,8 @@ export const slack = defineNotifier({
       ? `<${escape(event.link)}|#${escape(event.item)}>`
       : `#${escape(event.item)}`;
     const board = event.board ? ` · <${escape(event.board)}|board>` : "";
-    const text = `${user ? `<@${user}> ` : ""}${item} needs you — ${escape(event.title)} · ${escape(event.why)}${board}`;
+    const text = `${user ? `<@${user}> ` : ""}${item} needs you in ${escape(event.workflowName)} — ${escape(event.title)} · ` +
+      `${escape(event.why)}${board}`;
 
     // Never the URL, which is the credential: fetch quotes one it cannot
     // parse, so its own failure is said with the URL taken out.

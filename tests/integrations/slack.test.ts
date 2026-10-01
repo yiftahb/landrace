@@ -6,7 +6,8 @@ import type { NotifyEvent, RuntimeConfig, RuntimeContext } from "#namespace.js";
 const WEBHOOK = "https://hooks.slack.com/services/T000/B000/secretpart";
 
 const event = (over: Partial<NotifyEvent> = {}): NotifyEvent => ({
-  event: "needs-you", item: "29", title: "Add export", link: "https://github.com/acme/widgets/issues/29",
+  event: "needs-you", item: "29", workflow: "fast", workflowName: "Fastlane", title: "Add export",
+  link: "https://github.com/acme/widgets/issues/29",
   stage: "screened", why: "blocked by a security check", board: null, ...over,
 });
 
@@ -28,14 +29,14 @@ function webhook(answer: () => Response = () => new Response("ok")) {
 afterEach(() => jest.restoreAllMocks());
 
 describe("the slack notifier", () => {
-  it("posts one line to the webhook, mentioning you, with the item linked", async () => {
+  it("posts one line to the webhook, mentioning you, with the item linked and its workflow named", async () => {
     const { sent, texts } = webhook();
 
     await slack.send(event(), ctx());
 
     expect(sent.map((s) => [s.url, s.init.method])).toEqual([[WEBHOOK, "POST"]]);
     expect(texts()).toEqual([
-      "<@U123> <https://github.com/acme/widgets/issues/29|#29> needs you — Add export · blocked by a security check",
+      "<@U123> <https://github.com/acme/widgets/issues/29|#29> needs you in Fastlane — Add export · blocked by a security check",
     ]);
   });
 
@@ -54,13 +55,13 @@ describe("the slack notifier", () => {
   /*
    * A title is whoever opened the item, and `why` can carry the board's
    * words for it. Unescaped, `<@U999>` pings someone else and `<url|x>` is a
-   * link dressed as anything.
+   * link dressed as anything. A workflow's name is escaped the same way.
    */
   it("escapes what it did not write, so a title cannot mention or link", async () => {
     const { texts } = webhook();
-    await slack.send(event({ title: "<@U999> <https://evil|x>", why: "a & b" }), ctx());
+    await slack.send(event({ title: "<@U999> <https://evil|x>", why: "a & b", workflowName: "R&D <fast>" }), ctx());
     expect(texts()[0]).toBe(
-      "<@U123> <https://github.com/acme/widgets/issues/29|#29> needs you — &lt;@U999&gt; &lt;https://evil|x&gt; · a &amp; b",
+      "<@U123> <https://github.com/acme/widgets/issues/29|#29> needs you in R&amp;D &lt;fast&gt; — &lt;@U999&gt; &lt;https://evil|x&gt; · a &amp; b",
     );
   });
 

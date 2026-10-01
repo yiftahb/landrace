@@ -19,13 +19,12 @@ import type {
   Graph,
   LandraceEvent,
   LoadedWorkflow,
-  Node,
+  Ownership,
   PairDeps,
   Preflight,
   Problem,
   RedactingLogger,
   Registry,
-  Relationship,
   RuntimeConfig,
   RuntimeContext,
   Schedule,
@@ -44,7 +43,7 @@ import { createConversation } from "#mcp/conversation.js";
 import { postReply } from "#mcp/tools.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
-import { messageOf } from "#runner/errors.js";
+import { messageOf, Refusal } from "#runner/errors.js";
 import { createLogger, scrubberOf } from "#runner/events.js";
 import { createNotify, notifyProblems } from "#runner/notify.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
@@ -53,7 +52,7 @@ import { runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { oneLine } from "#runner/status.js";
-import { claimedBy, claimsOf, listingFailures, listWorkspace, reportedBy, tickWorkspace, turnedAway } from "#runner/tick.js";
+import { claimsOf, listingFailures, listWorkspace, tickWorkspace } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
@@ -526,7 +525,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
         // Not for `landrace status`: reading must not message anyone.
         ...(opts.readOnly || !loaded.config.notify ? {} : {
           notify: createNotify({
-            workflow, notify: loaded.config.notify, notifiers: registry.notifiers, ctx, log, board: opts.board ?? (() => null),
+            id, workflow, notify: loaded.config.notify, notifiers: registry.notifiers, ctx, log, board: opts.board ?? (() => null),
           }),
         }),
       },
@@ -688,22 +687,6 @@ export function createSchedule(opts: {
 }
 
 /**
- * Every listed graph as one, for the page, which still draws a single board:
- * each node once by id, each edge once. An id two sources report is a clash
- * the tick works neither way; which of its two nodes the page draws is
- * display only, until the board learns workflows.
- */
-export function unionOf(graphs: readonly Graph[]): Graph {
-  const nodes = new Map<string, Node>();
-  const edges = new Map<string, Relationship>();
-  for (const graph of graphs) {
-    for (const node of graph.nodes) if (!nodes.has(node.id)) nodes.set(node.id, node);
-    for (const edge of graph.relationships) edges.set(JSON.stringify([edge.from, edge.to, edge.type]), edge);
-  }
-  return { nodes: [...nodes.values()], relationships: [...edges.values()] };
-}
-
-/**
  * What the page is shown of each listing. A source that could not list is
  * shown as it last listed: one tracker blip must not empty the board, and
  * `board.list` forgets every id it is not handed. Claims are judged again
@@ -728,87 +711,48 @@ export function displayOf(workflows: readonly WorkflowRuntime[]): (listing: Work
 }
 
 /**
- * The workflow the last listing gave `item` to, or the sentence refusing to
- * act on it. An item claimed twice, reported by two sources, turned away by
- * every workflow or not listed at all is refused — never routed to whichever
- * workflow happens to come first.
+ * The page's Retry, Clear and "Go to step…", each sent through the goto of
+ * the workflow `ownerOf` gives the item — never through whichever comes
+ * first. Undefined when no workflow can write a record.
  */
-export function ownerIn(
-  rt: Pick<WorkspaceRuntime, "workflows">, listing: WorkspaceListing | undefined, item: string,
-): WorkflowRuntime | { refused: string } {
-  if (!listing) return { refused: `#${item} has not been listed yet; act on it after the first tick` };
-  const { claims } = listing;
-  const owner = claims.owner.get(item);
-  const found = owner === undefined ? undefined : rt.workflows.find((w) => w.id === owner);
-  if (found) return found;
-  const clash = claims.clashes.get(item);
-  const conflict = claims.conflicts.get(item);
-  const why = clash ? reportedBy(clash) : conflict ? claimedBy(conflict) : undefined;
-  if (why !== undefined) return { refused: `#${item} is ${why}; act on it after one workflow alone claims it` };
-  const reasons = claims.unclaimed.get(item);
-  if (reasons) return { refused: `#${item} is claimed by no workflow: ${turnedAway(reasons)}` };
-  return { refused: `#${item} is not an open item the last tick listed` };
-}
-
-/** The page's Retry and "Go to step…", sent through the owning workflow's own goto. Undefined when no workflow can write a record. */
-function gotoByClaim(rt: WorkspaceRuntime, ownerOf: (item: string) => WorkflowRuntime | { refused: string }): GotoPath | undefined {
-  const paths = new Map(rt.workflows.map((w) => [w.id, gotoFor({
-    source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx, workflow: w.deps.workflow,
-  })]));
+export function gotoByClaim(ownerOf: (item: string) => Ownership, paths: ReadonlyMap<string, GotoPath | undefined>): GotoPath | undefined {
   if (![...paths.values()].some((p) => p !== undefined)) return undefined;
   return {
     send: async (item, target, opts) => {
       const owner = ownerOf(item);
       if ("refused" in owner) return owner;
-      const path = paths.get(owner.id);
+      const path = paths.get(owner.workflow);
       return path
         ? path.send(item, target, opts)
-        : { refused: `#${item} belongs to ${owner.id}, which loads no hook that writes a record, so it cannot be sent back` };
+        : { refused: `#${item} belongs to ${owner.workflow}, which loads no hook that writes a record, so it cannot be sent back` };
     },
   };
 }
 
 /**
- * The item panel, each item's through its owning workflow's deps: a read by
- * `readOwner`, a write by `writeOwner`. Undefined for a runtime that keeps no
- * activity.
+ * The item panel, each item's through its owning workflow's: a read by
+ * `readOwner`, a write by `writeOwner`. A refusal is a `Refusal`, which the
+ * page's routes answer with its own sentence. Activity is one log for the
+ * workspace, keyed by item: what a step did stays readable whoever claims
+ * the item now.
  */
-function panelByClaim(
-  rt: WorkspaceRuntime,
-  readOwner: (item: string) => WorkflowRuntime | { refused: string },
-  writeOwner: (item: string) => WorkflowRuntime | { refused: string },
-): ItemPanel | undefined {
-  const panels = new Map<string, ItemPanel>();
-  // One log for the workspace, handed to every workflow alike and keyed by
-  // item: what a step did stays readable whoever claims the item now.
-  let activity: ActivityLog | undefined;
-  for (const w of rt.workflows) {
-    if (!w.deps.activity) continue;
-    activity = w.deps.activity;
-    panels.set(w.id, panelFor({
-      source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx,
-      executor: w.deps.executor, workflow: w.deps.workflow, steps: w.deps.steps,
-      ...(w.deps.sandbox ? { sandbox: w.deps.sandbox } : {}),
-      ...(w.deps.screen ? { screen: w.deps.screen } : {}),
-      scrub: w.deps.scrub,
-      ...(w.deps.childServer ? { server: w.deps.childServer } : {}),
-      ...(w.deps.artifacts ? { artifacts: w.deps.artifacts } : {}),
-      activity: w.deps.activity,
-    }));
-  }
-  const log = activity;
-  if (!log) return undefined;
-  const via = (ownerOf: (item: string) => WorkflowRuntime | { refused: string }) =>
+export function panelByClaim(
+  readOwner: (item: string) => Ownership,
+  writeOwner: (item: string) => Ownership,
+  panels: ReadonlyMap<string, ItemPanel>,
+  activity: ActivityLog,
+): ItemPanel {
+  const via = (ownerOf: (item: string) => Ownership) =>
     <T>(item: string, fn: (panel: ItemPanel) => Promise<T>): Promise<T> => {
       const owner = ownerOf(item);
-      if ("refused" in owner) return Promise.reject(new Error(owner.refused));
-      const panel = panels.get(owner.id);
-      return panel ? fn(panel) : Promise.reject(new Error(`#${item} belongs to ${owner.id}, which keeps no panel`));
+      if ("refused" in owner) return Promise.reject(new Refusal(owner.refused));
+      const panel = panels.get(owner.workflow);
+      return panel ? fn(panel) : Promise.reject(new Refusal(`#${item} belongs to ${owner.workflow}, which keeps no panel`));
     };
   const read = via(readOwner);
   const write = via(writeOwner);
   return {
-    activity: (item, after) => log.read(item, after),
+    activity: (item, after) => activity.read(item, after),
     conversation: (item) => read(item, (p) => p.conversation(item)),
     pairing: (item) => read(item, (p) => p.pairing(item)),
     reply: (item, message) => write(item, (p) => p.reply(item, message)),
@@ -917,17 +861,15 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // this write while only trying to read.
   await runPreflights(rt.preflights, rt.ctx);
 
-  // The last listing a tick or a Refresh made, and what the page was shown
-  // of it: the page's actions find an item's workflow by the second, and
-  // write only when the first judged it.
-  const last: { fresh?: WorkspaceListing; shown?: WorkspaceListing } = {};
+  // The last listing a tick or a Refresh made. The page is shown what
+  // `display` makes of it, and finds an item's workflow there; a write also
+  // needs this one to have judged the item itself.
+  const last: { fresh?: WorkspaceListing } = {};
   const display = displayOf(rt.workflows);
   const seen = (listing: WorkspaceListing): void => {
     last.fresh = listing;
     const shown = display(listing);
-    if (!shown) return;
-    last.shown = shown;
-    boardRef.current?.list(unionOf(shown.graphs));
+    if (shown) boardRef.current?.list(shown);
   };
 
   // Built before the board and the page, which both need to reach into it —
@@ -938,32 +880,33 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const schedule = createSchedule({ intervalMs: rt.intervalMs, run: trackedRun(rt, seen, inFlight) });
 
   const { folder, workspace } = await repoWorkspace(dir);
-  // `loadWorkspace` refuses a workspace with none, so this is never undefined.
-  const [first] = rt.workflows;
-  if (!first) throw new Error(`${dir} has no workflows`);
   const board = createBoard({
-    // One page, whose rows are placed by the first workflow's stages until the
-    // board learns which workflow each item is in.
-    workflow: first.deps.workflow, held: (t) => held(t), nextTickAt: schedule.nextAt, folder, workspace,
+    // Each item placed by the stages of the workflow that owns it.
+    workflows: rt.workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow })),
+    held: (t) => held(t), nextTickAt: schedule.nextAt, folder, workspace,
     // The tree nests along exactly what a source says is one-per-node — a
     // parent, the item a pull request implements — and nothing configured.
     nest: [...new Set(rt.workflows.flatMap((w) => w.source.relations.filter((r) => r.singular).map((r) => r.type)))],
   });
   boardRef.current = board;
 
-  const readOwner = (item: string): WorkflowRuntime | { refused: string } => ownerIn(rt, last.shown, item);
+  const readOwner = (item: string): Ownership => board.ownerOf(item);
   // A write needs the last listing to have judged the item itself: what a
   // failed source is shown as is its last good listing, which may be stale.
-  const writeOwner = (item: string): WorkflowRuntime | { refused: string } => {
+  const writeOwner = (item: string): Ownership => {
     const owner = readOwner(item);
     const failures = last.fresh ? listingFailures(last.fresh) : [];
     if ("refused" in owner || failures.length === 0) return owner;
     return { refused: rt.log.scrub(`#${item} is not written to until every source lists again: ${failures.join("; ")}`) };
   };
+  // One log for the workspace, handed to every workflow alike.
+  const activity = rt.workflows.find((w) => w.deps.activity)?.deps.activity;
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
     tick: schedule.wake,
-    goto: gotoByClaim(rt, writeOwner),
+    goto: gotoByClaim(writeOwner, new Map(rt.workflows.map((w) => [w.id, gotoFor({
+      source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx, workflow: w.deps.workflow,
+    })]))),
     // Re-list every source and reload the board from it: no converge, no
     // step, no agent — the page's Refresh button.
     refresh: async () => {
@@ -972,7 +915,16 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       const failures = listingFailures(listing);
       if (failures.length) throw new Error(rt.log.scrub(failures.join("; ")));
     },
-    panel: panelByClaim(rt, readOwner, writeOwner),
+    panel: activity && panelByClaim(readOwner, writeOwner, new Map(rt.workflows.map((w) => [w.id, panelFor({
+      source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx,
+      executor: w.deps.executor, workflow: w.deps.workflow, steps: w.deps.steps,
+      ...(w.deps.sandbox ? { sandbox: w.deps.sandbox } : {}),
+      ...(w.deps.screen ? { screen: w.deps.screen } : {}),
+      scrub: w.deps.scrub,
+      ...(w.deps.childServer ? { server: w.deps.childServer } : {}),
+      ...(w.deps.artifacts ? { artifacts: w.deps.artifacts } : {}),
+      activity,
+    })])), activity),
   });
   if (ui) {
     console.error(`landrace: triage page at ${ui.url}`);

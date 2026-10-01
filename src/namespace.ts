@@ -1190,6 +1190,9 @@ export interface Operator {
 export interface NotifyEvent {
   event: "needs-you";
   item: string;
+  /** The workflow whose item it is: its folder under `workflows/`, and its `name`. */
+  workflow: string;
+  workflowName: string;
   title: string;
   link: string;
   stage: string | null;
@@ -2044,6 +2047,12 @@ export interface BoardRow {
   link: string;
   /** Null only when there is no usable link to name a system from. */
   system: BoardSystem | null;
+  /**
+   * The workflow that owns this open item, by the last listing; null on an
+   * artifact, a closed item, and an item no one workflow owns — the note says
+   * which of those an open one is.
+   */
+  workflow: string | null;
   /** Items only: where this item itself stands. Null on an artifact row. */
   badge: Lane | null;
   /**
@@ -2168,9 +2177,15 @@ export interface BoardView {
   workspace: string;
 }
 
+/** Which workflow an item belongs to, or the sentence refusing to act on it. */
+export type Ownership = { workflow: string } | { refused: string };
+
 export interface Board {
   observe(e: LandraceEvent): void;
-  list(graph: Graph): void;
+  /** What the page is shown of a listing: every source's graph, and who owns what in them. */
+  list(listing: Pick<WorkspaceListing, "graphs" | "claims">): void;
+  /** By the last listing: never a guess at an item two workflows claim, two sources report, or none claims. */
+  ownerOf(item: string): Ownership;
   view(): Promise<BoardView>;
 }
 

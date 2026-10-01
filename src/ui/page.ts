@@ -973,6 +973,13 @@ function itemRowFor(row, depth, now, open) {
     title.addEventListener("click", () => openPanel(row.id));
   }
   top.append(num, title);
+  // The workflow that owns the item, small, right after its title. An item
+  // no one workflow owns names none: its note already says why.
+  if (row.workflow) {
+    const workflow = el("span", "workflow shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300", row.workflow);
+    workflow.title = "Workflow: " + row.workflow;
+    top.append(workflow);
+  }
   // No stage at all (a halted item, say) shows no chip — not an empty or
   // placeholder one. A row with a round but no stage cannot happen (round is
   // only ever set alongside a running row's own stage), so this only ever

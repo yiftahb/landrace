@@ -977,6 +977,36 @@ describe("an item row stopped by a security check", () => {
   });
 });
 
+/*
+ * One page over every workflow: an item's row says which workflow owns it,
+ * small, beside its title. An item no one workflow owns names none — its
+ * note says why.
+ */
+describe("an item row's workflow", () => {
+  const row = (workflow: string | null) => ({
+    id: "12", kind: "item", title: "Add export", link: "", closed: null, badge: "waiting", stage: "build",
+    priority: null, note: "queued", since: null, round: null, model: null, chat: null, screened: false, children: [], workflow,
+  });
+  const build = (r: ReturnType<typeof row>): FakeElement => runInNewContext(`
+    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
+    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
+    itemRowFor(ROW, 0, 0, false)`, { ROW: r, document: fakeDocument }) as FakeElement;
+  const tagOf = (li: FakeElement): FakeElement | undefined => descendants(li).find((d) => d.className.split(" ").includes("workflow"));
+
+  it("is named in a small tag right after the title", () => {
+    const li = build(row("fast"));
+    const tag = tagOf(li);
+    expect(tag?.text).toBe("fast");
+    const line = descendants(li).find((d) => d.children.includes(tag as FakeElement));
+    const at = line?.children.findIndex((c) => c.className.split(" ").includes("title")) ?? -1;
+    expect(line?.children[at + 1]).toBe(tag);
+  });
+
+  it("is not drawn for an item no one workflow owns", () => {
+    expect(tagOf(build(row(null)))).toBeUndefined();
+  });
+});
+
 // #20 above #21 in one lane: #21 had a document under it and so a toggle, #20
 // had none, and #21's number sat exactly where a child of #20's would — the
 // board read as #21 nested under #20.

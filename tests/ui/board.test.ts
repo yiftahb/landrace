@@ -1,3 +1,4 @@
+import { claimItems } from "#core/index.js";
 import type { Entry, Graph, Held, Node, Relationship, Running, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
 import { boardView, conversationOf, createBoard } from "#ui/board.js";
@@ -25,9 +26,13 @@ const edge = (from: string, to: string, type = "child-of"): Relationship => ({ f
 const graph = (nodes: Node[], relationships: Relationship[] = []): Graph => ({ nodes, relationships });
 const NEST = new Set(["child-of", "implements"]);
 
+/** A workspace of the one workflow above, `t`, and what a tick would list of `g` in it. */
+const ONLY = [{ id: "t", workflow }];
+const listingOf = (g: Graph) => ({ graphs: [g], claims: claimItems([{ id: "t", workflow, source: 0 }], [g]) });
+
 const view = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
-    workflow, graph: g, nest: NEST, now: 100, pid: 1, nextTickAt: null,
+    workflows: ONLY, listing: listingOf(g), nest: NEST, now: 100, pid: 1, nextTickAt: null,
     running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
   });
 
@@ -520,7 +525,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
-      "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "title", "updatedAt",
+      "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "title", "updatedAt", "workflow",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
@@ -553,7 +558,7 @@ describe("boardView: rows", () => {
 
 describe("createBoard", () => {
   const shell = (now: () => number, held: (t: string) => Promise<Held | null> = async () => null) =>
-    createBoard({ workflow, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace", nest: [...NEST] });
+    createBoard({ workflows: ONLY, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace", nest: [...NEST] });
 
   /*
    * The note says a person sent the item back, for as long as it is at the
@@ -562,7 +567,7 @@ describe("createBoard", () => {
    */
   it("says a running item was sent back, until it moves on", () => {
     const board = shell(() => 0);
-    board.list(graph([item("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
+    board.list(listingOf(graph([item("1", {}, ["go", "lr:stage:spec", "lr:working"])])));
     board.observe({ name: "item.evaluated", item: "1", decision: "transition", to: "spec", why: "goto" });
     board.observe({ name: "step.started", item: "1", stage: "spec", round: 2 });
     return board.view().then((v) => {
@@ -581,10 +586,10 @@ describe("createBoard", () => {
    */
   it("prunes sent for an item once it leaves the graph, so a stale note cannot resurface", async () => {
     const board = shell(() => 0);
-    board.list(graph([item("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
+    board.list(listingOf(graph([item("1", {}, ["go", "lr:stage:spec", "lr:working"])])));
     board.observe({ name: "item.evaluated", item: "1", decision: "transition", to: "spec", why: "goto" });
-    board.list(graph([])); // item 1 is gone from this listing
-    board.list(graph([item("1", {}, ["go", "lr:stage:spec", "lr:working"])])); // and back, with no new goto
+    board.list(listingOf(graph([]))); // item 1 is gone from this listing
+    board.list(listingOf(graph([item("1", {}, ["go", "lr:stage:spec", "lr:working"])]))); // and back, with no new goto
     board.observe({ name: "step.started", item: "1", stage: "spec", round: 3 });
     expect((await board.view()).rows[0]?.note).toBe("agent running");
   });
@@ -596,7 +601,7 @@ describe("createBoard", () => {
    */
   it("holds a paired item elsewhere, saying where and since when, until an evaluation stops naming it", async () => {
     const board = shell(() => 5_000);
-    board.list(graph([item("1", {}, ["go", "lr:stage:spec", "lr:working"])]));
+    board.list(listingOf(graph([item("1", {}, ["go", "lr:stage:spec", "lr:working"])])));
     const at = "1970-01-01T00:00:02.000Z";
     board.observe({ name: "item.evaluated", item: "1", decision: "wait", stage: "spec", paired: { stage: "spec", round: 2, n: 1, at } });
     expect((await board.view()).rows[0]).toMatchObject({
@@ -609,7 +614,7 @@ describe("createBoard", () => {
   it("opens a running row on step.started and closes it on step.finished", async () => {
     let t = 10;
     const board = shell(() => t);
-    board.list(graph([item("1")]));
+    board.list(listingOf(graph([item("1")])));
     board.observe({ name: "step.started", item: "1", stage: "spec", round: 1, model: "opus", effort: "low" });
     t = 20;
     expect((await board.view()).rows[0]).toMatchObject({ badge: "running", since: 10, model: "opus", effort: "low" });
@@ -627,17 +632,17 @@ describe("createBoard", () => {
     const blocked = ["go", "lr:stage:blocked", "lr:blocked"];
     const listed = graph([item("1", {}, blocked), item("2", {}, blocked)]);
     const stale = async () => (await board.view()).rows.map((r) => [r.id, r.badge, r.stale]);
-    board.list(listed);
+    board.list(listingOf(listed));
     expect(await stale()).toEqual([["1", "needs-you", false], ["2", "needs-you", false]]);
     board.observe({ name: "step.started", item: "1", stage: "spec", round: 1 });
     board.observe({ name: "step.finished", item: "1", stage: "spec", round: 1, ok: true });
     expect(await stale()).toEqual([["1", "needs-you", true], ["2", "needs-you", false]]);
-    board.list(listed);
+    board.list(listingOf(listed));
     expect(await stale()).toEqual([["1", "needs-you", true], ["2", "needs-you", false]]);
     board.observe({ name: "lock.released", item: "1", kind: "tick" });
     board.observe({ name: "lock.released", item: "2", kind: "tick" });
     expect(await stale()).toEqual([["1", "needs-you", true], ["2", "needs-you", false]]);
-    board.list(listed);
+    board.list(listingOf(listed));
     expect(await stale()).toEqual([["1", "needs-you", false], ["2", "needs-you", false]]);
   });
 
@@ -645,7 +650,7 @@ describe("createBoard", () => {
   // model is, and never whatever else an event put under the key.
   it("carries no effort for a step that named none, or named something not a string", async () => {
     const board = shell(() => 0);
-    board.list(graph([item("1"), item("2")]));
+    board.list(listingOf(graph([item("1"), item("2")])));
     board.observe({ name: "step.started", item: "1", stage: "spec", round: 1 });
     board.observe({ name: "step.started", item: "2", stage: "spec", round: 1, effort: { level: "max" } });
     const rows = (await board.view()).rows;
@@ -654,7 +659,7 @@ describe("createBoard", () => {
 
   it("ignores a step event that names no item", async () => {
     const board = shell(() => 0);
-    board.list(graph([item("1")]));
+    board.list(listingOf(graph([item("1")])));
     board.observe({ name: "step.started", stage: "spec", round: 1 });
     expect((await board.view()).rows[0]?.badge).toBe("waiting");
   });
@@ -669,7 +674,7 @@ describe("createBoard", () => {
 
   it("reports nextTickAt from the function it was given, read fresh on each view()", async () => {
     let next: number | null = 111;
-    const board = createBoard({ workflow, held: async () => null, nextTickAt: () => next, folder: "f", workspace: "/w", nest: [] });
+    const board = createBoard({ workflows: ONLY, held: async () => null, nextTickAt: () => next, folder: "f", workspace: "/w", nest: [] });
     expect((await board.view()).nextTickAt).toBe(111);
     next = 222;
     expect((await board.view()).nextTickAt).toBe(222);
@@ -677,15 +682,127 @@ describe("createBoard", () => {
 
   it("nests along the relation types it was given", async () => {
     const board = shell(() => 0);
-    board.list(graph([item("1"), item("2")], [edge("2", "1")]));
+    board.list(listingOf(graph([item("1"), item("2")], [edge("2", "1")])));
     expect(shape((await board.view()).rows)).toEqual([["1", ["2"]]]);
   });
 
   it("asks the lock only about open item nodes, never about a pull request or a closed item", async () => {
     const asked: string[] = [];
     const board = shell(() => 0, async (t) => { asked.push(t); return null; });
-    board.list(graph([item("4"), item("9"), item("5", { closed: "done" }), pr("pr-1")], [edge("pr-1", "4", "implements")]));
+    board.list(listingOf(graph([item("4"), item("9"), item("5", { closed: "done" }), pr("pr-1")], [edge("pr-1", "4", "implements")])));
     await board.view();
     expect(asked.sort()).toEqual(["4", "9"]);
+  });
+});
+
+/*
+ * One page over every workflow of the workspace. Two workflows on one
+ * tracker, `main` and `fast`, each admitting its own label and placing an
+ * item by its own stages, and `gl` on a second tracker. An item no one
+ * workflow owns is shown, never placed by whichever workflow came first.
+ */
+describe("the board over several workflows", () => {
+  const main: Workflow = {
+    version: 1, name: "Main", description: "test",
+    eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+    stages: [
+      { id: "spec", entry: true, step: "steps/spec.md", goto: ["spec"], triggers: [{ when: { "run.stage": null } }] },
+      { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+      { id: "done", terminal: true, triggers: [{ when: { "run.stage": "spec" } }] },
+    ],
+  };
+  const fast: Workflow = {
+    version: 1, name: "Fastlane", description: "test",
+    eligible: [{ when: { "node.state.labels": { $in: ["lr:fast"] } }, else: "no lr:fast label" }],
+    stages: [
+      { id: "build", entry: true, step: "steps/build.md", goto: ["build"], triggers: [{ when: { "run.stage": null } }] },
+      { id: "blocked", goto: ["build"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+      { id: "shipped", terminal: true, triggers: [{ when: { "run.stage": "build" } }] },
+    ],
+  };
+  const WORKFLOWS = [{ id: "main", workflow: main }, { id: "fast", workflow: fast }, { id: "gl", workflow: { ...main, name: "Lab" } }];
+  /** What a tick lists: the first tracker's graph, read by main and fast, and the second's, read by gl. */
+  const across = (first: Graph, second: Graph = graph([])) => ({
+    graphs: [first, second],
+    claims: claimItems(WORKFLOWS.map((w) => ({ ...w, source: w.id === "gl" ? 1 : 0 })), [first, second]),
+  });
+  const several = (first: Graph, second?: Graph) =>
+    boardView({
+      workflows: WORKFLOWS, listing: across(first, second), nest: NEST, now: 100, pid: 1, nextTickAt: null,
+      running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace",
+    });
+  const blocked = (admit: string[]) => [...admit, "lr:stage:blocked", "lr:blocked"];
+  // Screened as well: a row its labels alone would offer every action on.
+  const screened = (admit: string[]) => [...blocked(admit), "lr:screened"];
+
+  it("places each item by the stages of the workflow that owns it, and names that workflow", () => {
+    const rows = several(graph([
+      item("1", {}, blocked(["lr:auto"])), item("2", {}, blocked(["lr:fast"])), item("3", {}, ["lr:fast", "lr:stage:shipped"]),
+    ])).rows;
+    const row = (id: string) => rows.find((r) => r.id === id);
+    expect(row("1")).toMatchObject({
+      workflow: "main", badge: "needs-you", stage: "blocked", retry: "/items/1/retry", goto: [{ stage: "spec", path: "/items/1/goto/spec" }],
+    });
+    expect(row("2")).toMatchObject({
+      workflow: "fast", badge: "needs-you", stage: "blocked", retry: "/items/2/retry", goto: [{ stage: "build", path: "/items/2/goto/build" }],
+    });
+    // Terminal in fast, and a stage main has never heard of.
+    expect(row("3")).toMatchObject({ workflow: "fast", badge: "discharged", lane: "discharged" });
+  });
+
+  it("files an item two workflows claim under Needs you, naming both, with no Retry, Go to or Clear", () => {
+    const [row] = several(graph([item("4", {}, screened(["lr:auto", "lr:fast"]))])).rows;
+    expect(row).toMatchObject({
+      id: "4", workflow: null, badge: "needs-you", lane: "needs-you", note: "claimed by fast and main",
+      stage: null, retry: null, clear: null, goto: [],
+    });
+  });
+
+  it("files an id two trackers both report under Needs you, naming the workflows reading each, with nothing to act on", () => {
+    const [row] = several(graph([item("5", {}, screened(["lr:auto"]))]), graph([item("5", {}, screened(["lr:auto"]))])).rows;
+    expect(row).toMatchObject({
+      id: "5", workflow: null, badge: "needs-you", lane: "needs-you", note: "reported by the sources of fast, gl and main",
+      stage: null, retry: null, clear: null, goto: [],
+    });
+  });
+
+  it("files an item no workflow claims under Not admitted, with each workflow's reason and nothing to act on", () => {
+    const [row] = several(graph([item("6", {}, screened([]))])).rows;
+    expect(row).toMatchObject({
+      id: "6", workflow: null, badge: "not-admitted", lane: "not-admitted", note: "skipped: no lr:auto label; no lr:fast label",
+      retry: null, clear: null, goto: [],
+    });
+  });
+
+  describe("whose an item is, by the last listing", () => {
+    const board = () => createBoard({ workflows: WORKFLOWS, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+
+    it("is nobody's before the first listing", () => {
+      expect(board().ownerOf("1")).toEqual({ refused: "#1 has not been listed yet; act on it after the first tick" });
+    });
+
+    it("is the one workflow that claims it, and otherwise a sentence saying why it is no one's", () => {
+      const b = board();
+      b.list(across(graph([
+        item("1", {}, ["lr:auto"]), item("2", {}, ["lr:fast"]), item("4", {}, ["lr:auto", "lr:fast"]), item("5", {}, ["lr:auto"]),
+        item("6", {}, []), item("7", { closed: "done" }, ["lr:auto"]), pr("pr-8"),
+      ]), graph([item("5", {}, ["lr:auto"])])));
+
+      expect(b.ownerOf("1")).toEqual({ workflow: "main" });
+      expect(b.ownerOf("2")).toEqual({ workflow: "fast" });
+      expect(b.ownerOf("4")).toEqual({ refused: "#4 is claimed by fast and main; act on it after one workflow alone claims it" });
+      expect(b.ownerOf("5")).toEqual({
+        refused: "#5 is reported by the sources of fast, gl and main; act on it after one source alone reports it",
+      });
+      expect(b.ownerOf("6")).toEqual({ refused: "#6 is claimed by no workflow: no lr:auto label; no lr:fast label" });
+      for (const id of ["7", "pr-8", "99"]) expect(b.ownerOf(id)).toEqual({ refused: `#${id} is not an open item the last tick listed` });
+    });
+
+    it("follows the latest listing: an item relabelled is its new workflow's", () => {
+      const b = board();
+      b.list(across(graph([item("1", {}, ["lr:auto"])])));
+      b.list(across(graph([item("1", {}, ["lr:fast"])])));
+      expect(b.ownerOf("1")).toEqual({ workflow: "fast" });
+    });
   });
 });

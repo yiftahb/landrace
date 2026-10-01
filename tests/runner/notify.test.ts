@@ -4,7 +4,7 @@ import { createNotify, notifyProblems } from "#runner/notify.js";
 import type { Node, Notifier, NotifyEvent, RuntimeConfig, RuntimeContext, Workflow } from "#namespace.js";
 
 const workflow: Workflow = {
-  version: 1, name: "t", description: "test",
+  version: 1, name: "Fastlane", description: "test",
   eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
   stages: [
     { id: "spec-questions", triggers: [{ when: { "run.stage": null } }] },
@@ -29,7 +29,7 @@ const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolv
 function harness(notifiers: Notifier[], notify: unknown = { on: ["needs-you"], via: notifiers.map((n) => n.id) }) {
   const events: Array<{ name: string; data?: Record<string, unknown> }> = [];
   const fire = createNotify({
-    workflow, notify: config(notify).notify, notifiers: new Map(notifiers.map((n) => [n.id, n])), ctx,
+    id: "fast", workflow, notify: config(notify).notify, notifiers: new Map(notifiers.map((n) => [n.id, n])), ctx,
     log: (name, data) => events.push({ name, ...(data ? { data } : {}) }),
     board: () => "http://127.0.0.1:4545",
   });
@@ -42,7 +42,7 @@ const recorder = (id: string) => {
 };
 
 describe("createNotify", () => {
-  it("tells each notifier once what the board says about an item waiting on you", async () => {
+  it("tells each notifier once what the board says about an item waiting on you, and whose workflow it is in", async () => {
     const { sent, notifier } = recorder("chat");
     const { fire, events } = harness([notifier]);
 
@@ -50,7 +50,7 @@ describe("createNotify", () => {
     await settle();
 
     expect(sent).toEqual([{
-      event: "needs-you", item: "29", title: "Add export", link: "https://tracker.example/29",
+      event: "needs-you", item: "29", workflow: "fast", workflowName: "Fastlane", title: "Add export", link: "https://tracker.example/29",
       stage: "spec-questions", why: "waiting on you", board: "http://127.0.0.1:4545",
     }]);
     expect(events).toEqual([{ name: "notify.sent", data: { item: "29", via: "chat" } }]);

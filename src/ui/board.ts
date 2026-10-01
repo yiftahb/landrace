@@ -1,12 +1,28 @@
-import { compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND } from "#conventions.js";
-import { gotoTargetsOf } from "#core/index.js";
+import { compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, stageFromLabels } from "#conventions.js";
+import { claimItems, gotoTargetsOf } from "#core/index.js";
 import { BLOCKED_NOTE, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
+import { claimedBy, reportedBy, turnedAway } from "#runner/tick.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
-  Board, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Pairing, PanelPaths, Running, Stage,
-  StatusRow, Workflow,
+  Board, BoardRow, BoardView, Claims, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
+  PanelPaths, Relationship, Running, Stage, StatusRow, Workflow, WorkspaceListing,
 } from "#namespace.js";
+
+/**
+ * Every listed graph as one, for the one page: each node once by id, each
+ * edge once. An id two sources report is a clash nobody works; which of its
+ * two nodes is drawn is display only.
+ */
+function unionOf(graphs: readonly Graph[]): Graph {
+  const nodes = new Map<string, Node>();
+  const edges = new Map<string, Relationship>();
+  for (const graph of graphs) {
+    for (const node of graph.nodes) if (!nodes.has(node.id)) nodes.set(node.id, node);
+    for (const edge of graph.relationships) edges.set(JSON.stringify([edge.from, edge.to, edge.type]), edge);
+  }
+  return { nodes: [...nodes.values()], relationships: [...edges.values()] };
+}
 
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 
@@ -131,9 +147,41 @@ function parentsOf(graph: Graph, nodes: ReadonlyMap<string, Node>, nest: Readonl
   return parent;
 }
 
+/**
+ * An open item no one workflow owns, as its row says it: two workflows
+ * claiming it, or two trackers reporting its id, is a halt a person has to
+ * settle, so it waits in Needs you; one every workflow turned away is not
+ * admitted, with each workflow's reason once. The tick's own words.
+ */
+function unownedRow(claims: Claims, node: Node): Pick<BoardRow, "badge" | "stage" | "note"> {
+  const conflict = claims.conflicts.get(node.id);
+  if (conflict) return { badge: "needs-you", stage: null, note: claimedBy(conflict) };
+  const clash = claims.clashes.get(node.id);
+  if (clash) return { badge: "needs-you", stage: null, note: reportedBy(clash) };
+  const reasons = turnedAway(claims.unclaimed.get(node.id) ?? []);
+  return { badge: "not-admitted", stage: stageFromLabels(labelsOf(node)).stage, note: oneLine(`skipped: ${reasons}`) };
+}
+
+/**
+ * Whose `item` is by `claims`, or the sentence refusing to act on it. Never
+ * the first of two claimants, and never a workflow for an item no listing
+ * showed open.
+ */
+function ownership(claims: Claims, item: string): Ownership {
+  const owner = claims.owner.get(item);
+  if (owner !== undefined) return { workflow: owner };
+  const conflict = claims.conflicts.get(item);
+  if (conflict) return { refused: `#${item} is ${claimedBy(conflict)}; act on it after one workflow alone claims it` };
+  const clash = claims.clashes.get(item);
+  if (clash) return { refused: `#${item} is ${reportedBy(clash)}; act on it after one source alone reports it` };
+  const reasons = claims.unclaimed.get(item);
+  if (reasons) return { refused: `#${item} is claimed by no workflow: ${turnedAway(reasons)}` };
+  return { refused: `#${item} is not an open item the last tick listed` };
+}
+
 export function boardView(input: {
-  workflow: Workflow;
-  graph: Graph;
+  workflows: ReadonlyArray<{ id: string; workflow: Workflow }>;
+  listing: Pick<WorkspaceListing, "graphs" | "claims">;
   /** Relation types the source declares singular — the only edges that nest. */
   nest: ReadonlySet<string>;
   running: ReadonlyMap<string, Running>;
@@ -154,26 +202,24 @@ export function boardView(input: {
   /** Items whose labels in `graph` predate a step this process ran on them — each row's `stale`. */
   stale?: ReadonlySet<string>;
 }): BoardView {
+  const graph = unionOf(input.listing.graphs);
   // Duplicate ids are a graph the engine halts on elsewhere; here the page
   // only has to stay drawable, so a repeat is skipped rather than drawn twice.
   const nodes = new Map<string, Node>();
-  for (const node of input.graph.nodes) if (!nodes.has(node.id)) nodes.set(node.id, node);
-
-  const items = [...nodes.values()].filter((n) => n.kind === ITEM_KIND);
-  const status = new Map<string, StatusRow>(statusRows(input.workflow, items).map((s) => [s.item, s]));
+  for (const node of graph.nodes) if (!nodes.has(node.id)) nodes.set(node.id, node);
+  const workflows = new Map(input.workflows.map((w) => [w.id, w.workflow]));
 
   const rowOf = (node: Node): BoardRow => {
     const link = safeUrl(node.link);
     const base: BoardRow = {
       id: node.id, kind: node.kind, title: oneLine(node.title), link,
-      system: link ? systemOf(link) : null,
+      system: link ? systemOf(link) : null, workflow: null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, updatedAt: node.updatedAt ?? null,
       round: null, model: null, effort: null,
       chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null, children: [],
     };
-    const s = status.get(node.id);
-    if (node.kind !== ITEM_KIND || !s) return base;
+    if (node.kind !== ITEM_KIND) return base;
 
     // Built from the item id and the workspace path alone — never title or
     // note — so nothing a tracker comment injected can ride along into a
@@ -181,7 +227,7 @@ export function boardView(input: {
     // An id chatFor refuses costs that row its Chat menu, not the page: one
     // throw here blanked every row of the board.
     const item: BoardRow = {
-      ...base, stage: s.stage, note: oneLine(s.note), panel: panelPaths(node.id), stale: input.stale?.has(node.id) ?? false,
+      ...base, stage: stageFromLabels(labelsOf(node)).stage, panel: panelPaths(node.id), stale: input.stale?.has(node.id) ?? false,
       chat: isItemId(node.id) ? chatFor(node.id, input.workspace) : null,
     };
     // A closed item is out of the loop whatever its labels still say or a
@@ -189,13 +235,25 @@ export function boardView(input: {
     // and its note says it is closed, not "blocked: needs a human" from a
     // label nobody took off.
     if (node.closed !== null) return { ...item, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped" };
+
+    // Placed by the stages of the one workflow that owns it. An item no one
+    // workflow owns is placed by none: its note says why, and its row offers
+    // nothing to act on — the page's writes would refuse it anyway, and an
+    // offer here would be a guess at whose stages its labels mean.
+    const owner = input.listing.claims.owner.get(node.id);
+    const workflow = owner === undefined ? undefined : workflows.get(owner);
+    const [s] = workflow ? statusRows(workflow, [node]) : [];
+    const placed: BoardRow = s
+      ? { ...item, workflow: owner ?? null, stage: s.stage, note: oneLine(s.note) }
+      : { ...item, ...unownedRow(input.listing.claims, node) };
+
     const running = input.running.get(node.id);
     if (running) {
       // A goto's target is only worth naming while the agent it sent is
       // still the one running — once the item moves on, "sent back to
       // spec" would be talking about a stage the item has already left.
       const note = input.sent?.get(node.id) === running.stage ? `agent running — sent back to ${running.stage}` : "agent running";
-      return { ...item, badge: "running", stage: running.stage, note,
+      return { ...placed, badge: "running", stage: running.stage, note,
         since: running.since, round: running.round, model: running.model, effort: running.effort };
     }
     const pairing = input.paired?.get(node.id);
@@ -204,7 +262,7 @@ export function boardView(input: {
       // — unlike a lock's heartbeat — is when the hold began.
       const began = Date.parse(pairing.at);
       return {
-        ...item, badge: "elsewhere", stage: pairing.stage, round: pairing.round,
+        ...placed, badge: "elsewhere", stage: pairing.stage, round: pairing.round,
         note: `Pairing — ${pairing.stage}, round ${pairing.round}`, since: Number.isNaN(began) ? null : began,
       };
     }
@@ -216,21 +274,22 @@ export function boardView(input: {
       // answering BoardRow.since ("when the current state began"). Nothing
       // else tells us when a foreign hold began, so this reports null rather
       // than a wrong clock.
-      return { ...item, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
+      return { ...placed, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
     }
+    if (!s || !workflow) return placed;
     const retry = stopped(s) ? retryPath(node.id) : null;
-    const goto = gotoPaths(node.id, input.workflow.stages.find((x) => x.id === s.stage));
+    const goto = gotoPaths(node.id, workflow.stages.find((x) => x.id === s.stage));
     // The status row's own verdict, not the labels read a second time; the
     // note is the page's wording of the same fact.
     if (s.note === SCREENED_NOTE) {
       return {
-        ...item, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry, clear: clearPath(node.id), goto,
+        ...placed, badge: laneOf(s, workflow), screened: true, note: SCREENED_NOTE, retry, clear: clearPath(node.id), goto,
       };
     }
-    return { ...item, badge: laneOf(s, input.workflow), retry, goto };
+    return { ...placed, badge: laneOf(s, workflow), retry, goto };
   };
 
-  const parent = parentsOf(input.graph, nodes, input.nest);
+  const parent = parentsOf(graph, nodes, input.nest);
   const children = new Map<string, Node[]>();
   const roots: Node[] = [];
   for (const node of nodes.values()) {
@@ -282,11 +341,13 @@ export function boardView(input: {
 
 /**
  * The stateful shell around boardView. Holds only what the process already
- * knew — the last graph and which agents are running — so losing it loses
- * nothing: the next tick rebuilds it. Nothing here ever feeds a decision.
+ * knew — the last listing and which agents are running — so losing it loses
+ * nothing: the next tick rebuilds it. Nothing here ever feeds a decision:
+ * whose an item is was settled by the claims that listing came with, and a
+ * write the page routes by it is judged afresh where it lands.
  */
 export function createBoard(opts: {
-  workflow: Workflow;
+  workflows: ReadonlyArray<{ id: string; workflow: Workflow }>;
   held: (item: string) => Promise<Held | null>;
   now?: () => number;
   pid?: number;
@@ -303,6 +364,8 @@ export function createBoard(opts: {
   const pid = opts.pid ?? process.pid;
   const nextTickAt = opts.nextTickAt ?? (() => null);
   const nest = new Set(opts.nest);
+  // Null until the first listing: before it, nothing is anyone's.
+  let listing: Pick<WorkspaceListing, "graphs" | "claims"> | null = null;
   let graph: Graph = { nodes: [], relationships: [] };
   const running = new Map<string, Running>();
   const sent = new Map<string, string>();
@@ -347,17 +410,21 @@ export function createBoard(opts: {
         stepped.set(e.item, true);
       }
     },
-    list(next: Graph): void {
-      graph = next;
+    list(next): void {
+      listing = next;
+      graph = unionOf(next.graphs);
       // An item that has left the graph — closed and eventually not
       // relisted, or never eligible again — never fires another
       // item.evaluated for `sent` to clear; without this it would sit
       // there forever, on the very ids `sent` no longer has an opinion worth
       // keeping about.
-      const ids = new Set(next.nodes.map((n) => n.id));
+      const ids = new Set(graph.nodes.map((n) => n.id));
       for (const id of sent.keys()) if (!ids.has(id)) sent.delete(id);
       for (const id of paired.keys()) if (!ids.has(id)) paired.delete(id);
       for (const [id, released] of stepped) if (released) stepped.delete(id);
+    },
+    ownerOf(item): Ownership {
+      return listing ? ownership(listing.claims, item) : { refused: `#${item} has not been listed yet; act on it after the first tick` };
     },
     async view(): Promise<BoardView> {
       // Open items only: nothing else can be held, and a closed item's
@@ -368,7 +435,7 @@ export function createBoard(opts: {
         if (h) elsewhere.set(n.id, h);
       }));
       return boardView({
-        workflow: opts.workflow, graph, nest, running, elsewhere, now: now(), pid, sent, paired,
+        workflows: opts.workflows, listing: listing ?? { graphs: [], claims: claimItems([], []) }, nest, running, elsewhere, now: now(), pid, sent, paired,
         stale: new Set(stepped.keys()), nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },

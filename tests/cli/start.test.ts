@@ -391,6 +391,7 @@ describe("boardSink", () => {
         current: {
           observe: () => { throw new Error("display broke"); },
           list: () => {},
+          ownerOf: (item) => ({ refused: `#${item} is not listed` }),
           view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
         },
       };
@@ -413,6 +414,7 @@ describe("boardSink", () => {
       current: {
         observe: (e) => { observed.push(e); },
         list: () => {},
+        ownerOf: (item) => ({ refused: `#${item} is not listed` }),
         view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
       },
     };
@@ -454,7 +456,7 @@ describe("repoWorkspace", () => {
 // Starts a real server on 127.0.0.1: skipped only where a sandbox forbids that.
 describeLoopback("startUi", () => {
   const board = () =>
-    createBoard({ workflow: { version: 1, name: "t", description: "test", stages: [] }, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    createBoard({ workflows: [{ id: "main", workflow: { version: 1, name: "t", description: "test", stages: [] } }], held: async () => null, folder: "f", workspace: "/w", nest: [] });
 
   it("serves nothing with --no-ui", async () => {
     expect(await startUi({ board: board(), ui: false, once: false, port: 0 })).toBeNull();

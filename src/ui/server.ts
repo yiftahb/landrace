@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { itemIdProblem } from "#conventions.js";
 import type { UiOptions, UiServer } from "#namespace.js";
-import { messageOf } from "#runner/errors.js";
+import { messageOf, Refusal } from "#runner/errors.js";
 import { oneLine } from "#runner/status.js";
 import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
@@ -140,6 +140,8 @@ function servePanel(
   }
   if (what === "conversation" || what === "pairing") {
     (what === "conversation" ? panel.conversation(item) : panel.pairing(item)).then(json, (e: unknown) => {
+      // Declined, not failed: the item is no one workflow's to read for.
+      if (e instanceof Refusal) return send(res, 409, text, oneLine(e.message));
       // Logged in full for the operator; the page gets a fixed sentence,
       // because a tracker's error can quote the item it refused.
       console.error(`landrace: reading #${item}'s ${what} failed: ${oneLine(messageOf(e))}`);
@@ -173,6 +175,9 @@ function servePanel(
       opts.tick?.();
       return json(answer);
     } catch (e) {
+      // Declined before anything was asked of any workflow: nothing was
+      // written, so nothing wakes, and the sentence is the whole answer.
+      if (e instanceof Refusal) return send(res, 409, text, oneLine(e.message));
       if (wakesAnyway) opts.tick?.();
       // Said, not hidden: the person waiting on a paid turn needs "no
       // session to join yet" or "screening blocked this turn", and the

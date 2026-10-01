@@ -104,3 +104,12 @@ function messageOfAt(e: unknown, depth: number): string {
 export function messageOf(e: unknown): string {
   return messageOfAt(e, 0);
 }
+
+/**
+ * A request this process declines on purpose, said as a sentence of its own:
+ * not a failure to report behind a fixed line, but an answer the person who
+ * asked can act on. The page's routes answer one with 409 and its words.
+ */
+export class Refusal extends Error {
+  override readonly name = "Refusal";
+}

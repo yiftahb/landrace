@@ -1630,7 +1630,7 @@ describe("telling a person an item needs them", () => {
     const posts: NotifyEvent[] = [];
     const chat = defineNotifier({ id: "chat", send: async (e) => { posts.push(e); } });
     const notify = createNotify({
-      workflow, notify: { on: ["needs-you"], via: ["chat"] }, notifiers: new Map([["chat", chat]]),
+      id: "main", workflow, notify: { on: ["needs-you"], via: ["chat"] }, notifiers: new Map([["chat", chat]]),
       ctx: { config: {} as RuntimeConfig, secrets: new Map(), signal: new AbortController().signal, log: () => {} },
       log: () => {}, board: () => null,
     });
@@ -1651,8 +1651,8 @@ describe("telling a person an item needs them", () => {
 
     expect((await converge()).trail).toEqual(["spec", "spec-questions"]);
     expect(posts).toEqual([{
-      event: "needs-you", item: "1", title: "Add export", link: expect.any(String) as unknown as string,
-      stage: "spec-questions", why: "waiting on you", board: null,
+      event: "needs-you", item: "1", workflow: "main", workflowName: "Main", title: "Add export",
+      link: expect.any(String) as unknown as string, stage: "spec-questions", why: "waiting on you", board: null,
     }]);
 
     await converge();

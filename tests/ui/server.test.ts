@@ -1,6 +1,9 @@
 import * as http from "node:http";
 import { request } from "node:http";
-import type { BoardView, GotoResult, UiServer, WakeResult } from "#namespace.js";
+import { gotoByClaim, panelByClaim } from "#cli/start.js";
+import { claimItems } from "#core/index.js";
+import type { ActivityLog, BoardView, GotoPath, GotoResult, Graph, ItemPanel, Node, UiServer, WakeResult, Workflow } from "#namespace.js";
+import { createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
 import { describeLoopback } from "#tests/support/loopback.js";
 
@@ -633,5 +636,118 @@ describeLoopback("the page's writes to an item: POST /items/<id>/retry and /item
     expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(Object.keys(res.headers).some((h) => h.toLowerCase().startsWith("access-control-allow"))).toBe(false);
+  });
+});
+
+/*
+ * The page's writes and its panel, each reaching the workflow that owns the
+ * item by the board's last listing — and, for an item no one workflow owns,
+ * nothing at all: a 409 in the board's own words, never a guess at the first
+ * workflow, and never the 502 a failed write gets.
+ */
+describeLoopback("the page's routes follow the item's workflow", () => {
+  let server: UiServer;
+  afterEach(async () => { await server?.close(); });
+
+  const flow = (name: string, label: string, first: string): Workflow => ({
+    version: 1, name, description: "test",
+    eligible: [{ when: { "node.state.labels": { $in: [label] } }, else: `no ${label} label` }],
+    stages: [
+      { id: first, entry: true, step: `steps/${first}.md`, goto: [first], triggers: [{ when: { "run.stage": null } }] },
+      { id: "blocked", goto: [first], triggers: [{ when: { "run.lastOutputValid": false } }] },
+    ],
+  });
+  /** `main` and `fast` on one tracker, `gl` on a second. */
+  const WORKFLOWS = [
+    { id: "main", workflow: flow("Main", "lr:auto", "spec") },
+    { id: "fast", workflow: flow("Fastlane", "lr:fast", "build") },
+    { id: "gl", workflow: flow("Lab", "lr:auto", "spec") },
+  ];
+  const item = (id: string, labels: string[]): Node => ({
+    id, kind: "item", title: `t${id}`, link: "", closed: null, priority: null, origin: null,
+    state: { labels: [...labels, "lr:stage:blocked", "lr:blocked"] },
+  });
+  const first: Graph = {
+    nodes: [item("1", ["lr:auto"]), item("2", ["lr:fast"]), item("4", ["lr:auto", "lr:fast"]), item("5", ["lr:auto"]), item("6", [])],
+    relationships: [],
+  };
+  const second: Graph = { nodes: [item("5", ["lr:auto"])], relationships: [] };
+
+  const ours = (action: string) => ({
+    "x-landrace-action": action, origin: `http://127.0.0.1:${server.port}`, "sec-fetch-site": "same-origin",
+  });
+
+  /** Each workflow's goto and panel writing down every call, and the page served over the board's own claims. */
+  const serve = async () => {
+    const board = createBoard({ workflows: WORKFLOWS, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    board.list({
+      graphs: [first, second],
+      claims: claimItems(WORKFLOWS.map((w) => ({ ...w, source: w.id === "gl" ? 1 : 0 })), [first, second]),
+    });
+    const calls: unknown[][] = [];
+    const gotoOf = (workflow: string): GotoPath => ({
+      send: async (item, target, opts) => { calls.push([workflow, "send", item, target, opts?.clear === true]); return { to: target ?? "blocked" }; },
+    });
+    const panelOf = (workflow: string): ItemPanel => ({
+      activity: async () => ({ stage: null, round: null, lines: [], total: 0 }),
+      conversation: async (item) => { calls.push([workflow, "conversation", item]); return []; },
+      reply: async (item) => { calls.push([workflow, "reply", item]); },
+      ask: async (item) => { calls.push([workflow, "ask", item]); return { reply: "ok", resolved: false }; },
+      resolve: async (item) => { calls.push([workflow, "resolve", item]); return { alreadyResolved: false }; },
+      pairing: async (item) => { calls.push([workflow, "pairing", item]); return { open: null, offers: [] }; },
+      pair: async (item) => { calls.push([workflow, "pair", item]); return { stage: "spec", round: 1, session: "s", cwd: "/w", command: "c" }; },
+      finish: async (item) => { calls.push([workflow, "finish", item]); return { stage: "spec", round: 1, discarded: [] }; },
+      release: async (item) => { calls.push([workflow, "release", item]); return { stage: "spec", round: 1 }; },
+    });
+    const activity: ActivityLog = { begin: () => {}, record: () => {}, read: async () => ({ stage: null, round: null, lines: [], total: 0 }) };
+    const owner = (item: string) => board.ownerOf(item);
+    const ids = ["main", "fast", "gl"];
+    const tick = jest.fn((): WakeResult => "started");
+    const goto = gotoByClaim(owner, new Map(ids.map((id) => [id, gotoOf(id)])));
+    if (!goto) throw new Error("every workflow here can write a record");
+    server = await serveBoard({
+      port: 0, view: () => board.view(), tick, goto,
+      panel: panelByClaim(owner, owner, new Map(ids.map((id) => [id, panelOf(id)])), activity),
+    });
+    return { calls, tick };
+  };
+
+  it("sends a Retry, a Clear and a Go to through the goto of the workflow that owns the item, and no other", async () => {
+    const { calls } = await serve();
+    expect((await get(server.port, "/items/1/retry", { method: "POST", headers: ours("retry") })).status).toBe(202);
+    expect((await get(server.port, "/items/2/clear", { method: "POST", headers: ours("clear") })).status).toBe(202);
+    expect((await get(server.port, "/items/2/goto/build", { method: "POST", headers: ours("goto") })).status).toBe(202);
+    expect(calls).toEqual([["main", "send", "1", null, false], ["fast", "send", "2", null, true], ["fast", "send", "2", "build", false]]);
+  });
+
+  it("reads and writes an item's panel through the workflow that owns it", async () => {
+    const { calls } = await serve();
+    expect((await get(server.port, "/items/1/conversation", { headers: ours("conversation") })).status).toBe(200);
+    expect((await get(server.port, "/items/2/reply", { method: "POST", headers: ours("reply"), body: "hi" })).status).toBe(200);
+    expect((await get(server.port, "/items/2/resolve", { method: "POST", headers: ours("resolve") })).status).toBe(200);
+    expect(calls).toEqual([["main", "conversation", "1"], ["fast", "reply", "2"], ["fast", "resolve", "2"]]);
+  });
+
+  const refusals = [
+    ["two workflows claim", "4", "#4 is claimed by fast and main; act on it after one workflow alone claims it"],
+    ["two trackers report", "5", "#5 is reported by the sources of fast, gl and main; act on it after one source alone reports it"],
+    ["no workflow claims", "6", "#6 is claimed by no workflow: no lr:auto label; no lr:fast label"],
+    ["the last listing never saw", "99", "#99 is not an open item the last tick listed"],
+  ] as const;
+
+  it.each(refusals)("refuses every write and read of an item %s with 409 and the board's sentence, reaching no workflow", async (_, id, sentence) => {
+    const { calls, tick } = await serve();
+    for (const [path, action, body] of [
+      ["retry", "retry"], ["clear", "clear"], ["goto/spec", "goto"], ["conversation", "conversation"], ["pairing", "pairing"],
+      ["reply", "reply", "hi"], ["ask", "ask", "hi"], ["resolve", "resolve"], ["pair", "pair", "spec"], ["finish", "finish"], ["release", "release"],
+    ] as const) {
+      const reading = action === "conversation" || action === "pairing";
+      const res = await get(server.port, `/items/${id}/${path}`, {
+        ...(reading ? {} : { method: "POST" }), headers: ours(action), ...(body === undefined ? {} : { body }),
+      });
+      expect([path, res.status, res.body]).toEqual([path, 409, sentence]);
+    }
+    expect(calls).toEqual([]);
+    expect(tick).not.toHaveBeenCalled();
   });
 });

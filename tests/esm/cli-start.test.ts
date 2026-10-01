@@ -945,14 +945,15 @@ describe("runStart and the wake file", () => {
  * next good tick. A source that cannot list is shown as it last listed, and
  * nothing is written to an item the failed listing could not judge.
  */
+const until = async (cond: () => boolean | Promise<boolean>, what: string, ms = 10_000): Promise<void> => {
+  const end = Date.now() + ms;
+  while (!(await cond())) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+
 describeLoopback("runStart's page while a source cannot list", () => {
-  const until = async (cond: () => boolean | Promise<boolean>, what: string, ms = 10_000): Promise<void> => {
-    const end = Date.now() + ms;
-    while (!(await cond())) {
-      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  };
 
   it("keeps the items it last listed on the board, and refuses to write to one until the source lists again", async () => {
     const flag = join(await mkdtemp(join(tmpdir(), "lr-flag-")), "down");
@@ -983,7 +984,58 @@ describeLoopback("runStart's page while a source cannot list", () => {
       const retried = await post(`items/${ITEM}/retry`, "retry");
       expect(retried.status).toBe(409);
       expect(await retried.text()).toMatch(/could not list the source of main: GET \/issues → 502/);
+      // The panel's writes are refused alike, in the same words.
+      const replied = await fetch(`${url}items/${ITEM}/reply`, { method: "POST", headers: { "x-landrace-action": "reply" }, body: "hi" });
+      expect(replied.status).toBe(409);
+      expect(await replied.text()).toMatch(/not written to until every source lists again: could not list the source of main/);
       expect(await applied(record)).toEqual([{ item: ITEM, type: "tracker.comment" }]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+});
+
+/*
+ * The page over two workflows, through the daemon's own wiring: each row
+ * names the workflow that owns it, an item both claim waits in Needs you
+ * naming both, and nothing the page can post reaches either workflow for it.
+ */
+describeLoopback("runStart's page over two workflows", () => {
+  it("names each item's workflow, files one both claim under Needs you, and refuses to act on it", async () => {
+    const { dir, record } = await fixture({
+      items: [{ id: ITEM, labels: ["lr:auto"] }, { id: "4343", labels: ["lr:fast"] }, { id: "4444", labels: ["lr:auto", "lr:fast"] }],
+    });
+    await withFast(dir);
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => {
+      said.push(String(line));
+    };
+    const running = runStart(dir, { uiPort: 0 });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
+      const rows = async (): Promise<BoardView["rows"]> => ((await (await fetch(`${url}board.json`)).json()) as BoardView).rows;
+      await until(async () => (await applied(record)).length === 2 && (await rows()).length === 3, "the first tick to work both items");
+
+      const row = async (id: string) => (await rows()).find((r) => r.id === id);
+      expect(await row(ITEM)).toMatchObject({ workflow: "main" });
+      expect(await row("4343")).toMatchObject({ workflow: "fast" });
+      expect(await row("4444")).toMatchObject({
+        workflow: null, badge: "needs-you", note: "claimed by fast and main", retry: null, clear: null, goto: [],
+      });
+
+      const sentence = "#4444 is claimed by fast and main; act on it after one workflow alone claims it";
+      for (const [path, action, body] of [["retry", "retry"], ["goto/spec", "goto"], ["reply", "reply", "hi"], ["conversation", "conversation"]] as const) {
+        const res = await fetch(`${url}items/4444/${path}`, {
+          method: action === "conversation" ? "GET" : "POST", headers: { "x-landrace-action": action }, ...(body === undefined ? {} : { body }),
+        });
+        expect([path, res.status, await res.text()]).toEqual([path, 409, sentence]);
+      }
+      expect((await applied(record)).filter((w) => JSON.stringify(w).includes("4444"))).toEqual([]);
     } finally {
       process.emit("SIGINT");
       await running;

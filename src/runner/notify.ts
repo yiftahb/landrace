@@ -13,6 +13,8 @@ import { laneOf, oneLine, statusRows } from "#runner/status.js";
  * sent — converge decides *when* this runs, and that is derived.
  */
 export function createNotify(opts: {
+  /** The workflow's folder under `workflows/`: whose item it is, with `workflow.name`. */
+  id: string;
   workflow: Workflow;
   notify: RuntimeConfig["notify"];
   notifiers: ReadonlyMap<string, Notifier>;
@@ -32,7 +34,7 @@ export function createNotify(opts: {
     if (!row || laneOf(row, opts.workflow) !== "needs-you") return;
 
     const event: NotifyEvent = {
-      event: "needs-you", item: row.item, title: oneLine(row.title), link: node.link,
+      event: "needs-you", item: row.item, workflow: opts.id, workflowName: opts.workflow.name, title: oneLine(row.title), link: node.link,
       stage: row.stage, why: oneLine(row.note), board: opts.board(),
     };
     for (const via of notify.via) {

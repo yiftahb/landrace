@@ -246,7 +246,7 @@ How agents run and where items live. Portable workflows keep none of this.
 
 #### `notify:` — being told an item needs you
 
-Every stop waits on a person, and until something tells them, the only sign is the Needs you lane. With a `notify:` block, an item that comes to rest in Needs you — the board's own rule, so the two never disagree — is announced once through each notifier `via` names: `#29 needs you — <title> · <why>`, where why is the board's note (`waiting on you`, `blocked by a security check`, …). An item that stays there is not announced again; one that leaves and comes back is. An item passing through `triage` on its way back is never announced: `triage` runs its step at once. Sending is fire-and-forget — a notifier that fails is a `notify.failed` line in the log and nothing more, it never stops an item, and nothing is kept about what was sent.
+Every stop waits on a person, and until something tells them, the only sign is the Needs you lane. With a `notify:` block, an item that comes to rest in Needs you — the board's own rule, so the two never disagree — is announced once through each notifier `via` names: `#29 needs you in <workflow> — <title> · <why>`, where workflow is the `name` of the workflow that owns the item and why is the board's note (`waiting on you`, `blocked by a security check`, …). An item that stays there is not announced again; one that leaves and comes back is. An item passing through `triage` on its way back is never announced: `triage` runs its step at once. Sending is fire-and-forget — a notifier that fails is a `notify.failed` line in the log and nothing more, it never stops an item, and nothing is kept about what was sent.
 
 ```yaml
 notify:
