@@ -930,7 +930,11 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     const uncovered = (c: Condition | undefined, where: string): void => {
       for (const path of pathsIn(c ?? {})) {
         if (!covered(path)) {
-          problems.push({ rule: "path-coverage", message: `${where} reads ${path}, which no hook provides` });
+          const now = retiredPlaceholder(path);
+          problems.push({
+            rule: "path-coverage",
+            message: `${where} reads ${path}, which no hook provides${now === null ? "" : `; "${path}" is now "${now}"`}`,
+          });
         }
       }
     };

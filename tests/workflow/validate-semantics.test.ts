@@ -187,6 +187,17 @@ describe("semantic validation", () => {
     expect(rules(w, noSteps, ["item.labels", "run.stage"])).toContain("path-coverage");
   });
 
+  it("points a retired `ticket` path at its new name", () => {
+    const w: Workflow = { version: 1, name: "t", stages: [
+      { id: "a", entry: true, triggers: [{ when: { "ticket.labels": "x" } }] },
+    ] };
+    const messages = validateSemantics(w, noSteps, ["item.labels", "run.stage"])
+      .filter((p) => p.rule === "path-coverage").map((p) => p.message);
+    expect(messages).toEqual([
+      'stage "a" reads ticket.labels, which no hook provides; "ticket.labels" is now "item.labels"',
+    ]);
+  });
+
   /*
    * An eligibility rule reads the same snapshot every trigger does, and an
    * uncovered path there is the quieter failure of the two: a trigger that

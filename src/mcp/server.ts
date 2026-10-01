@@ -26,8 +26,9 @@ const guard =
   };
 
 /**
- * An item id as a client sends it. Numbers are still taken, because every
- * client written before ids were strings sends `{ ticket: 42 }`; both are
+ * An item id as a client sends it. Numbers are still taken, because a
+ * client may send `{ item: 42 }`, and every one written before ids were
+ * strings did, under the old name `ticket`; both are
  * checked against the one id rule before any tool runs, so a hostile id never
  * reaches a lock file or a worktree path by way of the MCP plane.
  */

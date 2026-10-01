@@ -51,6 +51,18 @@ node dist/cli.js --help
 
 Requires Node 22 or newer. Landrace uses native type stripping and deliberately ships no TypeScript runtime.
 
+### Upgrading from "ticket" to "item"
+
+Every "ticket" in code, prompts, MCP and the board is now an "item". Data on trackers is unchanged: labels, markers, branches and relationship names are as they were, so items in flight keep working.
+
+After upgrading, rebuild, restart `landrace start`, reconnect the MCP client (`/mcp` in Claude Code), and reload any open board tab (an old tab's script draws items as plain links until reloaded). Then, where it applies:
+
+- **MCP tools:** `landrace_create_ticket` is `landrace_create_item` and `landrace_update_ticket` is `landrace_update_item`; every `ticket` parameter is `item`. Board routes `/tickets/<id>/…` are `/items/<id>/…`.
+- **Workflow files:** placeholders `{ticket…}` are `{item…}` and the capability `tickets:create` is `items:create`. `landrace validate` reports each with its new name.
+- **Telemetry (when enabled):** events `ticket.evaluated`, `ticket.skipped` and `ticket.aborted` are `item.*`; attributes `landrace.ticket` and `landrace.tickets` are `landrace.item` and `landrace.items`. No old names are kept, so re-key dashboards and alerts.
+- **Hook authors:** `ctx.ticket` is `ctx.item`, `NotifyEvent.ticket` is `NotifyEvent.item`, `Operator.createTicket` and `updateTicket` are `createItem` and `updateItem`, `BaseTracker`'s `tickets()` and `ticket()` are `items()` and `item()`, `TicketRecord` is `ItemRecord`, `TicketPatch` is `ItemPatch`, and `ticketNode` is `itemNode`.
+- **Notion:** the database column stays named `Ticket`, so existing databases keep working.
+
 ## Quick start
 
 ```bash
