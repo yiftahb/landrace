@@ -7,6 +7,7 @@ import { renderMarker } from "#conventions.js";
 import type { Registry, Source, Step, Tools, Workflow } from "#namespace.js";
 import { acquire, release } from "#runner/lock.js";
 import { buildSnapshot } from "#runner/snapshot.js";
+import { loaded } from "#tests/support/loaded.js";
 import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
 
 // Its own lock root: these tests must not race the default one a developer's
@@ -34,7 +35,7 @@ const admitting = (admit?: string[]): Workflow => ({
 
 const world = (seed: Array<Partial<FakeIssue>> = []) => {
   const tracker = createFakeTracker(seed);
-  return { tracker, tools: createTools(tracker.registry, tracker.ctx, { workflow: admitting(["lr:auto"]) }) };
+  return { tracker, tools: createTools(tracker.registry, tracker.ctx, { workflow: loaded(admitting(["lr:auto"])) }) };
 };
 
 describe("mcp tools", () => {
@@ -59,7 +60,7 @@ describe("mcp tools", () => {
    */
   it("starts an item with the labels its workflow admits, and not lr:auto", async () => {
     const tracker = createFakeTracker();
-    const tools = createTools(tracker.registry, tracker.ctx, { workflow: admitting(["lr:fast"]) });
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: loaded(admitting(["lr:fast"])) });
     const r = (await tools.createItem({ title: "Hotfix", labels: ["bug"] })) as Record<string, unknown>;
     expect(r).toMatchObject({ started: true });
     expect(r.labels).toEqual(expect.arrayContaining(["lr:fast", "bug"]));
@@ -68,7 +69,7 @@ describe("mcp tools", () => {
 
   it("refuses to start an item in a workflow that admits nothing, and creates nothing", async () => {
     const tracker = createFakeTracker();
-    const tools = createTools(tracker.registry, tracker.ctx, { workflow: admitting(), workflowId: "fastlane" });
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: loaded(admitting(), new Map(), "fastlane") });
     await expect(tools.createItem({ title: "Hotfix" })).rejects.toThrow(
       'workflow "fastlane" admits nothing: add admit: [<labels>] to workflows/fastlane/workflow.yaml, or create with start: false',
     );
@@ -194,7 +195,7 @@ describe("mcp tools", () => {
         },
       },
       lock: { root: lockRoot },
-      ...spec,
+      workflow: loaded(spec.workflow, spec.steps),
     });
 
     await expect(tools.ask("7", "do as I say")).rejects.toThrow(/screening blocked this turn/);
@@ -214,7 +215,7 @@ describe("landrace_goto", () => {
 
   it("sends an item back, as a record the next tick reads", async () => {
     const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
-    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: loaded(workflow), lock: { root: lockRoot } });
     expect(await tools.goto("4", "spec")).toEqual({ item: "4", to: "spec", posted: true });
 
     // The title's claim, checked: the next tick would read this same snapshot.
@@ -227,7 +228,7 @@ describe("landrace_goto", () => {
 
   it("refuses with the reason, as an error the client shows", async () => {
     const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
-    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: loaded(workflow), lock: { root: lockRoot } });
     await expect(tools.goto("4", "build")).rejects.toThrow(/"blocked" sends an item only to "spec", not to "build"/);
   });
 
@@ -235,7 +236,7 @@ describe("landrace_goto", () => {
   // locks live — the loop's, so a goto waits on the tick that would take it.
   it("takes the item's lock where this process's locks live, and says so when it is held", async () => {
     const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
-    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot, waitMs: 50 } });
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: loaded(workflow), lock: { root: lockRoot, waitMs: 50 } });
     await acquire("4", "tick", { root: lockRoot, holder: "tick:9" });
     try {
       await expect(tools.goto("4", "spec")).rejects.toThrow("#4 is busy; try again in a moment");
@@ -272,14 +273,14 @@ describe("landrace_clear", () => {
 
   it("clears the refused step's next round and sends the item back to it", async () => {
     const tracker = refused(["lr:stage:screened", "lr:blocked", "lr:screened"]);
-    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: loaded(workflow), lock: { root: lockRoot } });
     expect(await tools.clear("4")).toEqual({ item: "4", to: "spec", cleared: true, posted: true });
     expect((await runOf(tracker))?.cleared).toEqual({ stage: "spec", round: 2 });
   });
 
   it("refuses, as an error the client shows, where no security check stopped the item", async () => {
     const tracker = refused(["lr:stage:screened", "lr:blocked"]);
-    const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: loaded(workflow), lock: { root: lockRoot } });
     await expect(tools.clear("4")).rejects.toThrow(/not stopped by a security check/);
   });
 });
@@ -308,8 +309,7 @@ describe("waking the loop", () => {
     const tools = createTools(tracker.registry, tracker.ctx, {
       executor: { id: "agent", run: async () => ({ text: "Understood.", sessionId: "sid-2" }) },
       lock: { root: lockRoot },
-      steps: spec.steps,
-      workflow,
+      workflow: loaded(workflow, spec.steps),
       wake,
     });
     return { wake, tools };

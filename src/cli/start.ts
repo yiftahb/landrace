@@ -201,10 +201,10 @@ export function boardSink(
  * own flags (type stripping, --import), the CLI entry, and the workspace
  * directory made absolute so the agent's cwd cannot move it.
  */
-export function childServerCommand(dir: string): ServerCommand {
+export function childServerCommand(dir: string, workflowId: string): ServerCommand {
   return {
     command: process.execPath,
-    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir)],
+    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId],
   };
 }
 
@@ -500,7 +500,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       executor: opts.readOnly
         ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
         : await executorFor(loaded.config, registry, ectx),
-      childServer: childServerCommand(dir),
+      childServer: childServerCommand(dir, id),
       ...(sandbox === null ? {} : { sandbox }),
       ...(screener ? { screen: screener } : {}),
       ctx,

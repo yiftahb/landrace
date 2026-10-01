@@ -1719,13 +1719,7 @@ export interface ToolOptions {
    * holds no turn, and one that has an executor and not these refuses the
    * turn rather than running it unconstrained.
    */
-  workflow?: Workflow;
-  /**
-   * The workflow's id, its folder under `workflows/`: what a refusal names
-   * when the fix is an edit to that workflow's file.
-   */
-  workflowId?: string;
-  steps?: Map<string, Step>;
+  workflow?: LoadedWorkflow;
   sandbox?: { root: string };
   /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
   activity?: ActivityLog;

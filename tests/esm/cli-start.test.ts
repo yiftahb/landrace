@@ -226,7 +226,7 @@ describe("buildRuntime", () => {
   it("hands converge how to start its own item server, as this process on this workflow directory", async () => {
     const { dir } = await fixture();
     const rt = await buildRuntime(dir, {});
-    expect(rt.deps.childServer).toEqual(childServerCommand(dir));
+    expect(rt.deps.childServer).toEqual(childServerCommand(dir, "main"));
   });
 
   /**

@@ -101,6 +101,13 @@ export async function readWorkspace(dir: string, vars: ReadonlyMap<string, strin
   return { dir, workflows, ids, failures };
 }
 
+/** The workflow with this id, or the reason there is none by that id. */
+export function workflowById(ws: Workspace, id: string): LoadedWorkflow {
+  const found = ws.workflows.find((w) => w.id === id);
+  if (!found) throw new Error(`no workflow "${id}" in ${ws.dir}; it has ${ws.workflows.map((w) => w.id).join(", ")}`);
+  return found;
+}
+
 /**
  * The workspace's one workflow, for a command that runs one. Two are refused
  * rather than one of them taken: whichever sorted first is not a choice

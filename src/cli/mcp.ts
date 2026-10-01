@@ -11,7 +11,7 @@ import { createLogger, scrubberOf } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
-import { loadWorkspace, onlyWorkflow } from "#workflow/workspace.js";
+import { loadWorkspace, onlyWorkflow, workflowById } from "#workflow/workspace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
 import { childServerCommand, executorFor, sandboxFor, screenerFor } from "#cli/start.js";
@@ -32,7 +32,8 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
   const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
-  const { id: workflowId, dir: workflowDir, workflow, steps } = onlyWorkflow(ws, "mcp");
+  const loadedWorkflow = onlyWorkflow(ws, "mcp");
+  const { dir: workflowDir, workflow, steps } = loadedWorkflow;
   const registry = await loadHooks({ dir: workflowDir, modules: workflow.hooks ?? [], workspace: ws.dir });
 
   // stdout carries the MCP protocol, so anything we have to say goes to
@@ -143,9 +144,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
   return createTools(registry, ctx, {
     executor,
     ...screen,
-    workflow,
-    workflowId,
-    steps,
+    workflow: loadedWorkflow,
     ...(sandbox === null ? {} : { sandbox }),
     // A turn asked here runs in this process, and the loop's page reads its
     // progress from the same directory the loop's own steps write to.
@@ -155,7 +154,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
     // is handed gets no wake, so an agent cannot drive the loop.
     wake: () => touchWake(wakePath(dir)),
     // This same server, for a pairing's session to reach Landrace by.
-    server: childServerCommand(dir),
+    server: childServerCommand(dir, loadedWorkflow.id),
   });
 }
 
@@ -172,7 +171,7 @@ export async function runMcp(dir: string): Promise<void> {
  * No preflight and no source probe: the loop that started this agent ran both
  * already, moments ago, against the same configuration.
  */
-export async function buildChildTool(dir: string, binding: ChildBinding): Promise<ChildTool> {
+export async function buildChildTool(dir: string, binding: ChildBinding, workflowId: string): Promise<ChildTool> {
   const parentProblem = itemIdProblem(binding.parent);
   if (parentProblem) throw new Error(parentProblem);
   if (!Number.isInteger(binding.round) || binding.round < 1) {
@@ -181,11 +180,12 @@ export async function buildChildTool(dir: string, binding: ChildBinding): Promis
 
   const loaded = await loadConfig(dir);
   assertConfigUsable(dir, loaded);
-  // The workflow whose step this server was started for: the one there is,
-  // as for the loop that started it. It is also what says how a child is
-  // labelled, so nothing on this server's command line has to.
+  // The workflow whose step this server was started for, named on its command
+  // line by the loop that started it. It is also what says how a child is
+  // labelled, so a workspace of several workflows labels each one's children
+  // its own way.
   const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
-  const { dir: workflowDir, workflow, steps } = onlyWorkflow(ws, "mcp");
+  const { dir: workflowDir, workflow, steps } = workflowById(ws, workflowId);
   const stage = workflow.stages.find((s) => s.id === binding.stage);
   if (!stage) throw new Error(`the workflow has no stage "${binding.stage}"`);
   const step = stage.step ? steps.get(stage.step) : undefined;
@@ -211,7 +211,7 @@ export async function buildChildTool(dir: string, binding: ChildBinding): Promis
   };
 }
 
-export async function runChildMcp(dir: string, binding: ChildBinding): Promise<void> {
-  const server = createChildMcpServer(await buildChildTool(dir, binding));
+export async function runChildMcp(dir: string, binding: ChildBinding, workflowId: string): Promise<void> {
+  const server = createChildMcpServer(await buildChildTool(dir, binding, workflowId));
   await server.connect(new StdioServerTransport());
 }

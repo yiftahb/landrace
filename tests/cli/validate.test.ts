@@ -412,7 +412,7 @@ describe("landrace next, over a workspace", () => {
 
   it("refuses a workflow id the workspace has no folder for, naming the ones it has", async () => {
     const ws = await two();
-    await expect(runNext(ws, await snapshot(), "nope")).rejects.toThrow(`${ws}/workflows has no workflow "nope"; it has fastlane, main`);
+    await expect(runNext(ws, await snapshot(), "nope")).rejects.toThrow(`no workflow "nope" in ${ws}; it has fastlane, main`);
   });
 });
 

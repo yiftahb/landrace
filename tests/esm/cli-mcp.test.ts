@@ -473,17 +473,19 @@ export const operator = Object.defineProperty({
 }, KIND, { value: "operator", enumerable: false });
 `;
 
-  const workspace = async (admit: string): Promise<{ dir: string; created: string }> => {
+  /** One workflow per entry, id -> its `admit:` lines. */
+  const workspaceOf = async (admits: Record<string, string>): Promise<{ dir: string; created: string }> => {
     const root = await mkdtemp(join(tmpdir(), "lr-child-admit-"));
     const dir = join(root, ".landrace");
-    const main = join(dir, "workflows", "main");
     const created = join(root, "created.jsonl");
-    await mkdir(join(main, "steps"), { recursive: true });
     await mkdir(join(dir, "hooks"), { recursive: true });
     await writeFile(join(dir, "hooks", "operator.ts"), OPERATOR(created));
-    await writeFile(join(main, "steps", "breakdown.md"), "---\ncapabilities: [items:create]\n---\n\nBreak it down.\n");
-    await writeFile(join(main, "workflow.yaml"), `version: 1
-name: Main
+    for (const [id, admit] of Object.entries(admits)) {
+      const wf = join(dir, "workflows", id);
+      await mkdir(join(wf, "steps"), { recursive: true });
+      await writeFile(join(wf, "steps", "breakdown.md"), "---\ncapabilities: [items:create]\n---\n\nBreak it down.\n");
+      await writeFile(join(wf, "workflow.yaml"), `version: 1
+name: ${id}
 description: test
 ${admit}hooks: [../../hooks/operator.ts]
 stages:
@@ -492,21 +494,37 @@ stages:
     terminal: true
     step: steps/breakdown.md
 `);
+    }
     await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: claude, model: opus }\n");
     return { dir, created };
   };
+  const workspace = (admit: string) => workspaceOf({ main: admit });
 
   it("labels the child with the workflow's admit list", async () => {
     const { dir, created } = await workspace("admit: [lr:fast]\n");
-    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 });
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "main");
     await tool.createChild({ title: "API" });
     expect(await linesOf(created)).toEqual([["lr:fast"]]);
   });
 
   it("labels it with nothing when the workflow admits nothing", async () => {
     const { dir, created } = await workspace("");
-    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 });
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "main");
     await tool.createChild({ title: "API" });
     expect(await linesOf(created)).toEqual([[]]);
+  });
+
+  it("labels a child with the admit list of the workflow it is bound to, among several", async () => {
+    const { dir, created } = await workspaceOf({ main: "admit: [lr:auto]\n", fast: "admit: [lr:fast]\n" });
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "fast");
+    await tool.createChild({ title: "API" });
+    expect(await linesOf(created)).toEqual([["lr:fast"]]);
+  });
+
+  it("refuses a workflow the workspace does not have, naming the ones it does", async () => {
+    const { dir } = await workspaceOf({ main: "", fast: "" });
+    await expect(buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "nope")).rejects.toThrow(
+      /no workflow "nope".*fast, main|no workflow "nope".*main, fast/,
+    );
   });
 });

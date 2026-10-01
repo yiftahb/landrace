@@ -1,15 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { loadConfig } from "#config/load.js";
 import { decide, deriveRun, planEffects } from "#core/index.js";
-import type { Decision, Effect, LoadedWorkflow, Snapshot, Workspace } from "#namespace.js";
-import { loadWorkspace, onlyWorkflow } from "#workflow/workspace.js";
-
-/** The workflow `--workflow <id>` names, or the reason there is none by that id. */
-function workflowById(ws: Workspace, id: string): LoadedWorkflow {
-  const found = ws.workflows.find((w) => w.id === id);
-  if (!found) throw new Error(`${ws.dir}/workflows has no workflow "${id}"; it has ${ws.workflows.map((w) => w.id).join(", ")}`);
-  return found;
-}
+import type { Decision, Effect, Snapshot } from "#namespace.js";
+import { loadWorkspace, onlyWorkflow, workflowById } from "#workflow/workspace.js";
 
 export async function runNext(
   dir: string,

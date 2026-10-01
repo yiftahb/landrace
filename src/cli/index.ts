@@ -128,10 +128,11 @@ program
   .command("mcp")
   .description("run the MCP server over stdio")
   .option("-w, --workspace <dir>", "workspace directory", ".landrace")
+  .option("--workflow <id>", "with --child: the workflow whose step is creating the children")
   .option("--child <parent>", "serve only landrace_create_child, bound to this parent item")
   .option("--stage <stage>", "with --child: the stage creating the children")
   .option("--round <round>", "with --child: the round creating the children")
-  .action(async (opts: { workspace: string; child?: string; stage?: string; round?: string }) => {
+  .action(async (opts: { workspace: string; workflow?: string; child?: string; stage?: string; round?: string }) => {
     // The MCP client that spawned us shows stderr, so what loadingHooks prints
     // there is the only diagnostic a user gets.
     await loadingHooks("mcp", () => {
@@ -139,7 +140,8 @@ program
         if (opts.stage === undefined || opts.round === undefined) {
           throw new Error("--child needs --stage and --round");
         }
-        return runChildMcp(opts.workspace, { parent: opts.child, stage: opts.stage, round: Number(opts.round) });
+        if (opts.workflow === undefined) throw new Error("--child needs --workflow");
+        return runChildMcp(opts.workspace, { parent: opts.child, stage: opts.stage, round: Number(opts.round) }, opts.workflow);
       }
       return runMcp(opts.workspace);
     });

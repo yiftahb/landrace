@@ -46,18 +46,18 @@ secrets: { githubToken: $LR_TEST_TOKEN }
 
 describe("buildChildTool", () => {
   it("refuses a stage whose step did not declare items:create", async () => {
-    await expect(buildChildTool(await dirWithBreakdown(), { parent: "1", stage: "spec", round: 1 }))
+    await expect(buildChildTool(await dirWithBreakdown(), { parent: "1", stage: "spec", round: 1 }, "main"))
       .rejects.toThrow(/spec.*items:create/);
   });
 
   it("refuses a stage the workflow does not have", async () => {
-    await expect(buildChildTool(await dirWithBreakdown(), { parent: "1", stage: "nope", round: 1 }))
+    await expect(buildChildTool(await dirWithBreakdown(), { parent: "1", stage: "nope", round: 1 }, "main"))
       .rejects.toThrow(/no stage "nope"/);
   });
 
   it("refuses a round that is not a positive integer, and a parent that is not an item id", async () => {
     const dir = await dirWithBreakdown();
-    await expect(buildChildTool(dir, { parent: "1", stage: "breakdown", round: 0 })).rejects.toThrow(/round/);
-    await expect(buildChildTool(dir, { parent: "a/b", stage: "breakdown", round: 1 })).rejects.toThrow(/item id/);
+    await expect(buildChildTool(dir, { parent: "1", stage: "breakdown", round: 0 }, "main")).rejects.toThrow(/round/);
+    await expect(buildChildTool(dir, { parent: "a/b", stage: "breakdown", round: 1 }, "main")).rejects.toThrow(/item id/);
   });
 });

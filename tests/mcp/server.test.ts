@@ -4,6 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OUTPUT_KIND, renderMarker } from "#conventions.js";
+import { loaded } from "#tests/support/loaded.js";
 import type { Executor, Step, ToolOptions, Workflow } from "#namespace.js";
 import { createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
@@ -60,8 +61,8 @@ describe("mcp server over a real transport", () => {
     const plain: Executor = { id: "plain", run: async () => ({ text: "", sessionId: null }) };
     const { client, gh } = await connect([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }], {
       executor: plain,
-      workflow: { version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", entry: true, triggers: [] }] } as Workflow,
-      steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
+      workflow: loaded({ version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", entry: true, triggers: [] }] } as Workflow,
+        new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]])),
       sandbox: { root: process.cwd() },
     });
     const view = await client.callTool({ name: "landrace_pair", arguments: { item: 1 } });
@@ -76,7 +77,7 @@ describe("mcp server over a real transport", () => {
 
   it("creates an item end to end through the protocol", async () => {
     const workflow: Workflow = { version: 1, name: "t", description: "test", admit: ["lr:auto"], stages: [{ id: "spec", entry: true, terminal: true }] };
-    const { client, gh } = await connect([], { workflow });
+    const { client, gh } = await connect([], { workflow: loaded(workflow) });
     const r = await client.callTool({ name: "landrace_create_item", arguments: { title: "Add CSV export" } });
     expect(JSON.parse(textOf(r))).toMatchObject({ item: "1", started: true });
     expect(gh.issues.get(1)?.title).toBe("Add CSV export");
@@ -145,8 +146,8 @@ describe("mcp server over a real transport", () => {
         lock: { root },
         // A turn is held to what its step declared, so the conversation has to
         // be told what that is — as the loop tells it.
-        workflow: { version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", triggers: [] }] } as Workflow,
-        steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
+        workflow: loaded({ version: 1, name: "t", description: "test", stages: [{ id: "spec", step: "spec", triggers: [] }] } as Workflow,
+          new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]])),
       },
     );
     gh.say(

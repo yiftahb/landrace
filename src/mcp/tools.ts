@@ -119,8 +119,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     // conversation can only read if the workflow reaches it. Carried rather
     // than loaded again here — a second read of the same directory is a second
     // answer, free to differ from the one the loop is actually running.
-    ...(opts.workflow ? { workflow: opts.workflow } : {}),
-    ...(opts.steps ? { steps: opts.steps } : {}),
+    ...(opts.workflow ? { workflow: opts.workflow.workflow, steps: opts.workflow.steps } : {}),
     ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
     ...(opts.activity ? { activity: opts.activity } : {}),
   });
@@ -180,7 +179,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
         // The workflow's own rule, asked of the snapshot `decide` would gate
         // on — not a label name: the engine names none. A process not given
         // the workflow cannot say, so it does not.
-        ...(opts.workflow ? { eligible: checkEligible(opts.workflow, snapshot).eligible } : {}),
+        ...(opts.workflow ? { eligible: checkEligible(opts.workflow.workflow, snapshot).eligible } : {}),
         waitingOnYou: labels.includes(LABELS.awaiting),
         blocked: labels.includes(LABELS.blocked),
         rounds: run?.counters ?? {},
@@ -196,15 +195,14 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       // the labels the workflow admits with, which the engine names none of.
       // Refused before anything is written, never filed unstarted instead —
       // the caller asked for it to be worked, and would be told it is.
-      const admit = opts.workflow?.admit ?? [];
+      const admit = opts.workflow?.workflow.admit ?? [];
       if (start) {
         if (!opts.workflow) throw new Error("cannot start an item: this process was not given the workflow");
         if (admit.length === 0) {
           // The folder to edit, by its id: the display name is not a path.
-          const id = opts.workflowId;
           throw new Error(
-            `workflow "${id ?? opts.workflow.name}" admits nothing: add admit: [<labels>] to ` +
-            `${id === undefined ? "its workflow.yaml" : `workflows/${id}/workflow.yaml`}, or create with start: false`,
+            `workflow "${opts.workflow.id}" admits nothing: add admit: [<labels>] to ` +
+            `workflows/${opts.workflow.id}/workflow.yaml, or create with start: false`,
           );
         }
       }
@@ -250,7 +248,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       // And the lock this process was told the tick takes, as the
       // conversation is: a goto has to wait on the tick that would take it.
       const r = await sendTo(
-        { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
+        { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
         item,
         stage,
       );
@@ -262,7 +260,7 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     async clear(item, stage) {
       if (!opts.workflow) throw new Error("cannot clear a step: this process was not given the workflow");
       const r = await sendTo(
-        { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
+        { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
         item,
         stage ?? null,
         { clear: true },
@@ -317,10 +315,10 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
    * pairing is refused rather than guessed at.
    */
   function pairDeps(): PairDeps {
-    if (!opts.workflow || !opts.steps) throw new Error("cannot pair: this process was not given the workflow");
+    if (!opts.workflow) throw new Error("cannot pair: this process was not given the workflow");
     return {
       source: source(), pre: registry.pre, dispatcher, ctx,
-      workflow: opts.workflow, steps: opts.steps, executor: opts.executor ?? null, artifacts: registry.artifacts,
+      workflow: opts.workflow.workflow, steps: opts.workflow.steps, executor: opts.executor ?? null, artifacts: registry.artifacts,
       ...(opts.screen ? { screen: opts.screen } : {}),
       ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
       ...(opts.lock ? { lock: opts.lock } : {}),

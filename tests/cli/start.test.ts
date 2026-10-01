@@ -326,9 +326,9 @@ describe("which executor screens", () => {
  */
 describe("the item server an items:create step is handed", () => {
   it("is this process started again as `landrace mcp` on the absolute workspace directory", () => {
-    expect(childServerCommand("relative/.landrace")).toEqual({
+    expect(childServerCommand("relative/.landrace", "main")).toEqual({
       command: process.execPath,
-      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace")],
+      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main"],
     });
   });
 });
