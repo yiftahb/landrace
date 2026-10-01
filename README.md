@@ -195,9 +195,10 @@ integrations/        the integrations landrace ships: claude/ and codex/ on the 
 
 .landrace/
   landrace.yaml      runtime — how agents run, where items live
-  workflow.yaml      the process — one graph, stages declaring what activates them
-  steps/*.md         the work — front matter is the contract, the body is the prompt
-  hooks/*.ts         this project's integrations — GitHub's three roles `compose`d, `new Claude()` and the Slack re-export. Not part of the engine
+  workflows/<id>/    one folder per workflow; a workspace holds one or several
+    workflow.yaml    the process — one graph, stages declaring what activates them
+    steps/*.md       the work — front matter is the contract, the body is the prompt
+  hooks/*.ts         this project's integrations, shared by every workflow — GitHub's three roles `compose`d, `new Claude()` and the Slack re-export. Not part of the engine
   .env               secrets, gitignored, and `validate` fails if it is not
 ```
 
@@ -226,6 +227,7 @@ How agents run and where items live. Portable workflows keep none of this.
 | `security.model` | — | The model the screening run asks for. No default: absent, the screening executor's own default decides |
 | `log.redact` | `[]` | Secret names whose values must never be logged |
 | `secrets.*` | — | `$VAR` references resolved from `.landrace/.env`, handed to hooks as values |
+| `workflows` | the folders, alphabetically | The order the workflows are shown and run in. It must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
 | `vars.*` | — | `$VAR` references resolved the same way and substituted into `workflow.yaml` and the step files wherever `{vars.<name>}` appears. **Not secrets:** nothing redacts them |
 | `notify.on` | — | The events to tell a person about. One exists: `needs-you` |
 | `notify.via` | — | Notifier ids, each registered by a hook with `defineNotifier`. This repository's is `slack`, shipped as `landrace/integrations/slack` and re-exported by `.landrace/hooks/slack.ts`. An id no loaded notifier answers to is refused by `start` and reported by `validate` |
@@ -391,11 +393,22 @@ One workflow directory, one graph, one set of step files. An item assigned to so
 
 The skip costs one request for the whole repository, not one per item: a source's `list()` returns a `Graph`, and every item `Node` in it carries `assignees` beside `labels` in `state`, so the rule is answered from what `list` already returned, before any issue is fetched and before the per-item lock is taken. A source hook must fill it — empty when nobody is assigned — for the same reason a pre hook must: a rule the tick cannot answer abstains, and abstaining means eligible.
 
-### `.landrace/workflow.yaml` — the process
+### `.landrace/workflows/<id>/workflow.yaml` — the process
 
 The whole graph, in one readable file. Stages declare **what activates them**, so adding a stage never means editing its predecessor.
 
 The shipped workflow is a single flow with one entry stage, `spec`: every item is specified, approved, built and reviewed as one piece of work. A workflow may have several `entry: true` stages — say `spec` for items a person made (`"node.origin": null`) and `build` for children a breakdown created, once their parent waits on them, as [`tests/fixtures/children`](tests/fixtures/children/workflow.yaml) does. An item with no position then enters the one whose `"run.stage": null` trigger matches it; none, or more than one, halts. With a single entry stage, it is entered unconditionally, as before.
+
+Beside `stages`, the file's header says what the workflow is and what it admits:
+
+| Key | Meaning |
+|---|---|
+| `name` | The display title, shown on the board and in `status` |
+| `description` | Required. What the workflow is for, in a sentence; it is what an agent sees when it chooses where to start an item |
+| `admit` | The labels an item gets when it is started into this workflow, by `landrace_create_item` or as the child an `items:create` step files. The engine names none of its own. `validate` checks them against `eligible` when that rule is label-only, so a workflow cannot admit an item it would then skip |
+| `hooks` | Paths of the hook modules, in the order pre hooks run |
+
+Every path in the file, hook or step, is relative to the workflow's own folder and must resolve inside `.landrace/`, symlinks included. `../../hooks/github.ts` reaches the folder every workflow shares; a path that climbs out of `.landrace/` is refused, and so is a workflow folder that is itself a symlink.
 
 ```yaml
 stages:
@@ -484,7 +497,7 @@ Workflow-level keys beyond `stages`:
 
 Splitting is an engine feature a project enables in its own workflow; the shipped `.landrace/` workflow does not use it. [`tests/fixtures/children`](tests/fixtures/children/workflow.yaml) is the worked example — the shipped flow as it stood before `publish`, plus a `breakdown` stage between `triage` and `build`, a `children-running` stage the parent waits in, `build` as a second entry for the children, and `done` closing a finished item so its parent can count it — and it is what the tests drive to keep the feature working. Its stages name no branch and it publishes nothing, so its review starts once a pull request for the item exists, however that was opened; a project copying it wants the shipped workflow's `branch` fields and `publish` stage too.
 
-A step that declares `capabilities: [items:create]` — the fixture's `breakdown` stage — is handed exactly one landrace tool beside the servers `agent.mcp` allows, `landrace_create_child` (`title`, `body`, `priority` 0–9), served by a second server the executor starts beside the agent process: `landrace mcp --workflow <dir> --child <parent> --stage <stage> --round <round>`. That binding is fixed on the command line by the runner, not by anything the agent says, and `--strict-mcp-config` keeps a `.mcp.json` inside the worktree from adding a server of its own — or a `landrace` of its own, whose create_child the allowlist would approve. `breakdown` ends by saying `children` — it called the tool at least once — or `single` — it built the spec as one piece of work directly; the two outcomes route to `children-running` and `build`, and a round that says one but did the other halts at `blocked` rather than being guessed at.
+A step that declares `capabilities: [items:create]` — the fixture's `breakdown` stage — is handed exactly one landrace tool beside the servers `agent.mcp` allows, `landrace_create_child` (`title`, `body`, `priority` 0–9), served by a second server the executor starts beside the agent process: `landrace mcp --workspace <dir> --child <parent> --stage <stage> --round <round>`. That binding is fixed on the command line by the runner, not by anything the agent says, and `--strict-mcp-config` keeps a `.mcp.json` inside the worktree from adding a server of its own — or a `landrace` of its own, whose create_child the allowlist would approve. `breakdown` ends by saying `children` — it called the tool at least once — or `single` — it built the spec as one piece of work directly; the two outcomes route to `children-running` and `build`, and a round that says one but did the other halts at `blocked` rather than being guessed at.
 
 Re-running `breakdown` — after a revision, or after a crash mid-round — first drops, as not planned, every sub-item an earlier round of this stage created and every pull request open on them; anything already finished is left closed as it was. A sub-item a person opened under the parent by hand is never touched, this round or any other. The parent itself only reaches `done` once every sub-item still counted is closed as completed — one still open, or one an earlier round made that a person is still working, keeps the parent at `children-running`.
 
@@ -492,14 +505,14 @@ The child MCP server reads `.landrace/.env` from the workflow directory itself, 
 
 ### `.landrace/hooks/*.ts` — the integrations
 
-The engine has no integration in it. Talking to a tracker, publishing a page, reading a pull request — all of it is a TypeScript module in your own workflow directory, written against the `define*` contracts or re-exporting one `landrace/integrations/*` ships, and listed by path:
+The engine has no integration in it. Talking to a tracker, publishing a page, reading a pull request — all of it is a TypeScript module in your own workspace's `hooks/` folder, written against the `define*` contracts or re-exporting one `landrace/integrations/*` ships, and listed by path:
 
 ```yaml
 hooks:
-  - hooks/github.ts
+  - ../../hooks/github.ts
 ```
 
-A module imports the contracts from `landrace/hooks` and exports whatever kinds it implements — `definePreHook` to observe, `definePostHook` to act, `defineArtifactHook` for something that is both, `defineSource` to enumerate items, `defineOperator` for the create and update an operator asks for by hand, `defineExecutor` for an agent, `defineNotifier` for somewhere to tell a person an item needs them. The loader classifies each export by the brand its helper stamped, so one module can be a whole integration; the order of the list is the order pre hooks run in. A path must resolve inside the workflow directory, symlinks included, because `workflow.yaml` is a repo file a pull request can edit.
+A module imports the contracts from `landrace/hooks` and exports whatever kinds it implements — `definePreHook` to observe, `definePostHook` to act, `defineArtifactHook` for something that is both, `defineSource` to enumerate items, `defineOperator` for the create and update an operator asks for by hand, `defineExecutor` for an agent, `defineNotifier` for somewhere to tell a person an item needs them. The loader classifies each export by the brand its helper stamped, so one module can be a whole integration; the order of the list is the order pre hooks run in. A path is relative to the workflow's folder and must resolve inside `.landrace/`, symlinks included, because `workflow.yaml` is a repo file a pull request can edit.
 
 `.landrace/hooks/github.ts` in this repository is the reference: GitHub's issues, pull requests and Pages as `landrace/integrations/github` ships them — `GitHubIssues`, `GitHubForge` and `GitHubPages` — made into its hooks by one `compose` call. A second tracker is a sibling of those classes, and nothing in the engine changes — a test enforces that `src/` never names one.
 
@@ -744,7 +757,7 @@ And before a run starts: a project `.codex/config.toml` or `.codex/hooks.json` a
 
 **Pairing.** Codex names every session it starts itself, so none can start under the id landrace gives a pairing. It pairs only by carrying on the agent's own session on the stage: that session's file under `CODEX_HOME/sessions` is copied under the pairing's id, and the person runs `codex resume <that id>`, seeded with the step. Finish forks it with `codex exec fork`. A pairing on a stage the agent has not run yet is refused, saying why — release it, and pair once the agent has run the step.
 
-### `.landrace/steps/*.md` — the work
+### `.landrace/workflows/<id>/steps/*.md` — the work
 
 Front matter is the contract, the body is the prompt. The step declares where each shape of its output goes, so the engine never learns what a spec is.
 
@@ -773,6 +786,16 @@ Write the spec for #{node.id}: {node.title}…
 | `output.discriminator` | The field whose value picks the shape |
 | `output.shapes` | What each value of the discriminator must look like. Output that matches none is a hard fail, recorded, never retried |
 | `output.routes` | Where each shape goes. One route, one effect — two routes matching one output is ambiguity, and ambiguity halts. A route may also name a `goto`, a stage its stage lists, which the engine takes before any trigger |
+
+#### `extends:` — a step built on another
+
+A step file may name another in front matter, `extends: ./base.md` (a path relative to the file, inside `.landrace/`), and give only what differs. The child is merged over the parent:
+
+- Each front-matter key the child gives replaces the parent's whole; a key it leaves out is the parent's. Nothing inside a key is merged.
+- The body is a lead (the text before the first `## ` heading) and sections. A non-empty lead replaces the parent's lead.
+- A `## ` section whose heading matches one of the parent's replaces it, in the parent's place; a heading the parent lacks is appended.
+- A chain is allowed (a child of a child); a loop is an error naming the files.
+- A heading twice in one file is refused, so a replacement can only mean one section. A `## ` inside a fenced code block is text, not a heading.
 
 Both schemas are strict: an unknown key fails to load rather than being ignored. A field the engine silently ignores is a lie, and this codebase had four of them until the last review.
 
@@ -805,12 +828,13 @@ anchored edges alone for `cycle-bound`.
 ## CLI
 
 ```bash
-landrace start [-w <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui] [--telemetry] [--otel KEY=VALUE]...
+landrace start [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui] [--telemetry] [--otel KEY=VALUE]...
                                          # watch the tracker; serves the triage page on 127.0.0.1:4545
-landrace status [-w <dir>]               # one line per item: where it is, and why one was skipped or stopped
-landrace validate [dir]                  # prove a workflow sound
-landrace next -w <dir> -s <snapshot>     # the decision for a snapshot, no I/O
-landrace mcp [-w <dir>]                  # MCP server over stdio
+landrace status [-w, --workspace <dir>]               # one line per item: where it is, and why one was skipped or stopped
+landrace validate [dir]                  # prove every workflow in a workspace sound
+landrace next --workspace <dir> [--workflow <id>] -s <snapshot>
+                                         # the decision for a snapshot, no I/O; --workflow when there are several
+landrace mcp [-w, --workspace <dir>]                # MCP server over stdio
 ```
 
 `start` runs ticks on an interval and they overlap: the lock is per item, so an

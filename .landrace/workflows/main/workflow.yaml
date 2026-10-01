@@ -1,5 +1,5 @@
 version: 1
-name: landrace
+name: Main
 description: "The full flow: a spec a person approves, a build, a review loop, and a pull request a person merges."
 
 # The labels landrace_create_item adds when it starts an item here, and a

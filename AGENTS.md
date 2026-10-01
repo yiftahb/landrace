@@ -21,7 +21,8 @@ src/conventions.ts  label and marker vocabulary shared by all of the above
 src/sandbox.ts     repository identity, and the tmp root locks and worktrees share
 
 integrations/     the integrations landrace ships — the coding agents on the kit (claude/, codex/), GitHub on its tracker, forge and docs bases (github/), and the Slack notifier (slack/), each `landrace/integrations/<vendor>`. Not part of the engine.
-.landrace/hooks/  this project's integrations — GitHub's three roles made into hooks by one `compose` call (github.ts), and one-line re-exports of its coding agent (claude.ts: `new Claude()`) and its notifier (slack.ts). Not part of the engine.
+.landrace/workflows/<id>/  this project's workflows — each a workflow.yaml and its steps/*.md, paths relative to that folder and inside .landrace/. Not part of the engine.
+.landrace/hooks/  this project's integrations, shared by every workflow — GitHub's three roles made into hooks by one `compose` call (github.ts), and one-line re-exports of its coding agent (claude.ts: `new Claude()`) and its notifier (slack.ts). Not part of the engine.
 ```
 
 ## Rules

@@ -4,6 +4,7 @@ import { decide } from "#core/decide.js";
 import type { Snapshot } from "#namespace.js";
 import { renderPrompt } from "#runner/step.js";
 import { loadShipped } from "#tests/support/shipped.js";
+import { loadWorkspace } from "#workflow/workspace.js";
 import { loadConfig } from "#config/load.js";
 import { readClaudeSettings } from "landrace/integrations/claude";
 
@@ -25,6 +26,27 @@ describe("the shipped .landrace workflow", () => {
     const text = await readFile(".landrace/workflows/main/workflow.yaml", "utf8");
     expect(text).not.toMatch(/artifacts\.pr\./);
     expect(text).not.toMatch(/"item\.labels"/);
+  });
+});
+
+describe("the shipped workspace", () => {
+  it("is one workflow, main, with a title, a description and the label it admits", async () => {
+    const workspace = await loadWorkspace(".landrace");
+    expect(workspace.workflows.map((w) => w.id)).toEqual(["main"]);
+    const { workflow } = workspace.workflows[0]!;
+    expect(workflow.name).toBe("Main");
+    expect(workflow.description.trim()).not.toBe("");
+    expect(workflow.admit).toEqual(["lr:auto"]);
+  });
+
+  it("builds from a What to build section holding the spec and the person's message", async () => {
+    const { steps } = await loadShipped();
+    const prompt = steps.get("steps/build.md")?.prompt ?? "";
+    const section = prompt.slice(prompt.indexOf("## What to build"), prompt.indexOf("## Procedure"));
+    expect(prompt).toContain("## What to build");
+    expect(section).toContain("{brief.spec.content}");
+    expect(section).toContain("{run.lastHuman.data.body}");
+    expect(prompt.split("## What to build")[0]).not.toContain("{brief.spec.content}");
   });
 });
 
