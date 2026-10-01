@@ -473,6 +473,23 @@ export const retiredCapabilityPointers = (declared: readonly string[]): string =
     .join("");
 
 /**
+ * Template roots a step file or workflow may still carry from before the
+ * rename, and what each became: `{ticket}` itself and every `{ticket.<path>}`
+ * under it. Each pass leaves a name nobody answers for visible, so a stale
+ * one is not an error anywhere at runtime — a prompt reaches the agent with
+ * the hole in it — and only validation can say so.
+ */
+export const RETIRED_PLACEHOLDERS: Readonly<Record<string, string>> = { ticket: "item" };
+
+/** What a retired `{name}` is now — `ticket.body` → `item.body` — or null. Own keys only. */
+export function retiredPlaceholder(name: string): string | null {
+  const dot = name.indexOf(".");
+  const root = dot === -1 ? name : name.slice(0, dot);
+  if (!Object.hasOwn(RETIRED_PLACEHOLDERS, root)) return null;
+  return `${RETIRED_PLACEHOLDERS[root] ?? root}${dot === -1 ? "" : name.slice(dot)}`;
+}
+
+/**
  * The name the engine's own item server runs under when an `items:create`
  * step is handed it, and the one tool it offers. Vocabulary rather than an
  * executor's knowledge: the engine names both in the server it hands over, so

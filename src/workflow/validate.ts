@@ -8,9 +8,11 @@ import {
   OUTPUT_KIND,
   RECORD_EFFECT,
   retiredCapabilityPointers,
+  retiredPlaceholder,
   unknownCapabilities,
 } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
+import { fillTemplate } from "#core/index.js";
 import { identityOf } from "#core/locate.js";
 import { assertAllowedOperators, pathsIn } from "#core/predicate.js";
 import type { Condition, Problem, Stage, Step, Workflow } from "#namespace.js";
@@ -229,8 +231,17 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   // checked against its stage's list above, and an effect field of either
   // name would carry one past that check — or overwrite, on an entry record,
   // the stage the item came from.
+  //
+  // And a placeholder the rename of ticket to item retired, in the prompt or
+  // in any field the planner fills. Every pass leaves a name nobody answers
+  // for visible, so nothing at runtime says so: the agent reads
+  // `{ticket.body}` as text and a marker carries the literal `{ticket}`. A
+  // stage's own `branch` is refused at load, in its own words.
   for (const stage of w.stages) {
     const step = stage.step ? steps.get(stage.step) : undefined;
+    for (const pointer of retiredPointers(step?.prompt ?? "")) {
+      problems.push({ rule: "placeholder", message: `step ${stage.step}'s prompt names a placeholder the rename retired; ${pointer}` });
+    }
     const effects = [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).map((r) => r.effect)];
     for (const effect of effects) {
       for (const field of ["goto", "from"]) {
@@ -238,10 +249,34 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
           problems.push({ rule: "reserved-field", message: `stage "${stage.id}" has an effect with a "${field}" field, which only the engine writes` });
         }
       }
+      for (const [field, value] of Object.entries(effect)) {
+        if (typeof value !== "string") continue;
+        for (const pointer of retiredPointers(value)) {
+          problems.push({
+            rule: "placeholder",
+            message: `stage "${stage.id}" has a ${effect.type} effect whose ${field} names a placeholder the rename retired; ${pointer}`,
+          });
+        }
+      }
     }
   }
 
   return dedupe(problems);
+}
+
+/**
+ * Each retired placeholder in `text`, once, as `"{ticket.body}" is now
+ * "{item.body}"`. Read with core's own template syntax, so what counts as a
+ * placeholder here is exactly what every pass would try to fill.
+ */
+function retiredPointers(text: string): string[] {
+  const found = new Set<string>();
+  fillTemplate(text, (name) => {
+    const now = retiredPlaceholder(name);
+    if (now !== null) found.add(`"{${name}}" is now "{${now}}"`);
+    return undefined;
+  });
+  return [...found];
 }
 
 function dedupe(problems: Problem[]): Problem[] {

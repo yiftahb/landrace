@@ -244,6 +244,55 @@ describe("structural validation", () => {
   });
 });
 
+/*
+ * A step file or workflow written before the rename of ticket to item. Every
+ * pass leaves a name nobody answers for visible rather than failing, so
+ * `{ticket.body}` would reach the agent as those eleven characters and a
+ * marker would carry the literal `{ticket}` — nothing at runtime says so.
+ */
+describe("placeholders retired by the rename", () => {
+  const placeholders = (w: Workflow, steps?: Map<string, Step>) =>
+    validateStructure(w, steps).filter((p) => p.rule === "placeholder").map((p) => p.message);
+
+  it("flags {ticket.body} in a step's prompt, naming the step and what it is now", () => {
+    const steps = new Map<string, Step>([["s.md", { prompt: "The item:\n\n{ticket.body}\n" }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    expect(placeholders(w, steps)).toEqual([expect.stringMatching(/^step s\.md.*"\{ticket\.body\}" is now "\{item\.body\}"$/)]);
+  });
+
+  it("flags {ticket} in an on_enter effect's marker, naming the stage and what it is now", () => {
+    const w = wf([{ id: "a", entry: true, terminal: true, on_enter: [{ type: "tracker.comment", marker: "enter:{ticket}:{round}" }] }]);
+    expect(placeholders(w)).toEqual([expect.stringMatching(/^stage "a".*"\{ticket\}" is now "\{item\}"$/)]);
+  });
+
+  it("flags {ticket} in a step route's effect", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "",
+      output: {
+        discriminator: "kind", shapes: { spec: {} },
+        routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}", body: "Done with #{ticket}." } }],
+      },
+    }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    expect(placeholders(w, steps)).toEqual([expect.stringMatching(/^stage "a".*"\{ticket\}" is now "\{item\}"$/)]);
+  });
+
+  it("says nothing of the names that replaced them", () => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "{item.body}\n{item.comments}",
+      output: {
+        discriminator: "kind", shapes: { spec: {} },
+        routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}", body: "#{item}" } }],
+      },
+    }]]);
+    const w = wf([{
+      id: "a", entry: true, terminal: true, step: "s.md",
+      on_enter: [{ type: "branch.push", branch: "landrace/{item}" }],
+    }]);
+    expect(placeholders(w, steps)).toEqual([]);
+  });
+});
+
 describe("goto", () => {
   const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
   const w = (goto: Stage["goto"], b: Partial<Stage> = {}): Workflow => wf([
