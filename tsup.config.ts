@@ -17,6 +17,7 @@ export default defineConfig({
     testing: "src/testing/index.ts",
     "integrations/claude": "integrations/claude/index.ts",
     "integrations/codex": "integrations/codex/index.ts",
+    "integrations/github": "integrations/github/index.ts",
     "integrations/slack": "integrations/slack/index.ts",
   },
   external: [/^landrace\//],

@@ -1,16 +1,16 @@
 import { buildRegistry } from "#hooks/load.js";
 import { entriesFromComments } from "#conventions.js";
-import type { Entry, Registry, RuntimeConfig } from "#namespace.js";
-import type { RuntimeContext } from "#namespace.js";
-import { githubHooks, type Git } from "#landrace/hooks/github.js";
+import { compose } from "#kit/compose.js";
+import type { Entry, Git, Registry, RuntimeConfig, RuntimeContext } from "#namespace.js";
+import { createClient, GitHubForge, GitHubIssues, GitHubPages } from "landrace/integrations/github";
 
 /**
  * The shipped GitHub integration, over an in-memory GitHub.
  *
  * The fake is the HTTP boundary, not the hooks: `fetch` is what is replaced,
- * and everything above it — the client, both hooks, the source, the operator,
- * and the loader's own classification of them — is the real code a ticket runs
- * through. A second, hand-written imitation of the hooks would be free to
+ * and everything above it — the client, the three roles, what `compose` makes
+ * of them, and the loader's own classification of that — is the real code a
+ * ticket runs through. A second, hand-written imitation of the hooks would be free to
  * disagree with them, and the place it disagreed would be exactly the place a
  * leak across the boundary stopped being visible.
  */
@@ -71,6 +71,8 @@ export interface FakeThread {
   line?: number;
   /** Who opened it. Absent means the bot: Landrace's own reviewer raises most threads. */
   author?: string;
+  /** When it was opened. Absent, the fake stamps it the first time it is read, by the clock comments are dated by. */
+  createdAt?: string;
   /** The argument under the finding, oldest first. */
   replies?: Array<{ author: string; body: string }>;
 }
@@ -225,6 +227,21 @@ export const noBranches: Git = async (args) => {
   throw new Error(`the fake GitHub has no checkout to run "git ${args.join(" ")}" in; pass one as opts.git`);
 };
 
+/**
+ * The shipped integration's three roles over one client, composed as
+ * `.landrace/hooks/github.ts` composes them — but with `git` handed in rather
+ * than the hook file's own checkout, so nothing here reads or pushes the
+ * repository the tests run from.
+ */
+export function githubHooks({ git = noBranches, ...opts }: Parameters<typeof createClient>[0] & { git?: Git }) {
+  const client = createClient(opts);
+  return compose({
+    tracker: new GitHubIssues({ client }),
+    forge: new GitHubForge({ closingRefs: true, client, git }),
+    docs: new GitHubPages({ client }),
+  });
+}
+
 export function createFakeTracker(
   seed: Array<Partial<FakeIssue>> = [],
   opts: {
@@ -243,6 +260,7 @@ export function createFakeTracker(
   let nextIssue = 1;
   let nextComment = 1000;
   let clock = 0;
+  const stamp = (): string => new Date(Date.UTC(2026, 0, 1, 0, 0, clock++)).toISOString();
 
   /**
    * Monotonic per issue, the way a real tracker's timestamps are: a comment
@@ -255,7 +273,7 @@ export function createFakeTracker(
    * GitHub, not the engine.
    */
   const at = (issue: number): string => {
-    const next = new Date(Date.UTC(2026, 0, 1, 0, 0, clock++)).toISOString();
+    const next = stamp();
     const latest = (comments.get(issue) ?? []).reduce((max, c) => (c.created_at > max ? c.created_at : max), "");
     return latest >= next ? new Date(Date.parse(latest) + 1000).toISOString() : next;
   };
@@ -370,11 +388,11 @@ export function createFakeTracker(
       // `body` rides along on every node: a server returns what it returns,
       // and "no thread text reaches the snapshot" has to be a property of the
       // hook rather than of what the fake happened to omit.
-      // Every field either query asks of a thread node, because the fake
-      // answers both from this one page: the count's read takes
-      // `isResolved` alone, and the briefing takes the rest.
+      // Every field the one thread query asks of a node: the count reads
+      // `isResolved` and the last word, the briefing and the history the rest.
       nodes: page.map((t, i) => {
-        const opening = { body: t.body, author: { login: t.author ?? BOT } };
+        t.createdAt ??= stamp();
+        const opening = { body: t.body, createdAt: t.createdAt, author: { login: t.author ?? BOT } };
         const said = [opening, ...(t.replies ?? []).map((r) => ({ body: r.body, author: { login: r.author } }))];
         return {
           id: t.id ?? `thread-${pull.number}-${from + i}`,
@@ -604,10 +622,27 @@ export function createFakeTracker(
 
       if (operation === "LandraceIssue") {
         const issue = issues.get(Number(variables.number));
-        return json({ data: { repository: { issue: issue === undefined ? null : issueNode(issue) } } });
+        return json({
+          data: {
+            repository: {
+              issue: issue === undefined
+                ? null
+                : { ...issueNode(issue), parent: issue.parent === undefined ? null : { number: issue.parent } },
+            },
+          },
+        });
       }
 
-      if (operation === "LandraceThreads" || operation === "LandraceBrief") {
+      if (operation === "LandraceSubIssues") {
+        const issue = issues.get(Number(variables.number));
+        return json({
+          data: {
+            repository: { issue: issue === undefined ? null : { subIssues: connection(childrenOf(issue.number).map(issueNode)) } },
+          },
+        });
+      }
+
+      if (operation === "LandraceThreads") {
         const pull = pullOf(variables.number);
         return json({
           data: {
@@ -769,7 +804,10 @@ export function createFakeTracker(
         }
         return json(post(n, BOT, text));
       }
-      return json(comments.get(n) ?? []);
+      // Paged the way GitHub pages them: thirty unless asked for more, a hundred at most.
+      const per = Math.min(Number(url.searchParams.get("per_page") ?? "30"), 100);
+      const page = Number(url.searchParams.get("page") ?? "1");
+      return json((comments.get(n) ?? []).slice((page - 1) * per, page * per));
     }
 
     const onLabels = /^\/issues\/(\d+)\/labels$/.exec(path);

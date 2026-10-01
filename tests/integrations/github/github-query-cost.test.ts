@@ -1,4 +1,4 @@
-import { GRAPHQL_QUERIES } from "#landrace/hooks/github.js";
+import { GRAPHQL_QUERIES } from "landrace/integrations/github";
 
 /**
  * GitHub refuses a query before running it when the nodes it *could* return
@@ -58,6 +58,6 @@ describe("GitHub query cost", () => {
 
   it("costs every query the hook sends", () => {
     expect(Object.keys(GRAPHQL_QUERIES).sort()).toEqual(
-      ["BRIEF_QUERY", "CLOSED_PULLS_QUERY", "CLOSED_QUERY", "ISSUES_QUERY", "ISSUE_QUERY", "PREFLIGHT_PR_QUERY", "PULLS_QUERY", "REPLY_THREAD", "RESOLVE_THREAD", "THREADS_QUERY", "TICKET_QUERY"]);
+      ["CLOSED_PULLS_QUERY", "CLOSED_QUERY", "ISSUES_QUERY", "ISSUE_QUERY", "PREFLIGHT_PR_QUERY", "PULLS_QUERY", "REPLY_THREAD", "RESOLVE_THREAD", "SUB_ISSUES_QUERY", "THREADS_QUERY", "TICKET_QUERY"]);
   });
 });

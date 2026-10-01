@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { createFakeTracker, noBranches, type FakePages, type FakeTracker } from "#tests/support/fake-tracker.js";
-import { githubHooks, specArtifact } from "#landrace/hooks/github.js";
+import { createFakeTracker, githubHooks, noBranches, type FakePages, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { spec as shipped } from "#landrace/hooks/github.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import type { ArtifactHook, Effect, Graph, HookContext, Snapshot } from "#namespace.js";
 
@@ -225,7 +225,7 @@ describe("the spec artifact briefs its page as text", () => {
   });
 
   it("is reached through the module's own export too, not only the factory's", () => {
-    expect(typeof specArtifact.brief).toBe("function");
+    expect(typeof shipped.brief).toBe("function");
   });
 });
 
@@ -360,7 +360,7 @@ describe("the spec link points where the page can actually be read", () => {
     const events: Logged[] = [];
     const log = (event: string, data?: Record<string, unknown>) => { events.push({ event, data }); };
 
-    expect((await hooks.specArtifact.read({ ...gh.ctx, log, ticket: "12", snapshot: {} })).url).toBe(FILE_12);
+    expect((await hooks.spec.read({ ...gh.ctx, log, ticket: "12", snapshot: {} })).url).toBe(FILE_12);
     expect(unknown(events)).toEqual([
       { event: "github.pages.unknown", data: { reason: expect.stringContaining("fetch failed") } },
     ]);

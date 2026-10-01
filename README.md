@@ -33,6 +33,7 @@ treat the first one as a supervised experiment rather than a deployment.
 | Integration kit (`BaseExecutor`), with Claude and Codex as native integrations | ✅ built |
 | Integration kit: the shared tracker, forge and docs code, out of the GitHub hook | ✅ built |
 | Integration kit: tracker, forge and docs bases, `compose()`, and the in-memory adapter on them | ✅ built |
+| GitHub on the bases (`landrace/integrations/github`), the hook one `compose()` call | ✅ built |
 | Tick loop: polling, concurrency, per-ticket locking | ✅ built |
 | Artifact publishing to GitHub Pages, PR review threads | ✅ built |
 | Worktree sandbox with enforced capabilities | ✅ built |
@@ -151,7 +152,7 @@ Spec links — on that node, and in `artifacts.spec.url` — point at the Pages 
 
 Priority comes from this repository's own `P0`..`P9` label convention; two of them is a priority that cannot be told, and `read` halts the ticket rather than picking one, the same way two stage labels does. A closed ticket is never worked — it keeps whatever labels it had, `lr:auto` included, but only ever appears in a graph so a parent can count a finished child, never so a tick pays for a step on it. And a GitHub close reason this hook does not recognise — anything but `COMPLETED`, `NOT_PLANNED`, `DUPLICATE` or none — halts the ticket rather than guessing whether it is done or dropped.
 
-A step's prompt can also ask a source for prose the graph itself does not carry — `{brief.<source id>.<key>}`, fetched only when that step is about to run, never routed on by any predicate. `fix-review.md` and `code-review.md` read `{brief.github.threads}`: the open review threads across the ticket's pull requests, each named by its thread id, marked when Landrace's reviewer raised it, and said to be awaiting a fix or answered by the fixer, with its last reply — the ones awaiting a fix first, as a working list for the step to act on. `code-review.md` also reads `{brief.github.diff}`: what the ticket's open pull requests change, file by file, since a read-only step has no shell to run `git diff` with — 24,000 characters of patches at most, with every file past that named, to read in the worktree. A prompt is briefed only the keys it names, so one key never spends another's budget. `spec.md` and `retro.md` read `{brief.github.history}` from the same call — spec so a later round sees the questions it asked and every answer, since each round is a fresh session: every comment on the ticket in order — Landrace's own shown by marker, everyone else's by login — then every review thread on every pull request tied to it, resolved or not, merged or not, with who raised it and its last reply. It keeps the newest 60 comments and 40 threads — fewer when their text would pass 14,000 characters a half, so the engine's 32 KB cut never drops the newest — each body cut at 1,000 characters, and says how many earlier ones it left out.
+A step's prompt can also ask a source for prose the graph itself does not carry — `{brief.<source id>.<key>}`, fetched only when that step is about to run, never routed on by any predicate. This repository's GitHub hooks are made by `compose`, so its source's id is `project`. `fix-review.md` and `code-review.md` read `{brief.project.threads}`: the open review threads across the ticket's pull requests, each named by its thread id, marked when Landrace's reviewer raised it, and said to be awaiting a fix or answered by the fixer, with its last reply — the ones awaiting a fix first, as a working list for the step to act on. `code-review.md` also reads `{brief.project.diff}`: what the ticket's open pull requests change, file by file, since a read-only step has no shell to run `git diff` with — 24,000 characters of patches at most, with every file past that named, to read in the worktree. A prompt is briefed only the keys it names, so one key never spends another's budget. `spec.md` and `retro.md` read `{brief.project.history}` — spec so a later round sees the questions it asked and every answer, since each round is a fresh session: one timeline, oldest first, of every comment on the ticket — Landrace's own shown by marker, everyone else's by login — and every review thread on every pull request tied to it, resolved or not, merged or not, placed by when it was opened, with the pull request it is on, who raised it and its last reply. It keeps the newest 100 entries — fewer when their text would pass 28,000 characters, so the engine's 32 KB cut never drops the newest — each body cut at 1,000 characters, and says how many earlier ones it left out.
 
 An artifact can brief a step the same way. The spec artifact briefs `{brief.spec.content}` — the approved spec's own text, read off `gh-pages` — and `build.md`, `code-review.md` and `fix-review.md` embed it between two rules as the approved spec, framed as requirements rather than instructions. With no page published the text says so ("No spec has been published for this ticket.") instead of leaving a hole in the prompt; a page that cannot be read halts the step instead. The spec is handed over as text, never as a link to go and read: a prompt telling the agent to fetch a URL is exactly what the prompt screener refuses, and in a private repository the agent could not open the link anyway. `artifacts.spec.url` stays in those prompts only as a reference line for a person. Every briefing is escaped before it reaches a prompt and cut at 32 KB per hook — a cut says it was cut — so a long spec cannot crowd the review threads out of a fix round's prompt.
 
@@ -176,14 +177,15 @@ src/testing/         the harness, for testing a workflow of your own
 src/conventions.ts   label and marker vocabulary, shared by every hook
 src/sandbox.ts       repository identity; the tmp root locks and worktrees share
 
-integrations/        the integrations landrace ships: claude/ and codex/ on the kit, and slack/
-                     (`landrace/integrations/<vendor>`). Not part of the engine
+integrations/        the integrations landrace ships: claude/ and codex/ on the kit, github/ on its
+                     tracker, forge and docs bases, and slack/ (`landrace/integrations/<vendor>`).
+                     Not part of the engine
 
 .landrace/
   landrace.yaml      runtime — how agents run, where tickets live
   workflow.yaml      the process — one graph, stages declaring what activates them
   steps/*.md         the work — front matter is the contract, the body is the prompt
-  hooks/*.ts         this project's integrations — GitHub, `new Claude()` and the Slack re-export. Not part of the engine
+  hooks/*.ts         this project's integrations — GitHub's three roles `compose`d, `new Claude()` and the Slack re-export. Not part of the engine
   .env               secrets, gitignored, and `validate` fails if it is not
 ```
 
@@ -478,7 +480,7 @@ The child MCP server reads `.landrace/.env` from the workflow directory itself, 
 
 ### `.landrace/hooks/*.ts` — the integrations
 
-Landrace ships no integrations. Talking to a tracker, publishing a page, reading a pull request — all of it is a TypeScript module in your own workflow directory, written against the `define*` contracts and listed by path:
+The engine has no integration in it. Talking to a tracker, publishing a page, reading a pull request — all of it is a TypeScript module in your own workflow directory, written against the `define*` contracts or re-exporting one `landrace/integrations/*` ships, and listed by path:
 
 ```yaml
 hooks:
@@ -487,9 +489,9 @@ hooks:
 
 A module imports the contracts from `landrace/hooks` and exports whatever kinds it implements — `definePreHook` to observe, `definePostHook` to act, `defineArtifactHook` for something that is both, `defineSource` to enumerate tickets, `defineOperator` for the create and update an operator asks for by hand, `defineExecutor` for an agent, `defineNotifier` for somewhere to tell a person a ticket needs them. The loader classifies each export by the brand its helper stamped, so one module can be a whole integration; the order of the list is the order pre hooks run in. A path must resolve inside the workflow directory, symlinks included, because `workflow.yaml` is a repo file a pull request can edit.
 
-`.landrace/hooks/github.ts` in this repository is the reference implementation: one file with the REST client, both hooks, the source and the operator. A second tracker is a sibling of it, and nothing in the engine changes — a test enforces that `src/` never names one.
+`.landrace/hooks/github.ts` in this repository is the reference: GitHub's issues, pull requests and Pages as `landrace/integrations/github` ships them — `GitHubIssues`, `GitHubForge` and `GitHubPages` — made into its hooks by one `compose` call. A second tracker is a sibling of those classes, and nothing in the engine changes — a test enforces that `src/` never names one.
 
-A sibling is built on `landrace/kit`'s bases instead, and writes only its vendor's calls. A tracker extends `BaseTracker` (list and read tickets and their children, read and post comments, add and remove labels, close, create and update a ticket), a forge `BaseForge` (list pull requests and those naming a ticket, read threads, changed files and posted reviews, open and close a pull request, post a review, reply and resolve, read branch heads and push), a docs integration `BaseDocs` (read, publish and link a ticket's page, and list which tickets have one) — each answered in plain shapes: `TicketRecord`, `PullRecord`, `ReviewThread`, `ChangedFile`. The base holds everything else: the graph and its bounds, the pre hook's fragment, an `effects()` table with each effect's `satisfied()` beside its `apply()`, a `briefs()` table, the history's entries and the operator's writes. A hook file then exports what `compose` makes of them:
+A sibling is built on `landrace/kit`'s bases, as GitHub's are, and writes only its vendor's calls. A tracker extends `BaseTracker` (list and read tickets and their children, read and post comments, add and remove labels, close, create and update a ticket), a forge `BaseForge` (list pull requests and those naming a ticket, read threads, changed files and posted reviews, open and close a pull request, post a review, reply and resolve, read branch heads and push), a docs integration `BaseDocs` (read, publish and link a ticket's page, and list which tickets have one) — each answered in plain shapes: `TicketRecord`, `PullRecord`, `ReviewThread`, `ChangedFile`. The base holds everything else: the graph and its bounds, the pre hook's fragment, an `effects()` table with each effect's `satisfied()` beside its `apply()`, a `briefs()` table, the history's entries and the operator's writes. A hook file then exports what `compose` makes of them:
 
 ```ts
 import { compose } from "landrace/kit";
@@ -500,7 +502,19 @@ export const { preflight, source, operator, pre, post, spec } = compose({
 
 That is one source, one operator, one pre and one post hook under the id `project`, and the docs role's artifact `spec` — so a prompt names `{brief.project.threads}`, `{brief.project.diff}`, `{brief.project.history}` and `{brief.spec.content}`, and `history` is one timeline of the tracker's comments and the forge's review threads, oldest first. A forge's pull request implements a ticket by a `landrace/{ticket}` head or by naming it (`PullRecord.tickets`, a forge's `Closes #n`); one naming two tickets halts a read. Every clash between roles halts, naming both: an effect type, a briefing key or a snapshot path two roles claim stops `compose`, and a node id two report stops `list` or `read`. `nodes.close` is the one effect two roles share: its ids are split by their kind in the snapshot's graph, tickets to the tracker and pull requests to the forge, and a kind no role closes halts. A role's own `check` runs in the preflight, and its failure names the role. To change one piece, subclass and override it — an effect by spreading `super.effects()` and replacing or adding an entry. `createExternalState` in `landrace/testing` is `compose` over `MemoryTracker`, `MemoryForge` and `MemoryDocs`, built exactly this way.
 
-The functions the bases are made of stay exported, over the same plain shapes, for an integration not built on one — which this repository's GitHub hook still is:
+This repository's hook file is exactly that, over GitHub's three:
+
+```ts
+import { compose } from "landrace/kit";
+import { GitHubForge, GitHubIssues, GitHubPages } from "landrace/integrations/github";
+export const { preflight, source, operator, pre, post, spec } = compose({
+  tracker: new GitHubIssues(), forge: new GitHubForge({ closingRefs: true }), docs: new GitHubPages(),
+});
+```
+
+Built with no client, each role builds one from `tracker.repo`, the `githubToken` secret and `tracker.bot` — one per configuration, shared by all three, so one `GET /user` resolves the login they post as. The forge runs git in the repository of the file that constructs it, never the directory the process was started from; `git` hands it another. `closingRefs` says the tracker beside it is GitHub's own issues: on, a pull request it opens says `Closes #n`, and one closing a ticket's issue is tied to that ticket; off — beside another vendor's tracker, where `#7` is somebody else's GitHub issue that a merge would close — it writes and reads none, and the `landrace/{ticket}` head is the only tie. To check a change to it against the live repository, `pnpm build && pnpm parity` with `GITHUB_TOKEN` set reads every listed ticket through `main`'s hook and this one, and prints `equal`, or each node and edge that differs and exits 1.
+
+The functions the bases are made of stay exported, over the same plain shapes, for an integration not built on one:
 
 | From `landrace/kit` | What it is |
 |---|---|
@@ -509,7 +523,7 @@ The functions the bases are made of stay exported, over the same plain shapes, f
 | Docs | `SPEC`, `PUBLISH`, `hashOf`, `contentOf`, `mine`, `briefPage`, `publishSatisfied`, `specNode` |
 | Git | `gitIn`, `repositoryOf`, `ownGit`, `branchHeads`, `headsOf`, `headIn`; `originPushUrl` and `pushBranch`, fast-forward only with hooks off, the credential the hook's own |
 
-The hook keeps what is its vendor's: the client, the queries and their paging, its shapes and the mapping from them, which push URLs it trusts with a token and the scrubbing of it from what git says, and every event and word in its own name. The kit's functions never log; a base logs only in its role's name (`forge.review.*`, `docs.skipped`).
+An integration keeps what is its vendor's: the client, the queries and their paging, its shapes and the mapping from them, which push URLs it trusts with a token and the scrubbing of it from what git says, and every event and word in its own name (GitHub's `github.issue.skipped`, `github.pages.unknown`). The kit's functions never log; a base logs only in its role's name (`forge.review.*`, `docs.skipped`).
 
 A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", ticket, title, link, stage, why, board }` — `board` the triage page's URL when one is running, else null. Two notifiers under one id halt at load, naming both modules. `landrace/integrations/slack` is the one landrace ships, and this repository's `.landrace/hooks/slack.ts` re-exports it: it posts `{ text }` to the webhook, mentioning `slackNotifyUser` and linking the ticket, with the title and why escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal throws Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading.
 
