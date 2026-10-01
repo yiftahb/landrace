@@ -3,7 +3,7 @@
 export { compile, assertAllowedOperators, pathsIn, missingPaths, ALLOWED_OPERATORS } from "#core/predicate.js";
 export { deriveRun } from "#core/derive.js";
 export { canonicalize, hashSnapshot } from "#core/normalize.js";
-export { checkEligible } from "#core/eligible.js";
+export { checkEligible, eligibilityOfNode } from "#core/eligible.js";
 export { locate } from "#core/locate.js";
 export { assess } from "#core/assess.js";
 export { decide } from "#core/decide.js";
@@ -12,3 +12,4 @@ export { planNodesClose, staleClosure } from "#core/children.js";
 export { reconcile } from "#core/reconcile.js";
 export { deriveRel } from "#core/rel.js";
 export { gotoDeclined, gotoNotListed, gotoTargetsOf } from "#core/goto.js";
+export { claimItems } from "#core/claims.js";

@@ -1485,6 +1485,17 @@ export interface TickRow {
 
 export type Eligibility = { eligible: true } | { eligible: false; reason: string };
 
+/** One workflow of a workspace, and which of the listed graphs is its source's. */
+export interface ClaimInput { id: string; workflow: Workflow; source: number }
+
+/** Which workflow owns each open item; every other outcome is named, never picked. */
+export interface Claims {
+  owner: Map<string, string>;
+  conflicts: Map<string, string[]>;
+  clashes: Map<string, string[]>;
+  unclaimed: Map<string, string[]>;
+}
+
 /* --------------------------------------------------------------- testing -- */
 
 /**
