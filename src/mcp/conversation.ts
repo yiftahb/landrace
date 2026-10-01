@@ -9,6 +9,7 @@ import {
   mayWriteRepo,
   neutraliseMarkers,
   recordBodyProblem,
+  retiredCapabilityPointers,
   unknownCapabilities,
 } from "#conventions.js";
 import { stageBranch } from "#core/index.js";
@@ -167,7 +168,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
     if (unenforceable.length) {
       throw new Error(
         `cannot ask: stage "${stage}" declares ${unenforceable.map((c) => `"${c}"`).join(", ")}, ` +
-        `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}`,
+        `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}${retiredCapabilityPointers(unenforceable)}`,
       );
     }
     return { workflow, declared, step };

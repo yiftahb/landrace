@@ -32,7 +32,7 @@ Rules:
 
 If a decision would change the shape of the work and you cannot resolve it from
 the issue or the codebase, **output only the questions** — at most three, one
-per item, each with why it matters and a shortlist of options where one exists.
+per point, each with why it matters and a shortlist of options where one exists.
 Do not write a partial spec alongside them.
 
 

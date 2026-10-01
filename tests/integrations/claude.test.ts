@@ -703,6 +703,12 @@ describe("claude executor", () => {
       .rejects.toThrow(/refused capabilit[\s\S]*net:egress/i);
   });
 
+  it("refuses the retired capability tickets:create, naming items:create", async () => {
+    const dir = withCfg({ out: "should never run" });
+    await expect(run("x", {}, { cwd: dir, capabilities: ["tickets:create"] }))
+      .rejects.toThrow(/"tickets:create" is now "items:create"/);
+  });
+
   it("never lets the parent process's environment reach the agent", async () => {
     process.env.LANDRACE_TEST_SECRET = "super-secret-value-should-not-leak";
     const dir = withCfg({ out: "secret=[{{ENV:LANDRACE_TEST_SECRET}}]" });

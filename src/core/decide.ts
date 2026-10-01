@@ -87,7 +87,7 @@ export function decide(w: Workflow, s: Snapshot): Decision {
      * "No position" is the same thing as "a new item" only when the item
      * has no run behind it either. Position is one value written by a swap
      * that is not atomic, so losing it costs a crash, a 502 on the add, or a
-     * person with triage rights — and reading that as fresh restarted a
+     * person with triage rights — and reading that as fresh restarted an
      * item that had finished a build, four review rounds and three fix
      * rounds: a fresh paid entry step, the spec republished over the old one,
      * and the whole run still on the item, unread.

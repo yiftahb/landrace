@@ -764,6 +764,13 @@ describe("a conversation turn is held to what its step declared", () => {
     expect(bodies(tracker)).toHaveLength(before);
   });
 
+  it("refuses the retired capability tickets:create, naming items:create", async () => {
+    const spy: Executor = { id: "spy", run: async () => ({ text: "", sessionId: null }) };
+    await expect(
+      world(seeded(), spy, {}, undefined, spec({ capabilities: ["tickets:create"] })).ask("1", "carry on"),
+    ).rejects.toThrow(/"tickets:create" is now "items:create"/);
+  });
+
   it("refuses, without invoking the agent, when it cannot see what the step declared", async () => {
     let invoked = false;
     const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };

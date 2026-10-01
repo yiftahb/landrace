@@ -2,7 +2,7 @@
  * Jira Cloud issues as a project's tracker: the JQL, the changelog that says
  * who last edited a body, the workflow's transitions, and the account's
  * permissions. Everything else a tracker does is `BaseTracker`'s — position
- * is still an `lr:stage:*` label, and Jira's status moves only to close a
+ * is still an `lr:stage:*` label, and Jira's status moves only to close an
  * item or reopen it.
  */
 import { type Closed, type RuntimeContext, STAGE_LABEL_PREFIX, type ItemPatch } from "landrace/hooks";

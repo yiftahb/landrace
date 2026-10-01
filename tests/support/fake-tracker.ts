@@ -9,7 +9,7 @@ import { createClient, GitHubForge, GitHubIssues, GitHubPages } from "landrace/i
  *
  * The fake is the HTTP boundary, not the hooks: `fetch` is what is replaced,
  * and everything above it — the client, the three roles, what `compose` makes
- * of them, and the loader's own classification of that — is the real code a
+ * of them, and the loader's own classification of that — is the real code an
  * item runs through. A second, hand-written imitation of the hooks would be free to
  * disagree with them, and the place it disagreed would be exactly the place a
  * leak across the boundary stopped being visible.

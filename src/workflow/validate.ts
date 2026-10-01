@@ -357,7 +357,7 @@ function isFreshItemOnly(when: Condition): boolean {
  * nested under $and, $or or $not at any depth.
  *
  * This is the line "abstain rather than guess" draws for the entry rule: a
- * condition that never mentions run.stage at all cannot possibly anchor a
+ * condition that never mentions run.stage at all cannot possibly anchor an
  * item to a position, so refusing it is not a guess. Everything that does
  * mention it but is not isFreshItemOnly — $or, $in, $not, $ne, or a form
  * this file has not been taught — is read here only far enough to know it

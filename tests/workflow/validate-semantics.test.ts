@@ -526,7 +526,7 @@ describe("the graph rules, on a workflow that has an entry stage", () => {
  *
  * Only the first half was implemented (`totality`: every shape has a *route*,
  * somewhere for the content to go). `triage` declared `question` and `unclear`
- * and routed both to a comment, and nothing in the graph fired on either, so a
+ * and routed both to a comment, and nothing in the graph fired on either, so an
  * item that reached one sat at `triage` wearing `lr:awaiting` for good —
  * decide() excludes the current stage's own triggers, so even the human's next
  * reply did nothing. Nothing reported it.

@@ -126,7 +126,7 @@ export const assigneesOf = (node: Node | undefined): string[] => strings(node?.s
 /**
  * Whether a listed node is work: an item, and an open one. A closed item
  * is in a graph so a parent can count it, and it keeps whatever labels it had
- * — `lr:auto` included — so reading its labels alone would pay for steps on a
+ * — `lr:auto` included — so reading its labels alone would pay for steps on an
  * item somebody already finished.
  */
 export const isOpenItem = (node: Node): boolean => node.kind === ITEM_KIND && node.closed === null;
@@ -135,7 +135,7 @@ export const isOpenItem = (node: Node): boolean => node.kind === ITEM_KIND && no
  * The order the tick hands work out in. Lower priority first; unprioritised
  * after every number, so a hook that forgot to map priority does not jump its
  * whole tracker to the front; then the id, so the order is total. Ordering
- * work is not choosing a transition — nothing here decides what happens to a
+ * work is not choosing a transition — nothing here decides what happens to an
  * item, only which one gets an agent first.
  */
 export const compareWork = (a: Node, b: Node): number => {
@@ -345,7 +345,7 @@ export const CLOSE_EFFECT = "tracker.close";
  * here for the reason the tracker writes are: the in-memory tracker handles
  * both, and a forge hook for somebody else's tracker has to spell them the
  * same way or a workflow does not carry over. Which branch is always the
- * effect's own `branch` field — the workflow says, never a convention — so a
+ * effect's own `branch` field — the workflow says, never a convention — so an
  * item can have as many branches as its stages name.
  */
 export const BRANCH_PUSH_EFFECT = "branch.push";

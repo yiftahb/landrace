@@ -75,7 +75,7 @@ export default tseslint.config(
               "#core/*, #namespace.js, #conventions.js and @ucast/*" },
         ],
       }],
-      // core re-derives a ticket's whole progress from external records on
+      // core re-derives an item's whole progress from external records on
       // every run, so a crash recovers by re-deriving rather than repairing
       // stored state — that guarantee only holds if core is pure: no clock,
       // no randomness, no ambient I/O. These catch the actual globals and

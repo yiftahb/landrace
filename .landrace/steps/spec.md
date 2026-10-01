@@ -74,7 +74,7 @@ so, do not work around it). No person is in this session: do not wait for
 approval, settle every choice the item and the code can settle. Keep it
 simple; do not over-engineer. A choice that changes the shape of the work and
 cannot be settled → skip to Step 6 with **questions only**: at most three, one
-per item, each the question, why it matters in one line, and options where
+per point, each the question, why it matters in one line, and options where
 they exist. Same style as the spec. No partial spec beside them.
 
 **Step 4 — Write the spec in its four sections.** Style: caveman. Drop

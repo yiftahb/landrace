@@ -1157,7 +1157,7 @@ export interface NotifyEvent {
 
 /**
  * Tells a person somewhere else — a chat, a pager. Fire-and-forget: a send
- * that fails is logged and nothing else, so a notifier can never stop a
+ * that fails is logged and nothing else, so a notifier can never stop an
  * item, and nothing about what was sent is kept.
  */
 export interface Notifier {
@@ -2132,7 +2132,7 @@ export interface ReplyDeps {
 export type GotoResult = { refused: string } | { to: string };
 
 /**
- * A reply's needs, the workflow, which is what says where a stage may send a
+ * A reply's needs, the workflow, which is what says where a stage may send an
  * item, and where the per-item locks live — the tick's own, by default,
  * since a goto has to be serialised against the tick that would take it.
  */

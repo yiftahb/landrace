@@ -16,7 +16,7 @@ import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { CAPABILITIES, CHILD_SERVER_NAME, mayCreateItems, mayWriteRepo, unknownCapabilities } from "#conventions.js";
+import { CAPABILITIES, CHILD_SERVER_NAME, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import type {
   AgentSettings,
@@ -632,7 +632,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       if (refused.length) {
         throw new Error(
           `refused capabilities ${refused.map((c) => JSON.stringify(c)).join(", ")}: ` +
-          `this executor can enforce only ${CAPABILITIES.join(", ")}`,
+          `this executor can enforce only ${CAPABILITIES.join(", ")}${retiredCapabilityPointers(refused)}`,
         );
       }
 

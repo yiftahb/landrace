@@ -902,7 +902,7 @@ describe("a stopped item's Retry", () => {
     expect(seen.posts).toEqual([["/items/19/goto/build", { method: "POST", headers: { "x-landrace-action": "goto" } }]]);
   });
 
-  it("shows a refusal on the item that asked, and only there", async () => {
+  it("shows a refusal on the menu entry that asked, and only there", async () => {
     const { menu, context } = menuFor(row("/items/19/retry", BACK), { response: { ok: false, text: "past its cap" } });
     gotoOf(menu, "build")?.listeners.get("click")?.();
     await settle();

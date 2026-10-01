@@ -183,7 +183,7 @@ export function updatedAtOf(at: string | undefined): { updatedAt?: number } {
 }
 
 /**
- * The one mapping from an item, as an integration reads its tracker's, to a
+ * The one mapping from an item, as an integration reads its tracker's, to an
  * item node. `bot` is the login we post as: an origin counts only in a body
  * we wrote, because a re-run closes whatever claims it. The parent is an
  * edge, not a field, so it is not asked for here.
