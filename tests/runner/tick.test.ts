@@ -639,6 +639,13 @@ describe("statusLines", () => {
   it("renders nothing for no rows", () => {
     expect(statusLines([])).toEqual([]);
   });
+
+  // One workflow has nothing to tell apart: `[main]` on every row is noise.
+  it("tags each item with its workflow only where the workspace has several", () => {
+    const rows = [{ item: "12", title: "Add export", stage: "spec", note: "queued", workflow: "main" }, { item: "13", title: "Halted", stage: null, note: "halted: claimed by fast and main" }];
+    expect(statusLines(rows)).toEqual([expect.stringMatching(/^#12 {2}spec {2}/), expect.stringMatching(/^#13 {2}— {2}/)]);
+    expect(statusLines(rows, { several: true })).toEqual([expect.stringMatching(/^#12 \[main\] {2}spec {2}/), expect.stringMatching(/^#13 {9}— /)]);
+  });
 });
 
 describe("onList", () => {

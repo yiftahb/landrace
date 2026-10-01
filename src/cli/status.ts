@@ -16,5 +16,5 @@ export async function runStatus(dir: string): Promise<string[]> {
   // a source that could not list is the command's failure, said by name.
   const failures = listingFailures(listing);
   if (failures.length) throw new Error(rt.log.scrub(failures.join("; ")));
-  return statusLines(workspaceStatusRows(rt.workflows, listing));
+  return statusLines(workspaceStatusRows(rt.workflows, listing), { several: rt.workflows.length > 1 });
 }

@@ -697,7 +697,8 @@ describe("runStart --once", () => {
       console.log = wrote;
     }
 
-    expect(printed.filter((l) => l.startsWith("#"))).toEqual([`#${ITEM} [main] terminal after 1 pass(es)`]);
+    // One workflow: nothing to tell apart, so no `[main]` beside the id.
+    expect(printed.filter((l) => l.startsWith("#"))).toEqual([`#${ITEM} terminal after 1 pass(es)`]);
     expect(await applied(record)).toEqual([{ item: ITEM, type: "tracker.comment" }]);
     // Nothing is left holding the item: the next run is free to take it.
     expect(await acquire(ITEM, "tick")).toBe(true);
@@ -885,12 +886,12 @@ describe("runStatus", () => {
     ]);
   });
 
-  it("prints one line per item, from the same source the loop enumerates", async () => {
+  it("prints one line per item, from the same source the loop enumerates, untagged with one workflow", async () => {
     const { dir } = await fixture();
     const lines = await runStatus(dir);
 
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(new RegExp(`#${ITEM}.*Add export.*queued`));
+    expect(lines[0]).toMatch(new RegExp(`^#${ITEM} {2}— {2}Add export.*queued`));
   });
 
   /*

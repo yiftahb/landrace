@@ -50,14 +50,22 @@ const clip = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, width - 1)}…` : text;
 
 /**
+ * An item's id, and its workflow beside it — `12 [fast]` — where the
+ * workspace has several to tell apart; with one, `[main]` on every line is
+ * noise. What `landrace status` and `landrace start` both print.
+ */
+export const itemTag = (item: string, workflow: string | undefined, several: boolean): string =>
+  `${item}${several && workflow !== undefined ? ` [${workflow}]` : ""}`;
+
+/**
  * One line per listed item, including the ones that were skipped and why.
  * Eligibility being a decision rather than a query filter is what makes a
- * skipped item visible instead of absent.
+ * skipped item visible instead of absent. `several`: the workspace has more
+ * than one workflow, so each line names its own.
  */
-export function statusLines(rows: StatusRow[]): string[] {
+export function statusLines(rows: StatusRow[], opts: { several?: boolean } = {}): string[] {
   const stageOf = (row: StatusRow): string => row.stage ?? NO_STAGE;
-  // The workflow beside the id, `#12 [fast]`, as `landrace start` prints it.
-  const itemOf = (row: StatusRow): string => `${row.item}${row.workflow === undefined ? "" : ` [${row.workflow}]`}`;
+  const itemOf = (row: StatusRow): string => itemTag(row.item, row.workflow, opts.several ?? false);
   const titles = rows.map((row) => clip(oneLine(row.title), TITLE_WIDTH));
 
   const itemWidth = Math.max(0, ...rows.map((row) => itemOf(row).length));

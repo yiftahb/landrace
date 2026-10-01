@@ -54,7 +54,7 @@ import { held } from "#runner/lock.js";
 import { runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
-import { oneLine } from "#runner/status.js";
+import { itemTag, oneLine } from "#runner/status.js";
 import { displayOf, noSharedPre, sharedPre, writeOwnerOf } from "#runner/route.js";
 import { listingFailures, listWorkspace, sourcesOf, tickWorkspace } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
@@ -808,7 +808,8 @@ async function pass(rt: WorkspaceRuntime, seen?: (listing: WorkspaceListing) => 
   });
   // Printed beside the log, not through it: an outcome quotes a hook's or an
   // agent's failure, which can carry what the log itself would redact.
-  for (const row of rows) console.log(`#${row.item}${row.workflow === undefined ? "" : ` [${row.workflow}]`} ${rt.log.scrub(row.outcome)}`);
+  const several = rt.workflows.length > 1;
+  for (const row of rows) console.log(`#${itemTag(row.item, row.workflow, several)} ${rt.log.scrub(row.outcome)}`);
   if (failures.length) throw new Error(rt.log.scrub(failures.join("; ")));
 }
 
