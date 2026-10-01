@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadWorkspace } from "#workflow/workspace.js";
@@ -44,5 +44,22 @@ describe("loadWorkspace", () => {
     const ws = await workspaceWith({ main: { name: "Main" } });
     await mkdir(join(ws, "workflows", "drafts"));
     expect((await loadWorkspace(ws)).workflows.map((w) => w.id)).toEqual(["main"]);
+  });
+  it("refuses a workflow folder that is a symbolic link, inside the workspace or out of it", async () => {
+    for (const target of ["inside", "outside"]) {
+      const ws = await workspaceWith({ main: { name: "Main" } });
+      const real = target === "inside" ? join(ws, "workflows", "main") : (await workspaceWith({ main: { name: "Main" } })) + "/workflows/main";
+      await symlink(real, join(ws, "workflows", "linked"));
+      await expect(loadWorkspace(ws)).rejects.toThrow(/workflows\/linked is a symbolic link; a workflow must be a real folder inside the workspace/);
+      await expect(loadWorkspace(ws, new Map(), ["main", "linked"])).rejects.toThrow(/symbolic link/);
+    }
+  });
+  it("refuses an order that names a workflow twice", async () => {
+    const ws = await workspaceWith({ main: { name: "Main" } });
+    await expect(loadWorkspace(ws, new Map(), ["main", "main"])).rejects.toThrow(/workflows: names "main" twice/);
+  });
+  it("orders by code point, not by the machine's locale", async () => {
+    const ws = await workspaceWith({ a: { name: "alpha" }, z: { name: "Zed" } });
+    expect((await loadWorkspace(ws)).workflows.map((w) => w.id)).toEqual(["z", "a"]);
   });
 });
