@@ -566,6 +566,42 @@ For an installed landrace, hook modules are imported at runtime with no build st
 
 Conditions are MongoDB-style documents over snapshot paths, evaluated with a **closed operator allowlist** — `$eq $ne $in $nin $lt $lte $gt $gte $exists $all $size $and $or $not`. `$where` and `$regex` are rejected at load, because a workflow file is a repo file a pull request can edit.
 
+#### Notion
+
+`landrace/integrations/notion` keeps each ticket's spec in Notion rather than on gh-pages: `Notion` is a docs role, beside any tracker and forge.
+
+1. Create an internal integration at notion.so/profile/integrations with the **Read content**, **Update content** and **Insert content** capabilities, and copy its secret.
+2. Share the parent page with it — open the page, ••• → Connections, add the integration — and take the page's id: the 32 hex digits its link ends in.
+3. Declare the secret, and redact it:
+
+   ```yaml
+   log:
+     redact: [githubToken, notionToken]
+   secrets:
+     githubToken: $GITHUB_TOKEN
+     notionToken: $NOTION_TOKEN
+   ```
+
+4. Hand `compose` the role:
+
+   ```ts
+   import { compose } from "landrace/kit";
+   import { GitHubForge, GitHubIssues } from "landrace/integrations/github";
+   import { Notion } from "landrace/integrations/notion";
+   export const { preflight, source, operator, pre, post, spec } = compose({
+     tracker: new GitHubIssues(), forge: new GitHubForge({ closingRefs: true }),
+     docs: new Notion({ parent: "0123456789abcdef0123456789abcdef" }),
+   });
+   ```
+
+`landrace start` reads the parent page and creates a `Landrace specs` database in it when there is none, then rewrites its title unchanged — since an integration's capabilities can only be tried, that is how a token without **Update content** refuses to start rather than fail its first publish. **Insert content** is tried only on the start that creates the database: once it exists, a token that lost that capability, or a narrower integration shared on the parent later, still starts, and every publish then fails on Notion's 403. A parent not shared with the integration, a token Notion rejects, or no `notionToken` refuses to start, saying which. So do two databases of that title in the parent: which one holds the specs is not a guess.
+
+Each spec is a row of that database. `Ticket`, its title, is the ticket's id; the body is the spec as blocks, for a person to read; and `Source`, a text property, is the markdown itself. `Source` is what `{brief.spec.content}` hands a step, read whole, so a step works from exactly what was published, whatever the body made of it. It is written last, and a row whose `Source` is empty was never published. Publishing the same text again writes nothing. Changed text clears `Source`, replaces the body a block at a time, and writes `Source` again, so a publish cut off anywhere is redone on the same row by the next tick. Two rows for one ticket halt it. A spec link opens the ticket's row, or the parent page while there is none. Reading never creates the database, so `landrace status` writes nothing here either. Give each project a parent page of its own: two projects in one parent share one database, where ticket 12 of one is ticket 12 of the other. And anyone who can edit the parent page can edit `Source`, which the steps after the spec are briefed with.
+
+The body shows `#` to `###` headings (deeper ones as `###`), paragraphs, bulleted and numbered lists one level deep, fenced code (in plain text when Notion does not know the language), quotes, inline code, and links to absolute http(s) addresses. A table, a rule or HTML on lines of its own is shown as written, in a markdown code block; inside a paragraph or a list item, anything else — bold, an indented table — stays the text it was, as does a line with more inline code and links than one block takes, and a link longer than 2,000 characters. `Source` holds at most a hundred pieces of 2,000 characters; a longer spec is refused before anything is written to the database. Every request names `Notion-Version: 2025-09-03`; one that appends blocks carries at most 100, nested ones counted; and a 429 is waited out for as long as Notion's `Retry-After` says, five tries in all.
+
+To check it against a real workspace, `pnpm build && NOTION_TOKEN=… NOTION_PARENT=<the page's id> node scripts/notion-check.mjs` runs the check, a publish, the same text, changed text (over a hundred blocks, 60,000 characters with an emoji astride a piece boundary, a fence, a table, an item with 120 children) and the read back. It prints each step, and exits 1 when one failed or nothing was checked. It leaves its `check-<time>` row in the database for you to look at.
+
 ### Executors: the coding agent is a hook
 
 The engine runs no coding agent of its own: `agent.adapter` names a hook. `defineExecutor` registers one, either as `{ id, run }` directly or as `{ id, create(ctx) }` — a factory the runtime calls once at startup, with `ctx` the same `RuntimeContext` every hook gets plus `dir` (the workflow directory, for finding the repository), `redact` (secrets a run's own setup discovers, such as an MCP server's `env`, that the configuration never named) and `steps` (the workflow's steps, by path, so a factory can refuse what a step asks of it before the step runs). A factory that cannot start — a bad `agent.*` key, a server `.mcp.json` does not define, a step's effort it has no level for — throws, and `landrace validate` reports it under the `executor` rule, one problem per line.
