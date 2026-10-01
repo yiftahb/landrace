@@ -8,9 +8,10 @@ import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
-import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
+import { WorkflowLoadError } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
-import type { ExecutorContext, LoadedConfig, Problem, Registry, Step } from "#namespace.js";
+import { loadWorkspace } from "#workflow/workspace.js";
+import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Step, Workspace } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -59,13 +60,9 @@ async function isEnvExposed(dir: string): Promise<boolean> {
  * because calling every path in the workflow uncovered would bury the one
  * problem that is real.
  */
-async function coverage(
-  dir: string,
-  workflow: Awaited<ReturnType<typeof loadWorkflow>>["workflow"],
-  steps: Awaited<ReturnType<typeof loadWorkflow>>["steps"],
-): Promise<{ problems: Problem[]; registry: Registry | null }> {
+async function coverage(ws: Workspace, { dir, workflow, steps }: LoadedWorkflow): Promise<{ problems: Problem[]; registry: Registry | null }> {
   try {
-    const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
+    const registry = await loadHooks({ dir, modules: workflow.hooks ?? [], workspace: ws.dir });
     return { problems: validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined), registry };
   } catch (e) {
     // One exception: a node too old to read a TypeScript file is not a broken
@@ -150,17 +147,32 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    */
   if (loaded?.missingVars.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))] };
 
-  // A workflow that fails to load is itself the thing `validate` exists to
+  // A workspace that fails to load is itself the thing `validate` exists to
   // report — §11.1-§11.2 — so a load failure must become a Problem here
   // rather than propagate as an unhandled rejection past this function.
-  let workflow: Awaited<ReturnType<typeof loadWorkflow>>["workflow"];
-  let steps: Awaited<ReturnType<typeof loadWorkflow>>["steps"];
+  let ws: Workspace;
   try {
-    ({ workflow, steps } = await loadWorkflow(dir, loaded?.vars));
+    ws = await loadWorkspace(dir, loaded?.vars, loaded?.config.workflows);
   } catch (e) {
     const rule = e instanceof WorkflowLoadError ? e.rule : "schema";
     return { ok: false, problems: [...problems, { rule, message: messageOf(e) }, ...(await exposedEnv(dir))] };
   }
+
+  // Every workflow, each as it would run. With more than one, a problem that
+  // did not say which it is in would send the reader through every folder.
+  const named = ws.workflows.length > 1;
+  for (const wf of ws.workflows) {
+    const found = await workflowProblems(ws, wf, loaded);
+    problems.push(...(named ? found.map((p) => ({ ...p, message: `${wf.id}: ${p.message}` })) : found));
+  }
+
+  problems.push(...(await exposedEnv(dir)));
+  return { ok: problems.length === 0, problems };
+}
+
+async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: LoadedConfig | null): Promise<Problem[]> {
+  const { workflow, steps } = wf;
+  const problems: Problem[] = [];
 
   /*
    * Everything answerable from the files alone, first and on its own.
@@ -176,7 +188,7 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
   const graph: Problem[] = validate(workflow, steps);
   let registry: Registry | null = null;
   if (graph.length === 0) {
-    const result = await coverage(dir, workflow, steps);
+    const result = await coverage(ws, wf);
     problems.push(...result.problems);
     registry = result.registry;
   } else {
@@ -191,10 +203,8 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
   // configuration mistake there is `validate`'s business too. Only once the
   // hooks are known to have loaded — a workflow already found unsound, or
   // whose hooks would not import, has no registry to build one against.
-  if (loaded && registry) problems.push(...(await executorProblems(dir, loaded, registry, steps)), ...notifyProblems(loaded.config, registry));
-
-  problems.push(...(await exposedEnv(dir)));
-  return { ok: problems.length === 0, problems };
+  if (loaded && registry) problems.push(...(await executorProblems(ws.dir, loaded, registry, steps)), ...notifyProblems(loaded.config, registry));
+  return problems;
 }
 
 /**

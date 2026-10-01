@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
@@ -14,6 +14,7 @@ import { createDispatcher } from "#runner/effects.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { describeLoopback } from "#tests/support/loopback.js";
+import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
 import {
   boardSink,
   buildRuntime,
@@ -55,9 +56,7 @@ async function fixture(
   const root = await mkdtemp(join(tmpdir(), "lr-start-"));
   if (config.git) await exec("git", ["init", "-q", "-b", "main"], { cwd: root });
   const dir = join(root, ".landrace");
-  await mkdir(join(dir, "steps"), { recursive: true });
-  await cp("tests/fixtures/minimal/workflow.yaml", join(dir, "workflow.yaml"));
-  await cp("tests/fixtures/minimal/steps/spec.md", join(dir, "steps", "spec.md"));
+  await workspaceOf({ main: "tests/fixtures/minimal" }, dir);
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
@@ -97,10 +96,22 @@ describe("buildRuntime", () => {
     const dir = await fixture();
     // Schema-valid and unsound: no entry stage, so nothing can ever begin.
     await writeFile(
-      join(dir, "workflow.yaml"),
+      join(workflowIn(dir), "workflow.yaml"),
       "version: 1\nname: broken\ndescription: test\nstages:\n  - id: only\n    triggers: [{ when: { \"run.stage\": null } }]\n",
     );
     await expect(buildRuntime(dir, {})).rejects.toThrow(/does not validate[\s\S]*entry/);
+  });
+
+  /*
+   * Until the loop can run several workflows, it runs the one there is — and
+   * a second is refused, not ignored: running whichever sorted first would be
+   * an item worked by a workflow nobody chose for it.
+   */
+  it("refuses a workspace with two workflows, naming both, for start and for status alike", async () => {
+    const dir = await fixture();
+    await workspaceOf({ fastlane: "tests/fixtures/minimal" }, dir);
+    await expect(buildRuntime(dir, {})).rejects.toThrow(`landrace start runs one workflow at a time; ${dir}/workflows has 2 (fastlane, main)`);
+    await expect(buildRuntime(dir, { readOnly: true })).rejects.toThrow(/^landrace status runs one workflow at a time/);
   });
 
   // Matched on the missing-secret wording, not just the name: an unresolved
@@ -299,14 +310,14 @@ describe("which executor screens", () => {
 
 /**
  * The loop's item server is this very process started again as `landrace
- * mcp`, pointed at an absolute workflow directory: the agent runs in a
+ * mcp`, pointed at an absolute workspace directory: the agent runs in a
  * worktree, so a relative one would resolve somewhere else entirely.
  */
 describe("the item server an items:create step is handed", () => {
-  it("is this process started again as `landrace mcp` on the absolute workflow directory", () => {
+  it("is this process started again as `landrace mcp` on the absolute workspace directory", () => {
     expect(childServerCommand("relative/.landrace")).toEqual({
       command: process.execPath,
-      args: [...process.execArgv, process.argv[1], "mcp", "--workflow", resolve("relative/.landrace")],
+      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace")],
     });
   });
 });

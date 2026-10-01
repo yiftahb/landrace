@@ -1,5 +1,6 @@
 import { validate, validateSemantics } from "#workflow/validate.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { loadShipped } from "#tests/support/shipped.js";
 import type { Effect, Problem, Step, Workflow } from "#namespace.js";
 import { fastest } from "#tests/support/timing.js";
 
@@ -500,7 +501,7 @@ describe("semantic validation", () => {
  */
 describe("the graph rules, on a workflow that has an entry stage", () => {
   it("reports nothing on the shipped workflow", async () => {
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     expect(validate(workflow, steps)).toEqual([]);
   });
 
@@ -515,7 +516,7 @@ describe("the graph rules, on a workflow that has an entry stage", () => {
   });
 
   it("names an unbounded cycle and an unreachable pair planted in the shipped workflow", async () => {
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const tampered: Workflow = {
       ...workflow,
       stages: [
@@ -591,7 +592,7 @@ describe("every declared output shape has somewhere to go next", () => {
   });
 
   it("catches the two triage shapes that stranded a real item", async () => {
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     // The shipped workflow as it was: `question` and `unclear` declared, routed
     // to a comment, and led away from by nothing — every trigger that mentions
     // triage without demanding an answer by name taken out, which leaves only

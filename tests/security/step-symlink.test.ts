@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runValidate } from "#cli/validate.js";
 import { loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
 
@@ -14,7 +14,9 @@ const SECRET = "SSH_KEY=very-secret-material";
  */
 async function fixture(step: string, link: (dir: string, outside: string) => Promise<void>): Promise<string> {
   const base = await mkdtemp(join(tmpdir(), "landrace-link-"));
-  const dir = join(base, "flow");
+  // One workflow of the workspace `flow`, so the secret beside it is outside
+  // the workflow and the workspace both.
+  const dir = join(base, "flow", "workflows", "main");
   await mkdir(dir, { recursive: true });
   await writeFile(join(base, "outside-secret.md"), `---\ncapabilities: []\n---\n${SECRET}\n`);
   await writeFile(join(dir, "workflow.yaml"), `version: 1
@@ -58,7 +60,7 @@ describe("a symlink cannot smuggle a file into an agent's prompt", () => {
     ["a symlinked step file", symlinkedFile],
     ["a symlinked directory", symlinkedDir],
   ])("reports %s as a problem instead of validating clean", async (_name, build) => {
-    const { ok, problems } = await runValidate(await build());
+    const { ok, problems } = await runValidate(dirname(dirname(await build())));
     expect(problems).toContainEqual(expect.objectContaining({ rule: "step-path" }));
     expect(ok).toBe(false);
   });

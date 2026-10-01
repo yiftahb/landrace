@@ -75,7 +75,8 @@ describe("mcp server over a real transport", () => {
   });
 
   it("creates an item end to end through the protocol", async () => {
-    const { client, gh } = await connect();
+    const workflow: Workflow = { version: 1, name: "t", description: "test", admit: ["lr:auto"], stages: [{ id: "spec", entry: true, terminal: true }] };
+    const { client, gh } = await connect([], { workflow });
     const r = await client.callTool({ name: "landrace_create_item", arguments: { title: "Add CSV export" } });
     expect(JSON.parse(textOf(r))).toMatchObject({ item: "1", started: true });
     expect(gh.issues.get(1)?.title).toBe("Add CSV export");

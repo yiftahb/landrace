@@ -116,12 +116,12 @@ describe("the MCP servers a step may use", () => {
   it.each([
     ["node dist/cli.js mcp", { command: "node", args: ["dist/cli.js", "mcp"] }],
     ["landrace mcp", { command: "landrace", args: ["mcp"] }],
-    ["an absolute landrace", { command: "/usr/local/bin/landrace", args: ["mcp", "--workflow", ".landrace"] }],
+    ["an absolute landrace", { command: "/usr/local/bin/landrace", args: ["mcp", "--workspace", ".landrace"] }],
     ["npx landrace@latest mcp", { command: "npx", args: ["-y", "landrace@latest", "mcp"] }],
     ["an installed cli.js", { command: "node", args: ["/opt/node_modules/landrace/dist/cli.js", "mcp"] }],
     ["cli.js mcp", { command: "cli.js", args: ["mcp"] }],
     ["the source entry", { command: "node", args: ["--experimental-strip-types", "src/cli/index.ts", "mcp"] }],
-    ["a shell wrapping it", { command: "sh", args: ["-c", "landrace mcp --workflow .landrace"] }],
+    ["a shell wrapping it", { command: "sh", args: ["-c", "landrace mcp --workspace .landrace"] }],
     // Each of these got past the first version of the match.
     ["an end-of-options marker", { command: "node", args: ["dist/cli.js", "--", "mcp"] }],
     ["an entry with no extension", { command: "node", args: ["dist/cli", "mcp"] }],

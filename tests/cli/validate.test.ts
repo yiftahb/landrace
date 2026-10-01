@@ -1,6 +1,7 @@
 import { runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
-import { loadWorkflow } from "#workflow/load.js";
+import { loadShipped } from "#tests/support/shipped.js";
+import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -9,13 +10,13 @@ import { join } from "node:path";
 
 describe("landrace validate", () => {
   it("reports a sound workflow as valid", async () => {
-    const r = await runValidate("tests/fixtures/minimal");
+    const r = await runValidate(await workspaceOf({ main: "tests/fixtures/minimal" }));
     expect(r.ok).toBe(true);
     expect(r.problems).toEqual([]);
   });
 
   it("returns the problems it found, not just a boolean", async () => {
-    const r = await runValidate("tests/fixtures/duplicate-id");
+    const r = await runValidate(await workspaceOf({ main: "tests/fixtures/duplicate-id" }));
     expect(r.ok).toBe(false);
     expect(r.problems).toContainEqual(
       expect.objectContaining({ rule: "duplicate-id", message: expect.stringMatching(/duplicate stage id/) }),
@@ -23,7 +24,7 @@ describe("landrace validate", () => {
   });
 
   it("reports a missing step file as a problem instead of throwing", async () => {
-    const r = await runValidate("tests/fixtures/missing-step");
+    const r = await runValidate(await workspaceOf({ main: "tests/fixtures/missing-step" }));
     expect(r.ok).toBe(false);
     expect(r.problems).toContainEqual(
       expect.objectContaining({ rule: "missing-step", message: expect.stringMatching(/does not exist/) }),
@@ -31,7 +32,7 @@ describe("landrace validate", () => {
   });
 
   it("reports a schema failure as a problem instead of throwing", async () => {
-    const r = await runValidate("tests/fixtures/bad-schema");
+    const r = await runValidate(await workspaceOf({ main: "tests/fixtures/bad-schema" }));
     expect(r.ok).toBe(false);
     expect(r.problems).toContainEqual(expect.objectContaining({ rule: "schema" }));
   });
@@ -42,7 +43,7 @@ describe("landrace validate", () => {
   // fix-review each named a step with no output: block — assess() can never
   // see run.outputs[stage.id] and decide() invokes it again on every pass.
   it("gives every stage with a step a real output contract, so assess() can mark it complete", async () => {
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const missingOutput = workflow.stages
       .filter((s) => s.step && !steps.get(s.step)?.output)
       .map((s) => s.id);
@@ -71,11 +72,65 @@ describe("landrace validate", () => {
   // (if unlikely) candidate, and two claimed candidates is still ambiguous.
   // The step files should describe the shape in prose, not print it.
   it("does not print a literal json object in any shipped step's prompt", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     for (const step of steps.values()) {
       expect(step.prompt).not.toMatch(/\{\s*"[a-zA-Z_]+"\s*:/);
     }
     expect(steps.size).toBeGreaterThan(0);
+  });
+});
+
+/*
+ * A workspace is checked whole: every workflow in it, each as it would run.
+ * With more than one, a problem that did not say which workflow it is in would
+ * send the reader through every folder to find it.
+ */
+describe("landrace validate, over a workspace", () => {
+  const SOUND = (name: string): string => [
+    "version: 1", `name: ${name}`, "description: test", "stages:",
+    "  - id: a", "    entry: true", "    terminal: true", "    triggers:", '      - { when: { "run.stage": null } }', "",
+  ].join("\n");
+  // Schema-valid and unsound: no entry stage, so nothing can ever begin.
+  const NO_ENTRY = "version: 1\nname: Main\ndescription: test\nstages:\n  - id: only\n    triggers: [{ when: { \"run.stage\": null } }]\n";
+
+  const workspace = async (workflows: Record<string, string>): Promise<string> => {
+    const ws = await mkdtemp(join(tmpdir(), "landrace-validate-ws-"));
+    for (const [id, yaml] of Object.entries(workflows)) {
+      await mkdir(workflowIn(ws, id), { recursive: true });
+      await writeFile(join(workflowIn(ws, id), "workflow.yaml"), yaml);
+    }
+    return ws;
+  };
+
+  it("validates every workflow, and names the one each problem is in", async () => {
+    const r = await runValidate(await workspace({ main: NO_ENTRY, fastlane: SOUND("Fastlane") }));
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContainEqual(expect.objectContaining({ message: expect.stringMatching(/^main: .*entry/) }));
+    expect(r.problems.filter((p) => !p.message.startsWith("main: "))).toEqual([]);
+  });
+
+  it("is valid when every workflow in it is", async () => {
+    expect(await runValidate(await workspace({ main: SOUND("Main"), fastlane: SOUND("Fastlane") }))).toEqual({ ok: true, problems: [] });
+  });
+
+  it("does not prefix a problem with the id when there is only one workflow to be in", async () => {
+    const r = await runValidate(await workspace({ main: NO_ENTRY }));
+    expect(r.problems).toContainEqual(expect.objectContaining({ message: expect.stringMatching(/entry/) }));
+    expect(r.problems.filter((p) => p.message.startsWith("main: "))).toEqual([]);
+  });
+
+  it("reports the layout before workspaces, saying where to move it, and the command exits 1", async () => {
+    // tests/fixtures/minimal is a workflow folder: workflow.yaml at its root.
+    expect(await runValidate("tests/fixtures/minimal")).toEqual({
+      ok: false,
+      problems: [{ rule: "layout", message: expect.stringMatching(/workflow\.yaml is the layout before workspaces; move it to .*workflows\/main\/workflow\.yaml/) }],
+    });
+
+    const failure = await promisify(execFile)(process.execPath,
+      ["--experimental-strip-types", "--no-warnings", "src/cli/index.ts", "validate", "tests/fixtures/minimal"])
+      .then(() => null, (e: { code?: number; stderr?: string }) => e);
+    expect(failure?.code).toBe(1);
+    expect(failure?.stderr).toMatch(/layout: .*layout before workspaces/);
   });
 });
 
@@ -106,7 +161,8 @@ stages:
 
   const dirFor = async (config: string, graph = GRAPH): Promise<string> => {
     const dir = await mkdtemp(join(tmpdir(), "landrace-validate-vars-"));
-    await writeFile(join(dir, "workflow.yaml"), graph);
+    await mkdir(workflowIn(dir), { recursive: true });
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), graph);
     await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude }\n${config}`);
     return dir;
   };
@@ -178,7 +234,8 @@ stages:
 describe("landrace validate, and the notify block", () => {
   const dirFor = async (config: string): Promise<string> => {
     const dir = await mkdtemp(join(tmpdir(), "landrace-validate-notify-"));
-    await writeFile(join(dir, "workflow.yaml"), [
+    await mkdir(workflowIn(dir), { recursive: true });
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), [
       "version: 1", "name: t", "description: test", "stages:",
       "  - id: a", "    entry: true", "    terminal: true", "    triggers:", '      - { when: { "run.stage": null } }', "",
     ].join("\n"));
@@ -211,7 +268,7 @@ describe("landrace next", () => {
     const file = join(dir, "snap.json");
     await writeFile(file, JSON.stringify({ entries: [], run: { stage: null, counters: {}, outputs: {} } }));
 
-    const r = await runNext("tests/fixtures/minimal", file);
+    const r = await runNext(await workspaceOf({ main: "tests/fixtures/minimal" }), file);
     expect(r.decision.action).toBe("transition");
     expect(r.decision.to?.id).toBe("spec");
     // The plan for entering a stage, with the round filled in from the
@@ -243,11 +300,39 @@ describe("landrace next", () => {
       run: { stage: null, counters: {}, outputs: {} },
     }));
 
-    const r = await runNext("tests/fixtures/assigned", file);
+    const r = await runNext(await workspaceOf({ main: "tests/fixtures/assigned" }), file);
 
     expect(r.decision.action).toBe("transition");
     expect(r.effects[0]).toMatchObject({ body: "ann is writing the spec, round 1." });
     delete process.env.LR_E2E_ASSIGNEE;
+  });
+});
+
+/*
+ * `next` explains one workflow. With one in the workspace that is the one; with
+ * several it is the one named, and naming none is the ambiguity it is.
+ */
+describe("landrace next, over a workspace", () => {
+  const snapshot = async (): Promise<string> => {
+    const file = join(await mkdtemp(join(tmpdir(), "landrace-next-ws-")), "snap.json");
+    await writeFile(file, JSON.stringify({ entries: [], run: { stage: null, counters: {}, outputs: {} } }));
+    return file;
+  };
+  const two = () => workspaceOf({ main: "tests/fixtures/minimal", fastlane: "tests/fixtures/minimal" });
+
+  it("decides with the workflow it is told to", async () => {
+    const r = await runNext(await two(), await snapshot(), "fastlane");
+    expect(r.decision.to?.id).toBe("spec");
+  });
+
+  it("refuses to pick one of several by itself, naming them", async () => {
+    const ws = await two();
+    await expect(runNext(ws, await snapshot())).rejects.toThrow(`landrace next runs one workflow at a time; ${ws}/workflows has 2 (fastlane, main)`);
+  });
+
+  it("refuses a workflow id the workspace has no folder for, naming the ones it has", async () => {
+    const ws = await two();
+    await expect(runNext(ws, await snapshot(), "nope")).rejects.toThrow(`${ws}/workflows has no workflow "nope"; it has fastlane, main`);
   });
 });
 
@@ -264,8 +349,8 @@ describe("landrace validate, a stage's branch, and worktree isolation", () => {
     const root = await mkdtemp(join(tmpdir(), "landrace-validate-branch-"));
     await exec("git", ["init", "-q"], { cwd: root });
     const dir = join(root, ".landrace");
-    await mkdir(join(dir, "steps"), { recursive: true });
-    await writeFile(join(dir, "workflow.yaml"), `version: 1
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), `version: 1
 name: t
 description: test
 stages:
@@ -280,7 +365,7 @@ stages:
     terminal: true
     triggers: [{ when: { "run.outputs.build.kind": done } }]
 `);
-    await writeFile(join(dir, "steps", "build.md"), `---
+    await writeFile(join(workflowIn(dir), "steps", "build.md"), `---
 capabilities: [repo:read, repo:write]
 output:
   discriminator: kind

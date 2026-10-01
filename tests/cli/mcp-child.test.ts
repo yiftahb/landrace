@@ -6,15 +6,16 @@ import { buildChildTool } from "#cli/mcp.js";
 const TOKEN = "ghp_a_token_long_enough_to_redact";
 
 /**
- * A workflow directory whose `breakdown` step declares items:create and
+ * A workspace whose one workflow's `breakdown` step declares items:create and
  * whose `spec` step does not, following the fixture pattern in
  * tests/cli/start.test.ts.
  */
 async function dirWithBreakdown(): Promise<string> {
   const dir = join(await mkdtemp(join(tmpdir(), "lr-mcp-child-")), ".landrace");
-  await mkdir(join(dir, "steps"), { recursive: true });
+  const main = join(dir, "workflows", "main");
+  await mkdir(join(main, "steps"), { recursive: true });
   await writeFile(
-    join(dir, "workflow.yaml"),
+    join(main, "workflow.yaml"),
     `version: 1
 name: test
 description: test
@@ -26,8 +27,8 @@ stages:
     step: steps/breakdown.md
 `,
   );
-  await writeFile(join(dir, "steps", "spec.md"), "---\ncapabilities: []\n---\n\nWrite the spec.\n");
-  await writeFile(join(dir, "steps", "breakdown.md"), "---\ncapabilities: [items:create]\n---\n\nBreak it down.\n");
+  await writeFile(join(main, "steps", "spec.md"), "---\ncapabilities: []\n---\n\nWrite the spec.\n");
+  await writeFile(join(main, "steps", "breakdown.md"), "---\ncapabilities: [items:create]\n---\n\nBreak it down.\n");
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1

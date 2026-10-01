@@ -1,4 +1,4 @@
-import { CHILD_SERVER_NAME, CHILD_TOOL, isItemId, LABELS, neutraliseMarkers, recordBodyProblem, itemIdProblem } from "#conventions.js";
+import { CHILD_SERVER_NAME, CHILD_TOOL, isItemId, neutraliseMarkers, recordBodyProblem, itemIdProblem } from "#conventions.js";
 import type { ChildBinding, NewChild, Node, Operator, RunServer, RuntimeContext, ServerCommand } from "#namespace.js";
 
 /** Ten is already more urgency levels than any tracker we have met distinguishes. */
@@ -13,15 +13,20 @@ const MAX_PRIORITY = 9;
  * effect: the tick never plans it, which is why "item creation is never an
  * effect" still holds — the agent does this, as work, while its step runs.
  *
- * The child is labelled eligible so the next tick picks it up, exactly as
- * landrace_create_item does by default; its own workflow instance starts
- * from there, through whichever entry stage accepts a child.
+ * The child gets the labels the creating workflow admits, exactly as
+ * landrace_create_item starts an item, so the next tick picks it up; its own
+ * workflow instance starts from there, through whichever entry stage accepts
+ * a child. `admit` is required, absent or not, so no caller files a child
+ * without saying which workflow's admission it carries: the engine names no
+ * label of its own to fall back on, and a workflow that admits nothing files
+ * children nothing starts.
  */
 export async function createChild(
   operator: Operator | null,
   binding: ChildBinding,
   input: NewChild,
   ctx: RuntimeContext,
+  admit: readonly string[] | undefined,
 ): Promise<Node> {
   if (!operator) {
     throw new Error("cannot create a child: no operator hook is configured. Add a module exporting defineOperator({ ... }) to the hooks list in workflow.yaml.");
@@ -44,7 +49,7 @@ export async function createChild(
       title,
       // A marker the agent wrote into the body would read back as ours.
       body: neutraliseMarkers(body),
-      labels: [LABELS.eligible],
+      labels: [...(admit ?? [])],
       parent: binding.parent,
       origin: { parent: binding.parent, stage: binding.stage, round: binding.round },
       ...(priority === undefined ? {} : { priority }),

@@ -15,6 +15,7 @@ import { gitIn } from "landrace/kit";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { loadShipped } from "#tests/support/shipped.js";
 import { validate } from "#workflow/validate.js";
 import type {
   Effect, ExternalState, GotoDeps, Harness, HookContext, NotifyEvent, PostHook, Rel, RuntimeConfig, RuntimeContext, ScriptedAnswer,
@@ -189,7 +190,7 @@ describe("an item in review whose only pull request merges", () => {
   it("moves on through pr-human-review to done rather than waiting", async () => {
     const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto", "lr:stage:code-review"] }] });
     state.openPull("1", { merged: true, openThreads: 2 });
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({
       workflow, steps, source: state.source, pre: [state.pre], post: [state.post],
       answers: { "code-review": '```json\n{"kind":"reviewed"}\n```' },
@@ -212,7 +213,7 @@ describe("an item in review whose only pull request merges", () => {
     const first = state.openPull("1");
     Object.assign(state.pull(first), { merged: true, closed: "done" });
     state.openPull("1");
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({
       workflow, steps, source: state.source, pre: [state.pre], post: [state.post],
       answers: { "code-review": '```json\n{"kind":"reviewed"}\n```' },
@@ -232,7 +233,7 @@ describe("an item in review whose only pull request merges", () => {
 describe("publishing a build, over the in-memory tracker", () => {
   it("opens the pull request after the build, reviews it, and pushes before every review round", async () => {
     const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:build"] }] });
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const seen: Array<{ stage: string; pushes: number }> = [];
     const run = createHarness({
       workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: ANSWERS,
@@ -476,8 +477,8 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
-  retro: '- `.landrace/steps/build.md`: builds skipped the lint run a reviewer then flagged\n\n' +
-    '```json\n{"kind":"learned","changes":[{"file":".landrace/steps/build.md","why":"builds skipped the lint run"}]}\n```',
+  retro: '- `.landrace/workflows/main/steps/build.md`: builds skipped the lint run a reviewer then flagged\n\n' +
+    '```json\n{"kind":"learned","changes":[{"file":".landrace/workflows/main/steps/build.md","why":"builds skipped the lint run"}]}\n```',
 };
 
 describe("the §10 cycle, including a fix that does not satisfy the reviewer", () => {
@@ -530,7 +531,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
    */
   it("runs the review round again after each fix, and stops at the budget", async () => {
     const { gh, during, reviewedAtHead } = await world();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
 
     const asked = await run.converge();
@@ -567,7 +568,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
    */
   it("pushes the build and opens its pull request, which is what lets review start", async () => {
     const { gh, root, origin, during } = await world();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
 
     await run.converge();
@@ -590,7 +591,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
    */
   it("halts with the reason, rather than opening an empty pull request, when the build left no branch", async () => {
     const { gh } = await world();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS });
 
     await run.converge();
@@ -608,7 +609,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
 
   it("shows each fix round the findings it is meant to address", async () => {
     const { gh, during } = await world();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
 
     await run.converge();
@@ -635,7 +636,7 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
    */
   it("hands the build, every review and every fix the approved spec as text", async () => {
     const { gh, during } = await world();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
 
     await run.converge();
@@ -681,7 +682,7 @@ describe("the retro, after a review settles", () => {
       if (++reviews === 1 && findings) pull?.threads.push({ isResolved: false, body: "this leaks a file handle", path: "src/x.ts", line: 12 });
       else for (const thread of pull?.threads ?? []) thread.isResolved = true;
     };
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: CLEAN, during });
 
     await run.converge();
@@ -732,7 +733,7 @@ describe("the retro, after a review settles", () => {
 describe("a human reply to an item blocked by a rejected output", () => {
   const blocked = async (answers: Record<string, ScriptedAnswer>) => {
     const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const writes: string[] = [];
     const run = createHarness({
       workflow, steps, ...hooksOf(gh), answers: { triage: '```json\n{"intent":"goto-spec"}\n```', ...answers },
@@ -801,7 +802,7 @@ describe("a step refused by a security check", () => {
 
   const at = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen: Record<string, ScriptedAnswer>) => {
     const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     // The judge declares no capability, so it is never screened: only the
     // steps that can act get a verdict.
     const run = createHarness({
@@ -958,7 +959,7 @@ describe("sending an item back to a step", () => {
   const world = async (labels: string[], answers: Record<string, ScriptedAnswer>, screen?: Record<string, ScriptedAnswer>) => {
     const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto", ...labels] }] });
     const specPage = specPageHook();
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({
       workflow, steps, source: state.source, pre: [state.pre], post: [state.post, specPage], answers,
       ...(screen === undefined ? {} : { screen }),
@@ -1107,7 +1108,7 @@ describe("sending an item back to a step", () => {
    */
   it("recovers a crash between build's entry comment and its status label with one Go to step", async () => {
     const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:spec-human-review", "lr:awaiting"] }] });
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const answers = { ...ANSWERS, triage: judged("approve") };
     const harness = (over: Partial<Parameters<typeof createHarness>[0]> = {}) =>
       createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, ...over });
@@ -1156,7 +1157,7 @@ describe("a halted item sent back to a review, from the board", () => {
   it("goes back to code-review — not to spec or build — and sheds lr:blocked", async () => {
     const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:code-review"] }] });
     state.openPull("1", { branch: "landrace/1" });
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({
       workflow, steps, source: state.source, pre: [state.pre], post: [state.post],
       answers: { "code-review": (round) => (round === 1 ? "no json" : '```json\n{"kind":"reviewed"}\n```') },
@@ -1183,7 +1184,7 @@ describe("a halted item sent back to a review, from the board", () => {
 
   it("refuses to send an item with no pull request to a review, and writes nothing", async () => {
     const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }] });
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     const deps = depsOf(state, workflow);
     const before = state.comments("1").length;
 
@@ -1207,7 +1208,7 @@ describe("a halted item sent back to a review, from the board", () => {
 describe("a reviewer's reply that triage cannot read as approve or revise", () => {
   const upTo = async (intent: string) => {
     const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const run = createHarness({
       workflow, steps, ...hooksOf(gh),
       answers: {
@@ -1250,7 +1251,7 @@ describe("a step whose honest report is longer than the tracker will take", () =
 
   const world = async () => {
     const gh = createFakeTracker([{ number: 1, title: "Add export", body: "please", labels: ["lr:auto"] }]);
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     return { gh, run: createHarness({ workflow, steps, ...hooksOf(gh), answers: { spec: REPORT } }) };
   };
 
@@ -1314,8 +1315,8 @@ describe("an item split into children, each worked to done, and the parent after
       workflow, steps, ...hooks, item: "1", answers: SPLIT_ANSWERS,
       during: async ({ stage, round }) => {
         if (stage !== "breakdown") return;
-        await createChild(state.operator, bind(round), { title: "API" }, ctx);
-        await createChild(state.operator, bind(round), { title: "UI" }, ctx);
+        await createChild(state.operator, bind(round), { title: "API" }, ctx, workflow.admit);
+        await createChild(state.operator, bind(round), { title: "UI" }, ctx, workflow.admit);
       },
     });
 
@@ -1366,7 +1367,7 @@ describe("when a child starts, and where", () => {
       workflow, steps, ...hooks, item: "1", answers: SPLIT_ANSWERS,
       during: async ({ stage, round }) => {
         if (stage !== "breakdown") return;
-        const { id } = await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "API" }, ctx);
+        const { id } = await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "API" }, ctx, workflow.admit);
         // The parent is at breakdown right now: its step is the one running.
         const r = await childRun(id).converge();
         early.push({ settled: r.result.settled, why: r.result.why, stage: state.stage(id) });
@@ -1412,7 +1413,7 @@ describe("revising a split item drops the first round's children and their pull 
       during: async ({ stage, round }) => {
         if (stage !== "breakdown") return;
         for (const title of titles[round] ?? []) {
-          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx);
+          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx, workflow.admit);
         }
       },
     });
@@ -1459,8 +1460,8 @@ describe("a breakdown that crashes after creating its children", () => {
       during: async ({ stage, round }) => {
         if (stage !== "breakdown") return;
         attempts++;
-        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "API" }, ctx);
-        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "UI" }, ctx);
+        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "API" }, ctx, workflow.admit);
+        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "UI" }, ctx, workflow.admit);
         if (attempts === 1) throw new Error("the agent died");
       },
     });
@@ -1499,7 +1500,7 @@ describe("a second breakdown round that breaks its contract", () => {
       during: async ({ stage, round }) => {
         if (stage !== "breakdown") return;
         for (const title of round === 1 ? ["API"] : created) {
-          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx);
+          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx, workflow.admit);
         }
       },
     });
@@ -1540,8 +1541,8 @@ describe("a second breakdown round, after one of the first round's children fini
       },
       during: async ({ stage, round }) => {
         if (stage !== "breakdown" || round !== 1) return;
-        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "A" }, ctx);
-        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "B" }, ctx);
+        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "A" }, ctx, workflow.admit);
+        await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title: "B" }, ctx, workflow.admit);
       },
     });
     await parent.converge();
@@ -1593,7 +1594,7 @@ describe("a breakdown whose answer contradicts what it created", () => {
       during: async ({ stage, round }) => {
         if (stage !== "breakdown") return;
         for (const title of created) {
-          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx);
+          await createChild(state.operator, { parent: "1", stage: "breakdown", round }, { title }, ctx, workflow.admit);
         }
       },
     });
@@ -1625,7 +1626,7 @@ describe("telling a person an item needs them", () => {
     over: { labels?: string[]; screen?: Record<string, ScriptedAnswer> } = {},
   ) => {
     const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto", ...(over.labels ?? [])] }] });
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const posts: NotifyEvent[] = [];
     const chat = defineNotifier({ id: "chat", send: async (e) => { posts.push(e); } });
     const notify = createNotify({
@@ -1700,7 +1701,7 @@ describe("a notify that throws", () => {
     const answers = { spec: '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```' };
     const run = async (notify?: () => void) => {
       const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto"] }] });
-      const { workflow, steps } = await loadWorkflow(".landrace");
+      const { workflow, steps } = await loadShipped();
       const events: string[] = [];
       const harness = createHarness({
         workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers,

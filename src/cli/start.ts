@@ -1,4 +1,4 @@
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { defineExecutor } from "#hooks/contracts.js";
@@ -50,8 +50,8 @@ import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
-import { loadWorkflow } from "#workflow/load.js";
 import { branchIsolationProblems, validate } from "#workflow/validate.js";
+import { loadWorkspace, onlyWorkflow } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
 
@@ -198,13 +198,13 @@ export function boardSink(
 
 /**
  * This same process, started again as `landrace mcp`: the node binary, its
- * own flags (type stripping, --import), the CLI entry, and the workflow
+ * own flags (type stripping, --import), the CLI entry, and the workspace
  * directory made absolute so the agent's cwd cannot move it.
  */
 export function childServerCommand(dir: string): ServerCommand {
   return {
     command: process.execPath,
-    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workflow", resolve(dir)],
+    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir)],
   };
 }
 
@@ -365,7 +365,7 @@ export async function repoWorkspace(dir: string): Promise<{ folder: string; work
 }
 
 /**
- * Read the workflow directory and assemble a runnable loop out of it, or
+ * Read the workspace and assemble a runnable loop out of its workflow, or
  * refuse with the reason.
  *
  * Everything that can be known before the first request goes out is checked
@@ -401,15 +401,18 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   });
 
   // With `vars` already substituted in: the graph the daemon runs is the
-  // graph `landrace validate` checked, filled in from the same map.
-  const { workflow, steps } = await loadWorkflow(dir, loaded.vars);
+  // graph `landrace validate` checked, filled in from the same map. One
+  // workflow, until the loop can claim items for several; `readOnly` is
+  // `landrace status` (see BuildOptions), and the refusal names the command.
+  const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
+  const { dir: workflowDir, workflow, steps } = onlyWorkflow(ws, opts.readOnly ? "status" : "start");
 
   // A workflow that cannot be proved sound must not be run against a live
   // repository: every problem validate reports is one an operator would
   // otherwise meet as a halted item with an effect already applied to it.
   const refuse = (problems: Problem[]): never => {
     throw new Error(
-      `the workflow in ${dir} does not validate; run \`landrace validate ${dir}\`:\n` +
+      `the workflow in ${workflowDir} does not validate; run \`landrace validate ${dir}\`:\n` +
       problems.map((p) => `  ${p.rule}: ${p.message}`).join("\n"),
     );
   };
@@ -424,7 +427,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
 
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
-  const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
+  const registry = await loadHooks({ dir: workflowDir, modules: workflow.hooks ?? [], workspace: ws.dir });
   // A notify.via nothing answers to is a notification that silently never
   // comes; `validate` reports the same words.
   const unnotified = notifyProblems(loaded.config, registry);
@@ -468,7 +471,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   if (!registry.source) {
     throw new Error(
       "no source hook is configured, so there is nothing to enumerate. Add a module exporting " +
-      `defineSource({ ... }) to the hooks list in ${dir}/workflow.yaml.`,
+      `defineSource({ ... }) to the hooks list in ${join(workflowDir, "workflow.yaml")}.`,
     );
   }
 

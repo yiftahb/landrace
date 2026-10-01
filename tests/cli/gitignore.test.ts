@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, copyFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { runValidate } from "#cli/validate.js";
+import { workspaceOf } from "#tests/support/workspace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,12 +21,9 @@ async function gitInit(cwd: string): Promise<void> {
   await execFileAsync("git", ["init", "-q"], { cwd });
 }
 
-/** A workflow directory loadable by runValidate, with a .env file in it. */
+/** A workspace loadable by runValidate, with a .env file in it. */
 async function workflowDir(...segments: string[]): Promise<string> {
-  const dir = join(...segments);
-  await mkdir(join(dir, "steps"), { recursive: true });
-  await copyFile("tests/fixtures/minimal/workflow.yaml", join(dir, "workflow.yaml"));
-  await copyFile("tests/fixtures/minimal/steps/spec.md", join(dir, "steps", "spec.md"));
+  const dir = await workspaceOf({ main: "tests/fixtures/minimal" }, join(...segments));
   await writeFile(join(dir, ".env"), "GITHUB_TOKEN=ghp_x\n");
   return dir;
 }

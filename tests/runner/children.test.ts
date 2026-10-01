@@ -11,28 +11,42 @@ describe("createChild", () => {
 
   it("files the child under the bound parent, stage and round, ready to be worked", async () => {
     const state = world();
-    const node = await createChild(state.operator, binding, { title: "api", body: "do it", priority: 1 }, ctx);
+    const node = await createChild(state.operator, binding, { title: "api", body: "do it", priority: 1 }, ctx, ["lr:auto"]);
     const row = state.item(node.id);
     expect(row.parent).toBe("1");
     expect(row.labels).toContain("lr:auto");
     expect((await state.source.read("1", ctx)).nodes.find((n) => n.id === node.id)?.origin).toEqual(binding);
   });
 
+  /*
+   * What starts a child is what its workflow admits, never a label the engine
+   * picked: a workflow eligible on `lr:fast` whose children came out `lr:auto`
+   * would have them picked up by a different workflow, or by none.
+   */
+  it("labels the child with what the creating workflow admits, and nothing it does not", async () => {
+    const state = world();
+    const fast = await createChild(state.operator, binding, { title: "api" }, ctx, ["lr:fast", "team:pay"]);
+    expect(state.item(fast.id).labels).toEqual(["lr:fast", "team:pay"]);
+
+    const none = await createChild(state.operator, binding, { title: "ui" }, ctx, undefined);
+    expect(state.item(none.id).labels).toEqual([]);
+  });
+
   it("refuses an empty title, a body too long to post, and a priority that is not a small integer", async () => {
     const state = world();
-    await expect(createChild(state.operator, binding, { title: "  " }, ctx)).rejects.toThrow(/title/);
-    await expect(createChild(state.operator, binding, { title: "t", body: "x".repeat(40_000) }, ctx)).rejects.toThrow(/body/);
-    await expect(createChild(state.operator, binding, { title: "t", priority: -1 }, ctx)).rejects.toThrow(/priority/);
-    await expect(createChild(state.operator, binding, { title: "t", priority: 1.5 }, ctx)).rejects.toThrow(/priority/);
+    await expect(createChild(state.operator, binding, { title: "  " }, ctx, [])).rejects.toThrow(/title/);
+    await expect(createChild(state.operator, binding, { title: "t", body: "x".repeat(40_000) }, ctx, [])).rejects.toThrow(/body/);
+    await expect(createChild(state.operator, binding, { title: "t", priority: -1 }, ctx, [])).rejects.toThrow(/priority/);
+    await expect(createChild(state.operator, binding, { title: "t", priority: 1.5 }, ctx, [])).rejects.toThrow(/priority/);
     expect(state.children("1")).toEqual([]);
   });
 
   it("says so when no operator hook is configured", async () => {
-    await expect(createChild(null, binding, { title: "t" }, ctx)).rejects.toThrow(/no operator hook/);
+    await expect(createChild(null, binding, { title: "t" }, ctx, [])).rejects.toThrow(/no operator hook/);
   });
 
   it("refuses a binding whose parent is not an item id", async () => {
-    await expect(createChild(world().operator, { ...binding, parent: "../1" }, { title: "t" }, ctx)).rejects.toThrow(/item id/);
+    await expect(createChild(world().operator, { ...binding, parent: "../1" }, { title: "t" }, ctx, [])).rejects.toThrow(/item id/);
   });
 });
 
@@ -43,13 +57,13 @@ describe("createChild", () => {
  * landrace's CLI or its tool names.
  */
 describe("childServerFor", () => {
-  const base = { command: "/usr/bin/node", args: ["cli.js", "mcp", "--workflow", "/w/.landrace"] };
+  const base = { command: "/usr/bin/node", args: ["cli.js", "mcp", "--workspace", "/w/.landrace"] };
 
   it("puts the binding on the server's own command line", () => {
     expect(childServerFor(base, { parent: "12", stage: "breakdown", round: 2 })).toEqual({
       name: CHILD_SERVER_NAME,
       command: "/usr/bin/node",
-      args: ["cli.js", "mcp", "--workflow", "/w/.landrace", "--child", "12", "--stage", "breakdown", "--round", "2"],
+      args: ["cli.js", "mcp", "--workspace", "/w/.landrace", "--child", "12", "--stage", "breakdown", "--round", "2"],
       tools: [CHILD_TOOL],
     });
   });

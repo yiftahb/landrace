@@ -53,7 +53,7 @@ async function loadingHooks(what: string, run: () => Promise<void>): Promise<voi
 
 program
   .command("validate")
-  .argument("[dir]", "workflow directory", ".landrace")
+  .argument("[dir]", "workspace directory: every workflow under its workflows/ is checked", ".landrace")
   // Wrapped like `start`, because validate imports the hook modules now: path
   // coverage is a question about the workflow *and* its integrations, and on a
   // node that cannot read a .ts file the answer is to re-run with the flag,
@@ -73,13 +73,14 @@ program
 
 program
   .command("next")
-  .requiredOption("-w, --workflow <dir>", "workflow directory")
+  .requiredOption("-w, --workspace <dir>", "workspace directory")
+  .option("--workflow <id>", "the workflow to decide with, by its folder under workflows/; needed when there are several")
   .requiredOption("-s, --snapshot <file>", "snapshot json")
-  .action(async (opts: { workflow: string; snapshot: string }) => {
+  .action(async (opts: { workspace: string; workflow?: string; snapshot: string }) => {
     // Reported, not thrown: a snapshot missing what a stage's plan reads (a
     // node, a graph) came out as an unhandled rejection's stack trace.
     await loadingHooks("next", async () => {
-      const { decision, effects } = await runNext(opts.workflow, opts.snapshot);
+      const { decision, effects } = await runNext(opts.workspace, opts.snapshot, opts.workflow);
       console.log(JSON.stringify({ decision, effects }, null, 2));
     });
   });
@@ -87,7 +88,7 @@ program
 program
   .command("start")
   .description("watch the tracker and advance every eligible item")
-  .option("-w, --workflow <dir>", "workflow directory", ".landrace")
+  .option("-w, --workspace <dir>", "workspace directory", ".landrace")
   .option("--once", "run a single tick and exit")
   .option("--debug", "print every event, the agent's included, and the snapshot behind each decision")
   .option("--ui-port <port>", "port for the triage page", String(DEFAULT_UI_PORT))
@@ -100,10 +101,10 @@ program
     [] as string[],
   )
   .action(async (opts: {
-    workflow: string; once?: boolean; debug?: boolean; ui: boolean; uiPort: string; telemetry?: boolean; otel: string[];
+    workspace: string; once?: boolean; debug?: boolean; ui: boolean; uiPort: string; telemetry?: boolean; otel: string[];
   }) => {
     await loadingHooks("start", () =>
-      runStart(opts.workflow, {
+      runStart(opts.workspace, {
         ...(opts.once === undefined ? {} : { once: opts.once }),
         ...(opts.debug === undefined ? {} : { debug: opts.debug }),
         ui: opts.ui,
@@ -116,21 +117,21 @@ program
 program
   .command("status")
   .description("one line per candidate item, including why one was skipped")
-  .option("-w, --workflow <dir>", "workflow directory", ".landrace")
-  .action(async (opts: { workflow: string }) => {
+  .option("-w, --workspace <dir>", "workspace directory", ".landrace")
+  .action(async (opts: { workspace: string }) => {
     await loadingHooks("status", async () => {
-      for (const line of await runStatus(opts.workflow)) console.log(line);
+      for (const line of await runStatus(opts.workspace)) console.log(line);
     });
   });
 
 program
   .command("mcp")
   .description("run the MCP server over stdio")
-  .option("-w, --workflow <dir>", "workflow directory", ".landrace")
+  .option("-w, --workspace <dir>", "workspace directory", ".landrace")
   .option("--child <parent>", "serve only landrace_create_child, bound to this parent item")
   .option("--stage <stage>", "with --child: the stage creating the children")
   .option("--round <round>", "with --child: the round creating the children")
-  .action(async (opts: { workflow: string; child?: string; stage?: string; round?: string }) => {
+  .action(async (opts: { workspace: string; child?: string; stage?: string; round?: string }) => {
     // The MCP client that spawned us shows stderr, so what loadingHooks prints
     // there is the only diagnostic a user gets.
     await loadingHooks("mcp", () => {
@@ -138,9 +139,9 @@ program
         if (opts.stage === undefined || opts.round === undefined) {
           throw new Error("--child needs --stage and --round");
         }
-        return runChildMcp(opts.workflow, { parent: opts.child, stage: opts.stage, round: Number(opts.round) });
+        return runChildMcp(opts.workspace, { parent: opts.child, stage: opts.stage, round: Number(opts.round) });
       }
-      return runMcp(opts.workflow);
+      return runMcp(opts.workspace);
     });
   });
 

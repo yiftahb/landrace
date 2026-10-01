@@ -7,6 +7,8 @@ import { snapshotProvides } from "#runner/snapshot.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
 import type { Problem } from "#namespace.js";
+import { loadShipped } from "#tests/support/shipped.js";
+import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
 
 /**
  * `landrace validate` with the hooks it will actually run.
@@ -53,7 +55,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    * reports child-of — rather than left to abstain.
    */
   it("validates the children fixture clean, and covered by the shipped GitHub hook", async () => {
-    const r = await runValidate("tests/fixtures/children");
+    const r = await runValidate(await workspaceOf({ main: "tests/fixtures/children" }));
     expect(r.problems.filter((p) => p.rule !== "secret")).toEqual([]);
 
     const { workflow, steps } = await loadWorkflow("tests/fixtures/children");
@@ -75,8 +77,8 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    * under `rel` passes.
    */
   it("reports the pull request gates when the source does not declare implements", async () => {
-    const { workflow, steps } = await loadWorkflow(".landrace");
-    const registry = await loadHooks({ dir: ".landrace", modules: workflow.hooks ?? [] });
+    const { dir, workflow, steps, workspace } = await loadShipped();
+    const registry = await loadHooks({ dir, modules: workflow.hooks ?? [], workspace: workspace.dir });
     const empty = async () => ({ nodes: [], relationships: [] });
     const undeclaring = { id: "none", relations: [], list: empty, read: empty };
 
@@ -204,7 +206,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
       "", { entry: false },
     );
     const ran = join(dir, "imported.txt");
-    await writeFile(join(dir, "hook.ts"), `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(ran)}, "ran");\nexport const nothing = null;\n`);
+    await writeFile(join(workflowIn(dir), "hook.ts"), `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(ran)}, "ran");\nexport const nothing = null;\n`);
 
     const r = await runValidate(dir);
 
@@ -214,7 +216,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
 });
 
 /**
- * A workflow directory with the real claude hook loaded and `agent:` set to
+ * A workspace whose one workflow loads the real claude hook, with `agent:` set to
  * `adapter: claude, ${agentKeys}` — what both "reports an executor that
  * cannot start" and the multi-line case beside it need: a hook whose
  * `create()` can actually be reached and made to refuse.
@@ -234,29 +236,31 @@ export const { claude } = await import(pathToFileURL(${JSON.stringify(join(proce
 `,
   );
   await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude, ${agentKeys} }\n`);
+  const main = workflowIn(dir);
+  await mkdir(join(main, "steps"), { recursive: true });
   if (step) {
     // The minimal fixture's sound workflow, its one step asking for `effort`.
     const minimal = join(process.cwd(), "tests", "fixtures", "minimal");
     const workflow = await readFile(join(minimal, "workflow.yaml"), "utf8");
-    await writeFile(join(dir, "workflow.yaml"), workflow.replace("name: minimal\n", "name: minimal\nhooks: [hooks/claude.ts]\n"));
-    await mkdir(join(dir, "steps"));
+    await writeFile(join(main, "workflow.yaml"), workflow.replace("name: minimal\n", "name: minimal\nhooks: [../../hooks/claude.ts]\n"));
     const spec = await readFile(join(minimal, "steps", "spec.md"), "utf8");
-    await writeFile(join(dir, "steps", "spec.md"), spec.replace(/^---\n/, `---\neffort: ${step.effort}\n`));
+    await writeFile(join(main, "steps", "spec.md"), spec.replace(/^---\n/, `---\neffort: ${step.effort}\n`));
     return dir;
   }
-  await writeFile(join(dir, "workflow.yaml"), [
-    "version: 1", "name: t", "description: test", "hooks: [hooks/claude.ts]", "stages:",
+  await writeFile(join(main, "workflow.yaml"), [
+    "version: 1", "name: t", "description: test", "hooks: [../../hooks/claude.ts]", "stages:",
     "  - id: a", "    entry: true", "    terminal: true", "    triggers:",
     "      - name: fresh", '        when: { "run.stage": null }', "",
   ].join("\n"));
   return dir;
 }
 
-/** A workflow directory with one hook module in it, written from `module`. */
+/** A workspace whose one workflow has one hook module beside it, written from `module`. */
 async function workflowDir(module: string, opts: { entry?: boolean; reads?: string } = {}): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "landrace-hooks-"));
-  await writeFile(join(dir, "hook.ts"), module);
-  await writeFile(join(dir, "workflow.yaml"), [
+  await mkdir(workflowIn(dir), { recursive: true });
+  await writeFile(join(workflowIn(dir), "hook.ts"), module);
+  await writeFile(join(workflowIn(dir), "workflow.yaml"), [
     "version: 1",
     "name: hooked", "description: test",
     "hooks: [hook.ts]",

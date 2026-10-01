@@ -82,7 +82,7 @@ left → skip to Step 8 and answer `nothing`.
 **Step 4 — Pick the narrowest file for each lesson.** The one file whose agents
 would have avoided the mistake:
 
-* A lesson about one stage goes in `.landrace/steps/<stage>.md` — the spec,
+* A lesson about one stage goes in `.landrace/workflows/main/steps/<stage>.md` — the spec,
   build, code-review, fix-review, triage or this retro's own prompt. Edit only
   the prompt below the file's closing `---`: the front matter above it —
   capabilities, model, timeout, output and routes — is configuration, as out
@@ -129,7 +129,7 @@ changed — its path as `file`, and the one-line reason as `why` — or `kind`
 
 ## Rules
 
-- Never touch `.landrace/workflow.yaml`, `.landrace/hooks/`, `src/`, tests, or any other code, beyond resolving a conflict the merge raises. Routing, hooks and product code are out of your reach on purpose.
+- Never touch `.landrace/workflows/main/workflow.yaml`, `.landrace/hooks/`, `src/`, tests, or any other code, beyond resolving a conflict the merge raises. Routing, hooks and product code are out of your reach on purpose.
 - Work on the branch you are on — do not create, switch or rename branches.
 - Your commands run in a sandbox: they can write only inside this worktree and the repository's git directory, and reach only the hosts the operator allowed.
 - Never push any other branch, never force-push, and never touch `main`.

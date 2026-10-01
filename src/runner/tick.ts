@@ -60,9 +60,9 @@ export function eligibilityOf(workflow: Workflow, node: Node): Eligibility {
 
 /**
  * Stop the run of every item this tick lists as closed or no longer
- * eligible — how a person stops a step: close the item, or take `lr:auto`
- * off it. #29's own merge closed it mid-build and its agent ran on until it
- * was killed by hand.
+ * eligible — how a person stops a step: close the item, or take off the
+ * label its workflow admitted it with. #29's own merge closed it mid-build
+ * and its agent ran on until it was killed by hand.
  *
  * An item missing from the list is left running: a source may drop what it
  * cannot map (the shipped tracker hook does), and absent is not the same as stopped.

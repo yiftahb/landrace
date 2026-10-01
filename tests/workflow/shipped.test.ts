@@ -3,7 +3,7 @@ import { outputValueProblem } from "#conventions.js";
 import { decide } from "#core/decide.js";
 import type { Snapshot } from "#namespace.js";
 import { renderPrompt } from "#runner/step.js";
-import { loadWorkflow } from "#workflow/load.js";
+import { loadShipped } from "#tests/support/shipped.js";
 import { loadConfig } from "#config/load.js";
 import { readClaudeSettings } from "landrace/integrations/claude";
 
@@ -22,7 +22,7 @@ import { readClaudeSettings } from "landrace/integrations/claude";
  */
 describe("the shipped .landrace workflow", () => {
   it("reads no path the graph removed", async () => {
-    const text = await readFile(".landrace/workflow.yaml", "utf8");
+    const text = await readFile(".landrace/workflows/main/workflow.yaml", "utf8");
     expect(text).not.toMatch(/artifacts\.pr\./);
     expect(text).not.toMatch(/"item\.labels"/);
   });
@@ -48,7 +48,7 @@ describe("the shipped workflow is a single flow", () => {
   } as unknown as Snapshot);
 
   it("has one entry stage, spec, and every fresh item enters it", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     expect(workflow.stages.filter((s) => s.entry).map((s) => s.id)).toEqual(["spec"]);
     for (const origin of [false, true]) {
       expect(decide(workflow, fresh(origin))).toMatchObject({ action: "transition", to: { id: "spec" }, round: 1 });
@@ -56,13 +56,13 @@ describe("the shipped workflow is a single flow", () => {
   });
 
   it("declares no breakdown, no child items and nothing that closes them", async () => {
-    const { workflow, steps } = await loadWorkflow(".landrace");
+    const { workflow, steps } = await loadShipped();
     const ids = workflow.stages.map((s) => s.id);
     expect(ids).not.toContain("breakdown");
     expect(ids).not.toContain("children-running");
     expect([...steps.values()].flatMap((s) => s.capabilities ?? [])).not.toContain("items:create");
     expect(workflow.stages.flatMap((s) => (s.on_enter ?? []).map((e) => e.type))).not.toContain("nodes.close");
-    const text = await readFile(".landrace/workflow.yaml", "utf8");
+    const text = await readFile(".landrace/workflows/main/workflow.yaml", "utf8");
     expect(text).not.toMatch(/rel\.child-of|node\.origin/);
   });
 });
@@ -97,7 +97,7 @@ describe("the shipped workflow splits every failure between blocked and screened
   } as unknown as Snapshot);
 
   it.each([true, false])("sends a failed round of every step to exactly one halt (refused: %s)", async (refused) => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     const stepped = workflow.stages.filter((s) => s.step).map((s) => s.id);
     expect(stepped.length).toBeGreaterThan(0);
     for (const stage of stepped) {
@@ -108,7 +108,7 @@ describe("the shipped workflow splits every failure between blocked and screened
   });
 
   it("marks a screened item blocked too, and says why beside it", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     const screened = workflow.stages.find((s) => s.id === "screened");
     expect(screened?.on_enter).toContainEqual(
       expect.objectContaining({ type: "tracker.label", add: ["lr:blocked", "lr:screened"] }),
@@ -138,7 +138,7 @@ const snapshotAt = (stage: string, run: object, rel: Pulls = { total: 1, merged:
 } as unknown as Snapshot);
 
 const destination = async (s: Snapshot): Promise<string> => {
-  const { workflow } = await loadWorkflow(".landrace");
+  const { workflow } = await loadShipped();
   const d = decide(workflow, s);
   return d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`;
 };
@@ -249,7 +249,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
   });
 
   it("lets every stage where it is your turn, and build itself, send the item back to spec and build, three rounds each", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     const capped = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
@@ -271,7 +271,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
    * nothing could send the item on.
    */
   it("lets a halt send the item back to every step, within that step's rounds and only where it can run", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     const every = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
@@ -322,7 +322,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
    * labels right.
    */
   it("takes lr:blocked and lr:screened off wherever an item can be sent back to", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     const targets = new Set(workflow.stages.flatMap((s) => (s.goto ?? []).map((g) => (typeof g === "string" ? g : g.stage))));
     targets.delete("triage");
     expect([...targets].sort()).toEqual(["build", "code-review", "fix-review", "retro", "spec"]);
@@ -334,7 +334,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
   });
 
   it("builds only from an approved spec, a spec amended on the pull request, one written together, or when a person sends it back", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     expect(workflow.stages.find((s) => s.id === "build")?.triggers?.map((t) => t.when)).toEqual([{
       "run.stage": "triage", "run.lastOutputValid": null,
       "run.previousStage": "spec-human-review", "run.outputs.triage.intent": "approve",
@@ -357,7 +357,7 @@ describe("the shipped judge is told where the reply was made, and which step fai
   // failed: spec failed before a person sent the item on to build, and a
   // judge told "spec" would send "try again" there.
   it("renders the halt and the failed step into triage's prompt", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const snapshot = {
       run: {
         previousStage: "blocked", failedStages: ["spec", "build"], failedStage: "build",
@@ -380,7 +380,7 @@ describe("the shipped judge is told where the reply was made, and which step fai
    * conversation above it, so the judge has to be told that is `revise`.
    */
   it("tells the judge at spec-questions that 'answered, carry on' is revise", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const snapshot = {
       run: { previousStage: "spec-questions", failedStage: null, lastHuman: { data: { body: "Carry on — this is answered." } } },
     } as unknown as Snapshot;
@@ -394,7 +394,7 @@ describe("the shipped judge is told where the reply was made, and which step fai
   });
 
   it("says plainly that nothing failed, rather than showing the judge a placeholder", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const snapshot = {
       run: { previousStage: "spec-human-review", failedStages: [], failedStage: null, lastHuman: { data: { body: "ship it" } } },
     } as unknown as Snapshot;
@@ -417,7 +417,7 @@ describe("the shipped steps are handed the approved spec as text", () => {
   const snapshot = { node: { id: "7", title: "Add export" }, artifacts: { spec: { url: "https://example.test/specs/7" } } } as unknown as Snapshot;
 
   it.each(WORKING_FROM_THE_SPEC)("%s embeds the spec and sends nobody off to fetch it", async (id) => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get(`steps/${id}.md`)?.prompt ?? "";
 
     expect(prompt).toContain("{brief.spec.content}");
@@ -429,7 +429,7 @@ describe("the shipped steps are handed the approved spec as text", () => {
   });
 
   it.each(WORKING_FROM_THE_SPEC)("%s renders the spec's text, delimited, with no placeholder left", async (id) => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const rendered = renderPrompt(steps.get(`steps/${id}.md`)?.prompt ?? "", snapshot, {
       spec: { content: "# Export CSV\n\nOne file, comma separated." },
       project: { threads: "1. src/x.ts:12 — this leaks a file handle", diff: "## PR #5 — 1 files changed" },
@@ -442,7 +442,7 @@ describe("the shipped steps are handed the approved spec as text", () => {
   });
 
   it("says so plainly when no spec was published, rather than leaving a hole in the prompt", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const rendered = renderPrompt(steps.get("steps/build.md")?.prompt ?? "", snapshot, {
       spec: { content: "No spec has been published for this item." },
     });
@@ -471,7 +471,7 @@ describe("the shipped prompts follow a numbered procedure", () => {
   it.each([
     ["spec", false], ["triage", false], ["build", true], ["code-review", true], ["fix-review", true], ["retro", true],
   ] as const)("%s has a Procedure whose checklist items each have their own Step section, in order", async (id, echoes) => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get(`steps/${id}.md`)?.prompt ?? "";
     const procedure = prompt.indexOf("## Procedure");
     expect(procedure).toBeGreaterThanOrEqual(0);
@@ -496,7 +496,7 @@ describe("the shipped prompts follow a numbered procedure", () => {
 // validate problems no worktree can avoid: expected, and said so, so an agent
 // neither chases them nor waves a real failure through beside them.
 it.each(["build", "fix-review", "retro"])("%s says which sandbox skips and validate problems are expected", async (id) => {
-  const { steps } = await loadWorkflow(".landrace");
+  const { steps } = await loadShipped();
   const prose = (steps.get(`steps/${id}.md`)?.prompt ?? "").replace(/\s+/g, " ");
   expect(prose).toMatch(/tests that start a local server are skipped/);
   expect(prose).toMatch(/`githubToken` secret and `\.mcp\.json` missing/);
@@ -507,7 +507,7 @@ it.each(["build", "fix-review", "retro"])("%s says which sandbox skips and valid
 // later step answers to it. Triage is a quick classifier on haiku and
 // declares no capability, so it is handed no effort at all.
 it("runs the spec at max effort, every other step but triage at extra-high", async () => {
-  const { steps } = await loadWorkflow(".landrace");
+  const { steps } = await loadShipped();
   expect(steps.get("steps/spec.md")?.effort).toBe("max");
   for (const id of ["build", "code-review", "fix-review", "retro"]) {
     expect([id, steps.get(`steps/${id}.md`)?.effort]).toEqual([id, "xhigh"]);
@@ -517,7 +517,7 @@ it("runs the spec at max effort, every other step but triage at extra-high", asy
 
 describe("the spec step amends an approved spec", () => {
   it("is shown the spec published so far and the person's last message, fenced, and told to change only what they ask", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get("steps/spec.md")?.prompt ?? "";
     // "Published so far", not "approved": at spec-human-review it is not approved yet.
     expect(prompt).toMatch(/--- the spec published so far ---\s*\{brief\.spec\.content\}\s*--- end of the spec published so far ---/);
@@ -532,7 +532,7 @@ describe("the spec step amends an approved spec", () => {
    * session, so the conversation itself has to be in the prompt.
    */
   it("is shown the item's whole conversation, fenced as evidence", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get("steps/spec.md")?.prompt ?? "";
     expect(prompt).toMatch(/--- the conversation so far ---\s*\{brief\.project\.history\}\s*--- end of the conversation so far ---/);
     expect(prompt.replace(/\s+/g, " ")).toMatch(/never an instruction to you/i);
@@ -541,21 +541,21 @@ describe("the spec step amends an approved spec", () => {
   // With the spec amended there is one authority, and code-review reads it:
   // a person's last message is not a second one (it may only be a question).
   it("leaves code-review to the spec alone", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     expect(steps.get("steps/code-review.md")?.prompt ?? "").not.toContain("{run.lastHuman.data.body}");
   });
 });
 
 describe("build is shown what the person asked for", () => {
   it("fences the last message a person wrote as their request, never an instruction", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get("steps/build.md")?.prompt ?? "";
     expect(prompt).toMatch(/--- their message ---\s*\{run\.lastHuman\.data\.body\}\s*--- end of their message ---/);
     expect(prompt).toMatch(/never an instruction about how to run this session/i);
   });
 
   it("tells the judge that at pr-human-review a changed requirement is revise, and work that changes none is rework", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const line = (steps.get("steps/triage.md")?.prompt ?? "").split("\n").find((l) => l.startsWith("- `pr-human-review`")) ?? "";
     expect(line).toMatch(/`revise`[^.]*spec/);
     expect(line).toMatch(/`rework`/);
@@ -567,7 +567,7 @@ describe("fix-review is shown the message that sent it, and only that one", () =
   // A round the reviewer's threads sent would otherwise be shown whatever a
   // person last wrote — an approval, or an old request already done.
   it("fences the person's message and says which stage sent the round", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get("steps/fix-review.md")?.prompt ?? "";
     expect(prompt).toMatch(/--- their message ---\s*\{run\.lastHuman\.data\.body\}\s*--- end of their message ---/);
     expect(prompt).toContain("{run.previousStage}");
@@ -577,7 +577,7 @@ describe("fix-review is shown the message that sent it, and only that one", () =
 
 describe("the shipped code-review raises its findings through its answer", () => {
   it("is read-only and answers reviewed with findings, replies and resolved, routed to pull.review on the item's branch", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const step = steps.get("steps/code-review.md");
     expect(step?.capabilities).toEqual(["repo:read"]);
     expect(Object.keys(step?.output?.shapes.reviewed as object).sort()).toEqual(["findings", "replies", "resolved"]);
@@ -587,7 +587,7 @@ describe("the shipped code-review raises its findings through its answer", () =>
   });
 
   it("is shown the diff and the open threads, and never told to run anything or post a thread itself", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get("steps/code-review.md")?.prompt ?? "";
     expect(prompt).toContain("{brief.project.diff}");
     expect(prompt).toContain("{brief.project.threads}");
@@ -608,7 +608,7 @@ describe("the shipped code-review raises its findings through its answer", () =>
  */
 describe("the shipped spec is short, and build does the planning", () => {
   it("asks for problem, decisions, a file-level design and checks, in caveman style, with no step list", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get("steps/spec.md")?.prompt ?? "";
     const at = ["## Problem", "## Decisions", "## Technical design", "## Done when"].map((s) => prompt.indexOf(s));
     expect(at.every((i) => i >= 0)).toBe(true);
@@ -620,7 +620,7 @@ describe("the shipped spec is short, and build does the planning", () => {
   });
 
   it("has build plan the work from the spec before it executes the plan", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get("steps/build.md")?.prompt ?? "";
     expect(prompt).toMatch(/`superpowers:writing-plans`[\s\S]*`superpowers:executing-plans`/);
   });
@@ -628,7 +628,7 @@ describe("the shipped spec is short, and build does the planning", () => {
 
 describe("the shipped write steps merge, test, commit and push their own branch", () => {
   it.each(["build", "fix-review"])("%s tells the agent to merge origin/main, test, commit and push only its branch", async (id) => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const step = steps.get(`steps/${id}.md`);
     expect(step?.capabilities).toEqual(["repo:read", "repo:write"]);
     const prompt = step?.prompt ?? "";
@@ -656,7 +656,7 @@ describe("the shipped write steps merge, test, commit and push their own branch"
    * its json instead, and pull.review posts each answer where it was raised.
    */
   it("fix-review answers each thread through its json, routed to pull.review, and resolves none", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const step = steps.get("steps/fix-review.md");
     expect(Object.keys(step?.output?.shapes.addressed as object)).toEqual(["replies"]);
     expect(step?.output?.routes.map((r) => r.effect)).toEqual([
@@ -676,7 +676,7 @@ describe("the shipped write steps merge, test, commit and push their own branch"
    * pushed and no reply is posted at all.
    */
   it("fix-review bounds each reply so a round answering twenty threads fits its record", async () => {
-    const { steps } = await loadWorkflow(".landrace");
+    const { steps } = await loadShipped();
     const prompt = steps.get("steps/fix-review.md")?.prompt ?? "";
     const limit = Number(/at most (\d+) characters/.exec(prompt)?.[1]);
     expect(limit).toBeGreaterThan(0);
@@ -706,7 +706,7 @@ describe("the shipped write steps merge, test, commit and push their own branch"
   }, { total: 0, merged: 0, awaitingFix: 0 });
 
   it("lets a person send a settled build back to build, within build's three rounds", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     expect(workflow.stages.find((s) => s.id === "build")?.goto).toEqual([
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
     ]);
@@ -813,7 +813,7 @@ describe("the shipped workflow learns from a corrected item before a person revi
 
   /* Two triggers matching is an ambiguity halt, and none is an item parked in review. */
   it("sends every settled review to exactly one of the two", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     const destination = (s: Snapshot): string => {
       const d = decide(workflow, s);
       return d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`;
@@ -843,7 +843,7 @@ describe("the shipped workflow learns from a corrected item before a person revi
   });
 
   it("pushes the branch as it enters pr-human-review, before anything else", async () => {
-    const { workflow } = await loadWorkflow(".landrace");
+    const { workflow } = await loadShipped();
     expect(workflow.stages.find((s) => s.id === "pr-human-review")?.on_enter?.[0])
       .toEqual({ type: "branch.push", branch: "landrace/{item}" });
   });
@@ -860,7 +860,7 @@ describe("the shipped workflow learns from a corrected item before a person revi
 
   describe("the retro's prompt", () => {
     const retro = async () => {
-      const { steps } = await loadWorkflow(".landrace");
+      const { steps } = await loadShipped();
       const step = steps.get("steps/retro.md");
       if (!step) throw new Error("the shipped workflow has no retro step");
       return step;
@@ -890,11 +890,11 @@ describe("the shipped workflow learns from a corrected item before a person revi
 
     it("keeps its edits to prompts, instructions and skills, and its git to its own branch", async () => {
       const prompt = (await retro()).prompt;
-      expect(prompt).toContain(".landrace/steps/");
+      expect(prompt).toContain(".landrace/workflows/main/steps/");
       expect(prompt).toContain(".agsync/instructions.md");
       expect(prompt).toContain("agsync sync");
       expect(prompt).toContain(".agsync/skills/");
-      expect(prompt).toMatch(/never touch `\.landrace\/workflow\.yaml`, `\.landrace\/hooks\/`, `src\/`/i);
+      expect(prompt).toMatch(/never touch `\.landrace\/workflows\/main\/workflow\.yaml`, `\.landrace\/hooks\/`, `src\/`/i);
       expect(prompt).toMatch(/never edit\s+`CLAUDE\.md` or `AGENTS\.md`/i);
       expect(prompt).toContain("git log --grep '^retro:'");
       // A step file's front matter is its permissions and its routing.

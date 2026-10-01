@@ -11,6 +11,7 @@ import { acquire, release } from "#runner/lock.js";
 import { sandboxRoot } from "#sandbox.js";
 import { tick } from "#runner/tick.js";
 import { touchWake, wakePath } from "#wake.js";
+import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
 
 /**
  * `buildRuntime` over a hook module that is a real file on disk, imported the
@@ -105,7 +106,7 @@ const EXECUTOR = `export const executor = brand("executor", {
 const workflowReading = (path?: string, budget?: string): string => `version: 1
 name: e2e
 description: test
-hooks: [hooks/fake.ts, hooks/claude.ts]
+hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
@@ -175,7 +176,8 @@ async function fixture(
 export const { claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), ".landrace", "hooks", "claude.ts"))}).href);
 `,
   );
-  await writeFile(join(dir, "workflow.yaml"), workflowReading(opts.reads, opts.budget));
+  await mkdir(workflowIn(dir), { recursive: true });
+  await writeFile(join(workflowIn(dir), "workflow.yaml"), workflowReading(opts.reads, opts.budget));
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
@@ -290,7 +292,7 @@ describe("buildRuntime", () => {
       join(dir, "hooks", "fake.ts"),
       `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(ran)}, "ran");\n${HOOK}`,
     );
-    await writeFile(join(dir, "workflow.yaml"), WORKFLOW.replace("    entry: true\n", ""));
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW.replace("    entry: true\n", ""));
 
     await expect(buildRuntime(dir, {})).rejects.toThrow(/does not validate/);
     await expect(readFile(ran, "utf8")).rejects.toThrow();
@@ -303,13 +305,13 @@ describe("buildRuntime", () => {
    */
   it("refuses a stage's branch when steps do not run in worktrees", async () => {
     const { dir } = await fixture({ agentKeys: "isolation: none" });
-    await mkdir(join(dir, "steps"), { recursive: true });
-    await writeFile(join(dir, "steps", "build.md"), [
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "build.md"), [
       "---", "capabilities: [repo:read, repo:write]", "output:", "  discriminator: kind", "  shapes: { done: {} }",
       "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
       "---", "", "build", "",
     ].join("\n"));
-    await writeFile(join(dir, "workflow.yaml"), WORKFLOW
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
       .replace("    terminal: true\n", "    step: steps/build.md\n    branch: \"landrace/{item}\"\n")
       .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
 
@@ -321,13 +323,13 @@ describe("buildRuntime", () => {
   // `validate` names it, and `start` refuses it before the first step runs.
   it("refuses a step whose effort the executor does not take", async () => {
     const { dir } = await fixture();
-    await mkdir(join(dir, "steps"), { recursive: true });
-    await writeFile(join(dir, "steps", "build.md"), [
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "build.md"), [
       "---", "capabilities: [repo:read]", "effort: extreme", "output:", "  discriminator: kind", "  shapes: { done: {} }",
       "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
       "---", "", "build", "",
     ].join("\n"));
-    await writeFile(join(dir, "workflow.yaml"), WORKFLOW
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
       .replace("    terminal: true\n", "    step: steps/build.md\n")
       .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
 
@@ -423,7 +425,7 @@ ${EXECUTOR}`);
 
   it("refuses two notifiers under one id, naming both", async () => {
     const { dir } = await fixture({ hookExtra: `${notifierSource("one", "slack")}${notifierSource("two", "slack")}` });
-    await expect(buildRuntime(dir, {})).rejects.toThrow('two notifiers share the id "slack": "hooks/fake.ts" and "hooks/fake.ts"');
+    await expect(buildRuntime(dir, {})).rejects.toThrow('two notifiers share the id "slack": "../../hooks/fake.ts" and "../../hooks/fake.ts"');
   });
 
   it("refuses a notify.via the loaded notifiers do not answer to, naming the ones they do", async () => {
@@ -555,6 +557,21 @@ describe("the startup preflight", () => {
 });
 
 describe("runStart --once", () => {
+  /*
+   * One workflow at a time until the loop can claim items for several: a
+   * second folder is refused by name, before any hook is imported, any
+   * preflight writes or any item is touched — never run as whichever sorted
+   * first.
+   */
+  it("refuses a workspace with two workflows, naming both, and touches nothing", async () => {
+    const { dir, record } = await fixture({ preflight: "pass" });
+    await workspaceOf({ fastlane: "tests/fixtures/minimal" }, dir);
+    await expect(runStart(dir, { once: true }))
+      // In the workspace's own order: by name, and this fixture's main is "e2e".
+      .rejects.toThrow(`landrace start runs one workflow at a time; ${dir}/workflows has 2 (main, fastlane)`);
+    expect(await applied(record)).toEqual([]);
+  });
+
   it("enumerates, locks, builds a snapshot, decides and applies, then releases the lock", async () => {
     const { dir, record } = await fixture();
     // Swapped by hand: ESM mode takes the `jest` global away from this pass

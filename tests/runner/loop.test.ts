@@ -3,6 +3,7 @@ import { deriveRun } from "#core/index.js";
 import type { Effect, Marker, ScriptedAnswer } from "#namespace.js";
 import { parseMarker, stageFromLabels } from "#conventions.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { loadShipped } from "#tests/support/shipped.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 
 /**
@@ -103,7 +104,7 @@ async function run(
     dir?: string;
   } = {},
 ) {
-  const { workflow, steps } = await loadWorkflow(opts.dir ?? ".landrace");
+  const { workflow, steps } = opts.dir === undefined ? await loadShipped() : await loadWorkflow(opts.dir);
   const { pre, post, source } = hooksOf(gh);
 
   const harness = createHarness({

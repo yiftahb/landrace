@@ -96,7 +96,7 @@ const BINDING = { parent: "12", stage: "breakdown", round: 2 };
 const SERVER = {
   name: "landrace",
   command: "/usr/bin/node",
-  args: ["cli.js", "mcp", "--workflow", "/w", "--child", "12", "--stage", "breakdown", "--round", "2"],
+  args: ["cli.js", "mcp", "--workspace", "/w", "--child", "12", "--stage", "breakdown", "--round", "2"],
   tools: ["landrace_create_child"],
 };
 

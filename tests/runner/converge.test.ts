@@ -1229,7 +1229,7 @@ describe("a stage that creates children", () => {
 
   it("drops what a crashed attempt created before trying again, so there is one set, not two", async () => {
     const state = createExternalState({ items: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
-    const make = (title: string) => createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title }, ctx);
+    const make = (title: string) => createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title }, ctx, ["lr:auto"]);
     let attempt = 0;
     const seen: LandraceEvent[] = [];
     const run = createHarness({
@@ -1263,7 +1263,7 @@ describe("a stage that creates children", () => {
       answers: { breakdown: () => '```json\n{"kind":"children"}\n```' },
       // A way round the executor: the child lands with this round's origin
       // although the agent was never handed the tool.
-      during: async () => { await createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title: "sneaked" }, ctx); },
+      during: async () => { await createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title: "sneaked" }, ctx, ["lr:auto"]); },
     });
 
     const r = await run.converge();
@@ -1307,7 +1307,7 @@ describe("a stage that creates children", () => {
     // crash. Without the fix this spins to the pass cap re-applying the same
     // no-op; with it, the second sighting of the same still-open close halts.
     const state = createExternalState({ items: [{ id: "1", title: "big", labels: ["lr:stage:breakdown"] }] });
-    const stale = await createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title: "stale" }, ctx);
+    const stale = await createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title: "stale" }, ctx, ["lr:auto"]);
 
     const noOpClose = {
       ...state.post,
@@ -1388,7 +1388,7 @@ describe("the engine's own item server", () => {
       }],
     };
     const step: Step = { prompt: "go", capabilities: ["items:create"] };
-    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workspace", "/w"] };
     const binding = { parent: "1", stage: "spec", round: 1 };
     await converge("1", deps(w, {
       workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: spy, childServer,

@@ -55,3 +55,18 @@ export async function loadWorkspace(dir: string, vars: ReadonlyMap<string, strin
   }
   return { dir, workflows };
 }
+
+/**
+ * The workspace's one workflow, for a command that runs one. Two are refused
+ * rather than one of them taken: whichever sorted first is not a choice
+ * anybody made, and an item worked by it is worked by a workflow nobody chose.
+ */
+export function onlyWorkflow(ws: Workspace, command: string): LoadedWorkflow {
+  const [only, ...more] = ws.workflows;
+  if (!only || more.length) {
+    throw new Error(
+      `landrace ${command} runs one workflow at a time; ${ws.dir}/workflows has ${ws.workflows.length} (${ws.workflows.map((w) => w.id).join(", ")})`,
+    );
+  }
+  return only;
+}

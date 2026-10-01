@@ -1289,7 +1289,7 @@ describe("the items:create backstop", () => {
   it("hands the executor the binding, and the server to start for it, only when the step declared it", async () => {
     const seen: unknown[] = [];
     const executor: Executor = { id: "x", run: async (_p, o) => { seen.push(o.child); return { text: OK, sessionId: null }; } };
-    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workspace", "/w"] };
     await runStep({ ...base, executor, childServer, item: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: ["items:create"] } });
     await runStep({ ...base, executor, item: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: ["items:create"] } });
     await runStep({ ...base, executor, childServer, item: "1", stageId: "s", round: 3, step: { ...base.step, capabilities: [] } });
@@ -1305,7 +1305,7 @@ describe("the items:create backstop", () => {
     let screenerCalled = false;
     const executor: Executor = { id: "x", run: async () => { executorCalled = true; return { text: OK, sessionId: null }; } };
     const screener: Executor = { id: "screen", run: async () => { screenerCalled = true; return { text: OK, sessionId: null }; } };
-    const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
+    const childServer = { command: "node", args: ["cli.js", "mcp", "--workspace", "/w"] };
     const events: string[] = [];
     const r = await runStep({
       ...base, executor, childServer, item: "1", stageId: "-not-a-stage", round: 3,

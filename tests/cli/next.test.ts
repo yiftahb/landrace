@@ -15,8 +15,9 @@ const exec = promisify(execFile);
 describe("landrace next, from the command line", () => {
   it("reports a snapshot it cannot plan from, and exits non-zero", async () => {
     const dir = await mkdtemp(join(tmpdir(), "landrace-next-cli-"));
-    await mkdir(join(dir, "steps"));
-    await writeFile(join(dir, "workflow.yaml"), [
+    const main = join(dir, "workflows", "main");
+    await mkdir(join(main, "steps"), { recursive: true });
+    await writeFile(join(main, "workflow.yaml"), [
       "version: 1",
       "name: nx", "description: test",
       "stages:",
@@ -32,7 +33,7 @@ describe("landrace next, from the command line", () => {
       '      - { when: { "run.outputs.b": { $exists: true } } }',
       "",
     ].join("\n"));
-    await writeFile(join(dir, "steps", "b.md"), "---\ncapabilities: [items:create]\n---\n\ngo\n");
+    await writeFile(join(main, "steps", "b.md"), "---\ncapabilities: [items:create]\n---\n\ngo\n");
     const snapshot = join(dir, "snap.json");
     await writeFile(snapshot, JSON.stringify({ entries: [], run: { stage: null } }));
 

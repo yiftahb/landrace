@@ -11,7 +11,7 @@ import { createLogger, scrubberOf } from "#runner/events.js";
 import { runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
-import { loadWorkflow } from "#workflow/load.js";
+import { loadWorkspace, onlyWorkflow } from "#workflow/workspace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
 import { childServerCommand, executorFor, sandboxFor, screenerFor } from "#cli/start.js";
@@ -31,8 +31,9 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
 
   // The hooks list lives in the workflow, not in landrace.yaml: which
   // integrations are needed is part of the workflow that needs them.
-  const { workflow, steps } = await loadWorkflow(dir, loaded.vars);
-  const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
+  const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
+  const { dir: workflowDir, workflow, steps } = onlyWorkflow(ws, "mcp");
+  const registry = await loadHooks({ dir: workflowDir, modules: workflow.hooks ?? [], workspace: ws.dir });
 
   // stdout carries the MCP protocol, so anything we have to say goes to
   // stderr — which is what the client that spawned us shows. What an
@@ -179,7 +180,11 @@ export async function buildChildTool(dir: string, binding: ChildBinding): Promis
 
   const loaded = await loadConfig(dir);
   assertConfigUsable(dir, loaded);
-  const { workflow, steps } = await loadWorkflow(dir, loaded.vars);
+  // The workflow whose step this server was started for: the one there is,
+  // as for the loop that started it. It is also what says how a child is
+  // labelled, so nothing on this server's command line has to.
+  const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
+  const { dir: workflowDir, workflow, steps } = onlyWorkflow(ws, "mcp");
   const stage = workflow.stages.find((s) => s.id === binding.stage);
   if (!stage) throw new Error(`the workflow has no stage "${binding.stage}"`);
   const step = stage.step ? steps.get(stage.step) : undefined;
@@ -187,7 +192,7 @@ export async function buildChildTool(dir: string, binding: ChildBinding): Promis
     throw new Error(`stage "${binding.stage}"'s step does not declare items:create, so it may not create children`);
   }
 
-  const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
+  const registry = await loadHooks({ dir: workflowDir, modules: workflow.hooks ?? [], workspace: ws.dir });
   const events = createLogger({
     redactValues: redactionValues(loaded),
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
@@ -199,7 +204,7 @@ export async function buildChildTool(dir: string, binding: ChildBinding): Promis
 
   return {
     async createChild(input) {
-      const node = await createChild(registry.operator, binding, input, ctx);
+      const node = await createChild(registry.operator, binding, input, ctx, workflow.admit);
       return { item: node.id, title: node.title, link: node.link };
     },
   };

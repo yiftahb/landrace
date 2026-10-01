@@ -23,7 +23,7 @@ function walk(node: unknown, visit: (key: string, value: unknown) => void): void
 /**
  * The allowlist is enforced before the condition reaches the evaluator, and it
  * recurses: `$where` nested under `$or` is the documented way past a
- * single-level check. `.landrace/workflow.yaml` is a repo file, so a
+ * single-level check. `.landrace/workflows/main/workflow.yaml` is a repo file, so a
  * contributor's PR can edit it.
  */
 export function assertAllowedOperators(c: Condition): void {

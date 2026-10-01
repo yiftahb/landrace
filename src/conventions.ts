@@ -6,8 +6,11 @@
  */
 import type { Effect, Entry, Graph, HandoffArg, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
 
+/*
+ * No admission label among them: what starts an item is each workflow's own
+ * `admit` list, and the engine names none of its own.
+ */
 export const LABELS = {
-  eligible: "lr:auto",
   working: "lr:working",
   awaiting: "lr:awaiting",
   blocked: "lr:blocked",
@@ -126,8 +129,8 @@ export const assigneesOf = (node: Node | undefined): string[] => strings(node?.s
 /**
  * Whether a listed node is work: an item, and an open one. A closed item
  * is in a graph so a parent can count it, and it keeps whatever labels it had
- * — `lr:auto` included — so reading its labels alone would pay for steps on an
- * item somebody already finished.
+ * — the ones its workflow admitted it with included — so reading its labels
+ * alone would pay for steps on an item somebody already finished.
  */
 export const isOpenItem = (node: Node): boolean => node.kind === ITEM_KIND && node.closed === null;
 

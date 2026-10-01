@@ -722,7 +722,7 @@ export type RuntimeContext = Omit<HookContext, "item" | "snapshot">;
 
 /**
  * What an executor factory is built with: the context every hook gets, plus
- * the two things only an executor needs. `dir` is the workflow directory the
+ * the two things only an executor needs. `dir` is the workspace directory the
  * runtime was built from, which is where a factory finds its repository.
  * `redact` keeps values out of every log line from now on — an executor's
  * setup can hold credentials the configuration never named, such as an MCP

@@ -60,8 +60,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
 
   server.tool(
     "landrace_create_item",
-    "Open a new item. By default it is labelled so the orchestrator picks it up on its " +
-      "next tick and starts work — pass start: false to file it without starting anything.",
+    "Open a new item. By default it is given the labels its workflow admits, so the orchestrator " +
+      "picks it up on its next tick and starts work — pass start: false to file it without starting anything.",
     {
       title: z.string().min(1),
       body: z.string().optional(),

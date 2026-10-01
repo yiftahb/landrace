@@ -9,6 +9,7 @@ import {
   stageFromLabels,
   isOpenItem,
 } from "#conventions.js";
+import { checkEligible } from "#core/index.js";
 import type { Node, PairDeps, ReplyDeps, Snapshot, Source } from "#namespace.js";
 import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
@@ -176,7 +177,10 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
         ...(ambiguous
           ? { problem: `more than one lr:stage:* label (${found.join(", ")}) — the item cannot be placed` }
           : {}),
-        eligible: labels.includes(LABELS.eligible),
+        // The workflow's own rule, asked of the snapshot `decide` would gate
+        // on — not a label name: the engine names none. A process not given
+        // the workflow cannot say, so it does not.
+        ...(opts.workflow ? { eligible: checkEligible(opts.workflow, snapshot).eligible } : {}),
         waitingOnYou: labels.includes(LABELS.awaiting),
         blocked: labels.includes(LABELS.blocked),
         rounds: run?.counters ?? {},
@@ -188,12 +192,22 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     async createItem({ title, body = "", labels = [], start = true }) {
       const operator = requireOperator(registry.operator, "create an item");
       refuseEngineLabels(labels, "set");
-      // `start` is the one exception, and it is ours to set, not the caller's.
-      const wanted = [...new Set([...labels, ...(start ? [LABELS.eligible] : [])])];
+      // `start` is the one exception, and it is ours to set, not the caller's:
+      // the labels the workflow admits with, which the engine names none of.
+      // Refused before anything is written, never filed unstarted instead —
+      // the caller asked for it to be worked, and would be told it is.
+      const admit = opts.workflow?.admit ?? [];
+      if (start) {
+        if (!opts.workflow) throw new Error("cannot start an item: this process was not given the workflow");
+        if (admit.length === 0) {
+          throw new Error(`workflow "${opts.workflow.name}" admits nothing: add admit: [<labels>] to its workflow.yaml, or create with start: false`);
+        }
+      }
+      const wanted = [...new Set([...labels, ...(start ? admit : [])])];
       // A marker pasted into a body would read back as something we wrote.
       const created = await operator.createItem({ title, body: neutraliseMarkers(body), labels: wanted }, ctx);
       wakeLoop();
-      return { ...summarise(created), started: wanted.includes(LABELS.eligible) };
+      return { ...summarise(created), started: admit.length > 0 && admit.every((l) => wanted.includes(l)) };
     },
 
     async updateItem(item, { title, body, state, addLabels = [], removeLabels = [] }) {

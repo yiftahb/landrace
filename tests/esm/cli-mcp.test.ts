@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { buildMcpTools } from "#cli/mcp.js";
+import { buildChildTool, buildMcpTools } from "#cli/mcp.js";
 import { createActivityLog } from "#runner/activity.js";
 import { sandboxRoot } from "#sandbox.js";
 import { release } from "#runner/lock.js";
@@ -155,7 +155,8 @@ async function fixture(opts: {
   const record = join(root, "posted.jsonl");
   const invocations = join(root, "invoked.jsonl");
   const order = join(root, "order.jsonl");
-  await mkdir(join(dir, "steps"), { recursive: true });
+  const main = join(dir, "workflows", "main");
+  await mkdir(join(main, "steps"), { recursive: true });
   await mkdir(join(dir, "hooks"), { recursive: true });
 
   await writeFile(
@@ -177,7 +178,7 @@ export const { claude } = await import(pathToFileURL(${JSON.stringify(join(proce
   );
   // What the step declared, which is what a turn on its session is held to.
   await writeFile(
-    join(dir, "steps", "spec.md"),
+    join(main, "steps", "spec.md"),
     `---
 capabilities: [repo:read]
 model: haiku
@@ -187,11 +188,11 @@ Write the spec.
 `,
   );
   await writeFile(
-    join(dir, "workflow.yaml"),
+    join(main, "workflow.yaml"),
     `version: 1
 name: mcp
 description: test
-hooks: [hooks/fake.ts, hooks/claude.ts]
+hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
@@ -392,7 +393,7 @@ describe("buildMcpTools and the servers a turn is handed", () => {
   // A turn runs at its step's effort, so the plane refuses one the executor has no level for, as `start` does.
   it("refuses a step whose effort the executor does not take", async () => {
     const { dir } = await fixture({ screen: false, adapter: "claude" });
-    await writeFile(join(dir, "steps", "spec.md"), "---\ncapabilities: [repo:read]\neffort: extreme\n---\n\nWrite the spec.\n");
+    await writeFile(join(dir, "workflows", "main", "steps", "spec.md"), "---\ncapabilities: [repo:read]\neffort: extreme\n---\n\nWrite the spec.\n");
     await expect(buildMcpTools(dir)).rejects.toThrow(/steps\/spec\.md asks for effort "extreme", which the claude executor does not take/);
   });
 
@@ -450,5 +451,62 @@ describe("buildMcpTools and the servers a turn is handed", () => {
       mcpJson: { mcpServers: { items: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });
     await expect(buildMcpTools(dir)).rejects.toThrow(/"items"[\s\S]*operator tools must never reach a step agent/);
+  });
+});
+
+/*
+ * The child server is started on the workspace, never told what to label a
+ * child: it reads that from the workflow it loads, the same file whose step
+ * declared items:create. A child labelled with anything else would be started
+ * for a workflow that did not create it, or for none.
+ */
+describe("buildChildTool and what the creating workflow admits", () => {
+  const OPERATOR = (created: string): string => `import { appendFile } from "node:fs/promises";
+const KIND = Symbol.for("landrace.hook.kind");
+export const operator = Object.defineProperty({
+  id: "fake",
+  createItem: async (input: { title: string; labels?: string[] }): Promise<unknown> => {
+    await appendFile(${JSON.stringify(created)}, JSON.stringify(input.labels ?? null) + "\\n");
+    return { id: "9", kind: "item", title: input.title, link: "u/9", closed: null, priority: null, origin: null, state: { labels: input.labels ?? [], assignees: [] } };
+  },
+  updateItem: async (): Promise<unknown> => { throw new Error("not here"); },
+}, KIND, { value: "operator", enumerable: false });
+`;
+
+  const workspace = async (admit: string): Promise<{ dir: string; created: string }> => {
+    const root = await mkdtemp(join(tmpdir(), "lr-child-admit-"));
+    const dir = join(root, ".landrace");
+    const main = join(dir, "workflows", "main");
+    const created = join(root, "created.jsonl");
+    await mkdir(join(main, "steps"), { recursive: true });
+    await mkdir(join(dir, "hooks"), { recursive: true });
+    await writeFile(join(dir, "hooks", "operator.ts"), OPERATOR(created));
+    await writeFile(join(main, "steps", "breakdown.md"), "---\ncapabilities: [items:create]\n---\n\nBreak it down.\n");
+    await writeFile(join(main, "workflow.yaml"), `version: 1
+name: Main
+description: test
+${admit}hooks: [../../hooks/operator.ts]
+stages:
+  - id: breakdown
+    entry: true
+    terminal: true
+    step: steps/breakdown.md
+`);
+    await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: claude, model: opus }\n");
+    return { dir, created };
+  };
+
+  it("labels the child with the workflow's admit list", async () => {
+    const { dir, created } = await workspace("admit: [lr:fast]\n");
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 });
+    await tool.createChild({ title: "API" });
+    expect(await linesOf(created)).toEqual([["lr:fast"]]);
+  });
+
+  it("labels it with nothing when the workflow admits nothing", async () => {
+    const { dir, created } = await workspace("");
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 });
+    await tool.createChild({ title: "API" });
+    expect(await linesOf(created)).toEqual([[]]);
   });
 });

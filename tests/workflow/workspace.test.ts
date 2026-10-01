@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadWorkspace } from "#workflow/workspace.js";
+import { loadWorkspace, onlyWorkflow } from "#workflow/workspace.js";
 
 async function workspaceWith(map: Record<string, { name: string }>): Promise<string> {
   const ws = await mkdtemp(join(tmpdir(), "lr-ws-"));
@@ -61,5 +61,22 @@ describe("loadWorkspace", () => {
   it("orders by code point, not by the machine's locale", async () => {
     const ws = await workspaceWith({ a: { name: "alpha" }, z: { name: "Zed" } });
     expect((await loadWorkspace(ws)).workflows.map((w) => w.id)).toEqual(["z", "a"]);
+  });
+});
+
+/*
+ * Until a workspace can run several workflows at once, a command that runs one
+ * takes the only one there is — and refuses two rather than running whichever
+ * sorted first, which is the "first match wins" this codebase never does.
+ */
+describe("onlyWorkflow", () => {
+  it("is the workspace's one workflow", async () => {
+    const ws = await loadWorkspace(await workspaceWith({ main: { name: "Main" } }));
+    expect(onlyWorkflow(ws, "start").id).toBe("main");
+  });
+  it("refuses two, naming the command, the folder and both ids", async () => {
+    const ws = await loadWorkspace(await workspaceWith({ main: { name: "Main" }, fastlane: { name: "Fastlane" } }));
+    expect(() => onlyWorkflow(ws, "start"))
+      .toThrow(`landrace start runs one workflow at a time; ${ws.dir}/workflows has 2 (fastlane, main)`);
   });
 });

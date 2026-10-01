@@ -6,7 +6,7 @@ import { Codex } from "landrace/integrations/codex";
 import { loadConfig } from "#config/load.js";
 import { hookKindOf } from "#hooks/contracts.js";
 import type { Executor, ExecutorContext } from "#namespace.js";
-import { loadWorkflow } from "#workflow/load.js";
+import { loadShipped } from "#tests/support/shipped.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 
 afterAll(removeRepos);
@@ -376,7 +376,7 @@ describe("the Codex integration", () => {
 
     it("names the shipped spec step's max, which codex has no level for", async () => {
       const loaded = await loadConfig(".landrace");
-      const { steps } = await loadWorkflow(".landrace", loaded.vars);
+      const { steps } = await loadShipped(loaded.vars);
       await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }, steps)))
         .rejects.toThrow(/steps\/spec\.md asks for effort "max", which the codex executor does not take: none, low, medium, high, xhigh/);
     });

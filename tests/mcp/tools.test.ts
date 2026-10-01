@@ -24,9 +24,17 @@ const spec: { workflow: Workflow; steps: Map<string, Step> } = {
   steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
 };
 
+/** A workflow that starts what it admits with `lr:auto`, eligible on the same label, as the shipped one is. */
+const admitting = (admit?: string[]): Workflow => ({
+  version: 1, name: "t", description: "test",
+  ...(admit ? { admit } : {}),
+  eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+  stages: [{ id: "spec", step: "spec", triggers: [] }],
+});
+
 const world = (seed: Array<Partial<FakeIssue>> = []) => {
   const tracker = createFakeTracker(seed);
-  return { tracker, tools: createTools(tracker.registry, tracker.ctx) };
+  return { tracker, tools: createTools(tracker.registry, tracker.ctx, { workflow: admitting(["lr:auto"]) }) };
 };
 
 describe("mcp tools", () => {
@@ -42,6 +50,38 @@ describe("mcp tools", () => {
     const r = (await tools.createItem({ title: "Later", start: false })) as Record<string, unknown>;
     expect(r).toMatchObject({ started: false });
     expect(r.labels).not.toContain("lr:auto");
+  });
+
+  /*
+   * What starts an item is what its workflow admits. The engine used to add
+   * `lr:auto` whatever the workflow was, so an item opened for a workflow
+   * eligible on something else was started for a different one, or for none.
+   */
+  it("starts an item with the labels its workflow admits, and not lr:auto", async () => {
+    const tracker = createFakeTracker();
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: admitting(["lr:fast"]) });
+    const r = (await tools.createItem({ title: "Hotfix", labels: ["bug"] })) as Record<string, unknown>;
+    expect(r).toMatchObject({ started: true });
+    expect(r.labels).toEqual(expect.arrayContaining(["lr:fast", "bug"]));
+    expect(r.labels).not.toContain("lr:auto");
+  });
+
+  it("refuses to start an item in a workflow that admits nothing, and creates nothing", async () => {
+    const tracker = createFakeTracker();
+    const tools = createTools(tracker.registry, tracker.ctx, { workflow: admitting() });
+    await expect(tools.createItem({ title: "Hotfix" })).rejects.toThrow(
+      'workflow "t" admits nothing: add admit: [<labels>] to its workflow.yaml, or create with start: false',
+    );
+    expect(tracker.issues.size).toBe(0);
+    // Filing it without starting it needs no admission label at all.
+    expect(await tools.createItem({ title: "Later", start: false })).toMatchObject({ started: false });
+  });
+
+  it("refuses to start an item when it was not given the workflow, and creates nothing", async () => {
+    const tracker = createFakeTracker();
+    const tools = createTools(tracker.registry, tracker.ctx);
+    await expect(tools.createItem({ title: "Hotfix" })).rejects.toThrow(/not given the workflow/);
+    expect(tracker.issues.size).toBe(0);
   });
 
   // The labels here used to be lr: ones, which is the editor writing workflow
@@ -98,6 +138,19 @@ describe("mcp tools", () => {
     expect(s).toMatchObject({ item: "3", stage: "spec", eligible: true, waitingOnYou: false });
     expect(s.rounds).toEqual({ spec: 1 });
     expect(s.lastEvent).toMatchObject({ actor: "human" });
+  });
+
+  /*
+   * Eligible by the workflow's own rule, the one `decide` gates on, and not by
+   * a label name the engine used to hard-code: it names none now.
+   */
+  it("reports eligibility by the workflow's own rule, and none without the workflow", async () => {
+    const { tools } = world([{ number: 3, labels: ["lr:auto"] }, { number: 4, labels: ["lr:fast"] }]);
+    expect(await tools.status("3")).toMatchObject({ eligible: true });
+    expect(await tools.status("4")).toMatchObject({ eligible: false });
+
+    const tracker = createFakeTracker([{ number: 3, labels: ["lr:auto"] }]);
+    expect(await createTools(tracker.registry, tracker.ctx).status("3")).not.toHaveProperty("eligible");
   });
 
   it("flags an item carrying two stage labels instead of guessing", async () => {
@@ -237,7 +290,7 @@ describe("landrace_clear", () => {
  * throw wrote nothing a pass could pick up.
  */
 describe("waking the loop", () => {
-  const workflow: Workflow = { version: 1, name: "t", description: "test", stages: [
+  const workflow: Workflow = { version: 1, name: "t", description: "test", admit: ["lr:auto"], stages: [
     { id: "spec", entry: true, step: "spec", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }],
       triggers: [{ when: { "run.stage": null } }] },
     { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
