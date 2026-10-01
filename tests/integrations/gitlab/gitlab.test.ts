@@ -1,8 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createClient, GitLab } from "landrace/integrations/gitlab";
 import { branchHeads, compose, gitIn } from "landrace/kit";
@@ -491,6 +491,27 @@ describe("GitLab composed as a project's forge", () => {
     await apply(effect);
     await apply(effect);
     expect(gl.mrs.get(1)?.discussions).toHaveLength(2);
+  });
+});
+
+/* The live check, run with nothing to run against: it says what it needs and fails, before it imports or asks anything. */
+describe("scripts/gitlab-check.mjs", () => {
+  const run = (env: Record<string, string>) => {
+    const { GITLAB_TOKEN: _t, GITLAB_PROJECT: _p, GITLAB_BASE_URL: _b, ...rest } = process.env;
+    void [_t, _p, _b];
+    return spawnSync(process.execPath, [resolve("scripts/gitlab-check.mjs")], { encoding: "utf8", env: { ...rest, ...env } });
+  };
+
+  it("exits non-zero, naming GITLAB_TOKEN, without one", () => {
+    const r = run({ GITLAB_PROJECT: PROJECT });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/GITLAB_TOKEN/);
+  });
+
+  it("exits non-zero, naming GITLAB_PROJECT, without one", () => {
+    const r = run({ GITLAB_TOKEN: "t" });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/GITLAB_PROJECT/);
   });
 });
 
