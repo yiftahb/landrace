@@ -28,7 +28,7 @@ const NEST = new Set(["child-of", "implements"]);
 
 /** A workspace of the one workflow above, `t`, and what a tick would list of `g` in it. */
 const ONLY = [{ id: "t", workflow }];
-const listingOf = (g: Graph) => ({ graphs: [g], claims: claimItems([{ id: "t", workflow, source: 0 }], [g]) });
+const listingOf = (g: Graph) => ({ graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow, source: 0 }], [g]) });
 
 const view = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
@@ -198,8 +198,18 @@ describe("boardView: an item's panel", () => {
       item("7"), item("8"), item("9", {}, ["go", "lr:stage:blocked", "lr:blocked"]), item("10", { closed: "done" }),
     ]), { running }).rows;
     // Drawn lane by lane: needs you, running, waiting, done.
-    expect(rows.map((r) => r.panel?.reply)).toEqual(["/items/9/reply", "/items/8/reply", "/items/7/reply", "/items/10/reply"]);
+    expect(rows.map((r) => r.panel?.conversation)).toEqual([
+      "/items/9/conversation", "/items/8/conversation", "/items/7/conversation", "/items/10/conversation",
+    ]);
     expect(rows.find((r) => r.id === "7")?.panel).toEqual(PATHS);
+  });
+
+  // Nothing is written to a closed item: its panel reads, and offers nothing to write.
+  it("gives a closed item a panel that only reads", () => {
+    expect(view(graph([item("10", { closed: "done" })])).rows[0]?.panel).toEqual({
+      ...PATHS, activity: "/items/10/activity", conversation: "/items/10/conversation", pairing: "/items/10/pairing",
+      reply: null, ask: null, resolve: null, pair: null, finish: null, release: null,
+    });
   });
 
   it("gives an artifact none, and an item whose id is not one none", () => {
@@ -474,6 +484,11 @@ describe("boardView: rows", () => {
     expect(rows.map((r) => [r.id, r.chat === null])).toEqual([["1", false], ["bad id", true]]);
   });
 
+  // One workflow: every item is its, and a tag saying so on each row would say nothing.
+  it("names the workflow an item is in, but draws no tag for it in a workspace of one", () => {
+    expect(view(graph([item("1")])).rows[0]).toMatchObject({ workflow: "t", tag: null });
+  });
+
   it("gives an item row a badge, its stage, a chat, and its system", () => {
     const row = view(graph([item("7", { link: "https://github.com/a/b/issues/7" })])).rows[0];
     expect(row).toMatchObject({ id: "7", kind: "item", badge: "waiting", system: { name: "GitHub" } });
@@ -525,7 +540,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
-      "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "title", "updatedAt", "workflow",
+      "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "tag", "title", "updatedAt", "workflow",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });
@@ -724,13 +739,19 @@ describe("the board over several workflows", () => {
   /** What a tick lists: the first tracker's graph, read by main and fast, and the second's, read by gl. */
   const across = (first: Graph, second: Graph = graph([])) => ({
     graphs: [first, second],
+    sourceOf: new Map(WORKFLOWS.map((w) => [w.id, w.id === "gl" ? 1 : 0])),
     claims: claimItems(WORKFLOWS.map((w) => ({ ...w, source: w.id === "gl" ? 1 : 0 })), [first, second]),
   });
-  const several = (first: Graph, second?: Graph) =>
+  const several = (first: Graph, second?: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
     boardView({
       workflows: WORKFLOWS, listing: across(first, second), nest: NEST, now: 100, pid: 1, nextTickAt: null,
-      running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace",
+      running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
     });
+  /** What an item no one workflow owns may still do in its panel: read. */
+  const reads = (id: string) => ({
+    activity: `/items/${id}/activity`, conversation: `/items/${id}/conversation`, pairing: `/items/${id}/pairing`,
+    reply: null, ask: null, resolve: null, pair: null, finish: null, release: null,
+  });
   const blocked = (admit: string[]) => [...admit, "lr:stage:blocked", "lr:blocked"];
   // Screened as well: a row its labels alone would offer every action on.
   const screened = (admit: string[]) => [...blocked(admit), "lr:screened"];
@@ -741,36 +762,60 @@ describe("the board over several workflows", () => {
     ])).rows;
     const row = (id: string) => rows.find((r) => r.id === id);
     expect(row("1")).toMatchObject({
-      workflow: "main", badge: "needs-you", stage: "blocked", retry: "/items/1/retry", goto: [{ stage: "spec", path: "/items/1/goto/spec" }],
+      workflow: "main", tag: "Main", badge: "needs-you", stage: "blocked", retry: "/items/1/retry",
+      goto: [{ stage: "spec", path: "/items/1/goto/spec" }],
     });
     expect(row("2")).toMatchObject({
-      workflow: "fast", badge: "needs-you", stage: "blocked", retry: "/items/2/retry", goto: [{ stage: "build", path: "/items/2/goto/build" }],
+      workflow: "fast", tag: "Fastlane", badge: "needs-you", stage: "blocked", retry: "/items/2/retry",
+      goto: [{ stage: "build", path: "/items/2/goto/build" }],
     });
     // Terminal in fast, and a stage main has never heard of.
-    expect(row("3")).toMatchObject({ workflow: "fast", badge: "discharged", lane: "discharged" });
+    expect(row("3")).toMatchObject({ workflow: "fast", tag: "Fastlane", badge: "discharged", lane: "discharged" });
+    // Its panel writes too: the page's writes reach its owner.
+    expect(row("1")?.panel?.reply).toBe("/items/1/reply");
   });
 
   it("files an item two workflows claim under Needs you, naming both, with no Retry, Go to or Clear", () => {
     const [row] = several(graph([item("4", {}, screened(["lr:auto", "lr:fast"]))])).rows;
     expect(row).toMatchObject({
-      id: "4", workflow: null, badge: "needs-you", lane: "needs-you", note: "claimed by fast and main",
-      stage: null, retry: null, clear: null, goto: [],
+      id: "4", workflow: null, tag: null, badge: "needs-you", lane: "needs-you", note: "claimed by fast and main",
+      stage: null, retry: null, clear: null, goto: [], panel: reads("4"),
     });
+  });
+
+  /*
+   * The halt is the news: an item a person pairs on under main, then labels
+   * lr:fast too, is no longer main's to pair on — the tick stops it for
+   * exactly this — and its row says so over whatever it is doing.
+   */
+  it("says an item two workflows claim, or two trackers report, over its running, pairing or being held elsewhere", () => {
+    const run: Running = { stage: "spec", round: 1, model: null, effort: null, since: 5 };
+    const pairing = { stage: "spec", round: 2, n: 1, at: "1970-01-01T00:00:02.000Z" };
+    const other: Held = { item: "13", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
+    const both = ["lr:auto", "lr:fast", "lr:stage:spec"];
+    const rows = several(graph([item("11", {}, both), item("12", {}, both), item("13", {}, both), item("14", {}, ["lr:auto"])]),
+      graph([item("14", {}, ["lr:auto"])]), {
+        running: new Map([["11", run], ["14", run]]), paired: new Map([["12", pairing]]), elsewhere: new Map([["13", other]]),
+      }).rows;
+    expect(rows.map((r) => [r.id, r.badge, r.note])).toEqual([
+      ["11", "needs-you", "claimed by fast and main"], ["12", "needs-you", "claimed by fast and main"],
+      ["13", "needs-you", "claimed by fast and main"], ["14", "needs-you", "reported by the sources of fast, gl and main"],
+    ]);
   });
 
   it("files an id two trackers both report under Needs you, naming the workflows reading each, with nothing to act on", () => {
     const [row] = several(graph([item("5", {}, screened(["lr:auto"]))]), graph([item("5", {}, screened(["lr:auto"]))])).rows;
     expect(row).toMatchObject({
-      id: "5", workflow: null, badge: "needs-you", lane: "needs-you", note: "reported by the sources of fast, gl and main",
-      stage: null, retry: null, clear: null, goto: [],
+      id: "5", workflow: null, tag: null, badge: "needs-you", lane: "needs-you", note: "reported by the sources of fast, gl and main",
+      stage: null, retry: null, clear: null, goto: [], panel: reads("5"),
     });
   });
 
   it("files an item no workflow claims under Not admitted, with each workflow's reason and nothing to act on", () => {
     const [row] = several(graph([item("6", {}, screened([]))])).rows;
     expect(row).toMatchObject({
-      id: "6", workflow: null, badge: "not-admitted", lane: "not-admitted", note: "skipped: no lr:auto label; no lr:fast label",
-      retry: null, clear: null, goto: [],
+      id: "6", workflow: null, tag: null, badge: "not-admitted", lane: "not-admitted", note: "skipped: no lr:auto label; no lr:fast label",
+      retry: null, clear: null, goto: [], panel: reads("6"),
     });
   });
 
@@ -795,7 +840,29 @@ describe("the board over several workflows", () => {
         refused: "#5 is reported by the sources of fast, gl and main; act on it after one source alone reports it",
       });
       expect(b.ownerOf("6")).toEqual({ refused: "#6 is claimed by no workflow: no lr:auto label; no lr:fast label" });
-      for (const id of ["7", "pr-8", "99"]) expect(b.ownerOf(id)).toEqual({ refused: `#${id} is not an open item the last tick listed` });
+      // Nothing is written to a closed item, whoever's it was.
+      expect(b.ownerOf("7")).toEqual({ refused: "#7 is closed, so nothing is written to it" });
+      for (const id of ["pr-8", "99"]) expect(b.ownerOf(id)).toEqual({ refused: `#${id} is not an item the last tick listed` });
+    });
+
+    /*
+     * A closed item is no workflow's — claims are for open items — but what
+     * was said on it is still worth reading: through the one source that
+     * lists it, never one of the workflows reading that source picked first.
+     */
+    it("reads an open item through its owner, and a closed one through the one source that lists it", () => {
+      const b = board();
+      b.list(across(graph([
+        item("1", {}, ["lr:auto"]), item("4", {}, ["lr:auto", "lr:fast"]), item("7", { closed: "done" }, ["lr:auto"]),
+        item("9", { closed: "done" }, ["lr:auto"]), pr("pr-8"),
+      ]), graph([item("10", { closed: "dropped" }, ["lr:auto"]), item("9", { closed: "done" }, ["lr:auto"])])));
+
+      expect(b.readerOf("1")).toEqual({ workflow: "main" });
+      expect(b.readerOf("4")).toEqual({ refused: "#4 is claimed by fast and main; act on it after one workflow alone claims it" });
+      expect(b.readerOf("7")).toEqual({ source: 0 });
+      expect(b.readerOf("10")).toEqual({ source: 1 });
+      expect(b.readerOf("9")).toEqual({ refused: "#9 is reported by the sources of fast, gl and main; read it in its own tracker" });
+      for (const id of ["pr-8", "99"]) expect(b.readerOf(id)).toEqual({ refused: `#${id} is not an item the last tick listed` });
     });
 
     it("follows the latest listing: an item relabelled is its new workflow's", () => {

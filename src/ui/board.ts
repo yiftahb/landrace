@@ -6,7 +6,7 @@ import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
   Board, BoardRow, BoardView, Claims, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
-  PanelPaths, Relationship, Running, Stage, StatusRow, Workflow, WorkspaceListing,
+  PanelPaths, ReadRoute, Relationship, Running, Stage, StatusRow, Workflow, WorkspaceListing,
 } from "#namespace.js";
 
 /**
@@ -59,16 +59,20 @@ const gotoPaths = (id: string, stage: Stage | undefined): BoardRow["goto"] =>
     ? gotoTargetsOf(stage).map((g) => ({ stage: g.stage, path: `/items/${id}/goto/${encodeURIComponent(g.stage)}` }))
     : [];
 
-/** Where an item's panel reads and writes — built here, from an id already checked, never by the page. */
-const panelPaths = (id: string): PanelPaths | null =>
-  isItemId(id)
-    ? {
-        activity: `/items/${id}/activity`, conversation: `/items/${id}/conversation`,
-        reply: `/items/${id}/reply`, ask: `/items/${id}/ask`, resolve: `/items/${id}/resolve`,
-        pairing: `/items/${id}/pairing`, pair: `/items/${id}/pair`,
-        finish: `/items/${id}/finish`, release: `/items/${id}/release`,
-      }
-    : null;
+/**
+ * Where an item's panel reads and writes — built here, from an id already
+ * checked, never by the page. Only an item one workflow owns is written to,
+ * so only its panel names the writes; every other item's only reads.
+ */
+const panelPaths = (id: string, writes: boolean): PanelPaths | null => {
+  if (!isItemId(id)) return null;
+  const write = (what: string): string | null => (writes ? `/items/${id}/${what}` : null);
+  return {
+    activity: `/items/${id}/activity`, conversation: `/items/${id}/conversation`, pairing: `/items/${id}/pairing`,
+    reply: write("reply"), ask: write("ask"), resolve: write("resolve"),
+    pair: write("pair"), finish: write("finish"), release: write("release"),
+  };
+};
 
 /**
  * An item's records as the panel's conversation: oldest first, only what
@@ -148,26 +152,22 @@ function parentsOf(graph: Graph, nodes: ReadonlyMap<string, Node>, nest: Readonl
 }
 
 /**
- * An open item no one workflow owns, as its row says it: two workflows
- * claiming it, or two trackers reporting its id, is a halt a person has to
- * settle, so it waits in Needs you; one every workflow turned away is not
- * admitted, with each workflow's reason once. The tick's own words.
+ * Why an open item is worked by neither of the workflows that want it: two
+ * claiming it, or two trackers reporting its id. A halt a person has to
+ * settle, in the tick's own words; null for any other item.
  */
-function unownedRow(claims: Claims, node: Node): Pick<BoardRow, "badge" | "stage" | "note"> {
-  const conflict = claims.conflicts.get(node.id);
-  if (conflict) return { badge: "needs-you", stage: null, note: claimedBy(conflict) };
-  const clash = claims.clashes.get(node.id);
-  if (clash) return { badge: "needs-you", stage: null, note: reportedBy(clash) };
-  const reasons = turnedAway(claims.unclaimed.get(node.id) ?? []);
-  return { badge: "not-admitted", stage: stageFromLabels(labelsOf(node)).stage, note: oneLine(`skipped: ${reasons}`) };
+function haltOf(claims: Claims, item: string): string | null {
+  const conflict = claims.conflicts.get(item);
+  if (conflict) return claimedBy(conflict);
+  const clash = claims.clashes.get(item);
+  return clash ? reportedBy(clash) : null;
 }
 
 /**
- * Whose `item` is by `claims`, or the sentence refusing to act on it. Never
- * the first of two claimants, and never a workflow for an item no listing
- * showed open.
+ * Whose open `item` is by `claims`, or the sentence refusing to act on it.
+ * Never the first of two claimants. Null when no listing showed it open.
  */
-function ownership(claims: Claims, item: string): Ownership {
+function ownership(claims: Claims, item: string): Ownership | null {
   const owner = claims.owner.get(item);
   if (owner !== undefined) return { workflow: owner };
   const conflict = claims.conflicts.get(item);
@@ -176,8 +176,16 @@ function ownership(claims: Claims, item: string): Ownership {
   if (clash) return { refused: `#${item} is ${reportedBy(clash)}; act on it after one source alone reports it` };
   const reasons = claims.unclaimed.get(item);
   if (reasons) return { refused: `#${item} is claimed by no workflow: ${turnedAway(reasons)}` };
-  return { refused: `#${item} is not an open item the last tick listed` };
+  return null;
 }
+
+/** The sources, by index, that list `item` as an item: closed in each, when no listing showed it open. */
+const listedIn = (graphs: readonly Graph[], item: string): number[] =>
+  [...graphs.entries()].filter(([, g]) => g.nodes.some((n) => n.id === item && n.kind === ITEM_KIND)).map(([index]) => index);
+
+/** The workflows reading the sources at `indices`, in id order. */
+const readingAny = (sourceOf: ReadonlyMap<string, number>, indices: readonly number[]): string[] =>
+  [...sourceOf].filter(([, index]) => indices.includes(index)).map(([id]) => id).sort(compareIds);
 
 export function boardView(input: {
   workflows: ReadonlyArray<{ id: string; workflow: Workflow }>;
@@ -213,7 +221,7 @@ export function boardView(input: {
     const link = safeUrl(node.link);
     const base: BoardRow = {
       id: node.id, kind: node.kind, title: oneLine(node.title), link,
-      system: link ? systemOf(link) : null, workflow: null,
+      system: link ? systemOf(link) : null, workflow: null, tag: null,
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, updatedAt: node.updatedAt ?? null,
       round: null, model: null, effort: null,
@@ -227,7 +235,7 @@ export function boardView(input: {
     // An id chatFor refuses costs that row its Chat menu, not the page: one
     // throw here blanked every row of the board.
     const item: BoardRow = {
-      ...base, stage: stageFromLabels(labelsOf(node)).stage, panel: panelPaths(node.id), stale: input.stale?.has(node.id) ?? false,
+      ...base, stage: stageFromLabels(labelsOf(node)).stage, panel: panelPaths(node.id, false), stale: input.stale?.has(node.id) ?? false,
       chat: isItemId(node.id) ? chatFor(node.id, input.workspace) : null,
     };
     // A closed item is out of the loop whatever its labels still say or a
@@ -236,16 +244,26 @@ export function boardView(input: {
     // label nobody took off.
     if (node.closed !== null) return { ...item, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped" };
 
-    // Placed by the stages of the one workflow that owns it. An item no one
+    // Two workflows claiming it, or two trackers reporting its id, is the
+    // news, said over whatever it is doing: the tick stops a run for exactly
+    // this, and a pairing under one of the two is no longer that one's alone.
+    const { claims } = input.listing;
+    const halt = haltOf(claims, node.id);
+    if (halt) return { ...item, badge: "needs-you", stage: null, note: oneLine(halt) };
+
+    // Placed by the stages of the one workflow that owns it. An item no
     // workflow owns is placed by none: its note says why, and its row offers
     // nothing to act on — the page's writes would refuse it anyway, and an
     // offer here would be a guess at whose stages its labels mean.
-    const owner = input.listing.claims.owner.get(node.id);
+    const owner = claims.owner.get(node.id);
     const workflow = owner === undefined ? undefined : workflows.get(owner);
     const [s] = workflow ? statusRows(workflow, [node]) : [];
-    const placed: BoardRow = s
-      ? { ...item, workflow: owner ?? null, stage: s.stage, note: oneLine(s.note) }
-      : { ...item, ...unownedRow(input.listing.claims, node) };
+    const placed: BoardRow = s && workflow
+      ? {
+          ...item, workflow: owner ?? null, tag: workflows.size > 1 ? workflow.name : null,
+          stage: s.stage, note: oneLine(s.note), panel: panelPaths(node.id, true),
+        }
+      : { ...item, badge: "not-admitted", note: oneLine(`skipped: ${turnedAway(claims.unclaimed.get(node.id) ?? [])}`) };
 
     const running = input.running.get(node.id);
     if (running) {
@@ -339,6 +357,8 @@ export function boardView(input: {
   };
 }
 
+const unlisted = (item: string): Ownership => ({ refused: `#${item} has not been listed yet; act on it after the first tick` });
+
 /**
  * The stateful shell around boardView. Holds only what the process already
  * knew — the last listing and which agents are running — so losing it loses
@@ -365,7 +385,7 @@ export function createBoard(opts: {
   const nextTickAt = opts.nextTickAt ?? (() => null);
   const nest = new Set(opts.nest);
   // Null until the first listing: before it, nothing is anyone's.
-  let listing: Pick<WorkspaceListing, "graphs" | "claims"> | null = null;
+  let listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf"> | null = null;
   let graph: Graph = { nodes: [], relationships: [] };
   const running = new Map<string, Running>();
   const sent = new Map<string, string>();
@@ -424,7 +444,22 @@ export function createBoard(opts: {
       for (const [id, released] of stepped) if (released) stepped.delete(id);
     },
     ownerOf(item): Ownership {
-      return listing ? ownership(listing.claims, item) : { refused: `#${item} has not been listed yet; act on it after the first tick` };
+      if (!listing) return unlisted(item);
+      return ownership(listing.claims, item) ?? {
+        refused: listedIn(listing.graphs, item).length ? `#${item} is closed, so nothing is written to it` : `#${item} is not an item the last tick listed`,
+      };
+    },
+    readerOf(item): ReadRoute {
+      if (!listing) return unlisted(item);
+      const open = ownership(listing.claims, item);
+      if (open) return open;
+      // Closed, and so no workflow's: read through the one source that lists
+      // it. Two that do may be two different items under one id, and which
+      // one was meant is not for the board to pick.
+      const [only, ...more] = listedIn(listing.graphs, item);
+      if (only === undefined) return { refused: `#${item} is not an item the last tick listed` };
+      if (more.length === 0) return { source: only };
+      return { refused: `#${item} is ${reportedBy(readingAny(listing.sourceOf, [only, ...more]))}; read it in its own tracker` };
     },
     async view(): Promise<BoardView> {
       // Open items only: nothing else can be held, and a closed item's

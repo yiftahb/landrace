@@ -392,6 +392,7 @@ describe("boardSink", () => {
           observe: () => { throw new Error("display broke"); },
           list: () => {},
           ownerOf: (item) => ({ refused: `#${item} is not listed` }),
+          readerOf: (item) => ({ refused: `#${item} is not listed` }),
           view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
         },
       };
@@ -415,6 +416,7 @@ describe("boardSink", () => {
         observe: (e) => { observed.push(e); },
         list: () => {},
         ownerOf: (item) => ({ refused: `#${item} is not listed` }),
+        readerOf: (item) => ({ refused: `#${item} is not listed` }),
         view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
       },
     };

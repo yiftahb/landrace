@@ -2,7 +2,9 @@ import * as http from "node:http";
 import { request } from "node:http";
 import { gotoByClaim, panelByClaim } from "#cli/start.js";
 import { claimItems } from "#core/index.js";
-import type { ActivityLog, BoardView, GotoPath, GotoResult, Graph, ItemPanel, Node, UiServer, WakeResult, Workflow } from "#namespace.js";
+import type {
+  ActivityLog, BoardView, GotoPath, GotoResult, Graph, ItemPanel, ItemReads, Node, UiServer, WakeResult, Workflow,
+} from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
 import { describeLoopback } from "#tests/support/loopback.js";
@@ -663,15 +665,19 @@ describeLoopback("the page's routes follow the item's workflow", () => {
     { id: "fast", workflow: flow("Fastlane", "lr:fast", "build") },
     { id: "gl", workflow: flow("Lab", "lr:auto", "spec") },
   ];
-  const item = (id: string, labels: string[]): Node => ({
-    id, kind: "item", title: `t${id}`, link: "", closed: null, priority: null, origin: null,
+  const item = (id: string, labels: string[], closed: Node["closed"] = null): Node => ({
+    id, kind: "item", title: `t${id}`, link: "", closed, priority: null, origin: null,
     state: { labels: [...labels, "lr:stage:blocked", "lr:blocked"] },
   });
+  // #7 is closed where only the first tracker lists it, #9 where both do.
   const first: Graph = {
-    nodes: [item("1", ["lr:auto"]), item("2", ["lr:fast"]), item("4", ["lr:auto", "lr:fast"]), item("5", ["lr:auto"]), item("6", [])],
+    nodes: [
+      item("1", ["lr:auto"]), item("2", ["lr:fast"]), item("4", ["lr:auto", "lr:fast"]), item("5", ["lr:auto"]), item("6", []),
+      item("7", ["lr:auto"], "done"), item("9", ["lr:auto"], "done"),
+    ],
     relationships: [],
   };
-  const second: Graph = { nodes: [item("5", ["lr:auto"])], relationships: [] };
+  const second: Graph = { nodes: [item("5", ["lr:auto"]), item("9", ["lr:auto"], "done")], relationships: [] };
 
   const ours = (action: string) => ({
     "x-landrace-action": action, origin: `http://127.0.0.1:${server.port}`, "sec-fetch-site": "same-origin",
@@ -682,6 +688,7 @@ describeLoopback("the page's routes follow the item's workflow", () => {
     const board = createBoard({ workflows: WORKFLOWS, held: async () => null, folder: "f", workspace: "/w", nest: [] });
     board.list({
       graphs: [first, second],
+      sourceOf: new Map(WORKFLOWS.map((w) => [w.id, w.id === "gl" ? 1 : 0])),
       claims: claimItems(WORKFLOWS.map((w) => ({ ...w, source: w.id === "gl" ? 1 : 0 })), [first, second]),
     });
     const calls: unknown[][] = [];
@@ -699,6 +706,10 @@ describeLoopback("the page's routes follow the item's workflow", () => {
       finish: async (item) => { calls.push([workflow, "finish", item]); return { stage: "spec", round: 1, discarded: [] }; },
       release: async (item) => { calls.push([workflow, "release", item]); return { stage: "spec", round: 1 }; },
     });
+    const readsOf = (source: number): ItemReads => ({
+      conversation: async (item) => { calls.push([`source ${source}`, "conversation", item]); return []; },
+      pairing: async (item) => { calls.push([`source ${source}`, "pairing", item]); return { open: null, offers: [] }; },
+    });
     const activity: ActivityLog = { begin: () => {}, record: () => {}, read: async () => ({ stage: null, round: null, lines: [], total: 0 }) };
     const owner = (item: string) => board.ownerOf(item);
     const ids = ["main", "fast", "gl"];
@@ -707,7 +718,10 @@ describeLoopback("the page's routes follow the item's workflow", () => {
     if (!goto) throw new Error("every workflow here can write a record");
     server = await serveBoard({
       port: 0, view: () => board.view(), tick, goto,
-      panel: panelByClaim(owner, owner, new Map(ids.map((id) => [id, panelOf(id)])), activity),
+      panel: panelByClaim({
+        read: (item) => board.readerOf(item), write: owner, activity,
+        panels: new Map(ids.map((id) => [id, panelOf(id)])), sources: new Map([[0, readsOf(0)], [1, readsOf(1)]]),
+      }),
     });
     return { calls, tick };
   };
@@ -732,7 +746,7 @@ describeLoopback("the page's routes follow the item's workflow", () => {
     ["two workflows claim", "4", "#4 is claimed by fast and main; act on it after one workflow alone claims it"],
     ["two trackers report", "5", "#5 is reported by the sources of fast, gl and main; act on it after one source alone reports it"],
     ["no workflow claims", "6", "#6 is claimed by no workflow: no lr:auto label; no lr:fast label"],
-    ["the last listing never saw", "99", "#99 is not an open item the last tick listed"],
+    ["the last listing never saw", "99", "#99 is not an item the last tick listed"],
   ] as const;
 
   it.each(refusals)("refuses every write and read of an item %s with 409 and the board's sentence, reaching no workflow", async (_, id, sentence) => {
@@ -749,5 +763,28 @@ describeLoopback("the page's routes follow the item's workflow", () => {
     }
     expect(calls).toEqual([]);
     expect(tick).not.toHaveBeenCalled();
+  });
+
+  /*
+   * A Done item's conversation was readable before workspaces, and is again:
+   * through the one tracker that lists it. Nothing is written to it.
+   */
+  it("reads a closed item through the one source that lists it, and refuses every write to it", async () => {
+    const { calls, tick } = await serve();
+    expect((await get(server.port, "/items/7/conversation", { headers: ours("conversation") })).status).toBe(200);
+    expect((await get(server.port, "/items/7/pairing", { headers: ours("pairing") })).status).toBe(200);
+    for (const [path, action] of [["reply", "reply"], ["resolve", "resolve"], ["release", "release"], ["retry", "retry"]] as const) {
+      const res = await get(server.port, `/items/7/${path}`, { method: "POST", headers: ours(action), body: "hi" });
+      expect([path, res.status, res.body]).toEqual([path, 409, "#7 is closed, so nothing is written to it"]);
+    }
+    expect(calls).toEqual([["source 0", "conversation", "7"], ["source 0", "pairing", "7"]]);
+    expect(tick).not.toHaveBeenCalled();
+  });
+
+  it("refuses to read a closed id two trackers both list, rather than picking one", async () => {
+    const { calls } = await serve();
+    const res = await get(server.port, "/items/9/conversation", { headers: ours("conversation") });
+    expect([res.status, res.body]).toEqual([409, "#9 is reported by the sources of fast, gl and main; read it in its own tracker"]);
+    expect(calls).toEqual([]);
   });
 });

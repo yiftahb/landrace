@@ -66,6 +66,21 @@ export function listingFailures(listing: WorkspaceListing): string[] {
 }
 
 /**
+ * Every distinct source, by identity, in the order the workflows first name
+ * them, and the index of each workflow's: what every listing of one runtime
+ * indexes its graphs by.
+ */
+export function sourcesOf(workflows: ReadonlyArray<Pick<WorkflowRuntime, "id" | "source">>): { sources: Source[]; sourceOf: Map<string, number> } {
+  const sources: Source[] = [];
+  const sourceOf = new Map<string, number>();
+  for (const w of workflows) {
+    const known = sources.indexOf(w.source);
+    sourceOf.set(w.id, known === -1 ? sources.push(w.source) - 1 : known);
+  }
+  return { sources, sourceOf };
+}
+
+/**
  * Every distinct source listed once, and every open item claimed for at most
  * one workflow.
  *
@@ -78,12 +93,7 @@ export function listingFailures(listing: WorkspaceListing): string[] {
  * listed is unknown this tick — so its items are neither worked nor stopped.
  */
 export async function listWorkspace(runtime: Pick<WorkspaceRuntime, "workflows" | "ctx" | "log">): Promise<WorkspaceListing> {
-  const sources: Source[] = [];
-  const sourceOf = new Map<string, number>();
-  for (const w of runtime.workflows) {
-    const known = sources.indexOf(w.source);
-    sourceOf.set(w.id, known === -1 ? sources.push(w.source) - 1 : known);
-  }
+  const { sources, sourceOf } = sourcesOf(runtime.workflows);
 
   // Through a promise first: a source is a hook, and one that throws before
   // it returns a promise would otherwise take every other source down with it.

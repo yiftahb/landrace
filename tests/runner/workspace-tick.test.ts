@@ -1,10 +1,12 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defineNotifier } from "#hooks/contracts.js";
 import type {
-  Executor, ExternalState, HookContext, LandraceEvent, RuntimeContext, Source, Step, Workflow, WorkflowRuntime, WorkspaceListing,
-  WorkspaceRuntime,
+  Executor, ExternalState, HookContext, LandraceEvent, NotifyEvent, RuntimeContext, Source, Step, Workflow, WorkflowRuntime,
+  WorkspaceListing, WorkspaceRuntime,
 } from "#namespace.js";
+import { createNotify } from "#runner/notify.js";
 import { createExternalState } from "#testing/index.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
@@ -348,5 +350,42 @@ describe("one tick over every workflow", () => {
     expect((await first)[0]?.outcome).toMatch(/^halt .*aborted/);
     expect(a.runs).toEqual([{ workflow: "main", stopped: true }]);
     expect(two.comments("12")).toEqual([]);
+  });
+});
+
+/*
+ * One notifier object, loaded by both workflows from one hook module: each
+ * workflow's notify sends through it for that workflow's own items only, so
+ * an item coming to rest waiting on you is said once, not once per workflow.
+ */
+describe("a notifier two workflows share", () => {
+  /** One stage that asks a person at once: entered, the item waits on you. */
+  const ASKING: Workflow = {
+    version: 1, name: "asking", description: "test",
+    stages: [{
+      id: "ask", entry: true, triggers: [{ when: { "run.stage": null } }],
+      on_enter: [{ type: "tracker.status", value: "ask" }, { type: "tracker.label", add: ["lr:awaiting"] }],
+    }],
+  };
+
+  it("sends once per item that comes to rest waiting on you, naming the workflow it is in", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:fast"] }] });
+    const a = agents();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main")], ["fast", "lr:fast", state, state.source, a.agent("fast")]]);
+    const sent: NotifyEvent[] = [];
+    const chat = defineNotifier({ id: "chat", send: async (e) => { sent.push(e); } });
+    for (const wf of w.runtime.workflows) {
+      wf.deps.workflow = { ...ASKING, name: wf.id === "main" ? "Main" : "Fastlane", eligible: wf.deps.workflow.eligible ?? [] };
+      wf.deps.notify = createNotify({
+        id: wf.id, workflow: wf.deps.workflow, notify: { on: ["needs-you"], via: ["chat"] }, notifiers: new Map([["chat", chat]]),
+        ctx: w.runtime.ctx, log: w.runtime.log, board: () => null,
+      });
+    }
+
+    await w.once();
+    await new Promise((r) => setImmediate(r));
+
+    expect(sent.map((e) => [e.item, e.workflow, e.workflowName]).sort()).toEqual([["1", "main", "Main"], ["2", "fast", "Fastlane"]]);
+    expect(a.runs).toEqual([]);
   });
 });

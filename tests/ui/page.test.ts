@@ -983,9 +983,9 @@ describe("an item row stopped by a security check", () => {
  * note says why.
  */
 describe("an item row's workflow", () => {
-  const row = (workflow: string | null) => ({
+  const row = (workflow: string | null, tag: string | null = null) => ({
     id: "12", kind: "item", title: "Add export", link: "", closed: null, badge: "waiting", stage: "build",
-    priority: null, note: "queued", since: null, round: null, model: null, chat: null, screened: false, children: [], workflow,
+    priority: null, note: "queued", since: null, round: null, model: null, chat: null, screened: false, children: [], workflow, tag,
   });
   const build = (r: ReturnType<typeof row>): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
@@ -993,17 +993,18 @@ describe("an item row's workflow", () => {
     itemRowFor(ROW, 0, 0, false)`, { ROW: r, document: fakeDocument }) as FakeElement;
   const tagOf = (li: FakeElement): FakeElement | undefined => descendants(li).find((d) => d.className.split(" ").includes("workflow"));
 
-  it("is named in a small tag right after the title", () => {
-    const li = build(row("fast"));
+  it("is named, by its name, in a small tag right after the title", () => {
+    const li = build(row("fast", "Fastlane"));
     const tag = tagOf(li);
-    expect(tag?.text).toBe("fast");
+    expect(tag?.text).toBe("Fastlane");
     const line = descendants(li).find((d) => d.children.includes(tag as FakeElement));
     const at = line?.children.findIndex((c) => c.className.split(" ").includes("title")) ?? -1;
     expect(line?.children[at + 1]).toBe(tag);
   });
 
-  it("is not drawn for an item no one workflow owns", () => {
+  it("is not drawn for an item no one workflow owns, nor in a workspace of one workflow", () => {
     expect(tagOf(build(row(null)))).toBeUndefined();
+    expect(tagOf(build(row("main")))).toBeUndefined();
   });
 });
 
@@ -1973,6 +1974,51 @@ describe("the composer's Reply", () => {
 });
 
 /*
+ * A read the server declines — an item two workflows claim, a closed id two
+ * trackers list — comes back 409 with its own sentence, which says why far
+ * better than a fixed line; anything else keeps the fixed one.
+ */
+describe("the panel's reads, when the server declines them", () => {
+  const read = async (fn: "loadConversation" | "loadPairing", status: number, body: string) => {
+    const context: Record<string, unknown> = {
+      panelId: "4", conversation: { lines: null, error: "" }, pairing: { view: null, error: "", command: null },
+      currentRow: () => ({ id: "4", panel: { conversation: "/items/4/conversation", pairing: "/items/4/pairing" } }),
+      fetch: () => Promise.resolve({ ok: false, status, text: () => Promise.resolve(body), json: () => Promise.reject(new Error("not json")) }),
+      renderPanel: () => {},
+    };
+    runInNewContext(`${fnSource("refusalOf")}${fnSource(fn)} ${fn}()`, context);
+    await new Promise((r) => setTimeout(r, 0));
+    return context;
+  };
+  const SAID = "#4 is claimed by fast and main; act on it after one workflow alone claims it";
+
+  it("shows the server's sentence for the conversation it refused", async () => {
+    expect(((await read("loadConversation", 409, SAID)).conversation as { error: string }).error).toBe(SAID);
+    expect(((await read("loadConversation", 502, "upstream")).conversation as { error: string }).error).toBe("could not read the conversation");
+  });
+
+  it("shows the server's sentence for the pairing read it refused", async () => {
+    expect(((await read("loadPairing", 409, SAID)).pairing as { error: string }).error).toBe(SAID);
+    expect(((await read("loadPairing", 502, "upstream")).pairing as { error: string }).error).toBe("could not read what may be paired on");
+  });
+});
+
+/*
+ * The composer writes, so it is offered only where the server put write
+ * paths: on an item waiting on you that one workflow owns.
+ */
+describe("the panel's composer", () => {
+  const shown = (row: object, mode: string): boolean =>
+    runInNewContext(`${fnSource("composerShown")} composerShown(ROW, MODE)`, { ROW: row, MODE: mode }) as boolean;
+
+  it("is shown on an item waiting on you that it may write to, and not on one it may only read", () => {
+    expect(shown({ panel: { reply: "/items/1/reply" } }, "needs-you")).toBe(true);
+    expect(shown({ panel: { reply: null } }, "needs-you")).toBe(false);
+    expect(shown({ panel: { reply: "/items/1/reply" } }, "other")).toBe(false);
+  });
+});
+
+/*
  * The panel's Pairing section: built from the server's answer and the
  * panel's own state, and nothing the page puts together itself.
  */
@@ -1983,12 +2029,13 @@ describe("the panel's Pairing section", () => {
     override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
   }
   const doc = { createElement: (tag: string) => new Clickable(tag), createElementNS: (_: string, tag: string) => new Clickable(tag) };
-  const section = (view: object | null, state: object = {}) => {
+  const section = (view: object | null, state: object = {}, row: object = {}) => {
     const seen: unknown[][] = [];
     const nodes = runInNewContext(
       `${["el", "panelNote", "offerLabel", "pairingSectionOf"].map(fnSource).join("")} pairingSectionOf(ROW, VIEW, STATE)`,
       {
-        ROW: { id: "29" }, VIEW: view, STATE: { command: null, note: "", busy: false, error: "", ...state }, document: doc,
+        ROW: { id: "29", panel: { pair: "/items/29/pair" }, ...row }, VIEW: view,
+        STATE: { command: null, note: "", busy: false, error: "", ...state }, document: doc,
         pairWrite: (...a: unknown[]) => seen.push(["write", ...a]), copyCommand: () => seen.push(["copy"]),
       },
     ) as Clickable[];
@@ -2030,13 +2077,26 @@ describe("the panel's Pairing section", () => {
     expect(s.text.join(" ")).toContain("#29 is busy");
     const b = runInNewContext(
       `${["el", "panelNote", "offerLabel", "pairingSectionOf"].map(fnSource).join("")} pairingSectionOf(ROW, VIEW, STATE)`,
-      { ROW: { id: "29" }, VIEW: { open: null, offers: [{ stage: "spec", round: 1, continue: false }] }, STATE: { busy: true, note: "" }, document: doc },
+      {
+        ROW: { id: "29", panel: { pair: "/items/29/pair" } }, VIEW: { open: null, offers: [{ stage: "spec", round: 1, continue: false }] },
+        STATE: { busy: true, note: "" }, document: doc,
+      },
     ) as Clickable[];
     expect((b.flatMap(descendants).find((n) => n.tag === "button") as Clickable).disabled).toBe(true);
   });
 
   it("reads while it waits on the server's answer", () => {
     expect(section(null).text.join(" ")).toMatch(/Reading what may be paired on/);
+  });
+
+  // A closed item, or one no one workflow owns, carries no write paths: the
+  // section says what is open, and offers nothing to do about it.
+  it("offers no button on an item whose panel only reads", () => {
+    const readOnly = { panel: { pair: null, finish: null, release: null } };
+    const open = section({ open: { stage: "spec", round: 2, n: 1, at: "2026-01-01T00:00:00Z" }, offers: [] }, {}, readOnly);
+    expect(open.text.join(" ")).toMatch(/Pairing on spec, round 2/);
+    expect(open.buttons).toEqual([]);
+    expect(section({ open: null, offers: [{ stage: "spec", round: 1, continue: false }] }, {}, readOnly).buttons).toEqual([]);
   });
 });
 

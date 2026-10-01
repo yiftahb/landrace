@@ -39,7 +39,7 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  */
 const hookSource = (
   provides?: string[], preflight?: "pass" | "throw", preFails?: string,
-  items: Array<{ id: string; labels: string[] }> = [{ id: ITEM, labels: ["lr:auto"] }], listFails?: string,
+  items: Array<{ id: string; labels: string[]; closed?: "done" }> = [{ id: ITEM, labels: ["lr:auto"] }], listFails?: string,
   listFailsWhen?: string,
 ): string => `import { existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
@@ -51,8 +51,8 @@ const brand = (kind: string, value: object): object =>
 interface Ctx { item: string; config: { tracker: { record: string } } }
 
 const graph = {
-  nodes: ${JSON.stringify(items.map(({ id, labels }) => ({
-    id, kind: "item", title: "Add export", link: `u/${id}`, closed: null, priority: null, origin: null, state: { labels, assignees: [] },
+  nodes: ${JSON.stringify(items.map(({ id, labels, closed }) => ({
+    id, kind: "item", title: "Add export", link: `u/${id}`, closed: closed ?? null, priority: null, origin: null, state: { labels, assignees: [] },
   })))},
   relationships: [],
 };
@@ -165,7 +165,7 @@ async function fixture(
     /** More of `landrace.yaml`, after everything else in it. */
     configExtra?: string;
     /** The items the fake source lists; one `lr:auto` item by default. */
-    items?: Array<{ id: string; labels: string[] }>;
+    items?: Array<{ id: string; labels: string[]; closed?: "done" }>;
     /** A message the source's `list` fails with. */
     listFails?: string;
     /** A file whose presence makes the source's `list` fail, for a test to switch the tracker off mid-run. */
@@ -1005,7 +1005,10 @@ describeLoopback("runStart's page while a source cannot list", () => {
 describeLoopback("runStart's page over two workflows", () => {
   it("names each item's workflow, files one both claim under Needs you, and refuses to act on it", async () => {
     const { dir, record } = await fixture({
-      items: [{ id: ITEM, labels: ["lr:auto"] }, { id: "4343", labels: ["lr:fast"] }, { id: "4444", labels: ["lr:auto", "lr:fast"] }],
+      items: [
+        { id: ITEM, labels: ["lr:auto"] }, { id: "4343", labels: ["lr:fast"] }, { id: "4444", labels: ["lr:auto", "lr:fast"] },
+        { id: "4545", labels: ["lr:auto"], closed: "done" },
+      ],
     });
     await withFast(dir);
     const said: string[] = [];
@@ -1019,11 +1022,12 @@ describeLoopback("runStart's page over two workflows", () => {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
       const rows = async (): Promise<BoardView["rows"]> => ((await (await fetch(`${url}board.json`)).json()) as BoardView).rows;
-      await until(async () => (await applied(record)).length === 2 && (await rows()).length === 3, "the first tick to work both items");
+      await until(async () => (await applied(record)).length === 2 && (await rows()).length === 4, "the first tick to work both items");
 
       const row = async (id: string) => (await rows()).find((r) => r.id === id);
-      expect(await row(ITEM)).toMatchObject({ workflow: "main" });
-      expect(await row("4343")).toMatchObject({ workflow: "fast" });
+      // Tagged by name: two workflows, so which one is worth saying.
+      expect(await row(ITEM)).toMatchObject({ workflow: "main", tag: "e2e" });
+      expect(await row("4343")).toMatchObject({ workflow: "fast", tag: "fast" });
       expect(await row("4444")).toMatchObject({
         workflow: null, badge: "needs-you", note: "claimed by fast and main", retry: null, clear: null, goto: [],
       });
@@ -1036,6 +1040,13 @@ describeLoopback("runStart's page over two workflows", () => {
         expect([path, res.status, await res.text()]).toEqual([path, 409, sentence]);
       }
       expect((await applied(record)).filter((w) => JSON.stringify(w).includes("4444"))).toEqual([]);
+
+      // A closed item is no workflow's, but its conversation is read through
+      // the one source that lists it; nothing is written to it.
+      const read = await fetch(`${url}items/4545/conversation`, { headers: { "x-landrace-action": "conversation" } });
+      expect([read.status, await read.json()]).toEqual([200, []]);
+      const replied = await fetch(`${url}items/4545/reply`, { method: "POST", headers: { "x-landrace-action": "reply" }, body: "hi" });
+      expect([replied.status, await replied.text()]).toEqual([409, "#4545 is closed, so nothing is written to it"]);
     } finally {
       process.emit("SIGINT");
       await running;

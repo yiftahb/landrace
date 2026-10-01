@@ -2053,6 +2053,12 @@ export interface BoardRow {
    * which of those an open one is.
    */
   workflow: string | null;
+  /**
+   * The owning workflow's name, drawn beside the title; null wherever
+   * `workflow` is, and in a workspace of one workflow, where it would say
+   * nothing. Display only: nothing routes by it.
+   */
+  tag: string | null;
   /** Items only: where this item itself stands. Null on an artifact row. */
   badge: Lane | null;
   /**
@@ -2122,14 +2128,18 @@ export interface BoardRow {
 export interface PanelPaths {
   activity: string;
   conversation: string;
-  reply: string;
-  ask: string;
-  resolve: string;
+  /**
+   * The writes are null on an item no one workflow owns, or that is closed:
+   * the page's routes refuse every write to one, so the page offers none.
+   */
+  reply: string | null;
+  ask: string | null;
+  resolve: string | null;
   /** The Pairing section's read, and its three writes. */
   pairing: string;
-  pair: string;
-  finish: string;
-  release: string;
+  pair: string | null;
+  finish: string | null;
+  release: string | null;
 }
 
 /** One record of an item's conversation, as the panel shows it: plain text, oldest first. */
@@ -2148,6 +2158,9 @@ export interface ConversationLine {
  * What the item panel reads and writes. The top of the panel reads the
  * BoardRow already in /board.json; everything here is the bottom half.
  */
+/** The item panel's two reads that spend a tracker read: what a closed item's source answers, as a workflow's panel does. */
+export type ItemReads = Pick<ItemPanel, "conversation" | "pairing">;
+
 export interface ItemPanel {
   activity(item: string, after: number): Promise<ActivityPage>;
   conversation(item: string): Promise<ConversationLine[]>;
@@ -2180,12 +2193,21 @@ export interface BoardView {
 /** Which workflow an item belongs to, or the sentence refusing to act on it. */
 export type Ownership = { workflow: string } | { refused: string };
 
+/**
+ * Where a read of an item goes: the workflow that owns it, or — for a closed
+ * item, which no workflow claims — the one source that lists it, by its
+ * index in the listing; or the sentence refusing the read.
+ */
+export type ReadRoute = Ownership | { source: number };
+
 export interface Board {
   observe(e: LandraceEvent): void;
-  /** What the page is shown of a listing: every source's graph, and who owns what in them. */
-  list(listing: Pick<WorkspaceListing, "graphs" | "claims">): void;
-  /** By the last listing: never a guess at an item two workflows claim, two sources report, or none claims. */
+  /** What the page is shown of a listing: every source's graph, which workflows read each, and who owns what in them. */
+  list(listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">): void;
+  /** For a write, by the last listing: never a guess at an item two workflows claim, two sources report, or none claims. */
   ownerOf(item: string): Ownership;
+  /** For a read, by the last listing: as `ownerOf`, and a closed item through the one source that lists it. */
+  readerOf(item: string): ReadRoute;
   view(): Promise<BoardView>;
 }
 

@@ -973,11 +973,12 @@ function itemRowFor(row, depth, now, open) {
     title.addEventListener("click", () => openPanel(row.id));
   }
   top.append(num, title);
-  // The workflow that owns the item, small, right after its title. An item
-  // no one workflow owns names none: its note already says why.
-  if (row.workflow) {
-    const workflow = el("span", "workflow shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300", row.workflow);
-    workflow.title = "Workflow: " + row.workflow;
+  // The workflow that owns the item, by name, small, right after its title.
+  // The server leaves it off where it would say nothing — a workspace of one
+  // workflow — and on an item no one workflow owns, whose note says why.
+  if (row.tag) {
+    const workflow = el("span", "workflow shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300", row.tag);
+    workflow.title = "Workflow " + row.workflow;
     top.append(workflow);
   }
   // No stage at all (a halted item, say) shows no chip — not an empty or
@@ -1586,6 +1587,12 @@ function setPanelNote(text) {
   if (panelStatus.textContent !== text) panelStatus.textContent = text;
 }
 
+// The composer writes: offered on an item waiting on you, and only where
+// the server put write paths on its panel — an item one workflow owns.
+function composerShown(row, mode) {
+  return mode === "needs-you" && Boolean(row.panel && row.panel.reply);
+}
+
 function syncComposer() {
   for (const b of [replyButton, askButton, resolveButton]) b.disabled = panelBusy;
 }
@@ -1620,8 +1627,8 @@ function renderPanel() {
     }
     panelPairing.hidden = !pairing.shown;
     if (pairing.shown) replaceIfChanged(panelPairing, pairingSectionOf(row, pairing.view, pairing));
-    composer.hidden = mode !== "needs-you";
-    if (mode === "needs-you") renderChat(row);
+    composer.hidden = !composerShown(row, mode);
+    if (!composer.hidden) renderChat(row);
     syncComposer();
     // Held at the bottom while it was there — the newest line is the one
     // worth reading — and left where a person scrolled it otherwise.
@@ -1670,20 +1677,34 @@ function pollPanel(delay) {
   }, delay);
 }
 
+// What a read the server answered with anything but 200 says: a 409 is
+// the server declining it — the item is no one workflow's, or a closed id
+// two trackers list — in a sentence of its own, which says why better than
+// the fixed line; anything else is a failure the landrace log explains.
+async function refusalOf(res, fallback) {
+  if (res.status !== 409) return fallback;
+  const said = await res.text().then((t) => t.trim(), () => "");
+  return said || fallback;
+}
+
 // Asked of the page's own script only: it spends a tracker read.
 async function loadConversation() {
   const row = currentRow();
   if (!row) return;
   const id = row.id;
+  let error = "could not read the conversation";
   try {
     const res = await fetch(row.panel.conversation, { cache: "no-store", headers: { "x-landrace-action": "conversation" } });
-    if (!res.ok) throw new Error(String(res.status));
+    if (!res.ok) {
+      error = await refusalOf(res, error);
+      throw new Error(String(res.status));
+    }
     const lines = await res.json();
     if (panelId !== id) return;
     conversation = { lines, error: "" };
   } catch (e) {
     if (panelId !== id) return;
-    conversation = { lines: conversation.lines, error: "could not read the conversation" };
+    conversation = { lines: conversation.lines, error };
   }
   renderPanel();
 }
@@ -1759,7 +1780,11 @@ function pairingSectionOf(row, view, state) {
     return out;
   }
   const buttons = el("div", "mt-2 flex flex-wrap items-center gap-2");
+  // An item no one workflow owns, or a closed one, has no write paths: the
+  // section says what is open on it, and offers nothing to do about it.
+  const writes = Boolean(row.panel && row.panel.pair);
   const button = (label, key, onClick) => {
+    if (!writes) return;
     const b = el("button", "${BUTTON}", label);
     b.type = "button";
     b.disabled = state.busy;
@@ -1793,9 +1818,13 @@ async function loadPairing() {
   const row = currentRow();
   if (!row) return;
   const id = row.id;
+  let error = "could not read what may be paired on";
   try {
     const res = await fetch(row.panel.pairing, { cache: "no-store", headers: { "x-landrace-action": "pairing" } });
-    if (!res.ok) throw new Error(String(res.status));
+    if (!res.ok) {
+      error = await refusalOf(res, error);
+      throw new Error(String(res.status));
+    }
     const view = await res.json();
     if (panelId !== id) return;
     pairing.view = view;
@@ -1804,7 +1833,7 @@ async function loadPairing() {
     if (!view.open) pairing.command = null;
   } catch (e) {
     if (panelId !== id) return;
-    pairing.error = "could not read what may be paired on";
+    pairing.error = error;
   }
   renderPanel();
 }

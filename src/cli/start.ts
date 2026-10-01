@@ -11,6 +11,7 @@ import type {
   Board,
   BuildOptions,
   ConversationDeps,
+  ConversationLine,
   EventName,
   Executor,
   ExecutorContext,
@@ -21,6 +22,8 @@ import type {
   LoadedWorkflow,
   Ownership,
   PairDeps,
+  PreHook,
+  ReadRoute,
   Preflight,
   Problem,
   RedactingLogger,
@@ -33,6 +36,7 @@ import type {
   Source,
   StartOptions,
   ItemPanel,
+  ItemReads,
   UiServer,
   WakeResult,
   WorkflowRuntime,
@@ -52,7 +56,7 @@ import { runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { oneLine } from "#runner/status.js";
-import { claimsOf, listingFailures, listWorkspace, tickWorkspace } from "#runner/tick.js";
+import { claimsOf, listingFailures, listWorkspace, sourcesOf, tickWorkspace } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
@@ -171,13 +175,34 @@ export function panelFor(
     finish: (item, note) => paired((p) => finishPair(p, item, note)),
     release: (item) => paired((p) => releasePair(p, item)),
     activity: (item, after) => deps.activity.read(item, after),
-    conversation: async (item) => {
-      const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
-      return conversationOf(snapshot.entries ?? []);
-    },
+    conversation: (item) => conversationIn(deps, item),
     reply: (item, message) => scrubbed(postReply(deps, item, message)),
     ask: (item, message) => scrubbed(conversation.ask(item, message)),
     resolve: (item) => scrubbed(conversation.resolve(item)),
+  };
+}
+
+/** An item's records as the panel reads them, through `source` and `pre` alone. */
+async function conversationIn(deps: { source: Source; pre: PreHook[]; ctx: RuntimeContext }, item: string): Promise<ConversationLine[]> {
+  const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
+  return conversationOf(snapshot.entries ?? []);
+}
+
+/**
+ * A closed item's panel reads, through the source that lists it rather than
+ * through any one workflow: no workflow claims a closed item, and choosing
+ * one of the several that read a source would be the first match by another
+ * name. It reads with the pre hooks every workflow on that source loads, so
+ * no one workflow's own is picked over another's. A closed item has nothing
+ * to pair on; only a pairing left open on it is said.
+ */
+export function sourceReader(deps: { source: Source; pre: PreHook[]; ctx: RuntimeContext }): ItemReads {
+  return {
+    conversation: (item) => conversationIn(deps, item),
+    pairing: async (item) => {
+      const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
+      return { open: snapshot.run?.pairing ?? null, offers: [] };
+    },
   };
 }
 
@@ -731,28 +756,35 @@ export function gotoByClaim(ownerOf: (item: string) => Ownership, paths: Readonl
 
 /**
  * The item panel, each item's through its owning workflow's: a read by
- * `readOwner`, a write by `writeOwner`. A refusal is a `Refusal`, which the
+ * `read`, which sends a closed item's to the reader of the one source that
+ * lists it, and a write by `write`. A refusal is a `Refusal`, which the
  * page's routes answer with its own sentence. Activity is one log for the
  * workspace, keyed by item: what a step did stays readable whoever claims
  * the item now.
  */
-export function panelByClaim(
-  readOwner: (item: string) => Ownership,
-  writeOwner: (item: string) => Ownership,
-  panels: ReadonlyMap<string, ItemPanel>,
-  activity: ActivityLog,
-): ItemPanel {
-  const via = (ownerOf: (item: string) => Ownership) =>
-    <T>(item: string, fn: (panel: ItemPanel) => Promise<T>): Promise<T> => {
-      const owner = ownerOf(item);
-      if ("refused" in owner) return Promise.reject(new Refusal(owner.refused));
-      const panel = panels.get(owner.workflow);
-      return panel ? fn(panel) : Promise.reject(new Refusal(`#${item} belongs to ${owner.workflow}, which keeps no panel`));
-    };
-  const read = via(readOwner);
-  const write = via(writeOwner);
+export function panelByClaim(opts: {
+  read: (item: string) => ReadRoute;
+  write: (item: string) => Ownership;
+  /** Each workflow's own panel, by workflow id. */
+  panels: ReadonlyMap<string, ItemPanel>;
+  /** Each source's reader, by its index in the listing. */
+  sources: ReadonlyMap<number, ItemReads>;
+  activity: ActivityLog;
+}): ItemPanel {
+  const read = <T>(item: string, fn: (reads: ItemReads) => Promise<T>): Promise<T> => {
+    const route = opts.read(item);
+    if ("refused" in route) return Promise.reject(new Refusal(route.refused));
+    const reads = "source" in route ? opts.sources.get(route.source) : opts.panels.get(route.workflow);
+    return reads ? fn(reads) : Promise.reject(new Refusal(`#${item} has no reader in this process`));
+  };
+  const write = <T>(item: string, fn: (panel: ItemPanel) => Promise<T>): Promise<T> => {
+    const owner = opts.write(item);
+    if ("refused" in owner) return Promise.reject(new Refusal(owner.refused));
+    const panel = opts.panels.get(owner.workflow);
+    return panel ? fn(panel) : Promise.reject(new Refusal(`#${item} belongs to ${owner.workflow}, which keeps no panel`));
+  };
   return {
-    activity: (item, after) => activity.read(item, after),
+    activity: (item, after) => opts.activity.read(item, after),
     conversation: (item) => read(item, (p) => p.conversation(item)),
     pairing: (item) => read(item, (p) => p.pairing(item)),
     reply: (item, message) => write(item, (p) => p.reply(item, message)),
@@ -890,17 +922,22 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   });
   boardRef.current = board;
 
-  const readOwner = (item: string): Ownership => board.ownerOf(item);
   // A write needs the last listing to have judged the item itself: what a
   // failed source is shown as is its last good listing, which may be stale.
   const writeOwner = (item: string): Ownership => {
-    const owner = readOwner(item);
+    const owner = board.ownerOf(item);
     const failures = last.fresh ? listingFailures(last.fresh) : [];
     if ("refused" in owner || failures.length === 0) return owner;
     return { refused: rt.log.scrub(`#${item} is not written to until every source lists again: ${failures.join("; ")}`) };
   };
   // One log for the workspace, handed to every workflow alike.
   const activity = rt.workflows.find((w) => w.deps.activity)?.deps.activity;
+  // A closed item's reads, by the index its source has in every listing.
+  const sources = new Map(sourcesOf(rt.workflows).sources.map((source, index) => {
+    const on = rt.workflows.filter((w) => w.source === source);
+    const pre = [...new Set(on.flatMap((w) => w.deps.pre))].filter((hook) => on.every((w) => w.deps.pre.includes(hook)));
+    return [index, sourceReader({ source, pre, ctx: rt.ctx })];
+  }));
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
     tick: schedule.wake,
@@ -915,7 +952,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       const failures = listingFailures(listing);
       if (failures.length) throw new Error(rt.log.scrub(failures.join("; ")));
     },
-    panel: activity && panelByClaim(readOwner, writeOwner, new Map(rt.workflows.map((w) => [w.id, panelFor({
+    panel: activity && panelByClaim({ read: (item) => board.readerOf(item), write: writeOwner, activity, sources, panels: new Map(rt.workflows.map((w) => [w.id, panelFor({
       source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx,
       executor: w.deps.executor, workflow: w.deps.workflow, steps: w.deps.steps,
       ...(w.deps.sandbox ? { sandbox: w.deps.sandbox } : {}),
@@ -924,7 +961,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       ...(w.deps.childServer ? { server: w.deps.childServer } : {}),
       ...(w.deps.artifacts ? { artifacts: w.deps.artifacts } : {}),
       activity,
-    })])), activity),
+    })])) }),
   });
   if (ui) {
     console.error(`landrace: triage page at ${ui.url}`);
