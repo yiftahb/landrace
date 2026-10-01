@@ -411,6 +411,12 @@ export interface LoadedConfig {
 
 export type StepFrontMatter = z.infer<typeof stepFrontMatterSchema>;
 
+/** A step file read but not yet validated: the raw front matter, so an `extends` chain merges before zod sees it. */
+export interface ParsedStep {
+  front: Record<string, unknown>;
+  body: string;
+}
+
 export interface Step extends StepFrontMatter {
   prompt: string;
 }

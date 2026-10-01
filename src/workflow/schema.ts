@@ -58,6 +58,12 @@ export const workflowSchema = z.object({
 }).strict();
 
 export const stepFrontMatterSchema = z.object({
+  /**
+   * Another step file this one is merged over, section by section. The loader
+   * resolves and strips it before this schema runs on the merged result; it is
+   * declared so a lone parseStep of such a file is not refused as unknown.
+   */
+  extends: z.string().min(1).optional(),
   capabilities: z.array(z.string()).optional(),
   /**
    * Which model this step is worth. Read by runStep and handed to the

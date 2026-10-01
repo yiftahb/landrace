@@ -1,9 +1,10 @@
 import { readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join, posix, resolve, sep } from "node:path";
+import { isAbsolute, join, posix, relative as relativePath, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import type { z } from "zod";
-import type { ContainedPath, LoadFailureRule, Step, Workflow } from "#namespace.js";
+import type { ContainedPath, LoadFailureRule, ParsedStep, Step, Workflow } from "#namespace.js";
 import { stageBranch } from "#core/index.js";
+import { mergeSteps } from "#workflow/extend.js";
 import { stepFrontMatterSchema, workflowSchema } from "#workflow/schema.js";
 import { substituteVars } from "#workflow/vars.js";
 import { messageOf } from "#runner/errors.js";
@@ -133,12 +134,28 @@ function sayWhy(error: z.ZodError): string {
 
 const FRONT_MATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
-export function parseStep(source: string): Step {
+/** A step file split into its raw front matter and body; nothing validated yet. */
+function readStep(source: string): ParsedStep {
   const m = source.match(FRONT_MATTER);
   if (!m) throw new Error("a step file must begin with YAML front matter");
-  const front = stepFrontMatterSchema.safeParse(parse(m[1] as string) ?? {});
-  if (!front.success) throw new Error(`front matter is not valid: ${sayWhy(front.error)}`);
-  return { ...front.data, prompt: m[2] as string };
+  const front: unknown = parse(m[1] as string) ?? {};
+  if (typeof front !== "object" || front === null || Array.isArray(front)) {
+    throw new Error("front matter is not valid: it must be a mapping");
+  }
+  return { front: front as Record<string, unknown>, body: m[2] as string };
+}
+
+/** The merged step, validated once: an unknown key anywhere in the chain is refused here. */
+function validateStep({ front, body }: ParsedStep): Step {
+  const rest = { ...front };
+  delete rest.extends;
+  const parsed = stepFrontMatterSchema.safeParse(rest);
+  if (!parsed.success) throw new Error(`front matter is not valid: ${sayWhy(parsed.error)}`);
+  return { ...parsed.data, prompt: body };
+}
+
+export function parseStep(source: string): Step {
+  return validateStep(readStep(source));
 }
 
 /**
@@ -159,6 +176,7 @@ export function parseStep(source: string): Step {
 export async function loadWorkflow(
   dir: string,
   vars: ReadonlyMap<string, string> = new Map(),
+  opts: { workspace?: string } = {},
 ): Promise<{ workflow: Workflow; steps: Map<string, Step> }> {
   const raw = parse(await readFile(join(dir, "workflow.yaml"), "utf8"));
   const parsed = workflowSchema.safeParse(raw);
@@ -195,29 +213,64 @@ export async function loadWorkflow(
 
   // A step's body goes straight into an agent's prompt, and workflow.yaml is a
   // repo file a contributor's PR can edit: `step: ../../outside-secret.md`, or
-  // a symlink to the same place, read that file and prompted with it.
+  // a symlink to the same place, read that file and prompted with it. The same
+  // holds for a step's `extends:`, so each link of a chain is held inside the
+  // workspace the same way.
+  const workspace = opts.workspace ?? dir;
+  const base = relativePath(workspace, dir).split(sep).join("/");
   const steps = new Map<string, Step>();
   for (const stage of workflow.stages) {
     if (!stage.step || steps.has(stage.step)) continue;
 
-    const where = await containedPath(dir, stage.step);
-    if (!where.ok) {
-      throw new WorkflowLoadError(
-        where.kind === "missing" ? "missing-step" : "step-path",
-        where.kind === "missing"
-          ? `stage "${stage.id}" names a step file that does not exist: ${stage.step}`
-          : `stage "${stage.id}" names a step file that ${where.reason}: ${stage.step}`,
-      );
+    // Child first; each link's base is the folder of the file that names it.
+    const chain: ParsedStep[] = [];
+    const visited: string[] = [];
+    const shown: string[] = [];
+    let name = posix.normalize(posix.join(base, stage.step));
+    let from = base;
+    let ref: string = stage.step;
+    for (;;) {
+      const where = await workspacePath(workspace, from, ref);
+      if (!where.ok) {
+        const subject = chain.length === 0 ? `stage "${stage.id}" names a step file` : `step ${shown.at(-1)} extends a step file`;
+        throw new WorkflowLoadError(
+          where.kind === "missing" ? "missing-step" : "step-path",
+          where.kind === "missing" ? `${subject} that does not exist: ${ref}` : `${subject} that ${where.reason}: ${ref}`,
+        );
+      }
+      shown.push(name);
+      if (visited.includes(where.path)) {
+        throw new WorkflowLoadError("step-path", `extends loop: ${shown.join(" → ")}`);
+      }
+      visited.push(where.path);
+
+      // Existence was decided above, by the same realpath the containment check
+      // used; a second "does it exist" guard here would be unreachable.
+      const source = await readFile(where.path, "utf8");
+      let parsedStep: ParsedStep;
+      try {
+        parsedStep = readStep(source);
+      } catch (e) {
+        // Named, because "front matter is not valid" is unactionable when a
+        // workflow has five step files and the loader read them in graph order.
+        throw new WorkflowLoadError("schema", `step ${chain.length === 0 ? stage.step : name}: ${messageOf(e)}`);
+      }
+      chain.push(parsedStep);
+      const next = parsedStep.front.extends;
+      if (next === undefined) break;
+      if (typeof next !== "string" || next === "") {
+        throw new WorkflowLoadError("schema", `step ${name}: extends must be a non-empty path`);
+      }
+      from = posix.dirname(name);
+      ref = next;
+      name = posix.normalize(posix.join(from, next));
     }
 
-    // Existence was decided above, by the same realpath the containment check
-    // used; a second "does it exist" guard here would be unreachable.
-    const source = await readFile(where.path, "utf8");
     try {
-      steps.set(stage.step, fill(parseStep(source), stage.step));
+      const root = chain.pop() as ParsedStep;
+      const merged = chain.reduceRight((acc, child) => mergeSteps(acc, child), root);
+      steps.set(stage.step, fill(validateStep(merged), stage.step));
     } catch (e) {
-      // Named, because "front matter is not valid" is unactionable when a
-      // workflow has five step files and the loader read them in graph order.
       throw new WorkflowLoadError("schema", `step ${stage.step}: ${messageOf(e)}`);
     }
   }

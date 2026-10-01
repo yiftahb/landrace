@@ -173,3 +173,53 @@ describe("a stage's branch", () => {
       .rejects.toMatchObject({ rule: "branch", message: expect.stringMatching(/no step/) });
   });
 });
+
+describe("a step file that extends another", () => {
+  let ws: string;
+  const put = (rel: string, text: string): void => {
+    mkdirSync(join(ws, rel, ".."), { recursive: true });
+    writeFileSync(join(ws, rel), text);
+  };
+  const flow = (name: string, step: string): void =>
+    put(`workflows/${name}/workflow.yaml`,
+      `version: 1\nname: ${name}\ndescription: d\nstages:\n  - id: build\n    entry: true\n    terminal: true\n    step: ${step}\n`);
+
+  beforeEach(() => { ws = mkdtempSync(join(tmpdir(), "landrace-ext-")); });
+  afterEach(() => { rmSync(ws, { recursive: true, force: true }); });
+
+  it("loads a step that extends another, merged", async () => {
+    put("workflows/main/steps/build.md", "---\ncapabilities: [repo:read]\nmodel: opus\n---\nLead.\n\n## What to build\n\nSpec.\n\n## Rules\n\nR.\n");
+    put("workflows/fast/steps/build.md", "---\nextends: ../../main/steps/build.md\neffort: high\n---\n## What to build\n\nItem.\n");
+    flow("fast", "steps/build.md");
+    const { steps } = await loadWorkflow(join(ws, "workflows/fast"), new Map(), { workspace: ws });
+    const step = steps.get("steps/build.md");
+    expect(step).toMatchObject({ capabilities: ["repo:read"], model: "opus", effort: "high" });
+    expect(step).not.toHaveProperty("extends");
+    expect(step?.prompt).toContain("Item.");
+    expect(step?.prompt).not.toContain("Spec.");
+    expect(step?.prompt).toContain("## Rules");
+  });
+
+  it("refuses an extends loop, naming the files", async () => {
+    put("workflows/loop/steps/a.md", "---\nextends: b.md\n---\nA\n");
+    put("workflows/loop/steps/b.md", "---\nextends: a.md\n---\nB\n");
+    flow("loop", "steps/a.md");
+    await expect(loadWorkflow(join(ws, "workflows/loop"), new Map(), { workspace: ws }))
+      .rejects.toThrow(/extends loop: .*a\.md.*b\.md.*a\.md/);
+  });
+
+  it("refuses an extends that leaves the workspace", async () => {
+    put("workflows/escape/steps/c.md", "---\nextends: ../../../../outside.md\n---\nC\n");
+    flow("escape", "steps/c.md");
+    await expect(loadWorkflow(join(ws, "workflows/escape"), new Map(), { workspace: ws }))
+      .rejects.toThrow(/outside the workspace/);
+  });
+
+  it("validates the merged step, not the child alone", async () => {
+    put("workflows/main/steps/build.md", "---\nmodel: opus\n---\nLead.\n");
+    put("workflows/typo/steps/build.md", "---\nextends: ../../main/steps/build.md\neffortt: high\n---\nX\n");
+    flow("typo", "steps/build.md");
+    await expect(loadWorkflow(join(ws, "workflows/typo"), new Map(), { workspace: ws }))
+      .rejects.toThrow(/steps\/build\.md.*effortt/);
+  });
+});
