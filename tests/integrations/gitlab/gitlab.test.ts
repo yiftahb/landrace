@@ -189,3 +189,112 @@ describe("reviews", () => {
     expect(await forgeOver(gl).reviews(mr.iid, gl.ctx())).toEqual(["ours <!-- landrace:review:1 -->"]);
   });
 });
+
+describe("openPull and closePull", () => {
+  it("opens a merge request from the branch into the project's default branch", async () => {
+    const gl = createFakeGitLab();
+    gl.settings.defaultBranch = "trunk";
+    await forgeOver(gl).openPull({ ticket: "7", branch: "landrace/7", title: "Add a thing" }, gl.ctx());
+    expect([...gl.mrs.values()]).toEqual([expect.objectContaining({ source_branch: "landrace/7", target_branch: "trunk", title: "Add a thing", state: "opened" })]);
+  });
+
+  /* A crash between the request and the next read re-runs the effect; GitLab answers the second with a 409. */
+  it("counts GitLab's 'already exists' as opened", async () => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/7" });
+    await expect(forgeOver(gl).openPull({ ticket: "7", branch: "landrace/7", title: "t" }, gl.ctx())).resolves.toBeUndefined();
+    expect(gl.mrs.size).toBe(1);
+  });
+
+  it("says any other refusal", async () => {
+    const gl = createFakeGitLab();
+    const forge = forgeOver(gl);
+    const ctx = gl.ctx();
+    await forge.login(ctx);
+    gl.settings.visible = false;
+    await expect(forge.openPull({ ticket: "7", branch: "landrace/7", title: "t" }, ctx)).rejects.toThrow(/404/);
+  });
+
+  it("closes a merge request without merging it", async () => {
+    const gl = createFakeGitLab();
+    const mr = gl.open({ source_branch: "landrace/7" });
+    await forgeOver(gl).closePull(mr.iid, gl.ctx());
+    expect(mr.state).toBe("closed");
+  });
+});
+
+describe("postReview", () => {
+  /** Line 2 added between two context lines: new 1 and 3 are old 1 and 2. */
+  const DIFF = "@@ -1,2 +1,3 @@\n line one\n+line two\n line three\n";
+
+  const reviewed = async (diffs: Parameters<FakeGitLab["diffsFor"]>[1] = [{ new_path: "src/a.ts", diff: DIFF }]) => {
+    const gl = createFakeGitLab();
+    gl.diffsFor("landrace/7", diffs);
+    const mr = gl.open({ source_branch: "landrace/7" });
+    const forge = forgeOver(gl);
+    const path = diffs[0]?.new_path ?? "";
+    await forge.postReview(mr.iid, {
+      body: "The review.",
+      lines: [{ path, line: 2, body: "on the added line" }, { path, line: 3, body: "on a context line" }],
+      files: [{ path, body: "line 40: off the hunks" }],
+      head: mr.sha,
+    }, gl.ctx());
+    return { gl, mr, forge };
+  };
+
+  it("puts each finding on the diff — an added line by its new number, a context line by both, the rest on the file", async () => {
+    const { mr } = await reviewed();
+    const positions = mr.discussions.map((d) => [d.notes[0]?.body, d.notes[0]?.position]);
+    const refs = { base_sha: `base-${mr.iid}`, start_sha: `base-${mr.iid}`, head_sha: mr.sha, old_path: "src/a.ts", new_path: "src/a.ts" };
+    expect(positions).toEqual([
+      ["line 40: off the hunks", { position_type: "file", ...refs }],
+      ["on the added line", { position_type: "text", ...refs, new_line: 2 }],
+      ["on a context line", { position_type: "text", ...refs, new_line: 3, old_line: 2 }],
+      ["The review.", undefined],
+    ]);
+  });
+
+  it("names a renamed file's old path beside its new one", async () => {
+    const { mr } = await reviewed([{ old_path: "src/old.ts", new_path: "src/a.ts", renamed_file: true, diff: DIFF }]);
+    expect(mr.discussions.slice(0, 3).map((d) => d.notes[0]?.position?.old_path)).toEqual(["src/old.ts", "src/old.ts", "src/old.ts"]);
+  });
+
+  it("posts the prose last, as a plain note no count includes", async () => {
+    const { gl, mr, forge } = await reviewed();
+    expect(gl.requests.filter((r) => r.method === "POST").at(-1)?.path).toMatch(/\/notes$/);
+    const threads = await forge.threads(mr.iid, gl.ctx());
+    expect(threads.map((t) => t.first?.body)).toEqual(["line 40: off the hunks", "on the added line", "on a context line"]);
+  });
+});
+
+describe("reply and resolve", () => {
+  const withThread = async () => {
+    const gl = createFakeGitLab();
+    const mr = gl.open({ source_branch: "landrace/7" });
+    const discussion = gl.discuss(mr.iid, { body: "a finding" });
+    const forge = forgeOver(gl);
+    const ctx = gl.ctx();
+    await forge.threads(mr.iid, ctx);
+    return { gl, discussion, forge, ctx };
+  };
+
+  it("replies on the discussion a thread id names", async () => {
+    const { discussion, forge, ctx } = await withThread();
+    await forge.reply(discussion.id, "fixed", ctx);
+    expect(discussion.notes.map((n) => [n.author.username, n.body])).toEqual([["landrace-bot", "a finding"], ["landrace-bot", "fixed"]]);
+  });
+
+  it("resolves it", async () => {
+    const { discussion, forge, ctx } = await withThread();
+    await forge.resolve(discussion.id, ctx);
+    expect(discussion.notes.every((n) => n.resolved)).toBe(true);
+  });
+
+  it("refuses an id no merge request it read has, asking GitLab nothing", async () => {
+    const { gl, forge, ctx } = await withThread();
+    const asked = gl.requests.length;
+    await expect(forge.reply("f".repeat(40), "x", ctx)).rejects.toThrow(/no merge request read so far has the discussion f{40}/);
+    await expect(forge.resolve("f".repeat(40), ctx)).rejects.toThrow(/no merge request read so far/);
+    expect(gl.requests.length).toBe(asked);
+  });
+});

@@ -118,6 +118,28 @@ const fileOf = (d: Diff): ChangedFile => {
   };
 };
 
+/** The old-side number of a new-side line the patch shows unchanged, or null for an added line or one it does not show. */
+function oldLineOf(diff: string, line: number): number | null {
+  let oldAt = 0;
+  let newAt = 0;
+  for (const row of hunkRows(diff)) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
+    if (hunk) {
+      oldAt = Number(hunk[1]);
+      newAt = Number(hunk[2]);
+    } else if (row.startsWith("-")) {
+      oldAt++;
+    } else if (row.startsWith("+")) {
+      if (newAt++ === line) return null;
+    } else if (!row.startsWith("\\")) {
+      if (newAt === line) return oldAt;
+      oldAt++;
+      newAt++;
+    }
+  }
+  return null;
+}
+
 /** A refusal past a paging bound, said as one: a count over part of a list is a number known to be short. */
 const tooMany = (what: string): Error =>
   new Error(`${what}, more than one read carries — reporting what was read would be reporting a number known to be short`);
@@ -211,24 +233,83 @@ export class GitLab extends BaseForge {
     return items;
   }
 
-  async openPull(): Promise<void> {
-    throw new Error("not yet");
+  async openPull({ branch, title }: { ticket: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void> {
+    const gl = this.gl(ctx);
+    // The project's own default branch, never an assumed "main".
+    const info = await gl.get<{ default_branch?: unknown }>("");
+    if (typeof info.default_branch !== "string" || info.default_branch === "") {
+      throw new Error(`${this.project} did not say what its default branch is`);
+    }
+    try {
+      await gl.post("/merge_requests", { source_branch: branch, target_branch: info.default_branch, title });
+    } catch (e) {
+      // "Another open merge request already exists for this source branch":
+      // the effect landed, most likely on an attempt a crash cut off before
+      // the next read could see it.
+      if (statusOf(e) === 409 && /already exists/i.test(String(e))) return;
+      throw e;
+    }
   }
 
-  async closePull(): Promise<void> {
-    throw new Error("not yet");
+  async closePull(pull: number, ctx: RuntimeContext): Promise<void> {
+    await this.gl(ctx).put(`/merge_requests/${pull}`, { state_event: "close" });
   }
 
-  async postReview(): Promise<void> {
-    throw new Error("not yet");
+  /**
+   * File findings, then line findings, as diff discussions on the merge
+   * request's current diff; then the review's prose as a plain note — last,
+   * because its marker says the round is on GitLab, and plain, because
+   * nobody can resolve one and so no count ever includes it.
+   *
+   * GitLab places a line by both sides where both exist: a context line
+   * given only its new number is refused, and a renamed file is named by its
+   * old path beside its new one.
+   */
+  async postReview(
+    pull: number,
+    { body, lines, files }: {
+      body: string; lines: Array<{ path: string; line: number; body: string }>; files: Array<{ path: string; body: string }>; head: string;
+    },
+    ctx: RuntimeContext,
+  ): Promise<void> {
+    const gl = this.gl(ctx);
+    const on = `/merge_requests/${pull}/discussions`;
+    if (lines.length + files.length > 0) {
+      const mr = await gl.get<{ diff_refs?: { base_sha?: unknown; start_sha?: unknown; head_sha?: unknown } | null }>(`/merge_requests/${pull}`);
+      const { base_sha, start_sha, head_sha } = mr.diff_refs ?? {};
+      if (typeof base_sha !== "string" || typeof start_sha !== "string" || typeof head_sha !== "string") {
+        throw new Error(`merge request !${pull} has no diff yet for GitLab to place findings on`);
+      }
+      const diffs = new Map((await this.diffs(pull, ctx)).map((d) => [d.new_path, d]));
+      const at = (path: string) => ({ base_sha, start_sha, head_sha, old_path: diffs.get(path)?.old_path ?? path, new_path: path });
+      for (const f of files) await gl.post(on, { body: f.body, position: { position_type: "file", ...at(f.path) } });
+      for (const c of lines) {
+        const old = oldLineOf(diffs.get(c.path)?.diff ?? "", c.line);
+        await gl.post(on, { body: c.body, position: { position_type: "text", ...at(c.path), new_line: c.line, ...(old === null ? {} : { old_line: old }) } });
+      }
+    }
+    await gl.post(`/merge_requests/${pull}/notes`, { body });
   }
 
-  async reply(): Promise<void> {
-    throw new Error("not yet");
+  /** Checked, not assumed: an answer with no note is a reply that did not land. */
+  async reply(thread: string, body: string, ctx: RuntimeContext): Promise<void> {
+    const note = await this.gl(ctx).post<{ id?: unknown } | null>(`${this.discussion(thread)}/notes`, { body });
+    if (typeof note?.id !== "number") throw new Error(`GitLab did not post the reply on discussion ${thread}`);
   }
 
-  async resolve(): Promise<void> {
-    throw new Error("not yet");
+  /** Checked the same way: an answer that does not read as resolved is a resolve that did not happen. */
+  async resolve(thread: string, ctx: RuntimeContext): Promise<void> {
+    const answer = await this.gl(ctx).put<Discussion | null>(this.discussion(thread), { resolved: true });
+    if (!answer || threadOf(answer)?.resolved !== true) throw new Error(`GitLab did not resolve discussion ${thread}`);
+  }
+
+  /** A discussion's path, by the merge request `threads` read it on — or a refusal, before anything is asked. */
+  private discussion(thread: string): string {
+    const pull = this.discussions.get(thread);
+    if (pull === undefined) {
+      throw new Error(`no merge request read so far has the discussion ${thread}, so it cannot be answered or resolved`);
+    }
+    return `/merge_requests/${pull}/discussions/${encodeURIComponent(thread)}`;
   }
 
   async heads(): Promise<BranchHeads> {
