@@ -9,9 +9,9 @@ import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { WorkflowLoadError } from "#workflow/load.js";
-import { admitProblems, branchIsolationProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, validate } from "#workflow/validate.js";
 import { readWorkspace } from "#workflow/workspace.js";
-import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Step, Workspace, WorkspaceRead } from "#namespace.js";
+import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workspace, WorkspaceRead } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -169,8 +169,17 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
   // the notifiers — is one problem however many of them meet it, said once
   // and attributed only when not every workflow does.
   const shared = new Map<string, { problem: Problem; ids: string[] }>();
+  const sourceKeys = new Map<string, string>();
+  const sources: unknown[] = [];
   for (const wf of ws.workflows) {
     const found = await workflowProblems(ws, wf, loaded);
+    // Sameness is the identity of the loaded source object, as the tick's own
+    // claims go by it. A workflow whose hooks did not load, or that has no
+    // source, has no key, and the claim check abstains for it.
+    if (found.source) {
+      const at = sources.indexOf(found.source);
+      sourceKeys.set(wf.id, `source-${at === -1 ? sources.push(found.source) - 1 : at}`);
+    }
     problems.push(...(named ? found.own.map((p) => ({ ...p, message: `${wf.id}: ${p.message}` })) : found.own));
     for (const p of found.shared) {
       const key = `${p.rule}\n${p.message}`;
@@ -179,6 +188,8 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
       else shared.set(key, { problem: p, ids: [wf.id] });
     }
   }
+  // Between workflows, so named by neither's prefix.
+  problems.push(...claimProblems(ws, (id) => sourceKeys.get(id) ?? ""));
   for (const { problem, ids } of shared.values()) {
     problems.push(named && ids.length < ws.ids.length ? { ...problem, message: `${ids.join(", ")}: ${problem.message}` } : problem);
   }
@@ -192,7 +203,7 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
  * hooks' coverage of it; and those `shared` with every workflow built against
  * the same configuration — the executors and the notifiers it names.
  */
-async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: LoadedConfig | null): Promise<{ own: Problem[]; shared: Problem[] }> {
+async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: LoadedConfig | null): Promise<{ own: Problem[]; shared: Problem[]; source: Source | null }> {
   const { workflow, steps } = wf;
   const own: Problem[] = [];
 
@@ -229,7 +240,7 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
   const shared = loaded && registry
     ? [...(await executorProblems(ws.dir, loaded, registry, steps)), ...notifyProblems(loaded.config, registry)]
     : [];
-  return { own, shared };
+  return { own, shared, source: registry?.source ?? null };
 }
 
 /**

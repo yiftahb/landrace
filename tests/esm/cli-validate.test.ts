@@ -288,3 +288,47 @@ export const observe = Object.defineProperty(
   KIND, { value: "pre", enumerable: false },
 );
 `;
+
+/*
+ * Two workflows that load one hook module share its source object, and
+ * claims are judged over that. Sameness is the loaded source's identity, so a
+ * second module exporting its own source is a different source and is left
+ * alone.
+ */
+describe("landrace validate, and two workflows over one source", () => {
+  const SOURCE = `const KIND = Symbol.for("landrace.hook.kind");
+const list = async () => ({ nodes: [], relationships: [] });
+export const tracker = Object.defineProperty({ id: "t", relations: [], list, read: list }, KIND, { value: "source", enumerable: false });
+`;
+  const flow = (name: string, hook: string, admit: string, labels: string): string => [
+    "version: 1", `name: ${name}`, "description: test", `hooks: [${hook}]`, `admit: [${admit}]`, "eligible:",
+    `  - { when: { "node.state.labels": { $in: [${labels}] } }, else: "no" }`,
+    "stages:", "  - id: a", "    entry: true", "    terminal: true", "    triggers:", '      - { when: { "run.stage": null } }', "",
+  ].join("\n");
+
+  const check = async (fast: string, fastHook = "../../hooks/src.ts"): Promise<string[]> => {
+    const ws = await mkdtemp(join(tmpdir(), "landrace-validate-claims-"));
+    await mkdir(join(ws, "hooks"), { recursive: true });
+    await writeFile(join(ws, "hooks", "src.ts"), SOURCE);
+    await writeFile(join(ws, "hooks", "other.ts"), SOURCE);
+    for (const [id, yaml] of [["main", flow("Main", "../../hooks/src.ts", "lr:auto", "lr:auto")], ["fast", fast.replace("HOOK", fastHook)]] as const) {
+      await mkdir(workflowIn(ws, id), { recursive: true });
+      await writeFile(join(workflowIn(ws, id), "workflow.yaml"), yaml);
+    }
+    return (await runValidate(ws)).problems.filter((p) => p.rule === "claims").map((p) => p.message);
+  };
+
+  it("is clean when each admits what only it accepts", async () => {
+    expect(await check(flow("Fast", "HOOK", "lr:fast", "lr:fast"))).toEqual([]);
+  });
+
+  it("reports an item one admits and the other accepts, naming both workflows", async () => {
+    expect(await check(flow("Fast", "HOOK", "lr:fast", "lr:auto, lr:fast"))).toEqual([
+      "workflows main and fast both claim an item started in main (admit [lr:auto] satisfies fast's eligible)",
+    ]);
+  });
+
+  it("does not compare workflows whose sources come from different modules", async () => {
+    expect(await check(flow("Fast", "HOOK", "lr:fast", "lr:auto, lr:fast"), "../../hooks/other.ts")).toEqual([]);
+  });
+});

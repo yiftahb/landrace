@@ -16,7 +16,7 @@ import { gotoTargetsOf } from "#core/goto.js";
 import { fillTemplate } from "#core/index.js";
 import { identityOf } from "#core/locate.js";
 import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
-import type { Condition, Problem, Snapshot, Stage, Step, Workflow } from "#namespace.js";
+import type { Condition, EligibilityRule, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 
 export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
@@ -984,6 +984,50 @@ export function branchIsolationProblems(w: Workflow, isolation: string): Problem
 /** The one path an admission label can satisfy a rule through. */
 const LABELS_PATH = "node.state.labels";
 
+/** The eligible rules that read the labels and nothing else: the only ones a label list can answer. */
+const labelRules = (w: Workflow): EligibilityRule[] =>
+  (w.eligible ?? []).filter((r) => Object.keys(r.when).length === 1 && LABELS_PATH in r.when);
+
+/** Whether an item carrying exactly these labels passes the rule; throws on an operator outside the allowlist. */
+const acceptsLabels = (r: EligibilityRule, labels: string[]): boolean =>
+  compile(r.when)({ node: { state: { labels: [...labels] } } } as unknown as Snapshot);
+
+/**
+ * Two workflows over one source cannot both claim an item one of them
+ * admits: `landrace_create_item` would start it in `a` and the next tick
+ * would halt it, claimed twice.
+ *
+ * `sourceOf` names the source a workflow reads from, "" when that is not
+ * known; two workflows are compared only when they name the same one — by
+ * identity of the loaded source object, which is what the tick's own claims
+ * go by. Compared only where `b`'s eligibility is wholly a check of labels
+ * (every rule, and at least one): a rule reading anything else could refuse
+ * what labels alone accept, so the check abstains rather than guess.
+ */
+export function claimProblems(ws: Workspace, sourceOf: (id: string) => string): Problem[] {
+  const problems: Problem[] = [];
+  for (const a of ws.workflows) {
+    const admit = a.workflow.admit ?? [];
+    const source = sourceOf(a.id);
+    if (admit.length === 0 || source === "") continue;
+    for (const b of ws.workflows) {
+      if (b === a || sourceOf(b.id) !== source) continue;
+      const rules = labelRules(b.workflow);
+      if (rules.length === 0 || rules.length !== (b.workflow.eligible ?? []).length) continue;
+      try {
+        if (!rules.every((r) => acceptsLabels(r, admit))) continue;
+      } catch {
+        continue;
+      }
+      problems.push({
+        rule: "claims",
+        message: `workflows ${a.id} and ${b.id} both claim an item started in ${a.id} (admit [${admit.join(", ")}] satisfies ${b.id}'s eligible)`,
+      });
+    }
+  }
+  return problems;
+}
+
 /**
  * Whether what workflow `id` admits an item with is what its own eligibility
  * accepts. An item `landrace_create_item` starts there carries exactly those
@@ -1006,11 +1050,10 @@ export function admitProblems(id: string, w: Workflow): Problem[] {
   const reserved: Problem[] = admit
     .filter((l) => l.startsWith(STAGE_LABEL_PREFIX) || (Object.values(LABELS) as unknown[]).includes(l))
     .map((l) => ({ rule: "admit", message: `workflow "${id}" admits "${l}", a label the engine writes itself` }));
-  const rules = (w.eligible ?? []).filter((r) => Object.keys(r.when).length === 1 && LABELS_PATH in r.when);
-  const snapshot = { node: { state: { labels: [...admit] } } } as unknown as Snapshot;
+  const rules = labelRules(w);
   let refused: typeof rules;
   try {
-    refused = rules.filter((r) => !compile(r.when)(snapshot));
+    refused = rules.filter((r) => !acceptsLabels(r, admit));
   } catch {
     // An operator outside the allowlist: the structural rules report it, and
     // a rule that cannot be compiled cannot be asked anything.

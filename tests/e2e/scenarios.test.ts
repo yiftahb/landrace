@@ -10,6 +10,7 @@ import { createLogger } from "#runner/events.js";
 import { sendTo } from "#runner/goto.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { tick } from "#tests/support/tick.js";
+import { tickWorkspace } from "#runner/tick.js";
 import { createExternalState, createHarness } from "#testing/index.js";
 import { gitIn } from "landrace/kit";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
@@ -18,7 +19,7 @@ import { loadWorkflow } from "#workflow/load.js";
 import { loadShipped } from "#tests/support/shipped.js";
 import { validate } from "#workflow/validate.js";
 import type {
-  Effect, ExternalState, GotoDeps, Harness, HookContext, NotifyEvent, PostHook, Rel, RuntimeConfig, RuntimeContext, ScriptedAnswer,
+  Effect, Executor, ExternalState, GotoDeps, Harness, HookContext, NotifyEvent, PostHook, Rel, RuntimeConfig, RuntimeContext, ScriptedAnswer,
 } from "#namespace.js";
 
 // Its own lock root for every goto here: these tests must not race the
@@ -1717,5 +1718,77 @@ describe("a notify that throws", () => {
     expect(loud.trail).toEqual(quiet.trail);
     expect(loud.labels).toEqual(quiet.labels);
     expect(loud.events).toContain("notify.failed");
+  });
+});
+
+/*
+ * Two workflows over one tracker, run by the workspace tick itself: the
+ * engine pieces as shipped and the in-memory tracker, with only the agent
+ * faked. What is pinned is the claim — which workflow works an item, or that
+ * none does and the row says why — not what a workflow then decides.
+ */
+describe("two workflows in one workspace", () => {
+  const SPEC_ANSWER = '```json\n{"kind":"spec","title":"T"}\n```';
+  let root: string;
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "lr-e2e-workspace-")); });
+
+  async function workspace(items: Array<{ id: string; labels: string[] }>, concurrency = 3) {
+    const state = createExternalState({ items });
+    const minimal = await loadWorkflow("tests/fixtures/minimal");
+    const ran: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const events: string[] = [];
+    const log = createLogger({ sink: (e) => events.push(e.name) });
+    const stop = new AbortController();
+    const ctx: RuntimeContext = { config: {} as HookContext["config"], secrets: new Map(), signal: stop.signal, log: () => {} };
+    const flow = (id: string, label: string) => {
+      const executor: Executor = {
+        id: `agent-${id}`,
+        run: async () => {
+          ran.push(id);
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise((r) => setTimeout(r, 10));
+          inFlight -= 1;
+          return { text: SPEC_ANSWER, sessionId: null };
+        },
+      };
+      return {
+        id, name: id, description: "test", source: state.source,
+        deps: {
+          workflow: { ...minimal.workflow, eligible: [{ when: { "node.state.labels": { $in: [label] } }, else: `no ${label} label` }] },
+          steps: minimal.steps, source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor, ctx, log, scrub: (t: string) => t,
+        },
+      };
+    };
+    const runtime = {
+      dir: root, workflows: [flow("main", "lr:auto"), flow("fast", "lr:fast")],
+      preflights: [], intervalMs: 60_000, concurrency, stop, running: new Map(), log, ctx,
+    };
+    return { state, ran, peak: () => peak, events, once: () => tickWorkspace({ runtime, lock: { root } }) };
+  }
+
+  it("takes an lr:auto item and an lr:fast item to their first stage in one tick", async () => {
+    const w = await workspace([{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:fast"] }]);
+    const rows = await w.once();
+    expect(rows.map((r) => [r.item, r.workflow])).toEqual([["1", "main"], ["2", "fast"]]);
+    expect(w.ran.slice().sort()).toEqual(["fast", "main"]);
+    expect([w.state.stage("1"), w.state.stage("2")]).toEqual(["done", "done"]);
+  });
+
+  it("writes nothing for an item carrying both labels, and reports it naming both workflows", async () => {
+    const w = await workspace([{ id: "3", labels: ["lr:auto", "lr:fast"] }]);
+    expect(await w.once()).toEqual([{ item: "3", outcome: "claimed by fast and main" }]);
+    expect(w.ran).toEqual([]);
+    expect(w.state.comments("3")).toEqual([]);
+    expect(w.state.item("3").labels).toEqual(["lr:auto", "lr:fast"]);
+  });
+
+  it("holds tick.concurrency across both workflows", async () => {
+    const w = await workspace([{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:fast"] }, { id: "3", labels: ["lr:auto"] }], 1);
+    expect(await w.once()).toHaveLength(3);
+    expect(w.ran).toHaveLength(3);
+    expect(w.peak()).toBe(1);
   });
 });

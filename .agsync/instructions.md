@@ -35,6 +35,10 @@ integrations/     the integrations landrace ships — the coding agents on the k
 
 Two stages whose identity predicates both match, two triggers that both fire, two post hooks claiming one effect type — all stop the item and say so. An engine that quietly picks the first one is worse than one that admits it cannot tell. There is no "first match wins" anywhere in this codebase, and no "first seen wins" either: `list` sees every item, `read` only one item's neighbourhood, so a clash judged against what a read happens to know halts on one item and silently picks on the other. Every read that can meet the clash halts on it.
 
+### One owner per item, or it halts
+
+Several workflows share one start; each open item is claimed by exactly one (`claimItems`, `src/core/claims.ts`, judged by `eligible`). Two claimants or two sources reporting an id halt and name both; unclaimed is Not admitted. `validate`'s `claims` check abstains where it cannot tell.
+
 ### State is derived, never stored
 
 An item's entire progress is re-derived from the tracker on every run: position from a label, rounds by counting records, findings from review threads. There is no database, no ledger, no cache to repair. Recovery is re-derivation. If you find yourself adding a field to remember something, find the external record that already implies it.

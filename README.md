@@ -811,6 +811,16 @@ A step file may name another in front matter, `extends: ./base.md` (a path relat
 
 Both schemas are strict: an unknown key fails to load rather than being ignored. A field the engine silently ignores is a lie, and this codebase had four of them until the last review.
 
+## Workspaces
+
+A workspace holds one workflow or several, and one `landrace start` runs all of them: every workflow's source is listed, each open item is claimed by one workflow, and that workflow works it.
+
+- **Claims.** A workflow claims an item its `eligible` rules accept. Exactly one claim is the rule: an item two workflows accept is a conflict, an id two different sources both report is a clash, and either halts, naming both workflows, rather than going to whichever came first. An item no workflow accepts is unclaimed, and shows as Not admitted with each workflow's reason. Give each workflow its own `admit` label and `eligible` rule (`lr:auto` for one, `lr:fast` for another) and a start can never be claimed twice; `landrace validate` reports two workflows over one source where what one admits the other accepts (`claims`, abstaining where an `eligible` rule reads more than labels or the sources are not the same loaded object).
+- **One pool.** `tick.concurrency` bounds the workspace, not each workflow: items of every workflow share its slots, most urgent first.
+- **A failing source.** With several sources, one that cannot list leaves every clash unjudged, so that tick no other source's items are worked, and the board refuses writes while any source is failing. Runs already in flight are not stopped for it. With one source, its own items are simply absent.
+- **The board** shows the workflow's name on each row when there is more than one.
+- **MCP.** `landrace_workflows` lists each workflow (`id`, `name`, `description`, `claimed`, `needsYou`, and `creates`, whether `landrace_create_item` can start an item in it). `landrace_items` and `landrace_waiting` list across the workspace, each row naming its workflow, and the halts that no workflow may work; with `workflow` they narrow to that workflow's items and the halts it is party to. `landrace_create_item` takes `workflow`, required when more than one can create items. Every tool that takes an item id (`landrace_status`, `landrace_reply`, `landrace_goto`, ...) resolves the workflow by the item's claim, and refuses an item no workflow claims or two do. `landrace mcp --workflow <id>` scopes a server to one workflow: it lists, creates and acts for that workflow alone, and says so in each tool's description.
+
 ## What `validate` proves
 
 | Rule | Catches |
@@ -830,6 +840,7 @@ Both schemas are strict: an unknown key fails to load rather than being ignored.
 | `trigger-name` | A trigger named `goto`, the name a goto transition is logged under |
 | `reserved-field` | A `goto` or `from` field in an `on_enter` effect or a route's effect — fields only the engine writes |
 | `admit` | A label a workflow admits items with that one of its own `eligible` rules (a check of labels alone) turns away, so the item would be started and never worked; an admitted label the engine writes itself (`lr:working`, `lr:stage:…`) |
+| `claims` | Two workflows over one source (the same loaded hook object) where the labels one admits satisfy the other's `eligible` rules, all label-only, so an item started in one would be claimed by both and halt. Abstains where a rule reads anything else, a workflow admits nothing, or the sources differ |
 | `layout` | A workspace that is not one: the pre-workspace `workflow.yaml` at its root, no workflows, a workflow id that is not usable, a `workflows` folder or a workflow folder that is a symbolic link, a `workflows:` order in `landrace.yaml` that does not name exactly the folders |
 
 Every rule runs on every workflow. An earlier version abstained where a trigger
