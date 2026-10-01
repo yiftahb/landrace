@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { defineConfig } from "tsup";
 export default defineConfig({
   // `hooks` is what a hook module imports: package.json has declared
@@ -15,10 +16,13 @@ export default defineConfig({
     hooks: "src/hooks/index.ts",
     kit: "src/kit/index.ts",
     testing: "src/testing/index.ts",
-    "integrations/claude": "integrations/claude/index.ts",
-    "integrations/codex": "integrations/codex/index.ts",
-    "integrations/github": "integrations/github/index.ts",
-    "integrations/slack": "integrations/slack/index.ts",
+    // One entry per folder, so a new vendor — Jira, GitLab, Notion built side
+    // by side — never edits this file and never conflicts with another here.
+    ...Object.fromEntries(
+      readdirSync("integrations", { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => [`integrations/${d.name}`, `integrations/${d.name}/index.ts`]),
+    ),
   },
   external: [/^landrace\//],
   format: ["esm"],
