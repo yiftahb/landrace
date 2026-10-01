@@ -65,7 +65,7 @@ function sandboxSettings({ hosts, deny }: SandboxSettings): Record<string, unkno
 /** Per tool, the argument worth a glance — the file it read, the command it ran — in the names the CLI's own tools use. */
 const TOOL_ARGS = ["file_path", "notebook_path", "path", "command", "pattern", "url", "query", "description"];
 
-/** One tool call as the ticket panel shows it: its name and that argument, relative to where the agent runs. */
+/** One tool call as the item panel shows it: its name and that argument, relative to where the agent runs. */
 function toolLine(name: string, input: unknown, cwd: string): string {
   const args = input !== null && typeof input === "object" ? (input as Record<string, unknown>) : {};
   const key = TOOL_ARGS.find((k) => typeof args[k] === "string" && args[k] !== "");
@@ -123,7 +123,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
   /**
    * The CLI finds a session only under the directory it ran in, and the one
    * resumed may have run elsewhere: a pairing's hand-in forks in the
-   * pairing's checkout, and a later turn resumes it from the ticket's. Not
+   * pairing's checkout, and a later turn resumes it from the item's. Not
    * found, the `--resume` fails as it always did.
    */
   protected async prepare({ resume, cwd }: RunPlan<ClaudeExtras>): Promise<void> {
@@ -142,7 +142,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     //
     // stream-json ends on the result event, which carries session_id —
     // without it a conversation cannot continue — and prints every tool call
-    // and message before it as a line of its own, which is what the ticket
+    // and message before it as a line of its own, which is what the item
     // panel shows. Under -p the CLI refuses stream-json without --verbose.
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", mayWrite ? "acceptEdits" : "manual"];
     // `--restricted` removes the tools that run commands or code (Bash and
@@ -191,7 +191,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // something: a `.mcp.json` committed to the repository the worktree is
     // cut from, or the operator's own user-level servers, would otherwise
     // load beside the agent — landrace's own operator server among them,
-    // which can move a step's own ticket. An allowlisted server's `env` goes
+    // which can move a step's own item. An allowlisted server's `env` goes
     // as `.mcp.json` wrote it, and is visible in `ps` for as long as the step
     // runs.
     //
@@ -241,7 +241,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * The CLI keeps a session under the directory it ran in. So a command run a
    * second time — after the terminal was closed — resumes the session it
    * started rather than starting another, and the agent's own session, which
-   * ran in the ticket's worktree, is brought over before it is forked here.
+   * ran in the item's worktree, is brought over before it is forked here.
    */
   protected async handoffArgv({ cwd, session, promptFile, resume, server }: HandoffPlan): Promise<HandoffArg[]> {
     const here = projectDir(this.home, cwd);

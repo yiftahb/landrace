@@ -36,7 +36,7 @@ import { stepTimeoutMs } from "#runner/budget.js";
  * a transition; asking it whether it is still missing something is a value a
  * deterministic rule reads.
  */
-const TURN = (message: string): string => `The person who owns this ticket replied:
+const TURN = (message: string): string => `The person who owns this item replied:
 
 ${message}
 
@@ -77,7 +77,7 @@ function prose(text: string): string {
  *
  * Each turn is a fresh agent run resumed onto the session the step started, so
  * a crash costs a turn rather than the conversation — and the session id is
- * read back off the ticket (spec §6.1), which is what lets an MCP process that
+ * read back off the item (spec §6.1), which is what lets an MCP process that
  * never ran the step join the conversation at all.
  *
  * Every write here goes through the same dispatcher and the same effect types
@@ -87,21 +87,21 @@ function prose(text: string): string {
  * and the person would have talked to nobody.
  */
 export function createConversation(deps: ConversationDeps): Conversation {
-  const snapshotOf = (ticket: string): Promise<Snapshot> =>
-    buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+  const snapshotOf = (item: string): Promise<Snapshot> =>
+    buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
 
-  const say = (ticket: string, snapshot: Snapshot, body: string, marked?: Record<string, unknown>): Promise<void> =>
+  const say = (item: string, snapshot: Snapshot, body: string, marked?: Record<string, unknown>): Promise<void> =>
     deps.dispatcher.apply(
       { type: "tracker.comment", body, ...(marked ?? {}) },
-      { ...deps.ctx, ticket, snapshot },
+      { ...deps.ctx, item, snapshot },
     );
 
   /**
-   * The most recent session on the ticket: a conversation turn's if there has
+   * The most recent session on the item: a conversation turn's if there has
    * been one, otherwise the step's own. Derived from the records rather than
    * remembered, so two MCP processes and a tick all read the same answer.
    */
-  const join = (ticket: string, snapshot: Snapshot): JoinedSession => {
+  const join = (item: string, snapshot: Snapshot): JoinedSession => {
     const entries = [...((snapshot.entries as Entry[] | undefined) ?? [])].sort((a, b) =>
       a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
     );
@@ -115,12 +115,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
       }
     }
     throw new Error(
-      `#${ticket} has no session to join yet: no step on it has produced a draft to talk about`,
+      `#${item} has no session to join yet: no step on it has produced a draft to talk about`,
     );
   };
 
   /**
-   * Whether the ticket is already back in the loop's hands.
+   * Whether the item is already back in the loop's hands.
    *
    * Not a flag of its own: "a person spoke last" is what the workflow's
    * human-handback triggers already read, so resolving *is* posting a human
@@ -145,7 +145,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
    * can say the limits of is a turn nobody is holding to them, and this
    * process has already proved it can run one.
    */
-  const stepBehind = (ticket: string, stage: string): { workflow: Workflow; declared: Stage; step: Step } => {
+  const stepBehind = (item: string, stage: string): { workflow: Workflow; declared: Stage; step: Step } => {
     // Narrowed here rather than read off `deps.workflow` again below: `declared`
     // and `step` can only be truthy when `deps.workflow` is, but nothing
     // downstream of a second `deps.workflow?.` can see that for itself — a
@@ -156,7 +156,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
     const step = declared?.step === undefined ? undefined : deps.steps?.get(declared.step);
     if (!workflow || !declared || !step) {
       throw new Error(
-        `cannot ask: #${ticket}'s conversation belongs to stage "${stage}", and this process cannot see what ` +
+        `cannot ask: #${item}'s conversation belongs to stage "${stage}", and this process cannot see what ` +
         "that step declared — a turn that is not held to the step's own capabilities is a way around them",
       );
     }
@@ -174,12 +174,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
   };
 
   return {
-    async ask(ticket, message, opts) {
+    async ask(item, message, opts) {
       // The tick can resume the same session, and two agent runs resuming one
       // session is the race §7 names. Waiting a few seconds beats failing a
       // person's request over a 200ms label write.
       return withLock(
-        ticket,
+        item,
         "conversation",
         async () => {
           /*
@@ -193,8 +193,8 @@ export function createConversation(deps: ConversationDeps): Conversation {
           const tooLong = recordBodyProblem(message);
           if (tooLong) throw new Error(`cannot ask: the question ${tooLong}`);
 
-          const snapshot = await snapshotOf(ticket);
-          const { session, stage, round } = join(ticket, snapshot);
+          const snapshot = await snapshotOf(item);
+          const { session, stage, round } = join(item, snapshot);
           if (!deps.executor) {
             throw new Error(
               "cannot ask: no agent executor is configured, so there is nothing to resume the session with",
@@ -204,13 +204,13 @@ export function createConversation(deps: ConversationDeps): Conversation {
           // Before anything is screened, posted or paid for: what the step
           // declared is the frame this whole turn runs inside, and a turn
           // that cannot be held to it must not start.
-          const { workflow, declared, step } = stepBehind(ticket, stage);
+          const { workflow, declared, step } = stepBehind(item, stage);
           const root = deps.sandbox?.root;
           // Where the step worked, which is where its session continues: the
           // stage's branch when it names one — converge's own rule, so a turn
           // on a build commits where the build did rather than onto a
           // detached HEAD that is deleted with the worktree.
-          const branch = stageBranch(declared, ticket, round);
+          const branch = stageBranch(declared, item, round);
           if (!branch.ok) throw new Error(`cannot ask: ${branch.reason}`);
 
           const turn = TURN(message);
@@ -235,7 +235,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
            * the words will actually be read in.
            *
            * Before the question is posted, not just before the run. A blocked
-           * turn that had already left the person's words on the ticket would
+           * turn that had already left the person's words on the item would
            * hand the loop a human turn — the thing that resolves a
            * conversation — off text we refused to act on.
            */
@@ -270,7 +270,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
               const on = branch.branch === null
                 ? undefined
                 : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
-              sandbox = { path: await ensureWorktree(ticket, root, on) };
+              sandbox = { path: await ensureWorktree(item, root, on) };
             }
 
             // Read before the agent runs, and a failure refuses the turn
@@ -280,11 +280,11 @@ export function createConversation(deps: ConversationDeps): Conversation {
             if (!start.ok) throw new Error(`cannot ask: ${start.reason}`);
 
             // The person's words, first and unmarked: they are a human turn —
-            // the same rule `landrace_reply` follows — so the ticket shows who
+            // the same rule `landrace_reply` follows — so the item shows who
             // actually said what, and the record survives an agent that never
             // answers. Neutralised, because a marker pasted into a question
             // would otherwise read back as control state we wrote.
-            await say(ticket, snapshot, neutraliseMarkers(message));
+            await say(item, snapshot, neutraliseMarkers(message));
 
             let text: string;
             let sessionId: string | null;
@@ -316,12 +316,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
                 // Beside the step's own lines, under the round it joined, so
                 // the panel shows an Ask's progress without wiping the step's.
                 ...(deps.activity
-                  ? { onActivity: (e: AgentActivity) => deps.activity?.record(ticket, stage, round, e) }
+                  ? { onActivity: (e: AgentActivity) => deps.activity?.record(item, stage, round, e) }
                   : {}),
                 // The caller's own signal when there is one, joined with the
                 // limit above: an MCP client that disconnects mid-turn aborts
                 // the request, which kills the agent and unwinds through the
-                // lock's release rather than holding that ticket for the rest
+                // lock's release rather than holding that item for the rest
                 // of the run.
                 signal: turnSignal,
               }));
@@ -338,7 +338,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // Asked of the file system, not of the flags we passed — the same
             // check, for the same reason, as the one after a step. A refused
             // turn answers nothing, so its reply is never posted: leaving it
-            // on the ticket would publish the work of a run we just refused.
+            // on the item would publish the work of a run we just refused.
             const trespass = await sandboxTrespass(sandbox, start.before);
             if (trespass) throw new Error(`this conversation turn was refused: ${trespass}`);
 
@@ -350,7 +350,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // ride in the marker beside it — and the caller below receives the
             // whole reply either way. Throwing here lost the answer *and* the
             // session the next turn would have resumed from.
-            await say(ticket, snapshot, neutraliseMarkers(fitRecordBody(reply)), {
+            await say(item, snapshot, neutraliseMarkers(fitRecordBody(reply)), {
               kind: CONVERSATION_KIND,
               stage,
               round,
@@ -364,28 +364,28 @@ export function createConversation(deps: ConversationDeps): Conversation {
 
             return { reply, resolved };
           } finally {
-            if (sandbox !== undefined && root !== undefined) await removeWorktree(ticket, root);
+            if (sandbox !== undefined && root !== undefined) await removeWorktree(item, root);
           }
         },
         { holder: `mcp:ask:${process.pid}`, waitMs: WAIT_FOR_LOOP_MS, deadlineMs: TURN_DEADLINE_MS, ...deps.lock },
       );
     },
 
-    async resolve(ticket, why = "Carry on — this is answered.") {
+    async resolve(item, why = "Carry on — this is answered.") {
       return withLock(
-        ticket,
+        item,
         "conversation",
         async () => {
-          const snapshot = await snapshotOf(ticket);
-          // Asked before anything is written: resolving a ticket no step has
-          // spoken on is a wrong ticket number, not a no-op.
-          join(ticket, snapshot);
+          const snapshot = await snapshotOf(item);
+          // Asked before anything is written: resolving an item no step has
+          // spoken on is a wrong item number, not a no-op.
+          join(item, snapshot);
           if (handedBack(snapshot)) return { alreadyResolved: true };
 
           // Unmarked, so it reads as the human turn it is. That is the whole
           // mechanism: the loop's own trigger sees a person spoke last and
-          // picks the ticket up on its next tick.
-          await say(ticket, snapshot, neutraliseMarkers(why));
+          // picks the item up on its next tick.
+          await say(item, snapshot, neutraliseMarkers(why));
           return { alreadyResolved: false };
         },
         { holder: `mcp:resolve:${process.pid}`, waitMs: WAIT_FOR_LOOP_MS, ...deps.lock },

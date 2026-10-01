@@ -146,7 +146,7 @@ describe("buildRuntime", () => {
   /*
    * A var is substituted into the workflow before anything validates it, so an
    * unresolved one is not a value that is merely absent — it is a graph filled
-   * in with nothing, and a predicate filled in with nothing matches no ticket.
+   * in with nothing, and a predicate filled in with nothing matches no item.
    * The daemon finds that out as a repository where nothing ever happens.
    */
   it("refuses to start when a var does not resolve", async () => {
@@ -268,7 +268,7 @@ describe("which executor screens", () => {
   /*
    * A hook is JavaScript by the time it runs, and the type says nothing then.
    * Without this, a factory that forgot to return its executor started the
-   * loop, and the first paid tick met "run is not a function" on a ticket it
+   * loop, and the first paid tick met "run is not a function" on an item it
    * had already moved.
    */
   it.each([
@@ -298,11 +298,11 @@ describe("which executor screens", () => {
 });
 
 /**
- * The loop's ticket server is this very process started again as `landrace
+ * The loop's item server is this very process started again as `landrace
  * mcp`, pointed at an absolute workflow directory: the agent runs in a
  * worktree, so a relative one would resolve somewhere else entirely.
  */
-describe("the ticket server a tickets:create step is handed", () => {
+describe("the item server an items:create step is handed", () => {
   it("is this process started again as `landrace mcp` on the absolute workflow directory", () => {
     expect(childServerCommand("relative/.landrace")).toEqual({
       command: process.execPath,
@@ -369,7 +369,7 @@ describe("boardSink", () => {
         },
       };
       const sink = boardSink((e) => printed.push(e), board);
-      const event: LandraceEvent = { name: "step.started", ticket: "1" };
+      const event: LandraceEvent = { name: "step.started", item: "1" };
 
       expect(() => sink(event)).not.toThrow();
       expect(printed).toEqual([event]);
@@ -390,7 +390,7 @@ describe("boardSink", () => {
         view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
       },
     };
-    const event: LandraceEvent = { name: "step.finished", ticket: "1" };
+    const event: LandraceEvent = { name: "step.finished", item: "1" };
 
     boardSink((e) => printed.push(e), board)(event);
 
@@ -493,19 +493,19 @@ describeLoopback("startUi", () => {
   /**
    * The wiring itself: startUi is the one place a caller's `goto` reaches
    * serveBoard, so this is what stands between `gotoFor` and a working POST
-   * /tickets/<id>/goto/<stage> — proven with a real request rather than a
+   * /items/<id>/goto/<stage> — proven with a real request rather than a
    * spy on serveBoard. Deleting `opts.goto` from `startUi`'s call to
    * `serveBoard` would leave every other test in this file green while
    * Retry and "Go to step…" quietly 404; this is what catches that.
    */
-  it("passes goto through to serveBoard, so POST /tickets/<id>/goto/<stage> reaches it", async () => {
+  it("passes goto through to serveBoard, so POST /items/<id>/goto/<stage> reaches it", async () => {
     const calls: Array<[string, string | null]> = [];
     const ui = await startUi({
       board: board(), ui: true, once: false, port: 0,
       goto: { send: async (t, s) => { calls.push([t, s]); return { to: "spec" }; } },
     });
     try {
-      const res = await fetch(`http://127.0.0.1:${ui?.port}/tickets/19/goto/spec`, {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/items/19/goto/spec`, {
         method: "POST",
         headers: { "x-landrace-action": "goto", origin: `http://127.0.0.1:${ui?.port}` },
       });
@@ -536,8 +536,8 @@ describeLoopback("startUi", () => {
     }
   });
 
-  /** The same wiring for the ticket panel: deleting `opts.panel` from startUi would 404 every panel route. */
-  it("passes the panel through to serveBoard, so POST /tickets/<id>/reply reaches it", async () => {
+  /** The same wiring for the item panel: deleting `opts.panel` from startUi would 404 every panel route. */
+  it("passes the panel through to serveBoard, so POST /items/<id>/reply reaches it", async () => {
     const replies: Array<[string, string]> = [];
     const panel = {
       activity: async () => ({ stage: null, round: null, lines: [], total: 0 }),
@@ -552,7 +552,7 @@ describeLoopback("startUi", () => {
     };
     const ui = await startUi({ board: board(), ui: true, once: false, port: 0, panel });
     try {
-      const res = await fetch(`http://127.0.0.1:${ui?.port}/tickets/19/reply`, {
+      const res = await fetch(`http://127.0.0.1:${ui?.port}/items/19/reply`, {
         method: "POST",
         headers: { "x-landrace-action": "reply", origin: `http://127.0.0.1:${ui?.port}` },
         body: "B2B only",
@@ -591,7 +591,7 @@ describe("the page's Retry and Go to step", () => {
     expect(gotoFor({ source: tracker.registry.source as Source, pre: [], dispatcher: createDispatcher([]), ctx: tracker.ctx, workflow: WF })).toBeUndefined();
   });
 
-  it("sends a stopped ticket back to the stage that failed", async () => {
+  it("sends a stopped item back to the stage that failed", async () => {
     const tracker = createFakeTracker([{ number: 19, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
     tracker.say(19, `entered${renderMarker({ stage: "spec", kind: "enter", round: 1 })}`);
     tracker.say(19, `broken${renderMarker({ stage: "spec", kind: "malformed", round: 1 })}`);
@@ -605,17 +605,17 @@ describe("the page's Retry and Go to step", () => {
 
     // A record the next tick actually reads, not just an answer this call
     // happened to return.
-    const snapshot = await buildSnapshot({ ticket: "19", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "19" } });
+    const snapshot = await buildSnapshot({ item: "19", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "19" } });
     expect(snapshot.run?.goto).toBe("spec");
   });
 });
 
 /*
- * The ticket panel, assembled the way `landrace mcp` assembles a
+ * The item panel, assembled the way `landrace mcp` assembles a
  * conversation: the tick's own source, pre hooks and dispatcher, so what the
  * page writes is what the next tick re-derives.
  */
-describe("the ticket panel", () => {
+describe("the item panel", () => {
   const SPEC: Workflow = { version: 1, name: "t", stages: [{ id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] }] };
 
   const panelWorld = async (run: Executor["run"] = async () => ({ text: "Understood.\n```json\n{ \"blocking\": false }\n```", sessionId: "sid-2" })) => {
@@ -634,7 +634,7 @@ describe("the ticket panel", () => {
     return { tracker, panel };
   };
 
-  it("reads the ticket's conversation, marker off, oldest first", async () => {
+  it("reads the item's conversation, marker off, oldest first", async () => {
     const { panel } = await panelWorld();
     expect(await panel.conversation("12")).toMatchObject([{ by: "landrace", byAgent: true, stage: "spec", round: 1, text: "Which markets?" }]);
   });
@@ -654,7 +654,7 @@ describe("the ticket panel", () => {
     expect(await panel.activity("12", 0)).toMatchObject({ stage: "spec", round: 1, lines: [{ kind: "tool", text: "Read spec.md" }] });
   });
 
-  it("hands the ticket back, once", async () => {
+  it("hands the item back, once", async () => {
     const { panel } = await panelWorld();
     expect(await panel.resolve("12")).toEqual({ alreadyResolved: false });
     expect(await panel.resolve("12")).toEqual({ alreadyResolved: true });
@@ -718,7 +718,7 @@ describe("loop", () => {
     const p = loop(fakeRuntime(stop), schedule, inFlight).then(() => { resolved = true; });
 
     // Let the abort-signal microtasks settle: schedule.stop() has already
-    // run, but the ticket still holding its lock has not, so loop must not
+    // run, but the item still holding its lock has not, so loop must not
     // have resolved — resolving here is exactly the "released the lock
     // before the work was done" bug this guards.
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();

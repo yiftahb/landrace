@@ -10,7 +10,7 @@ const workflow: Workflow = {
   name: "multi-entry",
   stages: [
     { id: "spec", entry: true, step: "steps/spec.md",
-      triggers: [{ name: "top-level ticket", when: { "run.stage": null, "rel.child-of.out.total": 0 } }],
+      triggers: [{ name: "top-level item", when: { "run.stage": null, "rel.child-of.out.total": 0 } }],
       on_enter: [enter, status("spec")] },
     { id: "build", entry: true, step: "steps/build.md",
       triggers: [{ name: "child from a breakdown", when: { "run.stage": null, "rel.child-of.out.total": 1 } }],
@@ -35,15 +35,15 @@ describe("several entry stages, end to end", () => {
     expect(validateStructure(workflow, steps).filter((p) => p.rule === "entry")).toEqual([]);
   });
 
-  it("a top-level ticket starts at spec and a child at build", async () => {
-    const world = createExternalState({ tickets: [
+  it("a top-level item starts at spec and a child at build", async () => {
+    const world = createExternalState({ items: [
       { id: "1", labels: ["lr:auto"] },
       { id: "2", labels: ["lr:auto"], parent: "1" },
     ] });
 
-    const parent = createHarness({ workflow, steps, source: world.source, pre: [world.pre], post: [world.post], ticket: "1",
+    const parent = createHarness({ workflow, steps, source: world.source, pre: [world.pre], post: [world.post], item: "1",
       answers: { spec: '```json\n{"kind":"done"}\n```' } });
-    const child = createHarness({ workflow, steps, source: world.source, pre: [world.pre], post: [world.post], ticket: "2",
+    const child = createHarness({ workflow, steps, source: world.source, pre: [world.pre], post: [world.post], item: "2",
       answers: { build: '```json\n{"kind":"done"}\n```' } });
 
     await parent.converge();

@@ -7,19 +7,19 @@ import type { ArtifactHook, Effect, Graph, HookContext, Snapshot } from "#namesp
 /**
  * The spec artifact, over the in-memory GitHub. The fake is the HTTP
  * boundary — real blobs, trees, commits and refs — so what is exercised here
- * is the hook a ticket actually runs through, and nothing leaves the machine.
+ * is the hook an item actually runs through, and nothing leaves the machine.
  */
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
 const world = (): {
   gh: FakeTracker;
   spec: ArtifactHook;
-  ctx: (ticket: string, snapshot?: Snapshot) => HookContext;
+  ctx: (item: string, snapshot?: Snapshot) => HookContext;
 } => {
   const gh = createFakeTracker([{ number: 12 }, { number: 13 }]);
   const spec = gh.registry.post.find((h) => h.handles.includes("artifact.publish")) as ArtifactHook | undefined;
   if (!spec) throw new Error("no hook publishes the spec artifact");
-  return { gh, spec, ctx: (ticket, snapshot = {}) => ({ ...gh.ctx, ticket, snapshot }) };
+  return { gh, spec, ctx: (item, snapshot = {}) => ({ ...gh.ctx, item, snapshot }) };
 };
 
 const publish = (body: string, artifact = "spec"): Effect => ({ type: "artifact.publish", artifact, body });
@@ -29,11 +29,11 @@ const after = async (spec: ArtifactHook, ctx: HookContext): Promise<Snapshot> =>
 
 const writes = (gh: FakeTracker) => gh.requests.filter((r) => r.method !== "GET");
 
-/** Ticket #12's page as a file on GitHub: the link for a repository with no Pages site, which the fake's is by default. */
+/** Item #12's page as a file on GitHub: the link for a repository with no Pages site, which the fake's is by default. */
 const FILE_12 = "https://github.com/acme/widgets/blob/gh-pages/specs/12/index.md";
 
 describe("the spec artifact's reference is derived, never stored", () => {
-  it("names a url computed from the repository and the ticket, with nothing published yet", async () => {
+  it("names a url computed from the repository and the item, with nothing published yet", async () => {
     const { spec, ctx } = world();
     expect(await spec.read(ctx("12"))).toEqual({ exists: false, hash: null, url: FILE_12 });
   });
@@ -46,7 +46,7 @@ describe("the spec artifact's reference is derived, never stored", () => {
     expect(gh.published().get("specs/12/index.md")).toBe("# Spec\n\nthe plan");
   });
 
-  it("puts each ticket's spec at its own path, keeping the ones already there", async () => {
+  it("puts each item's spec at its own path, keeping the ones already there", async () => {
     const { gh, spec, ctx } = world();
     await spec.apply(publish("twelve"), ctx("12"));
     await spec.apply(publish("thirteen"), ctx("13"));
@@ -136,7 +136,7 @@ describe("publishing the same content twice costs one write", () => {
  * silently drops the publish; "not satisfied" republishes on every tick and
  * pays for it.
  */
-describe("a publish it cannot account for halts the ticket", () => {
+describe("a publish it cannot account for halts the item", () => {
   it("refuses an effect naming an artifact it does not publish", async () => {
     const { spec, ctx } = world();
     const other = publish("# Spec", "pr");
@@ -162,12 +162,12 @@ describe("a publish it cannot account for halts the ticket", () => {
   });
 
   /*
-   * The same failure on ticket #404, which is the one that matters: a status
+   * The same failure on item #404, which is the one that matters: a status
    * matched by searching the error *text* for "404" finds the path instead —
    * `/contents/specs/404/index.md` — and reports a broken repository as an
    * unpublished spec, which then republishes on every tick forever.
    */
-  it("does not read the ticket number as the status it is checking for", async () => {
+  it("does not read the item number as the status it is checking for", async () => {
     const { gh, spec, ctx } = world();
     gh.breakOn((r) => r.path.startsWith("/contents/"), 500);
     await expect(spec.read(ctx("404"))).rejects.toThrow(/500/);
@@ -177,7 +177,7 @@ describe("a publish it cannot account for halts the ticket", () => {
 /**
  * The spec is handed to the steps that work from it as text, not as a link.
  *
- * Ticket #19's build prompt said "the approved spec is at <url>" — a blob URL
+ * Item #19's build prompt said "the approved spec is at <url>" — a blob URL
  * in a private repository the agent could not have opened anyway — and the
  * screener refused it as an instruction to fetch something off the network,
  * which is what it was. The page's own text is already one read away, so it
@@ -198,7 +198,7 @@ describe("the spec artifact briefs its page as text", () => {
 
   it("says plainly that nothing is published, rather than briefing an empty page", async () => {
     const { spec, ctx } = world();
-    expect((await briefed(spec, ctx("12"))).content).toMatch(/no spec has been published for this ticket/i);
+    expect((await briefed(spec, ctx("12"))).content).toMatch(/no spec has been published for this item/i);
   });
 
   it("reports a failed read rather than briefing 'nothing is published'", async () => {
@@ -254,7 +254,7 @@ describe("the spec link points where the page can actually be read", () => {
     return {
       listed: linkIn(await source.list(ctx)),
       read: linkIn(await source.read("12", ctx)),
-      artifact: (await spec.read({ ...ctx, ticket: "12", snapshot: {} })).url,
+      artifact: (await spec.read({ ...ctx, item: "12", snapshot: {} })).url,
     };
   };
   const everywhere = (link: string) => ({ listed: link, read: link, artifact: link });
@@ -360,7 +360,7 @@ describe("the spec link points where the page can actually be read", () => {
     const events: Logged[] = [];
     const log = (event: string, data?: Record<string, unknown>) => { events.push({ event, data }); };
 
-    expect((await hooks.spec.read({ ...gh.ctx, log, ticket: "12", snapshot: {} })).url).toBe(FILE_12);
+    expect((await hooks.spec.read({ ...gh.ctx, log, item: "12", snapshot: {} })).url).toBe(FILE_12);
     expect(unknown(events)).toEqual([
       { event: "github.pages.unknown", data: { reason: expect.stringContaining("fetch failed") } },
     ]);
@@ -372,7 +372,7 @@ describe("the spec link points where the page can actually be read", () => {
   ])("asks once per client when the answer is definitive (%s), however many reads", async (_, site) => {
     const { gh, spec, ctx } = published();
     gh.pages(site);
-    // Side by side first, the way a pass reads several tickets: the question
+    // Side by side first, the way a pass reads several items: the question
     // still in flight is the one they share, not one each.
     await Promise.all([spec.read(ctx("12")), spec.read(ctx("13")), links(gh, spec)]);
     await links(gh, spec);

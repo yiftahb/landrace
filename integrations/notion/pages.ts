@@ -1,8 +1,8 @@
 /*
- * Notion as a project's docs: each ticket's spec a row of the `Landrace
+ * Notion as a project's docs: each item's spec a row of the `Landrace
  * specs` database in a page the operator shared with the integration — a
  * database because only its rows carry properties of their own. The row's
- * `Ticket` is the ticket, its body the spec as blocks for a person to read,
+ * `Ticket` is the item, its body the spec as blocks for a person to read,
  * and its `Source` the markdown itself, which is what a step is briefed and
  * what says the page is published. Everything else a docs integration does
  * is `BaseDocs`'s.
@@ -13,7 +13,12 @@ import { type Block, MAX_TEXT, pieces, toBlocks } from "./blocks.js";
 import { type Client, clientFor, tokenRejected } from "./client.js";
 
 const TITLE = "Landrace specs";
-const TICKET = "Ticket";
+/**
+ * The row's title column, named before the rename of ticket to item and left
+ * so: every database made before it has this column, and a query naming
+ * another is refused.
+ */
+const ITEM_COLUMN = "Ticket";
 const SOURCE = "Source";
 
 /** Notion's longest array: a rich text property's pieces, and the blocks one request appends, nested ones counted. */
@@ -28,7 +33,7 @@ const statusOf = (e: unknown): unknown => (e as { status?: unknown } | null)?.st
 interface Row {
   id: string;
   url: string;
-  ticket: string;
+  itemId: string;
   source: { id: string; empty: boolean };
 }
 
@@ -37,7 +42,7 @@ interface Database {
   dataSource: string;
 }
 
-/** What a client has learned: the database, and each looked-up ticket's row link (null for no row). */
+/** What a client has learned: the database, and each looked-up item's row link (null for no row). */
 interface State {
   database?: Promise<Database> | undefined;
   urls: Map<string, string | null>;
@@ -56,7 +61,7 @@ function rowOf(page: unknown): Row {
   return {
     id: p.id,
     url: p.url,
-    ticket: plainOf(p.properties?.[TICKET]?.title),
+    itemId: plainOf(p.properties?.[ITEM_COLUMN]?.title),
     // Only emptiness is read here: a query answers 25 rich text objects at most.
     source: { id: source.id, empty: !Array.isArray(source.rich_text) || source.rich_text.length === 0 },
   };
@@ -77,8 +82,8 @@ function databaseOf(answer: unknown): Database {
   return { id: db.id, dataSource: source.id };
 }
 
-const duplicate = (ticket: string, rows: Row[]): Error =>
-  new Error(`${rows.length} rows are ticket ${ticket} in "${TITLE}" (${rows.map((r) => r.url).join(", ")}); remove all but one`);
+const duplicate = (item: string, rows: Row[]): Error =>
+  new Error(`${rows.length} rows are item ${item} in "${TITLE}" (${rows.map((r) => r.url).join(", ")}); remove all but one`);
 
 const childrenOf = (block: Block): Block[] => (block[block.type] as { children?: Block[] }).children ?? [];
 
@@ -116,7 +121,7 @@ async function append(notion: Client, parent: string, blocks: Block[]): Promise<
 }
 
 /**
- * A ticket's spec, kept in Notion over one client — the one handed in, or the
+ * An item's spec, kept in Notion over one client — the one handed in, or the
  * one `ctx.config` builds from the `notionToken` secret.
  */
 export class Notion extends BaseDocs {
@@ -169,7 +174,7 @@ export class Notion extends BaseDocs {
       .then(async (db) => db ?? databaseOf(await notion.call("POST", "/databases", {
         parent: { type: "page_id", page_id: this.parent },
         title: titled,
-        initial_data_source: { properties: { [TICKET]: { title: {} }, [SOURCE]: { rich_text: {} } } },
+        initial_data_source: { properties: { [ITEM_COLUMN]: { title: {} }, [SOURCE]: { rich_text: {} } } },
       })))
       .catch((e: unknown) => {
         state.database = undefined;
@@ -189,19 +194,19 @@ export class Notion extends BaseDocs {
     return existing ? databaseOf(await notion.call("GET", `/databases/${String(existing.id)}`)) : null;
   }
 
-  private async rows(notion: Client, ticket?: string): Promise<Row[]> {
+  private async rows(notion: Client, item?: string): Promise<Row[]> {
     const db = await this.found(notion);
     if (db === null) return [];
-    const filter = ticket === undefined ? {} : { filter: { property: TICKET, title: { equals: ticket } } };
+    const filter = item === undefined ? {} : { filter: { property: ITEM_COLUMN, title: { equals: item } } };
     return (await notion.all<unknown>("POST", `/data_sources/${db.dataSource}/query`, filter)).map(rowOf);
   }
 
-  /** The ticket's row, or null. Two halt: which of them is the spec is not a guess. */
-  private async row(notion: Client, ticket: string): Promise<Row | null> {
-    const rows = (await this.rows(notion, ticket)).filter((r) => r.ticket === ticket);
-    if (rows.length > 1) throw duplicate(ticket, rows);
+  /** The item's row, or null. Two halt: which of them is the spec is not a guess. */
+  private async row(notion: Client, item: string): Promise<Row | null> {
+    const rows = (await this.rows(notion, item)).filter((r) => r.itemId === item);
+    if (rows.length > 1) throw duplicate(item, rows);
     const [row = null] = rows;
-    this.state(notion).urls.set(ticket, row?.url ?? null);
+    this.state(notion).urls.set(item, row?.url ?? null);
     return row;
   }
 
@@ -210,29 +215,29 @@ export class Notion extends BaseDocs {
    * query answers it carries 25 rich text objects at most. An empty one is a
    * row whose first publish never finished: no page.
    */
-  async page(ticket: string, ctx: RuntimeContext): Promise<string | null> {
+  async page(item: string, ctx: RuntimeContext): Promise<string | null> {
     const notion = this.notion(ctx);
-    const row = await this.row(notion, ticket);
+    const row = await this.row(notion, item);
     if (row === null || row.source.empty) return null;
     const property = encodeURIComponent(decodeURIComponent(row.source.id));
-    const items = await notion.all<{ rich_text?: { plain_text?: unknown } }>("GET", `/pages/${row.id}/properties/${property}`);
-    const content = items.map((item) => {
-      const piece = item.rich_text?.plain_text;
+    const propertyItems = await notion.all<{ rich_text?: { plain_text?: unknown } }>("GET", `/pages/${row.id}/properties/${property}`);
+    const content = propertyItems.map((entry) => {
+      const piece = entry.rich_text?.plain_text;
       // A piece read as "" would hash as different text and republish on every tick.
-      if (typeof piece !== "string") throw new Error(`Notion answered ${SOURCE} of ticket ${ticket} with a piece that is not text`);
+      if (typeof piece !== "string") throw new Error(`Notion answered ${SOURCE} of item ${item} with a piece that is not text`);
       return piece;
     }).join("");
     return content === "" ? null : content;
   }
 
   /**
-   * The ticket's row — found, or made — with its body replaced and `Source`
+   * The item's row — found, or made — with its body replaced and `Source`
    * written last. `Source` is what says a page is published, so a publish cut
    * off anywhere before it is redone, on the same row, by the next apply; and
    * a changed page's old `Source` is cleared first, so it never vouches for a
    * body that is no longer it.
    */
-  async publish(ticket: string, content: string, ctx: RuntimeContext): Promise<void> {
+  async publish(item: string, content: string, ctx: RuntimeContext): Promise<void> {
     const source = pieces(content);
     if (source.length > MAX_ITEMS) {
       throw new Error(
@@ -243,13 +248,13 @@ export class Notion extends BaseDocs {
     }
     const notion = this.notion(ctx);
     const { dataSource } = await this.made(notion);
-    let row = await this.row(notion, ticket);
+    let row = await this.row(notion, item);
     if (row === null) {
       row = rowOf(await notion.call("POST", "/pages", {
         parent: { type: "data_source_id", data_source_id: dataSource },
-        properties: { [TICKET]: { title: [text(ticket)] } },
+        properties: { [ITEM_COLUMN]: { title: [text(item)] } },
       }));
-      this.state(notion).urls.set(ticket, row.url);
+      this.state(notion).urls.set(item, row.url);
     } else if (!row.source.empty) {
       await notion.call("PATCH", `/pages/${row.id}`, { properties: { [SOURCE]: { rich_text: [] } } });
     }
@@ -263,32 +268,32 @@ export class Notion extends BaseDocs {
 
   /**
    * The row, or the parent page while there is none. From the link the last
-   * lookup of the ticket found — the listing's, or the page read's — so a
-   * board of tickets costs no query each.
+   * lookup of the item found — the listing's, or the page read's — so a
+   * board of items costs no query each.
    */
-  async link(ticket: string, ctx: RuntimeContext): Promise<string> {
+  async link(item: string, ctx: RuntimeContext): Promise<string> {
     const notion = this.notion(ctx);
     const urls = this.state(notion).urls;
-    const url = urls.has(ticket) ? urls.get(ticket) : (await this.row(notion, ticket))?.url;
+    const url = urls.has(item) ? urls.get(item) : (await this.row(notion, item))?.url;
     return url ?? `https://www.notion.so/${this.parent}`;
   }
 
-  /** Which tickets have a page, from one query of every row. */
+  /** Which items have a page, from one query of every row. */
   async published(ctx: RuntimeContext): Promise<Set<string>> {
     const notion = this.notion(ctx);
-    const byTicket = new Map<string, Row[]>();
+    const byItem = new Map<string, Row[]>();
     for (const row of await this.rows(notion)) {
       // A row a person added and left blank is nobody's spec.
-      if (row.ticket !== "") byTicket.set(row.ticket, [...(byTicket.get(row.ticket) ?? []), row]);
+      if (row.itemId !== "") byItem.set(row.itemId, [...(byItem.get(row.itemId) ?? []), row]);
     }
     const urls = this.state(notion).urls;
     urls.clear();
     const paged = new Set<string>();
-    for (const [ticket, rows] of byTicket) {
+    for (const [item, rows] of byItem) {
       const [row] = rows;
-      if (!row || rows.length > 1) throw duplicate(ticket, rows);
-      urls.set(ticket, row.url);
-      if (!row.source.empty) paged.add(ticket);
+      if (!row || rows.length > 1) throw duplicate(item, rows);
+      urls.set(item, row.url);
+      if (!row.source.empty) paged.add(item);
     }
     return paged;
   }

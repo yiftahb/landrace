@@ -58,14 +58,14 @@ describe("a marker only counts when the account we post as wrote it", () => {
     expect(decision).toMatchObject({ action: "transition", trigger: "triaged" });
   });
 
-  it("does not let a stranger block a ticket with a malformed marker", () => {
+  it("does not let a stranger block an item with a malformed marker", () => {
     const body = `nope${marker({ stage: "triage", kind: "malformed", round: 99 })}`;
     const { run } = decideOn([comment(1, "mallory", body)], BOT, "triage");
     expect(run.failedStages).toEqual([]);
     expect(run.lastOutputValid).toBeNull();
   });
 
-  it("does not let a stranger make a ticket read as refused by a security check", () => {
+  it("does not let a stranger make an item read as refused by a security check", () => {
     const body = `nope${marker({ stage: "triage", kind: "refused", round: 99 })}`;
     const { run } = decideOn([comment(1, "mallory", body)], BOT, "triage");
     expect(run.failedStages).toEqual([]);
@@ -115,7 +115,7 @@ describe("a marker only counts when the account we post as wrote it", () => {
     expect(() => entriesFromComments([comment(1, BOT, approve)], "")).toThrow(/login/i);
   });
 
-  it("does not let a stranger send a ticket anywhere", () => {
+  it("does not let a stranger send an item anywhere", () => {
     const body = `go${marker({ stage: "blocked", kind: "goto", round: 0, goto: "build" })}`;
     const [entry] = entriesFromComments([comment(1, "mallory", body)], BOT);
     expect(entry).toMatchObject({ kind: "human", byAgent: false });

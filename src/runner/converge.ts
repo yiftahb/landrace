@@ -31,7 +31,7 @@ function malformedBody(reason: string, scrub: (text: string) => string, kind: st
   // log-sink only — a body composed here goes straight to the tracker,
   // bypassing the logger's own redaction entirely.
   const redacted = scrub(reason);
-  // Headed as what it was: a person opening a ticket stopped by a security
+  // Headed as what it was: a person opening an item stopped by a security
   // check has a different job from one reading an agent's unreadable answer.
   const heading = kind === REFUSED_KIND ? "Step refused by a security check" : "Step output rejected";
   const full = `## ${heading}\n\n${redacted}. Nothing was retried.`;
@@ -42,11 +42,11 @@ function malformedBody(reason: string, scrub: (text: string) => string, kind: st
 const scrubberFor = (deps: ConvergeDeps): ((text: string) => string) => scrubberOf(deps.ctx.secrets, deps.scrub);
 
 /**
- * Act on one ticket until the next move depends on something outside the loop.
+ * Act on one item until the next move depends on something outside the loop.
  * Doing one thing per poll would put a whole interval between "moved to a
  * stage" and "ran its step", with nothing external happening in between.
  */
-export async function converge(ticket: string, deps: ConvergeDeps): Promise<ConvergeResult> {
+export async function converge(item: string, deps: ConvergeDeps): Promise<ConvergeResult> {
   const root = deps.sandbox?.root;
   let entered = false;
 
@@ -68,18 +68,18 @@ export async function converge(ticket: string, deps: ConvergeDeps): Promise<Conv
     ? null
     : async (on?: WorktreeBranch): Promise<string> => {
         entered = true;
-        return ensureWorktree(ticket, root, on);
+        return ensureWorktree(item, root, on);
       };
 
   try {
-    return await converging(ticket, deps, enter);
+    return await converging(item, deps, enter);
   } finally {
-    if (entered && root !== undefined) await removeWorktree(ticket, root);
+    if (entered && root !== undefined) await removeWorktree(item, root);
   }
 }
 
 async function converging(
-  ticket: string,
+  item: string,
   deps: ConvergeDeps,
   enterSandbox: ((on?: WorktreeBranch) => Promise<string>) | null,
 ): Promise<ConvergeResult> {
@@ -125,11 +125,11 @@ async function converging(
   // the rest of this call's passes re-applying the same no-op.
   const residueApplied = new Set<string>();
 
-  // Whether the pass before this one applied a transition. A ticket that
+  // Whether the pass before this one applied a transition. An item that
   // waits on the pass after one has just come to rest, which is the one
   // moment a person is told; one found waiting with no move behind it was
   // already waiting, and was told then. Bounded by this call like `pass`,
-  // never stored: a ticket that leaves and comes back moves again.
+  // never stored: an item that leaves and comes back moves again.
   let moved = false;
 
   for (let pass = 1; pass <= maxPasses; pass++) {
@@ -151,37 +151,37 @@ async function converging(
     // CLAUDE.md says errors report, they do not crash.
     let snapshot: Snapshot;
     try {
-      snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: deps.ctx });
+      snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: deps.ctx });
     } catch (e) {
       const reason = messageOf(e);
-      deps.log("snapshot.failed", { ticket, reason });
+      deps.log("snapshot.failed", { item, reason });
       return { passes: pass, settled: "halt", why: reason };
     }
     // §14's per-pass dump. The logger drops it unless --debug is on, so the
     // decision below is always reported alongside the thing it was decided
     // from, and never at the price of a whole snapshot per pass in a quiet log.
-    deps.log("snapshot.built", { ticket, pass, snapshot });
+    deps.log("snapshot.built", { item, pass, snapshot });
 
-    // Before anything is decided, because acting on an unplaceable ticket is
+    // Before anything is decided, because acting on an unplaceable item is
     // what this closes: two `lr:stage:*` labels used to run a paid step at
-    // whichever one came first in the array, and the same ticket with them
+    // whichever one came first in the array, and the same item with them
     // the other way round ran a different stage. Ambiguity halts here like
     // every other ambiguity in this engine, and like both operator surfaces
-    // were already reporting for exactly this ticket.
+    // were already reporting for exactly this item.
     const unplaceable = positionProblem(snapshot);
     if (unplaceable) {
-      deps.log("ticket.evaluated", { ticket, pass, stage: null, decision: "halt", why: unplaceable });
+      deps.log("item.evaluated", { item, pass, stage: null, decision: "halt", why: unplaceable });
       return { passes: pass, settled: "halt", why: unplaceable };
     }
 
     const decision = decide(deps.workflow, snapshot);
 
-    deps.log("ticket.evaluated", {
-      ticket, pass,
+    deps.log("item.evaluated", {
+      item, pass,
       stage: decision.stage?.id ?? null,
       // Where it is going, beside where it is. The last transition of a run is
       // never evaluated from its destination — nothing evaluates a terminal
-      // ticket — so without this the stage a ticket ended in appears nowhere
+      // item — so without this the stage an item ended in appears nowhere
       // in the stream, and the only other place to read it is the tracker's
       // own idea of a position, which the engine deliberately does not know.
       to: decision.to?.id ?? null,
@@ -196,7 +196,7 @@ async function converging(
 
     if (decision.action === "skip") {
       const why = decision.why ?? "not eligible";
-      deps.log("ticket.skipped", { ticket, reason: why });
+      deps.log("item.skipped", { item, reason: why });
       return { passes: pass, settled: "wait", why };
     }
     if (decision.action === "wait") {
@@ -206,7 +206,7 @@ async function converging(
         try {
           deps.notify?.(snapshot);
         } catch (e) {
-          deps.log("notify.failed", { ticket, reason: messageOf(e) });
+          deps.log("notify.failed", { item, reason: messageOf(e) });
         }
       }
       return { passes: pass, settled: "wait", why: decision.why ?? "no trigger matched" };
@@ -219,16 +219,16 @@ async function converging(
 
       if (!stage || !step) {
         const reason = `stage "${stage?.id}" names a step that is not loaded`;
-        deps.log("step.rejected", { ticket, reason });
+        deps.log("step.rejected", { item, reason });
         // M2: the malformed path posts a durable record; a workflow naming a
-        // step that never loaded is just as much a reason a ticket is stuck,
-        // and an operator watching the ticket deserves the same trace.
+        // step that never loaded is just as much a reason an item is stuck,
+        // and an operator watching the item deserves the same trace.
         if (stage) {
           const posted = await tryApply(
             [malformedEffect(stage.id, round, reason, scrub)],
-            ticket, snapshot, deps,
+            item, snapshot, deps,
           );
-          if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
+          if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });
         }
         return { passes: pass, settled: "halt", why: reason };
       }
@@ -244,16 +244,16 @@ async function converging(
         closePlanned = planNodesClose(stage, snapshot, round + 1);
       } catch (e) {
         const reason = messageOf(e);
-        deps.log("effect.failed", { ticket, reason });
+        deps.log("effect.failed", { item, reason });
         return { passes: pass, settled: "halt", why: reason };
       }
       if (closePlanned.length) {
         // Same reconcile path and the same "dropped as already satisfied"
         // logging as the transition below: an operator reading the log
         // should not be able to tell which of the two planned this effect.
-        const reconciled = reconcileLogged(closePlanned, ticket, snapshot, deps);
+        const reconciled = reconcileLogged(closePlanned, item, snapshot, deps);
         if (!reconciled.ok) {
-          deps.log("effect.failed", { ticket, reason: reconciled.reason });
+          deps.log("effect.failed", { item, reason: reconciled.reason });
           return { passes: pass, settled: "halt", why: reconciled.reason };
         }
         const surviving = reconciled.surviving;
@@ -263,13 +263,13 @@ async function converging(
             const ids = surviving.flatMap((e) => (Array.isArray(e.ids) ? (e.ids as string[]) : []));
             const reason = `stage "${stage.id}" round ${round}: nodes.close was applied but is still not satisfied; still open: ` +
               (ids.length ? ids.join(", ") : "(no ids named)");
-            deps.log("effect.failed", { ticket, reason });
+            deps.log("effect.failed", { item, reason });
             return { passes: pass, settled: "halt", why: reason };
           }
           residueApplied.add(key);
-          const cleaned = await tryApply(surviving, ticket, snapshot, deps);
+          const cleaned = await tryApply(surviving, item, snapshot, deps);
           if (!cleaned.ok) {
-            deps.log("effect.failed", { ticket, reason: cleaned.reason });
+            deps.log("effect.failed", { item, reason: cleaned.reason });
             return { passes: pass, settled: "halt", why: cleaned.reason };
           }
           continue;
@@ -285,12 +285,12 @@ async function converging(
       const key = `${stage.id}:${round}`;
       if (invoked.has(key)) {
         const reason = `stage "${stage.id}" round ${round} was already invoked this call and left nothing readable; not retrying`;
-        deps.log("step.rejected", { ticket, stage: stage.id, round, reason });
+        deps.log("step.rejected", { item, stage: stage.id, round, reason });
         // The malformed path posts a durable record; a stage stuck here is
         // just as much a reason an operator needs to see something on the
-        // ticket, not just a line in a log they may never open.
-        const posted = await tryApply([malformedEffect(stage.id, round, reason, scrub)], ticket, snapshot, deps);
-        if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
+        // item, not just a line in a log they may never open.
+        const posted = await tryApply([malformedEffect(stage.id, round, reason, scrub)], item, snapshot, deps);
+        if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });
         return { passes: pass, settled: "halt", why: reason };
       }
       invoked.add(key);
@@ -308,26 +308,26 @@ async function converging(
        */
       let briefing: Record<string, Record<string, string>>;
       try {
-        briefing = await buildBriefing([...(deps.artifacts ?? []), deps.source], { ...deps.ctx, ticket, snapshot }, step.prompt);
+        briefing = await buildBriefing([...(deps.artifacts ?? []), deps.source], { ...deps.ctx, item, snapshot }, step.prompt);
       } catch (e) {
         const reason = messageOf(e);
-        deps.log("step.rejected", { ticket, stage: stage.id, round, reason });
+        deps.log("step.rejected", { item, stage: stage.id, round, reason });
         return { passes: pass, settled: "halt", why: reason };
       }
 
       // Before the step, and reported rather than thrown: "this is not a git
       // repository" is an operator's mistake, and a stack trace out of
-      // converge would tell them nothing about which ticket or stage it was.
+      // converge would tell them nothing about which item or stage it was.
       //
       // On the stage's branch when it names one: the step's own if it may
-      // write, a detached look at it otherwise. Checked for this ticket before
+      // write, a detached look at it otherwise. Checked for this item before
       // anything is checked out — a template that was fine for the example
-      // ticket at load is not always fine for this one.
+      // item at load is not always fine for this one.
       let sandbox: { path: string } | null = null;
       if (enterSandbox) {
-        const branch = stageBranch(stage, ticket, round);
+        const branch = stageBranch(stage, item, round);
         if (!branch.ok) {
-          deps.log("step.rejected", { ticket, stage: stage.id, round, reason: branch.reason });
+          deps.log("step.rejected", { item, stage: stage.id, round, reason: branch.reason });
           return { passes: pass, settled: "halt", why: branch.reason };
         }
         try {
@@ -338,7 +338,7 @@ async function converging(
           };
         } catch (e) {
           const reason = messageOf(e);
-          deps.log("step.rejected", { ticket, stage: stage.id, round, reason });
+          deps.log("step.rejected", { item, stage: stage.id, round, reason });
           return { passes: pass, settled: "halt", why: reason };
         }
       }
@@ -349,39 +349,39 @@ async function converging(
       // anything watching for "running" would wait on it for ever.
       // The finally is the point — a throw or an abort must not leave a step
       // looking as if it is still going.
-      deps.log("step.started", { ticket, stage: stage.id, round, model: step.model ?? null, effort: step.effort ?? null });
+      deps.log("step.started", { item, stage: stage.id, round, model: step.model ?? null, effort: step.effort ?? null });
       // The panel's lines for this run start here: a step that never
       // finished is run again at the same round, and its lines are not these.
-      deps.activity?.begin(ticket, stage.id, round);
+      deps.activity?.begin(item, stage.id, round);
       let finishedOk = false;
       let result: StepResult;
       try {
         result = await runStep({
-          step, ticket, stageId: stage.id, round, snapshot, briefing,
+          step, item, stageId: stage.id, round, snapshot, briefing,
           executor: deps.executor, signal: deps.ctx.signal,
-          readGraph: () => deps.source.read(ticket, deps.ctx),
+          readGraph: () => deps.source.read(item, deps.ctx),
           ...(deps.screen ? { screen: deps.screen } : {}),
           ...(sandbox ? { sandbox } : {}),
           ...(deps.stepTimeoutMs === undefined ? {} : { defaultTimeoutMs: deps.stepTimeoutMs }),
           ...(deps.childServer ? { childServer: deps.childServer } : {}),
-          ...(deps.activity ? { onActivity: (e: AgentActivity) => deps.activity?.record(ticket, stage.id, round, e) } : {}),
+          ...(deps.activity ? { onActivity: (e: AgentActivity) => deps.activity?.record(item, stage.id, round, e) } : {}),
           log: deps.log,
         });
         finishedOk = result.ok;
       } finally {
-        deps.log("step.finished", { ticket, stage: stage.id, round, ok: finishedOk });
+        deps.log("step.finished", { item, stage: stage.id, round, ok: finishedOk });
       }
 
-      // A run stopped while its step ran — Ctrl-C, or the ticket closed or
+      // A run stopped while its step ran — Ctrl-C, or the item closed or
       // taken off the loop (see tick) — writes nothing, whatever the step
       // returned: an answer the agent got out as it was killed is not one
       // anybody still wants, and a screener killed mid-verdict refused
       // nothing. Nothing written leaves the round owed, so it runs again if
-      // the ticket comes back.
+      // the item comes back.
       if (deps.ctx.signal.aborted) return { passes: pass, settled: "halt", why: "the run was aborted" };
 
       if (!result.ok) {
-        deps.log("step.rejected", { ticket, stage: stage.id, round, kind: result.kind, reason: result.reason });
+        deps.log("step.rejected", { item, stage: stage.id, round, kind: result.kind, reason: result.reason });
 
         if (result.kind === "unavailable") {
           // The step never ran at all — the executor itself threw (a
@@ -413,9 +413,9 @@ async function converging(
         // run.lastRefused, which is read back from this kind.
         const posted = await tryApply(
           [malformedEffect(stage.id, round, result.reason, scrub, result.kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)],
-          ticket, snapshot, deps,
+          item, snapshot, deps,
         );
-        if (!posted.ok) deps.log("effect.failed", { ticket, reason: posted.reason });
+        if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });
         return { passes: pass, settled: "halt", why: result.reason };
       }
 
@@ -439,9 +439,9 @@ async function converging(
       // publish, say — would need reconciling here, because for that effect
       // "already satisfied" is a real, checkable fact about the world, not
       // a question this same round's own output could ever have answered.
-      const applied = await tryApply(result.effects, ticket, snapshot, deps);
+      const applied = await tryApply(result.effects, item, snapshot, deps);
       if (!applied.ok) {
-        deps.log("effect.failed", { ticket, reason: applied.reason });
+        deps.log("effect.failed", { item, reason: applied.reason });
         return { passes: pass, settled: "halt", why: applied.reason };
       }
       continue;
@@ -453,21 +453,21 @@ async function converging(
     // converge, and never a guess at an empty cascade.
     let planned: Effect[];
     try {
-      planned = planEffects(decision, snapshot, ticket);
+      planned = planEffects(decision, snapshot, item);
     } catch (e) {
       const reason = messageOf(e);
-      deps.log("effect.failed", { ticket, reason });
+      deps.log("effect.failed", { item, reason });
       return { passes: pass, settled: "halt", why: reason };
     }
-    const reconciled = reconcileLogged(planned, ticket, snapshot, deps);
+    const reconciled = reconcileLogged(planned, item, snapshot, deps);
     if (!reconciled.ok) {
-      deps.log("effect.failed", { ticket, reason: reconciled.reason });
+      deps.log("effect.failed", { item, reason: reconciled.reason });
       return { passes: pass, settled: "halt", why: reconciled.reason };
     }
     const surviving = reconciled.surviving;
-    const applied = await tryApply(surviving, ticket, snapshot, deps);
+    const applied = await tryApply(surviving, item, snapshot, deps);
     if (!applied.ok) {
-      deps.log("effect.failed", { ticket, reason: applied.reason });
+      deps.log("effect.failed", { item, reason: applied.reason });
       return { passes: pass, settled: "halt", why: applied.reason };
     }
 
@@ -485,7 +485,7 @@ async function converging(
     }
   }
 
-  deps.log("ticket.evaluated", { ticket, decision: "cap", why: `hit ${maxPasses} passes without settling` });
+  deps.log("item.evaluated", { item, decision: "cap", why: `hit ${maxPasses} passes without settling` });
   return { passes: maxPasses, settled: "cap" };
 }
 
@@ -533,7 +533,7 @@ function tryReconcile(
  */
 function reconcileLogged(
   planned: Effect[],
-  ticket: string,
+  item: string,
   snapshot: Snapshot,
   deps: ConvergeDeps,
 ): { ok: true; surviving: Effect[] } | { ok: false; reason: string } {
@@ -545,7 +545,7 @@ function reconcileLogged(
     // bug to whoever is looking at an effect that did not happen, and the
     // answer they need is which hook said it already had.
     deps.log("effect.discarded", {
-      ticket,
+      item,
       type: dropped.type,
       satisfiedBy: deps.dispatcher.handlerFor(dropped.type)?.id ?? null,
     });
@@ -556,16 +556,16 @@ function reconcileLogged(
 /** Same reasoning as tryReconcile, for the apply side: apply() can reject too (a rate limit, a broken hook), from both the invoke path and the transition path. */
 async function tryApply(
   effects: Effect[],
-  ticket: string,
+  item: string,
   snapshot: Snapshot,
   deps: ConvergeDeps,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   // A stopped run writes nothing, whichever write it had reached: a
-  // transition decided from a snapshot read as the ticket closed is as
+  // transition decided from a snapshot read as the item closed is as
   // unwanted as a step's answer. See the check after runStep.
   if (deps.ctx.signal.aborted) return { ok: false, reason: "the run was aborted" };
   try {
-    await applyAll(effects, ticket, snapshot, deps);
+    await applyAll(effects, item, snapshot, deps);
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: messageOf(e) };
@@ -574,13 +574,13 @@ async function tryApply(
 
 async function applyAll(
   effects: Effect[],
-  ticket: string,
+  item: string,
   snapshot: Snapshot,
   deps: ConvergeDeps,
 ): Promise<void> {
   for (const effect of effects) {
-    deps.log("effect.planned", { ticket, type: effect.type });
-    await deps.dispatcher.apply(effect, { ...deps.ctx, ticket, snapshot });
-    deps.log("effect.applied", { ticket, type: effect.type });
+    deps.log("effect.planned", { item, type: effect.type });
+    await deps.dispatcher.apply(effect, { ...deps.ctx, item, snapshot });
+    deps.log("effect.applied", { item, type: effect.type });
   }
 }

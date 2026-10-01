@@ -57,7 +57,7 @@ export const unseen = (repo: string): Error =>
 
 /**
  * The engine's id as the number GitHub wants. Only GitHub's integration knows
- * its ids are integers; anything else reaching here is a ticket from some
+ * its ids are integers; anything else reaching here is an item from some
  * other tracker, and calling `/issues/NaN` with it would report a 404 about
  * the wrong thing.
  */
@@ -117,7 +117,7 @@ export function createClient(opts: GitHubOptions) {
     });
     onResponse?.(res);
     // The status rides on the error rather than only in its text. "Is this a
-    // 404?" answered by searching the message finds the *path* on a ticket
+    // 404?" answered by searching the message finds the *path* on an item
     // numbered 404 — `/contents/specs/404/index.md` — and a caller that reads
     // a broken repository as an absent file republishes it on every tick.
     if (!res.ok) {
@@ -364,7 +364,7 @@ export function createClient(opts: GitHubOptions) {
     createComment: (n: number, body: string) => {
       // Refused before the request goes out, because a 422 here is an apply
       // that throws — and an apply that throws leaves nothing durable on the
-      // ticket, so the next tick re-derives the stage as pending and pays for
+      // item, so the next tick re-derives the stage as pending and pays for
       // the step all over again.
       if (body.length > MAX_COMMENT_CHARS) {
         throw new Error(
@@ -456,7 +456,7 @@ export function createClient(opts: GitHubOptions) {
         encoding: "base64",
       });
       const tree = await call<{ sha: string }>("POST", "/git/trees", {
-        // Everything already on the branch is kept: each ticket owns its own
+        // Everything already on the branch is kept: each item owns its own
         // path, and a publish must not delete its neighbours.
         ...(head ? { base_tree: head.tree } : {}),
         tree: [{ path, mode: "100644", type: "blob", sha: blob.sha }],

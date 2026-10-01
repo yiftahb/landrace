@@ -12,12 +12,12 @@ output:
 
 Implement #{node.id}: {node.title}.
 
-If this ticket went through specification, the approved spec is at
-{artifacts.spec.url} — work from it. A ticket created by a breakdown of a larger
+If this item went through specification, the approved spec is at
+{artifacts.spec.url} — work from it. An item created by a breakdown of a larger
 one has no page there: its own description below is the spec, written when the
-parent was planned. Either way, the description is the ticket's own words:
+parent was planned. Either way, the description is the item's own words:
 
-{ticket.body}
+{item.body}
 
 Use the `superpowers:executing-plans` skill. Work through the spec and commit
 as you go. Run the test suite and the lint checks
@@ -26,7 +26,7 @@ yourself is a wasted round.
 
 Commit locally only; you have no credentials and cannot push. This workflow
 names no branch and publishes nothing: review starts once a pull request for
-the ticket exists, opened some other way.
+the item exists, opened some other way.
 
 Summarise what you did in your own words, then end with a fenced json block
 whose only field is `kind`, set to `done`.

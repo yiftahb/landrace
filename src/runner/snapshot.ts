@@ -47,7 +47,7 @@ export const ENGINE_PROVIDES: readonly string[] = [
   "run.unblockedAt",
   "run.pairing", "run.pairing.*",
   "run.lastOutputBy",
-  // The source's reading of the ticket, put in before any pre hook runs.
+  // The source's reading of the item, put in before any pre hook runs.
   "node", "node.id", "node.kind", "node.title", "node.link", "node.closed", "node.priority", "node.origin",
   "node.state", "node.state.*",
   "graph", "graph.*",
@@ -80,7 +80,7 @@ export function snapshotProvides(pre: PreHook[], source: Source | null): string[
 }
 
 export async function buildSnapshot(opts: {
-  ticket: string;
+  item: string;
   source: Source;
   hooks: PreHook[];
   ctx: Omit<HookContext, "snapshot">;
@@ -88,16 +88,16 @@ export async function buildSnapshot(opts: {
   digest?: (input: string) => string;
 }): Promise<Snapshot> {
   // The graph first, so every pre hook — and every post hook's satisfied(),
-  // which reads the snapshot this built — sees the ticket as the engine does.
+  // which reads the snapshot this built — sees the item as the engine does.
   let graph: Graph;
   try {
-    graph = await opts.source.read(opts.ticket, opts.ctx);
+    graph = await opts.source.read(opts.item, opts.ctx);
   } catch (e) {
-    throw new Error(`source "${opts.source.id}" could not read "${opts.ticket}": ${messageOf(e)}`);
+    throw new Error(`source "${opts.source.id}" could not read "${opts.item}": ${messageOf(e)}`);
   }
-  const problem = graphProblem(graph, opts.source.relations, opts.ticket);
+  const problem = graphProblem(graph, opts.source.relations, opts.item);
   if (problem) throw new Error(`source "${opts.source.id}" returned a graph nothing can be decided from: ${problem}`);
-  const node = graph.nodes.find((n) => n.id === opts.ticket) as Node; // graphProblem proved it is there
+  const node = graph.nodes.find((n) => n.id === opts.item) as Node; // graphProblem proved it is there
 
   // Graph and node only: rel is counted after the hooks, because which
   // children still count depends on the run's rounds, and the run is derived
@@ -123,7 +123,7 @@ export async function buildSnapshot(opts: {
   // A child an earlier round of its stage created no longer counts once the
   // stage is entered again (core/rel.ts).
   const entered = Object.fromEntries(Object.entries(run.rounds).map(([stage, r]) => [stage, r.entered]));
-  const rel = deriveRel(graph, opts.ticket, opts.source.relations.map((r) => r.type), entered);
+  const rel = deriveRel(graph, opts.item, opts.source.relations.map((r) => r.type), entered);
   if (!rel.ok) throw new Error(`source "${opts.source.id}": ${rel.why}`);
 
   // Time enters here and nowhere else: core may not read a clock.
@@ -144,20 +144,20 @@ export async function buildSnapshot(opts: {
 }
 
 /**
- * Why this ticket cannot be placed at all, or null.
+ * Why this item cannot be placed at all, or null.
  *
  * Asked here rather than inside `decide`, because "how many positions is this
- * ticket carrying" is a question about the tracker's own labels, and this is
+ * item carrying" is a question about the tracker's own labels, and this is
  * the layer that turns labels into `run.stage`. Asked by converge before it
- * decides anything, because a ticket with two positions used to run a paid
+ * decides anything, because an item with two positions used to run a paid
  * step at whichever one came first in the array — the engine acting on an
  * ambiguity both operator surfaces were already refusing to resolve.
  *
- * A reason rather than a boolean: an operator reading a halted ticket needs
+ * A reason rather than a boolean: an operator reading a halted item needs
  * to know which labels to take off it.
  */
 export function positionProblem(snapshot: Snapshot): string | null {
   const { ambiguous, found } = stageFromLabels(labelsOf(snapshot.node as Node | undefined));
   if (!ambiguous) return null;
-  return `cannot place the ticket: it carries ${found.length} stage labels (${found.join(", ")}), and position is one`;
+  return `cannot place the item: it carries ${found.length} stage labels (${found.join(", ")}), and position is one`;
 }

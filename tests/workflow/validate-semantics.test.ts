@@ -64,7 +64,7 @@ describe("semantic validation", () => {
 
     /*
      * Without an entry record assess() reads a stage's first round as its
-     * last one forever, so the loop runs its body exactly once and the ticket
+     * last one forever, so the loop runs its body exactly once and the item
      * ping-pongs between two "complete" stages until the pass cap. Silent, and
      * paid for in agent invocations, so it is caught here rather than there.
      */
@@ -137,7 +137,7 @@ describe("semantic validation", () => {
    * so a field it names but the engine can never carry is a rule that silently
    * does nothing: the value is dropped at the step boundary (a reserved id is
    * not a name, it is a reachable key on a plain object), the trigger reading
-   * it never matches, and the ticket waits forever with nothing to explain it.
+   * it never matches, and the item waits forever with nothing to explain it.
    */
   it("flags a declared shape field that can never travel, because it is a reserved object key", () => {
     const steps = new Map<string, Step>([["s.md", {
@@ -182,41 +182,41 @@ describe("semantic validation", () => {
 
   it("flags a predicate path nothing provides", () => {
     const w: Workflow = { version: 1, name: "t", stages: [
-      { id: "a", entry: true, triggers: [{ when: { "ticket.nonsense": 1 } }] },
+      { id: "a", entry: true, triggers: [{ when: { "item.nonsense": 1 } }] },
     ] };
-    expect(rules(w, noSteps, ["ticket.labels", "run.stage"])).toContain("path-coverage");
+    expect(rules(w, noSteps, ["item.labels", "run.stage"])).toContain("path-coverage");
   });
 
   /*
    * An eligibility rule reads the same snapshot every trigger does, and an
    * uncovered path there is the quieter failure of the two: a trigger that
-   * matches nothing leaves one ticket where it is, while an `eligible` rule
-   * that matches nothing skips *every* ticket in the repository — reported by
+   * matches nothing leaves one item where it is, while an `eligible` rule
+   * that matches nothing skips *every* item in the repository — reported by
    * `status` as the workflow's own `else`, which reads exactly like the rule
-   * working. `ticket.assignee` beside a hook providing `ticket.assignees` is
+   * working. `item.assignee` beside a hook providing `item.assignees` is
    * the shape it arrives in.
    */
   it("flags an eligibility rule reading a path nothing provides", () => {
     const w: Workflow = {
       version: 1, name: "t",
-      eligible: [{ when: { "ticket.assignee": "ann" }, else: "not yours" }],
+      eligible: [{ when: { "item.assignee": "ann" }, else: "not yours" }],
       stages: [{ id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] }],
     };
-    expect(rules(w, noSteps, ["ticket.assignees", "run.stage"])).toContain("path-coverage");
+    expect(rules(w, noSteps, ["item.assignees", "run.stage"])).toContain("path-coverage");
   });
 
   it("says nothing about an eligibility rule reading a path a hook does provide", () => {
     const w: Workflow = {
       version: 1, name: "t",
-      eligible: [{ when: { "ticket.assignees": { $in: ["ann"] } }, else: "not yours" }],
+      eligible: [{ when: { "item.assignees": { $in: ["ann"] } }, else: "not yours" }],
       stages: [{ id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] }],
     };
-    expect(rules(w, noSteps, ["ticket.assignees", "run.stage"])).not.toContain("path-coverage");
+    expect(rules(w, noSteps, ["item.assignees", "run.stage"])).not.toContain("path-coverage");
   });
 
   it("checks no paths when no hook declares what it provides", () => {
     const w: Workflow = { version: 1, name: "t", stages: [
-      { id: "a", entry: true, triggers: [{ when: { "ticket.nonsense": 1 } }] },
+      { id: "a", entry: true, triggers: [{ when: { "item.nonsense": 1 } }] },
     ] };
     expect(rules(w, noSteps, undefined)).not.toContain("path-coverage");
   });
@@ -253,7 +253,7 @@ describe("semantic validation", () => {
 
   it("treats a trigger that names no stage as reachable from anywhere but its own stage", () => {
     // `blocked` in the shipped workflow: `{ "run.lastOutputValid": false }`
-    // says nothing about position, so it can fire wherever the ticket is.
+    // says nothing about position, so it can fire wherever the item is.
     // Counting it as no edge at all reported `a` as having no way out.
     const w: Workflow = { version: 1, name: "t", stages: [
       { id: "a", entry: true, triggers: [
@@ -482,7 +482,7 @@ describe("semantic validation", () => {
 /**
  * The rules, against the workflows that actually ship.
  *
- * `isPlainAnchor` demanded a string, and the only way to say "a fresh ticket"
+ * `isPlainAnchor` demanded a string, and the only way to say "a fresh item"
  * is `{ "run.stage": null }`, so dead-end, cycle-bound and reachability were
  * off for every workflow with an entry stage — which is every workflow. The
  * proof that they are on is that a workflow with a planted defect reports it.
@@ -527,7 +527,7 @@ describe("the graph rules, on a workflow that has an entry stage", () => {
  * Only the first half was implemented (`totality`: every shape has a *route*,
  * somewhere for the content to go). `triage` declared `question` and `unclear`
  * and routed both to a comment, and nothing in the graph fired on either, so a
- * ticket that reached one sat at `triage` wearing `lr:awaiting` for good —
+ * item that reached one sat at `triage` wearing `lr:awaiting` for good —
  * decide() excludes the current stage's own triggers, so even the human's next
  * reply did nothing. Nothing reported it.
  */
@@ -579,7 +579,7 @@ describe("every declared output shape has somewhere to go next", () => {
     expect(rules(w, twoShapes)).toContain("shape-edge");
   });
 
-  it("catches the two triage shapes that stranded a real ticket", async () => {
+  it("catches the two triage shapes that stranded a real item", async () => {
     const { workflow, steps } = await loadWorkflow(".landrace");
     // The shipped workflow as it was: `question` and `unclear` declared, routed
     // to a comment, and led away from by nothing — every trigger that mentions
@@ -604,7 +604,7 @@ describe("every declared output shape has somewhere to go next", () => {
 });
 
 describe("children", () => {
-  const breakdownStep = { prompt: "p", capabilities: ["tickets:create"] } as Step;
+  const breakdownStep = { prompt: "p", capabilities: ["items:create"] } as Step;
   const stepsWith = (s: Step) => new Map([["steps/b.md", s]]);
   const wf = (on_enter: Effect[]): Workflow => ({
     version: 1, name: "t",
@@ -618,7 +618,7 @@ describe("children", () => {
   const close = { type: "nodes.close", follow: ["child-of"] } as Effect;
 
   it("flags a step that creates children with nothing to clean them on a re-run", () => {
-    expect(children(validate(wf([enter]), stepsWith(breakdownStep)))).toEqual([expect.stringMatching(/"b".*tickets:create.*nodes\.close/)]);
+    expect(children(validate(wf([enter]), stepsWith(breakdownStep)))).toEqual([expect.stringMatching(/"b".*items:create.*nodes\.close/)]);
   });
 
   /*
@@ -629,7 +629,7 @@ describe("children", () => {
    */
   it("flags a step that creates children in a stage that writes no entry record", () => {
     expect(children(validate(wf([close]), stepsWith(breakdownStep))))
-      .toEqual([expect.stringMatching(/"b".*tickets:create.*entry record/)]);
+      .toEqual([expect.stringMatching(/"b".*items:create.*entry record/)]);
     const other = { ...enter, kind: "output" } as Effect;
     expect(children(validate(wf([other, close]), stepsWith(breakdownStep))))
       .toEqual([expect.stringMatching(/"b".*entry record/)]);
@@ -637,7 +637,7 @@ describe("children", () => {
 
   it("flags a close with nothing that could have made what it closes", () => {
     const ps = validate(wf([{ type: "nodes.close", follow: ["child-of"] }]), stepsWith({ prompt: "p", capabilities: [] } as Step));
-    expect(children(ps)).toEqual([expect.stringMatching(/"b".*nodes\.close.*tickets:create/)]);
+    expect(children(ps)).toEqual([expect.stringMatching(/"b".*nodes\.close.*items:create/)]);
   });
 
   it("flags a close with nothing to follow", () => {

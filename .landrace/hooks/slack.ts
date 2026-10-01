@@ -1,6 +1,6 @@
 /*
  * This project's notifier: Slack, as landrace ships it (`integrations/slack/`),
- * told when a ticket needs you. Its two secrets, `slackWebhookUrl` and
+ * told when an item needs you. Its two secrets, `slackWebhookUrl` and
  * `slackNotifyUser`, are declared in landrace.yaml; `notify.via` names it.
  *
  * `landrace/integrations/slack` resolves here by Node's package

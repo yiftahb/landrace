@@ -17,7 +17,7 @@ describe("structural validation", () => {
     expect(rules(wf([{ id: "a" }, { id: "b", terminal: true, triggers: [{ when: { y: 1 } }] }]))).toContain("entry");
   });
 
-  it("accepts several entry stages that each say which fresh tickets they take", () => {
+  it("accepts several entry stages that each say which fresh items they take", () => {
     const w = wf([
       { id: "a", entry: true, triggers: [{ when: { "run.stage": null, "rel.child-of.out.total": 0 } }] },
       { id: "b", entry: true, triggers: [{ when: { "run.stage": null, "rel.child-of.out.total": 1 } }] },
@@ -38,7 +38,7 @@ describe("structural validation", () => {
 
   it("refuses an entry trigger that could fire mid-workflow", () => {
     // Not anchored on run.stage: null, so decide() would evaluate it from
-    // every other stage too and drag a running ticket back to b.
+    // every other stage too and drag a running item back to b.
     const problems = validateStructure(wf([
       { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
       { id: "b", entry: true, triggers: [{ when: { "rel.child-of.out.total": 1 } }] },
@@ -73,7 +73,7 @@ describe("structural validation", () => {
   });
 
   it("abstains, rather than flags, an entry trigger that mentions run.stage only under $or", () => {
-    // Could hold on a fresh ticket, could hold on one at "b" — unreadable, so
+    // Could hold on a fresh item, could hold on one at "b" — unreadable, so
     // this must not be reported as either anchored or refused.
     const w = wf([
       { id: "a", entry: true, triggers: [{ when: { $or: [{ "run.stage": null }, { "run.stage": "b" }] } }] },
@@ -182,7 +182,7 @@ describe("structural validation", () => {
    * Before the workflow ever runs, and in the report a person reads: a
    * capability nothing enforces is the operator believing in a restriction
    * that was never applied. Meeting it at runtime instead means finding out on
-   * a ticket already in flight, one refused step at a time.
+   * an item already in flight, one refused step at a time.
    */
   it("flags a step declaring a capability the engine cannot enforce", () => {
     const steps = new Map<string, Step>([["s.md", { prompt: "", capabilities: ["repo:read", "net:egress"] }]]);
@@ -191,6 +191,13 @@ describe("structural validation", () => {
 
     expect(problems.map((p) => p.rule)).toContain("capability");
     expect(problems.find((p) => p.rule === "capability")?.message).toMatch(/net:egress/);
+  });
+
+  it("flags the retired capability tickets:create, naming items:create", () => {
+    const steps = new Map<string, Step>([["s.md", { prompt: "", capabilities: ["repo:read", "tickets:create"] }]]);
+    const w = wf([{ id: "a", entry: true, terminal: true, step: "s.md" }]);
+    const problems = validateStructure(w, steps);
+    expect(problems.find((p) => p.rule === "capability")?.message).toMatch(/"tickets:create" is now "items:create"/);
   });
 
   /**
@@ -247,7 +254,7 @@ describe("goto", () => {
   const said = (wk: Workflow, steps?: Map<string, Step>) =>
     validateStructure(wk, steps).filter((p) => p.rule === "goto").map((p) => p.message);
 
-  it("accepts a stage sending tickets to one that records its entry, bare or capped", () => {
+  it("accepts a stage sending items to one that records its entry, bare or capped", () => {
     expect(said(w(["a"]))).toEqual([]);
     expect(said(w([{ stage: "a", when: { "run.counters.a": { $lt: 3 } } }]))).toEqual([]);
   });
@@ -263,13 +270,13 @@ describe("goto", () => {
   /*
    * The target's entry record is what consumes a goto. A target that writes
    * none leaves the goto pending on arrival — and a pending goto its new
-   * stage does not list halts the ticket there.
+   * stage does not list halts the item there.
    */
   it("refuses a target whose entry writes no record", () => {
     expect(said(w(["c"]))).toEqual([expect.stringMatching(/"c".*records no "enter"/)]);
   });
 
-  it("refuses a route that sends tickets somewhere its stage does not list", () => {
+  it("refuses a route that sends items somewhere its stage does not list", () => {
     const steps = new Map<string, Step>([["j.md", {
       prompt: "",
       output: {

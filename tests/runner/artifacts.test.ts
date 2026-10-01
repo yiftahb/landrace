@@ -5,14 +5,14 @@ import { buildSnapshot } from "#runner/snapshot.js";
 import { staticSource } from "#testing/index.js";
 import type { ArtifactHook, HookContext, Snapshot } from "#namespace.js";
 
-/** Ticket "7", alone: these cases are about the artifacts, not the source. */
+/** Item "7", alone: these cases are about the artifacts, not the source. */
 const seven = staticSource({
-  nodes: [{ id: "7", kind: "ticket", title: "t", link: "u/7", closed: null, priority: null, origin: null, state: {} }],
+  nodes: [{ id: "7", kind: "item", title: "t", link: "u/7", closed: null, priority: null, origin: null, state: {} }],
   relationships: [],
 });
 
 const ctx = (snapshot: Snapshot = {}): HookContext => ({
-  ticket: "7",
+  item: "7",
   snapshot,
   config: {} as HookContext["config"],
   secrets: new Map(),
@@ -56,7 +56,7 @@ describe("an artifact's state lands under its own name", () => {
 
   it("survives the real snapshot build with both artifacts intact", async () => {
     const snapshot = await buildSnapshot({
-      ticket: "7",
+      item: "7",
       source: seven,
       hooks: [artifactPreHook(reading("pr", { number: 7 })), artifactPreHook(reading("spec", { exists: true }))],
       ctx: ctx() as Omit<HookContext, "snapshot">,
@@ -67,7 +67,7 @@ describe("an artifact's state lands under its own name", () => {
   });
 });
 
-describe("a read that cannot be trusted stops the ticket", () => {
+describe("a read that cannot be trusted stops the item", () => {
   it("names the artifact whose read failed", async () => {
     const broken = artifact("spec", async () => { throw new Error("404 from pages"); });
     await expect(artifactPreHook(broken).run(ctx())).rejects.toThrow(/artifact "spec".*404 from pages/);
@@ -203,7 +203,7 @@ describe("an artifact's briefing reaches the prompt and nothing else", () => {
   it("puts nothing into the snapshot the engine decides from", async () => {
     const hook = briefing("pr", () => ({ threads: "finding 1" }));
     const snapshot = await buildSnapshot({
-      ticket: "7",
+      item: "7",
       source: seven,
       hooks: [artifactPreHook(hook)],
       ctx: ctx() as Omit<HookContext, "snapshot">,
@@ -232,7 +232,7 @@ describe("an artifact's briefing reaches the prompt and nothing else", () => {
 
   /*
    * Truncated rather than refused, and that is the choice worth stating: the
-   * text is unbounded and attacker-written, so a refusal would be a ticket
+   * text is unbounded and attacker-written, so a refusal would be an item
    * halted by anyone willing to paste a megabyte into a review comment.
    * Nothing downstream reads it as state, so there is no predicate that can
    * silently stop matching when it is cut.
@@ -328,7 +328,7 @@ describe("a briefing is built for the step that asks for it, by name", () => {
     const built = await buildBriefing(
       [briefing("pr", () => { asked++; return { threads: "finding 0" }; })],
       ctx(),
-      "Write the spec for {ticket.title}. The threads are at {artifacts.pr.openThreads}.",
+      "Write the spec for {item.title}. The threads are at {artifacts.pr.openThreads}.",
     );
 
     expect(asked).toBe(0);

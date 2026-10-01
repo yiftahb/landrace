@@ -7,16 +7,16 @@ import { compile } from "#core/predicate.js";
 import type { Decision, Run, Snapshot, Stage, Workflow } from "#namespace.js";
 
 /**
- * What a ticket has done that an entry stage's own first round cannot
+ * What an item has done that an entry stage's own first round cannot
  * account for.
  *
- * Every stage the ticket has been recorded as entering, plus every stage that
+ * Every stage the item has been recorded as entering, plus every stage that
  * has settled a round — an output, or a rejection. An entry stage at round
  * one is deliberately not history: entering it is the very thing being
  * considered, and its record landing without the position that belongs beside
  * it is the ordinary crash this design already recovers from. *Every* entry
  * stage, not only the first: a child whose first entry into `build` crashed
- * before its label landed is exactly as recoverable as a top-level ticket
+ * before its label landed is exactly as recoverable as a top-level item
  * whose entry into `spec` did.
  */
 function history(run: Run, entryIds: ReadonlySet<string>): string[] {
@@ -28,13 +28,13 @@ function history(run: Run, entryIds: ReadonlySet<string>): string[] {
 }
 
 /**
- * Which entry stage a ticket with no position starts at.
+ * Which entry stage an item with no position starts at.
  *
  * One entry stage is entered unconditionally, its triggers unread — that is
  * the rule every workflow written before this one relies on, including the
  * ones whose entry stage carries only loop-back triggers that cannot hold on a
- * fresh ticket. Reading them now would halt every such workflow's first
- * ticket.
+ * fresh item. Reading them now would halt every such workflow's first
+ * item.
  *
  * Several are chosen between by their triggers, and only by their triggers.
  * No match is a halt, not a fall back to the first one declared: a child the
@@ -52,7 +52,7 @@ function pickEntry(entries: Stage[], s: Snapshot): { to: Stage; trigger: string 
       .map((t) => ({ to: stage, trigger: t.name ?? stage.id })),
   );
   const [only, ...rest] = matches;
-  if (!only) return { why: `no entry stage accepts this ticket (tried: ${entries.map((e) => e.id).join(", ")})` };
+  if (!only) return { why: `no entry stage accepts this item (tried: ${entries.map((e) => e.id).join(", ")})` };
   if (rest.length > 0) {
     return { why: `ambiguous entry: ${matches.map((m) => `${m.to.id} (${m.trigger})`).join(", ")}` };
   }
@@ -78,22 +78,22 @@ export function decide(w: Workflow, s: Snapshot): Decision {
 
   const where = locate(w, s);
   if (where.kind === "ambiguous") {
-    return { action: "halt", why: `cannot place the ticket: ${where.ids.join(", ")} all match` };
+    return { action: "halt", why: `cannot place the item: ${where.ids.join(", ")} all match` };
   }
   if (where.kind === "none") {
     const entries = w.stages.filter((x) => x.entry);
     if (entries.length === 0) return { action: "halt", why: "the workflow has no entry stage" };
     /*
-     * "No position" is the same thing as "a new ticket" only when the ticket
+     * "No position" is the same thing as "a new item" only when the item
      * has no run behind it either. Position is one value written by a swap
      * that is not atomic, so losing it costs a crash, a 502 on the add, or a
      * person with triage rights — and reading that as fresh restarted a
-     * ticket that had finished a build, four review rounds and three fix
+     * item that had finished a build, four review rounds and three fix
      * rounds: a fresh paid entry step, the spec republished over the old one,
-     * and the whole run still on the ticket, unread.
+     * and the whole run still on the item, unread.
      *
      * Recovery is re-derivation, and here there is nothing left to re-derive
-     * from — the one record that said where the ticket was is gone. So this
+     * from — the one record that said where the item was is gone. So this
      * halts for a person the way every other thing the engine cannot tell
      * halts, rather than guessing the cheapest-looking answer and spending
      * money on it. Asked before an entry stage is chosen, because the answer
@@ -103,8 +103,8 @@ export function decide(w: Workflow, s: Snapshot): Decision {
     if (behind.length) {
       return {
         action: "halt",
-        why: `the ticket has already run ${behind.join(", ")} but has no position: ` +
-          "it is not a new ticket, and where it belongs cannot be derived",
+        why: `the item has already run ${behind.join(", ")} but has no position: ` +
+          "it is not a new item, and where it belongs cannot be derived",
       };
     }
     const picked = pickEntry(entries, s);
@@ -148,9 +148,9 @@ export function decide(w: Workflow, s: Snapshot): Decision {
    * command that should never have written it, and halts. One the list names
    * but whose `when` does not hold is declined: the decision is left to the
    * stage's own triggers below, neither retried nor halted here. That is not
-   * a guarantee the ticket has somewhere to go — a workflow that wants the
+   * a guarantee the item has somewhere to go — a workflow that wants the
    * reply to come home once the cap is hit must give this stage a trigger
-   * that says so, or the ticket only waits.
+   * that says so, or the item only waits.
    */
   let declined: string | null = null;
   if (run.goto) {
@@ -158,7 +158,7 @@ export function decide(w: Workflow, s: Snapshot): Decision {
     if (!to) {
       return {
         action: "halt", stage, subState,
-        why: `"${stage.id}" was asked to send a ticket to "${run.goto}", which is not a stage of this workflow`,
+        why: `"${stage.id}" was asked to send an item to "${run.goto}", which is not a stage of this workflow`,
       };
     }
     const unlisted = gotoNotListed(stage, to.id);

@@ -14,9 +14,9 @@
  * a fence marker, prose that happens to contain `{"kind":"spec"}`, or a
  * worked example fence earlier in the reply all became a "second candidate"
  * under that scheme — and every one of them is ordinary agent output, not
- * an attack. `spec.md` interpolates `{ticket.body}` directly into the
+ * an attack. `spec.md` interpolates `{item.body}` directly into the
  * prompt, so an outsider could plant `{"kind":"spec"}` in an issue body as a
- * free, repeatable way to block any ticket that reached that step.
+ * free, repeatable way to block any item that reached that step.
  *
  * `conventions.ts` already solved this exact problem for markers, and says
  * why: "a document about this system will quote the format, and reading the

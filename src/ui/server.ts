@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { ticketIdProblem } from "#conventions.js";
+import { itemIdProblem } from "#conventions.js";
 import type { UiOptions, UiServer } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { oneLine } from "#runner/status.js";
@@ -31,14 +31,14 @@ const STATIC: Record<string, { type: string; body: string }> = {
  */
 const ACTION_HEADER = "x-landrace-action";
 
-/** Where the page's Retry posts: one ticket, named in the path. */
-const RETRY_PATH = /^\/tickets\/([^/]+)\/retry$/;
+/** Where the page's Retry posts: one item, named in the path. */
+const RETRY_PATH = /^\/items\/([^/]+)\/retry$/;
 
-/** Where the page's Clear & retry posts: one ticket, named in the path. */
-const CLEAR_PATH = /^\/tickets\/([^/]+)\/clear$/;
+/** Where the page's Clear & retry posts: one item, named in the path. */
+const CLEAR_PATH = /^\/items\/([^/]+)\/clear$/;
 
-/** Where the page's "Go to step…" posts: one ticket, and the step it names. */
-const GOTO_PATH = /^\/tickets\/([^/]+)\/goto\/([^/]+)$/;
+/** Where the page's "Go to step…" posts: one item, and the step it names. */
+const GOTO_PATH = /^\/items\/([^/]+)\/goto\/([^/]+)$/;
 
 function send(res: ServerResponse, status: number, type: string, body: string): void {
   res.writeHead(status, {
@@ -78,8 +78,8 @@ function foreignWrite(req: IncomingMessage, action: string, port: number): strin
   return null;
 }
 
-/** The ticket panel's routes: one ticket, named in the path, and what is asked of it. */
-const PANEL_PATH = /^\/tickets\/([^/]+)\/(activity|conversation|reply|ask|resolve|pairing|pair|finish|release)$/;
+/** The item panel's routes: one item, named in the path, and what is asked of it. */
+const PANEL_PATH = /^\/items\/([^/]+)\/(activity|conversation|reply|ask|resolve|pairing|pair|finish|release)$/;
 
 /** Far past what a record carries (conventions' own cap is 32 KiB): the post's own check words the limit. */
 const MAX_BODY_BYTES = 256 * 1024;
@@ -100,13 +100,13 @@ function bodyOf(req: IncomingMessage): Promise<string | null> {
 }
 
 /**
- * The ticket panel: three reads and six writes on one ticket. Its activity
+ * The item panel: three reads and six writes on one item. Its activity
  * is a local file read, open like /board.json. Its conversation and its
  * Pairing section each spend a tracker read, so like /refresh they are asked
  * only from the page's own script — a cross-site `<img>` would otherwise make
  * the operator's token pay for one. Reply, Ask, Resolve, and a pairing's
  * Pair, Finish and Release each carry their own name in the header, like
- * every other write here; all but Reply move the ticket, so they wake the loop.
+ * every other write here; all but Reply move the item, so they wake the loop.
  */
 function servePanel(
   opts: UiOptions, req: IncomingMessage, res: ServerResponse, port: number, id: string, what: string,
@@ -120,13 +120,13 @@ function servePanel(
     const foreign = foreignWrite(req, what, port);
     if (foreign) return send(res, 403, text, foreign);
   }
-  let ticket: string;
+  let item: string;
   try {
-    ticket = decodeURIComponent(id);
+    item = decodeURIComponent(id);
   } catch {
-    return send(res, 400, text, "that is not a ticket id");
+    return send(res, 400, text, "that is not an item id");
   }
-  const problem = ticketIdProblem(ticket);
+  const problem = itemIdProblem(item);
   if (problem) return send(res, 400, text, problem);
 
   const json = (value: unknown): void => send(res, 200, "application/json; charset=utf-8", JSON.stringify(value));
@@ -135,14 +135,14 @@ function servePanel(
     const after = new URL(req.url ?? "/", "http://x").searchParams.get("after") ?? "0";
     if (!/^\d+$/.test(after)) return send(res, 400, text, "after must be a whole number");
     // A local file, nothing that can quote a tracker; still never a stack trace.
-    panel.activity(ticket, Number(after)).then(json, () => send(res, 500, text, "the activity could not be read"));
+    panel.activity(item, Number(after)).then(json, () => send(res, 500, text, "the activity could not be read"));
     return;
   }
   if (what === "conversation" || what === "pairing") {
-    (what === "conversation" ? panel.conversation(ticket) : panel.pairing(ticket)).then(json, (e: unknown) => {
+    (what === "conversation" ? panel.conversation(item) : panel.pairing(item)).then(json, (e: unknown) => {
       // Logged in full for the operator; the page gets a fixed sentence,
-      // because a tracker's error can quote the ticket it refused.
-      console.error(`landrace: reading #${ticket}'s ${what} failed: ${oneLine(messageOf(e))}`);
+      // because a tracker's error can quote the item it refused.
+      console.error(`landrace: reading #${item}'s ${what} failed: ${oneLine(messageOf(e))}`);
       send(res, 502, text, `could not read the ${what}; the landrace log says why`);
     });
     return;
@@ -154,21 +154,21 @@ function servePanel(
     const needsText = what === "reply" || what === "ask" || what === "pair";
     if (needsText && body.trim() === "") return send(res, 400, text, what === "pair" ? "name a step to pair on" : "write something first");
     // A hand-in that is refused has still written the rejected round, which
-    // the loop is what halts the ticket on — so it wakes either way.
+    // the loop is what halts the item on — so it wakes either way.
     const wakesAnyway = what === "finish";
     try {
       if (what === "reply") {
-        await panel.reply(ticket, body);
+        await panel.reply(item, body);
         // A reply is a comment and nothing more: the loop reads it on its
         // own next pass, as it would one typed into the tracker.
         return send(res, 200, text, "posted");
       }
-      const answer = what === "ask" ? await panel.ask(ticket, body)
-        : what === "pair" ? await panel.pair(ticket, body.trim())
-        : what === "finish" ? await panel.finish(ticket, body)
-        : what === "release" ? await panel.release(ticket)
-        : await panel.resolve(ticket);
-      // The ticket is back in the loop's hands: the pass that picks it up
+      const answer = what === "ask" ? await panel.ask(item, body)
+        : what === "pair" ? await panel.pair(item, body.trim())
+        : what === "finish" ? await panel.finish(item, body)
+        : what === "release" ? await panel.release(item)
+        : await panel.resolve(item);
+      // The item is back in the loop's hands: the pass that picks it up
       // runs now, not when the countdown comes round.
       opts.tick?.();
       return json(answer);
@@ -178,7 +178,7 @@ function servePanel(
       // session to join yet" or "screening blocked this turn", and the
       // panel wiring has already scrubbed secrets out of it. One line,
       // because the page shows it on one.
-      console.error(`landrace: ${what} on #${ticket} failed: ${oneLine(messageOf(e))}`);
+      console.error(`landrace: ${what} on #${item} failed: ${oneLine(messageOf(e))}`);
       return send(res, 502, text, oneLine(messageOf(e)));
     }
   }, () => send(res, 400, text, "the request could not be read"));
@@ -195,7 +195,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
     // DNS rebinding: a page on attacker.example can point its own name at
     // 127.0.0.1, and the browser will then send its requests here with that
     // name in Host. Answering only our own names is what stops it reading
-    // private ticket titles through the user's browser.
+    // private item titles through the user's browser.
     if (req.headers.host !== `${HOST}:${port}` && req.headers.host !== `localhost:${port}`) {
       send(res, 421, "text/plain; charset=utf-8", "misdirected request");
       return;
@@ -249,7 +249,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         () => send(res, 200, "text/plain; charset=utf-8", "refreshed"),
         (e: unknown) => {
           // Logged in full for the operator; the page gets a fixed sentence,
-          // because a tracker's error can quote the ticket it refused.
+          // because a tracker's error can quote the item it refused.
           console.error(`landrace: refresh failed: ${oneLine(messageOf(e))}`);
           send(res, 502, "text/plain; charset=utf-8", "could not refresh; the landrace log says why");
         },
@@ -257,11 +257,11 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
       return;
     }
 
-    // The page's ticket writes, guarded the same way as /tick, and answered
-    // in short sentences the page shows beside the item that asked. A Retry
+    // The page's item writes, guarded the same way as /tick, and answered
+    // in short sentences the page shows beside the menu item that asked. A Retry
     // is a goto with no step named: the stage that last failed. A Clear &
     // retry is a Retry that also clears that step's next round of the
-    // security check — `sendTo` alone decides whether the ticket was screened.
+    // security check — `sendTo` alone decides whether the item was screened.
     const retrying = RETRY_PATH.exec(path);
     const clearing = retrying ? null : CLEAR_PATH.exec(path);
     const going = retrying || clearing ? null : GOTO_PATH.exec(path);
@@ -280,19 +280,19 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
       }
-      let ticket: string;
+      let item: string;
       let target: string | null = null;
       try {
-        ticket = decodeURIComponent(writing[1] ?? "");
+        item = decodeURIComponent(writing[1] ?? "");
         if (going) target = decodeURIComponent(going[2] ?? "");
       } catch {
-        // A Retry's path names only a ticket, so a malformed `%` there can
-        // only be a bad ticket id; a goto's path names both, and decoding
+        // A Retry's path names only an item, so a malformed `%` there can
+        // only be a bad item id; a goto's path names both, and decoding
         // does not say which one broke.
-        send(res, 400, "text/plain; charset=utf-8", going ? "that is not a ticket and a step" : "that is not a ticket id");
+        send(res, 400, "text/plain; charset=utf-8", going ? "that is not an item and a step" : "that is not an item id");
         return;
       }
-      const problem = ticketIdProblem(ticket);
+      const problem = itemIdProblem(item);
       if (problem) {
         send(res, 400, "text/plain; charset=utf-8", problem);
         return;
@@ -309,23 +309,23 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         return;
       }
       const goto = opts.goto;
-      Promise.resolve().then(() => (clearing ? goto.send(ticket, target, { clear: true }) : goto.send(ticket, target))).then(
+      Promise.resolve().then(() => (clearing ? goto.send(item, target, { clear: true }) : goto.send(item, target))).then(
         (r) => {
           if ("refused" in r) {
             send(res, 409, "text/plain; charset=utf-8", r.refused);
             return;
           }
-          // The person is waiting on the ticket they just sent back: the
+          // The person is waiting on the item they just sent back: the
           // pass that picks it up runs now, not when the countdown comes round.
           opts.tick?.();
           send(res, 202, "text/plain; charset=utf-8", clearing
-            ? `cleared #${ticket} of the security check and sent it back to ${r.to}`
-            : `sent #${ticket} back to ${r.to}`);
+            ? `cleared #${item} of the security check and sent it back to ${r.to}`
+            : `sent #${item} back to ${r.to}`);
         },
         (e: unknown) => {
           // Logged in full for the operator; the page gets a fixed sentence,
-          // because a tracker's error can quote the ticket it refused.
-          console.error(`landrace: sending #${ticket} back failed: ${oneLine(messageOf(e))}`);
+          // because a tracker's error can quote the item it refused.
+          console.error(`landrace: sending #${item} back failed: ${oneLine(messageOf(e))}`);
           send(res, 502, "text/plain; charset=utf-8", "could not send it back; the landrace log says why");
         },
       );
@@ -363,11 +363,11 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
 /**
  * The triage page, on loopback only. Every route is a GET except the page's
  * writes: POST /tick, present only when the caller hands us a schedule to
- * wake; POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>, present
- * only when it hands us a way to send a ticket back, and which wake that
+ * wake; POST /items/<id>/retry and /items/<id>/goto/<stage>, present
+ * only when it hands us a way to send an item back, and which wake that
  * schedule too once they have; POST /refresh, present only when it hands us
  * a way to re-read the tracker, which starts no agent but still spends a
- * tracker read and so is guarded the same way; and the ticket panel's
+ * tracker read and so is guarded the same way; and the item panel's
  * Reply, Ask and Resolve, present only when it hands us a panel.
  */
 export function serveBoard(opts: UiOptions): Promise<UiServer> {

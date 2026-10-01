@@ -2,7 +2,7 @@ import { AGENT_BY, CLEAR_KIND, ENTRY_KIND, MALFORMED_KIND, OUTPUT_KIND, PAIR_KIN
 import type { Entry, Run, StageRounds } from "#namespace.js";
 
 /**
- * Everything the engine knows about a ticket's progress, computed from entries.
+ * Everything the engine knows about an item's progress, computed from entries.
  * Nothing here is stored: recovery is re-derivation.
  */
 export function deriveRun(entries: Entry[], stage: string | null): Run {
@@ -70,7 +70,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * loop: the round a re-entry stamps on its own entry record is this counter
    * plus one, so a stage that could never produce output re-entered at the
    * same round forever, the identical record was reconciled away, nothing on
-   * the ticket changed, and the trigger that handed it back fired again on the
+   * the item changed, and the trigger that handed it back fired again on the
    * very next pass — 30 passes and 60 tracker writes per tick, for good.
    *
    * It is also what makes §11.4's bound a bound: a workflow writing
@@ -91,15 +91,15 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   /*
    * How far each stage has got: entered against output. A stage with no
    * entry record at all reads as entered once, which is what keeps a stage
-   * that never loops — and every ticket already in flight when entry records
+   * that never loops — and every item already in flight when entry records
    * were introduced — assessed exactly as before: any output means complete.
    * Null-prototype for the same reason `outputs` is.
    */
   const rounds = Object.create(null) as Run["rounds"];
   for (const s of new Set([...roundsByStage.keys(), ...maxEnteredRoundByStage.keys()])) {
     // Folded rather than `Math.max(...set)`: the set is as long as the
-    // ticket's comment history, and a spread that long is an argument-count
-    // limit waiting to be hit by a busy ticket.
+    // item's comment history, and a spread that long is an argument-count
+    // limit waiting to be hit by a busy item.
     let output = 0;
     for (const r of roundsByStage.get(s) ?? []) output = Math.max(output, r);
     rounds[s] = { entered: maxEnteredRoundByStage.get(s) ?? 1, output } satisfies StageRounds;
@@ -134,10 +134,10 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    *
    * Failure is also scoped to the round the stage has actually been *entered*
    * for, not to the stage for the rest of its life. §2: "a terminal blocked is
-   * a trap — halting is a handoff, and replying takes the ticket back". A
+   * a trap — halting is a handoff, and replying takes the item back". A
    * rejection that outlived the round it judged made that handback a second
    * trap: the stage was failed for good, so nothing could re-invoke it, and
-   * the ticket ping-ponged between blocked and the stage it was handed back to
+   * the item ping-ponged between blocked and the stage it was handed back to
    * until the pass cap. So a later entry record — which only a workflow's own
    * trigger can produce, never the engine on its own — puts the stage back to
    * pending for a *new* round. That is not the retry CLAUDE.md forbids: the
@@ -173,19 +173,19 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     .reduce((max, e) => Math.max(max, e.round), 0);
 
   /*
-   * A goto is pending from when it is written until the ticket next enters a
+   * A goto is pending from when it is written until the item next enters a
    * stage. Position in the ordered list, not timestamps: a tracker can stamp
    * comments to the second, a goto and the entry that consumes it can share
    * one, and the stable sort above keeps the order the tracker listed them in.
    *
    * It is also scoped to the stage that wrote it. A decline leaves it
-   * unconsumed, and a trigger can then carry the ticket on to a stage that
+   * unconsumed, and a trigger can then carry the item on to a stage that
    * writes no entry record of its own — `blocked`, a terminal `done`. Read
    * back there, a goto whose reason and cap belonged to the stage it was
    * declined at would be judged again against a stage nobody sent it from:
    * taken past the cap it was declined under, halted for a target the new
    * stage never lists, or left decorating a wait with a stale reason. So it
-   * answers only while `stage` — the position passed in, i.e. the ticket's
+   * answers only while `stage` — the position passed in, i.e. the item's
    * own current one — is the stage the record naming it was written at;
    * anywhere else it reads as already consumed.
    */
@@ -224,12 +224,12 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   const previousStage = lastEntry !== undefined && lastEntry.stage === stage ? lastEntry.from ?? null : null;
 
   /*
-   * The failure that put the ticket here, which is the step it last left.
+   * The failure that put the item here, which is the step it last left.
    * `failedStages` alone answered "what has failed and not run since", and
-   * that outlives being routed around: spec fails, a person sends the ticket
+   * that outlives being routed around: spec fails, a person sends the item
    * on to build, the reviews run out and it halts again — spec is still
    * listed, and Retry, reading the list, paid for a spec round nobody asked
-   * for. Only the latest stage the ticket was in before this one can have
+   * for. Only the latest stage the item was in before this one can have
    * put it here; anything older it has since left behind.
    *
    * Two kinds of entry are walked past. The current stage's own, so the judge
@@ -241,12 +241,12 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * past — a goto from the halt whose step failed again is what put it here.
    *
    * Round trips from the *current visit* only: those newer than this stage's
-   * own latest entry. An earlier visit also sent the ticket on from here — a
+   * own latest entry. An earlier visit also sent the item on from here — a
    * judge's goto-spec after a failed build — and walked past as a round trip,
    * that move let the judge's next visit, at spec-human-review, be told the
    * build had failed. A stage that records no entry — a halt — leaves no
    * visit to scope by, so every settled trip from it is walked past; one from
-   * an earlier visit is reached only when the ticket came back with no other
+   * an earlier visit is reached only when the item came back with no other
    * stage's entry in between, since any such entry ends the walk first.
    */
   const ownEntry = ordered.findLastIndex((e) => e.kind === ENTRY_KIND && e.stage === stage);

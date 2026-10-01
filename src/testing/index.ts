@@ -8,7 +8,7 @@
  * own HTTP boundary, with the real hooks, because a second hand-written copy
  * of a hook is free to disagree with it. What ships here is the part that is
  * the same whatever the tracker: a scripted agent, and a harness that drives
- * converge and writes down where the ticket went and what it was paid for.
+ * converge and writes down where the item went and what it was paid for.
  */
 export { createHarness } from "#testing/harness.js";
 export { createExternalState, MemoryDocs, MemoryForge, MemoryTracker, staticSource } from "#testing/external-state.js";

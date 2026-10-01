@@ -10,7 +10,7 @@ import { createClient, GitHubForge, GitHubIssues, GitHubPages } from "landrace/i
  * The fake is the HTTP boundary, not the hooks: `fetch` is what is replaced,
  * and everything above it — the client, the three roles, what `compose` makes
  * of them, and the loader's own classification of that — is the real code a
- * ticket runs through. A second, hand-written imitation of the hooks would be free to
+ * item runs through. A second, hand-written imitation of the hooks would be free to
  * disagree with them, and the place it disagreed would be exactly the place a
  * leak across the boundary stopped being visible.
  */
@@ -80,13 +80,13 @@ export interface FakeThread {
 export interface FakePull {
   number: number;
   title?: string;
-  /** The head branch. A PR is found by it, because the reference is derived from the ticket and never stored. */
+  /** The head branch. A PR is found by it, because the reference is derived from the item and never stored. */
   head: string;
   headSha: string;
   merged: boolean;
   /** GraphQL's own state. Absent means whatever `merged` implies: MERGED, else OPEN. */
   state?: "OPEN" | "MERGED" | "CLOSED";
-  /** The issues it closes when merged — its closing references, the other way a PR is tied to a ticket. */
+  /** The issues it closes when merged — its closing references, the other way a PR is tied to an item. */
   closes?: number[];
   threads: FakeThread[];
   /** What a `POST /pulls` asked for, as it asked: the branch it goes into, and its description. */
@@ -167,12 +167,12 @@ export interface FakeTracker {
   pages(answer: FakePages | number | null): void;
   /** The login the fake posts under, so what it writes reads back as ours — the relationship the real client has with its token. */
   bot: string;
-  labelsOf(ticket: number): string[];
+  labelsOf(item: number): string[];
   /** Post as the bot, the way an effect would. */
-  say(ticket: number, body: string): FakeComment;
+  say(item: number, body: string): FakeComment;
   /** Post as somebody else, the way a person would. */
-  sayAs(login: string, ticket: number, body: string, at?: string): FakeComment;
-  entriesOf(ticket: number): Entry[];
+  sayAs(login: string, item: number, body: string, at?: string): FakeComment;
+  entriesOf(item: number): Entry[];
   /** The pull requests that exist, by number. */
   pulls: Map<number, FakePull>;
   /** Open one on a head branch, the way a push and a `gh pr create` would. One with an existing number replaces it. */
@@ -199,7 +199,7 @@ const THREAD_PAGE = 100;
 /** And per page of issues and of pull requests, for the same reason. */
 const ISSUE_PAGE = 100;
 
-/** And the `first:` the hook asks a ticket's sub-issues and pull requests for. */
+/** And the `first:` the hook asks an item's sub-issues and pull requests for. */
 const CONNECTION_PAGE = 50;
 
 /**
@@ -300,9 +300,9 @@ export function createFakeTracker(
     nextIssue = Math.max(nextIssue, n + 1);
   }
 
-  const post = (ticket: number, login: string, body: string, when?: string): FakeComment => {
-    const comment: FakeComment = { id: nextComment++, body, created_at: when ?? at(ticket), user: { login } };
-    comments.set(ticket, [...(comments.get(ticket) ?? []), comment]);
+  const post = (item: number, login: string, body: string, when?: string): FakeComment => {
+    const comment: FakeComment = { id: nextComment++, body, created_at: when ?? at(item), user: { login } };
+    comments.set(item, [...(comments.get(item) ?? []), comment]);
     return comment;
   };
 
@@ -597,7 +597,7 @@ export function createFakeTracker(
         });
       }
 
-      if (operation === "LandraceTicket") {
+      if (operation === "LandraceItem") {
         const issue = issues.get(Number(variables.number));
         const parent = issue?.parent === undefined ? undefined : issues.get(issue.parent);
         return json({
@@ -955,9 +955,9 @@ export function createFakeTracker(
     truncateTrees: () => { treesTruncated = true; },
     pages: (answer) => { pagesSite = answer; },
     bot: BOT,
-    labelsOf: (ticket) => issues.get(ticket)?.labels ?? [],
-    say: (ticket, body) => post(ticket, BOT, body),
-    sayAs: (login, ticket, body, when) => post(ticket, login, body, when),
-    entriesOf: (ticket) => entriesFromComments(comments.get(ticket) ?? [], BOT),
+    labelsOf: (item) => issues.get(item)?.labels ?? [],
+    say: (item, body) => post(item, BOT, body),
+    sayAs: (login, item, body, when) => post(item, login, body, when),
+    entriesOf: (item) => entriesFromComments(comments.get(item) ?? [], BOT),
   };
 }

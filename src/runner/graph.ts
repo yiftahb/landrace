@@ -1,4 +1,4 @@
-import { isReservedId, MAX_SUBGRAPH_NODES, ticketIdProblem } from "#conventions.js";
+import { isReservedId, MAX_SUBGRAPH_NODES, itemIdProblem } from "#conventions.js";
 import type { Graph, RelationDecl } from "#namespace.js";
 import { problemWith } from "#runner/artifacts.js";
 
@@ -9,7 +9,7 @@ const CLOSED = new Set<unknown>([null, "done", "dropped"]);
  *
  * A source is a hook, and what it returns is outside input: this runs before
  * any count is taken or any decision made from it, so a half graph halts the
- * ticket with a reason rather than being quietly read as a smaller one.
+ * item with a reason rather than being quietly read as a smaller one.
  */
 export function graphProblem(graph: Graph, relations: readonly RelationDecl[], id?: string): string | null {
   if (id !== undefined && graph.nodes.length > MAX_SUBGRAPH_NODES) {
@@ -18,7 +18,7 @@ export function graphProblem(graph: Graph, relations: readonly RelationDecl[], i
 
   const ids = new Set<string>();
   for (const node of graph.nodes) {
-    const bad = ticketIdProblem(node.id);
+    const bad = itemIdProblem(node.id);
     if (bad) return bad;
     if (ids.has(node.id)) return `duplicate node id "${node.id}"`;
     ids.add(node.id);
@@ -32,7 +32,7 @@ export function graphProblem(graph: Graph, relations: readonly RelationDecl[], i
     const stateProblem = problemWith(node.state, "", 0, { chars: 0 });
     if (stateProblem) return `node "${node.id}": ${stateProblem}`;
   }
-  if (id !== undefined && !ids.has(id)) return `the ticket "${id}" is not in the graph its source read for it`;
+  if (id !== undefined && !ids.has(id)) return `the item "${id}" is not in the graph its source read for it`;
 
   const declared = new Map(relations.map((r) => [r.type, r]));
   const singularOut = new Map<string, string>();

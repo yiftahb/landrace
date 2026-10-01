@@ -5,35 +5,35 @@ import { createExternalState, staticSource } from "#testing/index.js";
 import type { HookContext, Node, Rel, Run, RuntimeConfig } from "#namespace.js";
 
 const ctx = (): Omit<HookContext, "snapshot"> => ({
-  ticket: "1",
+  item: "1",
   config: {} as HookContext["config"],
   secrets: new Map(),
   signal: new AbortController().signal,
   log: () => {},
 });
 
-const ctxFor = (ticket: string) => ({
-  ticket, config: {} as RuntimeConfig, secrets: new Map(), signal: new AbortController().signal, log: () => {},
+const ctxFor = (item: string) => ({
+  item, config: {} as RuntimeConfig, secrets: new Map(), signal: new AbortController().signal, log: () => {},
 });
 
-const ticketNode = (id: string, labels: string[] = []): Node => ({
-  id, kind: "ticket", title: `issue ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
+const itemNode = (id: string, labels: string[] = []): Node => ({
+  id, kind: "item", title: `issue ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
   state: { labels, assignees: [] },
 });
 
-/** One ticket, "1", alone in its graph — for the cases that are about the pre hooks rather than the source. */
-const lone = (labels: string[] = []) => staticSource({ nodes: [ticketNode("1", labels)], relationships: [] });
+/** One item, "1", alone in its graph — for the cases that are about the pre hooks rather than the source. */
+const lone = (labels: string[] = []) => staticSource({ nodes: [itemNode("1", labels)], relationships: [] });
 
 describe("buildSnapshot reads the graph first", () => {
-  it("puts the ticket's node and graph in the snapshot before any pre hook runs, and its rel counts after", async () => {
-    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:build"] }] });
+  it("puts the item's node and graph in the snapshot before any pre hook runs, and its rel counts after", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:stage:build"] }] });
     state.openPull("1", { openThreads: 2 });
     let seenByHook: { node?: unknown; graph?: unknown; rel?: unknown } = {};
     const peek = definePreHook({ id: "peek", provides: [], run: ({ snapshot }) => {
       seenByHook = { node: snapshot.node, graph: snapshot.graph, rel: snapshot.rel };
       return {};
     } });
-    const s = await buildSnapshot({ ticket: "1", source: state.source, hooks: [state.pre, peek], ctx: ctxFor("1") });
+    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre, peek], ctx: ctxFor("1") });
     expect((s.node as Node).id).toBe("1");
     expect(seenByHook.node).toEqual(s.node);
     expect(seenByHook.graph).toEqual(s.graph);
@@ -45,19 +45,19 @@ describe("buildSnapshot reads the graph first", () => {
 
   it("fails the snapshot, naming the source, when its graph is not one to decide from", async () => {
     const broken = staticSource({ nodes: [], relationships: [] });
-    await expect(buildSnapshot({ ticket: "1", source: broken, hooks: [], ctx: ctxFor("1") }))
+    await expect(buildSnapshot({ item: "1", source: broken, hooks: [], ctx: ctxFor("1") }))
       .rejects.toThrow(/source "static".*"1" is not in the graph/);
   });
 
   it("names the source when its read throws", async () => {
     const failing = { ...lone(), read: async () => { throw new Error("rate limited"); } };
-    await expect(buildSnapshot({ ticket: "1", source: failing, hooks: [], ctx: ctxFor("1") }))
+    await expect(buildSnapshot({ item: "1", source: failing, hooks: [], ctx: ctxFor("1") }))
       .rejects.toThrow(/source "static" could not read "1": rate limited/);
   });
 
-  it("does not let a pre hook move the ticket by returning a node of its own", async () => {
-    const liar = definePreHook({ id: "liar", provides: [], run: () => ({ node: ticketNode("1", ["lr:stage:done"]) }) });
-    const s = await buildSnapshot({ ticket: "1", source: lone(["lr:stage:spec"]), hooks: [liar], ctx: ctxFor("1") });
+  it("does not let a pre hook move the item by returning a node of its own", async () => {
+    const liar = definePreHook({ id: "liar", provides: [], run: () => ({ node: itemNode("1", ["lr:stage:done"]) }) });
+    const s = await buildSnapshot({ item: "1", source: lone(["lr:stage:spec"]), hooks: [liar], ctx: ctxFor("1") });
     expect((s.run as Run).stage).toBe("spec");
     expect(labelsIn(s.node)).toEqual(["lr:stage:spec"]);
   });
@@ -65,20 +65,20 @@ describe("buildSnapshot reads the graph first", () => {
 
 describe("buildSnapshot's rel", () => {
   it("does not let a pre hook replace the rel counts", async () => {
-    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:build"] }] });
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:stage:build"] }] });
     state.openPull("1");
     const liar = definePreHook({ id: "liar", provides: [], run: () => ({ rel: { implements: { in: { total: 0 } } } }) });
-    const s = await buildSnapshot({ ticket: "1", source: state.source, hooks: [state.pre, liar], ctx: ctxFor("1") });
+    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre, liar], ctx: ctxFor("1") });
     expect((s.rel as Rel)["implements"]?.in.total).toBe(1);
   });
 
   it("leaves out a child an earlier round of the stage created once the stage is entered again", async () => {
-    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:breakdown"] }] });
-    const make = (round: number) => state.operator.createTicket(
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:stage:breakdown"] }] });
+    const make = (round: number) => state.operator.createItem(
       { title: `r${round}`, parent: "1", origin: { parent: "1", stage: "breakdown", round } }, ctxFor("1"),
     );
     const old = await make(1);
-    state.ticket(old.id).closed = "done";
+    state.item(old.id).closed = "done";
     await make(2);
     // The engine's own entry records, as the tracker would hold them.
     const post = state.post;
@@ -86,7 +86,7 @@ describe("buildSnapshot's rel", () => {
       await post.apply({ type: "tracker.comment", kind: "enter", stage: "breakdown", round, marker: `enter:breakdown:${round}`, body: "in" }, { ...ctxFor("1"), snapshot: {} });
     }
 
-    const s = await buildSnapshot({ ticket: "1", source: state.source, hooks: [state.pre], ctx: ctxFor("1") });
+    const s = await buildSnapshot({ item: "1", source: state.source, hooks: [state.pre], ctx: ctxFor("1") });
 
     expect((s.run as Run).rounds["breakdown"]?.entered).toBe(2);
     expect((s.rel as Rel)["child-of"]?.in).toMatchObject({ total: 1, not: { closed: 1 } });
@@ -98,7 +98,7 @@ const labelsIn = (node: unknown): unknown => (node as Node).state.labels;
 describe("buildSnapshot", () => {
   it("merges fragments in declaration order", async () => {
     const s = await buildSnapshot({
-      ticket: "1",
+      item: "1",
       source: lone(),
       hooks: [
         definePreHook({ id: "a", run: () => ({ x: 1, shared: "first" }) }),
@@ -111,7 +111,7 @@ describe("buildSnapshot", () => {
 
   it("gives each hook what previous hooks produced", async () => {
     const s = await buildSnapshot({
-      ticket: "1",
+      item: "1",
       source: lone(),
       hooks: [
         definePreHook({ id: "a", run: () => ({ base: 2 }) }),
@@ -128,7 +128,7 @@ describe("buildSnapshot", () => {
   it("derives run state from entries and the stage label", async () => {
     const at = "2026-01-01T00:00:00Z";
     const s = await buildSnapshot({
-      ticket: "1",
+      item: "1",
       source: lone(["lr:auto", "lr:stage:spec"]),
       hooks: [
         definePreHook({
@@ -144,14 +144,14 @@ describe("buildSnapshot", () => {
   });
 
   it("carries the clock in, so core never reads it", async () => {
-    const s = await buildSnapshot({ ticket: "1", source: lone(), hooks: [], ctx: ctx(), now: 1234 });
+    const s = await buildSnapshot({ item: "1", source: lone(), hooks: [], ctx: ctx(), now: 1234 });
     expect(s.now).toBe(1234);
   });
 
   it("names the hook that threw, rather than failing anonymously", async () => {
     await expect(
       buildSnapshot({
-        ticket: "1",
+        item: "1",
         source: lone(),
         hooks: [definePreHook({ id: "flaky", run: () => { throw new Error("no network"); } })],
         ctx: ctx(),
@@ -167,7 +167,7 @@ describe("buildSnapshot", () => {
   it("does not itself crash when the hook rejects with a non-Error value", async () => {
     await expect(
       buildSnapshot({
-        ticket: "1",
+        item: "1",
         source: lone(),
         hooks: [definePreHook({ id: "flaky", run: () => { throw null; } })],
         ctx: ctx(),
@@ -177,23 +177,23 @@ describe("buildSnapshot", () => {
 
   it("records the snapshot hash, which the decision cache reads later", async () => {
     const s = await buildSnapshot({
-      ticket: "1", source: lone(), hooks: [], ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
+      item: "1", source: lone(), hooks: [], ctx: ctx(), now: 5, digest: (input) => `len:${input.length}`,
     });
     expect(String(s.hash)).toMatch(/^len:\d+$/);
   });
 
   it("gives the same hash for the same inputs at different times", async () => {
     const digest = (input: string) => `len:${input.length}`;
-    const a = await buildSnapshot({ ticket: "1", source: lone(), hooks: [], ctx: ctx(), now: 1, digest });
-    const b = await buildSnapshot({ ticket: "1", source: lone(), hooks: [], ctx: ctx(), now: 999, digest });
+    const a = await buildSnapshot({ item: "1", source: lone(), hooks: [], ctx: ctx(), now: 1, digest });
+    const b = await buildSnapshot({ item: "1", source: lone(), hooks: [], ctx: ctx(), now: 999, digest });
     expect(a.hash).toBe(b.hash);
   });
 
-  it("places the ticket as null when no stage label is present", async () => {
+  it("places the item as null when no stage label is present", async () => {
     const s = await buildSnapshot({
-      ticket: "1",
+      item: "1",
       source: lone(["lr:auto"]),
-      hooks: [definePreHook({ id: "t", run: () => ({ ticket: { body: "" } }) })],
+      hooks: [definePreHook({ id: "t", run: () => ({ item: { body: "" } }) })],
       ctx: ctx(),
     });
     expect(s.run).toMatchObject({ stage: null });
@@ -213,9 +213,9 @@ describe("snapshotProvides", () => {
   const declaring = (id: string, provides: string[]) => definePreHook({ id, provides, run: () => ({}) });
 
   it("unions what the hooks declare with what the engine derives", () => {
-    const provided = snapshotProvides([declaring("a", ["ticket.labels"]), declaring("b", ["artifacts.pr.*"])], null);
+    const provided = snapshotProvides([declaring("a", ["item.labels"]), declaring("b", ["artifacts.pr.*"])], null);
 
-    expect(provided).toEqual(expect.arrayContaining(["ticket.labels", "artifacts.pr.*", "run.stage", "run.counters.*"]));
+    expect(provided).toEqual(expect.arrayContaining(["item.labels", "artifacts.pr.*", "run.stage", "run.counters.*"]));
   });
 
   /*
@@ -226,7 +226,7 @@ describe("snapshotProvides", () => {
    * when it cannot analyse a trigger.
    */
   it("abstains entirely when any loaded hook declares nothing", () => {
-    expect(snapshotProvides([declaring("a", ["ticket.labels"]), definePreHook({ id: "b", run: () => ({}) })], lone()))
+    expect(snapshotProvides([declaring("a", ["item.labels"]), definePreHook({ id: "b", run: () => ({}) })], lone()))
       .toBeNull();
   });
 

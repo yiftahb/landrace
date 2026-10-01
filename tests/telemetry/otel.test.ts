@@ -153,16 +153,16 @@ describe("createOtelSink", () => {
   it("turns an event into a log record: name, landrace.* attributes, severity and service.name", async () => {
     const exporter = memory();
     const otel = await createOtelSink(telemetrySettings(on({ OTEL_SERVICE_NAME: "lr-test" }))!, exporter);
-    otel.sink({ name: "agent.event", ticket: "19", raw: "hello", n: 3, ok: true, usage: { in: 1 } });
-    otel.sink({ name: "effect.failed", ticket: "19" });
-    otel.sink({ name: "lock.stolen", ticket: "19" });
+    otel.sink({ name: "agent.event", item: "19", raw: "hello", n: 3, ok: true, usage: { in: 1 } });
+    otel.sink({ name: "effect.failed", item: "19" });
+    otel.sink({ name: "lock.stolen", item: "19" });
     await otel.shutdown();
 
     const records = exporter.getFinishedLogRecords();
     expect(records.map((r) => r.body)).toEqual(["agent.event", "effect.failed", "lock.stolen"]);
     expect(records[0]?.attributes).toEqual({
       "event.name": "agent.event",
-      "landrace.ticket": "19",
+      "landrace.item": "19",
       "landrace.raw": "hello",
       "landrace.n": 3,
       "landrace.ok": true,

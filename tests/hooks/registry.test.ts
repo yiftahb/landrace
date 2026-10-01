@@ -18,12 +18,12 @@ const post = (id: string, handles: string[]) =>
 const empty = async () => ({ nodes: [], relationships: [] });
 const source = (id: string) => defineSource({ id, relations: [], list: empty, read: empty });
 
-const candidate: Node = { id: "1", kind: "ticket", title: "t", link: "u", closed: null, priority: null, origin: null, state: {} };
+const candidate: Node = { id: "1", kind: "item", title: "t", link: "u", closed: null, priority: null, origin: null, state: {} };
 const operator = (id: string) =>
   defineOperator({
     id,
-    createTicket: async () => candidate,
-    updateTicket: async () => candidate,
+    createItem: async () => candidate,
+    updateItem: async () => candidate,
   });
 
 const executor = (id: string) => defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) });

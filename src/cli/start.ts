@@ -28,7 +28,7 @@ import type {
   Screener,
   ServerCommand,
   StartOptions,
-  TicketPanel,
+  ItemPanel,
   UiServer,
   WakeResult,
 } from "#namespace.js";
@@ -85,7 +85,7 @@ export function parsePort(text: string): number {
 export async function startUi(
   opts: {
     board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined;
-    refresh?: (() => Promise<void>) | undefined; panel?: TicketPanel | undefined;
+    refresh?: (() => Promise<void>) | undefined; panel?: ItemPanel | undefined;
   },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
@@ -107,18 +107,18 @@ export async function startUi(
 }
 
 /**
- * The page's Retry and "Go to step…": both send the ticket back through the
+ * The page's Retry and "Go to step…": both send the item back through the
  * one path `landrace_goto` takes, read afresh when the request arrives.
  * Undefined when no hook can write a record, so the page's server answers
  * both routes with a 404 rather than a write that could only fail.
  */
 export function gotoFor(deps: GotoDeps): GotoPath | undefined {
   if (!deps.dispatcher.handlerFor(RECORD_EFFECT)) return undefined;
-  return { send: (ticket, target, opts) => sendTo(deps, ticket, target, opts) };
+  return { send: (item, target, opts) => sendTo(deps, item, target, opts) };
 }
 
 /**
- * The ticket panel: the conversation `landrace mcp` holds, held from the
+ * The item panel: the conversation `landrace mcp` holds, held from the
  * page instead — the same postReply, the same createConversation over the
  * tick's own source, pre hooks and dispatcher, so what the page writes is
  * what the next tick re-derives. A turn asked here is held to its step's
@@ -135,7 +135,7 @@ export function panelFor(
     server?: ServerCommand;
     artifacts?: ArtifactHook[];
   },
-): TicketPanel {
+): ItemPanel {
   const conversation = createConversation(deps);
   const clean = scrubberOf(deps.ctx.secrets, deps.scrub);
   const scrubbed = <T>(p: Promise<T>): Promise<T> =>
@@ -159,18 +159,18 @@ export function panelFor(
     }));
   };
   return {
-    pairing: (ticket) => paired((p) => pairingView(p, ticket)),
-    pair: (ticket, stage) => paired((p) => startPair(p, ticket, stage)),
-    finish: (ticket, note) => paired((p) => finishPair(p, ticket, note)),
-    release: (ticket) => paired((p) => releasePair(p, ticket)),
-    activity: (ticket, after) => deps.activity.read(ticket, after),
-    conversation: async (ticket) => {
-      const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+    pairing: (item) => paired((p) => pairingView(p, item)),
+    pair: (item, stage) => paired((p) => startPair(p, item, stage)),
+    finish: (item, note) => paired((p) => finishPair(p, item, note)),
+    release: (item) => paired((p) => releasePair(p, item)),
+    activity: (item, after) => deps.activity.read(item, after),
+    conversation: async (item) => {
+      const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
       return conversationOf(snapshot.entries ?? []);
     },
-    reply: (ticket, message) => scrubbed(postReply(deps, ticket, message)),
-    ask: (ticket, message) => scrubbed(conversation.ask(ticket, message)),
-    resolve: (ticket) => scrubbed(conversation.resolve(ticket)),
+    reply: (item, message) => scrubbed(postReply(deps, item, message)),
+    ask: (item, message) => scrubbed(conversation.ask(item, message)),
+    resolve: (item) => scrubbed(conversation.resolve(item)),
   };
 }
 
@@ -223,7 +223,7 @@ const built = new WeakMap<ExecutorContext, Map<string, Promise<Executor>>>();
  * the loaded hooks alone, the engine having none of its own to fall back on.
  * A name nothing answers to is a startup error rather than a loop that runs
  * happily and then fails at its first invocation, hours in and one paid tick
- * at a time, on a ticket that has already been moved.
+ * at a time, on an item that has already been moved.
  */
 export async function executorFor(
   config: RuntimeConfig,
@@ -254,7 +254,7 @@ export async function executorFor(
       try {
         // Typed, but a hook is JavaScript by the time it runs: a factory that
         // returned nothing used to start the loop, and the first paid step
-        // met "run is not a function" on a ticket it had already moved.
+        // met "run is not a function" on an item it had already moved.
         const made: unknown = await hook.create(ctx);
         const run = (made as { run?: unknown } | null | undefined)?.run;
         if (typeof run !== "function") throw new Error("its factory returned no run function");
@@ -345,7 +345,7 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<{ 
 function readOnlyExecutor(id: string): Executor {
   return defineExecutor({
     id,
-    run: () => Promise.reject(new Error("this runtime was built to read tickets, not to run steps")),
+    run: () => Promise.reject(new Error("this runtime was built to read items, not to run steps")),
   });
 }
 
@@ -371,7 +371,7 @@ export async function repoWorkspace(dir: string): Promise<{ folder: string; work
  * Everything that can be known before the first request goes out is checked
  * here — secrets resolve, the redaction list means something, the workflow is
  * sound, the hooks load, the executor the configuration names can start —
- * because the alternative is finding out one ticket at a time against a live
+ * because the alternative is finding out one item at a time against a live
  * repository.
  */
 export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Runtime> {
@@ -406,7 +406,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
 
   // A workflow that cannot be proved sound must not be run against a live
   // repository: every problem validate reports is one an operator would
-  // otherwise meet as a halted ticket with an effect already applied to it.
+  // otherwise meet as a halted item with an effect already applied to it.
   const refuse = (problems: Problem[]): never => {
     throw new Error(
       `the workflow in ${dir} does not validate; run \`landrace validate ${dir}\`:\n` +
@@ -453,7 +453,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
    *
    * `landrace validate` has unioned the hooks' `provides` since Task 14; the
    * daemon did not, so `start` would run a workflow the CLI rejects and meet
-   * the same fact as a halted ticket, one live repository at a time. A
+   * the same fact as a halted item, one live repository at a time. A
    * validator that checks less in the daemon than in the CLI is the "silently
    * stops checking" failure, one layer over.
    *
@@ -481,7 +481,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
   return {
     source: registry.source,
     // `landrace status` builds a Runtime through this same function to
-    // enumerate tickets, and it must never write to the repository it is
+    // enumerate items, and it must never write to the repository it is
     // diagnosing — so the preflights are handed back rather than run here,
     // and only `runStart` runs them. Left unrun, they are only a fact about
     // what the hooks declared: nothing has been checked yet.
@@ -503,7 +503,7 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
       ctx,
       log,
       scrub: log.scrub,
-      // What each step's agent is doing, for the page's ticket panel. Not for
+      // What each step's agent is doing, for the page's item panel. Not for
       // `landrace status`, which runs no step and must write nothing.
       ...(opts.readOnly ? {} : { activity: createActivityLog(sandboxRoot(dir), scrubberOf(ctx.secrets, log.scrub)) }),
       // Not for `landrace status` either: reading must not message anyone.
@@ -525,13 +525,13 @@ export async function buildRuntime(dir: string, opts: BuildOptions): Promise<Run
  * What Ctrl-C does, and it is a choice worth stating: the work in flight is
  * cancelled and its locks released, not finished.
  *
- * A converge holds a per-ticket lock for as long as it runs, and a step can be
- * a ten-minute agent. "Finish the ticket" would mean an operator who asked to
+ * A converge holds a per-item lock for as long as it runs, and a step can be
+ * a ten-minute agent. "Finish the item" would mean an operator who asked to
  * stop watches it keep spending for another ten minutes; abandoning it costs
- * at most one re-invocation, because a ticket's whole state is re-derived from
+ * at most one re-invocation, because an item's whole state is re-derived from
  * the tracker on the next run and the aborted step recorded nothing. So the
  * first interrupt aborts, which stops the next pass from starting and kills
- * the agent's process group, and then waits for each ticket to unwind so its
+ * the agent's process group, and then waits for each item to unwind so its
  * lock comes off cleanly.
  *
  * The second one exits anyway. A lock left behind carries this pid, and
@@ -556,7 +556,7 @@ export function createInterrupt(opts: {
     opts.stop.abort();
     say(
       "landrace: stopping — nothing new starts, the agent runs in flight are cancelled, and each " +
-      "ticket's lock comes off as it unwinds. Ctrl-C again to exit now.",
+      "item's lock comes off as it unwinds. Ctrl-C again to exit now.",
     );
   };
 }
@@ -657,7 +657,7 @@ export function createSchedule(opts: {
   };
 }
 
-/** One pass over every ticket, with a line per ticket for the person watching. */
+/** One pass over every item, with a line per item for the person watching. */
 async function pass(rt: Runtime, board?: Board): Promise<void> {
   const rows = await tick({
     source: rt.source, deps: rt.deps, concurrency: rt.concurrency, running: rt.running,
@@ -665,7 +665,7 @@ async function pass(rt: Runtime, board?: Board): Promise<void> {
   });
   // Printed beside the log, not through it: an outcome quotes a hook's or an
   // agent's failure, which can carry what the log itself would redact.
-  for (const row of rows) console.log(`#${row.ticket} ${rt.deps.scrub(row.outcome)}`);
+  for (const row of rows) console.log(`#${row.item} ${rt.deps.scrub(row.outcome)}`);
 }
 
 /**
@@ -691,8 +691,8 @@ function trackedRun(rt: Runtime, board: { current?: Board }, inFlight: Set<Promi
  * Run the schedule until asked to stop.
  *
  * Ticks fire on schedule and are allowed to overlap: mutual exclusion is per
- * ticket, and a global "is a tick running" guard would let one ten-minute step
- * starve every other ticket in the repository. `schedule` and `inFlight` are
+ * item, and a global "is a tick running" guard would let one ten-minute step
+ * starve every other item in the repository. `schedule` and `inFlight` are
  * built by the caller, not here — the page needs `schedule.nextAt`/`wake`
  * wired to the board and the server before this ever starts.
  */
@@ -707,7 +707,7 @@ export async function loop(rt: Runtime, schedule: Schedule, inFlight: Set<Promis
     schedule.stop();
   }
 
-  // Each ticket in flight is holding its own lock, released by withLock as its
+  // Each item in flight is holding its own lock, released by withLock as its
   // converge unwinds. Waiting here is the whole difference between "released"
   // and "stale until something else checks this pid".
   await Promise.all(inFlight);
@@ -752,7 +752,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const board = createBoard({
     workflow: rt.deps.workflow, held: (t) => held(t), nextTickAt: schedule.nextAt, folder, workspace,
     // The tree nests along exactly what the source says is one-per-node — a
-    // parent, the ticket a pull request implements — and nothing configured.
+    // parent, the item a pull request implements — and nothing configured.
     nest: rt.source.relations.filter((r) => r.singular).map((r) => r.type),
   });
   boardRef.current = board;

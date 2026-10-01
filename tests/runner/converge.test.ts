@@ -10,10 +10,10 @@ import type { Executor } from "#namespace.js";
 import type { RuntimeContext, Step } from "#namespace.js";
 import type { Dispatcher, Effect, LandraceEvent, Workflow } from "#namespace.js";
 
-/** Whatever ticket is asked for, alone in its graph, carrying the world's labels as they stand. */
+/** Whatever item is asked for, alone in its graph, carrying the world's labels as they stand. */
 const labelSource = (labels: Set<string>): Source => {
   const nodeOf = (id: string): Node => ({
-    id, kind: "ticket", title: `ticket ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
+    id, kind: "item", title: `item ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
     state: { labels: [...labels], assignees: [] },
   });
   return defineSource({
@@ -90,7 +90,7 @@ const deps = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) =
   dispatcher: createDispatcher([w.post]),
   executor: { id: "none", run: async () => ({ text: "", sessionId: null }) } as Executor,
   ctx: {
-    ticket: "1", config: {} as HookContext["config"], secrets: new Map(),
+    item: "1", config: {} as HookContext["config"], secrets: new Map(),
     signal: new AbortController().signal, log: () => {},
   },
   log: createLogger({ sink: () => {} }),
@@ -98,7 +98,7 @@ const deps = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) =
 });
 
 describe("converge", () => {
-  it("keeps acting until the ticket is terminal, in one call", async () => {
+  it("keeps acting until the item is terminal, in one call", async () => {
     const w = world();
     const r = await converge("1", deps(w));
     expect([...w.labels]).toContain("lr:stage:b");
@@ -110,7 +110,7 @@ describe("converge", () => {
     let reads = 0;
     const counting = definePreHook({
       id: "w",
-      run: () => { reads++; return { ticket: { labels: [...w.labels] }, entries: [...w.entries] }; },
+      run: () => { reads++; return { item: { labels: [...w.labels] }, entries: [...w.entries] }; },
     });
     await converge("1", deps(w, { pre: [counting] }));
     expect(reads).toBeGreaterThan(1);
@@ -153,14 +153,14 @@ describe("converge", () => {
   it("emits an evaluation event per pass", async () => {
     const seen: string[] = [];
     await converge("1", deps(world(), { log: createLogger({ sink: (e) => seen.push(e.name) }) }));
-    expect(seen.filter((n) => n === "ticket.evaluated").length).toBeGreaterThan(1);
+    expect(seen.filter((n) => n === "item.evaluated").length).toBeGreaterThan(1);
   });
 
   /**
    * Spec §14: `--debug` dumps the assembled snapshot per pass. It is the one
    * thing a decision was made from, and without it the log says what was
    * decided and never what it was decided on — which is exactly the question
-   * asked when a ticket sits in a stage nobody expected.
+   * asked when an item sits in a stage nobody expected.
    */
   it("dumps the snapshot it decided on, per pass, and only when debug is on", async () => {
     const quiet: LandraceEvent[] = [];
@@ -170,7 +170,7 @@ describe("converge", () => {
     const loud: LandraceEvent[] = [];
     await converge("1", deps(world(), { log: createLogger({ sink: (e) => loud.push(e), debug: true }) }));
     const dumps = loud.filter((e) => e.name === "snapshot.built");
-    expect(dumps).toHaveLength(loud.filter((e) => e.name === "ticket.evaluated").length);
+    expect(dumps).toHaveLength(loud.filter((e) => e.name === "item.evaluated").length);
     expect(labelsOf((dumps[0]?.snapshot as { node?: Node })?.node)).toEqual(["lr:auto"]);
   });
 
@@ -225,7 +225,7 @@ describe("converge", () => {
   });
 
   // The step contract is a hard fail, never a retry: a malformed step output
-  // must stop the ticket in the same pass it was produced, and must not be
+  // must stop the item in the same pass it was produced, and must not be
   // invoked again by a later pass of the same converge call.
   it("halts on a malformed step output without re-invoking the step", async () => {
     const w = world();
@@ -307,7 +307,7 @@ describe("converge", () => {
 
   // N6 (fix round 2) — the invoked-set halt above left no durable record, the
   // same gap M2 was raised to close for an unloaded step, in the same
-  // commit. An operator looking at a ticket stuck here saw nothing.
+  // commit. An operator looking at an item stuck here saw nothing.
   it("posts a durable record when the invoked-set guard trips, not just a log line", async () => {
     const w = world();
     const stepWorkflow: Workflow = {
@@ -328,7 +328,7 @@ describe("converge", () => {
   // was rejected has produced nothing. A step that never ran (the executor
   // threw — a network blip, a timeout, a Ctrl-C) is the opposite case, and
   // collapsing the two permanently poisoned a stage that had nothing to
-  // reject. Proof: the same ticket, same stage, first an outage then a
+  // reject. Proof: the same item, same stage, first an outage then a
   // recovery, across two separate converge() calls — the second one must
   // actually retry and actually reach the end, not stay stuck on the first
   // call's non-event forever.
@@ -447,7 +447,7 @@ describe("converge", () => {
     const r = await converge("1", {
       workflow: stepWorkflow, steps: new Map([["spec", step]]), source: labelSource(labels), pre: [pre],
       dispatcher: createDispatcher([statusHook, boom]), executor,
-      ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+      ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
       log: createLogger({ sink: () => {} }),
     });
     expect(r.settled).toBe("halt");
@@ -456,7 +456,7 @@ describe("converge", () => {
   // M2 — the malformed path already posts a durable record when a step
   // breaks its output contract; a stage naming a step that failed to load at
   // all halted with zero trace, leaving an operator looking at a stuck
-  // ticket with nothing explaining why.
+  // item with nothing explaining why.
   it("posts a durable record when a stage names a step that was never loaded", async () => {
     const w = world();
     const stepWorkflow: Workflow = {
@@ -553,12 +553,12 @@ describe("converge", () => {
         run: () => {
           reads++;
           if (reads === 1) controller.abort();
-          return { ticket: { labels: [...w.labels] }, entries: [...w.entries] };
+          return { item: { labels: [...w.labels] }, entries: [...w.entries] };
         },
       });
       const r = await converge("1", deps(w, {
         pre: [counting],
-        ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
+        ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
       }));
       expect(reads).toBe(1);
       expect(r.settled).toBe("halt");
@@ -572,12 +572,12 @@ describe("converge", () => {
         id: "w",
         run: () => {
           if (++reads === 2) controller.abort();
-          return { ticket: { labels: [...w.labels] }, entries: [...w.entries] };
+          return { item: { labels: [...w.labels] }, entries: [...w.entries] };
         },
       });
       const r = await converge("1", deps(w, {
         pre: [aborting],
-        ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
+        ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
       }));
       expect(r).toMatchObject({ settled: "halt", why: "the run was aborted" });
       expect([...w.labels]).toContain("lr:stage:a");
@@ -585,11 +585,11 @@ describe("converge", () => {
     });
 
     /*
-     * #33: a ticket closed mid-step is stopped by aborting its run, and a
+     * #33: an item closed mid-step is stopped by aborting its run, and a
      * stopped run writes nothing: not the answer an agent got out as it was
      * killed, and not a refusal from a screener that was killed mid-verdict.
      */
-    describe("a run aborted while its step ran writes nothing to the ticket", () => {
+    describe("a run aborted while its step ran writes nothing to the item", () => {
       const oneStep: Workflow = {
         version: 1, name: "t",
         stages: [{
@@ -603,7 +603,7 @@ describe("converge", () => {
         capabilities: ["repo:read"],
         output: { discriminator: "kind", shapes: { spec: {} }, routes: [{ when: { kind: "spec" }, effect: { type: "tracker.comment", marker: "spec:{round}" } }] },
       };
-      const ctxOf = (signal: AbortSignal) => ({ ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal, log: () => {} });
+      const ctxOf = (signal: AbortSignal) => ({ item: "1", config: {} as HookContext["config"], secrets: new Map(), signal, log: () => {} });
 
       it("not the answer the agent got out as it was stopped", async () => {
         const w = world();
@@ -636,11 +636,11 @@ describe("converge", () => {
       let reads = 0;
       const counting = definePreHook({
         id: "w",
-        run: () => { reads++; return { ticket: { labels: [...w.labels] }, entries: [...w.entries] }; },
+        run: () => { reads++; return { item: { labels: [...w.labels] }, entries: [...w.entries] }; },
       });
       const r = await converge("1", deps(w, {
         pre: [counting],
-        ctx: { ticket: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
+        ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: controller.signal, log: () => {} },
       }));
       expect(reads).toBe(0);
       expect(r).toMatchObject({ passes: 0, settled: "halt" });
@@ -704,8 +704,8 @@ describe("converge", () => {
   // N2 — a screening refusal is a verdict, not an outage: durable, terminal,
   // routed to blocked (spec §15). Classifying it as "unavailable" (round 1's
   // mistake) meant no durable record ever landed, so every single poll paid
-  // for another screener call, forever, with nothing on the ticket to show
-  // for it. Proof across three separate converge() calls on the same ticket,
+  // for another screener call, forever, with nothing on the item to show
+  // for it. Proof across three separate converge() calls on the same item,
   // matching the brief's own repro shape.
   it("posts a durable record for a screening refusal, so a later poll routes to blocked instead of re-screening forever", async () => {
     const w = world();
@@ -754,7 +754,7 @@ describe("converge", () => {
 
   /*
    * The same durable record, told apart from a broken contract by its kind.
-   * A person reading a ticket stopped by a security check has a different
+   * A person reading an item stopped by a security check has a different
    * job from one reading an agent's unreadable answer, and the workflow can
    * only send the two to different places if the record says which it was.
    */
@@ -781,7 +781,7 @@ describe("converge", () => {
       const screener = answering('```json\n{"verdict":"suspicious","reason":"asks for a URL fetch"}\n```');
       await converge("1", deps(w, { workflow: oneStep, steps: new Map([["spec", step]]), executor: answering(""), screen: { executor: screener } }));
       expect(rejections(w)).toEqual([{ kind: "refused", marker: "refused:spec:1" }]);
-      // Said as what it was, with the screener's reason, for whoever opens the ticket.
+      // Said as what it was, with the screener's reason, for whoever opens the item.
       const body = String(w.entries.find((e) => e.kind === "refused")?.body ?? "");
       expect(body).toMatch(/^## Step refused by a security check\n/);
       expect(body).toContain("asks for a URL fetch");
@@ -835,7 +835,7 @@ describe("converge", () => {
       workflow: stepWorkflow, steps: new Map([["spec", step]]),
       executor: agentExecutor, screen: { executor: brokenScreener },
       ctx: {
-        ticket: "1", config: {} as HookContext["config"], secrets: new Map([["token", secretValue]]),
+        item: "1", config: {} as HookContext["config"], secrets: new Map([["token", secretValue]]),
         signal: new AbortController().signal, log: () => {},
       },
     }));
@@ -876,7 +876,7 @@ describe("converge", () => {
       workflow: stepWorkflow, steps: new Map([["spec", step]]),
       executor: agentExecutor, screen: { executor: brokenScreener },
       ctx: {
-        ticket: "1", config: {} as HookContext["config"], secrets: new Map([["token", `  ${bareSecret}  `]]),
+        item: "1", config: {} as HookContext["config"], secrets: new Map([["token", `  ${bareSecret}  `]]),
         signal: new AbortController().signal, log: () => {},
       },
     }));
@@ -949,7 +949,7 @@ describe("converge", () => {
     await converge("1", deps(w, {
       workflow: stepWorkflow, steps: new Map([["spec", step]]), executor: answering, log, scrub: log.scrub,
       ctx: {
-        ticket: "1", config: {} as HookContext["config"], secrets: new Map([["webhook", webhook]]),
+        item: "1", config: {} as HookContext["config"], secrets: new Map([["webhook", webhook]]),
         signal: new AbortController().signal, log: () => {},
       },
     }));
@@ -1026,7 +1026,7 @@ describe("an artifact's briefing is built for the step, not for the pass", () =>
   /*
    * A step asked to address findings it cannot see is the defect this whole
    * mechanism exists to close, so a briefing that will not read must stop the
-   * ticket rather than quietly invoke the step with a placeholder where the
+   * item rather than quietly invoke the step with a placeholder where the
    * findings should be — which is indistinguishable, from inside the agent,
    * from a pull request with nothing on it.
    */
@@ -1047,22 +1047,22 @@ describe("an artifact's briefing is built for the step, not for the pass", () =>
 });
 
 /**
- * §14: the evaluation event says where the ticket *is*, and it has to say
+ * §14: the evaluation event says where the item *is*, and it has to say
  * where it is going too.
  *
  * Without the destination the log cannot draw the position trail at all: the
  * last transition of a run is never evaluated from its own destination —
- * nothing evaluates a terminal ticket — so the stage a ticket actually ended
+ * nothing evaluates a terminal item — so the stage an item actually ended
  * in appears nowhere in the stream. Reading it back off the tracker instead
  * means every reader of the log needs to know how that tracker stores a
  * position, which is the one thing the engine refuses to know.
  */
-describe("the evaluation event carries the stage the ticket moved to", () => {
+describe("the evaluation event carries the stage the item moved to", () => {
   it("names the destination of a transition, and null when it is not moving", async () => {
     const seen: LandraceEvent[] = [];
     await converge("1", deps(world(), { log: createLogger({ sink: (e) => seen.push(e) }) }));
 
-    const evaluated = seen.filter((e) => e.name === "ticket.evaluated");
+    const evaluated = seen.filter((e) => e.name === "item.evaluated");
     expect(evaluated.map((e) => [e.stage, e.to])).toEqual([
       [null, "a"],
       ["a", "b"],
@@ -1099,7 +1099,7 @@ describe("step.started and step.finished", () => {
   const pairOf = (events: LandraceEvent[]) =>
     events.filter((e) => e.name === "step.started" || e.name === "step.finished").map((e) => e.name);
 
-  it("brackets the invocation with the ticket, stage, round, model and effort", async () => {
+  it("brackets the invocation with the item, stage, round, model and effort", async () => {
     const w = world();
     const { events, log } = recorder();
     const executor: Executor = { id: "ok", run: async () => ({ text: '```json\n{"kind":"spec"}\n```', sessionId: null }) };
@@ -1107,12 +1107,12 @@ describe("step.started and step.finished", () => {
 
     const started = events.find((e) => e.name === "step.started");
     const finished = events.find((e) => e.name === "step.finished");
-    expect(started).toMatchObject({ ticket: "7", stage: "spec", round: 1, model: "haiku", effort: "low" });
-    expect(finished).toMatchObject({ ticket: "7", stage: "spec", round: 1, ok: true });
+    expect(started).toMatchObject({ item: "7", stage: "spec", round: 1, model: "haiku", effort: "low" });
+    expect(finished).toMatchObject({ item: "7", stage: "spec", round: 1, ok: true });
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
   });
 
-  it("files what the agent reports under the ticket, stage and round it ran for", async () => {
+  it("files what the agent reports under the item, stage and round it ran for", async () => {
     const w = world();
     const recorded: unknown[][] = [];
     const executor: Executor = {
@@ -1141,7 +1141,7 @@ describe("step.started and step.finished", () => {
     await converge("7", deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log }));
 
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
-    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ ticket: "7", ok: false });
+    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ item: "7", ok: false });
   });
 
   it("still finishes when runStep itself throws", async () => {
@@ -1161,7 +1161,7 @@ describe("step.started and step.finished", () => {
     await converge("7", deps(w, { workflow: specWorkflow, steps: new Map([["spec", spec]]), executor, log })).catch(() => {});
 
     expect(pairOf(events)).toEqual(["step.started", "step.finished"]);
-    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ ticket: "7", ok: false });
+    expect(events.find((e) => e.name === "step.finished")).toMatchObject({ item: "7", ok: false });
   });
 
   it("still finishes when the step is refused before the agent runs", async () => {
@@ -1210,7 +1210,7 @@ describe("a stage that creates children", () => {
     ],
   };
   const steps = new Map<string, Step>([["steps/breakdown.md", {
-    prompt: "split it", capabilities: ["tickets:create"],
+    prompt: "split it", capabilities: ["items:create"],
     output: {
       discriminator: "kind",
       shapes: { children: {} },
@@ -1228,12 +1228,12 @@ describe("a stage that creates children", () => {
   };
 
   it("drops what a crashed attempt created before trying again, so there is one set, not two", async () => {
-    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
+    const state = createExternalState({ items: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
     const make = (title: string) => createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title }, ctx);
     let attempt = 0;
     const seen: LandraceEvent[] = [];
     const run = createHarness({
-      workflow, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1",
+      workflow, steps, pre: [state.pre], post: [state.post], source: state.source, item: "1",
       answers: { breakdown: () => { if (attempt++ === 0) throw new Error("agent exited 1"); return '```json\n{"kind":"children"}\n```'; } },
       during: async () => { await make(`child ${attempt}`); },
       log: createLogger({ sink: (e) => seen.push(e) }),
@@ -1256,10 +1256,10 @@ describe("a stage that creates children", () => {
   });
 
   it("refuses a round whose step made children it never declared it could", async () => {
-    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
+    const state = createExternalState({ items: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
     const undeclared = new Map<string, Step>([["steps/breakdown.md", { ...steps.get("steps/breakdown.md"), capabilities: [] } as Step]]);
     const run = createHarness({
-      workflow, steps: undeclared, pre: [state.pre], post: [state.post], source: state.source, ticket: "1",
+      workflow, steps: undeclared, pre: [state.pre], post: [state.post], source: state.source, item: "1",
       answers: { breakdown: () => '```json\n{"kind":"children"}\n```' },
       // A way round the executor: the child lands with this round's origin
       // although the agent was never handed the tool.
@@ -1268,7 +1268,7 @@ describe("a stage that creates children", () => {
 
     const r = await run.converge();
     expect(r.result.settled).toBe("halt");
-    expect(r.result.why).toMatch(/without declaring tickets:create/);
+    expect(r.result.why).toMatch(/without declaring items:create/);
     expect(state.children("1").map((c) => c.title)).toEqual(["sneaked"]);
   });
 
@@ -1277,8 +1277,8 @@ describe("a stage that creates children", () => {
     // to guess which edges to walk, rather than closing nothing silently. This
     // fires on the very first pass, while entering "breakdown" (a transition,
     // not yet an invoke), so it pins planEffects's own halt-not-throw path.
-    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
-    const run = createHarness({ workflow: brokenWorkflow, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1" });
+    const state = createExternalState({ items: [{ id: "1", title: "big", labels: ["lr:auto"] }] });
+    const run = createHarness({ workflow: brokenWorkflow, steps, pre: [state.pre], post: [state.post], source: state.source, item: "1" });
     const r = await run.converge();
     expect(r.result.settled).toBe("halt");
     expect(r.result.why).toMatch(/breakdown/);
@@ -1290,8 +1290,8 @@ describe("a stage that creates children", () => {
     // "invoke" directly, on the very first pass. Without this test, deleting
     // the invoke-path catch (converge.ts's residue block) would go unnoticed —
     // the previous test only ever reaches the *transition*-path catch.
-    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:stage:breakdown"] }] });
-    const run = createHarness({ workflow: brokenWorkflow, steps, pre: [state.pre], post: [state.post], source: state.source, ticket: "1" });
+    const state = createExternalState({ items: [{ id: "1", title: "big", labels: ["lr:stage:breakdown"] }] });
+    const run = createHarness({ workflow: brokenWorkflow, steps, pre: [state.pre], post: [state.post], source: state.source, item: "1" });
     const r = await run.converge();
     expect(r.result.settled).toBe("halt");
     expect(r.result.why).toMatch(/breakdown/);
@@ -1306,7 +1306,7 @@ describe("a stage that creates children", () => {
     // closing anything, the shape of a real bug in a hook rather than a
     // crash. Without the fix this spins to the pass cap re-applying the same
     // no-op; with it, the second sighting of the same still-open close halts.
-    const state = createExternalState({ tickets: [{ id: "1", title: "big", labels: ["lr:stage:breakdown"] }] });
+    const state = createExternalState({ items: [{ id: "1", title: "big", labels: ["lr:stage:breakdown"] }] });
     const stale = await createChild(state.operator, { parent: "1", stage: "breakdown", round: 1 }, { title: "stale" }, ctx);
 
     const noOpClose = {
@@ -1317,7 +1317,7 @@ describe("a stage that creates children", () => {
       },
     };
 
-    const run = createHarness({ workflow, steps, pre: [state.pre], post: [noOpClose], source: state.source, ticket: "1" });
+    const run = createHarness({ workflow, steps, pre: [state.pre], post: [noOpClose], source: state.source, item: "1" });
     const r = await run.converge();
 
     expect(r.result.settled).toBe("halt");
@@ -1371,8 +1371,8 @@ describe("the step timeout budget", () => {
  * converge test builds `deps` with no `childServer` at all and would still
  * pass if the forwarding line were deleted.
  */
-describe("the engine's own ticket server", () => {
-  it("hands a tickets:create step's executor the server built for its binding", async () => {
+describe("the engine's own item server", () => {
+  it("hands an items:create step's executor the server built for its binding", async () => {
     const w = world();
     const seen: unknown[] = [];
     const spy: Executor = {
@@ -1387,7 +1387,7 @@ describe("the engine's own ticket server", () => {
         on_enter: [{ type: "tracker.status", value: "spec" }],
       }],
     };
-    const step: Step = { prompt: "go", capabilities: ["tickets:create"] };
+    const step: Step = { prompt: "go", capabilities: ["items:create"] };
     const childServer = { command: "node", args: ["cli.js", "mcp", "--workflow", "/w"] };
     const binding = { parent: "1", stage: "spec", round: 1 };
     await converge("1", deps(w, {
@@ -1419,7 +1419,7 @@ describe("a stage a person is pairing on", () => {
     }));
     expect(ran).toBe(0);
     expect(r).toMatchObject({ settled: "wait", why: expect.stringMatching(/pairing on "spec"/) });
-    expect(events.find((e) => e.name === "ticket.evaluated")).toMatchObject({
+    expect(events.find((e) => e.name === "item.evaluated")).toMatchObject({
       decision: "wait", paired: { stage: "spec", round: 1, n: 1 },
     });
   });

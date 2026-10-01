@@ -33,12 +33,12 @@ export const ARGV_CASES: Record<string, { executor: Record<string, unknown>; run
     executor: EVERYTHING,
     run: { capabilities: ["repo:read"], model: "haiku", effort: "low", resume: "sid-9" },
   },
-  "read, holding create_child": { executor: EVERYTHING, run: { capabilities: ["tickets:create", "repo:read"], child: CHILD } },
-  "read, declaring create_child with no binding": { executor: EVERYTHING, run: { capabilities: ["tickets:create", "repo:read"] } },
+  "read, holding create_child": { executor: EVERYTHING, run: { capabilities: ["items:create", "repo:read"], child: CHILD } },
+  "read, declaring create_child with no binding": { executor: EVERYTHING, run: { capabilities: ["items:create", "repo:read"] } },
   "write, bare": { executor: {}, run: { capabilities: ["repo:read", "repo:write"] } },
   "write, everything": {
     executor: EVERYTHING,
-    run: { capabilities: ["repo:read", "repo:write", "tickets:create"], child: CHILD, effort: "max", resume: "sid-9", fork: true },
+    run: { capabilities: ["repo:read", "repo:write", "items:create"], child: CHILD, effort: "max", resume: "sid-9", fork: true },
   },
   "write, nothing denied": { executor: { sandbox: { hosts: [], deny: [] } }, run: { capabilities: ["repo:write"] } },
 };

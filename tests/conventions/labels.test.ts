@@ -1,12 +1,12 @@
 import { stageFromLabels } from "#conventions.js";
 
 /**
- * Position is a label, and two of them is a ticket that cannot be placed.
+ * Position is a label, and two of them is an item that cannot be placed.
  *
  * `stageFromLabels` computed `ambiguous` and then returned `found[0]` anyway,
  * so the one caller that *acts* on the answer — buildSnapshot — ran a paid
  * step at whichever stage happened to come first in the array, while both
- * operator surfaces read the flag and reported the ticket as unplaceable. It
+ * operator surfaces read the flag and reported the item as unplaceable. It
  * was the only first-match-wins in the codebase.
  */
 describe("stageFromLabels", () => {

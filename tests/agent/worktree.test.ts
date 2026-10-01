@@ -105,7 +105,7 @@ describe("worktree", () => {
     await expect(removeWorktree("5", root)).resolves.toBeUndefined();
   });
 
-  it("gives each ticket its own worktree", async () => {
+  it("gives each item its own worktree", async () => {
     const root = await repo();
     expect(await ensureWorktree("6", root)).not.toBe(await ensureWorktree("7", root));
     await removeWorktree("6", root);
@@ -129,7 +129,7 @@ describe("worktree", () => {
   /**
    * Resolved at startup, not at the first invoke: a loop started outside a
    * repository would otherwise run happily and fail on its first paid step,
-   * hours in, on a ticket it has already moved.
+   * hours in, on an item it has already moved.
    */
   describe("repositoryRoot", () => {
     it("finds the repository a workflow directory sits in", async () => {
@@ -267,7 +267,7 @@ describe("a stage's branch", () => {
   });
 
   /*
-   * The reviewer reads the ticket's code, not main's — and reads it detached,
+   * The reviewer reads the item's code, not main's — and reads it detached,
    * so a commit it should never have made cannot land on the branch the next
    * push publishes.
    */
@@ -374,7 +374,7 @@ describe("a stage's branch", () => {
 
   /*
    * A step without a branch that follows one with a branch gets HEAD, not the
-   * ticket's code: what the stage declared, rather than whatever the worktree
+   * item's code: what the stage declared, rather than whatever the worktree
    * happened to be on.
    */
   it("detaches onto HEAD for a stage with no branch, after one that had a branch", async () => {
@@ -439,11 +439,11 @@ describe("the sandbox path", () => {
   });
 
   /**
-   * `ensureWorktree` is handed a ticket id straight out of a tracker hook, and
+   * `ensureWorktree` is handed an item id straight out of a tracker hook, and
    * this proves its own containment check holds even when nothing upstream —
-   * `ticketIdProblem` at the tick's own boundary — has screened the id first.
+   * `itemIdProblem` at the tick's own boundary — has screened the id first.
    */
-  it("refuses a ticket whose path climbs out of the sandbox root", async () => {
+  it("refuses an item whose path climbs out of the sandbox root", async () => {
     const root = await repo(join(home, "one", "widgets"));
     const outside = await victim();
     const climb = `../../../${basename(outside)}`;
@@ -490,12 +490,12 @@ describe("the sandbox path", () => {
 });
 
 /*
- * A pairing's worktree sits beside the ticket's own, in a slot of its own:
- * the tick and a conversation cut and remove `<ticket>` on every run, and a
+ * A pairing's worktree sits beside the item's own, in a slot of its own:
+ * the tick and a conversation cut and remove `<item>` on every run, and a
  * person's session must not be deleted out from under them by either.
  */
 describe("a worktree in its own slot", () => {
-  it("lives beside the ticket's, and removing one leaves the other", async () => {
+  it("lives beside the item's, and removing one leaves the other", async () => {
     const root = await repo();
     const mine = await ensureWorktree("5", root);
     const paired = await ensureWorktree("5", root, undefined, "5.pair");

@@ -37,14 +37,14 @@ const linesMatching = (pattern: RegExp): string[] =>
  * What it catches is the word. What it cannot catch is the shape, and three
  * GitHub-shaped assumptions live in `src/` and pass this test clean today:
  *
- *   1. a ticket's position is derived only from an `lr:stage:*` label
+ *   1. an item's position is derived only from an `lr:stage:*` label
  *      (`src/runner/snapshot.ts:94`), so a tracker with real statuses has to
  *      synthesise a label array it does not have — and §6's "a human moving a
- *      card moves the ticket" is delivered on no tracker at all;
+ *      card moves the item" is delivered on no tracker at all;
  *   2. `TrackerComment` (`src/namespace.ts:197`) is the GitHub REST wire
  *      shape, `created_at` and `user.login` and all, rather than the neutral
  *      `{ id, body, at, author }` the name promises;
- *   3. `TicketPatch.state` (`src/namespace.ts:386`) is `"open" | "closed"`,
+ *   3. `ItemPatch.state` (`src/namespace.ts:386`) is `"open" | "closed"`,
  *      which a Jira workflow status or a Linear per-team state must collapse
  *      into.
  *

@@ -16,7 +16,7 @@ import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { CAPABILITIES, CHILD_SERVER_NAME, mayCreateTickets, mayWriteRepo, unknownCapabilities } from "#conventions.js";
+import { CAPABILITIES, CHILD_SERVER_NAME, mayCreateItems, mayWriteRepo, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import type {
   AgentSettings,
@@ -160,7 +160,7 @@ function killGroup(child: ChildProcess): void {
   }
 }
 
-/** A path as the ticket panel shows it: relative to where the agent runs, when it is under it. */
+/** A path as the item panel shows it: relative to where the agent runs, when it is under it. */
 export const shortPath = (path: string, cwd: string): string => (path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path);
 
 /**
@@ -176,7 +176,7 @@ export const shortPath = (path: string, cwd: string): string => (path.startsWith
  * past it, and nothing could stop that short of running the server to ask.
  * Broad on purpose where it can be: refusing a server that merely resembles
  * it costs the operator a rename, and letting the real one through hands a
- * step agent the tools that move tickets.
+ * step agent the tools that move items.
  */
 // In order: where a program name can start (the line, a space, a path
 // separator, a quote or a shell operator); `landrace` with an npx-style
@@ -194,7 +194,7 @@ const operatorProblem = (name: string, how: string): Problem => ({
   rule: "mcp",
   message:
     `agent.mcp names "${name}", ${how} landrace's own operator server: its tools create, update and reply on ` +
-    "tickets — a step holding them could move its own ticket — so operator tools must never reach a step agent",
+    "items — a step holding them could move its own item — so operator tools must never reach a step agent",
 });
 
 const shapeProblem = (what: string): Problem => ({
@@ -643,7 +643,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       const tier: Tier = !declared ? "screen" : mayWriteRepo(capabilities) ? "write" : "read";
       // A permission, not an obligation: a turn that declares the word but was
       // handed no binding simply gets no tool.
-      const bound = binding !== undefined && mayCreateTickets(capabilities) ? binding : undefined;
+      const bound = binding !== undefined && mayCreateItems(capabilities) ? binding : undefined;
 
       // The step's own declaration, or the operator's default when it made
       // none — checked here rather than at construction alone, because a

@@ -83,16 +83,16 @@ const pushOf = (calls: Call[]): Call => {
   return found;
 };
 
-const snapshotOf = async (gh: FakeTracker, ticket = "1"): Promise<Snapshot> => {
-  const graph = await gh.registry.source?.read(ticket, gh.ctx);
-  const snapshot: Snapshot = { graph, node: graph?.nodes.find((n) => n.id === ticket) };
+const snapshotOf = async (gh: FakeTracker, item = "1"): Promise<Snapshot> => {
+  const graph = await gh.registry.source?.read(item, gh.ctx);
+  const snapshot: Snapshot = { graph, node: graph?.nodes.find((n) => n.id === item) };
   let merged = snapshot;
-  for (const hook of gh.registry.pre) merged = { ...merged, ...(await hook.run({ ...gh.ctx, ticket, snapshot: merged })) };
+  for (const hook of gh.registry.pre) merged = { ...merged, ...(await hook.run({ ...gh.ctx, item, snapshot: merged })) };
   return merged;
 };
 
 const contextOf = (gh: FakeTracker, snapshot: Snapshot, log: HookContext["log"] = () => {}): HookContext =>
-  ({ ...gh.ctx, ticket: "1", snapshot, log });
+  ({ ...gh.ctx, item: "1", snapshot, log });
 
 const post = (gh: FakeTracker) => {
   const hook = gh.registry.post[0];
@@ -107,7 +107,7 @@ describe("the branch facts the pre hook reads", () => {
     const main = await run(root, "rev-parse", "main");
     const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
 
-    const fragment = await gh.registry.pre[0]?.run({ ...gh.ctx, ticket: "1", snapshot: {} });
+    const fragment = await gh.registry.pre[0]?.run({ ...gh.ctx, item: "1", snapshot: {} });
 
     expect(fragment?.git).toEqual({
       local: { main, "landrace/1": sha },
@@ -238,7 +238,7 @@ describe("branch.push", () => {
    * remote.origin.push when one is given, refuses a mirror remote outright,
    * and follows tags only when asked — which the push says it is not.
    */
-  it("pushes the ticket's branch and nothing else, whatever origin's push settings say", async () => {
+  it("pushes the item's branch and nothing else, whatever origin's push settings say", async () => {
     const { root, origin } = await checkout();
     const sha = await build(root, "landrace/1");
     await run(root, "branch", "secret", "main");
@@ -396,10 +396,10 @@ describe("branch.push", () => {
   /*
    * A build that committed nothing leaves the branch where origin's default
    * branch already is: pushing it proposes nothing, and GitHub would refuse
-   * the pull request anyway. Said here, naming the ticket and the way out,
+   * the pull request anyway. Said here, naming the item and the way out,
    * and asked again every tick — so it clears itself once somebody commits.
    */
-  it("refuses a branch nothing was committed to, naming the ticket and the way out", async () => {
+  it("refuses a branch nothing was committed to, naming the item and the way out", async () => {
     const { root, origin } = await checkout();
     await run(root, "remote", "set-head", "origin", "main");
     await run(root, "branch", "landrace/1", "main");
@@ -427,7 +427,7 @@ describe("branch.push", () => {
       .rejects.toThrow(/nothing was committed on landrace\/1/);
   });
 
-  /* Bounded, and stopped with the run: a push that hangs holds the ticket's lock. */
+  /* Bounded, and stopped with the run: a push that hangs holds the item's lock. */
   it("stops when the run is aborted", async () => {
     const { root, origin } = await checkout();
     await build(root, "landrace/1");
@@ -469,7 +469,7 @@ describe("branch.push", () => {
   });
 
   /*
-   * #20: pr-human-review pushes as it is entered, and a ticket comes back to
+   * #20: pr-human-review pushes as it is entered, and an item comes back to
    * it after a person's reply. By then a person may have pushed to the pull
    * request, or pressed "Update branch", and a fetch brought the news: origin
    * already has everything the branch has. That is nothing to publish, not a
@@ -500,7 +500,7 @@ describe("branch.push", () => {
   /*
    * Attacked directly: a git whose failure quotes the header back — the way
    * a trace variable in the operator's own environment would make it. What
-   * reaches the error, and so the log and the ticket, must not carry it.
+   * reaches the error, and so the log and the item, must not carry it.
    */
   it("keeps the token out of the error when git's own output quotes it", async () => {
     const logged: string[] = [];
@@ -549,7 +549,7 @@ describe("branch.push", () => {
 describe("pull.open", () => {
   const open: Effect = { type: "pull.open", branch: "landrace/1" };
 
-  it("opens a pull request from the effect's branch into the default branch, closing the ticket", async () => {
+  it("opens a pull request from the effect's branch into the default branch, closing the item", async () => {
     const { root } = await checkout();
     await build(root, "landrace/1");
     const gh = createFakeTracker([{ number: 1, title: "Add CSV export" }], { git: gitIn(root) });
@@ -564,10 +564,10 @@ describe("pull.open", () => {
   });
 
   /*
-   * One ticket, two branches: a pull request from one says nothing about the
+   * One item, two branches: a pull request from one says nothing about the
    * other, so each is opened — and each is satisfied — on its own.
    */
-  it("is satisfied per branch, not by the ticket having some pull request", async () => {
+  it("is satisfied per branch, not by the item having some pull request", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "api/1", closes: [1] });
     const snapshot = await snapshotOf(gh);
@@ -695,19 +695,19 @@ describe("a forge with closing references off", () => {
 
   it("opens a pull request with no closing reference in its body", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
-    await forgeOver(gh).openPull({ ticket: "1", branch: "landrace/1", title: "t" }, gh.ctx);
+    await forgeOver(gh).openPull({ item: "1", branch: "landrace/1", title: "t" }, gh.ctx);
     expect([...gh.pulls.values()]).toEqual([expect.objectContaining({ head: "landrace/1", body: "" })]);
     expect([...gh.pulls.values()][0]?.closes).toBeUndefined();
   });
 
-  it("ties a pull request to a ticket by its head alone, and asks GitHub for no closing reference", async () => {
+  it("ties a pull request to an item by its head alone, and asks GitHub for no closing reference", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ number: 20, head: "feature/x", closes: [1] });
     gh.openPull({ number: 21, head: "landrace/1", closes: [1] });
     const forge = forgeOver(gh);
 
-    expect((await forge.pullsNaming("1", gh.ctx)).map((p) => [p.number, p.tickets])).toEqual([[21, []]]);
-    expect((await forge.pulls(gh.ctx)).map((p) => p.tickets)).toEqual([[], []]);
+    expect((await forge.pullsNaming("1", gh.ctx)).map((p) => [p.number, p.items])).toEqual([[21, []]]);
+    expect((await forge.pulls(gh.ctx)).map((p) => p.items)).toEqual([[], []]);
     expect(gh.graphql.filter((q) => /closingIssuesReferences|closedByPullRequestsReferences/.test(q.query))).toEqual([]);
   });
 });

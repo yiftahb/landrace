@@ -88,7 +88,7 @@ const PLUGIN = "superpowers@claude-plugins-official";
 const MEMORY = { command: "codebase-memory-mcp", args: [], env: { MEMORY_HOME: "/var/memory" } };
 const BINDING = { parent: "12", stage: "breakdown", round: 2 };
 /**
- * The engine's own ticket server for BINDING, described in full: this is
+ * The engine's own item server for BINDING, described in full: this is
  * what an executor is handed on `child.server` now — the binding is already
  * on its command line, so an executor builds `mcp__<name>__<tool>` without
  * knowing landrace's CLI or its tool's name.
@@ -144,7 +144,7 @@ describe("claude executor", () => {
 
   // stream-json still ends on the result event that carries the session id,
   // and prints each tool call and message as a line of its own before it —
-  // which is what the ticket panel shows. The CLI refuses stream-json under
+  // which is what the item panel shows. The CLI refuses stream-json under
   // -p without --verbose.
   it("asks for stream-json with --verbose: the session id at the end, the agent's work as it happens", async () => {
     const dir = withCfg({ out: "{{ARGV}}" });
@@ -233,7 +233,7 @@ describe("claude executor", () => {
   });
 
   // A pairing's hand-in forks in the pairing's own checkout, and its record
-  // names that fork; a later Ask resumes it from the ticket's worktree.
+  // names that fork; a later Ask resumes it from the item's worktree.
   it("brings the session it resumes over from the directory it ran in", async () => {
     const home = mkdtempSync(join(tmpdir(), "fake-home-"));
     dirs.push(home);
@@ -262,7 +262,7 @@ describe("claude executor", () => {
       return { home, cwd: realpathSync(cwd), promptFile, executor: createClaudeExecutor({ bin: "claude", home }) };
     };
 
-    // The seed is ticket text, and the command is pasted into a terminal:
+    // The seed is item text, and the command is pasted into a terminal:
     // the argument names the file, and the person's shell reads it.
     it("starts the session under the id it was given, seeded from the prompt's file, with the engine's server loaded", async () => {
       const { cwd, promptFile, executor } = setup();
@@ -403,7 +403,7 @@ describe("claude executor", () => {
     await expect(run("x", {}, { cwd: dir, signal: controller.signal } as never)).rejects.toThrow(/agent aborted/);
   });
 
-  // #33: a tick stops a closed ticket's run whenever it lists it, and that
+  // #33: a tick stops a closed item's run whenever it lists it, and that
   // can land while the run still awaits its checkout, before any listener
   // exists to hear it. Missed, the agent ran on to its timeout.
   it("still stops an agent whose abort landed while the run was getting ready", async () => {
@@ -778,7 +778,7 @@ describe("plugins and MCP servers", () => {
    * Strict even with nothing to allow: without it, a `.mcp.json` committed to
    * the repository — which is what the step's worktree is checked out from —
    * or the operator's own user-level servers would load beside the step. The
-   * operator's server is one of those, and it can move the step's own ticket.
+   * operator's server is one of those, and it can move the step's own item.
    */
   it("gives a step with an empty allowlist an empty, strict config and allows nothing", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
@@ -800,7 +800,7 @@ describe("plugins and MCP servers", () => {
 
   it("hands a conversation turn the same servers, and never the create_child server it holds no binding for", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), {
-      capabilities: ["tickets:create", "repo:read"],
+      capabilities: ["items:create", "repo:read"],
     });
     expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers)).toEqual(["codebase-memory-mcp"]);
     expect(list(argv, "--allowedTools")).toEqual(["mcp__codebase-memory-mcp"]);
@@ -808,7 +808,7 @@ describe("plugins and MCP servers", () => {
 
   it("gives a read-only step holding create_child both the allowlisted servers and its bound child server", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), {
-      capabilities: ["tickets:create", "repo:read"], child: { ...BINDING, server: SERVER },
+      capabilities: ["items:create", "repo:read"], child: { ...BINDING, server: SERVER },
     });
     const servers = JSON.parse(flag(argv, "--mcp-config") as string).mcpServers;
     expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
@@ -826,7 +826,7 @@ describe("plugins and MCP servers", () => {
    */
   it("ends every variadic list at the next flag or at the end of argv, with everything configured", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), {
-      capabilities: ["tickets:create", "repo:read"], child: { ...BINDING, server: SERVER }, model: "haiku",
+      capabilities: ["items:create", "repo:read"], child: { ...BINDING, server: SERVER }, model: "haiku",
     });
     // Read the way the CLI reads them, up to the next flag: exactly what each
     // was meant to hold, and not one element more.
@@ -839,9 +839,9 @@ describe("plugins and MCP servers", () => {
 describe("the create_child tool", () => {
   const binding = BINDING;
 
-  it("starts the agent with the bound child server when the step may create tickets", async () => {
+  it("starts the agent with the bound child server when the step may create items", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), {
-      capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: SERVER },
+      capabilities: ["items:create", "repo:read"], child: { ...binding, server: SERVER },
     });
     const config = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string);
     expect(config.mcpServers.landrace).toEqual({ command: SERVER.command, args: SERVER.args });
@@ -863,7 +863,7 @@ describe("the create_child tool", () => {
     // allowlisted tool through; `--restricted` and an explicit deny list keep
     // it from editing or running anything while it does.
     const argv = await argvOf(createClaudeExecutor({ bin }), {
-      capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: SERVER },
+      capabilities: ["items:create", "repo:read"], child: { ...binding, server: SERVER },
     });
     expect(argv.slice(0, 8)).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
     const denied = argv.slice(8, argv.indexOf("--mcp-config"));
@@ -873,7 +873,7 @@ describe("the create_child tool", () => {
 
   it("leaves a writing step holding the tool in acceptEdits, with nothing denied", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), {
-      capabilities: ["tickets:create", "repo:write"], child: { ...binding, server: SERVER },
+      capabilities: ["items:create", "repo:write"], child: { ...binding, server: SERVER },
     });
     expect(argv.slice(0, 6)).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"]);
     expect(argv).not.toContain("--restricted");
@@ -885,7 +885,7 @@ describe("the create_child tool", () => {
       "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
       "--disallowedTools", ...WRITE_TOOLS, "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ];
-    const declaring = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["tickets:create", "repo:read"] });
+    const declaring = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["items:create", "repo:read"] });
     expect(declaring).toEqual(readOnly);
     const unbound = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"], child: { ...binding, server: SERVER } });
     expect(unbound).toEqual(readOnly);
@@ -898,13 +898,13 @@ describe("the create_child tool", () => {
   });
 
   it("offers nothing to a conversation turn, which is handed no binding", async () => {
-    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["tickets:create"] });
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["items:create"] });
     expect(JSON.parse(flag(argv, "--mcp-config") as string)).toEqual({ mcpServers: {} });
     expect(argv).not.toContain("--allowedTools");
   });
 
   it("refuses rather than drops the capability when it was not told how to start the server", async () => {
-    await expect(argvOf(createClaudeExecutor({ bin }), { capabilities: ["tickets:create"], child: binding }))
+    await expect(argvOf(createClaudeExecutor({ bin }), { capabilities: ["items:create"], child: binding }))
       .rejects.toThrow(/cannot give this step create_child/);
   });
 
@@ -919,7 +919,7 @@ describe("the create_child tool", () => {
    */
   it("refuses rather than silently replace an allowlisted server under the engine's own name", async () => {
     await expect(argvOf(createClaudeExecutor({ bin, mcpServers: { [SERVER.name]: { command: "decoy" } } }), {
-      capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: SERVER },
+      capabilities: ["items:create", "repo:read"], child: { ...binding, server: SERVER },
     })).rejects.toThrow(/already named "landrace"/);
   });
 
@@ -930,12 +930,12 @@ describe("the create_child tool", () => {
    * from this server allowed wholesale.
    */
   it("builds mcp__<name>__<tool> from whatever name and tools the engine's server carries, not from a fixed one", async () => {
-    const OTHER = { name: "tickets", command: "/usr/bin/node", args: ["cli.js", "mcp"], tools: ["a", "b"] };
+    const OTHER = { name: "items", command: "/usr/bin/node", args: ["cli.js", "mcp"], tools: ["a", "b"] };
     const argv = await argvOf(createClaudeExecutor({ bin }), {
-      capabilities: ["tickets:create", "repo:read"], child: { ...binding, server: OTHER },
+      capabilities: ["items:create", "repo:read"], child: { ...binding, server: OTHER },
     });
-    expect(list(argv, "--allowedTools").sort()).toEqual(["mcp__tickets__a", "mcp__tickets__b"]);
-    expect(argv).not.toContain("mcp__tickets");
+    expect(list(argv, "--allowedTools").sort()).toEqual(["mcp__items__a", "mcp__items__b"]);
+    expect(argv).not.toContain("mcp__items");
   });
 
   /*
@@ -951,7 +951,7 @@ describe("the create_child tool", () => {
     const executor = createClaudeExecutor({
       bin, plugins: ["superpowers@claude-plugins-official"], mcpServers: { "codebase-memory-mcp": { command: "cbm" } }, mcpTools: {},
     });
-    const argv = await argvOf(executor, { capabilities: ["tickets:create"], child: { parent: "12", stage: "breakdown", round: 2, server: SERVER } });
+    const argv = await argvOf(executor, { capabilities: ["items:create"], child: { parent: "12", stage: "breakdown", round: 2, server: SERVER } });
     const servers = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string).mcpServers;
     expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
     expect(JSON.parse(argv[argv.indexOf("--settings") + 1] as string)).toEqual({
@@ -1026,7 +1026,7 @@ describe("a writing step's sandbox", () => {
 
   it("sandboxes a writing step that also holds create_child, beside its bound server", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), {
-      capabilities: ["tickets:create", "repo:write"], child: { ...BINDING, server: SERVER },
+      capabilities: ["items:create", "repo:write"], child: { ...BINDING, server: SERVER },
     });
     expect(JSON.parse(flag(argv, "--settings") as string)).toEqual(CONFINED);
     expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers)).toEqual(["landrace"]);

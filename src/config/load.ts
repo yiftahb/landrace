@@ -77,7 +77,7 @@ export function configProblems(dir: string, loaded: LoadedConfig): Problem[] {
       message:
         `vars entry "${name}" does not resolve to a usable value; set it in ${env}. ` +
         "A var is substituted into the workflow before anything validates it, so an unset or empty " +
-        "one fills a predicate in with nothing — and a predicate filled in with nothing matches no ticket",
+        "one fills a predicate in with nothing — and a predicate filled in with nothing matches no item",
     })),
     ...varsHoldingSecrets(loaded).map((name) => ({
       rule: "vars",
@@ -132,7 +132,7 @@ export async function loadConfig(dir: string): Promise<LoadedConfig> {
    * impossible rather than merely wrong. An empty value is refused for the
    * same reason as an absent one and is the likelier of the two: `export
    * LANDRACE_ASSIGNEE=` resolves perfectly, leaves `$in: [""]` in the graph,
-   * and every ticket in the repository is skipped with nobody able to say why.
+   * and every item in the repository is skipped with nobody able to say why.
    */
   const vars = new Map<string, string>();
   const missingVars: string[] = [];

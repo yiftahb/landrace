@@ -6,7 +6,7 @@ import * as kit from "landrace/kit";
  */
 describe("landrace/kit", () => {
   it("carries the executor base and the shared tracker, forge, docs and git code", () => {
-    for (const name of ["BaseExecutor", "ticketNode", "commentSatisfied", "pullNode", "threadsBrief", "specNode", "publishSatisfied", "gitIn", "pushBranch"]) {
+    for (const name of ["BaseExecutor", "itemNode", "commentSatisfied", "pullNode", "threadsBrief", "specNode", "publishSatisfied", "gitIn", "pushBranch"]) {
       expect(typeof (kit as Record<string, unknown>)[name]).toBe("function");
     }
   });

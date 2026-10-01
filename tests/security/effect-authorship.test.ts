@@ -16,7 +16,7 @@ const ours = (marker: string): string =>
   `please review${renderMarker({ stage: "spec", kind: "enter", round: 1, marker })}`;
 
 const snapshot = (comments: unknown[], bot: string | null = "landrace-bot"): Snapshot =>
-  ({ ticket: { labels: [], comments }, ...(bot === null ? {} : { tracker: { bot } }) }) as Snapshot;
+  ({ item: { labels: [], comments }, ...(bot === null ? {} : { tracker: { bot } }) }) as Snapshot;
 
 describe("an effect counts as done only when we are the ones who did it", () => {
   const hook = () => {
@@ -74,7 +74,7 @@ describe("an effect counts as done only when we are the ones who did it", () => 
 
   /*
    * An operator's reply is posted unmarked, because it genuinely is a human
-   * turn — which means nothing on the ticket would ever say it had been
+   * turn — which means nothing on the item would ever say it had been
    * posted. "Satisfied" would silently drop it and "not satisfied" would
    * re-post it on every tick, so the hook refuses to answer instead; an
    * unmarked comment is applied directly, never planned by a stage.
@@ -89,7 +89,7 @@ describe("an effect counts as done only when we are the ones who did it", () => 
     const fake = createFakeTracker([{ number: 1 }]);
     const [pre] = fake.registry.pre;
     if (!pre) throw new Error("the fake tracker registered no pre hook");
-    const fragment = await pre.run({ ticket: 1 } as unknown as HookContext);
+    const fragment = await pre.run({ item: 1 } as unknown as HookContext);
     expect(fragment.tracker).toEqual({ bot: "yiftahb" });
     expect(pre.provides).toContain("tracker.bot");
   });

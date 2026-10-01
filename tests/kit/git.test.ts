@@ -96,7 +96,7 @@ describe("headIn", () => {
 });
 
 describe("nothingCommitted", () => {
-  it("names the branch and the ticket, and says how it clears", () => {
+  it("names the branch and the item, and says how it clears", () => {
     expect(nothingCommitted("landrace/7", "7").message).toBe(
       "nothing was committed on landrace/7 for #7: it is already part of origin's default branch, so there is " +
       "nothing to push or propose. Commit to the branch and the next tick carries on",
@@ -173,7 +173,7 @@ describe("pushBranch", () => {
     };
     await expect(pushBranch(git, "landrace/3", "3", signal, [])).rejects.toThrow(
       "could not push landrace/3 to origin — origin's landrace/3 has commits this checkout does not, and " +
-      "landrace does not force-push; bring the branch up to date by hand and the ticket carries on: " +
+      "landrace does not force-push; bring the branch up to date by hand and the item carries on: " +
       "git push in /x: ! [rejected] landrace/3 (non-fast-forward)",
     );
   });

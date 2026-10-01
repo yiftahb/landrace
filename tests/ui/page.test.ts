@@ -92,8 +92,8 @@ describe("the filter row", () => {
   });
 
   it("has a search box with an accessible name", () => {
-    expect(input).toMatch(/aria-label="Search tickets"/);
-    expect(input).toMatch(/placeholder="Search tickets…"/);
+    expect(input).toMatch(/aria-label="Search items"/);
+    expect(input).toMatch(/placeholder="Search items…"/);
   });
 
   // Two buttons side by side, one of which always did nothing: the tree was
@@ -235,7 +235,7 @@ describe("the page's search", () => {
     expect(found("  aPi E")).toEqual({ self: ["31"], below: ["12"] });
   });
 
-  it("matches an id, with or without its #, and artifacts as well as tickets", () => {
+  it("matches an id, with or without its #, and artifacts as well as items", () => {
     expect(found("#41")).toEqual({ self: ["41"], below: ["40"] });
     expect(found("41")).toEqual({ self: ["41"], below: ["40"] });
     expect(found("pr:118")).toEqual({ self: ["pr:118"], below: ["12", "31"] });
@@ -251,7 +251,7 @@ describe("the page's expand state", () => {
     (runInNewContext(`const userExpanded = new Map(${JSON.stringify(stored)});${fnSource("isOpen")}isOpen`) as (r: Tree) => boolean)(row);
 
   // Everything starts open: the board is read top to bottom, and a branch that
-  // arrives shut hides the very ticket someone came to look at.
+  // arrives shut hides the very item someone came to look at.
   it("opens every row until the person closes it, whatever the row itself carries", () => {
     const row = { ...node("12", "Payments revamp", [node("31", "API endpoints")]), expanded: false };
     expect(isOpen([], row)).toBe(true);
@@ -319,7 +319,7 @@ describe("the one Collapse all / Expand all button", () => {
     let drawn = [];
     const toggleAll = { textContent: "Collapse all", clicks: [], addEventListener(type, f) { if (type === "click") this.clicks.push(f); } };
     let collapsesAll = true;
-    function ticketRowFor(row, depth, now, open) { return depth + ":" + row.id + (open ? "+" : ""); }
+    function itemRowFor(row, depth, now, open) { return depth + ":" + row.id + (open ? "+" : ""); }
     function artifactRowFor(row, depth, open) { return depth + ":" + row.id + (open ? "+" : ""); }
     function render(view) {
       lastView = view;
@@ -496,7 +496,7 @@ describe("the arrow keys on the board", () => {
     return seen;
   };
 
-  it("moves focus a ticket down or up from the board, and keeps the page from scrolling", () => {
+  it("moves focus an item down or up from the board, and keeps the page from scrolling", () => {
     expect(press("ArrowDown", { active: "body" })).toEqual({ steps: [1], prevented: 1 });
     expect(press("ArrowUp", { active: { inMain: true } })).toEqual({ steps: [-1], prevented: 1 });
   });
@@ -512,10 +512,10 @@ describe("the arrow keys on the board", () => {
   /*
    * Only titles on screen: a closed lane's or a search-hidden one's take no
    * focus. Chromium still lays out a closed <details>' content — boxes and
-   * all — and refuses focus there without a word: with every ticket in a
+   * all — and refuses focus there without a word: with every item in a
    * collapsed Done, the arrows walked into it and nothing moved.
    */
-  describe("stepping between ticket titles", () => {
+  describe("stepping between item titles", () => {
     const title = (id: string, shown = true) => {
       const li = { id };
       return { id, li, focused: 0, getClientRects: () => [{}], checkVisibility: () => shown, closest: () => li, focus() { this.focused++; }, scrollIntoView: () => {} };
@@ -563,7 +563,7 @@ describe("the chosen row", () => {
     }
   });
 
-  it("is the panel's ticket, marked on its row alone", () => {
+  it("is the panel's item, marked on its row alone", () => {
     const stale = { attrs: new Map([["aria-selected", "true"]]), removeAttribute(k: string) { this.attrs.delete(k); }, setAttribute(k: string, v: string) { this.attrs.set(k, v); } };
     const chosen = { attrs: new Map<string, string>(), removeAttribute(k: string) { this.attrs.delete(k); }, setAttribute(k: string, v: string) { this.attrs.set(k, v); } };
     const mark = (panelId: string | null) => runInNewContext(`${fnSource("markSelected")} markSelected()`, {
@@ -672,7 +672,7 @@ describe("the tree walk", () => {
   const walk = (query: string, expanded: Record<string, boolean> = {}): string[] => [...(runInNewContext(`
     const userExpanded = new Map(${JSON.stringify(Object.entries(expanded))});
     const touched = new Set();
-    function ticketRowFor(row, depth, now, open) { return depth + ":" + row.id + (open ? "+" : ""); }
+    function itemRowFor(row, depth, now, open) { return depth + ":" + row.id + (open ? "+" : ""); }
     function artifactRowFor(row, depth, open) { return depth + ":" + row.id + (open ? "+" : ""); }
     ${["isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows"].map(fnSource).join("")}
     treeRows(ROWS, 0, new Set(), 0, [], searchOf(ROWS, ${JSON.stringify(query)}), false)`, { ROWS: TREE }) as string[])];
@@ -723,12 +723,12 @@ describe("a system's mark in dark mode", () => {
 });
 
 describe("a row's title line", () => {
-  it("names the system only on artifact rows — a ticket row carries no mark and no system name", () => {
-    expect(fnSource("ticketRowFor")).not.toContain("systemMark(");
+  it("names the system only on artifact rows — an item row carries no mark and no system name", () => {
+    expect(fnSource("itemRowFor")).not.toContain("systemMark(");
     expect(fnSource("artifactRowFor")).toContain("systemMark(row.system)");
   });
 
-  it("shows a ticket's priority only when it has one, never a placeholder", () => {
+  it("shows an item's priority only when it has one, never a placeholder", () => {
     expect(APP_JS).toMatch(/if \(typeof row\.priority === "number"\)/);
     expect(APP_JS).not.toContain('"–"');
   });
@@ -736,7 +736,7 @@ describe("a row's title line", () => {
   // The toggle used to sit inside the title line, so a parent row's note
   // started under the toggle, a column left of its number.
   it("gives a parent row's toggle its own column, so the number, the note and wrapped chips share one edge", () => {
-    const src = fnSource("ticketRowFor");
+    const src = fnSource("itemRowFor");
     expect(src).not.toMatch(/top\.append\(toggleFor/);
     expect(src).toMatch(/main\.append\(toggleSlot\(row, open\)\);/);
     expect(src).toMatch(/body\.append\(top, bottom\);\s*main\.append\(body\);/);
@@ -757,12 +757,12 @@ const blockSource = (name: string): string => {
 };
 
 /**
- * A row's actions menu: this ticket's writes — Retry, and Go to step… to
+ * A row's actions menu: this item's writes — Retry, and Go to step… to
  * each stage the server offers — each offered only where the server put a
  * path in the row, asked before either posts, and posted to the path the
  * server built alone; the Chat caption and its targets follow, as before.
  */
-describe("a stopped ticket's Retry", () => {
+describe("a stopped item's Retry", () => {
   class Listening extends FakeElement {
     listeners = new Map<string, () => void>();
     disabled = false;
@@ -805,46 +805,46 @@ describe("a stopped ticket's Retry", () => {
     menu.children.find((c) => c.getAttribute("data-key") === "19:retry") as Listening | undefined;
   const gotoOf = (menu: Listening, stage: string): Listening | undefined =>
     menu.children.find((c) => c.getAttribute("data-key") === `19:goto:${stage}`) as Listening | undefined;
-  const BACK = [{ stage: "spec", path: "/tickets/19/goto/spec" }, { stage: "build", path: "/tickets/19/goto/build" }];
+  const BACK = [{ stage: "spec", path: "/items/19/goto/spec" }, { stage: "build", path: "/items/19/goto/build" }];
   const settle = () => new Promise((r) => setTimeout(r, 0));
 
   it("comes first, before the Chat caption and every chat item, and only on a row the server offered it for", () => {
-    expect(items(menuFor(row("/tickets/19/retry")).menu)).toEqual([
+    expect(items(menuFor(row("/items/19/retry")).menu)).toEqual([
       "Retry", "—", "Chat", "Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt",
     ]);
     expect(items(menuFor(row(null)).menu)).toEqual(["Chat", "Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt"]);
   });
 
   it("lists the steps the server offered under Go to step…, before the writes' divider", () => {
-    expect(items(menuFor(row("/tickets/19/retry", BACK)).menu)).toEqual([
+    expect(items(menuFor(row("/items/19/retry", BACK)).menu)).toEqual([
       "Retry", "Go to step…", "spec", "build", "—", "Chat", "Claude Code", "Claude Code (CLI)", "Cursor", "Codex", "—", "Copy prompt",
     ]);
     expect(items(menuFor(row(null, BACK)).menu).slice(0, 3)).toEqual(["Go to step…", "spec", "build"]);
   });
 
   it("is a menu item, keyed so focus on it survives a poll", () => {
-    const item = retryOf(menuFor(row("/tickets/19/retry")).menu);
+    const item = retryOf(menuFor(row("/items/19/retry")).menu);
     expect(item?.tag).toBe("button");
     expect(item?.getAttribute("role")).toBe("menuitem");
   });
 
-  // A screened ticket's overrule: next to Retry, asked in words that say the
+  // A screened item's overrule: next to Retry, asked in words that say the
   // security check is skipped, and posted under its own header.
   it("offers Clear & retry right after Retry, only where the server put a path", () => {
-    expect(items(menuFor(row("/tickets/19/retry", [], "/tickets/19/clear")).menu).slice(0, 3)).toEqual(["Retry", "Clear & retry", "—"]);
+    expect(items(menuFor(row("/items/19/retry", [], "/items/19/clear")).menu).slice(0, 3)).toEqual(["Retry", "Clear & retry", "—"]);
   });
 
   it("asks that the refused text was read, then posts with the clear header", async () => {
-    const { menu, seen } = menuFor(row("/tickets/19/retry", [], "/tickets/19/clear"));
+    const { menu, seen } = menuFor(row("/items/19/retry", [], "/items/19/clear"));
     const clear = menu.children.find((c) => c.getAttribute("data-key") === "19:clear") as Listening | undefined;
     clear?.listeners.get("click")?.();
     await settle();
     expect(seen.confirms[0]).toMatch(/#19[\s\S]*without the security check[\s\S]*read/);
-    expect(seen.posts).toEqual([["/tickets/19/clear", { method: "POST", headers: { "x-landrace-action": "clear" } }]]);
+    expect(seen.posts).toEqual([["/items/19/clear", { method: "POST", headers: { "x-landrace-action": "clear" } }]]);
   });
 
   it("asks before it posts, and posts nothing when told no", async () => {
-    const { menu, seen } = menuFor(row("/tickets/19/retry"), { confirm: false });
+    const { menu, seen } = menuFor(row("/items/19/retry"), { confirm: false });
     retryOf(menu)?.listeners.get("click")?.();
     await settle();
     expect(seen.confirms).toHaveLength(1);
@@ -853,28 +853,28 @@ describe("a stopped ticket's Retry", () => {
   });
 
   it("posts once, to the server's own path, with the header the server asks for — then closes, returns focus and polls", async () => {
-    const { menu, seen } = menuFor(row("/tickets/19/retry"));
+    const { menu, seen } = menuFor(row("/items/19/retry"));
     retryOf(menu)?.listeners.get("click")?.();
     await settle();
-    expect(seen.posts).toEqual([["/tickets/19/retry", { method: "POST", headers: { "x-landrace-action": "retry" } }]]);
+    expect(seen.posts).toEqual([["/items/19/retry", { method: "POST", headers: { "x-landrace-action": "retry" } }]]);
     expect(seen.closed).toEqual([{ returnFocus: true }]);
     expect(seen.polls).toEqual([0]);
   });
 
   // The server moves it only when a tick lists the tracker again; until then the page shows it moving.
-  it("marks the ticket moving once the server took the write, and not when it refused", async () => {
-    const taken = menuFor(row("/tickets/19/retry", BACK));
+  it("marks the item moving once the server took the write, and not when it refused", async () => {
+    const taken = menuFor(row("/items/19/retry", BACK));
     gotoOf(taken.menu, "build")?.listeners.get("click")?.();
     await settle();
     expect(taken.seen.moved).toEqual(["19"]);
-    const refused = menuFor(row("/tickets/19/retry"), { response: { ok: false, text: "nope" } });
+    const refused = menuFor(row("/items/19/retry"), { response: { ok: false, text: "nope" } });
     retryOf(refused.menu)?.listeners.get("click")?.();
     await settle();
     expect(refused.seen.moved).toEqual([]);
   });
 
   it("keeps the menu open and says what the server said when it refuses", async () => {
-    const { menu, seen, context } = menuFor(row("/tickets/19/retry"), {
+    const { menu, seen, context } = menuFor(row("/items/19/retry"), {
       response: { ok: false, text: "#19 is not blocked or screened right now, so there is nothing to retry" },
     });
     retryOf(menu)?.listeners.get("click")?.();
@@ -887,7 +887,7 @@ describe("a stopped ticket's Retry", () => {
   });
 
   it("says landrace is not answering when the post never lands", async () => {
-    const { menu, context } = menuFor(row("/tickets/19/retry"), { response: "down" });
+    const { menu, context } = menuFor(row("/items/19/retry"), { response: "down" });
     retryOf(menu)?.listeners.get("click")?.();
     await settle();
     const again = runInNewContext("buildRowMenu(ROW)", context) as Listening;
@@ -899,11 +899,11 @@ describe("a stopped ticket's Retry", () => {
     gotoOf(menu, "build")?.listeners.get("click")?.();
     await settle();
     expect(seen.confirms[0]).toMatch(/#19[\s\S]*build[\s\S]*paid step/);
-    expect(seen.posts).toEqual([["/tickets/19/goto/build", { method: "POST", headers: { "x-landrace-action": "goto" } }]]);
+    expect(seen.posts).toEqual([["/items/19/goto/build", { method: "POST", headers: { "x-landrace-action": "goto" } }]]);
   });
 
   it("shows a refusal on the item that asked, and only there", async () => {
-    const { menu, context } = menuFor(row("/tickets/19/retry", BACK), { response: { ok: false, text: "past its cap" } });
+    const { menu, context } = menuFor(row("/items/19/retry", BACK), { response: { ok: false, text: "past its cap" } });
     gotoOf(menu, "build")?.listeners.get("click")?.();
     await settle();
     const again = runInNewContext("buildRowMenu(ROW)", context) as Listening;
@@ -912,7 +912,7 @@ describe("a stopped ticket's Retry", () => {
   });
 
   it("forgets a refusal once its menu closes", async () => {
-    const { menu, context } = menuFor(row("/tickets/19/retry"), { response: { ok: false, text: "nope" } });
+    const { menu, context } = menuFor(row("/items/19/retry"), { response: { ok: false, text: "nope" } });
     retryOf(menu)?.listeners.get("click")?.();
     await settle();
     expect(runInNewContext("writeNotes.size", context)).toBe(1);
@@ -939,17 +939,17 @@ describe("a stopped ticket's Retry", () => {
   });
 });
 
-describe("a ticket row stopped by a security check", () => {
-  interface TicketRow extends Tree {
+describe("an item row stopped by a security check", () => {
+  interface ItemRow extends Tree {
     kind: string; link: string; closed: null; badge: string; stage: string; priority: null; note: string;
     since: null; round: null; model: null; chat: null; screened: boolean;
   }
-  const build = (row: TicketRow): FakeElement => runInNewContext(`
+  const build = (row: ItemRow): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
-    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "ticketRowFor"].map(fnSource).join("")}
-    ticketRowFor(ROW, 0, 0, false)`, { ROW: row, document: fakeDocument }) as FakeElement;
-  const screened: TicketRow = {
-    id: "19", kind: "ticket", title: "Payments revamp", link: "https://github.com/a/b/issues/19", closed: null,
+    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
+    itemRowFor(ROW, 0, 0, false)`, { ROW: row, document: fakeDocument }) as FakeElement;
+  const screened: ItemRow = {
+    id: "19", kind: "item", title: "Payments revamp", link: "https://github.com/a/b/issues/19", closed: null,
     badge: "needs-you", stage: "screened", priority: null, note: "blocked by a security check",
     since: null, round: null, model: null, chat: null, screened: true, children: [],
   };
@@ -982,13 +982,13 @@ describe("a ticket row stopped by a security check", () => {
 // board read as #21 nested under #20.
 describe("a row's toggle column", () => {
   const row = (children: unknown[]) => ({
-    id: "20", kind: "ticket", title: "Retro stage", link: "", closed: null, badge: "waiting", stage: "spec",
+    id: "20", kind: "item", title: "Retro stage", link: "", closed: null, badge: "waiting", stage: "spec",
     priority: null, note: "", since: null, round: null, model: null, chat: null, screened: false, children,
   });
   const build = (r: ReturnType<typeof row>): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
-    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "ticketRowFor"].map(fnSource).join("")}
-    ticketRowFor(ROW, 0, 0, ROW.children.length > 0)`, { ROW: r, document: fakeDocument }) as FakeElement;
+    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
+    itemRowFor(ROW, 0, 0, ROW.children.length > 0)`, { ROW: r, document: fakeDocument }) as FakeElement;
   const slot = (li: FakeElement): FakeElement | undefined => li.children[0]?.children[0];
   const width = (e: FakeElement | undefined): string[] => (e?.className ?? "").split(" ").filter((c) => c.startsWith("w-"));
 
@@ -1127,9 +1127,9 @@ describe("an artifact row", () => {
     expect(link(li)?.getAttribute("aria-label")).toBe("Spec: Payments revamp, document on wiki.acme.internal, opens in a new tab");
   });
 
-  // Same column as a ticket's number at this depth: the toggle is a column of
+  // Same column as an item's number at this depth: the toggle is a column of
   // its own, and the mark opens the line after it.
-  it("keeps the toggle in its own column ahead of the link, so the mark lines up with a ticket's number", () => {
+  it("keeps the toggle in its own column ahead of the link, so the mark lines up with an item's number", () => {
     const leaf = build(spec, 2);
     expect(leaf.className.split(" ")).toContain("pl-16");
     expect(leaf.children.map((c) => c.tag)).toEqual(["span", "a"]);
@@ -1273,7 +1273,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the ticket panel's and pairing's, the message box's shortcut, and the bell's — no more, no less", () => {
+  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, and the bell's — no more, no less", () => {
     // Pins the count deliberately: the tick button, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
     // button (each wired once, outside anything a render rebuilds), the
@@ -1285,8 +1285,8 @@ describe("the page", () => {
     // writeItem, shared by Retry and every Go to step… target, and built
     // only where the server offered one), and one document listener each for
     // outside-click and Escape (both defined once, so re-rendering never
-    // multiplies them). And the ticket panel's: a ticket row's title button
-    // and the row itself (each defined once, in ticketRowFor), ✕, ⤢, Reply,
+    // multiplies them). And the item panel's: an item row's title button
+    // and the row itself (each defined once, in itemRowFor), ✕, ⤢, Reply,
     // Ask the step, Resolve, and the window's hashchange. And pairing's: the
     // row menu's Pairing…, the panel header's ⋯ and its Pairing… item, and
     // one for every button of its Pairing section (defined once, in
@@ -1345,7 +1345,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-live", "polite"');
   });
 
-  it("tracks the open menu by ticket, never by an element reference, so a render() in between can't leave it stale", () => {
+  it("tracks the open menu by item, never by an element reference, so a render() in between can't leave it stale", () => {
     expect(APP_JS).toContain("let openMenuKey = null;");
     expect(APP_JS).not.toContain("pendingView");
     // No stashed view: pollOnce() renders unconditionally now.
@@ -1423,11 +1423,11 @@ describe("the page", () => {
 });
 
 /*
- * The ticket panel: a row opens it, the URL names it, and its bottom half
- * follows what the ticket is doing — live lines while an agent runs, a
+ * The item panel: a row opens it, the URL names it, and its bottom half
+ * follows what the item is doing — live lines while an agent runs, a
  * composer while it waits on a person, the conversation otherwise.
  */
-describe("the ticket panel's markup", () => {
+describe("the item panel's markup", () => {
   const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
 
   it("starts closed, and takes the full width below sm", () => {
@@ -1444,13 +1444,13 @@ describe("the ticket panel's markup", () => {
   // The ⋯ once sat in the redrawn top section and, clicked, opened no menu
   // at all: a section appeared further down. It is the header's own menu
   // now, beside ⤢ and ✕, outside anything a poll redraws.
-  it("puts the ticket's actions in a ⋯ menu in the header, anchored under it, with Pairing… in it", () => {
+  it("puts the item's actions in a ⋯ menu in the header, anchored under it, with Pairing… in it", () => {
     const header = PAGE_HTML.slice(PAGE_HTML.indexOf('<aside id="panel"'), PAGE_HTML.indexOf('<div id="panel-top"'));
     const trigger = /<button id="panel-more"[^>]*>⋯<\/button>/.exec(header)?.[0] ?? "";
     expect(trigger).toContain('data-key="panel:trigger"');
     expect(trigger).toContain('aria-haspopup="menu"');
     expect(trigger).toContain('aria-expanded="false"');
-    expect(trigger).toContain('aria-label="Ticket actions"');
+    expect(trigger).toContain('aria-label="Item actions"');
     const menu = /<div id="panel-menu"[^>]*>/.exec(header)?.[0] ?? "";
     expect(menu).toContain('data-key="panel:menu"');
     expect(menu).toContain('role="menu"');
@@ -1466,7 +1466,7 @@ describe("the ticket panel's markup", () => {
     expect(APP_JS).not.toContain("panel:more");
   });
 
-  // Back, or another ticket's row, moves the panel without a click outside
+  // Back, or another item's row, moves the panel without a click outside
   // the menu: left open, it would hold the one-open slot and the "c" key.
   it("closes the header's menu whenever the panel moves or shuts", () => {
     for (const to of [null, "8"]) {
@@ -1506,22 +1506,22 @@ describe("the ticket panel's markup", () => {
   });
 });
 
-describe("the ticket panel's address", () => {
-  const ticketOfHash = (hash: string): unknown => runInNewContext(`${fnSource("ticketOfHash")} ticketOfHash(HASH)`, { HASH: hash });
+describe("the item panel's address", () => {
+  const itemOfHash = (hash: string): unknown => runInNewContext(`${fnSource("itemOfHash")} itemOfHash(HASH)`, { HASH: hash });
 
-  it("reads #ticket=<id>, so a reload reopens the panel it was on", () => {
-    expect(ticketOfHash("#ticket=12")).toBe("12");
-    expect(ticketOfHash("#ticket=PROJ-7")).toBe("PROJ-7");
+  it("reads #item=<id>, so a reload reopens the panel it was on", () => {
+    expect(itemOfHash("#item=12")).toBe("12");
+    expect(itemOfHash("#item=PROJ-7")).toBe("PROJ-7");
   });
 
   it("reads nothing from any other hash, or a malformed one", () => {
-    expect(ticketOfHash("")).toBeNull();
-    expect(ticketOfHash("#tickets")).toBeNull();
-    expect(ticketOfHash("#ticket=")).toBeNull();
-    expect(ticketOfHash("#ticket=%E0")).toBeNull();
+    expect(itemOfHash("")).toBeNull();
+    expect(itemOfHash("#items")).toBeNull();
+    expect(itemOfHash("#item=")).toBeNull();
+    expect(itemOfHash("#item=%E0")).toBeNull();
   });
 
-  it("finds a ticket anywhere in the tree", () => {
+  it("finds an item anywhere in the tree", () => {
     const rows = [{ id: "1", children: [{ id: "2", children: [{ id: "3", children: [] }] }] }];
     const find = (id: string): unknown => runInNewContext(`${fnSource("findRow")} findRow(ROWS, ID)`, { ROWS: rows, ID: id });
     expect(find("3")).toEqual({ id: "3", children: [] });
@@ -1529,12 +1529,12 @@ describe("the ticket panel's address", () => {
   });
 
   it("opens on a row click by pushing the hash, so Back closes it", () => {
-    expect(fnSource("openPanel")).toContain('location.hash = "ticket=" + encodeURIComponent(id)');
-    expect(APP_JS).toContain('window.addEventListener("hashchange", () => showPanel(ticketOfHash(location.hash)));');
+    expect(fnSource("openPanel")).toContain('location.hash = "item=" + encodeURIComponent(id)');
+    expect(APP_JS).toContain('window.addEventListener("hashchange", () => showPanel(itemOfHash(location.hash)));');
   });
 
-  it("opens only from a ticket row with panel paths, and never from its links, toggle or menu", () => {
-    const src = fnSource("ticketRowFor");
+  it("opens only from an item row with panel paths, and never from its links, toggle or menu", () => {
+    const src = fnSource("itemRowFor");
     expect(src).toMatch(/if \(row\.panel\)/);
     expect(src).toContain('closest("a, button, [role=menu]")');
     expect(fnSource("artifactRowFor")).not.toContain("openPanel");
@@ -1561,7 +1561,7 @@ describe("the Escape key and the panel", () => {
   });
 });
 
-describe("the ticket panel's facts", () => {
+describe("the item panel's facts", () => {
   const facts = (row: object): Record<string, string> => {
     const [, dl] = runInNewContext(`${fnSource("el")}${fnSource("panelTopOf")} panelTopOf(ROW, null, 0)`, {
       ROW: { id: "12", link: "", badge: null, screened: false, stage: "build", round: 2, createdAt: null, since: null, children: [], ...row },
@@ -1580,10 +1580,10 @@ describe("the ticket panel's facts", () => {
   });
 });
 
-describe("the ticket panel's live lines", () => {
+describe("the item panel's live lines", () => {
   const lines = [{ kind: "tool", text: "Read a.ts", at: 1 }, { kind: "message", text: "Looks fine", at: 2 }];
 
-  it("says which bottom a ticket gets from its badge", () => {
+  it("says which bottom an item gets from its badge", () => {
     const modeOf = (badge: string | null): unknown => runInNewContext(`${fnSource("modeOf")} modeOf(ROW)`, { ROW: { badge } });
     expect(modeOf("running")).toBe("running");
     expect(modeOf("needs-you")).toBe("needs-you");
@@ -1591,7 +1591,7 @@ describe("the ticket panel's live lines", () => {
     expect(["waiting", "discharged", "not-admitted", null].map(modeOf)).toEqual(["other", "other", "other", "other"]);
   });
 
-  // An Ask through `landrace mcp` holds the ticket from another process —
+  // An Ask through `landrace mcp` holds the item from another process —
   // the reason activity is kept on disk at all — so it is read live too.
   it("keeps reading while an agent runs here or in another process, and not otherwise", () => {
     const live = (mode: string): unknown => runInNewContext(`${fnSource("readsLive")} readsLive(MODE)`, { MODE: mode });
@@ -1603,7 +1603,7 @@ describe("the ticket panel's live lines", () => {
     const line = { kind: "tool", text: "Read new.ts", at: 9 };
     const context: Record<string, unknown> = {
       panelId: "12", activity: { stage: "build", round: 1, lines: [{ kind: "tool", text: "Read old.ts", at: 1 }] },
-      currentRow: () => ({ id: "12", panel: { activity: "/tickets/12/activity" } }),
+      currentRow: () => ({ id: "12", panel: { activity: "/items/12/activity" } }),
       renderPanel: () => {},
       fetch: (url: string) => {
         const after = Number(url.split("after=")[1]);
@@ -1654,7 +1654,7 @@ describe("the ticket panel's live lines", () => {
   });
 });
 
-describe("the ticket panel's bottom half", () => {
+describe("the item panel's bottom half", () => {
   const LINES = [{ kind: "tool", text: "Read a.ts", at: 1 }];
   const CONVERSATION = [
     { at: "2026-01-01T00:00:00Z", by: "landrace", byAgent: true, kind: "output", stage: "spec", round: 1, text: "Which markets?" },
@@ -1698,10 +1698,10 @@ describe("the ticket panel's bottom half", () => {
       { kind: "tool", text: "Read ask-era.ts", at: Date.parse("2026-01-01T00:02:00Z") },
     ] } });
     const text = bottom({}, "elsewhere", st).join("\n");
-    expect(text).toMatch(/EU only[\s\S]*Another process holds this ticket[\s\S]*Read ask-era\.ts/);
+    expect(text).toMatch(/EU only[\s\S]*Another process holds this item[\s\S]*Read ask-era\.ts/);
     expect(text).not.toContain("Read step-era.ts");
     expect(bottom({}, "elsewhere", state({ activity: { stage: null, round: null, lines: [] } })).join("\n"))
-      .toMatch(/Another process holds this ticket; its agent has reported nothing yet/);
+      .toMatch(/Another process holds this item; its agent has reported nothing yet/);
   });
 
   it("shows an Ask's progress under the conversation while it runs, then the step's answer", () => {
@@ -1714,7 +1714,7 @@ describe("the ticket panel's bottom half", () => {
 
 // A poll every 1.5s that redrew the same text wiped any selection in it —
 // copying the step's question lost it within seconds.
-describe("redrawing the ticket panel", () => {
+describe("redrawing the item panel", () => {
   const draws = (texts: string[][]) => {
     let replaced = 0;
     const target = { dataset: {} as Record<string, string>, replaceChildren: () => { replaced++; } };
@@ -1735,9 +1735,9 @@ describe("redrawing the ticket panel", () => {
   });
 });
 
-describe("the ticket panel's writes", () => {
+describe("the item panel's writes", () => {
   class Box { value = ""; }
-  const ROW = { id: "12", panel: { reply: "/tickets/12/reply", ask: "/tickets/12/ask", resolve: "/tickets/12/resolve" } };
+  const ROW = { id: "12", panel: { reply: "/items/12/reply", ask: "/items/12/ask", resolve: "/items/12/resolve" } };
   const OK: Record<string, string> = { ask: '{"reply":"EU it is.","resolved":true}', resolve: '{"alreadyResolved":false}', reply: "posted" };
 
   const write = async (kind: string, world: {
@@ -1772,7 +1772,7 @@ describe("the ticket panel's writes", () => {
   it("posts a reply with the page's own header, then reads the conversation again", async () => {
     const { seen, box } = await write("reply");
     expect(seen.confirms).toEqual([]);
-    expect(seen.posts).toEqual([["/tickets/12/reply", {
+    expect(seen.posts).toEqual([["/items/12/reply", {
       method: "POST", headers: { "x-landrace-action": "reply", "content-type": "text/plain;charset=UTF-8" }, body: "EU only",
     }]]);
     expect(box.value).toBe("");
@@ -1787,15 +1787,15 @@ describe("the ticket panel's writes", () => {
 
   it("answers an Ask inline, from what the server said", async () => {
     const { seen, context } = await write("ask");
-    expect(seen.posts[0]?.[0]).toBe("/tickets/12/ask");
+    expect(seen.posts[0]?.[0]).toBe("/items/12/ask");
     expect(context.askAnswer).toEqual({ reply: "EU it is.", resolved: true });
     expect(seen.polls).toEqual([0]);
   });
 
   // Escape or Back during a minutes-long Ask is the natural thing to do; the
-  // answer still belongs to the ticket, and reopening it shows it rather
+  // answer still belongs to the item, and reopening it shows it rather
   // than "Asking the step…" for good — an invitation to pay for a second.
-  it("keeps an Ask's answer for its ticket when the panel was closed while it ran", async () => {
+  it("keeps an Ask's answer for its item when the panel was closed while it ran", async () => {
     const { seen, box, context } = await write("ask", { closes: true });
     expect(context.askAnswer).toEqual({ reply: "EU it is.", resolved: true });
     expect(context.panelBusy).toBe(false);
@@ -1804,7 +1804,7 @@ describe("the ticket panel's writes", () => {
     expect(box.value).toBe("");
   });
 
-  it("says a refused Ask's reason for its ticket even when the panel was closed", async () => {
+  it("says a refused Ask's reason for its item even when the panel was closed", async () => {
     const { seen } = await write("ask", { closes: true, response: { ok: false, text: "screening blocked this turn" } });
     expect(seen.notes.at(-1)).toBe("screening blocked this turn");
   });
@@ -1812,7 +1812,7 @@ describe("the ticket panel's writes", () => {
   it("resolves without a message and without asking", async () => {
     const { seen } = await write("resolve", { text: "" });
     expect(seen.confirms).toEqual([]);
-    expect(seen.posts[0]?.[0]).toBe("/tickets/12/resolve");
+    expect(seen.posts[0]?.[0]).toBe("/items/12/resolve");
     expect(seen.notes.at(-1)).toMatch(/Handed back/);
   });
 
@@ -1832,8 +1832,8 @@ describe("the ticket panel's writes", () => {
     expect(seen.notes.at(-1)).toMatch(/not responding/);
   });
 
-  // A Reply or a Resolve hands the ticket on; an Ask is a turn beside it and moves nothing.
-  it("marks the ticket moving after a Reply or a Resolve the server took, even from another ticket's panel", async () => {
+  // A Reply or a Resolve hands the item on; an Ask is a turn beside it and moves nothing.
+  it("marks the item moving after a Reply or a Resolve the server took, even from another item's panel", async () => {
     expect((await write("reply")).seen.moved).toEqual(["12"]);
     expect((await write("resolve", { text: "", closes: true })).seen.moved).toEqual(["12"]);
     expect((await write("ask")).seen.moved).toEqual([]);
@@ -1842,17 +1842,17 @@ describe("the ticket panel's writes", () => {
 });
 
 /*
- * The lag between a click and the board moving: the server moves a ticket
+ * The lag between a click and the board moving: the server moves an item
  * only when a tick lists the tracker again, up to a whole interval later, and
  * a Reply wakes no tick at all. So the page shows it in Waiting until then.
  */
-describe("a ticket a write just went through for", () => {
+describe("an item a write just went through for", () => {
   type Move = { lane: string; next: number | null; ticks: number; at: number };
   const move = (lane: string): Move => ({ lane, next: 1000, ticks: 0, at: 5 });
   const view = (lane: string, nextTickAt: number | null = 1000) => ({
     nextTickAt,
     rows: [
-      { id: "19", lane, badge: lane, note: "blocked: needs a human", since: 1, retry: "/tickets/19/retry", clear: "/tickets/19/clear", goto: [{ stage: "spec", path: "/tickets/19/goto/spec" }], children: [] },
+      { id: "19", lane, badge: lane, note: "blocked: needs a human", since: 1, retry: "/items/19/retry", clear: "/items/19/clear", goto: [{ stage: "spec", path: "/items/19/goto/spec" }], children: [] },
       { id: "20", lane: "needs-you", badge: "needs-you", note: "waiting on you", since: 1, retry: null, clear: null, goto: [], children: [] },
     ],
   });
@@ -1871,7 +1871,7 @@ describe("a ticket a write just went through for", () => {
 
   it("lets go once the server moves it, and draws the server's own row", () => {
     const moves = new Map([["19", move("needs-you")]]);
-    expect(drawn(view("running"), moves).rows[0]).toMatchObject({ lane: "running", retry: "/tickets/19/retry" });
+    expect(drawn(view("running"), moves).rows[0]).toMatchObject({ lane: "running", retry: "/items/19/retry" });
     expect(moves.size).toBe(0);
   });
 
@@ -1883,7 +1883,7 @@ describe("a ticket a write just went through for", () => {
     expect(moves.size).toBe(0);
   });
 
-  it("lets go of a ticket gone from the board, and of any once no tick is scheduled", () => {
+  it("lets go of an item gone from the board, and of any once no tick is scheduled", () => {
     const gone = new Map([["7", move("needs-you")]]);
     drawn(view("needs-you"), gone);
     expect(gone.size).toBe(0);
@@ -2043,7 +2043,7 @@ describe("the pairing's command, once handed out", () => {
   });
 });
 
-describe("a ticket row's Pairing… item", () => {
+describe("an item row's Pairing… item", () => {
   class Listening extends FakeElement {
     listeners = new Map<string, () => void>();
     disabled = false;
@@ -2066,8 +2066,8 @@ describe("a ticket row's Pairing… item", () => {
     return { menu, seen };
   };
 
-  it("comes first on a ticket with a panel, and opens its Pairing section", () => {
-    const { menu, seen } = menuFor({ pairing: "/tickets/19/pairing" });
+  it("comes first on an item with a panel, and opens its Pairing section", () => {
+    const { menu, seen } = menuFor({ pairing: "/items/19/pairing" });
     expect(menu.children.slice(0, 2).map((c) => (c.tag === "hr" ? "—" : c.textContent))).toEqual(["Pairing…", "—"]);
     (menu.children[0] as Listening).listeners.get("click")?.();
     expect(seen).toEqual([["close"], ["pairing", "19"]]);
@@ -2079,9 +2079,9 @@ describe("a ticket row's Pairing… item", () => {
 });
 
 /**
- * The 🔔: with it on and the browser's leave, a ticket that has just come to
+ * The 🔔: with it on and the browser's leave, an item that has just come to
  * need you — since the last poll, never on the first — raises one system
- * notification, and a click on it opens that ticket's panel.
+ * notification, and a click on it opens that item's panel.
  */
 describe("the notify bell", () => {
   it("sits in the header, wired in script", () => {
@@ -2099,7 +2099,7 @@ describe("the notify bell", () => {
     expect(fnSource("pollOnce")).toMatch(/arrived\(neededYou, now\)/);
   });
 
-  describe("which tickets have just come to need you", () => {
+  describe("which items have just come to need you", () => {
     type Row = { id: string; badge: string | null; stale: boolean; children: Row[] };
     const row = (id: string, badge: string | null, children: Row[] = [], stale = false): Row => ({ id, badge, stale, children });
     /** What each poll in turn announces, the way pollOnce carries one poll's answer into the next. */
@@ -2123,11 +2123,11 @@ describe("the notify bell", () => {
       expect(polls(board)).toEqual([[]]);
     });
 
-    it("finds a ticket newly badged needs-you, a child as well as a root", () => {
+    it("finds an item newly badged needs-you, a child as well as a root", () => {
       expect(polls([row("1", "waiting", [row("3", "running")]), row("2", "running")], board)).toEqual([[], ["1", "3"]]);
     });
 
-    it("finds none for a ticket that stays", () => {
+    it("finds none for an item that stays", () => {
       expect(polls(board, board)).toEqual([[], []]);
     });
 
@@ -2136,20 +2136,20 @@ describe("the notify bell", () => {
       expect(polls(board, left, board)).toEqual([[], [], ["1"]]);
     });
 
-    // A conversation turn from the editor, or a pairing, holds the ticket's
+    // A conversation turn from the editor, or a pairing, holds the item's
     // lock: the board badges it elsewhere meanwhile, but it never left you.
-    it("finds none for a ticket only held elsewhere a while, which never left", () => {
+    it("finds none for an item only held elsewhere a while, which never left", () => {
       const held = [row("1", "elsewhere", [row("3", "needs-you")]), row("2", "running")];
       expect(polls(board, held, held, board)).toEqual([[], [], [], []]);
     });
 
-    it("still finds a ticket held elsewhere before it ever needed you", () => {
+    it("still finds an item held elsewhere before it ever needed you", () => {
       expect(polls([row("1", "elsewhere")], [row("1", "needs-you")])).toEqual([[], ["1"]]);
     });
 
     // Between triage's step and the next list, a spec approval heading into
     // build still reads needs-you from the labels it is leaving.
-    it("finds none for a ticket only passing through a step, while its labels are stale", () => {
+    it("finds none for an item only passing through a step, while its labels are stale", () => {
       const running = [row("1", "running")];
       const stale = [row("1", "needs-you", [], true)];
       expect(polls([row("1", "needs-you")], running, stale, stale, running)).toEqual([[], [], [], [], []]);
@@ -2187,8 +2187,8 @@ describe("the notify bell", () => {
     };
 
     // renotify beside the tag: a return replaces the last one still listed
-    // for that ticket, and has to alert again rather than swap in silently.
-    it("is one per ticket, saying which and why, tagged by ticket, alerting again on a return", () => {
+    // for that item, and has to alert again rather than swap in silently.
+    it("is one per item, saying which and why, tagged by item, alerting again on a return", () => {
       expect(shown({ on: true, permission: "granted" }).made.map(({ title, body, tag, renotify }) => ({ title, body, tag, renotify }))).toEqual([
         { title: "#29 needs you", body: "Add export — blocked by a security check", tag: "landrace-29", renotify: true },
       ]);
@@ -2203,7 +2203,7 @@ describe("the notify bell", () => {
       expect(shown(opts).made).toEqual([]);
     });
 
-    it("opens the ticket's panel when clicked", () => {
+    it("opens the item's panel when clicked", () => {
       const { made, opened } = shown({ on: true, permission: "granted" });
       made[0]?.click?.();
       expect(opened).toEqual(["29"]);
@@ -2235,7 +2235,7 @@ describe("the notify bell", () => {
      */
     it("says the browser has not allowed it yet when turned on without an answer", () => {
       expect(state(true, "default")).toEqual(expect.objectContaining({ pressed: "false", label: expect.stringMatching(/not allowed[\s\S]*site settings[\s\S]*ask again/) }));
-      expect(state(false, "default").label).toBe("Notify me when a ticket needs you");
+      expect(state(false, "default").label).toBe("Notify me when an item needs you");
     });
 
     // Toggled from what it shows: on, but with the browser's prompt dismissed,

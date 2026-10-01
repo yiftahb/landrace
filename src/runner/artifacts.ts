@@ -87,7 +87,7 @@ function priorArtifacts(snapshot: HookContext["snapshot"]): Record<string, unkno
 export function artifactPreHook(hook: ArtifactHook): PreHook {
   // At wiring time, not at read time: an id is fixed when the module is
   // loaded, so an unusable one should stop the daemon starting rather than
-  // stop one ticket, once per tick, forever.
+  // stop one item, once per tick, forever.
   if (isReservedId(hook.id)) {
     throw new Error(`artifact "${hook.id}" is named after a reserved object key and cannot be addressed in the snapshot`);
   }
@@ -127,7 +127,7 @@ export function artifactPreHook(hook: ArtifactHook): PreHook {
  *
  * Cut rather than refused, and that is the choice worth stating: a briefing is
  * unbounded text that whoever can comment on a pull request writes, so a
- * refusal would be a ticket halted by anyone willing to paste a megabyte into
+ * refusal would be an item halted by anyone willing to paste a megabyte into
  * a review thread. Nothing downstream reads a briefing as state, so there is
  * no predicate that silently stops matching when it is cut — unlike artifact
  * state above, where a dropped field is exactly that.

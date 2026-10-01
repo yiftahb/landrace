@@ -178,9 +178,9 @@ describe("the claude executor, built from the runtime's context", () => {
     const root = await gitRepo();
     const dir = join(root, ".landrace");
     await mkdir(dir, { recursive: true });
-    await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { tickets: { command: "node", args: ["dist/cli.js", "mcp"] } } }));
-    await expect(factory.create(ctxFor(dir, { adapter: "claude", mcp: ["tickets"] })))
-      .rejects.toThrow(/"tickets"[\s\S]*operator tools must never reach a step agent/);
+    await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { items: { command: "node", args: ["dist/cli.js", "mcp"] } } }));
+    await expect(factory.create(ctxFor(dir, { adapter: "claude", mcp: ["items"] })))
+      .rejects.toThrow(/"items"[\s\S]*operator tools must never reach a step agent/);
   });
 });
 

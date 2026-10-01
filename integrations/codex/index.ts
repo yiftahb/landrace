@@ -170,7 +170,7 @@ export class Codex extends BaseExecutor {
     if (tier === "write") {
       set("sandbox_workspace_write.network_access", false);
       // workspace-write opens $TMPDIR and /tmp too, unless told not to — and
-      // $TMPDIR/landrace/<repo>/ holds every other ticket's worktree, the
+      // $TMPDIR/landrace/<repo>/ holds every other item's worktree, the
       // locks and pairing seeds, and the screener's directory of its own.
       set("sandbox_workspace_write.exclude_tmpdir_env_var", true);
       set("sandbox_workspace_write.exclude_slash_tmp", true);

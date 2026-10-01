@@ -2,7 +2,7 @@ import { planEffects, planNodesClose, staleClosure } from "#core/index.js";
 import type { Graph, Node, Snapshot, Stage } from "#namespace.js";
 
 const t = (id: string, o: Partial<Node> = {}): Node => ({
-  id, kind: "ticket", title: id, link: "", closed: null, priority: null, origin: null, state: {}, ...o,
+  id, kind: "item", title: id, link: "", closed: null, priority: null, origin: null, state: {}, ...o,
 });
 const child = (id: string, round: number, o: Partial<Node> = {}) =>
   t(id, { origin: { parent: "P", stage: "breakdown", round }, ...o });

@@ -92,7 +92,7 @@ describe("loadConfig", () => {
  *
  * What it must never do is resolve to *something* when there was nothing. A
  * var that fell back to the literal "$LANDRACE_ASSIGNEE", or to "", would
- * substitute an eligibility rule that matches no ticket at all — and the
+ * substitute an eligibility rule that matches no item at all — and the
  * operator's evidence would be a repository where nothing ever happens, which
  * is the hardest failure this system has.
  */
@@ -118,7 +118,7 @@ describe("loadConfig resolves the vars block", () => {
   /*
    * The case the "never an empty string" rule is actually about: the variable
    * *is* set, to nothing. Resolution succeeds, the reference is gone, and the
-   * workflow gets `$in: [""]` — a filter that silently claims no ticket.
+   * workflow gets `$in: [""]` — a filter that silently claims no item.
    */
   it("reports a variable that resolves to an empty value, which resolution alone would accept", async () => {
     const { vars, missingVars } = await loadConfig(

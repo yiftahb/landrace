@@ -14,9 +14,9 @@ import type { HookContext, PreHook } from "#namespace.js";
  * validator that flags healthy workflows gets switched off.
  *
  * Asked of both trackers, because the two had drifted: the fake declared
- * `ticket.stage` and no `tracker.bot`, the shipped integration declared
- * `tracker.bot` and provided `ticket.state`, `ticket.url` and an undeclared
- * `ticket.stage` that nothing read. `landrace validate` answered differently
+ * `item.stage` and no `tracker.bot`, the shipped integration declared
+ * `tracker.bot` and provided `item.state`, `item.url` and an undeclared
+ * `item.stage` that nothing read. `landrace validate` answered differently
  * depending on which one was loaded, which is exactly the drift
  * `conventions.ts` warns about.
  */
@@ -42,30 +42,30 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     if (!hook) throw new Error("the fake tracker registered no pre hook");
     expect(hook.id).toBe("project");
 
-    const fragment = await hook.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
+    const fragment = await hook.run({ ...gh.ctx, item: "1", snapshot: {} } as HookContext);
     expect(pathsIn(fragment)).toEqual(declaredBy(hook));
   });
 
   it("the in-memory tracker", async () => {
-    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto", "lr:stage:spec"] }] });
-    const fragment = await state.pre.run({ ticket: "1", snapshot: {} } as HookContext);
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto", "lr:stage:spec"] }] });
+    const fragment = await state.pre.run({ item: "1", snapshot: {} } as HookContext);
     expect(pathsIn(fragment)).toEqual(declaredBy(state.pre));
-    expect(declaredBy(state.pre)).toEqual(["entries", "ticket", "ticket.body", "ticket.comments"]);
+    expect(declaredBy(state.pre)).toEqual(["entries", "item", "item.body", "item.comments"]);
   });
 
   /*
-   * And neither says again what the ticket's node already says. The title,
-   * the labels and the assignees are the source's reading of the ticket; a
+   * And neither says again what the item's node already says. The title,
+   * the labels and the assignees are the source's reading of the item; a
    * copy of them in a pre hook's fragment is a second reading, free to
-   * disagree with the one the engine placed the ticket from.
+   * disagree with the one the engine placed the item from.
    */
-  it("and neither of them copies what the ticket's node carries", async () => {
+  it("and neither of them copies what the item's node carries", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     const github = gh.registry.pre[0];
     if (!github) throw new Error("the fake tracker registered no pre hook");
-    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const state = createExternalState({ items: [{ id: "1" }] });
     for (const hook of [github, state.pre]) {
-      for (const path of ["ticket.number", "ticket.title", "ticket.url", "ticket.state", "ticket.labels", "ticket.assignees"]) {
+      for (const path of ["item.number", "item.title", "item.url", "item.state", "item.labels", "item.assignees"]) {
         expect({ hook: hook.id, path, declared: declaredBy(hook).includes(path) }).toEqual({ hook: hook.id, path, declared: false });
       }
     }
@@ -73,19 +73,19 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
 
   /*
    * And neither spells the position a second time. Position is derived once,
-   * in buildSnapshot, out of the node's labels; a `ticket.stage` beside it is a
+   * in buildSnapshot, out of the node's labels; an `item.stage` beside it is a
    * second answer to one question, free to disagree with the first.
    */
   it("and neither of them spells the position a second time", async () => {
     const gh = createFakeTracker([{ number: 1, labels: ["lr:stage:spec"] }]);
     const github = gh.registry.pre[0];
     if (!github) throw new Error("the fake tracker registered no pre hook");
-    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:stage:spec"] }] });
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:stage:spec"] }] });
 
     for (const hook of [github, state.pre]) {
-      const fragment = await hook.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
-      expect(pathsIn(fragment)).not.toContain("ticket.stage");
-      expect(declaredBy(hook)).not.toContain("ticket.stage");
+      const fragment = await hook.run({ ...gh.ctx, item: "1", snapshot: {} } as HookContext);
+      expect(pathsIn(fragment)).not.toContain("item.stage");
+      expect(declaredBy(hook)).not.toContain("item.stage");
     }
   });
 
@@ -99,12 +99,12 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     const gh = createFakeTracker([{ number: 1 }]);
     const github = gh.registry.pre[0];
     if (!github) throw new Error("the fake tracker registered no pre hook");
-    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const state = createExternalState({ items: [{ id: "1" }] });
 
-    // Who a ticket belongs to, its labels and its title are the node's now
+    // Who an item belongs to, its labels and its title are the node's now
     // (`node.state.assignees`, `node.state.labels`, `node.title`), read by the
     // engine from either source the same way.
-    const shared = ["ticket.body", "ticket.comments", "entries"];
+    const shared = ["item.body", "item.comments", "entries"];
     expect(declaredBy(github)).toEqual(expect.arrayContaining(shared));
     expect(declaredBy(state.pre)).toEqual(expect.arrayContaining(shared));
   });

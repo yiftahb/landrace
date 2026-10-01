@@ -1,7 +1,7 @@
 import { Jira, type JiraOptions } from "landrace/integrations/jira";
 import { LABELS, parseMarker, renderMarker } from "#conventions.js";
 import { compose } from "#kit/compose.js";
-import { TICKET_PAGE } from "#kit/tracker.js";
+import { ITEM_PAGE } from "#kit/tracker.js";
 import type { HookContext, Node, RuntimeContext, Snapshot } from "#namespace.js";
 import { MemoryDocs, MemoryForge } from "#testing/index.js";
 import {
@@ -26,7 +26,7 @@ function setup(options: Partial<JiraOptions> = {}, secrets: Record<string, strin
   return { fake, jira, ctx };
 }
 
-const on = (ctx: RuntimeContext, ticket: string, snapshot: Snapshot = {}): HookContext => ({ ...ctx, ticket, snapshot });
+const on = (ctx: RuntimeContext, item: string, snapshot: Snapshot = {}): HookContext => ({ ...ctx, item, snapshot });
 
 /** The text of every paragraph in a document, a hard break read as "\n". */
 const paragraphTexts = (doc: Adf | null): string[] =>
@@ -36,14 +36,14 @@ describe("the client", () => {
   it("asks /myself first, with basic auth, and posts as the account's id", async () => {
     const { fake, jira, ctx } = setup();
     expect(await jira.login(ctx)).toBe(BOT.accountId);
-    await jira.tickets(ctx);
+    await jira.items(ctx);
     expect(fake.calls[0]?.path).toBe("/rest/api/3/myself");
     expect(fake.calls.filter((c) => c.path === "/rest/api/3/myself")).toHaveLength(1);
   });
 
   it("refuses to run when Jira rejects the email and token", async () => {
     const { fake, jira, ctx } = setup({}, { ...SECRETS, jiraToken: "not-the-token-at-all" });
-    await expect(jira.tickets(ctx)).rejects.toThrow(/cannot resolve the account landrace posts as.*401/);
+    await expect(jira.items(ctx)).rejects.toThrow(/cannot resolve the account landrace posts as.*401/);
     expect(fake.calls.map((c) => c.path)).toEqual(["/rest/api/3/myself"]);
   });
 
@@ -75,16 +75,16 @@ describe("the client", () => {
   });
 });
 
-describe("reading tickets", () => {
-  it("lists the project's open issues as tickets, mapped field by field", async () => {
+describe("reading items", () => {
+  it("lists the project's open issues as items, mapped field by field", async () => {
     const { fake, jira, ctx } = setup();
     const created = Date.parse("2026-09-01T12:00:00.000Z");
     const one = fake.add({
       summary: "Ship it", labels: ["lr:auto"], assignee: PERSON, creator: BOT, reporter: PERSON,
       created: jiraTime(created), updated: jiraTime(created + 60_000), status: "In Progress", priority: "2",
     });
-    const [ticket] = await jira.tickets(ctx);
-    expect(ticket).toEqual({
+    const [item] = await jira.items(ctx);
+    expect(item).toEqual({
       id: one.key,
       title: "Ship it",
       link: `${SITE}/browse/${one.key}`,
@@ -105,7 +105,7 @@ describe("reading tickets", () => {
     const { fake, jira, ctx } = setup();
     fake.pageSize = 2;
     for (let i = 0; i < 5; i++) fake.add();
-    expect((await jira.tickets(ctx)).map((t) => t.id)).toEqual(["KEY-1", "KEY-2", "KEY-3", "KEY-4", "KEY-5"]);
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual(["KEY-1", "KEY-2", "KEY-3", "KEY-4", "KEY-5"]);
   });
 
   it("lists a closed issue only when landrace moved it and it closed inside the Done window", async () => {
@@ -117,7 +117,7 @@ describe("reading tickets", () => {
     fake.add({ status: "Done", labels: [stage], updated: jiraTime(Date.now() - 40 * DAY), statusChanged: jiraTime(Date.now() - 40 * DAY) });
     // Touched lately, but closed long before the window.
     fake.add({ status: "Done", labels: [stage], updated: recent, statusChanged: jiraTime(Date.now() - 40 * DAY) });
-    expect((await jira.tickets(ctx)).map((t) => [t.id, t.closed])).toEqual([["KEY-1", "done"]]);
+    expect((await jira.items(ctx)).map((t) => [t.id, t.closed])).toEqual([["KEY-1", "done"]]);
   });
 
   it("reads closed as dropped when the status or the resolution is named as transitions.dropped", async () => {
@@ -127,7 +127,7 @@ describe("reading tickets", () => {
     fake.add({ status: "Done", resolution: "Done" });
     fake.add({ status: "Done", resolution: null });
     fake.add({ status: "To Do" });
-    const closed = await Promise.all(["KEY-1", "KEY-2", "KEY-3", "KEY-4", "KEY-5"].map(async (k) => (await jira.ticket(k, ctx)).closed));
+    const closed = await Promise.all(["KEY-1", "KEY-2", "KEY-3", "KEY-4", "KEY-5"].map(async (k) => (await jira.item(k, ctx)).closed));
     expect(closed).toEqual(["dropped", "dropped", "done", "done", null]);
   });
 
@@ -136,7 +136,7 @@ describe("reading tickets", () => {
     const parent = fake.add();
     const child = fake.add({ parent: parent.key, issuetype: "Subtask" });
     const stray = fake.add({ parent: "OTHER-9" });
-    const parents = new Map((await jira.tickets(ctx)).map((t) => [t.id, t.parent]));
+    const parents = new Map((await jira.items(ctx)).map((t) => [t.id, t.parent]));
     expect(parents.get(child.key)).toBe(parent.key);
     expect(parents.get(stray.key)).toBeNull();
   });
@@ -144,12 +144,12 @@ describe("reading tickets", () => {
   it("reads who last changed the description as the body's editor", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add({ creator: BOT });
-    expect((await jira.ticket(issue.key, ctx)).editor).toBeUndefined();
+    expect((await jira.item(issue.key, ctx)).editor).toBeUndefined();
     fake.edit(issue.key, PERSON, paragraphs("rewritten"));
     fake.edit(issue.key, BOT, paragraphs("back"));
     fake.edit(issue.key, PERSON, paragraphs("again"));
-    expect((await jira.ticket(issue.key, ctx)).editor).toBe(PERSON.accountId);
-    expect((await jira.tickets(ctx))[0]?.editor).toBe(PERSON.accountId);
+    expect((await jira.item(issue.key, ctx)).editor).toBe(PERSON.accountId);
+    expect((await jira.items(ctx))[0]?.editor).toBe(PERSON.accountId);
   });
 
   it("reads the editor across every page of changes", async () => {
@@ -158,19 +158,19 @@ describe("reading tickets", () => {
     const issue = fake.add();
     for (let i = 0; i < 4; i++) fake.edit(issue.key, PERSON, paragraphs(`${i}`));
     fake.edit(issue.key, BOT, paragraphs("ours"));
-    expect((await jira.ticket(issue.key, ctx)).editor).toBe(BOT.accountId);
+    expect((await jira.item(issue.key, ctx)).editor).toBe(BOT.accountId);
   });
 
   it("refuses an issue Jira answers under another key: it moved", async () => {
     const { fake, jira, ctx } = setup();
     const { key } = fake.add();
     fake.move(key, "KEY-77");
-    await expect(jira.ticket(key, ctx)).rejects.toThrow(/KEY-1 has moved to KEY-77/);
+    await expect(jira.item(key, ctx)).rejects.toThrow(/KEY-1 has moved to KEY-77/);
   });
 
   it("says which issue it could not find", async () => {
     const { jira, ctx } = setup();
-    await expect(jira.ticket("KEY-404", ctx)).rejects.toThrow(/KEY-404 is not an issue in KEY/);
+    await expect(jira.item("KEY-404", ctx)).rejects.toThrow(/KEY-404 is not an issue in KEY/);
   });
 
   it.each(["OTHER-1", "KEY-0", "KEY-1 OR project = OTHER", "KEY-1/comment", "key-1", "KEY-01"])(
@@ -178,7 +178,7 @@ describe("reading tickets", () => {
     async (id) => {
       const { fake, jira, ctx } = setup();
       for (const read of [
-        () => jira.ticket(id, ctx), () => jira.children(id, ctx), () => jira.comments(id, ctx),
+        () => jira.item(id, ctx), () => jira.children(id, ctx), () => jira.comments(id, ctx),
         () => jira.comment(id, "x", ctx), () => jira.addLabels(id, ["a"], ctx), () => jira.removeLabel(id, "a", ctx),
         () => jira.close(id, "done", ctx), () => jira.update(id, { title: "t" }, ctx),
         () => jira.create({ title: "t", body: "", parent: id, priority: undefined }, ctx),
@@ -189,7 +189,7 @@ describe("reading tickets", () => {
     },
   );
 
-  it("reads a ticket's children, closed ones too", async () => {
+  it("reads an item's children, closed ones too", async () => {
     const { fake, jira, ctx } = setup();
     const parent = fake.add();
     fake.add({ parent: parent.key, issuetype: "Subtask" });
@@ -208,12 +208,12 @@ describe("reading tickets", () => {
     expect((await jira.children(parent.key, ctx)).map((c) => c.id)).toEqual([child]);
   });
 
-  it("refuses a ticket with more children than one read carries", async () => {
+  it("refuses an item with more children than one read carries", async () => {
     const { fake, jira, ctx } = setup();
     fake.pageSize = 20;
     const parent = fake.add();
-    for (let i = 0; i <= TICKET_PAGE; i++) fake.add({ parent: parent.key, issuetype: "Subtask" });
-    await expect(jira.children(parent.key, ctx)).rejects.toThrow(new RegExp(`more than the ${TICKET_PAGE}`));
+    for (let i = 0; i <= ITEM_PAGE; i++) fake.add({ parent: parent.key, issuetype: "Subtask" });
+    await expect(jira.children(parent.key, ctx)).rejects.toThrow(new RegExp(`more than the ${ITEM_PAGE}`));
   });
 
   it("reads every comment, oldest first, as text under the author's account id", async () => {
@@ -310,7 +310,7 @@ describe("writing", () => {
     await jira.close(a.key, "done", ctx);
     await jira.close(b.key, "dropped", ctx);
     expect([a.status, b.status]).toEqual(["Done", "Won't Do"]);
-    expect([(await jira.ticket(a.key, ctx)).closed, (await jira.ticket(b.key, ctx)).closed]).toEqual(["done", "dropped"]);
+    expect([(await jira.item(a.key, ctx)).closed, (await jira.item(b.key, ctx)).closed]).toEqual(["done", "dropped"]);
   });
 
   it("leaves an issue already closed as it is, whatever the graph it was planned from said", async () => {
@@ -358,13 +358,13 @@ describe("writing", () => {
     expect(fake.writes()).toEqual([]);
   });
 
-  it("creates a ticket as the issue type, and a child as the child type under its parent", async () => {
+  it("creates an item as the issue type, and a child as the child type under its parent", async () => {
     const { fake, jira, ctx } = setup();
     const top = await jira.create({ title: "Top", body: "line one\nline two", parent: undefined, priority: undefined }, ctx);
     const child = await jira.create({ title: "Child", body: "", parent: top, priority: undefined }, ctx);
     expect([fake.issue(top).issuetype, fake.issue(top).parent]).toEqual(["Task", null]);
     expect([fake.issue(child).issuetype, fake.issue(child).parent]).toEqual(["Subtask", top]);
-    expect((await jira.ticket(top, ctx)).body).toBe("line one\nline two");
+    expect((await jira.item(top, ctx)).body).toBe("line one\nline two");
   });
 
   it("creates with the project's priority at landrace's index, and past its last with the lowest", async () => {
@@ -373,7 +373,7 @@ describe("writing", () => {
     const p3 = await jira.create({ title: "b", body: "", parent: undefined, priority: 3 }, ctx);
     const p9 = await jira.create({ title: "c", body: "", parent: undefined, priority: 9 }, ctx);
     expect([p0, p3, p9].map((k) => fake.issue(k).priority)).toEqual(["1", "4", "5"]);
-    expect((await jira.ticket(p9, ctx)).priority).toBe(4);
+    expect((await jira.item(p9, ctx)).priority).toBe(4);
   });
 
   it("updates the title and the body", async () => {
@@ -399,7 +399,7 @@ describe("writing", () => {
       .toEqual([{ transition: { id: "31" } }, { transition: { id: "11" } }]);
   });
 
-  it("asks for no transition when the ticket is already in the state asked for", async () => {
+  it("asks for no transition when the item is already in the state asked for", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
     await jira.update(issue.key, { state: "open" }, ctx);
@@ -452,10 +452,10 @@ describe("composed with a forge and docs", () => {
     return { graph, node: graph.nodes.find((n) => n.id === id) };
   };
 
-  it("creates, records, labels and closes a ticket, and reads each back", async () => {
+  it("creates, records, labels and closes an item, and reads each back", async () => {
     const { fake, jira, ctx } = setup();
     const hooks = hooksOver(jira);
-    const node = await hooks.operator.createTicket({ title: "Work", body: "do it", labels: ["lr:auto"] }, ctx);
+    const node = await hooks.operator.createItem({ title: "Work", body: "do it", labels: ["lr:auto"] }, ctx);
     expect([node.id, node.title, node.state.labels]).toEqual(["KEY-1", "Work", ["lr:auto"]]);
 
     const record = { type: "tracker.comment", stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1", body: "Entered spec." };
@@ -478,8 +478,8 @@ describe("composed with a forge and docs", () => {
   it("drops a child a re-run closes, and reads it back dropped", async () => {
     const { jira, ctx } = setup();
     const hooks = hooksOver(jira);
-    const parent = await hooks.operator.createTicket({ title: "Parent" }, ctx);
-    const child = await hooks.operator.createTicket(
+    const parent = await hooks.operator.createItem({ title: "Parent" }, ctx);
+    const child = await hooks.operator.createItem(
       { title: "Child", parent: parent.id, origin: { parent: parent.id, stage: "breakdown", round: 1 } }, ctx,
     );
     expect(child.origin).toEqual({ parent: parent.id, stage: "breakdown", round: 1 });
@@ -511,8 +511,8 @@ describe("composed with a forge and docs", () => {
   it("reads a child's origin as nobody's once a person has edited its body", async () => {
     const { fake, jira, ctx } = setup();
     const hooks = hooksOver(jira);
-    const parent = await hooks.operator.createTicket({ title: "Parent" }, ctx);
-    const child = await hooks.operator.createTicket(
+    const parent = await hooks.operator.createItem({ title: "Parent" }, ctx);
+    const child = await hooks.operator.createItem(
       { title: "Child", parent: parent.id, origin: { parent: parent.id, stage: "breakdown", round: 1 } }, ctx,
     );
     fake.edit(child.id, PERSON, fake.issue(child.id).description as Adf);

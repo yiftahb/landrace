@@ -15,7 +15,7 @@ import type {
 import { scriptedExecutor } from "#testing/scripted.js";
 
 /**
- * A ticket, driven through a workflow, with what happened written down.
+ * An item, driven through a workflow, with what happened written down.
  *
  * Everything here was copied between test files before it was a function: a
  * logger that remembers which stage is running so the executor can answer as
@@ -29,7 +29,7 @@ import { scriptedExecutor } from "#testing/scripted.js";
  * only ever prove that a workflow works against that harness.
  */
 export function createHarness(options: HarnessOptions): Harness {
-  const ticket = options.ticket ?? "1";
+  const item = options.item ?? "1";
   const calls: StepCall[] = [];
   const trail: string[] = [];
   let at = { stage: "", round: 1 };
@@ -46,9 +46,9 @@ export function createHarness(options: HarnessOptions): Harness {
     if (name === "step.started" || name === "step.invoked") {
       at = { stage: String(data.stage), round: Number(data.round) };
     }
-    if (name === "ticket.evaluated") {
+    if (name === "item.evaluated") {
       // Where it was, then where it went. The destination is what makes the
-      // last transition of a run visible at all: nothing evaluates a ticket
+      // last transition of a run visible at all: nothing evaluates an item
       // from the stage it finished in.
       push(data.stage);
       push(data.to);
@@ -110,7 +110,7 @@ export function createHarness(options: HarnessOptions): Harness {
 
     converge: async (): Promise<HarnessRun> => {
       const from = { calls: calls.length, trail: trail.length };
-      const result = await converge(ticket, {
+      const result = await converge(item, {
         workflow: options.workflow,
         steps: options.steps,
         source: options.source,
@@ -120,7 +120,7 @@ export function createHarness(options: HarnessOptions): Harness {
         executor,
         ...(screener === undefined ? {} : { screen: { executor: screener, model: "screener" } }),
         ctx: {
-          ticket,
+          item,
           config: {} as HookContext["config"],
           secrets: new Map<string, string>(),
           signal: new AbortController().signal,

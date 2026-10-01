@@ -57,7 +57,7 @@ describe("entriesFromComments", () => {
     expect(entries[1]).toMatchObject({ kind: "human", byAgent: false });
   });
 
-  // For the ticket panel's conversation: what a person reads on the ticket,
+  // For the item panel's conversation: what a person reads on the item,
   // never the control state riding at the end of ours.
   it("carries each comment's text — ours with the marker taken off, a person's whole", () => {
     const entries = entriesFromComments([
@@ -70,7 +70,7 @@ describe("entriesFromComments", () => {
 
   // The test that used to stand here asserted the opposite — "authorship is
   // decided by the marker, not the login" — and that assumption was the
-  // vulnerability: any commenter could complete a stage, block a ticket or run
+  // vulnerability: any commenter could complete a stage, block an item or run
   // a counter up by pasting a marker. Authorship is now the login, and
   // tests/security/marker-forgery.test.ts is where the attacks live.
   it("reads a marker from the account we post as, whoever else is talking", () => {
@@ -98,7 +98,7 @@ describe("entriesFromComments", () => {
   // A record written before markers carried values has no value to read. It
   // still counts as a round — the envelope is what rounds are derived from —
   // but it must not read back as one, or `outputs.spec.kind` answers "output"
-  // again for exactly the tickets already in flight.
+  // again for exactly the items already in flight.
   it("gives an output record with no value no payload at all", () => {
     const [entry] = entriesFromComments(
       [{ id: 1, body: `old${renderMarker(doc)}`, created_at: at(1), user: { login: "bot" } }],

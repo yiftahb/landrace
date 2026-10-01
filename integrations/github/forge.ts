@@ -11,7 +11,7 @@
 import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
-  ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, TICKET_PAGE,
+  ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
   type BranchHeads, type ChangedFile, type Git, type PullRecord, type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, issueNumber, tokenRejected, unseen } from "./client.js";
@@ -44,7 +44,7 @@ query LandracePulls($owner: String!, $name: String!, $cursor: String) {
 /**
  * Merged and closed pull requests, most recently updated first, so the list
  * stops at the first one last touched before the window: none past it can
- * have been updated inside the window either. A Done ticket's merged pull
+ * have been updated inside the window either. A Done item's merged pull
  * request never answers the open-only query above.
  */
 const closedPullsQuery = (refs: boolean): string => `
@@ -58,17 +58,17 @@ query LandraceClosedPulls($owner: String!, $name: String!, $cursor: String) {
 }`;
 
 /**
- * Every pull request tied to one ticket: the ones on its `landrace/{ticket}`
+ * Every pull request tied to one item: the ones on its `landrace/{item}`
  * head, and — with closing references on — the ones that close its issue.
  */
-const ticketQuery = (refs: boolean): string => refs
+const itemQuery = (refs: boolean): string => refs
   ? `
-query LandraceTicket($owner: String!, $name: String!, $number: Int!, $head: String!) {
+query LandraceItem($owner: String!, $name: String!, $number: Int!, $head: String!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
-      closedByPullRequestsReferences(first: ${TICKET_PAGE}, includeClosedPrs: true) { totalCount nodes { ${pullFields(true)} } }
+      closedByPullRequestsReferences(first: ${ITEM_PAGE}, includeClosedPrs: true) { totalCount nodes { ${pullFields(true)} } }
     }
-    pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${TICKET_PAGE},
+    pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${ITEM_PAGE},
                  orderBy: { field: CREATED_AT, direction: DESC }) {
       totalCount
       nodes { ${pullFields(true)} }
@@ -76,9 +76,9 @@ query LandraceTicket($owner: String!, $name: String!, $number: Int!, $head: Stri
   }
 }`
   : `
-query LandraceTicket($owner: String!, $name: String!, $head: String!) {
+query LandraceItem($owner: String!, $name: String!, $head: String!) {
   repository(owner: $owner, name: $name) {
-    pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${TICKET_PAGE},
+    pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${ITEM_PAGE},
                  orderBy: { field: CREATED_AT, direction: DESC }) {
       totalCount
       nodes { ${pullFields(false)} }
@@ -91,7 +91,7 @@ query LandraceTicket($owner: String!, $name: String!, $head: String!) {
  * the count the graph carries and the text a prompt is briefed both read.
  *
  * `comments(first: 1)` is the finding itself, the thread's opening comment,
- * and when it was said places the thread in the ticket's history.
+ * and when it was said places the thread in the item's history.
  * `lastReply` is the thread's last word, which says whose turn it is.
  * `totalCount` says whether there was a reply at all. Only the counts reach
  * the graph: a body is written by anyone with comment access.
@@ -145,7 +145,7 @@ query($owner: String!, $name: String!) {
 export const FORGE_QUERIES = {
   PULLS_QUERY: pullsQuery(true),
   CLOSED_PULLS_QUERY: closedPullsQuery(true),
-  TICKET_QUERY: ticketQuery(true),
+  ITEM_QUERY: itemQuery(true),
   THREADS_QUERY,
   PREFLIGHT_PR_QUERY,
   RESOLVE_THREAD,
@@ -190,7 +190,7 @@ interface ThreadNode {
 
 /**
  * A pull request as GraphQL answers it, as the kit reads one: a fork's head
- * branch is not named, and with closing references off it names no ticket
+ * branch is not named, and with closing references off it names no item
  * whatever the answer carried.
  */
 const recordOf = (pull: PullNode, refs: boolean): PullRecord => ({
@@ -203,7 +203,7 @@ const recordOf = (pull: PullNode, refs: boolean): PullRecord => ({
   branch: pull.isCrossRepository ? undefined : pull.headRefName,
   createdAt: pull.createdAt,
   updatedAt: pull.updatedAt ?? undefined,
-  tickets: refs ? (pull.closingIssuesReferences?.nodes ?? []).map((i) => String(i.number)) : [],
+  items: refs ? (pull.closingIssuesReferences?.nodes ?? []).map((i) => String(i.number)) : [],
 });
 
 /** A thread comment as GraphQL answers it, as the kit reads one: a deleted account is no author at all. */
@@ -284,7 +284,7 @@ const shown = (url: string): string => url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/
  * says back is scrubbed of both spellings of the token before it becomes an
  * error, a log line or a comment.
  */
-async function push(git: Git, { token, repo }: Client, branch: string, ticket: string, signal: AbortSignal): Promise<void> {
+async function push(git: Git, { token, repo }: Client, branch: string, item: string, signal: AbortSignal): Promise<void> {
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
   const url = await originPushUrl(git, branch, signal);
@@ -294,7 +294,7 @@ async function push(git: Git, { token, repo }: Client, branch: string, ticket: s
       `refusing to push ${branch}: origin's push URL ${shown(url)} mentions github.com but is not in a form ` +
       "landrace can verify — https://github.com/<owner>/<repo>(.git), git@github.com:<owner>/<repo>.git or " +
       "ssh://git@github.com/<owner>/<repo>.git. A URL git could read differently from how it reads here is " +
-      "not one to push to, or hand a token to; set it in one of those forms and the ticket carries on",
+      "not one to push to, or hand a token to; set it in one of those forms and the item carries on",
     );
   }
   if (remote && remote.repo !== repo.toLowerCase()) {
@@ -309,7 +309,7 @@ async function push(git: Git, { token, repo }: Client, branch: string, ticket: s
     : [];
 
   try {
-    await pushBranch(git, branch, ticket, signal, auth);
+    await pushBranch(git, branch, item, signal, auth);
   } catch (e) {
     throw new Error(scrub(e instanceof Error ? e.message : String(e)));
   }
@@ -379,7 +379,7 @@ function constructedIn(): string | null {
  * directory the process was started from.
  *
  * `closingRefs` is whether the tracker beside it is GitHub's own issues. On,
- * a pull request it opens says `Closes #n` and one that closes a ticket's
+ * a pull request it opens says `Closes #n` and one that closes an item's
  * issue is tied to it; off, it writes none and reads none — beside another
  * vendor's tracker, `#7` is GitHub's issue 7, which is somebody else's, and a
  * merge would close it.
@@ -418,7 +418,7 @@ export class GitHubForge extends BaseForge {
     const { owner, name } = gh;
     const pulls: PullNode[] = [];
 
-    // A pull request missing from a short list is a ticket the board shows with no work on it.
+    // A pull request missing from a short list is an item the board shows with no work on it.
     let cursor: string | null = null;
     for (let page = 0; ; page++) {
       if (page === MAX_ISSUE_PAGES) {
@@ -457,29 +457,29 @@ export class GitHubForge extends BaseForge {
   }
 
   /**
-   * One ticket's pull requests, found either way — by its branch, and by
+   * One item's pull requests, found either way — by its branch, and by
    * closing reference — once each. A fork's found by its head name alone is
-   * not this ticket's: the name is in somebody else's repository. By closing
+   * not this item's: the name is in somebody else's repository. By closing
    * reference, it is.
    */
-  async pullsNaming(ticket: string, ctx: RuntimeContext): Promise<PullRecord[]> {
+  async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
     const gh = this.gh(ctx);
     type Connection = { totalCount: number; nodes: PullNode[] };
     const data = await gh.graphql<{
       repository: { issue?: { closedByPullRequestsReferences: Connection } | null; pullRequests: Connection } | null;
-    }>(ticketQuery(this.closingRefs), {
-      owner: gh.owner, name: gh.name, head: prBranch(ticket), ...(this.closingRefs ? { number: issueNumber(ticket) } : {}),
+    }>(itemQuery(this.closingRefs), {
+      owner: gh.owner, name: gh.name, head: prBranch(item), ...(this.closingRefs ? { number: issueNumber(item) } : {}),
     });
     if (!data.repository) throw unseen(gh.repo);
     const { issue, pullRequests } = data.repository;
-    if (this.closingRefs && !issue) throw new Error(`#${ticket} is not an issue in ${gh.repo}`);
+    if (this.closingRefs && !issue) throw new Error(`#${item} is not an issue in ${gh.repo}`);
     const closing = issue?.closedByPullRequestsReferences;
 
     // A count over the first page is a number known to be short, and every
-    // one of these is counted: past the page, the ticket halts saying so.
+    // one of these is counted: past the page, the item halts saying so.
     for (const [what, connection] of [["pull requests on its branch", pullRequests], ["pull requests closing it", closing]] as const) {
       if (connection && connection.totalCount > connection.nodes.length) {
-        throw new Error(`#${ticket} has ${connection.totalCount} ${what}, more than the ${TICKET_PAGE} one read carries`);
+        throw new Error(`#${item} has ${connection.totalCount} ${what}, more than the ${ITEM_PAGE} one read carries`);
       }
     }
 
@@ -527,7 +527,7 @@ export class GitHubForge extends BaseForge {
     return (await this.gh(ctx).listReviews(pull)).map((r) => r.body ?? "");
   }
 
-  async openPull({ ticket, branch, title }: { ticket: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void> {
+  async openPull({ item, branch, title }: { item: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void> {
     const gh = this.gh(ctx);
     try {
       await gh.openPull({
@@ -535,13 +535,13 @@ export class GitHubForge extends BaseForge {
         base: await gh.defaultBranch(),
         title,
         // The closing reference is the second way a pull request is tied to
-        // its ticket, and the one that survives a branch named any way at all.
-        ...(this.closingRefs ? { body: `Closes #${issueNumber(ticket)}` } : {}),
+        // its item, and the one that survives a branch named any way at all.
+        ...(this.closingRefs ? { body: `Closes #${issueNumber(item)}` } : {}),
       });
     } catch (e) {
       // GitHub's own way of saying what the push check says.
       if ((e as { status?: unknown } | null)?.status === 422 && /No commits between/i.test(String(e))) {
-        throw nothingCommitted(branch, ticket);
+        throw nothingCommitted(branch, item);
       }
       throw e;
     }
@@ -584,13 +584,13 @@ export class GitHubForge extends BaseForge {
     return branchHeads(this.git);
   }
 
-  async push(branch: string, ticket: string, ctx: HookContext): Promise<void> {
-    await push(this.git, this.gh(ctx), branch, ticket, ctx.signal);
+  async push(branch: string, item: string, ctx: HookContext): Promise<void> {
+    await push(this.git, this.gh(ctx), branch, item, ctx.signal);
   }
 
   /**
    * "Pull requests: Read", probed with one minimal query. Its write half has
-   * no harmless form to try — opening a ticket's pull request and closing a
+   * no harmless form to try — opening an item's pull request and closing a
    * dropped child's both need it — so a fine-grained token without it is
    * named by the write itself.
    */

@@ -11,7 +11,7 @@ import type { Condition, Graph, HookContext, Node, RuntimeContext, Snapshot, Sou
 /**
  * The GitHub source, over the in-memory GitHub. The fake is the HTTP boundary
  * — GraphQL included, because sub-issues, closing references and thread
- * resolution exist nowhere else — so what runs here is the hook a ticket
+ * resolution exist nowhere else — so what runs here is the hook an item
  * actually runs through.
  */
 const ctx = (gh: FakeTracker) => gh.ctx;
@@ -21,10 +21,10 @@ const sourceOf = (gh: FakeTracker): Source => {
   return gh.registry.source;
 };
 
-const briefOf = (gh: FakeTracker, ticket: string, snapshot: Snapshot = {}): Promise<Record<string, string>> => {
+const briefOf = (gh: FakeTracker, item: string, snapshot: Snapshot = {}): Promise<Record<string, string>> => {
   const source = sourceOf(gh);
   if (!source.brief) throw new Error("the github source briefs nothing");
-  return Promise.resolve(source.brief({ ...gh.ctx, ticket, snapshot } as HookContext));
+  return Promise.resolve(source.brief({ ...gh.ctx, item, snapshot } as HookContext));
 };
 
 const threads = (resolved: boolean[]): FakeThread[] =>
@@ -40,10 +40,10 @@ const gate = (when: Condition, graph: Graph, id: string): boolean => {
 };
 
 describe("the GitHub source", () => {
-  it("lists open issues as ticket nodes with priority from P labels", async () => {
+  it("lists open issues as item nodes with priority from P labels", async () => {
     const gh = createFakeTracker([{ number: 1, labels: ["lr:auto", "P1"] }, { number: 2 }]);
     const g = await sourceOf(gh).list(ctx(gh));
-    expect(g.nodes.map((n) => [n.id, n.kind, n.priority])).toEqual([["1", "ticket", 1], ["2", "ticket", null]]);
+    expect(g.nodes.map((n) => [n.id, n.kind, n.priority])).toEqual([["1", "item", 1], ["2", "item", null]]);
   });
 
   it("maps sub-issues to child-of, closed ones included, with their close reason", async () => {
@@ -95,17 +95,17 @@ describe("the GitHub source", () => {
     expect(g.relationships).toEqual([{ from: "3", to: "1", type: "child-of" }]);
   });
 
-  it("reads a ticket's parent, and the edge to it", async () => {
+  it("reads an item's parent, and the edge to it", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2, parent: 1 }]);
     const g = await sourceOf(gh).read("2", ctx(gh));
     expect(g.nodes.map((n) => n.id)).toEqual(["2", "1"]);
     expect(g.relationships).toEqual([{ from: "2", to: "1", type: "child-of" }]);
   });
 
-  it("reports every pull request on the ticket's branch and every one that closes it, once each", async () => {
+  it("reports every pull request on the item's branch and every one that closes it, once each", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
     gh.openPull({ number: 20, head: "landrace/7", headSha: "a", merged: true, threads: [] });
-    // On the ticket's branch *and* closing it: found both ways, reported once.
+    // On the item's branch *and* closing it: found both ways, reported once.
     gh.openPull({ number: 21, head: "landrace/7", headSha: "b", merged: false, threads: [{ isResolved: false, body: "x" }], closes: [7] });
     gh.openPull({ number: 22, head: "feature/other", headSha: "c", merged: false, threads: [], closes: [7] });
     const g = await sourceOf(gh).read("7", ctx(gh));
@@ -125,7 +125,7 @@ describe("the GitHub source", () => {
       expect(g.nodes.find((n) => n.id === "pr-20")?.createdAt).toBe(Date.parse("2026-09-21T12:30:00Z"));
     }
     // The fake answers the field whatever it is asked; GitHub answers only what the query names.
-    for (const name of ["LandraceTicket", "LandraceIssues", "LandracePulls"]) {
+    for (const name of ["LandraceItem", "LandraceIssues", "LandracePulls"]) {
       const sent = operations(gh, name);
       expect(sent.length).toBeGreaterThan(0);
       for (const q of sent) expect(q.query).toContain("createdAt");
@@ -140,22 +140,22 @@ describe("the GitHub source", () => {
       expect(g.nodes.find((n) => n.id === "7")?.updatedAt).toBe(Date.parse("2026-09-29T08:00:00Z"));
       expect(g.nodes.find((n) => n.id === "pr-20")?.updatedAt).toBe(Date.parse("2026-09-29T09:15:00Z"));
     }
-    for (const name of ["LandraceTicket", "LandraceIssues", "LandracePulls"]) {
+    for (const name of ["LandraceItem", "LandraceIssues", "LandracePulls"]) {
       const sent = operations(gh, name);
       expect(sent.length).toBeGreaterThan(0);
       for (const q of sent) expect(q.query).toContain("updatedAt");
     }
   });
 
-  describe("recently closed tickets, for the board's Done lane", () => {
+  describe("recently closed items, for the board's Done lane", () => {
     const daysAgo = (d: number): string => new Date(Date.now() - d * 86_400_000).toISOString();
     const closed = (number: number, days: number, labels: string[] = ["lr:stage:build"]): Partial<FakeIssue> =>
       ({ number, state: "closed", stateReason: "COMPLETED", labels, closedAt: daysAgo(days), updatedAt: daysAgo(days) });
 
-    it("lists a ticket Landrace worked and closed in the last 30 days, as closed", async () => {
+    it("lists an item Landrace worked and closed in the last 30 days, as closed", async () => {
       const gh = createFakeTracker([{ number: 1 }, closed(19, 2)]);
       const g = await sourceOf(gh).list(ctx(gh));
-      expect(g.nodes.find((n) => n.id === "19")).toMatchObject({ kind: "ticket", closed: "done" });
+      expect(g.nodes.find((n) => n.id === "19")).toMatchObject({ kind: "item", closed: "done" });
     });
 
     it("leaves out an issue Landrace never moved, and one closed more than 30 days ago", async () => {
@@ -175,12 +175,12 @@ describe("the GitHub source", () => {
     });
 
     /*
-     * The same window, for a merged or closed pull request on a ticket
-     * that closed inside it — the bug this covers: a Done ticket showed no
+     * The same window, for a merged or closed pull request on an item
+     * that closed inside it — the bug this covers: a Done item showed no
      * pull request at all, because `listGraph` paged open pull requests
      * only, and a merged one never reaches an OPEN-states query.
      */
-    it("lists a merged pull request on a recently closed ticket, tied to it", async () => {
+    it("lists a merged pull request on a recently closed item, tied to it", async () => {
       const gh = createFakeTracker([{ number: 1 }, closed(19, 2)]);
       gh.openPull({ number: 118, head: "landrace/19", merged: true, updatedAt: daysAgo(2) });
       const g = await sourceOf(gh).list(ctx(gh));
@@ -215,7 +215,7 @@ describe("the GitHub source", () => {
   });
 
   /*
-   * A ticket can have a pull request per branch its workflow names, and
+   * An item can have a pull request per branch its workflow names, and
    * `pull.open` is satisfied per branch — so every pull request says which
    * branch it is from, whichever read found it.
    */
@@ -232,13 +232,13 @@ describe("the GitHub source", () => {
 
   /*
    * A fork names its head branch in its own repository, and can name it
-   * anything — ours included. Tied to a ticket by that name, anybody's fork
+   * anything — ours included. Tied to an item by that name, anybody's fork
    * could stand in for the pull request `pull.open` is waiting to open, or
-   * pull a ticket into review. A fork's pull request still counts when it
-   * says it closes the ticket, and then carries no branch for `pull.open` to
+   * pull an item into review. A fork's pull request still counts when it
+   * says it closes the item, and then carries no branch for `pull.open` to
    * match on.
    */
-  it("ties a fork's pull request to a ticket only by what it closes, and reports no branch for it", async () => {
+  it("ties a fork's pull request to an item only by what it closes, and reports no branch for it", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
     gh.openPull({ number: 40, head: "landrace/7", crossRepository: true });
     gh.openPull({ number: 41, head: "landrace/7", crossRepository: true, closes: [7] });
@@ -263,7 +263,7 @@ describe("the GitHub source", () => {
    * one only. Both are nodes now, so a merged one beside a newer open one
    * still leaves work not done.
    */
-  it("does not read a ticket as merged while a newer pull request on it is open", async () => {
+  it("does not read an item as merged while a newer pull request on it is open", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
     gh.openPull({ number: 20, head: "landrace/7", merged: true, threads: [] });
     gh.openPull({ number: 21, head: "landrace/7", merged: false, threads: [] });
@@ -274,7 +274,7 @@ describe("the GitHub source", () => {
   /*
    * A thread left open on a merged pull request is nothing a fix round can
    * act on — the briefing shows open pull requests only — so counting it
-   * would send the ticket to fix-review for ever with nothing to fix.
+   * would send the item to fix-review for ever with nothing to fix.
    */
   it("counts open threads on open pull requests only, and pays nothing to count a merged one", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
@@ -292,7 +292,7 @@ describe("the GitHub source", () => {
   /*
    * A present zero, not an absent count: with every pull request merged, a
    * sum over nothing would be no path at all, and every trigger reading it —
-   * "no threads are open" included — would read false and park the ticket.
+   * "no threads are open" included — would read false and park the item.
    */
   it("sums open threads to zero when the only pull request is merged", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
@@ -304,14 +304,14 @@ describe("the GitHub source", () => {
     expect(operations(gh, "LandraceThreads")).toEqual([]);
   });
 
-  it("halts a ticket carrying two P labels on read, and schedules it as unprioritised on list", async () => {
+  it("halts an item carrying two P labels on read, and schedules it as unprioritised on list", async () => {
     const gh = createFakeTracker([{ number: 4, labels: ["P0", "P2"] }]);
     await expect(sourceOf(gh).read("4", ctx(gh))).rejects.toThrow(/P0.*P2/);
     const g = await sourceOf(gh).list(ctx(gh));
     expect(g.nodes[0]?.priority).toBeNull();
   });
 
-  it("halts on a pull request tied to two tickets, and lists it tied to neither", async () => {
+  it("halts on a pull request tied to two items, and lists it tied to neither", async () => {
     const gh = createFakeTracker([{ number: 7 }, { number: 8 }]);
     gh.openPull({ number: 40, head: "landrace/7", threads: [], closes: [8] });
     await expect(sourceOf(gh).read("7", ctx(gh))).rejects.toThrow(/#40 is tied to #7 and #8|#40 is tied to #8 and #7/);
@@ -320,7 +320,7 @@ describe("the GitHub source", () => {
     expect(g.relationships.filter((r) => r.type === "implements")).toEqual([]);
   });
 
-  it("briefs the open threads of every open pull request on the ticket", async () => {
+  it("briefs the open threads of every open pull request on the item", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
     gh.openPull({ number: 21, head: "landrace/7", headSha: "b", merged: false, threads: [{ isResolved: false, body: "fix this", path: "a.ts", line: 3 }] });
     const brief = await briefOf(gh, "7");
@@ -343,7 +343,7 @@ describe("the list a tick schedules from", () => {
     expect(g.relationships).toEqual([]);
   });
 
-  it("ties an open pull request to its ticket by branch or by closing reference, and lists no merged one", async () => {
+  it("ties an open pull request to its item by branch or by closing reference, and lists no merged one", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2 }]);
     gh.openPull({ number: 10, head: "landrace/1", threads: [] });
     gh.openPull({ number: 11, head: "feature/x", closes: [2], threads: [] });
@@ -382,7 +382,7 @@ describe("the list a tick schedules from", () => {
     await expect(sourceOf(gh).list(ctx(gh))).rejects.toThrow(/more than 1000 open pull requests/);
   });
 
-  it("carries who each ticket is assigned to, so the tick answers the rule before it reads anything", async () => {
+  it("carries who each item is assigned to, so the tick answers the rule before it reads anything", async () => {
     const gh = createFakeTracker([
       { number: 1, assignees: [{ login: "ann" }, { login: "bo" }] },
       { number: 2, assignees: [] },
@@ -396,11 +396,11 @@ describe("the list a tick schedules from", () => {
   });
 });
 
-describe("a pull request's reference is derived from the ticket, never stored", () => {
-  it("asks about the ticket's own branch, in the configured repository", async () => {
+describe("a pull request's reference is derived from the item, never stored", () => {
+  it("asks about the item's own branch, in the configured repository", async () => {
     const gh = createFakeTracker([{ number: 77 }]);
     await sourceOf(gh).read("77", ctx(gh));
-    expect(operations(gh, "LandraceTicket")[0]?.variables).toMatchObject({
+    expect(operations(gh, "LandraceItem")[0]?.variables).toMatchObject({
       owner: "acme", name: "widgets", number: 77, head: "landrace/77",
     });
   });
@@ -414,7 +414,7 @@ describe("a pull request's reference is derived from the ticket, never stored", 
     expect(gate({ "rel.implements.in.total": { $gt: 0 }, "rel.implements.in.sum.openThreads": 0 }, g, "1")).toBe(false);
   });
 
-  it("does not find another ticket's pull request", async () => {
+  it("does not find another item's pull request", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2 }]);
     gh.openPull({ head: "landrace/2", threads: threads([false]) });
     expect((await sourceOf(gh).read("1", ctx(gh))).nodes.filter((n) => n.kind === "pull-request")).toEqual([]);
@@ -431,7 +431,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({ merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2 });
   });
 
-  it("reports zero when every thread is resolved, which is what lets the ticket out of the loop", async () => {
+  it("reports zero when every thread is resolved, which is what lets the item out of the loop", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", threads: threads([true, true]) });
     const g = await sourceOf(gh).read("1", ctx(gh));
@@ -533,7 +533,7 @@ describe("untrusted thread text does not reach the graph", () => {
 
 /**
  * An empty answer and a broken one look identical to a predicate — both read
- * as "no pull request yet", which parks the ticket at `build` forever with
+ * as "no pull request yet", which parks the item at `build` forever with
  * nothing said. So neither is allowed to come back as one.
  */
 describe("a failed read is a failure, not an absent pull request", () => {
@@ -563,12 +563,12 @@ describe("a failed read is a failure, not an absent pull request", () => {
     await expect(elsewhere.source.list(ctx(gh))).rejects.toThrow(/acme\/other/);
   });
 
-  it("refuses a ticket with more sub-issues than one read carries, rather than counting a short page", async () => {
+  it("refuses an item with more sub-issues than one read carries, rather than counting a short page", async () => {
     const gh = createFakeTracker([{ number: 1 }, ...Array.from({ length: 51 }, (_, i) => ({ number: i + 2, parent: 1 }))]);
     await expect(sourceOf(gh).read("1", ctx(gh))).rejects.toThrow(/#1 has 51 sub-issues, more than the 50/);
   });
 
-  it("reports a ticket that is not an issue at all", async () => {
+  it("reports an item that is not an issue at all", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     await expect(sourceOf(gh).read("5", ctx(gh))).rejects.toThrow(/#5 is not an issue in acme\/widgets/);
   });
@@ -686,7 +686,7 @@ describe("the open threads reach the prompt, and only the prompt", () => {
     const other = githubHooks({ repo: "acme/other", token: "t", fetchImpl: gh.fetchImpl, git: noBranches });
     const brief = other.source.brief;
     if (!brief) throw new Error("the github source briefs nothing");
-    await expect(Promise.resolve(brief({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext)))
+    await expect(Promise.resolve(brief({ ...gh.ctx, item: "1", snapshot: {} } as HookContext)))
       .rejects.toThrow(/answered with nothing at all/);
   });
 
@@ -705,11 +705,11 @@ describe("the open threads reach the prompt, and only the prompt", () => {
 });
 
 /**
- * The whole of a ticket, for the retro: what was said on it and every thread
+ * The whole of an item, for the retro: what was said on it and every thread
  * raised on its pull requests, settled or not, merged or not. The open list
- * above is what is left to do; this is how the ticket got here.
+ * above is what is left to do; this is how the item got here.
  */
-describe("the ticket's history reaches the prompt, labelled by who said it", () => {
+describe("the item's history reaches the prompt, labelled by who said it", () => {
   const at = (seconds: number): string => new Date(Date.UTC(2026, 1, 1, 0, 0, seconds)).toISOString();
 
   it("labels a person's comment, a Landrace record, a resolved reviewer thread and a person's open thread on a merged pull request", async () => {
@@ -785,7 +785,7 @@ describe("the ticket's history reaches the prompt, labelled by who said it", () 
       createdAt: at(2 * i + 1),
     })) });
 
-    const briefed = await buildBriefing([sourceOf(gh)], { ...gh.ctx, ticket: "1", snapshot: {} } as HookContext, "{brief.project.history}");
+    const briefed = await buildBriefing([sourceOf(gh)], { ...gh.ctx, item: "1", snapshot: {} } as HookContext, "{brief.project.history}");
     const text = briefed.project?.history ?? "";
 
     expect(text).not.toContain("[truncated]");
@@ -797,26 +797,26 @@ describe("the ticket's history reaches the prompt, labelled by who said it", () 
   it("says so plainly when nothing was said and nothing was opened", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     const text = (await briefOf(gh, "1")).history ?? "";
-    expect(text).toMatch(/Nothing has been said on this ticket, and no review thread was raised/);
+    expect(text).toMatch(/Nothing has been said on this item, and no review thread was raised/);
   });
 });
 
 describe("the operator reads back what it wrote as the source would", () => {
-  it("returns a created issue as its ticket node", async () => {
+  it("returns a created issue as its item node", async () => {
     const gh = createFakeTracker([]);
-    const node = await gh.registry.operator?.createTicket({ title: "new", labels: ["lr:auto", "P2"] }, gh.ctx);
-    expect(node).toMatchObject({ id: "1", kind: "ticket", title: "new", priority: 2, closed: null, state: { labels: ["lr:auto", "P2"] } });
+    const node = await gh.registry.operator?.createItem({ title: "new", labels: ["lr:auto", "P2"] }, gh.ctx);
+    expect(node).toMatchObject({ id: "1", kind: "item", title: "new", priority: 2, closed: null, state: { labels: ["lr:auto", "P2"] } });
     expect(operations(gh, "LandraceIssue")).toHaveLength(1);
   });
 
-  it("returns an updated issue as its ticket node, closed as done", async () => {
+  it("returns an updated issue as its item node, closed as done", async () => {
     const gh = createFakeTracker([{ number: 3, labels: ["a"] }]);
-    const node = await gh.registry.operator?.updateTicket("3", { state: "closed", addLabels: ["b"], removeLabels: ["a"] }, gh.ctx);
+    const node = await gh.registry.operator?.updateItem("3", { state: "closed", addLabels: ["b"], removeLabels: ["a"] }, gh.ctx);
     expect(node).toMatchObject({ id: "3", closed: "done", state: { labels: ["b"] } });
   });
 });
 
-describe("a read carries the ticket's whole subtree", () => {
+describe("a read carries the item's whole subtree", () => {
   it("reads grandchildren and every descendant's pull requests, with their edges", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2, parent: 1 }, { number: 3, parent: 2 }]);
     gh.openPull({ head: "landrace/2", number: 20, threads: threads([false, true]) });
@@ -856,7 +856,7 @@ describe("a read carries the ticket's whole subtree", () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", number: 10 });
     const origin = { parent: "1", stage: "breakdown", round: 1 };
-    const child = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx);
+    const child = await gh.registry.operator!.createItem({ title: "api", parent: "1", origin }, gh.ctx);
     gh.openPull({ head: `landrace/${child.id}`, number: 20 });
     gh.issues.set(3, { ...gh.issues.get(Number(child.id))!, number: 3, id: 100_003, author: "a-person", parent: Number(child.id) });
     gh.openPull({ head: "landrace/3", number: 30 });
@@ -866,13 +866,13 @@ describe("a read carries the ticket's whole subtree", () => {
     expect(ids).toEqual(["pr-30", "3", "pr-20", child.id]);
 
     await createDispatcher(gh.registry.post).apply(
-      { type: "nodes.close", ids }, { ...gh.ctx, ticket: "1", snapshot: { graph } } as HookContext,
+      { type: "nodes.close", ids }, { ...gh.ctx, item: "1", snapshot: { graph } } as HookContext,
     );
 
     const after = await sourceOf(gh).read("1", ctx(gh));
     const closed = (id: string) => after.nodes.find((n) => n.id === id)?.closed;
     expect(ids.map(closed)).toEqual(["dropped", "dropped", "dropped", "dropped"]);
-    // The ticket's own pull request is not the cascade's to close.
+    // The item's own pull request is not the cascade's to close.
     expect(closed("pr-10")).toBeNull();
     expect(gh.registry.post[0]!.satisfied({ graph: after }, { type: "nodes.close", ids })).toBe(true);
   });
@@ -881,15 +881,15 @@ describe("a read carries the ticket's whole subtree", () => {
 /**
  * A published spec is a node of its own: the board draws only what a source
  * reports, and a page known only to the artifact hook was invisible there —
- * ticket #19 sat at spec-human-review with its spec published and nothing on
+ * item #19 sat at spec-human-review with its spec published and nothing on
  * the board to click. The artifact state the workflow routes on is unchanged;
  * this is the same page, reported as the graph sees it.
  */
 describe("a published spec page is a document node", () => {
-  const spec = (ticket: string): Node => ({
-    id: `spec-${ticket}`, kind: "document", title: "Spec",
+  const spec = (item: string): Node => ({
+    id: `spec-${item}`, kind: "document", title: "Spec",
     // The fake has no Pages site unless a test gives it one, so the page is linked as the file.
-    link: `https://github.com/acme/widgets/blob/gh-pages/specs/${ticket}/index.md`,
+    link: `https://github.com/acme/widgets/blob/gh-pages/specs/${item}/index.md`,
     closed: null, priority: null, origin: null, state: {},
   });
   const documents = (g: Graph) => g.nodes.filter((n) => n.kind === "document");
@@ -900,12 +900,12 @@ describe("a published spec page is a document node", () => {
     return { events, logged };
   };
 
-  it("declares documents as singular: a page documents one ticket", () => {
+  it("declares documents as singular: a page documents one item", () => {
     const gh = createFakeTracker();
     expect(sourceOf(gh).relations).toContainEqual({ type: "documents", singular: true });
   });
 
-  it("lists a ticket's page as a document, with the edge to its ticket, and none for a ticket without one", async () => {
+  it("lists an item's page as a document, with the edge to its item, and none for an item without one", async () => {
     const gh = createFakeTracker([{ number: 19 }, { number: 20 }]);
     gh.seedFile("specs/19/index.md", "# Spec");
     const g = await sourceOf(gh).list(ctx(gh));
@@ -916,7 +916,7 @@ describe("a published spec page is a document node", () => {
     expect(graphProblem(g, sourceOf(gh).relations)).toBeNull();
   });
 
-  it("reads the whole Pages branch once per list, however many tickets have a page", async () => {
+  it("reads the whole Pages branch once per list, however many items have a page", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2 }, { number: 3 }]);
     for (const n of [1, 2, 3]) gh.seedFile(`specs/${n}/index.md`, `spec ${n}`);
     const g = await sourceOf(gh).list(ctx(gh));
@@ -925,10 +925,10 @@ describe("a published spec page is a document node", () => {
     expect(gh.requests.filter((r) => r.path.startsWith("/contents/"))).toEqual([]);
   });
 
-  it("lists no document for a page whose ticket is not listed, nor for a file that is not a spec page", async () => {
+  it("lists no document for a page whose item is not listed, nor for a file that is not a spec page", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2, state: "closed" }]);
-    gh.seedFile("specs/2/index.md", "closed ticket, not listed");
-    gh.seedFile("specs/99/index.md", "no such ticket");
+    gh.seedFile("specs/2/index.md", "closed item, not listed");
+    gh.seedFile("specs/99/index.md", "no such item");
     gh.seedFile("specs/1/notes.md", "not the page");
     gh.seedFile("specs/1/index.md.bak", "not the page either");
     gh.seedFile("index.md", "the site's own home page");
@@ -947,7 +947,7 @@ describe("a published spec page is a document node", () => {
   /*
    * GitHub stops a recursive listing past its own limit and says so. Some of
    * the pages is a set known to be short — the board would show a spec on one
-   * ticket and silently none on the next — so the answer is none, said out
+   * item and silently none on the next — so the answer is none, said out
    * loud, and the tick goes on: nothing it works from depends on this.
    */
   it("lists no document at all from a truncated tree, logs why, and does not fail the tick", async () => {
@@ -995,9 +995,9 @@ describe("a published spec page is a document node", () => {
 
   /*
    * The listing is display only, and a list() that throws stalls every
-   * ticket's work for the sake of a board row. So a tree read that fails for
+   * item's work for the sake of a board row. So a tree read that fails for
    * any reason but "no branch" costs this tick its documents, says why, and
-   * nothing else — the tickets and pull requests are listed as ever.
+   * nothing else — the items and pull requests are listed as ever.
    */
   it.each([
     [500, "a server error"],
@@ -1047,7 +1047,7 @@ describe("a published spec page is a document node", () => {
     expect(events.filter((e) => e.event === "docs.skipped")).toEqual([]);
   });
 
-  it("reads the ticket's page into its neighbourhood, counted under rel.documents", async () => {
+  it("reads the item's page into its neighbourhood, counted under rel.documents", async () => {
     const gh = createFakeTracker([{ number: 19 }]);
     gh.seedFile("specs/19/index.md", "# Spec");
     const source = sourceOf(gh);
@@ -1065,9 +1065,9 @@ describe("a published spec page is a document node", () => {
     expect(treeReads(gh)).toEqual([]);
   });
 
-  it("reads no document for a ticket with no page, and counts zero", async () => {
+  it("reads no document for an item with no page, and counts zero", async () => {
     const gh = createFakeTracker([{ number: 19 }, { number: 20 }]);
-    gh.seedFile("specs/20/index.md", "another ticket's");
+    gh.seedFile("specs/20/index.md", "another item's");
     const source = sourceOf(gh);
     const g = await source.read("19", ctx(gh));
     expect(documents(g)).toEqual([]);
@@ -1076,7 +1076,7 @@ describe("a published spec page is a document node", () => {
     expect(rel.rel.documents?.in.total).toBe(0);
   });
 
-  it("reports a failed page read rather than reading the ticket as having none", async () => {
+  it("reports a failed page read rather than reading the item as having none", async () => {
     const gh = createFakeTracker([{ number: 19 }]);
     gh.seedFile("specs/19/index.md", "# Spec");
     gh.breakOn((r) => r.path.startsWith("/contents/"), 500);

@@ -4,7 +4,7 @@ import { extractJsonBlock } from "#agent/json-block.js";
  * Fix round 4: the five FC cases from task-7-8-fix4-brief.md, written and
  * watched failing against the round-3 (ambiguity-counting) implementation
  * *before* the trailing rule replaced it, per explicit instruction. Each of
- * these discarded a completed, honest agent run and blocked the ticket
+ * these discarded a completed, honest agent run and blocked the item
  * terminally under round 3 — the ruling is that the answer is simply the
  * last strict ```json fence with nothing but whitespace after it, and none
  * of these should be treated as ambiguous or unparseable once that lands.

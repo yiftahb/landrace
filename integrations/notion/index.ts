@@ -1,6 +1,6 @@
 /*
  * Notion, as landrace ships it (`landrace/integrations/notion`): a project's
- * docs, each ticket's spec a row of the `Landrace specs` database in a page
+ * docs, each item's spec a row of the `Landrace specs` database in a page
  * the operator shares with a Notion integration. Beside any tracker and forge:
  *
  *   export const { preflight, source, operator, pre, post, spec } = compose({

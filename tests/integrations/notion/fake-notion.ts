@@ -46,7 +46,7 @@ export interface FakeRequest { method: string; path: string; body: Json | undefi
 export interface FakeRow {
   id: string;
   url: string;
-  ticket: string;
+  item: string;
   /** `Source` as stored, a rich text object at a time. */
   source: Rich[];
   /** The row's body, in the form it was written. */
@@ -66,7 +66,7 @@ export interface FakeNotion {
   /** A `Landrace specs` database already there, as a previous start left it. */
   seedDatabase(title?: string): string;
   /** A row already in the (one) database, its `Source` the given rich text contents. */
-  seedRow(ticket: string, source: string[]): string;
+  seedRow(item: string, source: string[]): string;
   /** Answer requests that match with this status instead; a 429 says to retry after `retryAfter` seconds. */
   failOn(match: (r: FakeRequest) => boolean, status: number, opts?: { times?: number; retryAfter?: string }): void;
   /** The operator removes the integration from the parent page's connections. */
@@ -376,7 +376,7 @@ export function createFakeNotion({ token = "secret_test-token" }: { token?: stri
       return {
         id: dashed(r.id),
         url: urlOf(r.id),
-        ticket: plain(r.values[titleName(db)] ?? []),
+        item: plain(r.values[titleName(db)] ?? []),
         source: r.values.Source ?? [],
         blocks: r.children.flatMap((c) => {
           const block = blocks.get(c);
@@ -388,15 +388,17 @@ export function createFakeNotion({ token = "secret_test-token" }: { token?: stri
       const db = databases.get(c);
       return db ? [{ id: dashed(db.id), title: plain(db.title) }] : [];
     }),
+    // Seeded as a database made before the rename of ticket to item: its
+    // title column is `Ticket`, and stays so in every database landrace makes.
     seedDatabase: (title = "Landrace specs") =>
       dashed(createDatabase([{ type: "text", text: { content: title } }], { Ticket: { title: {} }, Source: { rich_text: {} } }).id),
-    seedRow: (ticket, source) => {
+    seedRow: (item, source) => {
       const db = [...databases.values()][0];
       if (!db) throw new Error("seed a database before its rows");
       const row: Row = {
         id: newId(), dataSource: db.dataSource, children: [], trashed: false,
         values: {
-          [titleName(db)]: [{ type: "text", text: { content: ticket } }],
+          [titleName(db)]: [{ type: "text", text: { content: item } }],
           Source: source.map((content) => ({ type: "text", text: { content } })),
         },
       };

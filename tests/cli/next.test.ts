@@ -32,7 +32,7 @@ describe("landrace next, from the command line", () => {
       '      - { when: { "run.outputs.b": { $exists: true } } }',
       "",
     ].join("\n"));
-    await writeFile(join(dir, "steps", "b.md"), "---\ncapabilities: [tickets:create]\n---\n\ngo\n");
+    await writeFile(join(dir, "steps", "b.md"), "---\ncapabilities: [items:create]\n---\n\ngo\n");
     const snapshot = join(dir, "snap.json");
     await writeFile(snapshot, JSON.stringify({ entries: [], run: { stage: null } }));
 

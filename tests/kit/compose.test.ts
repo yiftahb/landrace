@@ -18,15 +18,15 @@ const ctx: RuntimeContext = {
   config: {} as never, secrets: new Map(), signal: new AbortController().signal,
   log: (event, data) => { logged.push({ event, ...(data === undefined ? {} : { data }) }); },
 };
-const on = (ticket: string, snapshot: Snapshot = {}): HookContext => ({ ...ctx, ticket, snapshot });
+const on = (item: string, snapshot: Snapshot = {}): HookContext => ({ ...ctx, item, snapshot });
 
-/** The ticket's snapshot as a converge pass would hand it to satisfied(): its graph and its node. */
-const snapshotOf = async (hooks: ReturnType<typeof compose>, ticket: string): Promise<Snapshot> => {
-  const graph = await hooks.source.read(ticket, ctx);
-  return { graph, node: graph.nodes.find((n) => n.id === ticket) };
+/** The item's snapshot as a converge pass would hand it to satisfied(): its graph and its node. */
+const snapshotOf = async (hooks: ReturnType<typeof compose>, item: string): Promise<Snapshot> => {
+  const graph = await hooks.source.read(item, ctx);
+  return { graph, node: graph.nodes.find((n) => n.id === item) };
 };
 
-const seeded = (): MemoryTracker => new MemoryTracker({ tickets: [{ id: "1" }, { id: "2", parent: "1" }] });
+const seeded = (): MemoryTracker => new MemoryTracker({ items: [{ id: "1" }, { id: "2", parent: "1" }] });
 
 describe("compose refuses two roles claiming one thing", () => {
   it("halts on an effect type two roles both handle, naming both", () => {
@@ -84,10 +84,10 @@ describe("compose refuses two roles claiming one thing", () => {
   it("halts on a path under another role's, whose fragment would replace the other's whole", async () => {
     class Nested extends MemoryForge {
       override provides(): string[] {
-        return ["ticket.pulls"];
+        return ["item.pulls"];
       }
     }
-    expect(() => compose({ tracker: seeded(), forge: new Nested() })).toThrow(/"ticket".*the tracker.*the forge/);
+    expect(() => compose({ tracker: seeded(), forge: new Nested() })).toThrow(/"item".*the tracker.*the forge/);
   });
 
   it("refuses a node id two roles both report, on list and on read, naming both", async () => {
@@ -122,7 +122,7 @@ describe("nodes.close, the one effect two roles share", () => {
     }
     const forge = new Forge();
     const pr = forge.add("2");
-    const hooks = compose({ tracker: new Tracker({ tickets: [{ id: "1" }, { id: "2", parent: "1" }] }), forge });
+    const hooks = compose({ tracker: new Tracker({ items: [{ id: "1" }, { id: "2", parent: "1" }] }), forge });
     const effect = { type: "nodes.close", ids: [pr, "2"] };
 
     expect(hooks.post.handles.filter((t) => t === "nodes.close")).toHaveLength(1);
@@ -133,7 +133,7 @@ describe("nodes.close, the one effect two roles share", () => {
     expect(hooks.post.satisfied(await snapshotOf(hooks, "1"), effect)).toBe(true);
   });
 
-  // Core orders a close so a pull request is dropped before the ticket it
+  // Core orders a close so a pull request is dropped before the item it
   // implements; the split must not regroup the ids and undo that.
   it("closes the ids in the order they were planned, whichever role each is", async () => {
     const closed: string[] = [];
@@ -151,7 +151,7 @@ describe("nodes.close, the one effect two roles share", () => {
     }
     const forge = new Forge();
     const pr = forge.add("3");
-    const hooks = compose({ tracker: new Tracker({ tickets: [{ id: "1" }, { id: "2", parent: "1" }, { id: "3", parent: "1" }] }), forge });
+    const hooks = compose({ tracker: new Tracker({ items: [{ id: "1" }, { id: "2", parent: "1" }, { id: "3", parent: "1" }] }), forge });
     await hooks.post.apply({ type: "nodes.close", ids: ["2", pr, "3"] }, on("1", await snapshotOf(hooks, "1")));
     expect(closed).toEqual(["2", "pr-1", "3"]);
   });
@@ -177,12 +177,12 @@ describe("a role changed by subclassing", () => {
           "tracker.assign": {
             satisfied: (snapshot, effect) =>
               ((snapshot.node as Node | undefined)?.state.assignees as string[] | undefined ?? []).includes(String(effect.login)),
-            apply: async (effect, { ticket }) => { this.row(ticket).assignees.push(String(effect.login)); },
+            apply: async (effect, { item }) => { this.row(item).assignees.push(String(effect.login)); },
           },
         };
       }
     }
-    const hooks = compose({ tracker: new Assigning({ tickets: [{ id: "1" }] }), forge: new MemoryForge() });
+    const hooks = compose({ tracker: new Assigning({ items: [{ id: "1" }] }), forge: new MemoryForge() });
     const assign = { type: "tracker.assign", login: "someone" };
 
     expect(hooks.post.handles).toContain("tracker.assign");
@@ -210,8 +210,8 @@ describe("the preflight", () => {
 });
 
 describe("the graph compose reads", () => {
-  it("halts a read on a pull request tied to two tickets, and lists it with no edge", async () => {
-    const tracker = new MemoryTracker({ tickets: [{ id: "7" }, { id: "8", parent: "7" }] });
+  it("halts a read on a pull request tied to two items, and lists it with no edge", async () => {
+    const tracker = new MemoryTracker({ items: [{ id: "7" }, { id: "8", parent: "7" }] });
     const forge = new MemoryForge();
     // Opened against #7, from #8's branch: it names both, and a read of either sees both.
     const pr = forge.add("7", { branch: "landrace/8" });
@@ -223,10 +223,10 @@ describe("the graph compose reads", () => {
     expect(listed.nodes.map((n) => n.id)).not.toContain(pr);
   });
 
-  it("halts a read on a pull request from an unrelated ticket's landrace/ head naming this one", async () => {
-    const tracker = new MemoryTracker({ tickets: [{ id: "8" }, { id: "12" }] });
+  it("halts a read on a pull request from an unrelated item's landrace/ head naming this one", async () => {
+    const tracker = new MemoryTracker({ items: [{ id: "8" }, { id: "12" }] });
     const forge = new MemoryForge();
-    // #12's branch, its text closing #8: #12 is outside #8's neighbourhood, and still a ticket.
+    // #12's branch, its text closing #8: #12 is outside #8's neighbourhood, and still an item.
     forge.add("8", { branch: "landrace/12" });
     const hooks = compose({ tracker, forge });
 
@@ -234,13 +234,13 @@ describe("the graph compose reads", () => {
     await expect(hooks.source.read("12", ctx)).rejects.toThrow("pull request #1 is tied to #8 and #12");
   });
 
-  it("ties a pull request to its ticket by a landrace/{ticket} head or by the tickets it names, and nothing else", async () => {
+  it("ties a pull request to its item by a landrace/{item} head or by the items it names, and nothing else", async () => {
     class Forked extends MemoryForge {
-      override async pullsNaming(ticket: string): Promise<PullRecord[]> {
-        return (await super.pullsNaming(ticket)).map((p) => (p.number === 3 ? { ...p, branch: undefined, tickets: [] } : p));
+      override async pullsNaming(item: string): Promise<PullRecord[]> {
+        return (await super.pullsNaming(item)).map((p) => (p.number === 3 ? { ...p, branch: undefined, items: [] } : p));
       }
       override async pulls(): Promise<PullRecord[]> {
-        return (await super.pulls()).map((p) => (p.number === 3 ? { ...p, branch: undefined, tickets: [] } : p));
+        return (await super.pulls()).map((p) => (p.number === 3 ? { ...p, branch: undefined, items: [] } : p));
       }
     }
     const forge = new Forked();
@@ -254,17 +254,17 @@ describe("the graph compose reads", () => {
     expect(edges(await hooks.source.list(ctx))).toEqual(["pr-1", "pr-2"]);
   });
 
-  // A workflow with two branches per ticket names the second landrace/{ticket}-api:
-  // that head names no ticket there is, so the pull request is the one its text names.
-  it("reads a landrace/ head that is no ticket's as naming nothing", async () => {
-    const state = createExternalState({ tickets: [{ id: "1" }] });
+  // A workflow with two branches per item names the second landrace/{item}-api:
+  // that head names no item there is, so the pull request is the one its text names.
+  it("reads a landrace/ head that is no item's as naming nothing", async () => {
+    const state = createExternalState({ items: [{ id: "1" }] });
     const pr = state.openPull("1", { branch: "landrace/1-api" });
     const tied = { from: pr, to: "1", type: "implements" };
     expect((await state.source.read("1", ctx)).relationships).toContainEqual(tied);
     expect((await state.source.list(ctx)).relationships).toContainEqual(tied);
   });
 
-  it("declares every role's relationship types, and draws a published page beside its ticket", async () => {
+  it("declares every role's relationship types, and draws a published page beside its item", async () => {
     const docs = new MemoryDocs();
     const hooks = compose({ tracker: seeded(), forge: new MemoryForge(), docs });
     await docs.publish("2", "# Spec");
@@ -275,7 +275,7 @@ describe("the graph compose reads", () => {
     expect((await hooks.source.list(ctx)).relationships).toContainEqual({ from: "spec-2", to: "2", type: "documents" });
   });
 
-  it("lists the tickets without the pages when a page's link cannot be had, and says so", async () => {
+  it("lists the items without the pages when a page's link cannot be had, and says so", async () => {
     class Unlinked extends MemoryDocs {
       override async link(): Promise<string> {
         throw new Error("the site answered 502");
@@ -289,7 +289,7 @@ describe("the graph compose reads", () => {
     expect(logged).toEqual([expect.objectContaining({ event: "docs.skipped", data: expect.objectContaining({ reason: expect.stringMatching(/502/) }) })]);
   });
 
-  it("lists the tickets and their work without the pages when the docs listing fails, and says so", async () => {
+  it("lists the items and their work without the pages when the docs listing fails, and says so", async () => {
     class Unlisted extends MemoryDocs {
       override async published(): Promise<Set<string>> {
         throw new Error("the listing timed out");
@@ -314,7 +314,7 @@ describe("the briefing", () => {
         }];
       }
     }
-    const tracker = new MemoryTracker({ tickets: [{ id: "1" }] });
+    const tracker = new MemoryTracker({ items: [{ id: "1" }] });
     tracker.post("1", "a-person", "first");           // 00:00:00
     tracker.post("1", "a-person", "second");          // 00:00:01
     tracker.row("1").comments.push({ id: 9, body: "last", created_at: "2026-01-01T00:01:00Z", user: { login: "a-person" } });
@@ -333,7 +333,7 @@ describe("the briefing", () => {
   it("hands a step the spec page's text under the docs role's own artifact", async () => {
     const docs = new MemoryDocs();
     const hooks = compose({ tracker: seeded(), docs });
-    expect(await hooks.spec?.brief?.(on("1"))).toEqual({ content: "No spec has been published for this ticket." });
+    expect(await hooks.spec?.brief?.(on("1"))).toEqual({ content: "No spec has been published for this item." });
     await docs.publish("1", "# Spec");
     expect(await hooks.spec?.brief?.(on("1"))).toEqual({ content: "# Spec" });
   });
@@ -350,7 +350,7 @@ describe("the hooks compose hands back", () => {
 
 describe("the spec artifact", () => {
   it("publishes once, and reads back its hash and link", async () => {
-    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const state = createExternalState({ items: [{ id: "1" }] });
     const publish = { type: "artifact.publish", artifact: "spec", body: "# Spec\n\nDo it." };
     const artifacts = async (): Promise<Snapshot> => ({ artifacts: { spec: await state.spec.read(on("1")) } });
 
@@ -365,7 +365,7 @@ describe("the spec artifact", () => {
 
 describe("the tracker's comments", () => {
   it("checks a comment effect against its own login, with no bot in the snapshot", async () => {
-    const state = createExternalState({ tickets: [{ id: "1" }] });
+    const state = createExternalState({ items: [{ id: "1" }] });
     const effect = { type: "tracker.comment", kind: "enter", stage: "spec", round: 1, marker: "enter:spec:1", body: "Entered." };
     const pre = async (): Promise<Snapshot> => ({ ...(await state.pre.run(on("1"))) });
 

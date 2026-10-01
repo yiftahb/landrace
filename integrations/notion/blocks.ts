@@ -1,5 +1,5 @@
 /*
- * Markdown as Notion blocks: the body a person reads on a ticket's row.
+ * Markdown as Notion blocks: the body a person reads on an item's row.
  *
  * Only how the spec looks rides on this. Its text round-trips through the
  * row's `Source` property, cut by `pieces`, so a step is briefed exactly what

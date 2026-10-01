@@ -19,11 +19,11 @@ describe("a define* helper brands what it returns", () => {
     }),
     operator: defineOperator({
       id: "e",
-      createTicket: async ({ title }) => ({
-        id: "1", kind: "ticket", title, link: "u", closed: null, priority: null, origin: null, state: {},
+      createItem: async ({ title }) => ({
+        id: "1", kind: "item", title, link: "u", closed: null, priority: null, origin: null, state: {},
       }),
-      updateTicket: async (ticket) => ({
-        id: ticket, kind: "ticket", title: "t", link: "u", closed: null, priority: null, origin: null, state: {},
+      updateItem: async (item) => ({
+        id: item, kind: "item", title: "t", link: "u", closed: null, priority: null, origin: null, state: {},
       }),
     }),
     executor: defineExecutor({ id: "f", run: async () => ({ text: "", sessionId: null }) }),

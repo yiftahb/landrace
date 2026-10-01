@@ -129,7 +129,7 @@ describe("screenPrompt", () => {
   /*
    * #33: #29's code-review round 5 was blocked as "verdict could not be
    * read", and what the screener wrote was nowhere. It is logged now, and
-   * only logged: the ticket shows the reason, never the reply.
+   * only logged: the item shows the reason, never the reply.
    */
   describe("a reply that fails closed is logged", () => {
     const blocked = async (reply: string, log = createLogger({ sink: () => {} })) => {

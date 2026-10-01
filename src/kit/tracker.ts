@@ -1,24 +1,24 @@
 /*
  * What every tracker integration shares and none of them is: telling our own
  * comments from a stranger's, the `satisfied()` of each tracker effect, and
- * reading a ticket into the node the engine routes on. Published as part of
+ * reading an item into the node the engine routes on. Published as part of
  * `landrace/kit`.
  *
  * Every `satisfied()` here is synchronous and reads only the snapshot, which
  * is its contract; an integration's `satisfied()` is a switch over the effect
  * types it handles that calls one of these per type. What stays with the
  * integration is its API: the queries, their shapes, their paging, and
- * mapping what they answer into the plain fields `ticketNode` takes.
+ * mapping what they answer into the plain fields `itemNode` takes.
  */
 import {
   allClosed, CLOSE_EFFECT, entriesFromComments, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES, neutraliseMarkers,
   NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATIONS, renderMarker, renderOrigin, sameLogin,
-  STAGE_LABEL_PREFIX, STATUS_EFFECT, TICKET_KIND,
+  STAGE_LABEL_PREFIX, STATUS_EFFECT, ITEM_KIND,
 } from "#conventions.js";
 import { commentLine } from "#kit/forge.js";
 import type {
-  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewTicket, Node, RelationDecl, Relationship,
-  RuntimeContext, Snapshot, SnapshotComment, TicketPatch, TicketRecord, TrackerComment,
+  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, RelationDecl, Relationship,
+  RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
 } from "#namespace.js";
 
 export type { SnapshotComment } from "#namespace.js";
@@ -27,7 +27,7 @@ export type { SnapshotComment } from "#namespace.js";
  * A tracker's page size for a connection, and how many pages one read will
  * pay for. A count that stopped at the first page would read a 150-thread pull
  * request as having fewer findings than it has — and, with the first hundred
- * resolved, as having none at all, which is a ticket leaving the review loop
+ * resolved, as having none at all, which is an item leaving the review loop
  * with open findings on it. Past the cap the honest answer is that the count
  * could not be read, not a number we know is short.
  */
@@ -39,15 +39,15 @@ export const ISSUE_PAGE = 100;
 export const MAX_ISSUE_PAGES = 10;
 
 /**
- * How many sub-issues, and pull requests each way, one ticket read carries.
+ * How many sub-issues, and pull requests each way, one item read carries.
  * Every one of them is counted by the workflow — "every child closed", "every
- * pull request merged" — so a ticket with more than this is refused by
+ * pull request merged" — so an item with more than this is refused by
  * `read` rather than read as one with fewer.
  */
-export const TICKET_PAGE = 50;
+export const ITEM_PAGE = 50;
 
 // ponytail: a constant, not a setting — tracker config if another window is ever wanted.
-/** How far back the board's Done lane reaches. Display only: tick works open tickets alone. */
+/** How far back the board's Done lane reaches. Display only: tick works open items alone. */
 export const DONE_WINDOW_MS = 30 * 86_400_000;
 
 /**
@@ -57,16 +57,16 @@ export const DONE_WINDOW_MS = 30 * 86_400_000;
  *
  * The engine's own bound is `recordBodyProblem` in src/conventions.ts, which
  * is lower and tracker-agnostic, and which rejects at the step boundary where
- * the refusal is *recorded* on the ticket. This is the backstop under it — for
+ * the refusal is *recorded* on the item. This is the backstop under it — for
  * the bodies the engine does not compose, an operator's own `landrace_reply`
  * among them — and it reports the size rather than letting the API answer 422
  * to a request that should never have gone out.
  */
 export const MAX_COMMENT_CHARS = 65_536;
 
-/** The ticket's comments, as the pre hook put them in the snapshot. */
+/** The item's comments, as the pre hook put them in the snapshot. */
 export const commentsOf = (s: Snapshot): SnapshotComment[] =>
-  ((s.ticket as { comments?: SnapshotComment[] })?.comments ?? []);
+  ((s.item as { comments?: SnapshotComment[] })?.comments ?? []);
 
 /**
  * Who we post as, as the pre hook recorded it this tick. satisfied() is
@@ -92,7 +92,7 @@ export const wroteIt = (c: SnapshotComment, bot: string): boolean =>
 
 /*
  * The labels the source read, not a second copy of them from the pre hook:
- * one reading of the ticket, which is the one the engine placed it from.
+ * one reading of the item, which is the one the engine placed it from.
  *
  * The two label effects read labels, which only an account with write access
  * can set — unlike a comment, which anyone can post. Forging one is the
@@ -116,7 +116,7 @@ export function statusSatisfied(snapshot: Snapshot, effect: Effect): boolean {
 /** `tracker.comment`: a comment we wrote, carrying exactly this effect's marker. */
 export function commentSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   // An unmarked comment is an operator's own turn, applied directly and
-  // never planned by a stage — nothing on the ticket would say it had
+  // never planned by a stage — nothing on the item would say it had
   // already been posted, so reconciling one could only mean re-posting it
   // on every tick. Halting is the honest answer, and it is the rule that
   // every effect has a real satisfied() beside its apply().
@@ -160,7 +160,7 @@ export function closeSatisfied(snapshot: Snapshot): boolean {
 const PRIORITY_LABEL = /^P([0-9])$/;
 
 /**
- * `P0`..`P9`, the convention landrace's labels use. Two of them is a ticket
+ * `P0`..`P9`, the convention landrace's labels use. Two of them is an item
  * whose priority cannot be told — reported, like two stage labels, rather
  * than resolved by taking the first.
  */
@@ -176,39 +176,39 @@ export function createdAtOf(at: string | undefined): { createdAt?: number } {
   return Number.isNaN(ms) ? {} : { createdAt: ms };
 }
 
-/** The board's lane order, from when the tracker says the ticket last changed: absent, not NaN, likewise. */
+/** The board's lane order, from when the tracker says the item last changed: absent, not NaN, likewise. */
 export function updatedAtOf(at: string | undefined): { updatedAt?: number } {
   const ms = at === undefined ? NaN : Date.parse(at);
   return Number.isNaN(ms) ? {} : { updatedAt: ms };
 }
 
 /**
- * The one mapping from a ticket, as an integration reads its tracker's, to a
- * ticket node. `bot` is the login we post as: an origin counts only in a body
+ * The one mapping from an item, as an integration reads its tracker's, to a
+ * item node. `bot` is the login we post as: an origin counts only in a body
  * we wrote, because a re-run closes whatever claims it. The parent is an
  * edge, not a field, so it is not asked for here.
  */
-export function ticketNode(ticket: Omit<TicketRecord, "parent">, bot: string): Node {
+export function itemNode(item: Omit<ItemRecord, "parent">, bot: string): Node {
   return {
-    id: ticket.id,
-    kind: TICKET_KIND,
-    title: ticket.title,
-    link: ticket.link,
-    closed: ticket.closed,
-    priority: ticket.priority !== undefined ? ticket.priority : priorityFromLabels(ticket.labels).priority,
+    id: item.id,
+    kind: ITEM_KIND,
+    title: item.title,
+    link: item.link,
+    closed: item.closed,
+    priority: item.priority !== undefined ? item.priority : priorityFromLabels(item.labels).priority,
     // Nobody but us may have touched the body since: a person keeps the
     // bot's authorship when they edit it, and could otherwise rewrite the
     // marker to claim another stage or round.
-    origin: ticket.editor !== undefined && !sameLogin(ticket.editor, bot)
+    origin: item.editor !== undefined && !sameLogin(item.editor, bot)
       ? null
-      : parseOrigin(ticket.body, ticket.author, bot),
+      : parseOrigin(item.body, item.author, bot),
     // Always lists, and empty rather than absent: an eligibility rule reading
     // a path the node does not carry is one the tick cannot answer, and it
-    // abstains on those — so an unassigned ticket would be worked by every
+    // abstains on those — so an unassigned item would be worked by every
     // instance instead of none.
-    state: { labels: ticket.labels, assignees: ticket.assignees },
-    ...createdAtOf(ticket.createdAt),
-    ...updatedAtOf(ticket.updatedAt),
+    state: { labels: item.labels, assignees: item.assignees },
+    ...createdAtOf(item.createdAt),
+    ...updatedAtOf(item.updatedAt),
   };
 }
 
@@ -218,7 +218,7 @@ const strings = (value: unknown): string[] =>
 /**
  * The ids a `nodes.close` names that the snapshot's graph does not already
  * show closed. Already closed is left alone: a merged pull request cannot be
- * un-merged, and a ticket closed as done must not be re-closed as dropped.
+ * un-merged, and an item closed as done must not be re-closed as dropped.
  */
 export function stillOpen(snapshot: Snapshot, effect: Effect): string[] {
   const closed = new Map(((snapshot.graph as Graph | undefined)?.nodes ?? []).map((n) => [n.id, n.closed]));
@@ -230,7 +230,7 @@ export function stillOpen(snapshot: Snapshot, effect: Effect): string[] {
  *
  * An integration extends this and writes the abstract methods — each one a
  * request to its tracker, answered in the plain shapes of `src/namespace.ts`.
- * Everything a tracker does that is not its vendor's is here: the ticket
+ * Everything a tracker does that is not its vendor's is here: the item
  * graph and its bounds, the pre hook's fragment, the five tracker effects
  * with their `satisfied()`, the history's comments, and the operator's two
  * writes. `compose` makes the hooks out of it.
@@ -242,32 +242,32 @@ export function stillOpen(snapshot: Snapshot, effect: Effect): string[] {
 export abstract class BaseTracker {
   /** The login we post as: what tells our comments and markers from a stranger's. */
   abstract login(ctx: RuntimeContext): Promise<string>;
-  /** Every open ticket, and any closed one the board should still show, each with its parent. */
-  abstract tickets(ctx: RuntimeContext): Promise<TicketRecord[]>;
-  /** One ticket. Throws when there is none: a missing ticket is not an empty one. */
-  abstract ticket(id: string, ctx: RuntimeContext): Promise<TicketRecord>;
-  /** A ticket's children, closed ones too: "every child closed" counts all of them. */
-  abstract children(id: string, ctx: RuntimeContext): Promise<TicketRecord[]>;
-  /** Every comment on a ticket, oldest first, every page — or a refusal, never a short list. */
+  /** Every open item, and any closed one the board should still show, each with its parent. */
+  abstract items(ctx: RuntimeContext): Promise<ItemRecord[]>;
+  /** One item. Throws when there is none: a missing item is not an empty one. */
+  abstract item(id: string, ctx: RuntimeContext): Promise<ItemRecord>;
+  /** An item's children, closed ones too: "every child closed" counts all of them. */
+  abstract children(id: string, ctx: RuntimeContext): Promise<ItemRecord[]>;
+  /** Every comment on an item, oldest first, every page — or a refusal, never a short list. */
   abstract comments(id: string, ctx: RuntimeContext): Promise<TrackerComment[]>;
   /** Post a comment exactly as given: the base has already escaped it and stamped its marker. */
   abstract comment(id: string, body: string, ctx: RuntimeContext): Promise<void>;
   abstract addLabels(id: string, labels: string[], ctx: RuntimeContext): Promise<void>;
   abstract removeLabel(id: string, label: string, ctx: RuntimeContext): Promise<void>;
-  /** Close a ticket as done (completed) or dropped (not planned). */
+  /** Close an item as done (completed) or dropped (not planned). */
   abstract close(id: string, how: "done" | "dropped", ctx: RuntimeContext): Promise<void>;
   /**
-   * Create a ticket — linked under `parent`, with `priority` in whatever form
+   * Create an item — linked under `parent`, with `priority` in whatever form
    * the tracker keeps it — and answer its id. The body is already escaped and
    * stamped; the labels follow from the base once it is linked, because the
    * eligibility label is what lets a tick work it.
    */
   abstract create(
-    ticket: { title: string; body: string; parent: string | undefined; priority: number | undefined },
+    item: { title: string; body: string; parent: string | undefined; priority: number | undefined },
     ctx: RuntimeContext,
   ): Promise<string>;
-  /** Change a ticket's title, body or state; labels go through `addLabels` and `removeLabel`. */
-  abstract update(id: string, fields: Pick<TicketPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void>;
+  /** Change an item's title, body or state; labels go through `addLabels` and `removeLabel`. */
+  abstract update(id: string, fields: Pick<ItemPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void>;
 
   /** Run once at startup, before anything is paid for: a permission the workflow needs and the token lacks, say. */
   check?(ctx: RuntimeContext): Promise<void>;
@@ -283,18 +283,18 @@ export abstract class BaseTracker {
    * hold: the title, labels and assignees are the node's.
    */
   provides(): string[] {
-    return ["ticket", "ticket.body", "ticket.comments", "entries", "tracker", "tracker.bot"];
+    return ["item", "item.body", "item.comments", "entries", "tracker", "tracker.bot"];
   }
 
   /**
-   * The ticket's body and records, and the login we post as — recorded
+   * The item's body and records, and the login we post as — recorded
    * because `satisfied()` is synchronous and must know which comments are ours.
    */
   async observe(ctx: HookContext): Promise<Record<string, unknown>> {
-    const ticket = await this.ticket(ctx.ticket, ctx);
-    const comments = await this.comments(ctx.ticket, ctx);
+    const item = await this.item(ctx.item, ctx);
+    const comments = await this.comments(ctx.item, ctx);
     const bot = await this.login(ctx);
-    return { ticket: { body: ticket.body, comments }, entries: entriesFromComments(comments, bot), tracker: { bot } };
+    return { item: { body: item.body, comments }, entries: entriesFromComments(comments, bot), tracker: { bot } };
   }
 
   effects(): EffectTable {
@@ -302,9 +302,9 @@ export abstract class BaseTracker {
       [LABEL_EFFECT]: {
         satisfied: labelSatisfied,
         apply: async (effect, ctx) => {
-          for (const label of strings(effect.remove)) await this.removeLabel(ctx.ticket, label, ctx);
+          for (const label of strings(effect.remove)) await this.removeLabel(ctx.item, label, ctx);
           const add = strings(effect.add);
-          if (add.length > 0) await this.addLabels(ctx.ticket, add, ctx);
+          if (add.length > 0) await this.addLabels(ctx.item, add, ctx);
         },
       },
       [STATUS_EFFECT]: {
@@ -312,16 +312,16 @@ export abstract class BaseTracker {
         apply: async (effect, ctx) => {
           // Position is one label, and moving it is more than one request, so
           // there is a window in the middle. Removing first left zero stage
-          // labels in it, and a ticket with no position reads as a new one:
-          // a crash there restarted a finished ticket from its entry step.
+          // labels in it, and an item with no position reads as a new one:
+          // a crash there restarted a finished item from its entry step.
           // Adding first leaves two, which the engine refuses to place rather
           // than places wrongly — and the next status apply removes the
-          // loser, because what it removes is read off the ticket.
+          // loser, because what it removes is read off the item.
           const want = LABELS.stage(String(effect.value));
-          await this.addLabels(ctx.ticket, [want], ctx);
-          const { labels } = await this.ticket(ctx.ticket, ctx);
+          await this.addLabels(ctx.item, [want], ctx);
+          const { labels } = await this.item(ctx.item, ctx);
           for (const stale of labels.filter((l) => l.startsWith(STAGE_LABEL_PREFIX) && l !== want)) {
-            await this.removeLabel(ctx.ticket, stale, ctx);
+            await this.removeLabel(ctx.item, stale, ctx);
           }
         },
       },
@@ -331,7 +331,7 @@ export abstract class BaseTracker {
           const body = neutraliseMarkers(String(effect.body ?? ""));
           // No kind, no marker: an operator's reply is genuinely a human turn,
           // and stamping it would read a person's words as our own record.
-          await this.comment(ctx.ticket, effect.kind === undefined ? body : body + renderMarker(recordMarker(effect)), ctx);
+          await this.comment(ctx.item, effect.kind === undefined ? body : body + renderMarker(recordMarker(effect)), ctx);
         },
       },
       [CLOSE_EFFECT]: {
@@ -339,7 +339,7 @@ export abstract class BaseTracker {
         apply: async (_effect, ctx) => {
           // A person who dropped it decided that; closing it as done would overrule them.
           if (ctx.snapshot !== undefined && closeSatisfied(ctx.snapshot)) return;
-          await this.close(ctx.ticket, "done", ctx);
+          await this.close(ctx.item, "done", ctx);
         },
       },
       [NODES_CLOSE_EFFECT]: {
@@ -356,49 +356,49 @@ export abstract class BaseTracker {
     return {};
   }
 
-  /** The ticket's comments, for the history's one timeline. */
+  /** The item's comments, for the history's one timeline. */
   async history(ctx: HookContext): Promise<HistoryItem[]> {
     const bot = await this.login(ctx);
-    return (await this.comments(ctx.ticket, ctx)).map((c) => ({ at: c.created_at, text: commentLine(c, bot) }));
+    return (await this.comments(ctx.item, ctx)).map((c) => ({ at: c.created_at, text: commentLine(c, bot) }));
   }
 
-  /** Every ticket the tracker lists, and each child's edge to a parent the list carries: none dangles. */
+  /** Every item the tracker lists, and each child's edge to a parent the list carries: none dangles. */
   async list(ctx: RuntimeContext): Promise<Graph> {
     const bot = await this.login(ctx);
-    const tickets = await this.tickets(ctx);
-    const listed = new Set(tickets.map((t) => t.id));
+    const items = await this.items(ctx);
+    const listed = new Set(items.map((t) => t.id));
     return {
-      nodes: tickets.map((t) => ticketNode(t, bot)),
-      relationships: tickets.flatMap((t) =>
+      nodes: items.map((t) => itemNode(t, bot)),
+      relationships: items.flatMap((t) =>
         t.parent !== null && listed.has(t.parent) ? [{ from: t.id, to: t.parent, type: RELATIONS.childOf }] : []),
     };
   }
 
   /**
-   * One ticket's neighbourhood: itself, its parent, and every descendant,
+   * One item's neighbourhood: itself, its parent, and every descendant,
    * breadth first — the whole subtree, because a re-run's cascade closes what
    * hangs off a stale child and can close only what the graph shows it. The
-   * parent's other children are its business, not this ticket's. The read
+   * parent's other children are its business, not this item's. The read
    * stops past MAX_SUBGRAPH_NODES rather than paying for a graph the engine
    * would refuse.
    */
   async read(id: string, ctx: RuntimeContext): Promise<Graph> {
     const bot = await this.login(ctx);
-    const root = await this.ticket(id, ctx);
+    const root = await this.item(id, ctx);
     if (root.priority === undefined) {
       const { found } = priorityFromLabels(root.labels);
       if (found.length > 1) throw new Error(`#${id} carries ${found.join(" and ")}; priority is one`);
     }
-    const read: TicketRecord[] = [root];
+    const read: ItemRecord[] = [root];
     const relationships: Relationship[] = [];
     if (root.parent !== null) {
-      read.push(await this.ticket(root.parent, ctx));
+      read.push(await this.item(root.parent, ctx));
       relationships.push({ from: id, to: root.parent, type: RELATIONS.childOf });
     }
     const seen = new Set(read.map((t) => t.id));
     const queue = [root];
     for (let i = 0; i < queue.length; i++) {
-      const at = queue[i] as TicketRecord;
+      const at = queue[i] as ItemRecord;
       for (const child of await this.children(at.id, ctx)) {
         // A tracker keeps a tree; this only stops a read that is not one from walking in circles.
         if (seen.has(child.id)) continue;
@@ -413,7 +413,7 @@ export abstract class BaseTracker {
         }
       }
     }
-    return { nodes: read.map((t) => ticketNode(t, bot)), relationships };
+    return { nodes: read.map((t) => itemNode(t, bot)), relationships };
   }
 
   /**
@@ -421,14 +421,14 @@ export abstract class BaseTracker {
    * under our own login, so the origin reads back as ours and only ours; the
    * body is escaped first, so an agent cannot bring a marker of its own.
    */
-  async createTicket({ title, body, labels, parent, origin, priority }: NewTicket, ctx: RuntimeContext): Promise<Node> {
+  async createItem({ title, body, labels, parent, origin, priority }: NewItem, ctx: RuntimeContext): Promise<Node> {
     const stamped = neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : "");
     const id = await this.create({ title, body: stamped, parent, priority }, ctx);
     if ((labels ?? []).length > 0) await this.addLabels(id, labels ?? [], ctx);
-    return ticketNode(await this.ticket(id, ctx), await this.login(ctx));
+    return itemNode(await this.item(id, ctx), await this.login(ctx));
   }
 
-  async updateTicket(id: string, { title, body, state, addLabels, removeLabels }: TicketPatch, ctx: RuntimeContext): Promise<Node> {
+  async updateItem(id: string, { title, body, state, addLabels, removeLabels }: ItemPatch, ctx: RuntimeContext): Promise<Node> {
     for (const label of removeLabels ?? []) await this.removeLabel(id, label, ctx);
     if ((addLabels ?? []).length > 0) await this.addLabels(id, addLabels ?? [], ctx);
     const fields = {
@@ -437,6 +437,6 @@ export abstract class BaseTracker {
       ...(state === undefined ? {} : { state }),
     };
     if (Object.keys(fields).length > 0) await this.update(id, fields, ctx);
-    return ticketNode(await this.ticket(id, ctx), await this.login(ctx));
+    return itemNode(await this.item(id, ctx), await this.login(ctx));
   }
 }

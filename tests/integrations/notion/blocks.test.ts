@@ -3,7 +3,7 @@ import { createFakeNotion, type FakeRow } from "#tests/integrations/notion/fake-
 import type { RuntimeConfig, RuntimeContext } from "#namespace.js";
 
 /**
- * Markdown as Notion blocks: the body a person reads on a ticket's row, as
+ * Markdown as Notion blocks: the body a person reads on an item's row, as
  * the in-memory Notion stored it — which refuses whatever the real one would.
  * The text itself round-trips through `Source`, so the body is only how it
  * looks; anything the converter does not know is shown verbatim, never

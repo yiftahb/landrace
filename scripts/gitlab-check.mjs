@@ -63,13 +63,13 @@ let head = "";
 let iid = null;
 let branchMade = false;
 
-/** What the engine would hand an effect: the ticket's pull request nodes, and this branch committed. */
+/** What the engine would hand an effect: the item's pull request nodes, and this branch committed. */
 const snapshot = async () => ({
   node: { id: n, title: `gitlab-check ${n}` },
   graph: await forge.read([n], ctx, async () => false),
   git: { local: { [branch]: head }, remote: {} },
 });
-const apply = async (effect) => effects[effect.type].apply(effect, { ...ctx, ticket: n, snapshot: await snapshot() });
+const apply = async (effect) => effects[effect.type].apply(effect, { ...ctx, item: n, snapshot: await snapshot() });
 const counts = async () => {
   const pr = (await forge.read([n], ctx, async () => false)).nodes.find((node) => node.id === `pr-${iid}`);
   return `${pr?.state.openThreads}/${pr?.state.awaitingFix}`;

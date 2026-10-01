@@ -1,20 +1,20 @@
 import {
-  allClosed, CAPABILITIES, mayCreateTickets, parseOrigin, renderOrigin, unknownCapabilities,
+  allClosed, CAPABILITIES, mayCreateItems, parseOrigin, renderOrigin, unknownCapabilities,
 } from "#conventions.js";
 import type { Graph, Node } from "#namespace.js";
 
 const origin = { parent: "12", stage: "breakdown", round: 2 };
 
-describe("the tickets:create capability", () => {
+describe("the items:create capability", () => {
   it("is known, so an executor that enforces it is not refused", () => {
-    expect(CAPABILITIES).toContain("tickets:create");
-    expect(unknownCapabilities(["tickets:create", "repo:read"])).toEqual([]);
+    expect(CAPABILITIES).toContain("items:create");
+    expect(unknownCapabilities(["items:create", "repo:read"])).toEqual([]);
   });
 
   it("is granted only by declaring it", () => {
-    expect(mayCreateTickets(["tickets:create"])).toBe(true);
-    expect(mayCreateTickets(["repo:write"])).toBe(false);
-    expect(mayCreateTickets(undefined)).toBe(false);
+    expect(mayCreateItems(["items:create"])).toBe(true);
+    expect(mayCreateItems(["repo:write"])).toBe(false);
+    expect(mayCreateItems(undefined)).toBe(false);
   });
 });
 
@@ -49,7 +49,7 @@ describe("the origin marker", () => {
     expect(parseOrigin(body, "landrace-bot", "landrace-bot")).toBeNull();
   });
 
-  it("refuses a parent that is not a ticket id, or a round that is not a positive integer", () => {
+  it("refuses a parent that is not an item id, or a round that is not a positive integer", () => {
     const bad = (o: object) => `x\n\n<!-- landrace ${JSON.stringify({ kind: "child", stage: "b", round: 1, parent: "1", ...o })} -->`;
     expect(parseOrigin(bad({ parent: "../1" }), "bot", "bot")).toBeNull();
     expect(parseOrigin(bad({ round: 0 }), "bot", "bot")).toBeNull();
@@ -63,7 +63,7 @@ describe("the origin marker", () => {
 
 describe("allClosed", () => {
   const node = (id: string, closed: Node["closed"]): Node => ({
-    id, kind: "ticket", title: id, link: "", closed, priority: null, origin: null, state: {},
+    id, kind: "item", title: id, link: "", closed, priority: null, origin: null, state: {},
   });
   const graph: Graph = { nodes: [node("a", "done"), node("b", "dropped"), node("c", null)], relationships: [] };
 

@@ -14,8 +14,8 @@ describe("eligibility", () => {
   });
 
   it("explains why it skipped instead of vanishing", () => {
-    const w = wf([], [{ when: { "ticket.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }]);
-    expect(checkEligible(w, snap({ ticket: { labels: [] } }))).toEqual({
+    const w = wf([], [{ when: { "item.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }]);
+    expect(checkEligible(w, snap({ item: { labels: [] } }))).toEqual({
       eligible: false, reason: "no lr:auto label",
     });
   });

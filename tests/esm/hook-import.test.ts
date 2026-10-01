@@ -33,9 +33,9 @@ describe("hook modules are imported from disk and classified by their brand", ()
   it("returns hooks that actually run", async () => {
     const registry = await loadHooks({ dir: "tests/fixtures", modules: ["hooks/alpha.ts"] });
 
-    expect(await registry.pre[0]?.run({} as HookContext)).toEqual({ ticket: { title: "from alpha" } });
+    expect(await registry.pre[0]?.run({} as HookContext)).toEqual({ item: { title: "from alpha" } });
     expect((await registry.source?.list({} as HookContext))?.nodes).toEqual([{
-      id: "1", kind: "ticket", title: "one", link: "u/1", closed: null, priority: null, origin: null,
+      id: "1", kind: "item", title: "one", link: "u/1", closed: null, priority: null, origin: null,
       state: { labels: ["lr:auto"], assignees: [] },
     }]);
   });

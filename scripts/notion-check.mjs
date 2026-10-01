@@ -1,5 +1,5 @@
 /*
- * The Notion integration against a real workspace, the way a ticket's spec
+ * The Notion integration against a real workspace, the way an item's spec
  * goes through it:
  *
  *   pnpm build && NOTION_TOKEN=… NOTION_PARENT=<the shared page's 32-hex id> node scripts/notion-check.mjs
@@ -8,8 +8,8 @@
  * resolves to dist/ — hence the build. In order: `check`; a first publish,
  * read back; the same text again, which must be satisfied and write nothing;
  * changed text — over a hundred blocks, an emoji astride a piece boundary,
- * 60,000 characters, a fence, a table, an item with 120 children — and that
- * read back exactly, its body counted and its ticket listed. Each step prints `ok` or why not; exits 1 when one failed or
+ * 60,000 characters, a fence, a table, a list item with 120 children — and that
+ * read back exactly, its body counted and its item listed. Each step prints `ok` or why not; exits 1 when one failed or
  * nothing was checked.
  *
  * ponytail: each run publishes a fresh `check-<time>` row and leaves it, so
@@ -47,14 +47,14 @@ const ctx = {
   signal: new AbortController().signal,
   log: (event, data) => console.error(`${event} ${JSON.stringify(data ?? {})}`),
 };
-const ticket = `check-${Date.now()}`;
-const at = { ...ctx, ticket, snapshot: {} };
+const item = `check-${Date.now()}`;
+const at = { ...ctx, item, snapshot: {} };
 const publish = notion.effects()["artifact.publish"];
 const effect = (body) => ({ type: "artifact.publish", artifact: "spec", body });
 
 const first = "# Notion check\n\nA first publish, with `inline code` and [a link](https://example.com).\n\n- one\n  - one, nested\n- two\n";
 // Over 25 pieces of Source, which only the property item endpoint reads
-// whole; an item with more children than one append takes; and 125
+// whole; a list item with more children than one append takes; and 125
 // top-level blocks in all. The emoji's paragraph comes first, so it sits
 // astride the first cut of Source and of the paragraph's own text alike.
 const changed = [
@@ -69,7 +69,7 @@ if (changed.indexOf("😀") !== 1_999) throw new Error("notion-check: the emoji 
 const BLOCKS = 125;
 
 async function readsBack(text) {
-  const page = await notion.page(ticket, ctx);
+  const page = await notion.page(item, ctx);
   if (page === text) return;
   if (page === null) throw new Error("no page read back");
   let i = 0;
@@ -94,11 +94,11 @@ const steps = [
   ["read back", async () => {
     await readsBack(changed);
     // The row's id is the 32 hex digits its link ends in.
-    const row = /([0-9a-f]{32})$/.exec(await notion.link(ticket, ctx))?.[1];
+    const row = /([0-9a-f]{32})$/.exec(await notion.link(item, ctx))?.[1];
     if (!row) throw new Error("the link is not to a row");
     const blocks = await client.all("GET", `/blocks/${row}/children`);
     if (blocks.length !== BLOCKS) throw new Error(`the body has ${blocks.length} top-level blocks, not ${BLOCKS}`);
-    if (!(await notion.published(ctx)).has(ticket)) throw new Error("the ticket is not listed as published");
+    if (!(await notion.published(ctx)).has(item)) throw new Error("the item is not listed as published");
   }],
 ];
 
@@ -116,5 +116,5 @@ for (const [name, run] of steps) {
     if (name === "check") break;
   }
 }
-if (passed > 0) console.log(`row: ${await notion.link(ticket, ctx).catch((e) => `unknown (${e instanceof Error ? e.message : String(e)})`)}`);
+if (passed > 0) console.log(`row: ${await notion.link(item, ctx).catch((e) => `unknown (${e instanceof Error ? e.message : String(e)})`)}`);
 process.exitCode = failed === 0 && passed > 0 ? 0 : 1;

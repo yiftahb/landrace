@@ -58,7 +58,7 @@ export const runtimeConfigSchema = z.object({
    */
   vars: z.record(z.string()).default({}),
   /**
-   * Who is told when a ticket comes to rest waiting on a person: `on` the
+   * Who is told when an item comes to rest waiting on a person: `on` the
    * events, `via` the notifier hooks by id. Strict, and `needs-you` is the one
    * event there is — a notify block naming anything else would promise a
    * message that never comes.

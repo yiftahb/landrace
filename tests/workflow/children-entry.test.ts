@@ -4,7 +4,7 @@ import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
 
 /**
- * Two entry stages, chosen by origin: the engine's child-ticket feature as a
+ * Two entry stages, chosen by origin: the engine's child-item feature as a
  * project enables it. The shipped workflow is a single flow and has none of
  * this, so it is driven through the fixture that does.
  */
@@ -16,12 +16,12 @@ const run = (o: object = {}) => ({
   failedStage: null, pairing: null, lastOutputBy: null, ...o,
 });
 /**
- * A fresh, eligible ticket with `parents` outgoing child-of edges, made by a
+ * A fresh, eligible item with `parents` outgoing child-of edges, made by a
  * breakdown (an origin) or by a person (none), whose parent — if any — sits
  * at `parentStage`.
  */
 const fresh = (parents: number, o: { origin?: boolean; parentStage?: string } = {}): Snapshot => ({
-  node: { id: "7", kind: "ticket", title: "t", link: "", closed: null, priority: null,
+  node: { id: "7", kind: "item", title: "t", link: "", closed: null, priority: null,
     origin: o.origin ? { parent: "3", stage: "breakdown", round: 1 } : null,
     state: { labels: ["lr:auto"], assignees: [] } },
   rel: {
@@ -42,7 +42,7 @@ describe("the children fixture's entry stages", () => {
     expect(workflow.stages.filter((s) => s.entry).map((s) => s.id).sort()).toEqual(["build", "spec"]);
   });
 
-  it("starts a top-level ticket at spec", async () => {
+  it("starts a top-level item at spec", async () => {
     const { workflow } = await loadWorkflow(FIXTURE);
     expect(decide(workflow, fresh(0))).toMatchObject({ action: "transition", to: { id: "spec" }, round: 1 });
   });
@@ -78,9 +78,9 @@ describe("the children fixture's entry stages", () => {
   it("tells the build step what to work from when there is no spec", async () => {
     const { steps } = await loadWorkflow(FIXTURE);
     const build = steps.get("steps/build.md")?.prompt ?? "";
-    expect(build).toContain("{ticket.body}");
+    expect(build).toContain("{item.body}");
     expect(build).toContain("{artifacts.spec.url}");
     const review = steps.get("steps/code-review.md")?.prompt ?? "";
-    expect(review).toContain("{ticket.body}");
+    expect(review).toContain("{item.body}");
   });
 });

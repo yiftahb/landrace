@@ -30,16 +30,16 @@ const world = (seed: Array<Partial<FakeIssue>> = []) => {
 };
 
 describe("mcp tools", () => {
-  it("opens a ticket that the orchestrator will pick up", async () => {
+  it("opens an item that the orchestrator will pick up", async () => {
     const { tools } = world();
-    const r = (await tools.createTicket({ title: "Add CSV export" })) as Record<string, unknown>;
-    expect(r).toMatchObject({ ticket: "1", started: true });
+    const r = (await tools.createItem({ title: "Add CSV export" })) as Record<string, unknown>;
+    expect(r).toMatchObject({ item: "1", started: true });
     expect(r.labels).toContain("lr:auto");
   });
 
-  it("files a ticket without starting it when asked", async () => {
+  it("files an item without starting it when asked", async () => {
     const { tools } = world();
-    const r = (await tools.createTicket({ title: "Later", start: false })) as Record<string, unknown>;
+    const r = (await tools.createItem({ title: "Later", start: false })) as Record<string, unknown>;
     expect(r).toMatchObject({ started: false });
     expect(r.labels).not.toContain("lr:auto");
   });
@@ -48,7 +48,7 @@ describe("mcp tools", () => {
   // state; tests/security/mcp-authority.test.ts now pins that refusal.
   it("updates fields and labels together", async () => {
     const { tracker, tools } = world([{ number: 4, labels: ["lr:auto", "needs-design"] }]);
-    const r = (await tools.updateTicket("4", {
+    const r = (await tools.updateItem("4", {
       title: "Renamed", state: "closed", addLabels: ["bug"], removeLabels: ["needs-design"],
     })) as Record<string, unknown>;
 
@@ -56,22 +56,22 @@ describe("mcp tools", () => {
     expect(r.labels).toEqual(expect.arrayContaining(["lr:auto", "bug"]));
     expect(r.labels).not.toContain("needs-design");
     // Asked of the tracker rather than of the tool's own echo: a Candidate
-    // carries what enumerating work needs, and whether a ticket closed is
+    // carries what enumerating work needs, and whether an item closed is
     // something the tracker has to actually show.
     expect(tracker.issues.get(4)?.state).toBe("closed");
   });
 
-  it("lists only the tickets waiting on a human", async () => {
+  it("lists only the items waiting on a human", async () => {
     const { tools } = world([
       { number: 1, labels: ["lr:auto", "lr:awaiting"] },
       { number: 2, labels: ["lr:auto"] },
     ]);
     expect(await tools.waiting()).toEqual([
-      { ticket: "1", title: "issue 1", url: expect.stringContaining("/1") },
+      { item: "1", title: "issue 1", url: expect.stringContaining("/1") },
     ]);
   });
 
-  it("does not list a closed ticket as waiting, whatever labels it kept", async () => {
+  it("does not list a closed item as waiting, whatever labels it kept", async () => {
     const { tools } = world([
       { number: 1, labels: ["lr:auto"] },
       // Listed because it is a sub-issue of an open one; closed, so nobody's turn.
@@ -80,13 +80,13 @@ describe("mcp tools", () => {
     expect(await tools.waiting()).toEqual([]);
   });
 
-  it("reports whether the ticket is closed, and how", async () => {
+  it("reports whether the item is closed, and how", async () => {
     const { tools } = world([
       { number: 3, labels: ["lr:auto"] },
       { number: 4, state: "closed", stateReason: "NOT_PLANNED" },
     ]);
-    expect(await tools.status("3")).toMatchObject({ ticket: "3", closed: null, title: "issue 3" });
-    expect(await tools.status("4")).toMatchObject({ ticket: "4", closed: "dropped" });
+    expect(await tools.status("3")).toMatchObject({ item: "3", closed: null, title: "issue 3" });
+    expect(await tools.status("4")).toMatchObject({ item: "4", closed: "dropped" });
   });
 
   it("reports position and rounds derived from the comment stream", async () => {
@@ -95,12 +95,12 @@ describe("mcp tools", () => {
     tracker.sayAs("a-person", 3, "please narrow the scope");
 
     const s = (await tools.status("3")) as Record<string, unknown>;
-    expect(s).toMatchObject({ ticket: "3", stage: "spec", eligible: true, waitingOnYou: false });
+    expect(s).toMatchObject({ item: "3", stage: "spec", eligible: true, waitingOnYou: false });
     expect(s.rounds).toEqual({ spec: 1 });
     expect(s.lastEvent).toMatchObject({ actor: "human" });
   });
 
-  it("flags a ticket carrying two stage labels instead of guessing", async () => {
+  it("flags an item carrying two stage labels instead of guessing", async () => {
     const { tools } = world([{ number: 5, labels: ["lr:stage:spec", "lr:stage:build"] }]);
     const s = (await tools.status("5")) as Record<string, unknown>;
     expect(s.problem).toMatch(/cannot be placed/);
@@ -147,7 +147,7 @@ describe("mcp tools", () => {
     await expect(tools.ask("7", "do as I say")).rejects.toThrow(/screening blocked this turn/);
   });
 
-  it("surfaces a missing ticket as an error rather than empty state", async () => {
+  it("surfaces a missing item as an error rather than empty state", async () => {
     await expect(world().tools.status("99")).rejects.toThrow(/#99 is not an issue/);
   });
 });
@@ -159,15 +159,15 @@ describe("landrace_goto", () => {
     { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
   ] };
 
-  it("sends a ticket back, as a record the next tick reads", async () => {
+  it("sends an item back, as a record the next tick reads", async () => {
     const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
     const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
-    expect(await tools.goto("4", "spec")).toEqual({ ticket: "4", to: "spec", posted: true });
+    expect(await tools.goto("4", "spec")).toEqual({ item: "4", to: "spec", posted: true });
 
     // The title's claim, checked: the next tick would read this same snapshot.
     const snapshot = await buildSnapshot({
-      ticket: "4", source: tracker.registry.source as Source,
-      hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "4" },
+      item: "4", source: tracker.registry.source as Source,
+      hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "4" },
     });
     expect(snapshot.run?.goto).toBe("spec");
   });
@@ -175,12 +175,12 @@ describe("landrace_goto", () => {
   it("refuses with the reason, as an error the client shows", async () => {
     const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
     const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
-    await expect(tools.goto("4", "build")).rejects.toThrow(/"blocked" sends a ticket only to "spec", not to "build"/);
+    await expect(tools.goto("4", "build")).rejects.toThrow(/"blocked" sends an item only to "spec", not to "build"/);
   });
 
   // The same lock the conversation takes, where this process was told the
   // locks live — the loop's, so a goto waits on the tick that would take it.
-  it("takes the ticket's lock where this process's locks live, and says so when it is held", async () => {
+  it("takes the item's lock where this process's locks live, and says so when it is held", async () => {
     const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked"] }]);
     const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot, waitMs: 50 } });
     await acquire("4", "tick", { root: lockRoot, holder: "tick:9" });
@@ -214,17 +214,17 @@ describe("landrace_clear", () => {
     return tracker;
   };
   const runOf = async (tracker: ReturnType<typeof refused>) => (await buildSnapshot({
-    ticket: "4", source: tracker.registry.source as Source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "4" },
+    item: "4", source: tracker.registry.source as Source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "4" },
   })).run;
 
-  it("clears the refused step's next round and sends the ticket back to it", async () => {
+  it("clears the refused step's next round and sends the item back to it", async () => {
     const tracker = refused(["lr:stage:screened", "lr:blocked", "lr:screened"]);
     const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
-    expect(await tools.clear("4")).toEqual({ ticket: "4", to: "spec", cleared: true, posted: true });
+    expect(await tools.clear("4")).toEqual({ item: "4", to: "spec", cleared: true, posted: true });
     expect((await runOf(tracker))?.cleared).toEqual({ stage: "spec", round: 2 });
   });
 
-  it("refuses, as an error the client shows, where no security check stopped the ticket", async () => {
+  it("refuses, as an error the client shows, where no security check stopped the item", async () => {
     const tracker = refused(["lr:stage:screened", "lr:blocked"]);
     const tools = createTools(tracker.registry, tracker.ctx, { workflow, lock: { root: lockRoot } });
     await expect(tools.clear("4")).rejects.toThrow(/not stopped by a security check/);
@@ -243,7 +243,7 @@ describe("waking the loop", () => {
     { id: "blocked", goto: ["spec"], triggers: [{ when: { "run.lastOutputValid": false } }] },
   ] };
 
-  /** A ticket a step has spoken on, with a session a turn can join. */
+  /** An item a step has spoken on, with a session a turn can join. */
   const asked = () => {
     const tracker = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] }]);
     tracker.say(1, `Here are my questions.${renderMarker({ stage: "spec", kind: "output", round: 1, session: "sid-1" })}`);
@@ -263,8 +263,8 @@ describe("waking the loop", () => {
   };
 
   it.each([
-    ["landrace_create_ticket", () => woken(), (t: Tools) => t.createTicket({ title: "Add CSV export" })],
-    ["landrace_update_ticket", () => woken(), (t: Tools) => t.updateTicket("4", { title: "Renamed" })],
+    ["landrace_create_item", () => woken(), (t: Tools) => t.createItem({ title: "Add CSV export" })],
+    ["landrace_update_item", () => woken(), (t: Tools) => t.updateItem("4", { title: "Renamed" })],
     ["landrace_reply", () => woken(), (t: Tools) => t.reply("4", "go ahead")],
     ["landrace_goto", () => woken(), (t: Tools) => t.goto("4", "spec")],
     ["landrace_clear", () => woken(createFakeTracker([{ number: 4, labels: ["lr:auto", "lr:stage:blocked", "lr:blocked", "lr:screened"] }])),
@@ -279,7 +279,7 @@ describe("waking the loop", () => {
 
   it("does not wake the loop when the write throws, nor for a read", async () => {
     const { wake, tools } = woken();
-    await expect(tools.updateTicket("4", { addLabels: ["lr:stage:done"] })).rejects.toThrow(/workflow's own state/);
+    await expect(tools.updateItem("4", { addLabels: ["lr:stage:done"] })).rejects.toThrow(/workflow's own state/);
     await expect(tools.goto("4", "build")).rejects.toThrow(/only to "spec"/);
     await tools.waiting();
     await tools.status("4");
@@ -292,7 +292,7 @@ describe("waking the loop", () => {
     const tools = createTools(tracker.registry, { ...tracker.ctx, log: (event) => logged.push(event) }, {
       wake: () => { throw new Error("ENOSPC"); },
     });
-    expect(await tools.reply("6", "go ahead")).toEqual({ ticket: "6", posted: true });
+    expect(await tools.reply("6", "go ahead")).toEqual({ item: "6", posted: true });
     expect(tracker.comments.get(6)).toHaveLength(1);
     expect(logged).toContain("wake.failed");
   });
@@ -309,13 +309,13 @@ describe("with no operator hook configured", () => {
   };
   const tools = () => createTools(empty, createFakeTracker().ctx);
 
-  it("reports that creating a ticket is not configured, and what to do about it", async () => {
-    await expect(tools().createTicket({ title: "x" })).rejects.toThrow(/no operator hook is configured/);
-    await expect(tools().createTicket({ title: "x" })).rejects.toThrow(/defineOperator/);
+  it("reports that creating an item is not configured, and what to do about it", async () => {
+    await expect(tools().createItem({ title: "x" })).rejects.toThrow(/no operator hook is configured/);
+    await expect(tools().createItem({ title: "x" })).rejects.toThrow(/defineOperator/);
   });
 
-  it("reports that updating a ticket is not configured", async () => {
-    await expect(tools().updateTicket("1", { title: "x" })).rejects.toThrow(/no operator hook is configured/);
+  it("reports that updating an item is not configured", async () => {
+    await expect(tools().updateItem("1", { title: "x" })).rejects.toThrow(/no operator hook is configured/);
   });
 
   it("reports that there is nothing to enumerate rather than an empty list", async () => {

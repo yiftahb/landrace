@@ -1,7 +1,7 @@
 # One workflow directory, several instances. Everything here is the same file
 # for every developer; only the environment differs, which is what `vars` is
 # for — each instance exports its own LR_E2E_ASSIGNEE and takes only the
-# tickets assigned to it.
+# items assigned to it.
 version: 1
 agent: { adapter: claude }
 vars:

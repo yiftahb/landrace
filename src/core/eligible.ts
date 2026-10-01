@@ -3,7 +3,7 @@ import type { Snapshot, Workflow } from "#namespace.js";
 
 /**
  * Eligibility is a decision with a reason, not a query filter. An ineligible
- * ticket must appear in status as skipped, not vanish.
+ * item must appear in status as skipped, not vanish.
  */
 export function checkEligible(
   w: Workflow,

@@ -44,9 +44,9 @@ describe("landrace validate, against the hooks the workflow loads", () => {
   });
 
   /*
-   * The engine's child-ticket feature lives in a fixture now that the shipped
+   * The engine's child-item feature lives in a fixture now that the shipped
    * workflow is a single flow, and it has to stay a workflow a project could
-   * actually copy: clean on every rule, including the tickets:create ↔
+   * actually copy: clean on every rule, including the items:create ↔
    * nodes.close pairing and the entry record a creating stage must write. It
    * declares no hooks of its own (a hook path must stay inside its directory),
    * so path coverage is asked against the shipped GitHub hook — the one that
@@ -68,7 +68,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    *
    * §11's rule 8 was dormant — `runValidate` never passed `provided`, so the
    * rule compared nothing to nothing and reported the shipped workflow valid
-   * while a pull request gate had no hook behind it and a real ticket waited
+   * while a pull request gate had no hook behind it and a real item waited
    * at `build` forever. This asks the same file with the source's relations
    * taken back out, and requires it to say so: a `rel.implements` path is
    * covered because the source declares `implements`, not because anything
@@ -280,7 +280,7 @@ async function workflowDir(module: string, opts: { entry?: boolean; reads?: stri
  */
 const DECLARING_HOOK = `const KIND = Symbol.for("landrace.hook.kind");
 export const observe = Object.defineProperty(
-  { id: "fixture", provides: ["ticket.labels"], run: () => ({}) },
+  { id: "fixture", provides: ["item.labels"], run: () => ({}) },
   KIND, { value: "pre", enumerable: false },
 );
 `;

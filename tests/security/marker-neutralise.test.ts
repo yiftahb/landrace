@@ -158,7 +158,7 @@ describe("a relayed payload cannot come back as a record we wrote", () => {
  * openings, and `src/runner/step.ts` hands it the agent's prose bounded only
  * by the 8 MB `MAX_OUTPUT_BYTES`: measured here at 0.86 s for 250 KB, 14 s for
  * 1 MB and 59 s for 2 MB — at the cap, a quarter of an hour of a
- * single-threaded orchestrator doing nothing while every ticket waits and
+ * single-threaded orchestrator doing nothing while every item waits and
  * every lock is held.
  *
  * Pinned as a wall-clock budget rather than as a growth ratio, because the

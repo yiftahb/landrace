@@ -98,12 +98,12 @@ export interface Entry {
    */
   session?: string;
   /**
-   * Where a goto record asks the ticket to go: a stage id, written by
+   * Where a goto record asks the item to go: a stage id, written by
    * Landrace alone — beside a judge's output, or on the record the board's
    * "Go to step…" or `landrace_goto` writes. `run.goto` reads it.
    */
   goto?: string;
-  /** On an entry record, the stage the ticket left to enter this one. `run.previousStage` reads it. */
+  /** On an entry record, the stage the item left to enter this one. `run.previousStage` reads it. */
   from?: string;
   /**
    * Who produced an output record: "pair" for one a person handed in from a
@@ -116,8 +116,8 @@ export interface Entry {
   /** True when we wrote it. False means a person did. */
   byAgent: boolean;
   /**
-   * What a person reads on the ticket — ours with the marker taken off.
-   * Display only, for the ticket panel's conversation: it is not among the
+   * What a person reads on the item — ours with the marker taken off.
+   * Display only, for the item panel's conversation: it is not among the
    * paths the snapshot provides, and nothing routes on it.
    */
   text?: string;
@@ -171,7 +171,7 @@ export interface Run {
    */
   lastRefused: boolean | null;
   /**
-   * Where a goto record written since the ticket last entered a stage asks
+   * Where a goto record written since the item last entered a stage asks
    * it to go; null when there is none. Entering any stage writes an entry
    * record, and that is what consumes it — nothing is ever cleared.
    */
@@ -184,26 +184,26 @@ export interface Run {
    */
   cleared: { stage: string; round: number } | null;
   /**
-   * The stage the ticket left to enter the current one, read off the current
+   * The stage the item left to enter the current one, read off the current
    * stage's own entry record. Null when the current stage records no entry,
-   * or was entered as a fresh ticket: an older stage's answer would be a
+   * or was entered as a fresh item: an older stage's answer would be a
    * wrong one, not an approximate one.
    */
   previousStage: string | null;
   /** Every stage with a rejected round, independent of which stage `lastOutputValid` answers for. */
   failedStages: string[];
   /**
-   * The failure that put the ticket where it is: the stage of the latest
+   * The failure that put the item where it is: the stage of the latest
    * entry record of any stage but the current one — walking past a settled
    * round trip from the current visit, such as a question the judge sent home —
    * when that stage is still in `failedStages`; otherwise null. What Retry
    * re-runs and what the judge is told failed — never an older failure the
-   * ticket has since been sent around, which `failedStages` still lists.
+   * item has since been sent around, which `failedStages` still lists.
    */
   failedStage: string | null;
   unblockedAt: number;
   /**
-   * The pairing open on this ticket, or null. Read off the records alone: a
+   * The pairing open on this item, or null. Read off the records alone: a
    * pair record opens one, and an output record for its stage at its round or
    * later, or a release record, closes it. While one is open its stage never
    * runs alone.
@@ -233,7 +233,7 @@ export interface Trigger {
   when: Condition;
 }
 
-/** An entry in a stage's `goto`: a stage it may always send a ticket to, or one it may while `when` holds. */
+/** An entry in a stage's `goto`: a stage it may always send an item to, or one it may while `when` holds. */
 export type GotoEntry = string | { stage: string; when?: Condition | undefined };
 
 /** A `goto` entry as the engine reads it. `when` null means always. */
@@ -251,7 +251,7 @@ export interface Stage {
   id: string;
   step?: string;
   /**
-   * The branch this stage's step works on, as a template over `{ticket}`,
+   * The branch this stage's step works on, as a template over `{item}`,
    * `{stage}` and `{round}`. Absent, the step gets a detached checkout of HEAD
    * and nothing it commits outlives the worktree.
    */
@@ -263,7 +263,7 @@ export interface Stage {
   triggers?: Trigger[];
   on_enter?: Effect[];
   /**
-   * The stages a person may send a ticket at this stage back to — by a judge
+   * The stages a person may send an item at this stage back to — by a judge
    * step's route, the board's "Go to step…" or `landrace_goto`. A bare id
    * always; `{ stage, when }` only while `when` holds, which is where a
    * loop's round cap goes, since a goto takes no trigger. A goto to a stage
@@ -333,12 +333,12 @@ export interface Marker {
    */
   session?: string;
   /**
-   * Where a goto record asks the ticket to go: a stage id, written by
+   * Where a goto record asks the item to go: a stage id, written by
    * Landrace alone — beside a judge's output, or on the record the board's
    * "Go to step…" or `landrace_goto` writes. `run.goto` reads it.
    */
   goto?: string;
-  /** On an entry record, the stage the ticket left to enter this one. `run.previousStage` reads it. */
+  /** On an entry record, the stage the item left to enter this one. `run.previousStage` reads it. */
   from?: string;
   /** On an output record, who produced it — see `Entry.by`. */
   by?: string;
@@ -354,7 +354,7 @@ export interface Trailing {
 /**
  * One record as a tracker hands it over, and no more of it than marker parsing
  * needs: a body, when it was written, and who wrote it. Structural rather than
- * a tracker's own type, because a comment on an issue, a note on a ticket and
+ * a tracker's own type, because a comment on an issue, a note on an item and
  * a message on a thread are the same three facts under different names — the
  * spellings here are the ones every tracker API that has them already uses.
  */
@@ -397,7 +397,7 @@ export interface LoadedConfig {
    * Variable names that resolved to nothing usable: no such environment
    * variable, or one set to an empty value. Both are reported rather than
    * substituted, because a workflow filled in with "$LANDRACE_ASSIGNEE" or
-   * with "" is one that quietly matches no ticket at all.
+   * with "" is one that quietly matches no item at all.
    */
   missingVars: string[];
 }
@@ -446,7 +446,7 @@ export interface Problem {
  * redaction know every value that must never be printed.
  */
 export interface HookContext {
-  ticket: string;
+  item: string;
   snapshot: Snapshot;
   config: RuntimeConfig;
   secrets: ReadonlyMap<string, string>;
@@ -513,7 +513,7 @@ export interface Screener {
 
 /**
  * One line of what an agent is doing while it runs — a tool it called, or
- * something it said — for the ticket panel. Display only: nothing routes on
+ * something it said — for the item panel. Display only: nothing routes on
  * it, and the engine keeps only the last round of it per stage.
  */
 export interface AgentActivity {
@@ -527,7 +527,7 @@ export interface AgentActivity {
 export type ActivityRecord = AgentActivity & { round: number };
 
 /**
- * What the panel reads of a ticket's activity: the stage and round of the
+ * What the panel reads of an item's activity: the stage and round of the
  * run it last recorded, and that run's lines from `after` on. `total` is how
  * many lines the run has, so the next read can ask for only what is new.
  */
@@ -549,10 +549,10 @@ export interface ActivityLog {
    * the same round, and its dead attempt's lines are not this run's. Never
    * throws.
    */
-  begin(ticket: string, stage: string, round: number): void;
+  begin(item: string, stage: string, round: number): void;
   /** Never throws: a display must never be able to stop the work it displays. */
-  record(ticket: string, stage: string, round: number, e: AgentActivity): void;
-  read(ticket: string, after: number): Promise<ActivityPage>;
+  record(item: string, stage: string, round: number, e: AgentActivity): void;
+  read(item: string, after: number): Promise<ActivityPage>;
 }
 
 /**
@@ -561,7 +561,7 @@ export interface ActivityLog {
  *
  * What every executor owes the engine, beside what each option below asks:
  * - never hand a step or a turn the operator's own `landrace` MCP server: its
- *   tools create, update and move tickets, and a step holding them could move
+ *   tools create, update and move items, and a step holding them could move
  *   its own;
  * - run in `cwd` when given: the engine's read-only check inspects that
  *   directory, and a run anywhere else defeats it;
@@ -617,7 +617,7 @@ export interface Executor {
        * the engine's default, and the screening run gets the workflow's. The
        * engine also aborts `signal` when it passes, and that is all it does:
        * it does not stop waiting for the run. An executor that honours neither
-       * this nor `signal` holds its ticket until the process dies.
+       * this nor `signal` holds its item until the process dies.
        */
       timeoutMs?: number;
       /**
@@ -633,13 +633,13 @@ export interface Executor {
        */
       capabilities?: readonly string[];
       /**
-       * Present only for a step that declared `tickets:create`, and only on a
+       * Present only for a step that declared `items:create`, and only on a
        * step's own invocation — a conversation turn is never handed one, so a
        * turn cannot create children however it is asked to. An executor that
        * cannot expose a bound create_child tool must refuse a run that carries
        * this, never drop it: the step would report children it had no way to make.
        *
-       * `server` is the engine's own ticket server for this binding, ready to
+       * `server` is the engine's own item server for this binding, ready to
        * start: an executor loads it under `server.name` and allows exactly
        * `server.tools`. Absent, the engine could not say how to start one, and
        * the run must be refused.
@@ -647,7 +647,7 @@ export interface Executor {
       child?: ChildBinding & { server?: RunServer };
       /**
        * Told each tool call and each thing the agent says as it happens, for
-       * the ticket panel. Optional to honour: an executor that never calls it
+       * the item panel. Optional to honour: an executor that never calls it
        * runs exactly as before, and the panel says it has no live activity.
        * The engine's callback never throws.
        */
@@ -670,7 +670,7 @@ export interface Executor {
    * `server` is the engine's own, for the tools a person's session may reach
    * Landrace with.
    *
-   * The prompt carries ticket text anyone can write, so it is handed over as
+   * The prompt carries item text anyone can write, so it is handed over as
    * a file and goes into `argv` as `{ file: promptFile }`: what a person
    * pastes holds paths and ids, never that text.
    *
@@ -690,10 +690,10 @@ export interface Handoff {
 export type HandoffArg = string | { file: string };
 
 /**
- * The ticket-less half of a HookContext, for the two kinds that run before —
- * or without — a ticket to build a snapshot for.
+ * The item-less half of a HookContext, for the two kinds that run before —
+ * or without — an item to build a snapshot for.
  */
-export type RuntimeContext = Omit<HookContext, "ticket" | "snapshot">;
+export type RuntimeContext = Omit<HookContext, "item" | "snapshot">;
 
 /**
  * What an executor factory is built with: the context every hook gets, plus
@@ -844,7 +844,7 @@ export interface HandoffPlan {
  * field is optional: most lines say nothing the run needs.
  */
 export interface EventReading {
-  /** For the ticket panel. */
+  /** For the item panel. */
   activity?: Array<Pick<AgentActivity, "kind" | "text">>;
   /** The run's session, as the agent names it. Checked by the kit: a string, or the run is refused. */
   session?: unknown;
@@ -901,17 +901,17 @@ export interface ReviewThread {
   last: ThreadComment | null;
   /** How many comments the thread has: more than one means somebody replied. */
   comments: number;
-  /** When it was opened, ISO 8601: where it sits in the ticket's history. Absent where the forge does not say. */
+  /** When it was opened, ISO 8601: where it sits in the item's history. Absent where the forge does not say. */
   at?: string | undefined;
 }
 
 /**
- * A ticket as a tracker integration reads it: `ticketNode`'s fields, and the
- * ticket it is a child of. `priority` is set by a tracker with a priority
+ * An item as a tracker integration reads it: `itemNode`'s fields, and the
+ * item it is a child of. `priority` is set by a tracker with a priority
  * field of its own (Jira's, the in-memory one's), and then wins over any
  * `P0`..`P9` label; absent, the labels say.
  */
-export interface TicketRecord {
+export interface ItemRecord {
   id: string;
   title: string;
   link: string;
@@ -931,8 +931,8 @@ export interface TicketRecord {
 
 /**
  * A pull request as a forge integration reads it: `pullNode`'s fields, and
- * the tickets it names in its own text — `Closes #n` — beside the one its
- * `landrace/{ticket}` head is for. `branch` is undefined for a fork's.
+ * the items it names in its own text — `Closes #n` — beside the one its
+ * `landrace/{item}` head is for. `branch` is undefined for a fork's.
  */
 export interface PullRecord {
   number: number;
@@ -943,13 +943,13 @@ export interface PullRecord {
   headSha: string;
   branch: string | undefined;
   createdAt: string | undefined;
-  /** Optional, as `TicketRecord`'s is. */
+  /** Optional, as `ItemRecord`'s is. */
   updatedAt?: string | undefined;
-  tickets: string[];
+  items: string[];
 }
 
 /**
- * One entry in a ticket's history, rendered by the role it came from: a
+ * One entry in an item's history, rendered by the role it came from: a
  * comment by the tracker, a review thread by the forge. `at` is ISO 8601 and
  * orders the one timeline; an entry whose time is unknown carries "" and
  * sorts first.
@@ -980,7 +980,7 @@ export interface Roles {
 
 /**
  * What `compose` hands back, for a hook file to export as it stands: one of
- * each ticket-side kind under the id `project`, and the docs role's artifact
+ * each item-side kind under the id `project`, and the docs role's artifact
  * as `spec` — which also sorts it after `pre`, and the loader files a
  * module's exports in name order.
  */
@@ -1036,9 +1036,9 @@ export interface Preflight {
 }
 
 /**
- * Where the work comes from. A tick has to enumerate tickets before it has one
+ * Where the work comes from. A tick has to enumerate items before it has one
  * to build a snapshot for, so this cannot be a pre hook: a pre hook is handed
- * the ticket it is describing.
+ * the item it is describing.
  */
 export interface Source {
   id: string;
@@ -1052,23 +1052,23 @@ export interface Source {
   relations: RelationDecl[];
   /**
    * Everything, once per tick: eligibility, scheduling and the board are all
-   * answered from this, without a read per ticket. Each ticket node carries
+   * answered from this, without a read per item. Each item node carries
    * its labels and assignees in `state`, because that is what those three ask.
    */
   list(ctx: RuntimeContext): Promise<Graph>;
-  /** One ticket's neighbourhood — itself, its ancestors, its descendants and every related node — on every converge pass. */
+  /** One item's neighbourhood — itself, its ancestors, its descendants and every related node — on every converge pass. */
   read(id: string, ctx: RuntimeContext): Promise<Graph>;
-  /** Prompt text about this ticket, asked for only when a step's prompt names `{brief.<source id>.<key>}`. */
+  /** Prompt text about this item, asked for only when a step's prompt names `{brief.<source id>.<key>}`. */
   brief?(ctx: HookContext): Promise<Record<string, string>> | Record<string, string>;
 }
 
 /* `| undefined` throughout, because exactOptionalPropertyTypes is on and these
  * are fed straight from Zod, whose optional output includes it. */
-export interface NewTicket {
+export interface NewItem {
   title: string;
   body?: string | undefined;
   labels?: string[] | undefined;
-  /** The ticket this one is a child of. The hook links it with its tracker's own parent relation. */
+  /** The item this one is a child of. The hook links it with its tracker's own parent relation. */
   parent?: string | undefined;
   /**
    * Set only by the runner, for a child a step created. The hook appends it as
@@ -1082,7 +1082,7 @@ export interface NewTicket {
 /**
  * Who a created child belongs to, fixed by the runner before the agent starts.
  * The agent names a title and a body; it never names these, so it cannot file
- * a child under another ticket, stage or round.
+ * a child under another item, stage or round.
  */
 export interface ChildBinding {
   parent: string;
@@ -1113,7 +1113,7 @@ export interface NewChild {
   priority?: number | undefined;
 }
 
-export interface TicketPatch {
+export interface ItemPatch {
   title?: string | undefined;
   body?: string | undefined;
   state?: "open" | "closed" | undefined;
@@ -1124,11 +1124,11 @@ export interface TicketPatch {
 /**
  * Writes an operator asks for by hand, from the MCP plane.
  *
- * Creating a ticket is deliberately not an effect, and it must not become one.
- * Every effect needs a `satisfied()` beside its `apply()`, and "this ticket has
- * already been created" has no derived evidence to read — there is no ticket
+ * Creating an item is deliberately not an effect, and it must not become one.
+ * Every effect needs a `satisfied()` beside its `apply()`, and "this item has
+ * already been created" has no derived evidence to read — there is no item
  * yet to look at. An effect without a meaningful `satisfied()` is re-applied on
- * every tick, which here would mean a duplicate ticket per tick, forever. So
+ * every tick, which here would mean a duplicate item per tick, forever. So
  * creation is something a person asks for, never something the tick plans.
  *
  * Optional: with no operator hook loaded, the create and update tools report
@@ -1136,18 +1136,18 @@ export interface TicketPatch {
  */
 export interface Operator {
   id: string;
-  createTicket(input: NewTicket, ctx: RuntimeContext): Promise<Node>;
-  updateTicket(ticket: string, input: TicketPatch, ctx: RuntimeContext): Promise<Node>;
+  createItem(input: NewItem, ctx: RuntimeContext): Promise<Node>;
+  updateItem(item: string, input: ItemPatch, ctx: RuntimeContext): Promise<Node>;
 }
 
 /**
- * What a notifier is told when a ticket has come to rest waiting on a person.
+ * What a notifier is told when an item has come to rest waiting on a person.
  * No kind beyond `event`: the stage and why say which stop it is. `why` is the
- * board's own note for the ticket, and `board` the page's URL when one runs.
+ * board's own note for the item, and `board` the page's URL when one runs.
  */
 export interface NotifyEvent {
   event: "needs-you";
-  ticket: string;
+  item: string;
   title: string;
   link: string;
   stage: string | null;
@@ -1158,7 +1158,7 @@ export interface NotifyEvent {
 /**
  * Tells a person somewhere else — a chat, a pager. Fire-and-forget: a send
  * that fails is logged and nothing else, so a notifier can never stop a
- * ticket, and nothing about what was sent is kept.
+ * item, and nothing about what was sent is kept.
  */
 export interface Notifier {
   id: string;
@@ -1232,7 +1232,7 @@ export interface Dispatcher {
  */
 export type EventName =
   | "tick.started" | "tick.finished"
-  | "ticket.evaluated" | "ticket.skipped" | "ticket.aborted"
+  | "item.evaluated" | "item.skipped" | "item.aborted"
   | "step.invoked" | "step.started" | "step.finished" | "step.completed" | "step.rejected" | "step.unchecked"
   | "agent.event"
   | "snapshot.built" | "snapshot.failed"
@@ -1245,7 +1245,7 @@ export type EventName =
 
 export interface LandraceEvent {
   name: EventName;
-  ticket?: string;
+  item?: string;
   [key: string]: unknown;
 }
 
@@ -1286,7 +1286,7 @@ export type RedactingLogger = Logger & {
 export type LockKind = "tick" | "conversation" | "execution" | "goto" | "pair";
 
 export interface Held {
-  ticket: string;
+  item: string;
   holder: string;
   kind: LockKind;
   pid: number;
@@ -1295,7 +1295,7 @@ export interface Held {
   deadlineMs: number;
   /**
    * One acquisition, told apart from every other. A pid and a holder string
-   * are both shared by two converges of the same ticket in the same process —
+   * are both shared by two converges of the same item in the same process —
    * the loop lets ticks overlap on purpose — so neither can answer "is the
    * lock on disk still the one I took", which is the question release() has
    * to get right before it unlinks anything.
@@ -1311,7 +1311,7 @@ export interface LockOptions {
   /**
    * How long this lock may go unrefreshed before another process may take it.
    * Not a budget for the work: `withLock` refreshes while its body runs, so
-   * this bounds how long a holder that has gone silent keeps a ticket.
+   * this bounds how long a holder that has gone silent keeps an item.
    */
   deadlineMs?: number;
   /** Wait this long for a holder to finish before giving up. */
@@ -1334,7 +1334,7 @@ export interface LockOptions {
  *   fine and returned a verdict. A refusal must be durable and terminal, not
  *   a silent, free-to-repeat retry: treating it as "unavailable" turned a
  *   security refusal into a paid screener call on every single poll,
- *   forever, with nothing ever left on the ticket for anyone to see. It is
+ *   forever, with nothing ever left on the item for anyone to see. It is
  *   recorded under REFUSED_KIND rather than the contract's MALFORMED_KIND,
  *   which is what `run.lastRefused` reads back.
  */
@@ -1344,10 +1344,10 @@ export type StepResult =
 
 export interface ConvergeDeps {
   workflow: Workflow;
-  /** Read first on every pass: the ticket's node, its graph and its `rel` counts are what everything after it decides from. */
+  /** Read first on every pass: the item's node, its graph and its `rel` counts are what everything after it decides from. */
   source: Source;
   /**
-   * Where the repository is, when steps are to run in a per-ticket worktree of
+   * Where the repository is, when steps are to run in a per-item worktree of
    * it (`agent.isolation: worktree`). Absent means the agent runs wherever the
    * loop runs — the operator's own checkout — and the capability check has
    * nothing it may judge, because what changed there is not the step's doing.
@@ -1374,7 +1374,7 @@ export interface ConvergeDeps {
   log: Logger;
   /**
    * The runtime logger's `scrub`, for a record body composed outside the
-   * logger and posted where anyone reading the ticket sees it: it carries
+   * logger and posted where anyone reading the item sees it: it carries
    * what an executor registered through `redact` after startup, which the
    * secrets on `ctx` never named. Converge hands it those secrets as `extra`,
    * so both sets are redacted in one pass — never one instead of the other.
@@ -1383,14 +1383,14 @@ export interface ConvergeDeps {
   maxPasses?: number;
   /**
    * How to start this process as `landrace mcp` on the workflow directory,
-   * for a `tickets:create` step's ticket server. Absent, such a step is handed
+   * for an `items:create` step's item server. Absent, such a step is handed
    * no server and its executor refuses it.
    */
   childServer?: ServerCommand;
-  /** Where a step's activity is kept for the ticket panel. Absent, none is. */
+  /** Where a step's activity is kept for the item panel. Absent, none is. */
   activity?: ActivityLog;
   /**
-   * Handed the snapshot a ticket came to rest on after a transition. Injected
+   * Handed the snapshot an item came to rest on after a transition. Injected
    * rather than imported: the rule reads the status rows, which import the
    * tick, which imports converge.
    */
@@ -1405,7 +1405,7 @@ export interface ConvergeResult {
 }
 
 export interface StatusRow {
-  ticket: string;
+  item: string;
   title: string;
   stage: string | null;
   note: string;
@@ -1413,8 +1413,8 @@ export interface StatusRow {
 
 export interface TickOptions {
   /**
-   * Where the work comes from. Not a pre hook: a pre hook is handed the ticket
-   * it describes, and a tick has to enumerate tickets before it has one.
+   * Where the work comes from. Not a pre hook: a pre hook is handed the item
+   * it describes, and a tick has to enumerate items before it has one.
    */
   source: Source;
   /** Without a source of its own: converge reads the tick's, so one tick cannot enumerate from one source and decide from another. */
@@ -1422,8 +1422,8 @@ export interface TickOptions {
   concurrency?: number;
   lock?: LockOptions;
   /**
-   * Each ticket being converged, by id, with the controller that stops it.
-   * Shared across ticks, which overlap: the tick that lists a ticket closed,
+   * Each item being converged, by id, with the controller that stops it.
+   * Shared across ticks, which overlap: the tick that lists an item closed,
    * or no longer eligible, stops the run an earlier tick started. Absent,
    * nothing is stopped but by `ctx.signal`.
    */
@@ -1437,7 +1437,7 @@ export interface TickOptions {
 }
 
 export interface TickRow {
-  ticket: string;
+  item: string;
   outcome: string;
 }
 
@@ -1470,7 +1470,7 @@ export interface HarnessRun {
 export interface HarnessOptions {
   workflow: Workflow;
   steps: Map<string, Step>;
-  /** What the ticket's node, graph and `rel` counts are read from on every pass. */
+  /** What the item's node, graph and `rel` counts are read from on every pass. */
   source: Source;
   pre: PreHook[];
   post: PostHook[];
@@ -1485,7 +1485,7 @@ export interface HarnessOptions {
    * refusal: the same fail-closed reading the engine gives a real one.
    */
   screen?: { [stage: string]: ScriptedAnswer };
-  ticket?: string;
+  item?: string;
   /**
    * What the world does while a step runs — a push, a pull request appearing,
    * a person resolving a thread. Called after the invocation is decided and
@@ -1512,7 +1512,7 @@ export interface HarnessOptions {
 export interface Harness {
   /** One converge, as the daemon would run it. */
   converge(): Promise<HarnessRun>;
-  /** Every position the ticket has passed through, across every call, repeats collapsed. */
+  /** Every position the item has passed through, across every call, repeats collapsed. */
   trail(): string[];
   /** Every invocation, across every call. */
   calls(): StepCall[];
@@ -1520,14 +1520,14 @@ export interface Harness {
   counts(): { [stage: string]: number };
 }
 
-/** A ticket as the in-memory tracker holds it. */
-export interface ExternalTicket {
+/** An item as the in-memory tracker holds it. */
+export interface ExternalItem {
   id: string;
   title: string;
   body: string;
   labels: string[];
   /**
-   * Who the ticket belongs to, as logins. A list, because a tracker's is a
+   * Who the item belongs to, as logins. A list, because a tracker's is a
    * list — and because that is what lets several instances share one
    * repository, each taking only what is assigned to it.
    */
@@ -1535,7 +1535,7 @@ export interface ExternalTicket {
   comments: TrackerComment[];
   /** Lower is more urgent; null is unprioritised, never zero. */
   priority: number | null;
-  /** The ticket this one is a child of, by id. */
+  /** The item this one is a child of, by id. */
   parent: string | null;
   closed: Closed;
   /** Who opened it, as a login. */
@@ -1547,8 +1547,8 @@ export interface ExternalPull {
   /** The node id, `pr-<number>`. */
   id: string;
   number: number;
-  /** The ticket it implements. */
-  ticket: string;
+  /** The item it implements. */
+  item: string;
   merged: boolean;
   openThreads: number;
   /** Of `openThreads`, how many await a fix: every one whose last word is not the fixer's answer. */
@@ -1577,20 +1577,20 @@ export interface ExternalState extends ComposedHooks {
   /** The in-memory docs role's spec page: published, read back and briefed like any docs integration's. */
   spec: ArtifactHook;
   /**
-   * Open a pull request implementing `ticket`; returns its node id, `pr-<n>`, numbered from 1 in creation order.
+   * Open a pull request implementing `item`; returns its node id, `pr-<n>`, numbered from 1 in creation order.
    * `awaitingFix` defaults to `openThreads`: a thread nobody has answered awaits a fix.
    */
-  openPull(ticket: string, pr?: { merged?: boolean; openThreads?: number; awaitingFix?: number; closed?: Closed; branch?: string }): string;
+  openPull(item: string, pr?: { merged?: boolean; openThreads?: number; awaitingFix?: number; closed?: Closed; branch?: string }): string;
   /** Every branch a `branch.push` was applied for, in order: there is no repository here to push to. */
   pushes(): string[];
   /** The live record behind a pull request node, for a test to merge, close or comment on. */
   pull(id: string): ExternalPull;
-  ticket(id: string): ExternalTicket;
+  item(id: string): ExternalItem;
   /** Every row whose `parent` is this id, a test helper for asserting on what a step created. */
-  children(parent: string): ExternalTicket[];
+  children(parent: string): ExternalItem[];
   comments(id: string): string[];
   entriesOf(id: string): Entry[];
-  /** Where the ticket sits, as the engine would read it: out of a label. */
+  /** Where the item sits, as the engine would read it: out of a label. */
   stage(id: string): string | null;
   label(id: string, label: string): void;
   unlabel(id: string, label: string): void;
@@ -1620,18 +1620,18 @@ export type Verdict = { verdict?: unknown; nonce?: unknown; reason?: unknown };
 /* ------------------------------------------------------------------- mcp -- */
 
 export interface Tools {
-  waiting(): Promise<Array<{ ticket: string; title: string; url: string }>>;
-  status(ticket: string): Promise<unknown>;
+  waiting(): Promise<Array<{ item: string; title: string; url: string }>>;
+  status(item: string): Promise<unknown>;
   // `| undefined` is explicit because exactOptionalPropertyTypes is on and these
   // are fed straight from Zod, whose optional output includes it.
-  createTicket(input: {
+  createItem(input: {
     title: string;
     body?: string | undefined;
     labels?: string[] | undefined;
     start?: boolean | undefined;
   }): Promise<unknown>;
-  updateTicket(
-    ticket: string,
+  updateItem(
+    item: string,
     input: {
       title?: string | undefined;
       body?: string | undefined;
@@ -1640,28 +1640,28 @@ export interface Tools {
       removeLabels?: string[] | undefined;
     },
   ): Promise<unknown>;
-  reply(ticket: string, message: string): Promise<unknown>;
-  goto(ticket: string, stage: string): Promise<unknown>;
+  reply(item: string, message: string): Promise<unknown>;
+  goto(item: string, stage: string): Promise<unknown>;
   /** A goto that also clears the step it sends to of the security check, for that round alone. Absent a stage, the one refused. */
-  clear(ticket: string, stage?: string | undefined): Promise<unknown>;
-  ask(ticket: string, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
-  resolve(ticket: string, why?: string | undefined): Promise<unknown>;
+  clear(item: string, stage?: string | undefined): Promise<unknown>;
+  ask(item: string, message: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
+  resolve(item: string, why?: string | undefined): Promise<unknown>;
   /** What may be paired on now, and the pairing open, if any. */
-  pairing(ticket: string): Promise<unknown>;
-  pair(ticket: string, stage: string): Promise<unknown>;
-  finish(ticket: string, note?: string | undefined): Promise<unknown>;
-  release(ticket: string): Promise<unknown>;
+  pairing(item: string): Promise<unknown>;
+  pair(item: string, stage: string): Promise<unknown>;
+  finish(item: string, note?: string | undefined): Promise<unknown>;
+  release(item: string): Promise<unknown>;
 }
 
 /** The one tool a step that may create children is handed, already bound. */
 export interface ChildTool {
-  createChild(input: NewChild): Promise<{ ticket: string; title: string; link: string }>;
+  createChild(input: NewChild): Promise<{ item: string; title: string; link: string }>;
 }
 
 /**
  * What the MCP plane needs beyond the registry to hold a conversation: an
  * executor to resume a step's session with, a screener to judge the turn
- * before it runs, and where the per-ticket locks live. All optional — without
+ * before it runs, and where the per-item locks live. All optional — without
  * an executor the conversation tools report that none is configured rather
  * than crashing, exactly as the operator hook's absence is reported, and
  * screening is the operator's `security.screen` to switch off.
@@ -1684,8 +1684,8 @@ export interface ToolOptions {
   activity?: ActivityLog;
   /**
    * How to start `landrace mcp` on this workflow: a pairing hands it to the
-   * person's session, and a hand-in on a `tickets:create` step binds its
-   * ticket server from it. Absent, a pairing's session gets no server.
+   * person's session, and a hand-in on an `items:create` step binds its
+   * item server from it. Absent, a pairing's session gets no server.
    */
   server?: ServerCommand;
   /**
@@ -1720,7 +1720,7 @@ export interface Runtime {
   source: Source;
   /**
    * Assembled by `buildRuntime` but deliberately not run by it: `landrace
-   * status` builds a Runtime the same way to enumerate tickets, and must
+   * status` builds a Runtime the same way to enumerate items, and must
    * never make the one write a preflight can make while only trying to read.
    * Only `runStart` runs these, before the first tick.
    */
@@ -1732,7 +1732,7 @@ export interface Runtime {
   /**
    * Ctrl-C. The same signal every hook and executor is handed, so aborting it
    * stops the agent subprocess, stops the next pass from starting, and lets
-   * each ticket unwind through the lock it holds.
+   * each item unwind through the lock it holds.
    */
   stop: AbortController;
   /** See TickOptions.running: one map for the life of the loop, so every tick sees every run. */
@@ -1823,7 +1823,7 @@ export interface WorktreeBranch {
 /**
  * What a turn joins: the session to resume, and the stage and round whose
  * record carried it, so the turn is recorded against the same round the step
- * produced. All three are derived from the ticket, never remembered.
+ * produced. All three are derived from the item, never remembered.
  */
 export interface JoinedSession {
   session: string;
@@ -1832,7 +1832,7 @@ export interface JoinedSession {
 }
 
 export interface ConversationDeps {
-  /** The tick's own source and pre hooks: a turn reads the snapshot the tick would read, not a second view of the ticket. */
+  /** The tick's own source and pre hooks: a turn reads the snapshot the tick would read, not a second view of the item. */
   source: Source;
   pre: PreHook[];
   /** And the tick's own effect dispatcher, so a turn writes records the tick can re-derive. */
@@ -1855,7 +1855,7 @@ export interface ConversationDeps {
   workflow?: Workflow;
   steps?: Map<string, Step>;
   /**
-   * Where the repository is, when a turn is to run in a per-ticket worktree of
+   * Where the repository is, when a turn is to run in a per-item worktree of
    * it — the loop's own `agent.isolation: worktree`, read the same way. Its
    * presence is what makes the step's capabilities checkable rather than
    * delegated: we built the directory, so what changed in it is the turn's
@@ -1884,18 +1884,18 @@ export interface Conversation {
    * something", read fail-closed: unreadable means unresolved.
    */
   ask(
-    ticket: string,
+    item: string,
     message: string,
     opts?: { signal?: AbortSignal },
   ): Promise<{ reply: string; resolved: boolean }>;
-  /** Hand the ticket back to the loop as a human turn. Already handed back is reported, not repeated. */
-  resolve(ticket: string, why?: string): Promise<{ alreadyResolved: boolean }>;
+  /** Hand the item back to the loop as a human turn. Already handed back is reported, not repeated. */
+  resolve(item: string, why?: string): Promise<{ alreadyResolved: boolean }>;
 }
 
 /* -------------------------------------------------------------------- ui -- */
 
 /**
- * Where a ticket stands, drawn as its badge — and, for a whole branch, the
+ * Where an item stands, drawn as its badge — and, for a whole branch, the
  * lane it is drawn in. The cascade's order, most urgent first, is `URGENCY`
  * in src/ui/board.ts; nothing reads it from this union.
  */
@@ -1930,8 +1930,8 @@ export interface BoardSystem {
 }
 
 /**
- * The Chat menu's contents for one ticket, built server-side in
- * `src/ui/chat.ts` from nothing but the ticket number and the workspace
+ * The Chat menu's contents for one item, built server-side in
+ * `src/ui/chat.ts` from nothing but the item number and the workspace
  * path — the page script only ever assigns these to `href`/clipboard text,
  * never concatenates a URL of its own.
  */
@@ -1950,19 +1950,19 @@ export type ChatTarget = (typeof CHAT_TARGET_KEYS)[number];
  */
 export interface BoardRow {
   id: string;
-  /** "ticket", or whatever kind the source gave an artifact ("pull-request", "document"). */
+  /** "item", or whatever kind the source gave an artifact ("pull-request", "document"). */
   kind: string;
   title: string;
   /** http(s) only, else empty — it becomes an href. */
   link: string;
   /** Null only when there is no usable link to name a system from. */
   system: BoardSystem | null;
-  /** Tickets only: where this ticket itself stands. Null on an artifact row. */
+  /** Items only: where this item itself stands. Null on an artifact row. */
   badge: Lane | null;
   /**
    * Root rows only: the lane the whole branch is drawn in — the most urgent
-   * badge of any ticket in it, so a sub-ticket that needs you is never filed
-   * under a parent that merely waits. A branch with no ticket in it waits
+   * badge of any item in it, so a sub-item that needs you is never filed
+   * under a parent that merely waits. A branch with no item in it waits
    * while its root is open and is discharged once it is closed. Null on a
    * nested row, which is drawn in its root's lane.
    */
@@ -1981,33 +1981,33 @@ export interface BoardRow {
   model: string | null;
   /** The running step's own `effort`, as `model` is its own `model`; null where it named none. */
   effort: string | null;
-  /** Tickets only. */
+  /** Items only. */
   chat: Chat | null;
   /** Stopped by a security check rather than for any other reason — the page draws a shield. */
   screened: boolean;
   /**
    * The labels the badge was read from predate a step this process ran on
-   * the ticket: from the step's start until a list read after its tick let
-   * the ticket go. Meanwhile a needs-you badge may be the stage it is
+   * the item: from the step's start until a list read after its tick let
+   * the item go. Meanwhile a needs-you badge may be the stage it is
    * leaving, so the page's bell never counts it as an arrival.
    */
   stale: boolean;
   /**
-   * Where the page's Retry posts, for a ticket that is blocked or screened
+   * Where the page's Retry posts, for an item that is blocked or screened
    * right now; null everywhere else. Built by the server from a checked id,
    * so the page never puts a URL together itself. A Retry is now a goto with
    * no step named — the stage that last failed.
    */
   retry: string | null;
   /**
-   * Where the page's Clear & retry posts, for a ticket a security check
+   * Where the page's Clear & retry posts, for an item a security check
    * stopped, where a Retry is offered too; null everywhere else. The server
-   * re-reads the ticket, so this is an offer, never a clearance.
+   * re-reads the item, so this is an offer, never a clearance.
    */
   clear: string | null;
   /**
-   * The steps this ticket's stage may send it back to, each with the path
-   * the page posts to — built by the server. Empty unless the ticket is
+   * The steps this item's stage may send it back to, each with the path
+   * the page posts to — built by the server. Empty unless the item is
    * open, its agent is not running, and its stage lists a goto target; the
    * server's `sendTo` stays the one authority on whether a given send is
    * actually accepted (a stage's step still owed, a cap not holding, and so
@@ -2015,14 +2015,14 @@ export interface BoardRow {
    */
   goto: Array<{ stage: string; path: string }>;
   /**
-   * Where the ticket panel reads and writes, built by the server from a
-   * checked id like `retry`. Null on an artifact: only a ticket opens a panel.
+   * Where the item panel reads and writes, built by the server from a
+   * checked id like `retry`. Null on an artifact: only an item opens a panel.
    */
   panel: PanelPaths | null;
   children: BoardRow[];
 }
 
-/** The ticket panel's routes for one ticket. */
+/** The item panel's routes for one item. */
 export interface PanelPaths {
   activity: string;
   conversation: string;
@@ -2036,7 +2036,7 @@ export interface PanelPaths {
   release: string;
 }
 
-/** One record of a ticket's conversation, as the panel shows it: plain text, oldest first. */
+/** One record of an item's conversation, as the panel shows it: plain text, oldest first. */
 export interface ConversationLine {
   at: string;
   /** "landrace" for our own records, the author the source named for a person's. */
@@ -2049,19 +2049,19 @@ export interface ConversationLine {
 }
 
 /**
- * What the ticket panel reads and writes. The top of the panel reads the
+ * What the item panel reads and writes. The top of the panel reads the
  * BoardRow already in /board.json; everything here is the bottom half.
  */
-export interface TicketPanel {
-  activity(ticket: string, after: number): Promise<ActivityPage>;
-  conversation(ticket: string): Promise<ConversationLine[]>;
-  reply(ticket: string, message: string): Promise<void>;
-  ask(ticket: string, message: string): Promise<{ reply: string; resolved: boolean }>;
-  resolve(ticket: string): Promise<{ alreadyResolved: boolean }>;
-  pairing(ticket: string): Promise<PairingView>;
-  pair(ticket: string, stage: string): Promise<PairStarted>;
-  finish(ticket: string, note: string): Promise<PairFinished>;
-  release(ticket: string): Promise<{ stage: string; round: number }>;
+export interface ItemPanel {
+  activity(item: string, after: number): Promise<ActivityPage>;
+  conversation(item: string): Promise<ConversationLine[]>;
+  reply(item: string, message: string): Promise<void>;
+  ask(item: string, message: string): Promise<{ reply: string; resolved: boolean }>;
+  resolve(item: string): Promise<{ alreadyResolved: boolean }>;
+  pairing(item: string): Promise<PairingView>;
+  pair(item: string, stage: string): Promise<PairStarted>;
+  finish(item: string, note: string): Promise<PairFinished>;
+  release(item: string): Promise<{ stage: string; round: number }>;
 }
 
 export interface BoardView {
@@ -2097,7 +2097,7 @@ export interface UiOptions {
    */
   tick?: () => WakeResult;
   /**
-   * The page's Retry and "Go to step…": both send the ticket back through
+   * The page's Retry and "Go to step…": both send the item back through
    * `sendTo`, read afresh when the request arrives — the page is never taken
    * at its word. Absent, both routes are 404, as /tick is without a tick.
    */
@@ -2110,14 +2110,14 @@ export interface UiOptions {
    */
   refresh?: () => Promise<void>;
   /**
-   * The ticket panel's reads and its three writes — Reply, Ask, Resolve.
+   * The item panel's reads and its three writes — Reply, Ask, Resolve.
    * Absent, every panel route is 404.
    */
-  panel?: TicketPanel;
+  panel?: ItemPanel;
 }
 
 /**
- * What posting a person's reply on a ticket needs: the snapshot a post hook
+ * What posting a person's reply on an item needs: the snapshot a post hook
  * is handed, read the way the tick reads it, and the dispatcher every other
  * write goes through.
  */
@@ -2128,12 +2128,12 @@ export interface ReplyDeps {
   ctx: RuntimeContext;
 }
 
-/** What sending a ticket back to a step answers: the step it was sent to, or a sentence saying why not. */
+/** What sending an item back to a step answers: the step it was sent to, or a sentence saying why not. */
 export type GotoResult = { refused: string } | { to: string };
 
 /**
  * A reply's needs, the workflow, which is what says where a stage may send a
- * ticket, and where the per-ticket locks live — the tick's own, by default,
+ * item, and where the per-item locks live — the tick's own, by default,
  * since a goto has to be serialised against the tick that would take it.
  */
 export interface GotoDeps extends ReplyDeps {
@@ -2154,7 +2154,7 @@ export interface PairDeps extends GotoDeps {
   sandbox?: { root: string };
   /** `landrace mcp` on this workflow, for the person's session: their way back to Landrace. */
   server?: ServerCommand;
-  /** How to start the engine's ticket server, for a hand-in on a `tickets:create` step. */
+  /** How to start the engine's item server, for a hand-in on an `items:create` step. */
   childServer?: ServerCommand;
   /** Asked for the seeded prompt's briefing, as a step's invocation asks them. */
   artifacts?: ArtifactHook[];
@@ -2195,9 +2195,9 @@ export interface PairFinished {
   discarded: string[];
 }
 
-/** How the page's writes reach a ticket. `target` null is a Retry: `run.failedStage`, the failure that put the ticket where it is. */
+/** How the page's writes reach an item. `target` null is a Retry: `run.failedStage`, the failure that put the item where it is. */
 export interface GotoPath {
-  send(ticket: string, target: string | null, opts?: { clear?: boolean }): Promise<GotoResult>;
+  send(item: string, target: string | null, opts?: { clear?: boolean }): Promise<GotoResult>;
 }
 
 export interface UiServer {

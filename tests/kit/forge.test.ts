@@ -2,7 +2,7 @@ import { renderMarker } from "#conventions.js";
 import {
   answered, BRIEF_DIFF_CHARS, BRIEF_HISTORY_ITEMS, BRIEF_THREADS, commentableLines, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
   isFinding, isReply, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
-  threadLine, ticketOfBranch, where,
+  threadLine, itemOfBranch, where,
 } from "#kit/forge.js";
 import type { HistoryItem, ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
 
@@ -104,12 +104,12 @@ describe("placeFindings", () => {
   });
 });
 
-describe("prBranch and ticketOfBranch", () => {
-  it("name a ticket's branch, and read the ticket back from one of ours only", () => {
+describe("prBranch and itemOfBranch", () => {
+  it("name an item's branch, and read the item back from one of ours only", () => {
     expect(prBranch("7")).toBe("landrace/7");
-    expect(ticketOfBranch("landrace/7")).toBe("7");
-    expect(ticketOfBranch("landrace/07")).toBeNull();
-    expect(ticketOfBranch("feature/7")).toBeNull();
+    expect(itemOfBranch("landrace/7")).toBe("7");
+    expect(itemOfBranch("landrace/07")).toBeNull();
+    expect(itemOfBranch("feature/7")).toBeNull();
   });
 });
 
@@ -190,9 +190,9 @@ describe("threadsBrief", () => {
   });
 
   it("says there is nothing to address, rather than handing over an empty list", () => {
-    expect(threadsBrief([], new Map(), BOT)).toBe("There is no pull request open on this ticket, so there is nothing to address.");
+    expect(threadsBrief([], new Map(), BOT)).toBe("There is no pull request open on this item, so there is nothing to address.");
     expect(threadsBrief([5], new Map([[5, [thread({ resolved: true })]]]), BOT))
-      .toBe("No review thread on the ticket's pull requests is open. Nothing here needs addressing.");
+      .toBe("No review thread on the item's pull requests is open. Nothing here needs addressing.");
   });
 
   it("says how many threads it left out", () => {
@@ -225,7 +225,7 @@ describe("diffBrief", () => {
   });
 
   it("says there is no diff when no pull request is open", () => {
-    expect(diffBrief([])).toBe("No pull request is open on this ticket, so there is no diff to review.");
+    expect(diffBrief([])).toBe("No pull request is open on this item, so there is no diff to review.");
   });
 });
 
@@ -248,32 +248,32 @@ describe("threadLine", () => {
 });
 
 describe("historyBrief", () => {
-  const item = (at: string, text: string): HistoryItem => ({ at, text });
+  const entry = (at: string, text: string): HistoryItem => ({ at, text });
 
   it("is one timeline, oldest first, whichever role each entry came from", () => {
-    const items = [
-      item("2026-01-01T00:00:00Z", "@alice: first"),
-      item("2026-01-03T00:00:00Z", "@alice: third"),
-      item("2026-01-02T00:00:00.000Z", "On PR #4 (open): raised by @bob — open\nsecond"),
+    const entries = [
+      entry("2026-01-01T00:00:00Z", "@alice: first"),
+      entry("2026-01-03T00:00:00Z", "@alice: third"),
+      entry("2026-01-02T00:00:00.000Z", "On PR #4 (open): raised by @bob — open\nsecond"),
     ];
-    expect(historyBrief(items)).toBe("@alice: first\n\nOn PR #4 (open): raised by @bob — open\nsecond\n\n@alice: third");
+    expect(historyBrief(entries)).toBe("@alice: first\n\nOn PR #4 (open): raised by @bob — open\nsecond\n\n@alice: third");
   });
 
   it("puts an entry whose time is unknown first, rather than dropping it", () => {
-    expect(historyBrief([item("2026-01-01T00:00:00Z", "dated"), item("", "undated")])).toBe("undated\n\ndated");
+    expect(historyBrief([entry("2026-01-01T00:00:00Z", "dated"), entry("", "undated")])).toBe("undated\n\ndated");
   });
 
   it("keeps the newest past its cap and says how many it left out", () => {
-    const items = Array.from({ length: BRIEF_HISTORY_ITEMS + 5 }, (_, i) =>
-      item(new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(), `entry ${i}`));
-    const text = historyBrief(items);
+    const entries = Array.from({ length: BRIEF_HISTORY_ITEMS + 5 }, (_, i) =>
+      entry(new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(), `entry ${i}`));
+    const text = historyBrief(entries);
     expect(text).toMatch(/^\(5 earlier entries are not listed here\.\)/);
     expect(text).not.toMatch(/^entry 4$/m);
     expect(text).toMatch(/^entry 5$/m);
   });
 
   it("says so when nothing was said and nothing raised", () => {
-    expect(historyBrief([])).toBe("Nothing has been said on this ticket, and no review thread was raised on its pull requests.");
+    expect(historyBrief([])).toBe("Nothing has been said on this item, and no review thread was raised on its pull requests.");
   });
 });
 

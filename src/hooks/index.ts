@@ -31,7 +31,7 @@ export type {
   HookKind,
   Json,
   Marker,
-  NewTicket,
+  NewItem,
   Node,
   Notifier,
   NotifyEvent,
@@ -45,6 +45,6 @@ export type {
   RuntimeContext,
   Snapshot,
   Source,
-  TicketPatch,
+  ItemPatch,
   TrackerComment,
 } from "#namespace.js";

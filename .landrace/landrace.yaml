@@ -50,7 +50,7 @@ security:
   screen: true
   model: haiku
 
-# A ticket that comes to rest waiting on a person is posted to Slack, once
+# An item that comes to rest waiting on a person is posted to Slack, once
 # per arrival, by hooks/slack.ts. The board's 🔔 does the same in a browser.
 notify:
   on: [needs-you]

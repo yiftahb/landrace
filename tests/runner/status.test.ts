@@ -12,7 +12,7 @@ const workflow: Workflow = {
 };
 
 const candidate = (labels: string[], assignees: string[] = [], id = "1"): Node => ({
-  id, kind: "ticket", title: "Add export", link: "u/1", closed: null, priority: null, origin: null,
+  id, kind: "item", title: "Add export", link: "u/1", closed: null, priority: null, origin: null,
   state: { labels, assignees },
 });
 
@@ -24,18 +24,18 @@ describe("statusRows", () => {
    * it so — and says which: a security check is not an agent that could not
    * follow a format, and a person looks in a different place for each.
    */
-  it("says a ticket a security check stopped is blocked, and why", () => {
+  it("says an item a security check stopped is blocked, and why", () => {
     expect(noteFor(["go", "lr:stage:screened", "lr:blocked", "lr:screened"])).toBe("blocked by a security check");
     expect(noteFor(["go", "lr:stage:blocked", "lr:blocked"])).toBe("blocked: needs a human");
   });
 
-  it("skips a ticket with the workflow's own reason, not a label name of its own", () => {
+  it("skips an item with the workflow's own reason, not a label name of its own", () => {
     expect(noteFor([])).toBe("skipped: no go label");
   });
 
   it("reads the position out of the stage label", () => {
     expect(statusRows(workflow, [candidate(["go", "lr:stage:spec"])])[0]).toMatchObject({
-      ticket: "1",
+      item: "1",
       title: "Add export",
       stage: "spec",
     });
@@ -43,10 +43,10 @@ describe("statusRows", () => {
 
   /**
    * Ambiguity halts, and it must not be resolved by ordering here either: two
-   * stage labels mean the ticket cannot be placed, and printing the first one
+   * stage labels mean the item cannot be placed, and printing the first one
    * would report a position the engine itself refuses to believe.
    */
-  it("reports a ticket carrying two stage labels as unplaceable, and names no position", () => {
+  it("reports an item carrying two stage labels as unplaceable, and names no position", () => {
     const [row] = statusRows(workflow, [candidate(["go", "lr:stage:spec", "lr:stage:build"])]);
     expect(row?.stage).toBeNull();
     expect(row?.note).toMatch(/more than one/);
@@ -55,10 +55,10 @@ describe("statusRows", () => {
   /**
    * A table an operator reads to find out what their instance will do. With
    * the assignee unanswerable from a candidate the eligibility rule abstained,
-   * so a colleague's ticket printed as `queued` — a promise to work it that
+   * so a colleague's item printed as `queued` — a promise to work it that
    * converge then broke on the next tick.
    */
-  it("says a colleague's ticket is skipped, rather than promising to work it", () => {
+  it("says a colleague's item is skipped, rather than promising to work it", () => {
     const shared: Workflow = {
       ...workflow,
       eligible: [{ when: { "node.state.assignees": { $in: ["ann"] } }, else: "assigned to somebody else" }],
@@ -74,8 +74,8 @@ describe("statusRows", () => {
     expect(noteFor(["go"])).toBe("queued");
   });
 
-  it("prints tickets in id order, whatever order the source listed them in", () => {
+  it("prints items in id order, whatever order the source listed them in", () => {
     const rows = statusRows(workflow, [candidate(["go"], [], "10"), candidate(["go"], [], "9"), candidate(["go"], [], "2")]);
-    expect(rows.map((r) => r.ticket)).toEqual(["2", "9", "10"]);
+    expect(rows.map((r) => r.item)).toEqual(["2", "9", "10"]);
   });
 });

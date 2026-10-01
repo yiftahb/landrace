@@ -443,20 +443,20 @@ describeLoopback("POST /refresh", () => {
 
 /**
  * The page's second and third writes, and the ones that spend money: a Retry
- * or a "Go to step…" sends a ticket back through `sendTo`, which is what
+ * or a "Go to step…" sends an item back through `sendTo`, which is what
  * hands it back and re-runs a paid step. So both carry every guard POST
- * /tick does, and one more that only they need — the ticket has to allow the
+ * /tick does, and one more that only they need — the item has to allow the
  * goto *now*, read afresh when the request arrives, whatever the page that
  * asked believed. A Retry is a goto with no step named: the stage that last
  * failed.
  */
-describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /tickets/<id>/goto/<stage>", () => {
+describeLoopback("the page's writes to an item: POST /items/<id>/retry and /items/<id>/goto/<stage>", () => {
   let server: UiServer;
   afterEach(async () => { await server?.close(); });
 
-  const going = (send: (ticket: string, target: string | null) => Promise<GotoResult> = async (_, t) => ({ to: t ?? "build" })) => {
+  const going = (send: (item: string, target: string | null) => Promise<GotoResult> = async (_, t) => ({ to: t ?? "build" })) => {
     const calls: Array<[string, string | null]> = [];
-    return { calls, goto: { send: async (ticket: string, target: string | null) => { calls.push([ticket, target]); return send(ticket, target); } } };
+    return { calls, goto: { send: async (item: string, target: string | null) => { calls.push([item, target]); return send(item, target); } } };
   };
   const ours = (action: string) => ({
     "x-landrace-action": action, origin: `http://127.0.0.1:${server.port}`, "sec-fetch-site": "same-origin",
@@ -465,7 +465,7 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
   it("sends a Retry as a goto with no step named, and says where it went", async () => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    const res = await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours("retry") });
+    const res = await get(server.port, "/items/19/retry", { method: "POST", headers: ours("retry") });
     expect(res.status).toBe(202);
     expect(res.body).toBe("sent #19 back to build");
     expect(g.calls).toEqual([["19", null]]);
@@ -473,12 +473,12 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
 
   it("sends a Clear & retry as a clearing goto with no step named, and says so", async () => {
     const calls: unknown[][] = [];
-    const goto = { send: async (ticket: string, target: string | null, o?: { clear?: boolean }) => {
-      calls.push([ticket, target, o]);
+    const goto = { send: async (item: string, target: string | null, o?: { clear?: boolean }) => {
+      calls.push([item, target, o]);
       return { to: "spec" };
     } };
     server = await serveBoard({ port: 0, view: async () => empty, goto });
-    const res = await get(server.port, "/tickets/39/clear", { method: "POST", headers: ours("clear") });
+    const res = await get(server.port, "/items/39/clear", { method: "POST", headers: ours("clear") });
     expect(res.status).toBe(202);
     expect(res.body).toBe("cleared #39 of the security check and sent it back to spec");
     expect(calls).toEqual([["39", null, { clear: true }]]);
@@ -487,7 +487,7 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
   it("refuses a Clear & retry that names itself as anything else", async () => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    const res = await get(server.port, "/tickets/39/clear", { method: "POST", headers: ours("retry") });
+    const res = await get(server.port, "/items/39/clear", { method: "POST", headers: ours("retry") });
     expect(res.status).toBe(403);
     expect(g.calls).toEqual([]);
   });
@@ -495,15 +495,15 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
   it("sends a goto to the step in its path", async () => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    const res = await get(server.port, "/tickets/19/goto/spec", { method: "POST", headers: ours("goto") });
+    const res = await get(server.port, "/items/19/goto/spec", { method: "POST", headers: ours("goto") });
     expect(res.status).toBe(202);
     expect(g.calls).toEqual([["19", "spec"]]);
   });
 
   it("answers a refusal with its own sentence", async () => {
-    const g = going(async () => ({ refused: "#19: \"blocked\" sends a ticket only to \"spec\", not to \"done\"" }));
+    const g = going(async () => ({ refused: "#19: \"blocked\" sends an item only to \"spec\", not to \"done\"" }));
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    const res = await get(server.port, "/tickets/19/goto/done", { method: "POST", headers: ours("goto") });
+    const res = await get(server.port, "/items/19/goto/done", { method: "POST", headers: ours("goto") });
     expect(res.status).toBe(409);
     expect(res.body).toMatch(/only to "spec"/);
   });
@@ -513,7 +513,7 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
     const spy = jest.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const res = await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours("retry") });
+      const res = await get(server.port, "/items/19/retry", { method: "POST", headers: ours("retry") });
       expect(res.status).toBe(502);
       expect(res.body).toMatch(/could not send it back/);
       expect(res.body).not.toMatch(/ghp_/);
@@ -524,10 +524,10 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
   });
 
   /**
-   * A person who sent a ticket back is waiting on it: the pass that picks it
+   * A person who sent an item back is waiting on it: the pass that picks it
    * up runs now rather than when the countdown next comes round.
    */
-  it.each([["retry", "/tickets/19/retry"], ["goto", "/tickets/19/goto/spec"]])(
+  it.each([["retry", "/items/19/retry"], ["goto", "/items/19/goto/spec"]])(
     "wakes the schedule once after a %s is sent",
     async (action, path) => {
       const g = going();
@@ -543,14 +543,14 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
     const tick = jest.fn((): WakeResult => "started");
     const refused = going(async () => ({ refused: "#19: not now" }));
     server = await serveBoard({ port: 0, view: async () => empty, goto: refused.goto, tick });
-    expect((await get(server.port, "/tickets/19/goto/done", { method: "POST", headers: ours("goto") })).status).toBe(409);
+    expect((await get(server.port, "/items/19/goto/done", { method: "POST", headers: ours("goto") })).status).toBe(409);
     await server.close();
 
     const throwing = going(async () => { throw new Error("tracker down"); });
     server = await serveBoard({ port: 0, view: async () => empty, goto: throwing.goto, tick });
     const spy = jest.spyOn(console, "error").mockImplementation(() => {});
     try {
-      expect((await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours("retry") })).status).toBe(502);
+      expect((await get(server.port, "/items/19/retry", { method: "POST", headers: ours("retry") })).status).toBe(502);
     } finally {
       spy.mockRestore();
     }
@@ -560,14 +560,14 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
   it("refuses a request with no custom header — what a cross-site <form> sends — and sends nothing", async () => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    const res = await get(server.port, "/tickets/19/retry", {
+    const res = await get(server.port, "/items/19/retry", {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "a=1",
     });
     expect(res.status).toBe(403);
     expect(g.calls).toEqual([]);
   });
 
-  it.each([["retry", "/tickets/19/goto/spec"], ["goto", "/tickets/19/retry"], ["tick", "/tickets/19/goto/spec"]])(
+  it.each([["retry", "/items/19/goto/spec"], ["goto", "/items/19/retry"], ["tick", "/items/19/goto/spec"]])(
     "refuses the %s header on %s: each write names itself", async (action, path) => {
       const g = going();
       server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
@@ -575,29 +575,29 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
       expect(g.calls).toEqual([]);
     });
 
-  it.each(["..", "a%20b", "-rf", "%2E%2E%2Fetc"])("refuses a ticket id that is not one (%s)", async (id) => {
+  it.each(["..", "a%20b", "-rf", "%2E%2E%2Fetc"])("refuses an item id that is not one (%s)", async (id) => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    expect((await get(server.port, `/tickets/${id}/goto/spec`, { method: "POST", headers: ours("goto") })).status).toBe(400);
+    expect((await get(server.port, `/items/${id}/goto/spec`, { method: "POST", headers: ours("goto") })).status).toBe(400);
     expect(g.calls).toEqual([]);
   });
 
-  it("refuses a ticket id that is not one on the retry route too", async () => {
+  it("refuses an item id that is not one on the retry route too", async () => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    expect((await get(server.port, "/tickets/../retry", { method: "POST", headers: ours("retry") })).status).toBe(400);
+    expect((await get(server.port, "/items/../retry", { method: "POST", headers: ours("retry") })).status).toBe(400);
     expect(g.calls).toEqual([]);
   });
 
-  it("says 'ticket id' for a malformed % on the retry route, and 'ticket and a step' on the goto route", async () => {
+  it("says 'item id' for a malformed % on the retry route, and 'item and a step' on the goto route", async () => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    const retrying = await get(server.port, "/tickets/%E0%A4%A/retry", { method: "POST", headers: ours("retry") });
+    const retrying = await get(server.port, "/items/%E0%A4%A/retry", { method: "POST", headers: ours("retry") });
     expect(retrying.status).toBe(400);
-    expect(retrying.body).toBe("that is not a ticket id");
-    const going_ = await get(server.port, "/tickets/%E0%A4%A/goto/spec", { method: "POST", headers: ours("goto") });
+    expect(retrying.body).toBe("that is not an item id");
+    const going_ = await get(server.port, "/items/%E0%A4%A/goto/spec", { method: "POST", headers: ours("goto") });
     expect(going_.status).toBe(400);
-    expect(going_.body).toBe("that is not a ticket and a step");
+    expect(going_.body).toBe("that is not an item and a step");
     expect(g.calls).toEqual([]);
   });
 
@@ -607,7 +607,7 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
   it.each(["%00", "%E0%A4%A", "%E2%80%8B"])("refuses a step that is not one (%s)", async (stage) => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    expect((await get(server.port, `/tickets/19/goto/${stage}`, { method: "POST", headers: ours("goto") })).status).toBe(400);
+    expect((await get(server.port, `/items/19/goto/${stage}`, { method: "POST", headers: ours("goto") })).status).toBe(400);
     expect(g.calls).toEqual([]);
   });
 
@@ -615,21 +615,21 @@ describeLoopback("the page's writes to a ticket: POST /tickets/<id>/retry and /t
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
     const h = { "x-landrace-action": "goto" };
-    expect((await get(server.port, "/tickets/19/goto/spec", { method: "POST", headers: { ...h, origin: "http://evil.example" } })).status).toBe(403);
-    expect((await get(server.port, "/tickets/19/goto/spec", { method: "POST", headers: { ...h, "sec-fetch-site": "cross-site" } })).status).toBe(403);
-    expect((await get(server.port, "/tickets/19/goto/spec", { headers: h })).status).toBe(405);
+    expect((await get(server.port, "/items/19/goto/spec", { method: "POST", headers: { ...h, origin: "http://evil.example" } })).status).toBe(403);
+    expect((await get(server.port, "/items/19/goto/spec", { method: "POST", headers: { ...h, "sec-fetch-site": "cross-site" } })).status).toBe(403);
+    expect((await get(server.port, "/items/19/goto/spec", { headers: h })).status).toBe(405);
     expect(g.calls).toEqual([]);
   });
 
   it("is not there at all when nothing can write to the tracker", async () => {
     server = await serveBoard({ port: 0, view: async () => empty });
-    expect((await get(server.port, "/tickets/19/goto/spec", { method: "POST", headers: ours("goto") })).status).toBe(404);
+    expect((await get(server.port, "/items/19/goto/spec", { method: "POST", headers: ours("goto") })).status).toBe(404);
   });
 
   it("sends the CSP and no-store headers, and no Access-Control-Allow-*, on a write response", async () => {
     const g = going();
     server = await serveBoard({ port: 0, view: async () => empty, goto: g.goto });
-    const res = await get(server.port, "/tickets/19/retry", { method: "POST", headers: ours("retry") });
+    const res = await get(server.port, "/items/19/retry", { method: "POST", headers: ours("retry") });
     expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(Object.keys(res.headers).some((h) => h.toLowerCase().startsWith("access-control-allow"))).toBe(false);

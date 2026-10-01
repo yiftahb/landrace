@@ -1,8 +1,8 @@
 version: 1
 name: children
 
-# The engine's child-ticket feature, end to end: an approved spec is either
-# built as one piece of work or split into sub-tickets that are each built and
+# The engine's child-item feature, end to end: an approved spec is either
+# built as one piece of work or split into sub-items that are each built and
 # reviewed on their own, and the parent finishes when they do. The shipped
 # .landrace workflow is a single flow and uses none of this; this is the
 # example a project that wants splitting copies from, and what the tests drive
@@ -29,30 +29,30 @@ budget:
 # 1. `tracker.status` names the stage's own id, because on GitHub the status
 #    *is* the position: the hook writes it as `lr:stage:<value>` and the engine
 #    reads run.stage back out of that label. A display name there ("Building")
-#    derives a position no stage's identity matches, and the ticket cannot be
+#    derives a position no stage's identity matches, and the item cannot be
 #    placed at all.
 #
 # 2. The `enter` record comes first, before the status that moves the position.
 #    It is what tells the engine the stage owes another round — a crash between
-#    the two effects must leave the ticket at the *previous* stage, whose
+#    the two effects must leave the item at the *previous* stage, whose
 #    trigger simply fires again and replans the identical entry record (the
 #    round is derived, so it does not move). Written after the status instead,
-#    a crash would land the ticket on a stage that still reads as complete from
+#    a crash would land the item on a stage that still reads as complete from
 #    its last round, and that round would be silently skipped.
-# Pull requests are graph nodes: rel.implements.in.* counts every PR tied to the ticket — "all merged" is total > 0 and not.merged: 0, never a single PR's flag.
+# Pull requests are graph nodes: rel.implements.in.* counts every PR tied to the item — "all merged" is total > 0 and not.merged: 0, never a single PR's flag.
 stages:
   # ── spec phase ───────────────────────────────────────────────────────────
   - id: spec
     step: steps/spec.md
     entry: true
     triggers:
-      # Any ticket a person made — top-level, or a sub-issue they filed by
+      # Any item a person made — top-level, or a sub-issue they filed by
       # hand, which nobody planned and so needs a spec like any other. A
       # child a breakdown created carries an origin, and enters at build
       # instead — see below. With two entry stages, each trigger here that
-      # places a fresh ticket must be anchored on "run.stage": null, or it
+      # places a fresh item must be anchored on "run.stage": null, or it
       # would also fire mid-workflow.
-      - name: a ticket a person made
+      - name: an item a person made
         when: { "run.stage": null, "node.origin": null }
       # run.lastEvent.actor, not lastEvent.actor: the spec lists lastEvent.* as
       # a conventional top-level path, but deriveRun puts it inside run and no
@@ -78,10 +78,10 @@ stages:
           "run.stage": blocked
           "run.lastEvent.actor": human
           "run.counters.spec": { $lt: 3 }
-      # The open sub-tickets are what keep this disjoint from done's "every
-      # sub-ticket is finished": with none left open there is nothing to
-      # revise, and the ticket is finished instead.
-      - name: you asked for changes while the sub-tickets were running
+      # The open sub-items are what keep this disjoint from done's "every
+      # sub-item is finished": with none left open there is nothing to
+      # revise, and the item is finished instead.
+      - name: you asked for changes while the sub-items were running
         when:
           "run.stage": children-running
           "run.lastEvent.actor": human
@@ -96,10 +96,10 @@ stages:
   # `triage --question--> spec-questions`, and `unclear` here too: the enum
   # exists so the model can abstain instead of guessing, and an abstention has
   # to land somewhere a human turn can reach or it is worse than a guess — the
-  # ticket sat at `triage` wearing `lr:awaiting` and the next reply did
+  # item sat at `triage` wearing `lr:awaiting` and the next reply did
   # nothing, because decide() never evaluates the current stage's own
   # triggers. The triage step's own comment — its reason, in its own words —
-  # is already on the ticket by the time this is entered, so "waits and asks"
+  # is already on the item by the time this is entered, so "waits and asks"
   # is the asking; this is the waiting.
   - id: spec-questions
     triggers:
@@ -135,7 +135,7 @@ stages:
   # ── breakdown ────────────────────────────────────────────────────────────
   # Whether the approved spec is one piece of work or several. The close comes
   # first, before the entry record, for the same reason the entry record comes
-  # before the status: a crash between them must leave the ticket where its
+  # before the status: a crash between them must leave the item where its
   # trigger fires again and replans them all. It drops every child an earlier
   # round made, and everything those own; converge re-plans it before every
   # invocation too, which is what cleans up after a crashed attempt.
@@ -144,7 +144,7 @@ stages:
   # run.lastOutputValid: null. A rejected round leaves the last *accepted*
   # output in run.outputs, so a second round that broke its contract still
   # shows round 1's kind — and without this, "a step broke its output
-  # contract" and a stale kind would both match, and the ticket would halt as
+  # contract" and a stale kind would both match, and the item would halt as
   # ambiguous instead of being blocked for a person to hand back.
   - id: breakdown
     step: steps/breakdown.md
@@ -157,12 +157,12 @@ stages:
       - { type: tracker.status, value: breakdown }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 
-  # Nobody's turn: the children are being worked, each as its own ticket. Not
+  # Nobody's turn: the children are being worked, each as its own item. Not
   # lr:awaiting — a person has nothing to answer here — and not lr:working,
-  # which would read as an agent running on this ticket.
+  # which would read as an agent running on this item.
   - id: children-running
     triggers:
-      - name: the breakdown created sub-tickets
+      - name: the breakdown created sub-items
         when:
           "run.stage": breakdown
           "run.outputs.breakdown.kind": children
@@ -254,13 +254,13 @@ stages:
           "run.stage": pr-human-review
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
-      - name: every sub-ticket is finished
+      - name: every sub-item is finished
         when:
           "run.stage": children-running
           "rel.child-of.in.total": { $gt: 0 }
           "rel.child-of.in.not.closed": 0
     # Closed as finished, so a parent waiting in children-running sees this
-    # ticket among its closed children.
+    # item among its closed children.
     on_enter:
       - { type: tracker.status, value: done }
       - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
@@ -289,7 +289,7 @@ stages:
           "run.outputs.breakdown.kind": children
           "run.lastOutputValid": null
           "rel.child-of.in.total": 0
-      - name: the breakdown said one piece of work but created sub-tickets
+      - name: the breakdown said one piece of work but created sub-items
         when:
           "run.stage": breakdown
           "run.outputs.breakdown.kind": single

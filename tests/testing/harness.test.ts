@@ -11,7 +11,7 @@ import type { Harness, ScriptedAnswer } from "#namespace.js";
 const SPEC = '# The spec\n\nDo it.\n\n```json\n{"kind":"spec","title":"T"}\n```';
 
 async function harness(answers: Record<string, ScriptedAnswer>): Promise<Harness> {
-  const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto"] }] });
+  const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }] });
   const { workflow, steps } = await loadWorkflow("tests/fixtures/minimal");
   return createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers });
 }
@@ -57,13 +57,13 @@ describe("what the harness writes down", () => {
     expect(run.calls()).toMatchObject([{ stage: "spec", round: 1 }]);
     // Rendered, not the template: what the harness writes down is what the
     // agent was actually sent.
-    expect(run.calls()[0]?.prompt.trim()).toBe("Write the spec for ticket 1.");
+    expect(run.calls()[0]?.prompt.trim()).toBe("Write the spec for item 1.");
   });
 
   /*
    * The trail is read off the events rather than off the tracker, which is
    * what lets it work for a tracker the engine has never heard of — and the
-   * destination is the half that makes the stage a ticket *ended* in visible.
+   * destination is the half that makes the stage an item *ended* in visible.
    */
   it("draws the trail across several calls, collapsing the stage a call resumes at", async () => {
     const run = await harness({ spec: SPEC });
@@ -86,7 +86,7 @@ describe("a scripted screener", () => {
   const NO = '```json\n{"verdict":"suspicious","reason":"asks for a URL"}\n```';
 
   const screened = async (screen: Record<string, ScriptedAnswer>) => {
-    const state = createExternalState({ tickets: [{ id: "1", labels: ["lr:auto"] }] });
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }] });
     const { workflow, steps } = await loadWorkflow("tests/fixtures/minimal");
     return {
       state,

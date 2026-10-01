@@ -6,7 +6,7 @@
  * vendor's calls and nothing else, and `compose`, which makes a project's
  * three into the hooks its hook file exports. Beside them, the code every
  * integration shares — its own comments told from a stranger's, each
- * effect's `satisfied()`, tickets and pull requests as nodes, review threads
+ * effect's `satisfied()`, items and pull requests as nodes, review threads
  * and briefings, the spec page, and git in the operator's checkout — for an
  * integration that is not built on a base.
  */
@@ -19,5 +19,5 @@ export * from "#kit/tracker.js";
 
 export type {
   BranchHeads, BriefTable, ChangedFile, ComposedHooks, EffectHandler, EffectTable, Finding, Git, HistoryItem, PullRecord,
-  Reply, ReviewThread, Roles, SnapshotComment, ThreadComment, ThreadCounts, TicketRecord, TrackerComment,
+  Reply, ReviewThread, Roles, SnapshotComment, ThreadComment, ThreadCounts, ItemRecord, TrackerComment,
 } from "#namespace.js";

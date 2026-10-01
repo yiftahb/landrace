@@ -3,25 +3,25 @@
  * who last edited a body, the workflow's transitions, and the account's
  * permissions. Everything else a tracker does is `BaseTracker`'s — position
  * is still an `lr:stage:*` label, and Jira's status moves only to close a
- * ticket or reopen it.
+ * item or reopen it.
  */
-import { type Closed, type RuntimeContext, STAGE_LABEL_PREFIX, type TicketPatch } from "landrace/hooks";
+import { type Closed, type RuntimeContext, STAGE_LABEL_PREFIX, type ItemPatch } from "landrace/hooks";
 import {
-  BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, TICKET_PAGE,
-  type TicketRecord, type TrackerComment,
+  BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
+  type ItemRecord, type TrackerComment,
 } from "landrace/kit";
 import { type AdfDoc, fromAdf, toAdf } from "./adf.js";
 import { type Client, clientFor, isMissing } from "./client.js";
 
 export interface JiraOptions {
-  /** The project's key: `KEY` in `KEY-12`. Only its issues are tickets. */
+  /** The project's key: `KEY` in `KEY-12`. Only its issues are items. */
   project: string;
-  /** What a ticket with no parent is created as. "Task" unless named. */
+  /** What an item with no parent is created as. "Task" unless named. */
   issueType?: string | undefined;
   /** What a child is created as, under its parent: a sub-task type, "Subtask" unless named. */
   childType?: string | undefined;
   /**
-   * The workflow's transitions that close a ticket as done ("Done") and as
+   * The workflow's transitions that close an item as done ("Done") and as
    * dropped ("Won't Do"). A closed issue whose status or resolution carries
    * the dropped one's name reads as dropped.
    */
@@ -32,7 +32,7 @@ export interface JiraOptions {
 /** Jira's own bound on a comment or a description, counted on the document it is sent as. */
 const MAX_ADF_CHARS = 32_767;
 
-/** Every field a ticket is read from, asked for by name: a search returns ids alone unless told. */
+/** Every field an item is read from, asked for by name: a search returns ids alone unless told. */
 const FIELDS = [
   "summary", "status", "resolution", "labels", "assignee", "creator", "description", "created", "updated",
   "statuscategorychangedate", "parent", "priority",
@@ -137,7 +137,7 @@ export class Jira extends BaseTracker {
 
   /**
    * The engine's id as one of this project's keys, checked before it is put
-   * in a URL or a query. Anything else is another tracker's ticket, or text
+   * in a URL or a query. Anything else is another tracker's item, or text
    * that would rewrite the request it was spelled into.
    */
   private keyOf(id: string): string {
@@ -239,8 +239,8 @@ export class Jira extends BaseTracker {
     return same(status.name, this.dropped) || same(resolution?.name ?? undefined, this.dropped) ? "dropped" : "done";
   }
 
-  /** Issues as the kit reads tickets, with their editors and priorities. */
-  private async records(jira: Client, issues: Issue[]): Promise<TicketRecord[]> {
+  /** Issues as the kit reads items, with their editors and priorities. */
+  private async records(jira: Client, issues: Issue[]): Promise<ItemRecord[]> {
     if (issues.length === 0) return [];
     const editors = await this.editors(jira, issues.map((i) => i.id));
     const priorities = await this.priorityIds(jira);
@@ -261,7 +261,7 @@ export class Jira extends BaseTracker {
         editor: editors.get(id),
         createdAt: iso(fields.created),
         updatedAt: iso(fields.updated),
-        // A parent in another project is no ticket of this tracker's.
+        // A parent in another project is no item of this tracker's.
         parent: parent !== undefined && this.keyPattern.test(parent) ? parent : null,
         priority: priority === -1 ? null : priority,
       };
@@ -274,7 +274,7 @@ export class Jira extends BaseTracker {
    * That second list is for the board, not the loop, so past its bound it
    * stops quietly rather than failing the tick.
    */
-  async tickets(ctx: RuntimeContext): Promise<TicketRecord[]> {
+  async items(ctx: RuntimeContext): Promise<ItemRecord[]> {
     const jira = this.jira(ctx);
     const open = await this.search(jira, `project = "${this.project}" AND statusCategory != Done ORDER BY created ASC`);
     if (!open.complete) throw new Error(`${this.project} has more open issues than ${MAX_ISSUE_PAGES} pages carry`);
@@ -290,7 +290,7 @@ export class Jira extends BaseTracker {
     return this.records(jira, [...new Map([...open.issues, ...done].map((i) => [i.key, i])).values()]);
   }
 
-  async ticket(id: string, ctx: RuntimeContext): Promise<TicketRecord> {
+  async item(id: string, ctx: RuntimeContext): Promise<ItemRecord> {
     const key = this.keyOf(id);
     const jira = this.jira(ctx);
     let issue: Issue;
@@ -317,15 +317,15 @@ export class Jira extends BaseTracker {
    * never happened. The parent's own sub-tasks, read off the issue, are
    * never behind, so the search is asked to reconcile them.
    */
-  async children(id: string, ctx: RuntimeContext): Promise<TicketRecord[]> {
+  async children(id: string, ctx: RuntimeContext): Promise<ItemRecord[]> {
     const key = this.keyOf(id);
     const jira = this.jira(ctx);
     const parent = await jira.call<{ fields?: { subtasks?: Array<{ id?: string }> } }>("GET", `/rest/api/3/issue/${key}?fields=subtasks`);
     const subtasks = (parent.fields?.subtasks ?? []).flatMap((s) => (s.id === undefined ? [] : [Number(s.id)]));
-    if (subtasks.length > TICKET_PAGE) throw new Error(`${key} has more than the ${TICKET_PAGE} children one read carries`);
+    if (subtasks.length > ITEM_PAGE) throw new Error(`${key} has more than the ${ITEM_PAGE} children one read carries`);
     const found = await this.search(jira, `project = "${this.project}" AND parent = "${key}" ORDER BY created ASC`, subtasks);
-    if (!found.complete || found.issues.length > TICKET_PAGE) {
-      throw new Error(`${key} has more than the ${TICKET_PAGE} children one read carries`);
+    if (!found.complete || found.issues.length > ITEM_PAGE) {
+      throw new Error(`${key} has more than the ${ITEM_PAGE} children one read carries`);
     }
     return this.records(jira, found.issues);
   }
@@ -384,7 +384,7 @@ export class Jira extends BaseTracker {
 
   /**
    * Through the transition named for `how`, unless it is closed already: the
-   * graph a close was planned from came from search, and a ticket a person
+   * graph a close was planned from came from search, and an item a person
    * closed a moment ago must not be closed again over them. Missing, the
    * transition says which ones the issue offers; two of one name halt rather
    * than pick one; and one into a status Jira does not count as done is
@@ -446,9 +446,9 @@ export class Jira extends BaseTracker {
   /**
    * The title and body, and the state by transition: closed through the
    * done one, open through the first the issue offers into a To Do status.
-   * A state the ticket is already in asks for nothing.
+   * A state the item is already in asks for nothing.
    */
-  async update(id: string, { title, body, state }: Pick<TicketPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void> {
+  async update(id: string, { title, body, state }: Pick<ItemPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void> {
     const key = this.keyOf(id);
     const fields = {
       ...(title === undefined ? {} : { summary: title }),
@@ -468,7 +468,7 @@ export class Jira extends BaseTracker {
   /**
    * Startup, before anything is paid for: each permission the account lacks
    * on the project, each issue type it does not have, and each type without a
-   * labels field — a ticket's position is a label. Reads only: every write
+   * labels field — an item's position is a label. Reads only: every write
    * shows in the project's history, so the preflight makes none.
    */
   async check(ctx: RuntimeContext): Promise<void> {
@@ -494,7 +494,7 @@ export class Jira extends BaseTracker {
         }
         const fields = await everyPage<{ fieldId?: string }>(jira, `${path}/${encodeURIComponent(type.id)}`);
         if (!fields.some((f) => f.fieldId === "labels")) {
-          problems.push(`${this.project}'s "${wanted}" issues have no labels field, and a ticket's position is a label`);
+          problems.push(`${this.project}'s "${wanted}" issues have no labels field, and an item's position is a label`);
         }
       }
     }

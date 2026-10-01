@@ -16,7 +16,7 @@ import type { FakeTracker } from "#tests/support/fake-tracker.js";
  * idea what a login is.
  */
 const ctx = {} as RuntimeContext;
-const ticketCtx = { ticket: "1" } as HookContext;
+const itemCtx = { item: "1" } as HookContext;
 
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -85,14 +85,14 @@ describe("the hook resolves the login it posts as", () => {
 
   it("records the resolved login in the snapshot, for the post hook to check effects against", async () => {
     const { hooks } = build({ user: ok("landrace-bot") });
-    const fragment = await hooks.pre.run(ticketCtx);
+    const fragment = await hooks.pre.run(itemCtx);
     expect(fragment.tracker).toEqual({ bot: "landrace-bot" });
     expect(hooks.pre.provides).toContain("tracker.bot");
   });
 
   it("verifies a configured bot name against the token rather than trusting it", async () => {
     const { hooks } = build({ bot: "landrace[bot]", user: ok("Landrace[bot]") });
-    expect((await hooks.pre.run(ticketCtx)).tracker).toEqual({ bot: "landrace[bot]" });
+    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]" });
   });
 
   it("halts naming both logins when the configured name is a typo", async () => {
@@ -109,7 +109,7 @@ describe("the hook resolves the login it posts as", () => {
       bot: "landrace[bot]",
       user: () => { throw new Error("getaddrinfo ENOTFOUND api.github.com"); },
     });
-    expect((await hooks.pre.run(ticketCtx)).tracker).toEqual({ bot: "landrace[bot]" });
+    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]" });
   });
 
   it("refuses to run rather than guess when the login cannot be resolved", async () => {
@@ -131,28 +131,28 @@ describe("the hook resolves the login it posts as", () => {
     await expect(hooks.source.list(ctx)).rejects.toThrow(/no login/);
   });
 
-  it("refuses a non-numeric ticket id at the edge instead of calling /issues/NaN", async () => {
+  it("refuses a non-numeric item id at the edge instead of calling /issues/NaN", async () => {
     const { hooks, calls } = build({ user: ok("landrace-bot") });
-    await expect(hooks.pre.run({ ...ticketCtx, ticket: "PROJ-7" } as HookContext))
+    await expect(hooks.pre.run({ ...itemCtx, item: "PROJ-7" } as HookContext))
       .rejects.toThrow(/"PROJ-7" is not a GitHub issue number/);
     expect(calls.some((c) => c.includes("NaN"))).toBe(false);
   });
 });
 
 /**
- * Who a ticket belongs to, which is what lets several instances share one
- * repository: each takes the tickets assigned to it and skips the rest.
+ * Who an item belongs to, which is what lets several instances share one
+ * repository: each takes the items assigned to it and skips the rest.
  *
  * A list, because GitHub's issue has a list — `assignees`. The singular
  * `assignee` REST also returns is that list's first element under a second
- * name, and a second spelling of one fact is the mistake `ticket.stage`
+ * name, and a second spelling of one fact is the mistake `item.stage`
  * already was here: the two disagree the moment an issue has two assignees,
  * and nothing says which of them a predicate is reading.
  *
- * It lives on the ticket's node, which the source reads — once, for the tick's
+ * It lives on the item's node, which the source reads — once, for the tick's
  * list and the snapshot alike — and not in the pre hook's fragment beside it.
  */
-describe("who a ticket is assigned to", () => {
+describe("who an item is assigned to", () => {
   const nodeOf = async (assignees: Array<{ login: string }>) => {
     const gh = createFakeTracker([{ number: 1, assignees }]);
     const source = gh.registry.source;
@@ -169,7 +169,7 @@ describe("who a ticket is assigned to", () => {
    * Empty, never absent. `$in` over a missing path and `$in` over an empty
    * list both fail to match, but only one of them is a path `validate` can
    * cover and `missingPaths` can answer for — and an eligibility rule the
-   * tick cannot answer abstains, which would work an unassigned ticket
+   * tick cannot answer abstains, which would work an unassigned item
    * belonging to nobody.
    */
   it("carries an empty list for an unassigned issue rather than nothing at all", async () => {
@@ -185,23 +185,23 @@ describe("who a ticket is assigned to", () => {
     const gh = createFakeTracker([{ number: 1, assignees: [{ login: "ann" }] }]);
     const pre = gh.registry.pre[0];
     if (!pre) throw new Error("the fake tracker registered no pre hook");
-    const fragment = await pre.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
-    expect(Object.keys(fragment.ticket as object).sort()).toEqual(["body", "comments"]);
+    const fragment = await pre.run({ ...gh.ctx, item: "1", snapshot: {} } as HookContext);
+    expect(Object.keys(fragment.item as object).sort()).toEqual(["body", "comments"]);
   });
 });
 
 /*
- * A ticket's records are its comments, and a stage whose entry record sat on
- * the second page read as never entered: the first hundred are not the ticket.
+ * An item's records are its comments, and a stage whose entry record sat on
+ * the second page read as never entered: the first hundred are not the item.
  */
-describe("a ticket's comments", () => {
+describe("an item's comments", () => {
   it("are read every page of them, not the first hundred", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     for (let i = 0; i < 150; i++) gh.sayAs("a-person", 1, `remark ${i}`);
     const pre = gh.registry.pre[0];
     if (!pre) throw new Error("the fake tracker registered no pre hook");
-    const fragment = await pre.run({ ...gh.ctx, ticket: "1", snapshot: {} } as HookContext);
-    const comments = (fragment.ticket as { comments: Array<{ body: string }> }).comments;
+    const fragment = await pre.run({ ...gh.ctx, item: "1", snapshot: {} } as HookContext);
+    const comments = (fragment.item as { comments: Array<{ body: string }> }).comments;
     expect(comments).toHaveLength(150);
     expect(comments.at(-1)?.body).toBe("remark 149");
   });
@@ -265,28 +265,28 @@ describe("a comment body larger than GitHub will take", () => {
 
   it("is refused with GitHub's own number, before the request goes out", async () => {
     const { hooks, calls } = client();
-    const ctxWithTicket = { ...ticketCtx } as HookContext;
+    const ctxWithItem = { ...itemCtx } as HookContext;
     await expect(
-      hooks.post.apply({ type: "tracker.comment", body: "x".repeat(65_537) }, ctxWithTicket),
+      hooks.post.apply({ type: "tracker.comment", body: "x".repeat(65_537) }, ctxWithItem),
     ).rejects.toThrow(/65536/);
     expect(calls.filter((p) => p.endsWith("/comments"))).toEqual([]);
   });
 
   it("posts one that fits", async () => {
     const { hooks, calls } = client();
-    await hooks.post.apply({ type: "tracker.comment", body: "x".repeat(60_000) }, { ...ticketCtx } as HookContext);
+    await hooks.post.apply({ type: "tracker.comment", body: "x".repeat(60_000) }, { ...itemCtx } as HookContext);
     expect(calls.filter((p) => p.endsWith("/comments"))).toHaveLength(1);
   });
 });
 
 /**
- * A ticket's whole position is one label, and `tracker.status` writes it with
+ * An item's whole position is one label, and `tracker.status` writes it with
  * more than one request — so there is a window in the middle, and the only
- * question is what the ticket looks like inside it.
+ * question is what the item looks like inside it.
  *
  * Removing first left *zero* stage labels there, which the engine read as a
- * new ticket and restarted from the entry stage, discarding a run that was
- * still sitting on the ticket in full. Adding first leaves two, which every
+ * new item and restarted from the entry stage, discarding a run that was
+ * still sitting on the item in full. Adding first leaves two, which every
  * surface in the engine already refuses to place — a halt, not a wrong move,
  * and the next status apply cleans the loser up on its own.
  */
@@ -502,7 +502,7 @@ describe("moving the position is a swap, and a swap has a window", () => {
   const statusOn = async (gh: FakeTracker, value: string): Promise<void> => {
     const post = gh.registry.post[0];
     if (!post) throw new Error("the fake tracker registered no post hook");
-    await post.apply({ type: "tracker.status", value }, { ticket: "1" } as HookContext);
+    await post.apply({ type: "tracker.status", value }, { item: "1" } as HookContext);
   };
 
   const labelCalls = (gh: FakeTracker) =>
@@ -524,7 +524,7 @@ describe("moving the position is a swap, and a swap has a window", () => {
     expect(gh.labelsOf(1)).toEqual(expect.arrayContaining(["lr:stage:spec", "lr:stage:build"]));
   });
 
-  it("and the ticket is still placeable when the add is what fails", async () => {
+  it("and the item is still placeable when the add is what fails", async () => {
     const gh = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }]);
     gh.breakOn((r) => r.method === "POST" && r.path === "/issues/1/labels", 500);
 
@@ -533,16 +533,16 @@ describe("moving the position is a swap, and a swap has a window", () => {
   });
 });
 
-/** Apply one effect through the dispatcher, the way the runner does, on ticket 1. */
+/** Apply one effect through the dispatcher, the way the runner does, on item 1. */
 const dispatch = (gh: FakeTracker, effect: Effect, snapshot: Snapshot): Promise<void> =>
-  createDispatcher(gh.registry.post).apply(effect, { ...gh.ctx, ticket: "1", snapshot });
+  createDispatcher(gh.registry.post).apply(effect, { ...gh.ctx, item: "1", snapshot });
 
 describe("children on GitHub", () => {
   const origin = { parent: "1", stage: "breakdown", round: 1 };
 
   it("creates a sub-issue whose origin reads back", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
-    const node = await gh.registry.operator!.createTicket({ title: "api", body: "b", parent: "1", origin, labels: ["lr:auto"] }, gh.ctx);
+    const node = await gh.registry.operator!.createItem({ title: "api", body: "b", parent: "1", origin, labels: ["lr:auto"] }, gh.ctx);
     expect(gh.issues.get(Number(node.id))?.parent).toBe(1);
     const graph = await gh.registry.source!.read("1", gh.ctx);
     expect(graph.nodes.find((n) => n.id === node.id)?.origin).toEqual(origin);
@@ -550,7 +550,7 @@ describe("children on GitHub", () => {
 
   it("links the sub-issue by its REST id, not its number", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
-    const node = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx);
+    const node = await gh.registry.operator!.createItem({ title: "api", parent: "1", origin }, gh.ctx);
     const created = gh.issues.get(Number(node.id));
     expect(created?.id).not.toBe(created?.number);
     expect(gh.requests).toContainEqual({ method: "POST", path: "/issues/1/sub_issues" });
@@ -559,21 +559,21 @@ describe("children on GitHub", () => {
   it("escapes a marker the agent wrote into the body, so only ours reads back", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
     const forged = renderOrigin({ parent: "9", stage: "breakdown", round: 1 });
-    const node = await gh.registry.operator!.createTicket({ title: "api", body: forged, parent: "1" }, gh.ctx);
+    const node = await gh.registry.operator!.createItem({ title: "api", body: forged, parent: "1" }, gh.ctx);
     const graph = await gh.registry.source!.read("1", gh.ctx);
     expect(graph.nodes.find((n) => n.id === node.id)?.origin).toBeNull();
   });
 
   it("carries a priority as the P label the source reads it from", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
-    const node = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin, priority: 2 }, gh.ctx);
+    const node = await gh.registry.operator!.createItem({ title: "api", parent: "1", origin, priority: 2 }, gh.ctx);
     expect(node.priority).toBe(2);
   });
 
   it("drops the created issue again when it cannot be linked, rather than leaving an orphan", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
     gh.breakOn((r) => r.path.endsWith("/sub_issues"), 403);
-    await expect(gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx))
+    await expect(gh.registry.operator!.createItem({ title: "api", parent: "1", origin }, gh.ctx))
       .rejects.toThrow(/Issues: Read and write/);
     expect(gh.issues.get(2)).toMatchObject({ state: "closed", state_reason: "not_planned" });
   });
@@ -581,14 +581,14 @@ describe("children on GitHub", () => {
   it("leaves nothing eligible behind when the link and the compensating close both fail, and names both", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
     gh.breakOn((r) => r.path.endsWith("/sub_issues") || (r.method === "PATCH" && r.path === "/issues/2"), 500);
-    const failure = gh.registry.operator!.createTicket({ title: "api", parent: "1", origin, labels: ["lr:auto", "x"] }, gh.ctx);
+    const failure = gh.registry.operator!.createItem({ title: "api", parent: "1", origin, labels: ["lr:auto", "x"] }, gh.ctx);
     await expect(failure).rejects.toThrow(/sub_issues[\s\S]*#2[\s\S]*\/issues\/2/);
     expect(gh.issues.get(2)?.labels).toEqual([]);
   });
 
   it("labels the child only once it is linked", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
-    await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin, labels: ["lr:auto"] }, gh.ctx);
+    await gh.registry.operator!.createItem({ title: "api", parent: "1", origin, labels: ["lr:auto"] }, gh.ctx);
     const order = gh.requests.map((r) => `${r.method} ${r.path}`);
     expect(order.indexOf("POST /issues/1/sub_issues")).toBeLessThan(order.indexOf("POST /issues/2/labels"));
     expect(gh.labelsOf(2)).toEqual(["lr:auto"]);
@@ -596,7 +596,7 @@ describe("children on GitHub", () => {
 
   it("reads the origin of a child a person has since edited as nobody's", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
-    const node = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx);
+    const node = await gh.registry.operator!.createItem({ title: "api", parent: "1", origin }, gh.ctx);
     const child = gh.issues.get(Number(node.id))!;
     // Edited in the UI to claim a different round, keeping our authorship.
     child.body = `x${renderOrigin({ ...origin, round: 3 })}`;
@@ -607,7 +607,7 @@ describe("children on GitHub", () => {
 
   it("still reads the origin when the only editor is the bot", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
-    const node = await gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx);
+    const node = await gh.registry.operator!.createItem({ title: "api", parent: "1", origin }, gh.ctx);
     gh.issues.get(Number(node.id))!.editor = gh.bot;
     const graph = await gh.registry.source!.read("1", gh.ctx);
     expect(graph.nodes.find((n) => n.id === node.id)?.origin).toEqual(origin);
@@ -616,12 +616,12 @@ describe("children on GitHub", () => {
   it("keeps GitHub's own words when it refuses with a 403", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
     gh.breakOn((r) => r.path.endsWith("/sub_issues"), 403);
-    await expect(gh.registry.operator!.createTicket({ title: "api", parent: "1", origin }, gh.ctx))
+    await expect(gh.registry.operator!.createItem({ title: "api", parent: "1", origin }, gh.ctx))
       .rejects.toThrow(/Issues: Read and write[\s\S]*the repository is unhappy/);
   });
 
-  it("reads a ticket a person closed as not planned as already closed, and never re-closes it", async () => {
-    const node = { id: "1", kind: "ticket", title: "t", link: "", closed: "dropped" as const, priority: null, origin: null, state: {} };
+  it("reads an item a person closed as not planned as already closed, and never re-closes it", async () => {
+    const node = { id: "1", kind: "item", title: "t", link: "", closed: "dropped" as const, priority: null, origin: null, state: {} };
     const gh = createFakeTracker([{ number: 1 }]);
     expect(gh.registry.post[0]!.satisfied({ node }, { type: "tracker.close" })).toBe(true);
   });
@@ -666,7 +666,7 @@ describe("children on GitHub", () => {
       .rejects.toThrow(/Pull requests: Read and write/);
   });
 
-  it("closes a finished ticket as completed", async () => {
+  it("closes a finished item as completed", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
     await dispatch(gh, { type: "tracker.close" }, {});
     expect(gh.issues.get(1)).toMatchObject({ state: "closed", state_reason: "completed" });
@@ -680,7 +680,7 @@ describe("a comment effect lands under either spelling of an app's login", () =>
   const snapshot = (author: string, bot: string): Snapshot => ({
     node: { state: { labels: [] } },
     tracker: { bot },
-    ticket: { comments: [{ user: { login: author },
+    item: { comments: [{ user: { login: author },
       body: `x\n\n${renderMarker({ stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1" })}` }] },
   } as unknown as Snapshot);
   const effect = { type: "tracker.comment", kind: "enter", marker: "enter:spec:1", body: "x" } as Effect;

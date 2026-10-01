@@ -104,8 +104,8 @@ describe("the MCP servers a step may use", () => {
   });
 
   /*
-   * The operator server creates, updates and replies on tickets. A step agent
-   * holding it could move its own ticket — which is the one decision this
+   * The operator server creates, updates and replies on items. A step agent
+   * holding it could move its own item — which is the one decision this
    * engine exists to keep away from a model.
    */
   it("refuses the operator server by name, before any file is read", async () => {
@@ -135,9 +135,9 @@ describe("the MCP servers a step may use", () => {
     ["an npx git ref", { command: "npx", args: ["landrace#main", "mcp"] }],
     ["a module entry", { command: "node", args: ["./dist/cli.mjs", "mcp"] }],
   ])("refuses the operator server under another name: %s", async (_, definition) => {
-    const { dir } = await repo({ mcpServers: { tickets: definition } });
-    const { problems, servers } = await resolveStepServers(dir, ["tickets"]);
-    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/"tickets"[\s\S]*operator[\s\S]*never reach a step agent/) }]);
+    const { dir } = await repo({ mcpServers: { items: definition } });
+    const { problems, servers } = await resolveStepServers(dir, ["items"]);
+    expect(problems).toEqual([{ rule: "mcp", message: expect.stringMatching(/"items"[\s\S]*operator[\s\S]*never reach a step agent/) }]);
     expect(servers).toEqual({});
   });
 

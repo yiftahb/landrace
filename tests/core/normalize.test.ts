@@ -21,10 +21,10 @@ describe("canonicalize", () => {
 
   it("keeps a nested `now` field — only the top-level now is volatile", () => {
     // A hook-defined field that happens to be named `now` somewhere inside
-    // the snapshot (e.g. ticket.now) is ordinary data, not the tick clock,
+    // the snapshot (e.g. item.now) is ordinary data, not the tick clock,
     // and must still affect the hash like any other field.
-    expect(canonicalize({ a: 1, ticket: { now: 5 } } as never))
-      .not.toBe(canonicalize({ a: 1, ticket: { now: 9 } } as never));
+    expect(canonicalize({ a: 1, item: { now: 5 } } as never))
+      .not.toBe(canonicalize({ a: 1, item: { now: 9 } } as never));
   });
 
   it("hashes through the injected digest, since core cannot import crypto", () => {

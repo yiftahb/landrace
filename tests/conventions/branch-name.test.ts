@@ -74,7 +74,7 @@ describe("the branch an effect names", () => {
   });
 
   it("is refused when a template name was left in it", () => {
-    expect(() => effectBranch({ type: "pull.open", branch: "landrace/{ticket}" })).toThrow(/\{ticket\}/);
+    expect(() => effectBranch({ type: "pull.open", branch: "landrace/{item}" })).toThrow(/\{item\}/);
     expect(() => effectBranch({ type: "pull.open", branch: "x/{node.title}" })).toThrow(/\{node\.title\}/);
   });
 

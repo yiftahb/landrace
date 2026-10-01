@@ -99,9 +99,9 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
 });
 
 /**
- * A stage's `branch` is a template the runner fills per ticket and hands to
- * git as argv. What it can be is decided here, once, with an example ticket —
- * a workflow whose branch git would refuse for every ticket is found by
+ * A stage's `branch` is a template the runner fills per item and hands to
+ * git as argv. What it can be is decided here, once, with an example item —
+ * a workflow whose branch git would refuse for every item is found by
  * `landrace validate`, not by the first build that runs.
  */
 describe("a stage's branch", () => {
@@ -127,14 +127,14 @@ describe("a stage's branch", () => {
   afterEach(() => { while (dirs.length) rmSync(dirs.pop() as string, { recursive: true, force: true }); });
 
   it("loads a template that makes a branch git accepts", async () => {
-    const { workflow } = await loadWorkflow(withBranch("landrace/{ticket}"));
-    expect(workflow.stages[0]?.branch).toBe("landrace/{ticket}");
+    const { workflow } = await loadWorkflow(withBranch("landrace/{item}"));
+    expect(workflow.stages[0]?.branch).toBe("landrace/{item}");
   });
 
   it("refuses a template git could never accept, naming the stage and the rendered name", async () => {
-    await expect(loadWorkflow(withBranch("feat..{ticket}")))
+    await expect(loadWorkflow(withBranch("feat..{item}")))
       .rejects.toMatchObject({ rule: "branch", message: expect.stringMatching(/stage "build"[\s\S]*"feat\.\.1"/) });
-    await expect(loadWorkflow(withBranch("-{ticket}"))).rejects.toMatchObject({ rule: "branch" });
+    await expect(loadWorkflow(withBranch("-{item}"))).rejects.toMatchObject({ rule: "branch" });
   });
 
   /*
@@ -142,7 +142,7 @@ describe("a stage's branch", () => {
    * whatever a person typed, handed to git. Left in place it is even a legal
    * ref, braces and all, which is why it is refused by name.
    */
-  it("refuses a name outside {ticket}, {stage} and {round}", async () => {
+  it("refuses a name outside {item}, {stage} and {round}", async () => {
     await expect(loadWorkflow(withBranch("landrace/{node.title}")))
       .rejects.toMatchObject({ rule: "branch", message: expect.stringMatching(/\{node\.title\}/) });
   });
@@ -152,7 +152,7 @@ describe("a stage's branch", () => {
    * checked out, and a stage with no step has no worktree.
    */
   it("refuses a branch on a stage that runs no step", async () => {
-    await expect(loadWorkflow(withBranch("landrace/{ticket}", false)))
+    await expect(loadWorkflow(withBranch("landrace/{item}", false)))
       .rejects.toMatchObject({ rule: "branch", message: expect.stringMatching(/no step/) });
   });
 });

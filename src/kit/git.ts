@@ -117,7 +117,7 @@ export function headsOf(s: Snapshot): { local: Record<string, unknown>; remote: 
 export const headIn = (heads: Record<string, unknown>, branch: string): string | undefined =>
   Object.hasOwn(heads, branch) && typeof heads[branch] === "string" ? heads[branch] : undefined;
 
-/** How long one push may take before it is stopped: it holds the ticket's lock while it runs. */
+/** How long one push may take before it is stopped: it holds the item's lock while it runs. */
 export const PUSH_TIMEOUT_MS = 5 * 60_000;
 
 /**
@@ -126,9 +126,9 @@ export const PUSH_TIMEOUT_MS = 5 * 60_000;
  * both say it in one sentence: a halt that clears itself once somebody
  * commits, because the next tick asks again.
  */
-export const nothingCommitted = (branch: string, ticket: string): Error =>
+export const nothingCommitted = (branch: string, item: string): Error =>
   new Error(
-    `nothing was committed on ${branch} for #${ticket}: it is already part of origin's default branch, so ` +
+    `nothing was committed on ${branch} for #${item}: it is already part of origin's default branch, so ` +
     "there is nothing to push or propose. Commit to the branch and the next tick carries on",
   );
 
@@ -148,9 +148,9 @@ export async function originPushUrl(git: Git, branch: string, signal: AbortSigna
   const [url] = urls;
   if (urls.length !== 1 || url === undefined) {
     throw new Error(
-      `refusing to push ${branch}: origin has ${urls.length} push URLs, and landrace pushes a ticket's branch ` +
+      `refusing to push ${branch}: origin has ${urls.length} push URLs, and landrace pushes an item's branch ` +
       "to exactly one destination — the one it can check. Leave origin a single push URL " +
-      "(git remote set-url --push origin <url>) and the ticket carries on",
+      "(git remote set-url --push origin <url>) and the item carries on",
     );
   }
   return url;
@@ -180,7 +180,7 @@ export async function originPushUrl(git: Git, branch: string, signal: AbortSigna
 export async function pushBranch(
   git: Git,
   branch: string,
-  ticket: string,
+  item: string,
   signal: AbortSignal,
   config: Array<[string, string]>,
 ): Promise<void> {
@@ -202,7 +202,7 @@ export async function pushBranch(
   const base = (await git(["for-each-ref", "--format=%(objectname)", "refs/remotes/origin/HEAD"], {}, { signal })).trim();
   if (base !== "") {
     const ahead = (await git(["rev-list", "--count", `${base}..refs/heads/${branch}`], {}, { signal })).trim();
-    if (ahead === "0") throw nothingCommitted(branch, ticket);
+    if (ahead === "0") throw nothingCommitted(branch, item);
   }
 
   const all: Array<[string, string]> = [
@@ -221,7 +221,7 @@ export async function pushBranch(
     const said = e instanceof Error ? e.message : String(e);
     const behind = /non-fast-forward|fetch first/i.test(said)
       ? ` — origin's ${branch} has commits this checkout does not, and landrace does not force-push; ` +
-        "bring the branch up to date by hand and the ticket carries on"
+        "bring the branch up to date by hand and the item carries on"
       : "";
     throw new Error(`could not push ${branch} to origin${behind}: ${said}`);
   }

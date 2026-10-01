@@ -116,7 +116,7 @@ describe("pulls", () => {
     const mr = gl.open({ source_branch: "landrace/7", title: "Add a thing", sha: "abc" });
     expect(await forgeOver(gl).pulls(gl.ctx())).toEqual([{
       number: mr.iid, title: "Add a thing", link: mr.web_url, merged: false, closed: false, headSha: "abc",
-      branch: "landrace/7", createdAt: mr.created_at, updatedAt: mr.updated_at, tickets: [],
+      branch: "landrace/7", createdAt: mr.created_at, updatedAt: mr.updated_at, items: [],
     }]);
   });
 
@@ -144,7 +144,7 @@ describe("pulls", () => {
 });
 
 describe("pullsNaming", () => {
-  it("reads every merge request from the ticket's branch, merged and closed ones too, and no fork's", async () => {
+  it("reads every merge request from the item's branch, merged and closed ones too, and no fork's", async () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/7", state: "merged" });
     gl.open({ source_branch: "landrace/7" });
@@ -154,7 +154,7 @@ describe("pullsNaming", () => {
     expect(pulls.map((p) => [p.number, p.branch, p.merged])).toEqual([[2, "landrace/7", false], [1, "landrace/7", true]]);
   });
 
-  it("refuses more than one ticket read carries", async () => {
+  it("refuses more than one item read carries", async () => {
     const gl = createFakeGitLab();
     for (let i = 0; i < 51; i++) gl.open({ source_branch: "landrace/7", state: "closed" });
     await expect(forgeOver(gl).pullsNaming("7", gl.ctx())).rejects.toThrow(/#7 has more than 50 merge requests/);
@@ -228,7 +228,7 @@ describe("openPull and closePull", () => {
   it("opens a merge request from the branch into the project's default branch", async () => {
     const gl = createFakeGitLab();
     gl.settings.defaultBranch = "trunk";
-    await forgeOver(gl).openPull({ ticket: "7", branch: "landrace/7", title: "Add a thing" }, gl.ctx());
+    await forgeOver(gl).openPull({ item: "7", branch: "landrace/7", title: "Add a thing" }, gl.ctx());
     expect([...gl.mrs.values()]).toEqual([expect.objectContaining({ source_branch: "landrace/7", target_branch: "trunk", title: "Add a thing", state: "opened" })]);
   });
 
@@ -236,7 +236,7 @@ describe("openPull and closePull", () => {
   it("counts GitLab's 'already exists' as opened", async () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/7" });
-    await expect(forgeOver(gl).openPull({ ticket: "7", branch: "landrace/7", title: "t" }, gl.ctx())).resolves.toBeUndefined();
+    await expect(forgeOver(gl).openPull({ item: "7", branch: "landrace/7", title: "t" }, gl.ctx())).resolves.toBeUndefined();
     expect(gl.mrs.size).toBe(1);
   });
 
@@ -246,7 +246,7 @@ describe("openPull and closePull", () => {
     const ctx = gl.ctx();
     await forge.login(ctx);
     gl.settings.visible = false;
-    await expect(forge.openPull({ ticket: "7", branch: "landrace/7", title: "t" }, ctx)).rejects.toThrow(/404/);
+    await expect(forge.openPull({ item: "7", branch: "landrace/7", title: "t" }, ctx)).rejects.toThrow(/404/);
   });
 
   it("closes a merge request without merging it", async () => {
@@ -361,7 +361,7 @@ describe("push", () => {
 
   const pushed = async (git: Git): Promise<void> => {
     const gl = createFakeGitLab();
-    const ctx: HookContext = { ...gl.ctx(), ticket: "1", snapshot: {} };
+    const ctx: HookContext = { ...gl.ctx(), item: "1", snapshot: {} };
     await new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git }).push("landrace/1", "1", ctx);
   };
 
@@ -432,19 +432,19 @@ describe("GitLab composed as a project's forge", () => {
   const project = () => {
     const gl = createFakeGitLab();
     gl.diffsFor("landrace/7", [{ new_path: "src/a.ts", diff: DIFF }]);
-    // The checkout a build left: the ticket's branch committed, not yet on origin.
+    // The checkout a build left: the item's branch committed, not yet on origin.
     const git: Git = async (args) => (args[0] === "for-each-ref" ? `refs/heads/landrace/7\0${"a".repeat(40)}\n` : "");
     const hooks = compose({
-      tracker: new MemoryTracker({ tickets: [{ id: "7", title: "Add a thing" }] }),
+      tracker: new MemoryTracker({ items: [{ id: "7", title: "Add a thing" }] }),
       forge: new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git }),
     });
     const ctx = gl.ctx();
     const snapshot = async (): Promise<Snapshot> => {
       const graph = await hooks.source.read("7", ctx);
       const base: Snapshot = { graph, node: graph.nodes.find((n) => n.id === "7") };
-      return { ...base, ...(await hooks.pre.run({ ...ctx, ticket: "7", snapshot: base })) };
+      return { ...base, ...(await hooks.pre.run({ ...ctx, item: "7", snapshot: base })) };
     };
-    const apply = async (effect: Effect): Promise<void> => hooks.post.apply(effect, { ...ctx, ticket: "7", snapshot: await snapshot() });
+    const apply = async (effect: Effect): Promise<void> => hooks.post.apply(effect, { ...ctx, item: "7", snapshot: await snapshot() });
     const counts = async (): Promise<unknown[]> => {
       const pr = ((await snapshot()).graph as Graph).nodes.find((n) => n.kind === PULL_REQUEST_KIND);
       return [pr?.id, pr?.state.openThreads, pr?.state.awaitingFix];
@@ -457,7 +457,7 @@ describe("GitLab composed as a project's forge", () => {
     return { type: "pull.review", branch: "landrace/7", marker, stage: kind === "fix" ? "fix-review" : "code-review", round: Number(n), body: `Round ${marker}.`, output };
   };
 
-  it("opens the ticket's merge request, once", async () => {
+  it("opens the item's merge request, once", async () => {
     const { gl, hooks, snapshot, apply } = project();
     const open: Effect = { type: "pull.open", branch: "landrace/7" };
     expect(hooks.post.satisfied(await snapshot(), open)).toBe(false);

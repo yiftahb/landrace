@@ -4,7 +4,7 @@ import type { HookContext } from "#namespace.js";
 import type { Effect, Snapshot } from "#namespace.js";
 
 const ctx = (): HookContext => ({
-  ticket: "1", snapshot: {}, config: {} as HookContext["config"],
+  item: "1", snapshot: {}, config: {} as HookContext["config"],
   secrets: new Map(), signal: new AbortController().signal, log: () => {},
 });
 
@@ -14,7 +14,7 @@ const labelHook = () =>
     id: "labels",
     handles: ["tracker.label"],
     satisfied: (s: Snapshot, e: Effect) =>
-      ((s.ticket as { labels?: string[] })?.labels ?? []).includes(String(e.add)),
+      ((s.item as { labels?: string[] })?.labels ?? []).includes(String(e.add)),
     apply: async (e) => { applied.push(e); },
   });
 
@@ -29,7 +29,7 @@ describe("createDispatcher", () => {
 
   it("asks the handling hook whether an effect is already satisfied", () => {
     const d = createDispatcher([labelHook()]);
-    const s = { ticket: { labels: ["lr:working"] } } as Snapshot;
+    const s = { item: { labels: ["lr:working"] } } as Snapshot;
     expect(d.satisfied(s, { type: "tracker.label", add: "lr:working" })).toBe(true);
     expect(d.satisfied(s, { type: "tracker.label", add: "lr:blocked" })).toBe(false);
   });
@@ -85,7 +85,7 @@ describe("createDispatcher", () => {
     } catch (err) {
       expect((err as Error).message).not.toMatch(/labels/);
     }
-    const s = { ticket: { labels: ["lr:working"] } } as Snapshot;
+    const s = { item: { labels: ["lr:working"] } } as Snapshot;
     expect(d.satisfied(s, { type: "tracker.label", add: "lr:working" })).toBe(true);
   });
 

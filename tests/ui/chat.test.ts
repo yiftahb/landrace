@@ -1,7 +1,7 @@
 import { chatFor } from "#ui/chat.js";
 
 describe("chatFor", () => {
-  it("builds the exact prompt from the ticket number, nothing else", () => {
+  it("builds the exact prompt from the item number, nothing else", () => {
     expect(chatFor("41", "/repo/landrace").prompt).toBe(
       "I want to chat about issue #41 using the landrace MCP, pull it now and show me the latest status and what requires my attention",
     );
@@ -45,13 +45,13 @@ describe("chatFor", () => {
     expect(links.claude).not.toContain("é");
   });
 
-  it("puts only the integer ticket number in the prompt, never a title or note", () => {
+  it("puts only the integer item number in the prompt, never a title or note", () => {
     expect(chatFor("7", "/repo/x").prompt).toContain("#7");
     expect(chatFor("7", "/repo/x").prompt).not.toContain("title");
   });
 
-  it("refuses an id that is not a ticket id rather than building a link from it", () => {
-    expect(() => chatFor("a&b=c", "/w")).toThrow(/ticket id/);
+  it("refuses an id that is not an item id rather than building a link from it", () => {
+    expect(() => chatFor("a&b=c", "/w")).toThrow(/item id/);
   });
 
   it("builds links for a non-numeric id", () => {

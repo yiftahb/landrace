@@ -22,7 +22,7 @@ import { touchWake, wakePath } from "#wake.js";
  * therefore everything `buildRuntime` assembles out of it — is unreachable
  * there.
  */
-const TICKET = "4242";
+const ITEM = "4242";
 const TOKEN = "ghp_a_token_long_enough_to_redact";
 
 /**
@@ -41,11 +41,11 @@ const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
   Object.defineProperty(value, KIND, { value: kind, enumerable: false });
 
-interface Ctx { ticket: string; config: { tracker: { record: string } } }
+interface Ctx { item: string; config: { tracker: { record: string } } }
 
 const graph = {
   nodes: [{
-    id: "${TICKET}", kind: "ticket", title: "Add export", link: "u/${TICKET}", closed: null, priority: null,
+    id: "${ITEM}", kind: "item", title: "Add export", link: "u/${ITEM}", closed: null, priority: null,
     origin: null, state: { labels: ["lr:auto"], assignees: [] },
   }],
   relationships: [],
@@ -60,9 +60,9 @@ export const source = brand("source", {
 
 export const pre = brand("pre", {
   id: "fake",
-${provides === undefined ? "" : `  provides: ${JSON.stringify(provides)},\n`}  run: ({ ticket }: Ctx): Record<string, unknown> => {
+${provides === undefined ? "" : `  provides: ${JSON.stringify(provides)},\n`}  run: ({ item }: Ctx): Record<string, unknown> => {
     ${preFails === undefined ? "" : `throw new Error(${JSON.stringify(preFails)});`}
-    return { ticket: { body: "about " + ticket }, entries: [] };
+    return { item: { body: "about " + item }, entries: [] };
   },
 });
 
@@ -71,7 +71,7 @@ export const post = brand("post", {
   handles: ["tracker.comment"],
   satisfied: (): boolean => false,
   apply: async (effect: { type: string }, ctx: Ctx): Promise<void> => {
-    await appendFile(ctx.config.tracker.record, JSON.stringify({ ticket: ctx.ticket, type: effect.type }) + "\\n");
+    await appendFile(ctx.config.tracker.record, JSON.stringify({ item: ctx.item, type: effect.type }) + "\\n");
   },
 });
 ${preflight === undefined ? "" : `
@@ -113,7 +113,7 @@ ${budget === undefined ? "" : `budget:\n  stepTimeout: ${budget}\n`}stages:
     entry: true
     terminal: true
     triggers:
-      - name: fresh ticket
+      - name: fresh item
         when: { "run.stage": null${path === undefined ? "" : `, "${path}": { $exists: true }`} }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
@@ -198,7 +198,7 @@ const applied = async (record: string): Promise<unknown[]> =>
     .map((line) => JSON.parse(line) as unknown);
 
 afterEach(async () => {
-  await release(TICKET);
+  await release(ITEM);
 });
 
 describe("buildRuntime", () => {
@@ -215,12 +215,12 @@ describe("buildRuntime", () => {
   });
 
   /**
-   * A `tickets:create` step's ticket server is this fact, and nothing built
+   * An `items:create` step's item server is this fact, and nothing built
    * `buildRuntime`'s own `deps.childServer` was ever read back: a typo here
    * would only ever surface, days later, as a step refusing create_child
    * against a real repository.
    */
-  it("hands converge how to start its own ticket server, as this process on this workflow directory", async () => {
+  it("hands converge how to start its own item server, as this process on this workflow directory", async () => {
     const { dir } = await fixture();
     const rt = await buildRuntime(dir, {});
     expect(rt.deps.childServer).toEqual(childServerCommand(dir));
@@ -258,14 +258,14 @@ describe("buildRuntime", () => {
   });
 
   /*
-   * The ticket panel's live lines: where the page reads them, and never with
+   * The item panel's live lines: where the page reads them, and never with
    * a secret in them, whatever the agent put on its own command line.
    */
   it("hands converge an activity log under this repository's root that keeps the secret off disk", async () => {
     const { dir } = await fixture();
     const rt = await buildRuntime(dir, {});
-    rt.deps.activity?.record(TICKET, "spec", 1, { kind: "tool", text: `Bash curl -H "Authorization: Bearer ${TOKEN}"`, at: 1 });
-    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(TICKET, 0);
+    rt.deps.activity?.record(ITEM, "spec", 1, { kind: "tool", text: `Bash curl -H "Authorization: Bearer ${TOKEN}"`, at: 1 });
+    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(ITEM, 0);
     expect(page).toMatchObject({ stage: "spec", round: 1, total: 1 });
     expect(JSON.stringify(page)).not.toContain(TOKEN);
   });
@@ -309,7 +309,7 @@ describe("buildRuntime", () => {
       "---", "", "build", "",
     ].join("\n"));
     await writeFile(join(dir, "workflow.yaml"), WORKFLOW
-      .replace("    terminal: true\n", "    step: steps/build.md\n    branch: \"landrace/{ticket}\"\n")
+      .replace("    terminal: true\n", "    step: steps/build.md\n    branch: \"landrace/{item}\"\n")
       .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
 
     await expect(buildRuntime(dir, {})).rejects.toThrow(/branch: stage "spec"[\s\S]*agent\.isolation[\s\S]*"none"/);
@@ -338,7 +338,7 @@ describe("buildRuntime", () => {
    *
    * `landrace validate` unions the hooks' `provides` and rejects a workflow
    * whose predicate reads a path nothing supplies; `start` used to run that
-   * same workflow, halting tickets one at a time against a live repository
+   * same workflow, halting items one at a time against a live repository
    * over a fact the engine already knew before the first request. A validator
    * that checks less in the daemon than in the CLI is the "silently stops
    * checking" failure, one layer over.
@@ -349,7 +349,7 @@ describe("buildRuntime", () => {
    */
   it("refuses to start a workflow whose predicate reads a path no hook provides", async () => {
     const { dir } = await fixture({
-      provides: ["ticket", "ticket.body", "entries"],
+      provides: ["item", "item.body", "entries"],
       reads: "artifacts.pr.number",
     });
 
@@ -360,7 +360,7 @@ describe("buildRuntime", () => {
 
   it("starts when the hooks do provide what the workflow reads", async () => {
     const { dir } = await fixture({
-      provides: ["ticket", "ticket.body", "entries", "artifacts.pr.*"],
+      provides: ["item", "item.body", "entries", "artifacts.pr.*"],
       reads: "artifacts.pr.number",
     });
 
@@ -403,7 +403,7 @@ ${EXECUTOR}`);
   /**
    * The sandbox is resolved at startup, not at the first invoke: a loop
    * started outside a repository would otherwise assemble, poll, and fail at
-   * its first paid step — hours in, on a ticket it has already moved.
+   * its first paid step — hours in, on an item it has already moved.
    */
   it("refuses to start when steps are to be isolated and there is no repository to isolate from", async () => {
     const { dir } = await fixture({ git: false });
@@ -548,7 +548,7 @@ describe("the startup preflight", () => {
     await runStart(dir, { once: true });
     expect(await applied(record)).toEqual([
       { preflight: true },
-      { ticket: TICKET, type: "tracker.comment" },
+      { item: ITEM, type: "tracker.comment" },
     ]);
   });
 });
@@ -570,14 +570,14 @@ describe("runStart --once", () => {
       console.log = wrote;
     }
 
-    expect(printed.filter((l) => l.startsWith("#"))).toEqual([`#${TICKET} terminal after 1 pass(es)`]);
-    expect(await applied(record)).toEqual([{ ticket: TICKET, type: "tracker.comment" }]);
-    // Nothing is left holding the ticket: the next run is free to take it.
-    expect(await acquire(TICKET, "tick")).toBe(true);
+    expect(printed.filter((l) => l.startsWith("#"))).toEqual([`#${ITEM} terminal after 1 pass(es)`]);
+    expect(await applied(record)).toEqual([{ item: ITEM, type: "tracker.comment" }]);
+    // Nothing is left holding the item: the next run is free to take it.
+    expect(await acquire(ITEM, "tick")).toBe(true);
   });
 
   /*
-   * The row printed per ticket is stdout, beside the log and outside it. A
+   * The row printed per item is stdout, beside the log and outside it. A
    * value an executor's setup registered through `redact` — an allowlisted
    * server's env — was kept out of the log and printed here in the clear,
    * whenever a failure quoted it.
@@ -601,7 +601,7 @@ describe("runStart --once", () => {
     }
 
     const rows = printed.filter((l) => l.startsWith("#"));
-    expect(rows).toEqual([expect.stringMatching(new RegExp(`^#${TICKET} halt after 1 pass\\(es\\): .*\\[redacted\\]`))]);
+    expect(rows).toEqual([expect.stringMatching(new RegExp(`^#${ITEM} halt after 1 pass\\(es\\): .*\\[redacted\\]`))]);
     expect(printed.join("\n")).not.toContain("env-secret-value");
   });
 
@@ -693,7 +693,7 @@ describe("runStart --once", () => {
 
     expect(rows[0]?.outcome).toMatch(/aborted/);
     expect(await applied(record)).toEqual([]);
-    expect(await acquire(TICKET, "tick")).toBe(true);
+    expect(await acquire(ITEM, "tick")).toBe(true);
   });
 });
 
@@ -735,7 +735,7 @@ describe("an allowlisted server's env and headers", () => {
     }
     // What converge logs when a step's executor fails, through the same logger.
     expect(reason).toMatch(/^agent exited 3: /);
-    rt.deps.log("step.rejected", { ticket: TICKET, kind: "unavailable", reason });
+    rt.deps.log("step.rejected", { item: ITEM, kind: "unavailable", reason });
 
     const logged = JSON.stringify(seen);
     expect(logged).not.toContain("env-secret-value");
@@ -745,26 +745,26 @@ describe("an allowlisted server's env and headers", () => {
 });
 
 describe("runStatus", () => {
-  it("prints one line per ticket, from the same source the loop enumerates", async () => {
+  it("prints one line per item, from the same source the loop enumerates", async () => {
     const { dir } = await fixture();
     const lines = await runStatus(dir);
 
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(new RegExp(`#${TICKET}.*Add export.*queued`));
+    expect(lines[0]).toMatch(new RegExp(`#${ITEM}.*Add export.*queued`));
   });
 
   /*
    * `status` never runs a step, so what a step would be handed is none of its
    * business: a fresh clone nobody has run `agsync sync` in yet is exactly
-   * where someone asks what landrace thinks of their tickets. `start` still
+   * where someone asks what landrace thinks of their items. `start` still
    * refuses the same checkout — the buildRuntime tests pin that.
    */
-  it("reads the tickets with agent.mcp set and no .mcp.json at all", async () => {
+  it("reads the items with agent.mcp set and no .mcp.json at all", async () => {
     const { dir } = await fixture({ agentKeys: "mcp: [codebase-memory-mcp]" });
     await expect(buildRuntime(dir, {})).rejects.toThrow(/\.mcp\.json does not exist/);
 
     const lines = await runStatus(dir);
-    expect(lines[0]).toMatch(new RegExp(`#${TICKET}.*Add export.*queued`));
+    expect(lines[0]).toMatch(new RegExp(`#${ITEM}.*Add export.*queued`));
 
     // And what it built can read and nothing more: a step run without the
     // servers its configuration names would be a step run bare.

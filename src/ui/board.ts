@@ -1,4 +1,4 @@
-import { compareIds, compareWork, GOTO_TRIGGER, isOpenTicket, isTicketId, TICKET_KIND } from "#conventions.js";
+import { compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND } from "#conventions.js";
 import { gotoTargetsOf } from "#core/index.js";
 import { BLOCKED_NOTE, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { chatFor } from "#ui/chat.js";
@@ -11,22 +11,22 @@ import type {
 const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
 
 /**
- * Whether this row offers a Retry: the ticket is blocked or screened right
+ * Whether this row offers a Retry: the item is blocked or screened right
  * now. A Retry is a goto with no step named — the step whose failure put
- * the ticket there — and this is only the board's own offer; `sendTo`
- * re-reads the ticket and is the one authority on whether a given send is
+ * the item there — and this is only the board's own offer; `sendTo`
+ * re-reads the item and is the one authority on whether a given send is
  * actually taken.
  */
 const stopped = (row: StatusRow): boolean => row.note === BLOCKED_NOTE || row.note === SCREENED_NOTE;
 
 /** The path the page posts a Retry to — built here, from an id already checked, never by the page. */
-const retryPath = (id: string): string | null => (isTicketId(id) ? `/tickets/${id}/retry` : null);
+const retryPath = (id: string): string | null => (isItemId(id) ? `/items/${id}/retry` : null);
 
-/** And a Clear & retry, which only a screened ticket is offered: `sendTo` refuses it anywhere else. */
-const clearPath = (id: string): string | null => (isTicketId(id) ? `/tickets/${id}/clear` : null);
+/** And a Clear & retry, which only a screened item is offered: `sendTo` refuses it anywhere else. */
+const clearPath = (id: string): string | null => (isItemId(id) ? `/items/${id}/clear` : null);
 
 /**
- * Where the page posts a "Go to step…" — one path per step the ticket's
+ * Where the page posts a "Go to step…" — one path per step the item's
  * stage may send it to, built here from an id already checked and a stage
  * the workflow names, never by the page.
  *
@@ -34,28 +34,28 @@ const clearPath = (id: string): string | null => (isTicketId(id) ? `/tickets/${i
  * not records, so it cannot tell a judge whose round is settled from one
  * whose step is still owed the way `sendTo` can — restricting this to a
  * stepless stage would hide "Go to step…" from exactly the settled judge a
- * person needs it for, and from the ticket a crash stranded between a
+ * person needs it for, and from the item a crash stranded between a
  * target's entry comment and its status label. `sendTo` stays the one
- * authority: it re-reads the ticket and refuses an owed step in a sentence.
+ * authority: it re-reads the item and refuses an owed step in a sentence.
  */
 const gotoPaths = (id: string, stage: Stage | undefined): BoardRow["goto"] =>
-  stage !== undefined && isTicketId(id)
-    ? gotoTargetsOf(stage).map((g) => ({ stage: g.stage, path: `/tickets/${id}/goto/${encodeURIComponent(g.stage)}` }))
+  stage !== undefined && isItemId(id)
+    ? gotoTargetsOf(stage).map((g) => ({ stage: g.stage, path: `/items/${id}/goto/${encodeURIComponent(g.stage)}` }))
     : [];
 
-/** Where a ticket's panel reads and writes — built here, from an id already checked, never by the page. */
+/** Where an item's panel reads and writes — built here, from an id already checked, never by the page. */
 const panelPaths = (id: string): PanelPaths | null =>
-  isTicketId(id)
+  isItemId(id)
     ? {
-        activity: `/tickets/${id}/activity`, conversation: `/tickets/${id}/conversation`,
-        reply: `/tickets/${id}/reply`, ask: `/tickets/${id}/ask`, resolve: `/tickets/${id}/resolve`,
-        pairing: `/tickets/${id}/pairing`, pair: `/tickets/${id}/pair`,
-        finish: `/tickets/${id}/finish`, release: `/tickets/${id}/release`,
+        activity: `/items/${id}/activity`, conversation: `/items/${id}/conversation`,
+        reply: `/items/${id}/reply`, ask: `/items/${id}/ask`, resolve: `/items/${id}/resolve`,
+        pairing: `/items/${id}/pairing`, pair: `/items/${id}/pair`,
+        finish: `/items/${id}/finish`, release: `/items/${id}/release`,
       }
     : null;
 
 /**
- * A ticket's records as the panel's conversation: oldest first, only what
+ * An item's records as the panel's conversation: oldest first, only what
  * has something to read, ours as landrace's and a person's as whoever the
  * source says wrote it. Plain text — the page never renders it as markup.
  */
@@ -111,7 +111,7 @@ const inOrder = (row: BoardRow, order: (a: BoardRow, b: BoardRow) => number): Bo
  *
  * A node whose singular edges name two different parents is a root too,
  * whether the two edges share a type (a graph the engine itself refuses) or
- * not (a pull request that is child-of one ticket and implements another).
+ * not (a pull request that is child-of one item and implements another).
  * Picking one would be first-match-wins by another name. Two edges of
  * different types that agree on the parent are one parent.
  */
@@ -144,14 +144,14 @@ export function boardView(input: {
   folder: string;
   workspace: string;
   /**
-   * Which stage a goto last sent each ticket to, per the tick's own events —
+   * Which stage a goto last sent each item to, per the tick's own events —
    * the same source `running` is read from, never re-derived from labels.
-   * Read only to word the note while that ticket's agent is running now.
+   * Read only to word the note while that item's agent is running now.
    */
   sent?: ReadonlyMap<string, string>;
-  /** The pairing each ticket's latest evaluation said holds its step, per the tick's own events. */
+  /** The pairing each item's latest evaluation said holds its step, per the tick's own events. */
   paired?: ReadonlyMap<string, Pairing>;
-  /** Tickets whose labels in `graph` predate a step this process ran on them — each row's `stale`. */
+  /** Items whose labels in `graph` predate a step this process ran on them — each row's `stale`. */
   stale?: ReadonlySet<string>;
 }): BoardView {
   // Duplicate ids are a graph the engine halts on elsewhere; here the page
@@ -159,8 +159,8 @@ export function boardView(input: {
   const nodes = new Map<string, Node>();
   for (const node of input.graph.nodes) if (!nodes.has(node.id)) nodes.set(node.id, node);
 
-  const tickets = [...nodes.values()].filter((n) => n.kind === TICKET_KIND);
-  const status = new Map<string, StatusRow>(statusRows(input.workflow, tickets).map((s) => [s.ticket, s]));
+  const items = [...nodes.values()].filter((n) => n.kind === ITEM_KIND);
+  const status = new Map<string, StatusRow>(statusRows(input.workflow, items).map((s) => [s.item, s]));
 
   const rowOf = (node: Node): BoardRow => {
     const link = safeUrl(node.link);
@@ -173,29 +173,29 @@ export function boardView(input: {
       chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null, children: [],
     };
     const s = status.get(node.id);
-    if (node.kind !== TICKET_KIND || !s) return base;
+    if (node.kind !== ITEM_KIND || !s) return base;
 
-    // Built from the ticket id and the workspace path alone — never title or
+    // Built from the item id and the workspace path alone — never title or
     // note — so nothing a tracker comment injected can ride along into a
     // link the browser is about to open.
     // An id chatFor refuses costs that row its Chat menu, not the page: one
     // throw here blanked every row of the board.
-    const ticket: BoardRow = {
+    const item: BoardRow = {
       ...base, stage: s.stage, note: oneLine(s.note), panel: panelPaths(node.id), stale: input.stale?.has(node.id) ?? false,
-      chat: isTicketId(node.id) ? chatFor(node.id, input.workspace) : null,
+      chat: isItemId(node.id) ? chatFor(node.id, input.workspace) : null,
     };
-    // A closed ticket is out of the loop whatever its labels still say or a
+    // A closed item is out of the loop whatever its labels still say or a
     // stale event claims: it never asks for you, and never opens a parent —
     // and its note says it is closed, not "blocked: needs a human" from a
     // label nobody took off.
-    if (node.closed !== null) return { ...ticket, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped" };
+    if (node.closed !== null) return { ...item, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped" };
     const running = input.running.get(node.id);
     if (running) {
       // A goto's target is only worth naming while the agent it sent is
-      // still the one running — once the ticket moves on, "sent back to
-      // spec" would be talking about a stage the ticket has already left.
+      // still the one running — once the item moves on, "sent back to
+      // spec" would be talking about a stage the item has already left.
       const note = input.sent?.get(node.id) === running.stage ? `agent running — sent back to ${running.stage}` : "agent running";
-      return { ...ticket, badge: "running", stage: running.stage, note,
+      return { ...item, badge: "running", stage: running.stage, note,
         since: running.since, round: running.round, model: running.model, effort: running.effort };
     }
     const pairing = input.paired?.get(node.id);
@@ -204,7 +204,7 @@ export function boardView(input: {
       // — unlike a lock's heartbeat — is when the hold began.
       const began = Date.parse(pairing.at);
       return {
-        ...ticket, badge: "elsewhere", stage: pairing.stage, round: pairing.round,
+        ...item, badge: "elsewhere", stage: pairing.stage, round: pairing.round,
         note: `Pairing — ${pairing.stage}, round ${pairing.round}`, since: Number.isNaN(began) ? null : began,
       };
     }
@@ -216,7 +216,7 @@ export function boardView(input: {
       // answering BoardRow.since ("when the current state began"). Nothing
       // else tells us when a foreign hold began, so this reports null rather
       // than a wrong clock.
-      return { ...ticket, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
+      return { ...item, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
     }
     const retry = stopped(s) ? retryPath(node.id) : null;
     const goto = gotoPaths(node.id, input.workflow.stages.find((x) => x.id === s.stage));
@@ -224,10 +224,10 @@ export function boardView(input: {
     // note is the page's wording of the same fact.
     if (s.note === SCREENED_NOTE) {
       return {
-        ...ticket, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry, clear: clearPath(node.id), goto,
+        ...item, badge: laneOf(s, input.workflow), screened: true, note: SCREENED_NOTE, retry, clear: clearPath(node.id), goto,
       };
     }
-    return { ...ticket, badge: laneOf(s, input.workflow), retry, goto };
+    return { ...item, badge: laneOf(s, input.workflow), retry, goto };
   };
 
   const parent = parentsOf(input.graph, nodes, input.nest);
@@ -242,8 +242,8 @@ export function boardView(input: {
   // `seen` is the cycle guard: a node is drawn once, under the first path that
   // reaches it, and a cycle stops instead of recursing forever.
   const seen = new Set<string>();
-  // The most urgent ticket badge in each drawn subtree, null where the subtree
-  // holds no ticket. Only badges count: a closed ticket's is already
+  // The most urgent item badge in each drawn subtree, null where the subtree
+  // holds no item. Only badges count: a closed item's is already
   // `discharged` whatever its labels say, and an artifact has none, so neither
   // can raise a branch.
   const below = new Map<string, Lane | null>();
@@ -265,7 +265,7 @@ export function boardView(input: {
   // knows its lane.
   for (const node of [...roots.sort(compareWork), ...[...nodes.values()].sort(compareWork)]) {
     const row = build(node);
-    // A branch with no ticket — a pull request whose ticket is not listed —
+    // A branch with no item — a pull request whose item is not listed —
     // is still drawn rather than lost, and nothing in it is anyone's to act
     // on: it waits while open and is done once closed.
     if (!row) continue;
@@ -287,7 +287,7 @@ export function boardView(input: {
  */
 export function createBoard(opts: {
   workflow: Workflow;
-  held: (ticket: string) => Promise<Held | null>;
+  held: (item: string) => Promise<Held | null>;
   now?: () => number;
   pid?: number;
   /** When the next scheduled tick is due — the schedule's own `nextAt`. */
@@ -307,34 +307,34 @@ export function createBoard(opts: {
   const running = new Map<string, Running>();
   const sent = new Map<string, string>();
   const paired = new Map<string, Pairing>();
-  // Each ticket a step ran on, and whether its tick has let it go since: the
+  // Each item a step ran on, and whether its tick has let it go since: the
   // step is about to change its labels, and the graph still holds the ones
   // from before. Only a list after the release vouches for them again.
   const stepped = new Map<string, boolean>();
 
   return {
     observe(e: LandraceEvent): void {
-      if (typeof e.ticket !== "string") return;
-      // Every evaluation says whether a pairing holds the ticket's step, so
+      if (typeof e.item !== "string") return;
+      // Every evaluation says whether a pairing holds the item's step, so
       // the latest one is the answer — and one that does not name a pairing
       // is one that has ended.
-      if (e.name === "ticket.evaluated") {
+      if (e.name === "item.evaluated") {
         const p = e.paired as Partial<Pairing> | null | undefined;
         if (p && typeof p.stage === "string" && typeof p.round === "number" && typeof p.at === "string") {
-          paired.set(e.ticket, { stage: p.stage, round: p.round, n: typeof p.n === "number" ? p.n : 1, at: p.at });
+          paired.set(e.item, { stage: p.stage, round: p.round, n: typeof p.n === "number" ? p.n : 1, at: p.at });
         } else {
-          paired.delete(e.ticket);
+          paired.delete(e.item);
         }
       }
       // The tick's own record of a transition: a goto's is logged under the
       // trigger name no workflow may use, so the board can say so.
-      if (e.name === "ticket.evaluated" && e.decision === "transition") {
-        if (e.why === GOTO_TRIGGER && typeof e.to === "string") sent.set(e.ticket, e.to);
-        else sent.delete(e.ticket);
+      if (e.name === "item.evaluated" && e.decision === "transition") {
+        if (e.why === GOTO_TRIGGER && typeof e.to === "string") sent.set(e.item, e.to);
+        else sent.delete(e.item);
       }
       if (e.name === "step.started") {
-        stepped.set(e.ticket, false);
-        running.set(e.ticket, {
+        stepped.set(e.item, false);
+        running.set(e.item, {
           stage: String(e.stage ?? ""),
           round: typeof e.round === "number" ? e.round : 0,
           model: typeof e.model === "string" ? e.model : null,
@@ -342,16 +342,16 @@ export function createBoard(opts: {
           since: now(),
         });
       } else if (e.name === "step.finished") {
-        running.delete(e.ticket);
-      } else if (e.name === "lock.released" && stepped.has(e.ticket)) {
-        stepped.set(e.ticket, true);
+        running.delete(e.item);
+      } else if (e.name === "lock.released" && stepped.has(e.item)) {
+        stepped.set(e.item, true);
       }
     },
     list(next: Graph): void {
       graph = next;
-      // A ticket that has left the graph — closed and eventually not
+      // An item that has left the graph — closed and eventually not
       // relisted, or never eligible again — never fires another
-      // ticket.evaluated for `sent` to clear; without this it would sit
+      // item.evaluated for `sent` to clear; without this it would sit
       // there forever, on the very ids `sent` no longer has an opinion worth
       // keeping about.
       const ids = new Set(next.nodes.map((n) => n.id));
@@ -360,10 +360,10 @@ export function createBoard(opts: {
       for (const [id, released] of stepped) if (released) stepped.delete(id);
     },
     async view(): Promise<BoardView> {
-      // Open tickets only: nothing else can be held, and a closed ticket's
+      // Open items only: nothing else can be held, and a closed item's
       // badge ignores the lock anyway.
       const elsewhere = new Map<string, Held>();
-      await Promise.all(graph.nodes.filter(isOpenTicket).map(async (n) => {
+      await Promise.all(graph.nodes.filter(isOpenItem).map(async (n) => {
         const h = await opts.held(n.id);
         if (h) elsewhere.set(n.id, h);
       }));

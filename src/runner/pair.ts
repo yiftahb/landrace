@@ -7,7 +7,7 @@ import {
   CHILD_SERVER_NAME,
   durationMs,
   MALFORMED_KIND,
-  mayCreateTickets,
+  mayCreateItems,
   mayWriteRepo,
   PAIR_BY,
   PAIR_KIND,
@@ -33,20 +33,20 @@ import { buildSnapshot } from "#runner/snapshot.js";
 import { renderPrompt, sandboxBefore, sandboxTrespass, settleOutput } from "#runner/step.js";
 import { repoDigest } from "#sandbox.js";
 
-/** Long enough to lose a race to a tick reading a ticket that waits, short enough that a click is answered. */
+/** Long enough to lose a race to a tick reading an item that waits, short enough that a click is answered. */
 const WAIT_FOR_TICK_MS = 3_000;
 
 /** A hand-in runs an agent turn, and the lock has to outlast it; `withLock` refreshes it meanwhile. */
 const PAIR_DEADLINE_MS = 15 * 60_000;
 
 /**
- * Where a pairing's session works: beside the ticket's own worktree, never in
- * it. The tick and a conversation cut and remove `<ticket>` as they run, and
+ * Where a pairing's session works: beside the item's own worktree, never in
+ * it. The tick and a conversation cut and remove `<item>` as they run, and
  * the agent's session is found by the directory it ran in — so the person's
  * checkout has to be one nothing else touches, at a path that stays put from
  * the command they copied to the turn that closes it.
  */
-const slotOf = (ticket: string): string => `${ticket}.pair`;
+const slotOf = (item: string): string => `${item}.pair`;
 
 /**
  * Where the seeded prompt waits for the person's shell to read it: beside the
@@ -55,7 +55,7 @@ const slotOf = (ticket: string): string => `${ticket}.pair`;
  * seed swapped there after screening would be pasted into a session no
  * sandbox confines.
  */
-const seedOf = async (root: string, ticket: string): Promise<string> => `${await pathFor(slotOf(ticket), root)}.prompt.md`;
+const seedOf = async (root: string, item: string): Promise<string> => `${await pathFor(slotOf(item), root)}.prompt.md`;
 
 /**
  * What the seeded prompt says before the step's own words: that a person
@@ -96,36 +96,36 @@ function stepOf(deps: PairDeps, id: string): { stage: Stage; step: Step } {
 }
 
 /** A pairing's session, derived from where it is — never remembered, so a retried start hands out the same one. */
-const sessionOf = (root: string, ticket: string, p: Pick<Pairing, "stage" | "round" | "n">): string =>
-  pairSessionId(sha1, { repo: repoDigest(root), ticket, stage: p.stage, round: p.round, n: p.n });
+const sessionOf = (root: string, item: string, p: Pick<Pairing, "stage" | "round" | "n">): string =>
+  pairSessionId(sha1, { repo: repoDigest(root), item, stage: p.stage, round: p.round, n: p.n });
 
-function locked<T>(deps: PairDeps, ticket: string, what: string, fn: () => Promise<T>): Promise<T> {
+function locked<T>(deps: PairDeps, item: string, what: string, fn: () => Promise<T>): Promise<T> {
   // The tick's own lock, taken the way a goto takes it: a pairing reads,
   // decides and writes, and a tick in between would act on what it is
   // about to change.
-  return withLock(ticket, "pair", fn, {
+  return withLock(item, "pair", fn, {
     holder: `pair:${what}:${process.pid}`, waitMs: WAIT_FOR_TICK_MS, deadlineMs: PAIR_DEADLINE_MS, ...deps.lock,
   }).catch((e: unknown) => {
-    if ((e as { code?: unknown } | null)?.code === "ELOCKED") throw new Error(`#${ticket} is busy; try again in a moment`);
+    if ((e as { code?: unknown } | null)?.code === "ELOCKED") throw new Error(`#${item} is busy; try again in a moment`);
     throw e;
   });
 }
 
-const snapshotOf = (deps: PairDeps, ticket: string): Promise<Snapshot> =>
-  buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+const snapshotOf = (deps: PairDeps, item: string): Promise<Snapshot> =>
+  buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
 
-async function apply(deps: PairDeps, ticket: string, snapshot: Snapshot, effects: Effect[]): Promise<void> {
-  for (const effect of effects) await deps.dispatcher.apply(effect, { ...deps.ctx, ticket, snapshot });
+async function apply(deps: PairDeps, item: string, snapshot: Snapshot, effects: Effect[]): Promise<void> {
+  for (const effect of effects) await deps.dispatcher.apply(effect, { ...deps.ctx, item, snapshot });
 }
 
 /**
- * Enter `to` from where the ticket is, at `round`: its on_enter planned as a
+ * Enter `to` from where the item is, at `round`: its on_enter planned as a
  * transition would plan it, with whatever already landed reconciled away — so
  * a start retried after a crash re-applies only what is missing.
  */
-async function enter(deps: PairDeps, ticket: string, snapshot: Snapshot, from: Stage, to: Stage, round: number): Promise<void> {
-  const planned = planEffects({ action: "transition", stage: from, to, round }, snapshot, ticket);
-  await apply(deps, ticket, snapshot, reconcile(snapshot, planned, deps.dispatcher.satisfied));
+async function enter(deps: PairDeps, item: string, snapshot: Snapshot, from: Stage, to: Stage, round: number): Promise<void> {
+  const planned = planEffects({ action: "transition", stage: from, to, round }, snapshot, item);
+  await apply(deps, item, snapshot, reconcile(snapshot, planned, deps.dispatcher.satisfied));
 }
 
 async function screened(deps: PairDeps, prompt: Parameters<typeof screenPrompt>[0], what: string): Promise<void> {
@@ -139,14 +139,14 @@ async function screened(deps: PairDeps, prompt: Parameters<typeof screenPrompt>[
 
 /**
  * What a person may pair on now. The stage's own step while its round is
- * owed; otherwise each step the stage may send the ticket to by a goto, under
+ * owed; otherwise each step the stage may send the item to by a goto, under
  * the same checks and caps a goto is held to. Nothing without an agent that
  * can hand a session over, or a sandbox for one, and nothing while a pairing
  * is already open.
  */
-export function pairOffers(deps: PairDeps, snapshot: Snapshot, ticket: string): PairOffer[] {
+export function pairOffers(deps: PairDeps, snapshot: Snapshot, item: string): PairOffer[] {
   if (!deps.executor?.handoff || !deps.sandbox || !snapshot.run || snapshot.run.pairing) return [];
-  const origin = gotoOrigin(deps.workflow, snapshot, ticket);
+  const origin = gotoOrigin(deps.workflow, snapshot, item);
   if ("refused" in origin) return [];
   const { from } = origin;
   const offer = (stage: Stage): PairOffer =>
@@ -162,9 +162,9 @@ export function pairOffers(deps: PairDeps, snapshot: Snapshot, ticket: string): 
 }
 
 /** The panel's Pairing section: the pairing open now, and what else may be paired on. */
-export async function pairingView(deps: PairDeps, ticket: string): Promise<PairingView> {
-  const snapshot = await snapshotOf(deps, ticket);
-  return { open: snapshot.run?.pairing ?? null, offers: pairOffers(deps, snapshot, ticket) };
+export async function pairingView(deps: PairDeps, item: string): Promise<PairingView> {
+  const snapshot = await snapshotOf(deps, item);
+  return { open: snapshot.run?.pairing ?? null, offers: pairOffers(deps, snapshot, item) };
 }
 
 /**
@@ -172,12 +172,12 @@ export async function pairingView(deps: PairDeps, ticket: string): Promise<Pairi
  * its command back again.
  *
  * The pair record goes first, before the stage's on_enter: a crash between
- * the two leaves a ticket that is held, never one whose step runs alone, and
+ * the two leaves an item that is held, never one whose step runs alone, and
  * the retry re-applies the entry with whatever landed reconciled away. The
  * seeded prompt is screened before anything is written at all.
  */
-export function startPair(deps: PairDeps, ticket: string, stageId: string): Promise<PairStarted> {
-  return locked(deps, ticket, "start", async () => {
+export function startPair(deps: PairDeps, item: string, stageId: string): Promise<PairStarted> {
+  return locked(deps, item, "start", async () => {
     const executor = deps.executor;
     const handoff = executor?.handoff;
     if (!executor || !handoff) {
@@ -186,34 +186,34 @@ export function startPair(deps: PairDeps, ticket: string, stageId: string): Prom
     const root = deps.sandbox?.root;
     if (root === undefined) throw new Error("cannot pair: a pairing needs a checkout of its own, and agent.isolation is not worktree");
 
-    const snapshot = await snapshotOf(deps, ticket);
+    const snapshot = await snapshotOf(deps, item);
     const open = snapshot.run?.pairing ?? null;
     if (open !== null && open.stage !== stageId) {
-      throw new Error(`#${ticket} is already pairing on "${open.stage}"; finish or release that pairing first`);
+      throw new Error(`#${item} is already pairing on "${open.stage}"; finish or release that pairing first`);
     }
 
     let pairing: Pick<Pairing, "stage" | "round" | "n">;
     if (open !== null) {
       pairing = open;
     } else {
-      const offers = pairOffers(deps, snapshot, ticket);
+      const offers = pairOffers(deps, snapshot, item);
       const offer = offers.find((o) => o.stage === stageId);
       if (!offer) {
         throw new Error(offers.length
-          ? `#${ticket} cannot pair on "${stageId}" now; it may pair on ${offers.map((o) => `"${o.stage}"`).join(" or ")}`
-          : `#${ticket} has no step to pair on now`);
+          ? `#${item} cannot pair on "${stageId}" now; it may pair on ${offers.map((o) => `"${o.stage}"`).join(" or ")}`
+          : `#${item} has no step to pair on now`);
       }
       const earlier = ordered(snapshot).filter((e) => e.kind === PAIR_KIND && e.stage === stageId && e.round === offer.round);
       pairing = { stage: stageId, round: offer.round, n: earlier.length + 1 };
     }
     const { stage, step } = stepOf(deps, pairing.stage);
 
-    const briefing = await buildBriefing([...(deps.artifacts ?? []), deps.source], { ...deps.ctx, ticket, snapshot }, step.prompt);
+    const briefing = await buildBriefing([...(deps.artifacts ?? []), deps.source], { ...deps.ctx, item, snapshot }, step.prompt);
     const prompt = PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing);
     await screened(deps, (quote) => PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing, quote), "this pairing");
 
     if (open === null) {
-      await apply(deps, ticket, snapshot, [{
+      await apply(deps, item, snapshot, [{
         type: RECORD_EFFECT, kind: PAIR_KIND, stage: stage.id, round: pairing.round,
         marker: `${PAIR_KIND}:${stage.id}:${pairing.round}:${pairing.n}`,
         body: `Pairing on ${stage.id}, round ${pairing.round}: a person is working this round with the agent in ` +
@@ -221,36 +221,36 @@ export function startPair(deps: PairDeps, ticket: string, stageId: string): Prom
       }]);
     }
     // Entered unless the stage already has been at the pairing's round —
-    // not where the ticket stands, which a refused hand-in moves to a halt
+    // not where the item stands, which a refused hand-in moves to a halt
     // with that round entered, and asking for the command again must leave
     // it there. A stage that lists itself as a goto target rests at its
     // settled round — build, when publish's push fails — and pairing on it
     // enters the next. The one entered round still entered again is a crash
-    // between its record and its status: owed, with the ticket elsewhere.
-    const origin = gotoOrigin(deps.workflow, snapshot, ticket);
+    // between its record and its status: owed, with the item elsewhere.
+    const origin = gotoOrigin(deps.workflow, snapshot, item);
     if (!("refused" in origin)) {
       const entered = snapshot.run?.rounds[stage.id]?.entered ?? 0;
       const unfinished = origin.from.id !== stage.id && assess(snapshot, stage) === "pending";
-      if (entered < pairing.round || unfinished) await enter(deps, ticket, snapshot, origin.from, stage, pairing.round);
+      if (entered < pairing.round || unfinished) await enter(deps, item, snapshot, origin.from, stage, pairing.round);
     }
 
-    const branch = stageBranch(stage, ticket, pairing.round);
+    const branch = stageBranch(stage, item, pairing.round);
     if (!branch.ok) throw new Error(branch.reason);
     const on = branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
     // Found before it is cut: the person may already be working in it, and
     // cutting again would rebuild a checkout that has fallen behind.
-    const cwd = (await worktreeOf(slotOf(ticket), root)) ?? (await ensureWorktree(ticket, root, on, slotOf(ticket)));
+    const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item)));
 
-    // The seed holds ticket text anyone can write, and the command is pasted
+    // The seed holds item text anyone can write, and the command is pasted
     // into a terminal, which acts on control characters before any shell
     // quoting is read. So the command names this file, never its contents.
     // Created afresh, never written through what is already there: a link
-    // at the path would have the engine write ticket text wherever it points.
-    const promptFile = await seedOf(root, ticket);
+    // at the path would have the engine write item text wherever it points.
+    const promptFile = await seedOf(root, item);
     await rm(promptFile, { force: true });
     await writeFile(promptFile, prompt, { flag: "wx", mode: 0o600 });
 
-    const session = sessionOf(root, ticket, pairing);
+    const session = sessionOf(root, item, pairing);
     const resume = agentSession(snapshot, stage.id);
     const hand = await handoff({
       cwd, session, promptFile,
@@ -269,51 +269,51 @@ export function startPair(deps: PairDeps, ticket: string, stageId: string): Prom
 /**
  * Hand the pairing's work in: a closing turn, forked from the person's
  * session, asked for the step's answer — held to the step's own contract and
- * recorded as the pair's, after which the ticket moves on by its triggers.
+ * recorded as the pair's, after which the item moves on by its triggers.
  *
  * Refused or malformed, the round is recorded as rejected like a step's and
- * the ticket halts, with the pairing left open. Finishing again then enters
+ * the item halts, with the pairing left open. Finishing again then enters
  * the stage anew at its next round, by the same checks a goto is held to, and
  * closes it there.
  */
-export function finishPair(deps: PairDeps, ticket: string, note?: string): Promise<PairFinished> {
-  return locked(deps, ticket, "finish", async () => {
+export function finishPair(deps: PairDeps, item: string, note?: string): Promise<PairFinished> {
+  return locked(deps, item, "finish", async () => {
     const executor = deps.executor;
     if (!executor) throw new Error("cannot finish: no agent executor is configured");
     const root = deps.sandbox?.root;
     if (root === undefined) throw new Error("cannot finish: a pairing needs a checkout of its own, and agent.isolation is not worktree");
 
-    let snapshot = await snapshotOf(deps, ticket);
+    let snapshot = await snapshotOf(deps, item);
     const open = snapshot.run?.pairing ?? null;
-    if (open === null) throw new Error(`#${ticket} has no pairing to finish`);
+    if (open === null) throw new Error(`#${item} has no pairing to finish`);
     const { stage, step } = stepOf(deps, open.stage);
 
-    const origin = gotoOrigin(deps.workflow, snapshot, ticket);
+    const origin = gotoOrigin(deps.workflow, snapshot, item);
     if ("refused" in origin) throw new Error(`cannot finish: ${origin.refused}`);
     const round = nextRound(snapshot, stage.id);
-    // Where the ticket stands, settled is a round a crash left unentered —
+    // Where the item stands, settled is a round a crash left unentered —
     // entered here like any goto target; only a rejected one waits for the halt.
     const here = origin.from.id === stage.id ? assess(snapshot, stage) : null;
     if (here !== "pending") {
       if (here === "failed") {
-        throw new Error(`#${ticket}'s last hand-in on "${stage.id}" was refused; once the ticket has halted, finish again`);
+        throw new Error(`#${item}'s last hand-in on "${stage.id}" was refused; once the item has halted, finish again`);
       }
       const refused = gotoNotListed(origin.from, stage.id) ?? gotoDeclined(origin.from, snapshot, stage.id);
-      if (refused) throw new Error(`cannot finish #${ticket}'s pairing: ${refused}`);
-      await enter(deps, ticket, snapshot, origin.from, stage, round);
-      snapshot = await snapshotOf(deps, ticket);
+      if (refused) throw new Error(`cannot finish #${item}'s pairing: ${refused}`);
+      await enter(deps, item, snapshot, origin.from, stage, round);
+      snapshot = await snapshotOf(deps, item);
     }
 
-    const branch = stageBranch(stage, ticket, round);
+    const branch = stageBranch(stage, item, round);
     if (!branch.ok) throw new Error(branch.reason);
     const on = branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
-    const cwd = (await worktreeOf(slotOf(ticket), root)) ?? (await ensureWorktree(ticket, root, on, slotOf(ticket)));
+    const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item)));
     const sandbox = { path: cwd };
 
     const scrub = scrubberOf(deps.ctx.secrets, deps.scrub);
     const reject = async (kind: "contract" | "refused", reason: string): Promise<never> => {
-      await apply(deps, ticket, snapshot, [malformedEffect(stage.id, round, reason, scrub, kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)]);
-      throw new Error(`the hand-in was refused: ${reason}. #${ticket} halts with the pairing still open; finish again once it has`);
+      await apply(deps, item, snapshot, [malformedEffect(stage.id, round, reason, scrub, kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)]);
+      throw new Error(`the hand-in was refused: ${reason}. #${item} halts with the pairing still open; finish again once it has`);
     };
 
     // Read now, not when the pairing began: what the person changed while
@@ -335,15 +335,15 @@ export function finishPair(deps: PairDeps, ticket: string, note?: string): Promi
     try {
       ({ text, sessionId } = await executor.run(prompt, {
         round,
-        resume: sessionOf(root, ticket, open),
+        resume: sessionOf(root, item, open),
         fork: true,
         cwd,
         capabilities: step.capabilities ?? [],
         ...(step.model === undefined ? {} : { model: step.model }),
         ...(step.effort === undefined ? {} : { effort: step.effort }),
         timeoutMs,
-        ...(mayCreateTickets(step.capabilities) && deps.childServer
-          ? { child: { parent: ticket, stage: stage.id, round, server: childServerFor(deps.childServer, { parent: ticket, stage: stage.id, round }) } }
+        ...(mayCreateItems(step.capabilities) && deps.childServer
+          ? { child: { parent: item, stage: stage.id, round, server: childServerFor(deps.childServer, { parent: item, stage: stage.id, round }) } }
           : {}),
         signal: AbortSignal.any([deps.ctx.signal, limit]),
       }));
@@ -356,34 +356,34 @@ export function finishPair(deps: PairDeps, ticket: string, note?: string): Promi
     const trespass = await sandboxTrespass(sandbox, start.before);
     if (trespass) return reject("refused", trespass);
 
-    const settled = settleOutput({ step, ticket, stageId: stage.id, round, text, sessionId, by: PAIR_BY });
+    const settled = settleOutput({ step, item, stageId: stage.id, round, text, sessionId, by: PAIR_BY });
     if (!settled.ok) return reject(settled.kind === "refused" ? "refused" : "contract", settled.reason);
     // The destination first, then the record, as a step's are applied.
-    await apply(deps, ticket, snapshot, settled.effects);
+    await apply(deps, item, snapshot, settled.effects);
 
     // The output is recorded; what is still uncommitted goes with the
     // worktree, and the person is told what that was.
     const discarded = await worktreeState(cwd).then((s) => s.changes, () => []);
-    await removeWorktree(ticket, root, slotOf(ticket));
-    await rm(await seedOf(root, ticket), { force: true });
+    await removeWorktree(item, root, slotOf(item));
+    await rm(await seedOf(root, item), { force: true });
     return { stage: stage.id, round, discarded };
   });
 }
 
 /** Give the round back to the agent: a release record closes the pairing, and the next tick runs the step alone. */
-export function releasePair(deps: PairDeps, ticket: string): Promise<{ stage: string; round: number }> {
-  return locked(deps, ticket, "release", async () => {
-    const snapshot = await snapshotOf(deps, ticket);
+export function releasePair(deps: PairDeps, item: string): Promise<{ stage: string; round: number }> {
+  return locked(deps, item, "release", async () => {
+    const snapshot = await snapshotOf(deps, item);
     const open = snapshot.run?.pairing ?? null;
-    if (open === null) throw new Error(`#${ticket} has no pairing to release`);
-    await apply(deps, ticket, snapshot, [{
+    if (open === null) throw new Error(`#${item} has no pairing to release`);
+    await apply(deps, item, snapshot, [{
       type: RECORD_EFFECT, kind: RELEASE_KIND, stage: open.stage, round: open.round,
       marker: `${RELEASE_KIND}:${open.stage}:${open.round}:${open.n}`,
       body: `Released the pairing on ${open.stage}, round ${open.round}: the agent runs it alone.`,
     }]);
     if (deps.sandbox) {
-      await removeWorktree(ticket, deps.sandbox.root, slotOf(ticket));
-      await rm(await seedOf(deps.sandbox.root, ticket), { force: true });
+      await removeWorktree(item, deps.sandbox.root, slotOf(item));
+      await rm(await seedOf(deps.sandbox.root, item), { force: true });
     }
     return { stage: open.stage, round: open.round };
   });

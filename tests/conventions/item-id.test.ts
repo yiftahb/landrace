@@ -1,9 +1,9 @@
-import { compareIds, isTicketId, ticketIdProblem } from "#conventions.js";
+import { compareIds, isItemId, itemIdProblem } from "#conventions.js";
 
-describe("ticket ids", () => {
+describe("item ids", () => {
   it.each(["1", "42", "PROJ-7", "abc_def", "a.b", "A1-b2_c3.d4"])("accepts %s", (id) => {
-    expect(isTicketId(id)).toBe(true);
-    expect(ticketIdProblem(id)).toBeNull();
+    expect(isItemId(id)).toBe(true);
+    expect(itemIdProblem(id)).toBeNull();
   });
 
   it.each([
@@ -17,14 +17,14 @@ describe("ticket ids", () => {
     ["__proto__", "reserved"],
     ["x".repeat(65), "too long"],
   ])("refuses %j (%s)", (id) => {
-    expect(isTicketId(id)).toBe(false);
-    expect(ticketIdProblem(id)).toMatch(/ticket id/);
+    expect(isItemId(id)).toBe(false);
+    expect(itemIdProblem(id)).toMatch(/item id/);
   });
 
   it("refuses non-strings, naming the type", () => {
-    expect(isTicketId(42)).toBe(false);
-    expect(ticketIdProblem(42)).toMatch(/number/);
-    expect(ticketIdProblem(undefined)).toMatch(/undefined/);
+    expect(isItemId(42)).toBe(false);
+    expect(itemIdProblem(42)).toMatch(/number/);
+    expect(itemIdProblem(undefined)).toMatch(/undefined/);
   });
 
   it("orders numeric ids by value, not by character", () => {

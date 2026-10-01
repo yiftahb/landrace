@@ -16,7 +16,7 @@ describe("the step timeout", () => {
 
   it("falls back to one number when the workflow names none", () => {
     // Not zero and not infinity: a workflow with no budget still has to bound
-    // a step, or a hung agent holds its ticket's lock until the process dies.
+    // a step, or a hung agent holds its item's lock until the process dies.
     expect(stepTimeoutMs(workflow())).toBe(DEFAULT_STEP_TIMEOUT_MS);
     expect(stepTimeoutMs(workflow({}))).toBe(DEFAULT_STEP_TIMEOUT_MS);
   });

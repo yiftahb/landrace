@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { isTicketId } from "#conventions.js";
+import { isItemId } from "#conventions.js";
 import type { ActivityLog, ActivityPage, ActivityRecord } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { oneLine } from "#runner/status.js";
@@ -43,8 +43,8 @@ const sizeOf = (file: string): number | null => {
 const NONE: ActivityPage = { stage: null, round: null, lines: [], total: 0 };
 
 /**
- * What agents are doing, per ticket, kept at
- * `<root>/activity/<ticket>/<stage>.jsonl` — on disk, because a turn asked
+ * What agents are doing, per item, kept at
+ * `<root>/activity/<item>/<stage>.jsonl` — on disk, because a turn asked
  * through `landrace mcp` runs in another process and the page must show it.
  *
  * Display only, and never state: one round per stage, and a stage's next
@@ -55,10 +55,10 @@ const NONE: ActivityPage = { stage: null, round: null, lines: [], total: 0 };
  * the cut would leave its head on disk where the redactor no longer matches.
  */
 export function createActivityLog(root: string, redact: (text: string) => string): ActivityLog {
-  const dirOf = (ticket: string): string => join(root, "activity", ticket);
-  // A stage id is the workflow's own and a ticket id comes from the tracker;
+  const dirOf = (item: string): string => join(root, "activity", item);
+  // A stage id is the workflow's own and an item id comes from the tracker;
   // encoded, neither can name a path outside its directory.
-  const fileOf = (ticket: string, stage: string): string => join(dirOf(ticket), `${encodeURIComponent(stage)}.jsonl`);
+  const fileOf = (item: string, stage: string): string => join(dirOf(item), `${encodeURIComponent(stage)}.jsonl`);
 
   // Per file, the round it holds and how many lines, as of the size this
   // process last saw it at. Re-reading the whole file on every line made
@@ -76,26 +76,26 @@ export function createActivityLog(root: string, redact: (text: string) => string
   };
 
   return {
-    begin(ticket, stage, round) {
+    begin(item, stage, round) {
       try {
-        if (!isTicketId(ticket)) return;
-        const file = fileOf(ticket, stage);
-        mkdirSync(dirOf(ticket), { recursive: true });
+        if (!isItemId(item)) return;
+        const file = fileOf(item, stage);
+        mkdirSync(dirOf(item), { recursive: true });
         // Empty rather than gone: the run starting now is the stage the
         // panel reads as newest, before it has said anything.
         writeFileSync(file, "");
         known.set(file, { round, lines: 0, size: 0 });
       } catch (err) {
-        console.error(`landrace: could not start agent activity for #${ticket}: ${messageOf(err)}`);
+        console.error(`landrace: could not start agent activity for #${item}: ${messageOf(err)}`);
       }
     },
 
-    record(ticket, stage, round, e) {
+    record(item, stage, round, e) {
       // A display must never be able to stop the work it displays: this is
       // called from inside a paid run, so every failure ends here.
       try {
-        if (!isTicketId(ticket)) return;
-        const file = fileOf(ticket, stage);
+        if (!isItemId(item)) return;
+        const file = fileOf(item, stage);
         const line = `${JSON.stringify({
           round,
           kind: e.kind === "tool" ? "tool" : "message",
@@ -106,7 +106,7 @@ export function createActivityLog(root: string, redact: (text: string) => string
         const size = sizeOf(file);
         const held = size === null ? null : heldIn(file, size);
         if (held === null || held.round < round) {
-          mkdirSync(dirOf(ticket), { recursive: true });
+          mkdirSync(dirOf(item), { recursive: true });
           writeFileSync(file, line);
           known.set(file, { round, lines: 1, size: bytes });
           return;
@@ -128,14 +128,14 @@ export function createActivityLog(root: string, redact: (text: string) => string
         appendFileSync(file, line);
         known.set(file, { round, lines: held.lines + 1, size: (size ?? 0) + bytes });
       } catch (err) {
-        console.error(`landrace: could not record agent activity for #${ticket}: ${messageOf(err)}`);
+        console.error(`landrace: could not record agent activity for #${item}: ${messageOf(err)}`);
       }
     },
 
-    async read(ticket, after) {
-      if (!isTicketId(ticket)) return NONE;
+    async read(item, after) {
+      if (!isItemId(item)) return NONE;
       try {
-        const dir = dirOf(ticket);
+        const dir = dirOf(item);
         const names = (await readdir(dir)).filter((n) => n.endsWith(".jsonl"));
         const stamped = await Promise.all(names.map(async (name) => ({ name, at: (await stat(join(dir, name))).mtimeMs })));
         // The run that wrote last is the one worth showing: a step running

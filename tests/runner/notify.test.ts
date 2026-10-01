@@ -13,7 +13,7 @@ const workflow: Workflow = {
 };
 
 const node = (labels: string[], title = "Add export"): Node => ({
-  id: "29", kind: "ticket", title, link: "https://tracker.example/29", closed: null, priority: null, origin: null,
+  id: "29", kind: "item", title, link: "https://tracker.example/29", closed: null, priority: null, origin: null,
   state: { labels: ["lr:auto", ...labels] },
 });
 const waiting = { node: node(["lr:stage:spec-questions", "lr:awaiting"]) };
@@ -42,7 +42,7 @@ const recorder = (id: string) => {
 };
 
 describe("createNotify", () => {
-  it("tells each notifier once what the board says about a ticket waiting on you", async () => {
+  it("tells each notifier once what the board says about an item waiting on you", async () => {
     const { sent, notifier } = recorder("chat");
     const { fire, events } = harness([notifier]);
 
@@ -50,20 +50,20 @@ describe("createNotify", () => {
     await settle();
 
     expect(sent).toEqual([{
-      event: "needs-you", ticket: "29", title: "Add export", link: "https://tracker.example/29",
+      event: "needs-you", item: "29", title: "Add export", link: "https://tracker.example/29",
       stage: "spec-questions", why: "waiting on you", board: "http://127.0.0.1:4545",
     }]);
-    expect(events).toEqual([{ name: "notify.sent", data: { ticket: "29", via: "chat" } }]);
+    expect(events).toEqual([{ name: "notify.sent", data: { item: "29", via: "chat" } }]);
   });
 
-  it("says why a blocked ticket stopped, as the board does", async () => {
+  it("says why a blocked item stopped, as the board does", async () => {
     const { sent, notifier } = recorder("chat");
     harness([notifier]).fire({ node: node(["lr:stage:screened", "lr:blocked", "lr:screened"]) });
     await settle();
     expect(sent.map((e) => e.why)).toEqual(["blocked by a security check"]);
   });
 
-  it("says nothing about a ticket an agent is working on", async () => {
+  it("says nothing about an item an agent is working on", async () => {
     const { sent, notifier } = recorder("chat");
     const { fire, events } = harness([notifier]);
     fire({ node: node(["lr:stage:build", "lr:working"]) });
@@ -72,8 +72,8 @@ describe("createNotify", () => {
     expect(events).toEqual([]);
   });
 
-  // The board files a closed ticket under Done whatever its labels still say.
-  it("says nothing about a closed ticket still wearing lr:awaiting", async () => {
+  // The board files a closed item under Done whatever its labels still say.
+  it("says nothing about a closed item still wearing lr:awaiting", async () => {
     const { sent, notifier } = recorder("chat");
     harness([notifier]).fire({ node: { ...waiting.node, closed: "done" } });
     await settle();
@@ -101,9 +101,9 @@ describe("createNotify", () => {
 
     expect(sent).toHaveLength(1);
     expect(events).toEqual(expect.arrayContaining([
-      { name: "notify.failed", data: { ticket: "29", via: "rejects", reason: "503 from upstream" } },
-      { name: "notify.failed", data: { ticket: "29", via: "throws", reason: "no webhook configured" } },
-      { name: "notify.sent", data: { ticket: "29", via: "chat" } },
+      { name: "notify.failed", data: { item: "29", via: "rejects", reason: "503 from upstream" } },
+      { name: "notify.failed", data: { item: "29", via: "throws", reason: "no webhook configured" } },
+      { name: "notify.sent", data: { item: "29", via: "chat" } },
     ]));
   });
 

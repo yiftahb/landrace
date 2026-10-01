@@ -6,7 +6,7 @@ import type { NotifyEvent, RuntimeConfig, RuntimeContext } from "#namespace.js";
 const WEBHOOK = "https://hooks.slack.com/services/T000/B000/secretpart";
 
 const event = (over: Partial<NotifyEvent> = {}): NotifyEvent => ({
-  event: "needs-you", ticket: "29", title: "Add export", link: "https://github.com/acme/widgets/issues/29",
+  event: "needs-you", item: "29", title: "Add export", link: "https://github.com/acme/widgets/issues/29",
   stage: "screened", why: "blocked by a security check", board: null, ...over,
 });
 
@@ -28,7 +28,7 @@ function webhook(answer: () => Response = () => new Response("ok")) {
 afterEach(() => jest.restoreAllMocks());
 
 describe("the slack notifier", () => {
-  it("posts one line to the webhook, mentioning you, with the ticket linked", async () => {
+  it("posts one line to the webhook, mentioning you, with the item linked", async () => {
     const { sent, texts } = webhook();
 
     await slack.send(event(), ctx());
@@ -52,7 +52,7 @@ describe("the slack notifier", () => {
   });
 
   /*
-   * A title is whoever opened the ticket, and `why` can carry the board's
+   * A title is whoever opened the item, and `why` can carry the board's
    * words for it. Unescaped, `<@U999>` pings someone else and `<url|x>` is a
    * link dressed as anything.
    */

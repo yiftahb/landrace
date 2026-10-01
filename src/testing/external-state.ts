@@ -23,7 +23,7 @@ import type {
   EffectTable,
   ExternalPull,
   ExternalState,
-  ExternalTicket,
+  ExternalItem,
   Graph,
   HookContext,
   Node,
@@ -31,8 +31,8 @@ import type {
   RelationDecl,
   ReviewThread,
   Source,
-  TicketPatch,
-  TicketRecord,
+  ItemPatch,
+  ItemRecord,
   TrackerComment,
 } from "#namespace.js";
 
@@ -48,7 +48,7 @@ const PERSON = "a-person";
 /** The kind a fix round's route marker names — `fix:{round}` — as the shipped tracker hook reads it. */
 const FIX_KIND = "fix";
 
-/** Both relationship types this tracker reports: a sub-ticket's parent, and the ticket a pull request implements. */
+/** Both relationship types this tracker reports: a sub-item's parent, and the item a pull request implements. */
 const RELATION_DECLS: RelationDecl[] = [
   { type: RELATIONS.childOf, singular: true },
   { type: RELATIONS.implements, singular: true },
@@ -56,8 +56,8 @@ const RELATION_DECLS: RelationDecl[] = [
 
 /**
  * A source that answers every question with one fixed graph, for a test that
- * needs a ticket to exist and nothing to change under it. `read` returns the
- * whole graph whatever it is asked for, which the runner accepts: the ticket
+ * needs an item to exist and nothing to change under it. `read` returns the
+ * whole graph whatever it is asked for, which the runner accepts: the item
  * is in it, and every edge in it is whole.
  */
 export function staticSource(graph: Graph, relations: RelationDecl[] = RELATION_DECLS): Source {
@@ -65,8 +65,8 @@ export function staticSource(graph: Graph, relations: RelationDecl[] = RELATION_
 }
 
 /**
- * Monotonic per ticket, the way a real tracker's timestamps are: a comment
- * posted now is never dated before one already on the ticket. A bare counter
+ * Monotonic per item, the way a real tracker's timestamps are: a comment
+ * posted now is never dated before one already on the item. A bare counter
  * is not enough — a test seeding a human reply dated later than the counter
  * (the natural way to write "and then a person spoke") would have every
  * comment written afterwards sort *before* it, so `run.lastEvent.actor` stayed
@@ -82,10 +82,10 @@ function clock(): (existing: TrackerComment[]) => string {
 }
 
 /** A row as the tracker reads it out: copies of its lists, so a node never aliases the live row a test goes on to move. */
-const recordOf = (row: ExternalTicket): TicketRecord => ({
+const recordOf = (row: ExternalItem): ItemRecord => ({
   id: row.id,
   title: row.title,
-  link: `memory://tickets/${row.id}`,
+  link: `memory://items/${row.id}`,
   closed: row.closed ?? null,
   labels: [...row.labels],
   assignees: [...row.assignees],
@@ -106,33 +106,33 @@ const recordOf = (row: ExternalTicket): TicketRecord => ({
  * none, and its comment check asks its own login rather than the snapshot's.
  */
 export class MemoryTracker extends BaseTracker {
-  /** Every ticket, live: a test moves one the way a person on the tracker would. */
-  readonly rows = new Map<string, ExternalTicket>();
+  /** Every item, live: a test moves one the way a person on the tracker would. */
+  readonly rows = new Map<string, ExternalItem>();
   private readonly at = clock();
   private nextComment = 1000;
 
-  constructor(seed: { tickets?: Array<Partial<ExternalTicket>> } = {}) {
+  constructor(seed: { items?: Array<Partial<ExternalItem>> } = {}) {
     super();
-    for (const [i, s] of (seed.tickets ?? []).entries()) this.add(s, s.id ?? String(i + 1));
+    for (const [i, s] of (seed.items ?? []).entries()) this.add(s, s.id ?? String(i + 1));
   }
 
-  /** The live row behind a ticket. */
-  row(id: string): ExternalTicket {
+  /** The live row behind an item. */
+  row(id: string): ExternalItem {
     const row = this.rows.get(id);
-    if (!row) throw new Error(`no such ticket #${id}`);
+    if (!row) throw new Error(`no such item #${id}`);
     return row;
   }
 
-  /** A comment on a ticket, under `author`'s login, dated after every one already there. */
+  /** A comment on an item, under `author`'s login, dated after every one already there. */
   post(id: string, author: string, body: string): void {
     const row = this.row(id);
     row.comments.push({ id: this.nextComment++, body, created_at: this.at(row.comments), user: { login: author } });
   }
 
-  private add(s: Partial<ExternalTicket>, id: string): ExternalTicket {
-    const row: ExternalTicket = {
+  private add(s: Partial<ExternalItem>, id: string): ExternalItem {
+    const row: ExternalItem = {
       id,
-      title: s.title ?? `ticket ${id}`,
+      title: s.title ?? `item ${id}`,
       body: s.body ?? "",
       labels: [...(s.labels ?? [])],
       assignees: [...(s.assignees ?? [])],
@@ -150,15 +150,15 @@ export class MemoryTracker extends BaseTracker {
     return BOT;
   }
 
-  async tickets(): Promise<TicketRecord[]> {
+  async items(): Promise<ItemRecord[]> {
     return [...this.rows.values()].map(recordOf);
   }
 
-  async ticket(id: string): Promise<TicketRecord> {
+  async item(id: string): Promise<ItemRecord> {
     return recordOf(this.row(id));
   }
 
-  async children(id: string): Promise<TicketRecord[]> {
+  async children(id: string): Promise<ItemRecord[]> {
     return [...this.rows.values()].filter((r) => r.parent === id).map(recordOf);
   }
 
@@ -184,14 +184,14 @@ export class MemoryTracker extends BaseTracker {
     this.row(id).closed = how;
   }
 
-  async create(ticket: { title: string; body: string; parent: string | undefined; priority: number | undefined }): Promise<string> {
-    if (ticket.parent !== undefined) this.row(ticket.parent); // throws "no such ticket #<parent>" when it is not one
+  async create(item: { title: string; body: string; parent: string | undefined; priority: number | undefined }): Promise<string> {
+    if (item.parent !== undefined) this.row(item.parent); // throws "no such item #<parent>" when it is not one
     let n = this.rows.size + 1;
     while (this.rows.has(String(n))) n++;
-    return this.add({ ...ticket, author: BOT, parent: ticket.parent ?? null, priority: ticket.priority ?? null }, String(n)).id;
+    return this.add({ ...item, author: BOT, parent: item.parent ?? null, priority: item.priority ?? null }, String(n)).id;
   }
 
-  async update(id: string, fields: Pick<TicketPatch, "title" | "body" | "state">): Promise<void> {
+  async update(id: string, fields: Pick<ItemPatch, "title" | "body" | "state">): Promise<void> {
     const row = this.row(id);
     if (fields.title !== undefined) row.title = fields.title;
     if (fields.body !== undefined) row.body = fields.body;
@@ -203,12 +203,12 @@ export class MemoryTracker extends BaseTracker {
    * holds the two level. No `tracker.bot`: the login is this class's own.
    */
   override provides(): string[] {
-    return ["ticket", "ticket.body", "ticket.comments", "entries"];
+    return ["item", "item.body", "item.comments", "entries"];
   }
 
-  override async observe({ ticket }: HookContext): Promise<Record<string, unknown>> {
-    const comments = await this.comments(ticket);
-    return { ticket: { body: this.row(ticket).body, comments }, entries: entriesFromComments(comments, BOT) };
+  override async observe({ item }: HookContext): Promise<Record<string, unknown>> {
+    const comments = await this.comments(item);
+    return { item: { body: this.row(item).body, comments }, entries: entriesFromComments(comments, BOT) };
   }
 
   override effects(): EffectTable {
@@ -223,7 +223,7 @@ export class MemoryTracker extends BaseTracker {
   }
 }
 
-/** A pull request as the forge reads it out: memory's names the one ticket it was opened for, whatever its branch. */
+/** A pull request as the forge reads it out: memory's names the one item it was opened for, whatever its branch. */
 const pullRecordOf = (p: ExternalPull): PullRecord => ({
   number: p.number,
   title: `PR #${p.number}`,
@@ -233,7 +233,7 @@ const pullRecordOf = (p: ExternalPull): PullRecord => ({
   headSha: "",
   branch: p.branch,
   createdAt: undefined,
-  tickets: [p.ticket],
+  items: [p.item],
 });
 
 /** The forge's review calls, which the in-memory forge does not make: its threads are counts, and its `pull.review` moves them. */
@@ -255,15 +255,15 @@ export class MemoryForge extends BaseForge {
   private readonly pushed: string[] = [];
 
   /**
-   * Open a pull request implementing `ticket`, numbered from 1 in creation
+   * Open a pull request implementing `item`, numbered from 1 in creation
    * order. Merged means closed as done unless `closed` says otherwise, and
    * `awaitingFix` defaults to `openThreads`: a thread nobody answered awaits a fix.
    */
-  add(ticket: string, pr: { merged?: boolean; openThreads?: number; awaitingFix?: number; closed?: Closed; branch?: string } = {}): string {
+  add(item: string, pr: { merged?: boolean; openThreads?: number; awaitingFix?: number; closed?: Closed; branch?: string } = {}): string {
     const number = this.rows.size + 1;
     const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
     const pull: ExternalPull = {
-      id: `pr-${number}`, number, ticket, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, ...pr, closed,
+      id: `pr-${number}`, number, item, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, ...pr, closed,
     };
     this.rows.set(pull.id, pull);
     return pull.id;
@@ -288,8 +288,8 @@ export class MemoryForge extends BaseForge {
     return [...this.rows.values()].map(pullRecordOf);
   }
 
-  async pullsNaming(ticket: string): Promise<PullRecord[]> {
-    return [...this.rows.values()].filter((p) => p.ticket === ticket || p.branch === prBranch(ticket)).map(pullRecordOf);
+  async pullsNaming(item: string): Promise<PullRecord[]> {
+    return [...this.rows.values()].filter((p) => p.item === item || p.branch === prBranch(item)).map(pullRecordOf);
   }
 
   // ponytail: counts, not threads — briefed as none open, whatever the count says; hold thread text here if a test ever briefs it.
@@ -317,8 +317,8 @@ export class MemoryForge extends BaseForge {
     throw countsOnly();
   }
 
-  async openPull({ ticket, branch }: { ticket: string; branch: string }): Promise<void> {
-    this.add(ticket, { branch });
+  async openPull({ item, branch }: { item: string; branch: string }): Promise<void> {
+    this.add(item, { branch });
   }
 
   async closePull(pull: number): Promise<void> {
@@ -384,11 +384,11 @@ export class MemoryForge extends BaseForge {
       // No checkout to ask whether the branch has anything on it.
       [PULL_OPEN_EFFECT]: {
         satisfied: (effects[PULL_OPEN_EFFECT] as EffectHandler).satisfied,
-        apply: (effect, { ticket }) => this.openPull({ ticket, branch: effectBranch(effect) }),
+        apply: (effect, { item }) => this.openPull({ item, branch: effectBranch(effect) }),
       },
       [PULL_REVIEW_EFFECT]: {
         satisfied: (effects[PULL_REVIEW_EFFECT] as EffectHandler).satisfied,
-        apply: async (effect, { ticket }) => this.countReview(effect, ticket),
+        apply: async (effect, { item }) => this.countReview(effect, item),
       },
     };
   }
@@ -401,11 +401,11 @@ export class MemoryForge extends BaseForge {
    * a person's thread is theirs to close. A fix round resolves nothing. Once
    * per round, by its marker.
    */
-  private async countReview(effect: Effect, ticket: string): Promise<void> {
+  private async countReview(effect: Effect, item: string): Promise<void> {
     const branch = effectBranch(effect);
     const out = (effect.output ?? {}) as { findings?: unknown; resolved?: unknown; replies?: unknown };
     const some = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
-    const fromBranch = [...this.rows.values()].filter((p) => p.ticket === ticket && p.branch === branch);
+    const fromBranch = [...this.rows.values()].filter((p) => p.item === item && p.branch === branch);
     const pull = fromBranch.find((p) => p.closed === null && !p.merged);
     if (!pull) {
       // Merged meanwhile, or a clean review, is nothing to fix; no pull
@@ -438,21 +438,21 @@ export class MemoryForge extends BaseForge {
   }
 }
 
-/** Docs in memory, on the kit's base: each ticket's spec page is a string it keeps. */
+/** Docs in memory, on the kit's base: each item's spec page is a string it keeps. */
 export class MemoryDocs extends BaseDocs {
-  /** Every published page, by ticket. */
+  /** Every published page, by item. */
   readonly pages = new Map<string, string>();
 
-  async page(ticket: string): Promise<string | null> {
-    return this.pages.get(ticket) ?? null;
+  async page(item: string): Promise<string | null> {
+    return this.pages.get(item) ?? null;
   }
 
-  async publish(ticket: string, content: string): Promise<void> {
-    this.pages.set(ticket, content);
+  async publish(item: string, content: string): Promise<void> {
+    this.pages.set(item, content);
   }
 
-  async link(ticket: string): Promise<string> {
-    return `memory://specs/${ticket}`;
+  async link(item: string): Promise<string> {
+    return `memory://specs/${item}`;
   }
 
   async published(): Promise<Set<string>> {
@@ -476,18 +476,18 @@ export class MemoryDocs extends BaseDocs {
  * `MemoryDocs`, the same kit bases every integration is built on, so every
  * effect name and every `satisfied()` is the kit's own rather than a copy.
  */
-export function createExternalState(seed: { tickets?: Array<Partial<ExternalTicket>> } = {}): ExternalState {
+export function createExternalState(seed: { items?: Array<Partial<ExternalItem>> } = {}): ExternalState {
   const tracker = new MemoryTracker(seed);
   const forge = new MemoryForge();
   const docs = new MemoryDocs();
 
   return {
     ...compose({ tracker, forge, docs }),
-    ticket: (id) => tracker.row(id),
+    item: (id) => tracker.row(id),
     children: (parent) => [...tracker.rows.values()].filter((r) => r.parent === parent),
-    openPull: (ticket, pr = {}) => {
-      tracker.row(ticket);
-      return forge.add(ticket, pr);
+    openPull: (item, pr = {}) => {
+      tracker.row(item);
+      return forge.add(item, pr);
     },
     pull: (id) => forge.pull(id),
     pushes: () => forge.pushes(),

@@ -10,19 +10,19 @@ export const helper = (n: number): number => n + 1;
 
 export const observe = definePreHook({
   id: "alpha",
-  provides: ["ticket.title"],
-  run: () => ({ ticket: { title: "from alpha" } }),
+  provides: ["item.title"],
+  run: () => ({ item: { title: "from alpha" } }),
 });
 
 const one = {
   nodes: [{
-    id: "1", kind: "ticket", title: "one", link: "u/1", closed: null, priority: null, origin: null,
+    id: "1", kind: "item", title: "one", link: "u/1", closed: null, priority: null, origin: null,
     state: { labels: ["lr:auto"], assignees: [] },
   }],
   relationships: [],
 };
 
-export const tickets = defineSource({
+export const items = defineSource({
   id: "alpha",
   relations: [],
   list: async () => one,

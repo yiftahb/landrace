@@ -86,7 +86,7 @@ program
 
 program
   .command("start")
-  .description("watch the tracker and advance every eligible ticket")
+  .description("watch the tracker and advance every eligible item")
   .option("-w, --workflow <dir>", "workflow directory", ".landrace")
   .option("--once", "run a single tick and exit")
   .option("--debug", "print every event, the agent's included, and the snapshot behind each decision")
@@ -115,7 +115,7 @@ program
 
 program
   .command("status")
-  .description("one line per candidate ticket, including why one was skipped")
+  .description("one line per candidate item, including why one was skipped")
   .option("-w, --workflow <dir>", "workflow directory", ".landrace")
   .action(async (opts: { workflow: string }) => {
     await loadingHooks("status", async () => {
@@ -127,7 +127,7 @@ program
   .command("mcp")
   .description("run the MCP server over stdio")
   .option("-w, --workflow <dir>", "workflow directory", ".landrace")
-  .option("--child <parent>", "serve only landrace_create_child, bound to this parent ticket")
+  .option("--child <parent>", "serve only landrace_create_child, bound to this parent item")
   .option("--stage <stage>", "with --child: the stage creating the children")
   .option("--round <round>", "with --child: the round creating the children")
   .action(async (opts: { workflow: string; child?: string; stage?: string; round?: string }) => {

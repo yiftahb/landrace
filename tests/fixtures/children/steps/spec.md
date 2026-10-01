@@ -15,7 +15,7 @@ output:
 
 Write the spec for #{node.id}: {node.title}.
 
-{ticket.body}
+{item.body}
 
 Cover the problem and the proposed solution: what is broken or missing, what
 you propose to do about it, and how someone will know it worked.

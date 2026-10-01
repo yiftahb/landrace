@@ -85,14 +85,14 @@ describe("landrace validate", () => {
  * Every one of these is a report rather than an exception — the whole job of
  * the command — and every one of them is a mistake that otherwise surfaces as
  * a repository where nothing happens: a filter substituted with nothing
- * claims no ticket, and `status` prints the workflow's own `else` beside every
+ * claims no item, and `status` prints the workflow's own `else` beside every
  * one of them, which reads exactly like the filter working.
  */
 describe("landrace validate, and the vars a workflow is substituted with", () => {
   const GRAPH = `version: 1
 name: t
 eligible:
-  - when: { "ticket.assignees": { $in: ["{vars.assignee}"] } }
+  - when: { "item.assignees": { $in: ["{vars.assignee}"] } }
     else: "assigned to somebody else"
 stages:
   - id: a
@@ -235,9 +235,9 @@ describe("landrace next", () => {
     const file = join(dir, "snap.json");
     // Assigned to this instance, because the fixture's eligibility rule is the
     // substituted one: a snapshot with no assignee is skipped, and a skipped
-    // ticket plans nothing at all.
+    // item plans nothing at all.
     await writeFile(file, JSON.stringify({
-      node: { id: "1", kind: "ticket", state: { labels: [], assignees: ["ann"] } },
+      node: { id: "1", kind: "item", state: { labels: [], assignees: ["ann"] } },
       entries: [],
       run: { stage: null, counters: {}, outputs: {} },
     }));
@@ -270,7 +270,7 @@ stages:
   - id: build
     entry: true
     step: steps/build.md
-    branch: "landrace/{ticket}"
+    branch: "landrace/{item}"
     triggers: [{ when: { "run.stage": null } }]
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "round {round}" }

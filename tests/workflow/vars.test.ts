@@ -7,7 +7,7 @@ import { substituteVars } from "#workflow/vars.js";
 const vars = (entries: Record<string, string>): Map<string, string> => new Map(Object.entries(entries));
 
 /**
- * A variable is configuration, not state: it is the same for every ticket, so
+ * A variable is configuration, not state: it is the same for every item, so
  * it is resolved once and substituted into the workflow at load, and the
  * validator then sees a literal exactly as if it had been typed.
  *
@@ -19,9 +19,9 @@ const vars = (entries: Record<string, string>): Map<string, string> => new Map(O
  */
 describe("substituting vars over a parsed tree", () => {
   it("fills a reference in a predicate operand", () => {
-    const tree = { eligible: [{ when: { "ticket.assignees": { $in: ["{vars.assignee}"] } }, else: "not yours" }] };
+    const tree = { eligible: [{ when: { "item.assignees": { $in: ["{vars.assignee}"] } }, else: "not yours" }] };
     const out = substituteVars(tree, vars({ assignee: "ann" }), "workflow.yaml");
-    expect(out.value).toEqual({ eligible: [{ when: { "ticket.assignees": { $in: ["ann"] } }, else: "not yours" }] });
+    expect(out.value).toEqual({ eligible: [{ when: { "item.assignees": { $in: ["ann"] } }, else: "not yours" }] });
     expect(out.used).toEqual(["assignee"]);
     expect(out.unresolved).toEqual([]);
   });
@@ -40,14 +40,14 @@ describe("substituting vars over a parsed tree", () => {
   /*
    * The engine's own templates share the syntax and must survive untouched:
    * `{round}` and `{stage}` are filled per entry by expandEffectFields, and
-   * `{ticket.title}` per invocation by renderPrompt. A substitution pass that
+   * `{item.title}` per invocation by renderPrompt. A substitution pass that
    * ate them would leave a marker with no round in it, which is how a looping
    * stage stops being able to tell it owes another pass.
    */
   it("leaves every template that is not a var exactly as it found it", () => {
-    const body = "Round {round} of {stage}, shape {shape}, for {ticket.title} — {vars.team}";
+    const body = "Round {round} of {stage}, shape {shape}, for {item.title} — {vars.team}";
     const out = substituteVars({ body }, vars({ team: "platform" }), "w");
-    expect(out.value).toEqual({ body: "Round {round} of {stage}, shape {shape}, for {ticket.title} — platform" });
+    expect(out.value).toEqual({ body: "Round {round} of {stage}, shape {shape}, for {item.title} — platform" });
     // And not merely left in place: a pass that *considered* `{round}` a var
     // reference would leave the text identical and report it as undefined,
     // which is the same workflow refused at load for no reason.
@@ -93,9 +93,9 @@ describe("substituting vars over a parsed tree", () => {
   /*
    * One pass, never a second over its own output. A value is data, not more
    * template — otherwise what an environment variable holds decides what the
-   * next substitution reads, and `{ticket.body}` planted in an env var would
+   * next substitution reads, and `{item.body}` planted in an env var would
    * be filled in by renderPrompt at invocation time with whoever opened the
-   * ticket's words.
+   * item's words.
    */
   it("does not expand what a value itself contains", () => {
     const out = substituteVars({ a: "{vars.x}" }, vars({ x: "{vars.y}", y: "z" }), "w");
@@ -128,7 +128,7 @@ describe("loadWorkflow substitutes vars into the graph and the steps", () => {
   const GRAPH = `version: 1
 name: t
 eligible:
-  - when: { "ticket.assignees": { $in: ["{vars.assignee}"] } }
+  - when: { "item.assignees": { $in: ["{vars.assignee}"] } }
     else: "assigned to somebody else"
 stages:
   - id: a
@@ -145,7 +145,7 @@ output:
     - when: { kind: spec }
       effect: { type: tracker.comment, marker: "spec:{round}", label: "{vars.team}" }
 ---
-Write the spec for {ticket.title}, for the {vars.team} team.
+Write the spec for {item.title}, for the {vars.team} team.
 `;
 
   it("fills a predicate operand, an effect field and a step prompt from one map", async () => {
@@ -154,11 +154,11 @@ Write the spec for {ticket.title}, for the {vars.team} team.
       vars({ assignee: "ann", team: "platform" }),
     );
 
-    expect(workflow.eligible?.[0]?.when).toEqual({ "ticket.assignees": { $in: ["ann"] } });
+    expect(workflow.eligible?.[0]?.when).toEqual({ "item.assignees": { $in: ["ann"] } });
     // And the engine's own per-entry templates are still there to be filled.
     expect(workflow.stages[0]?.on_enter?.[0]?.body).toBe("ann is on this, round {round}.");
     const step = steps.get("steps/spec.md");
-    expect(step?.prompt.trim()).toBe("Write the spec for {ticket.title}, for the platform team.");
+    expect(step?.prompt.trim()).toBe("Write the spec for {item.title}, for the platform team.");
     expect(step?.output?.routes[0]?.effect.label).toBe("platform");
   });
 
@@ -199,7 +199,7 @@ Write the spec for {ticket.title}, for the {vars.team} team.
     const graph = `version: 1
 name: t
 eligible:
-  - { when: { "ticket.labels": { $in: ["lr:auto"] } }, else: "{vars.note}" }
+  - { when: { "item.labels": { $in: ["lr:auto"] } }, else: "{vars.note}" }
 stages:
   - id: a
     entry: true
@@ -219,7 +219,7 @@ stages:
   /*
    * A var in the graph with nothing supplying it is the same unknown
    * reference, and it has to be reported as one rather than left in place:
-   * `$in: ["{vars.assignee}"]` is a filter that matches no ticket, and a
+   * `$in: ["{vars.assignee}"]` is a filter that matches no item, and a
    * silent pass here is a repository where nothing ever happens.
    */
   it("refuses a graph that references a var when none were supplied at all", async () => {

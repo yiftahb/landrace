@@ -2,7 +2,7 @@ import { deriveRel } from "#core/index.js";
 import type { Graph, Node } from "#namespace.js";
 
 const n = (id: string, over: Partial<Node> = {}): Node => ({
-  id, kind: "ticket", title: id, link: "", closed: null, priority: null, origin: null, state: {}, ...over,
+  id, kind: "item", title: id, link: "", closed: null, priority: null, origin: null, state: {}, ...over,
 });
 const pr = (id: string, state: Node["state"], closed: Node["closed"] = null): Node =>
   n(id, { kind: "pull-request", state, closed });
@@ -65,7 +65,7 @@ describe("deriveRel", () => {
     expect(r.ok && r.rel["child-of"]?.in.not["closed"]).toBe(0);
   });
 
-  it("counts related tickets by position", () => {
+  it("counts related items by position", () => {
     const g: Graph = {
       nodes: [n("1"), n("2", { state: { labels: ["lr:stage:build"] } }), n("3", { state: { labels: ["lr:stage:done"] } })],
       relationships: [{ from: "2", to: "1", type: "child-of" }, { from: "3", to: "1", type: "child-of" }],
@@ -74,7 +74,7 @@ describe("deriveRel", () => {
     expect(r.ok && r.rel["child-of"]?.in.stage).toEqual({ build: 1, done: 1 });
   });
 
-  it("halts when a related ticket carries two positions", () => {
+  it("halts when a related item carries two positions", () => {
     const g: Graph = {
       nodes: [n("1"), n("2", { state: { labels: ["lr:stage:build", "lr:stage:done"] } })],
       relationships: [{ from: "2", to: "1", type: "child-of" }],

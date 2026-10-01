@@ -21,7 +21,7 @@ describe("assess is per round, not once per lifetime", () => {
   /*
    * The whole point. Before this, a stage was complete forever once any
    * output for it existed, so §10's review cycle could route back into
-   * code-review and code-review would simply not run — the ticket ping-ponged
+   * code-review and code-review would simply not run — the item ping-ponged
    * between two "complete" stages until the pass cap.
    */
   it("is pending again once the stage is re-entered at a later round", () => {

@@ -4,15 +4,15 @@ import type { Effect, Graph, Node, Snapshot, Stage } from "#namespace.js";
 /**
  * Every node a re-run of `stage` must drop before it creates its own children.
  *
- * Stale: made by this ticket's own `stage` in a round below `below`. Then
+ * Stale: made by this item's own `stage` in a round below `below`. Then
  * everything that belongs to those — reached through *incoming* edges of the
  * followed types, because ownership points up (a child points at its parent,
- * a pull request at its ticket). Already-closed nodes are walked through but
- * never listed. Post-order, so a pull request is dropped before the ticket it
+ * a pull request at its item). Already-closed nodes are walked through but
+ * never listed. Post-order, so a pull request is dropped before the item it
  * implements and nothing reads done while something under it is still open.
  *
  * `parent` is never in the answer, even if a malformed graph cycles back to
- * it: the ticket being worked is not something its own cleanup may close.
+ * it: the item being worked is not something its own cleanup may close.
  */
 export function staleClosure(
   graph: Graph,

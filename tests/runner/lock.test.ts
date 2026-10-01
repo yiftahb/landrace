@@ -23,21 +23,21 @@ describe("lock", () => {
    * is not there, and `withGate` only ever expected EEXIST. A bare release
    * against a repository whose `$TMPDIR` scratch had never been made (a fresh
    * machine, or one the OS had swept) threw
-   * `ENOENT ... locks/<ticket>.lock.steal` out of the `finally` of whatever
+   * `ENOENT ... locks/<item>.lock.steal` out of the `finally` of whatever
    * was releasing.
    */
   it("releases against a root nothing has locked in yet, rather than throwing at the gate", async () => {
     await expect(release("42", opts())).resolves.toBeUndefined();
   });
 
-  it("frees the ticket on release", async () => {
+  it("frees the item on release", async () => {
     await acquire("2", "tick", opts());
     await release("2", opts());
     expect(await held("2", opts())).toBeNull();
     expect(await acquire("2", "conversation", opts())).toBe(true);
   });
 
-  it("locks each ticket independently", async () => {
+  it("locks each item independently", async () => {
     await acquire("3", "tick", opts());
     expect(await acquire("4", "tick", opts())).toBe(true);
   });
@@ -52,7 +52,7 @@ describe("lock", () => {
     // 2^22 is above the maximum pid on macOS and Linux, so it cannot be running.
     await writeFile(
       join(root, "locks", "6.lock"),
-      JSON.stringify({ ticket: "6", holder: "ghost", kind: "tick", pid: 4194304, at: Date.now(), deadlineMs: 60000 }),
+      JSON.stringify({ item: "6", holder: "ghost", kind: "tick", pid: 4194304, at: Date.now(), deadlineMs: 60000 }),
     );
     expect(await held("6", opts())).toBeNull();
     expect(await acquire("6", "tick", opts())).toBe(true);
@@ -120,7 +120,7 @@ describe("concurrent racers", () => {
     await writeFile(
       join(root, "locks", "51.lock"),
       JSON.stringify({
-        ticket: "51",
+        item: "51",
         holder: "stale-holder",
         kind: "tick",
         pid: process.pid,
@@ -139,7 +139,7 @@ describe("concurrent racers", () => {
     // 2^22 is above the maximum pid on macOS and Linux, so it cannot be running.
     await writeFile(
       join(root, "locks", "52.lock"),
-      JSON.stringify({ ticket: "52", holder: "ghost", kind: "tick", pid: 4194304, at: Date.now(), deadlineMs: 60_000 }),
+      JSON.stringify({ item: "52", holder: "ghost", kind: "tick", pid: 4194304, at: Date.now(), deadlineMs: 60_000 }),
     );
     const results = await Promise.all(
       Array.from({ length: 30 }, (_, i) => acquire("52", "tick", { ...opts(), holder: `r${i}` })),
@@ -152,7 +152,7 @@ describe("concurrent racers", () => {
     await writeFile(
       join(root, "locks", "53.lock"),
       JSON.stringify({
-        ticket: "53",
+        item: "53",
         holder: "stale-holder",
         kind: "tick",
         pid: process.pid,
@@ -179,8 +179,8 @@ describe("concurrent racers", () => {
  * A converge is not one step: the shipped workflow's build-and-review run
  * makes eight paid invocations in a single call at `budget.stepTimeout` each
  * (tests/runner/loop.test.ts), so any fixed "the work may take this long"
- * number is either shorter than an honest run — two converges on one ticket,
- * sharing the one per-ticket worktree that whichever finishes first deletes —
+ * number is either shorter than an honest run — two converges on one item,
+ * sharing the one per-item worktree that whichever finishes first deletes —
  * or so long that it stops being a recovery mechanism at all. The deadline
  * measures silence instead, and a holder that is working says so.
  */
@@ -221,14 +221,14 @@ describe("a lock held through work that outlasts its own deadline", () => {
     expect(await held("70", opts())).toBeNull();
   }, 30_000);
 
-  it("does hand the ticket on once the holder stops saying it is working", async () => {
+  it("does hand the item on once the holder stops saying it is working", async () => {
     // The purpose the deadline exists for, unchanged: a holder that goes
-    // quiet — crashed, or wedged past any use — must not keep a ticket.
+    // quiet — crashed, or wedged past any use — must not keep an item.
     await mkdir(join(root, "locks"), { recursive: true });
     await writeFile(
       join(root, "locks", "72.lock"),
       JSON.stringify({
-        ticket: "72", holder: "gone-quiet", kind: "tick", pid: process.pid,
+        item: "72", holder: "gone-quiet", kind: "tick", pid: process.pid,
         at: Date.now() - 10_000, deadlineMs: 1_000, token: "theirs",
       }),
     );
@@ -238,13 +238,13 @@ describe("a lock held through work that outlasts its own deadline", () => {
   it("does not delete a lock that has been taken from it", async () => {
     // release() unlinked whatever was at the path, so a holder that had
     // already lost its lock deleted the new holder's on the way out and the
-    // ticket ended up held by nobody, with two converges running.
+    // item ended up held by nobody, with two converges running.
     await withLock("71", "tick", async () => {
       await mkdir(join(root, "locks"), { recursive: true });
       await writeFile(
         join(root, "locks", "71.lock"),
         JSON.stringify({
-          ticket: "71", holder: "someone-else", kind: "tick", pid: process.pid,
+          item: "71", holder: "someone-else", kind: "tick", pid: process.pid,
           at: Date.now(), deadlineMs: 60_000, token: "not-ours",
         }),
       );
@@ -256,7 +256,7 @@ describe("a lock held through work that outlasts its own deadline", () => {
 
 /**
  * The lock is the only thing standing between two processes driving one
- * ticket, and §7 is explicit that it is cross-process: the loop and the MCP
+ * item, and §7 is explicit that it is cross-process: the loop and the MCP
  * server coordinate by finding the same file. Which file that is used to be
  * `basename(process.cwd())` — the name of whatever directory each was
  * launched from — so the mechanism held only by coincidence. These two tests
@@ -290,7 +290,7 @@ describe("the default lock root", () => {
     expect(await acquire("4101", "tick", { holder: "tick:root" })).toBe(true);
     try {
       // The same repository, entered from a subdirectory and through a
-      // symlink: the same ticket, so the same lock, so the MCP server finds
+      // symlink: the same item, so the same lock, so the MCP server finds
       // the loop holding it rather than taking it as well.
       process.chdir(join(path, "packages", "app"));
       expect((await held("4101"))?.holder).toBe("tick:root");
@@ -311,7 +311,7 @@ describe("the default lock root", () => {
     expect(await acquire("4102", "tick", { holder: "tick:mine" })).toBe(true);
     try {
       // A different repository whose directory happens to share a name. Its
-      // #4102 is a different ticket on a different tracker, and it was
+      // #4102 is a different item on a different tracker, and it was
       // refused a lock it had every right to.
       process.chdir(theirs);
       expect(await held("4102")).toBeNull();

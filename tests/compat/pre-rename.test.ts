@@ -1,4 +1,4 @@
-import { TICKET_KIND } from "#conventions.js";
+import { ITEM_KIND } from "#conventions.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import type { Source } from "#namespace.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
@@ -27,7 +27,7 @@ describe("an item written before the rename", () => {
     for (const body of COMMENTS) tracker.say(7, body);
     tracker.openPull({ head: BRANCH });
     const source = tracker.registry.source as Source;
-    return { tracker, source, snapshot: await buildSnapshot({ ticket: "7", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "7" } }) };
+    return { tracker, source, snapshot: await buildSnapshot({ item: "7", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "7" } }) };
   };
 
   it("keeps its stage, rounds and outputs", async () => {
@@ -46,6 +46,6 @@ describe("an item written before the rename", () => {
   it("is listed as the kind the engine works", async () => {
     const { source, tracker } = await read();
     const graph = await source.list(tracker.ctx);
-    expect(graph.nodes.find((n) => n.id === "7")?.kind).toBe(TICKET_KIND);
+    expect(graph.nodes.find((n) => n.id === "7")?.kind).toBe(ITEM_KIND);
   });
 });

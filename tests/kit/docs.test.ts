@@ -51,7 +51,7 @@ describe("publishSatisfied", () => {
 });
 
 describe("specNode", () => {
-  it("is the page as a document beside its ticket", () => {
+  it("is the page as a document beside its item", () => {
     expect(specNode("7", "https://pages.example/specs/7/")).toEqual({
       id: "spec-7", kind: "document", title: "Spec", link: "https://pages.example/specs/7/",
       closed: null, priority: null, origin: null, state: {},

@@ -16,7 +16,7 @@ const empty = (): RelAgg => ({
 const fieldsOf = (node: Node): Array<[string, unknown]> =>
   [...Object.entries(node.state), ["closed", node.closed === "done"]];
 
-/** Made by this ticket's step in a round its stage has since been entered past. */
+/** Made by this item's step in a round its stage has since been entered past. */
 const superseded = (node: Node, id: string, entered: { readonly [stage: string]: number }): boolean => {
   const { origin } = node;
   if (origin === null || origin.parent !== id) return false;
@@ -25,7 +25,7 @@ const superseded = (node: Node, id: string, entered: { readonly [stage: string]:
 };
 
 /**
- * What a ticket's relationships add up to, counted from the graph on every
+ * What an item's relationships add up to, counted from the graph on every
  * pass and never stored — the same rule `run.counters` follows.
  *
  * Counts, not quantifiers: `$every` over an empty list is true, so a parent
@@ -36,8 +36,8 @@ const superseded = (node: Node, id: string, entered: { readonly [stage: string]:
  * of view. Counting them is what would let a breakdown that produced nothing
  * read as "every child is closed".
  *
- * So are superseded ones: a node this ticket's own step created (its origin
- * names this ticket) in a round of a stage that has since been entered again,
+ * So are superseded ones: a node this item's own step created (its origin
+ * names this item) in a round of a stage that has since been entered again,
  * per `entered` — the run's `rounds[stage].entered`. Re-entering the stage
  * replaced that round's plan. An open one is dropped by the stage's
  * nodes.close anyway, but one that had already finished stays closed as done
@@ -47,7 +47,7 @@ const superseded = (node: Node, id: string, entered: { readonly [stage: string]:
  *
  * Every declared type is present with zero counts even when nothing relates,
  * because a predicate reading an absent path matches nothing — `sum.x: 0`
- * would never be true of a ticket that has no related nodes at all.
+ * would never be true of an item that has no related nodes at all.
  */
 export function deriveRel(
   graph: Graph,
@@ -112,10 +112,10 @@ export function deriveRel(
       }
     }
 
-    if (other.kind === "ticket") {
+    if (other.kind === "item") {
       const { stage, ambiguous, found } = stageFromLabels(labelsOf(other));
       if (ambiguous) {
-        return { ok: false, why: `related ticket "${other.id}" carries more than one position (${found.join(", ")}), so it cannot be counted by stage` };
+        return { ok: false, why: `related item "${other.id}" carries more than one position (${found.join(", ")}), so it cannot be counted by stage` };
       }
       if (stage !== null) agg.stage[stage] = (agg.stage[stage] ?? 0) + 1;
     }

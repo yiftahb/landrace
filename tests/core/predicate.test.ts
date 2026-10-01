@@ -7,9 +7,9 @@ describe("predicate", () => {
   });
 
   it("ANDs keys within one condition", () => {
-    const p = compile({ "run.stage": "spec", "ticket.open": true });
-    expect(p({ run: { stage: "spec" }, ticket: { open: true } } as never)).toBe(true);
-    expect(p({ run: { stage: "spec" }, ticket: { open: false } } as never)).toBe(false);
+    const p = compile({ "run.stage": "spec", "item.open": true });
+    expect(p({ run: { stage: "spec" }, item: { open: true } } as never)).toBe(true);
+    expect(p({ run: { stage: "spec" }, item: { open: false } } as never)).toBe(false);
   });
 
   it("supports the allowed operators", () => {

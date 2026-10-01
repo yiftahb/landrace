@@ -4,8 +4,8 @@ import type { LandraceEvent } from "#namespace.js";
 describe("createLogger", () => {
   it("emits an event with its name and data", () => {
     const seen: LandraceEvent[] = [];
-    createLogger({ sink: (e) => seen.push(e) })("tick.started", { tickets: 3 });
-    expect(seen).toEqual([{ name: "tick.started", tickets: 3 }]);
+    createLogger({ sink: (e) => seen.push(e) })("tick.started", { items: 3 });
+    expect(seen).toEqual([{ name: "tick.started", items: 3 }]);
   });
 
   it("redacts a secret value wherever it appears", () => {
@@ -47,7 +47,7 @@ describe("createLogger", () => {
   it("drops the debug-only events unless debug is on, and keeps everything else", () => {
     const quiet: LandraceEvent[] = [];
     const q2 = createLogger({ sink: (e) => quiet.push(e) });
-    q2("snapshot.built", { snapshot: { ticket: { number: 1 } } });
+    q2("snapshot.built", { snapshot: { item: { number: 1 } } });
     q2("tick.started", {});
     expect(quiet.map((e) => e.name)).toEqual(["tick.started"]);
 
@@ -60,8 +60,8 @@ describe("createLogger", () => {
     const quiet: LandraceEvent[] = [];
     const q = createLogger({ sink: (e) => quiet.push(e) });
     q("agent.event", { raw: "thinking" });
-    q("ticket.evaluated", { ticket: 1 });
-    expect(quiet.map((e) => e.name)).toEqual(["ticket.evaluated"]);
+    q("item.evaluated", { item: 1 });
+    expect(quiet.map((e) => e.name)).toEqual(["item.evaluated"]);
 
     const loud: LandraceEvent[] = [];
     const d = createLogger({ sink: (e) => loud.push(e), debug: true });
@@ -103,8 +103,8 @@ describe("a logger with an exporter", () => {
     const error = jest.spyOn(console, "error").mockImplementation(() => {});
     try {
       const log = createLogger({ sink: (e) => printed.push(e), exporter: () => { throw new Error("collector down"); } });
-      expect(() => log("step.finished", { ticket: "7" })).not.toThrow();
-      expect(printed).toEqual([{ name: "step.finished", ticket: "7" }]);
+      expect(() => log("step.finished", { item: "7" })).not.toThrow();
+      expect(printed).toEqual([{ name: "step.finished", item: "7" }]);
       expect(error).toHaveBeenCalledWith(expect.stringContaining("collector down"));
     } finally {
       error.mockRestore();

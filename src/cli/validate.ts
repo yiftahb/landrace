@@ -51,7 +51,7 @@ async function isEnvExposed(dir: string): Promise<boolean> {
  * Dormant until now — `runValidate` never passed `provided`, so the rule
  * compared nothing to nothing and reported everything valid. That is not a
  * hypothetical: the shipped workflow read `artifacts.pr.number` with no hook
- * behind it, `landrace validate` said "valid", and a real ticket waited at
+ * behind it, `landrace validate` said "valid", and a real item waited at
  * `build` forever.
  *
  * A hook module that will not import is itself §11.1's "every referenced hook

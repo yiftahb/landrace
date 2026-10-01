@@ -1,15 +1,15 @@
 version: 1
 name: two-branches
 
-# One ticket, two branches: the API and the UI are built, pushed and proposed
+# One item, two branches: the API and the UI are built, pushed and proposed
 # separately, each on the branch its own stage names. Nothing in the engine
-# says a ticket has one branch — `branch` is per stage, and `branch.push` and
+# says an item has one branch — `branch` is per stage, and `branch.push` and
 # `pull.open` each say which one they mean.
 stages:
   - id: api
     entry: true
     step: steps/api.md
-    branch: "api/{ticket}"
+    branch: "api/{item}"
     triggers:
       - name: fresh
         when: { "run.stage": null }
@@ -22,13 +22,13 @@ stages:
       - name: the API is built
         when: { "run.stage": api, "run.outputs.api.kind": done }
     on_enter:
-      - { type: branch.push, branch: "api/{ticket}" }
-      - { type: pull.open, branch: "api/{ticket}" }
+      - { type: branch.push, branch: "api/{item}" }
+      - { type: pull.open, branch: "api/{item}" }
       - { type: tracker.status, value: publish-api }
 
   - id: ui
     step: steps/ui.md
-    branch: "ui/{ticket}"
+    branch: "ui/{item}"
     triggers:
       - name: the API's pull request is open
         when: { "run.stage": publish-api, "rel.implements.in.total": { $gt: 0 } }
@@ -36,17 +36,17 @@ stages:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Building the UI, round {round}." }
       - { type: tracker.status, value: ui }
 
-  # A pull request from api/<ticket> is already on the ticket by now. If
-  # `pull.open` were satisfied by "the ticket has one", this one would be
-  # dropped as done and the ticket would wait here for a second that never
+  # A pull request from api/<item> is already on the item by now. If
+  # `pull.open` were satisfied by "the item has one", this one would be
+  # dropped as done and the item would wait here for a second that never
   # comes.
   - id: publish-ui
     triggers:
       - name: the UI is built
         when: { "run.stage": ui, "run.outputs.ui.kind": done }
     on_enter:
-      - { type: branch.push, branch: "ui/{ticket}" }
-      - { type: pull.open, branch: "ui/{ticket}" }
+      - { type: branch.push, branch: "ui/{item}" }
+      - { type: pull.open, branch: "ui/{item}" }
       - { type: tracker.status, value: publish-ui }
 
   - id: done

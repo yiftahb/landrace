@@ -26,7 +26,7 @@ export function createDispatcher(hooks: PostHook[]): Dispatcher {
     // But a handler that throws is attributed and rethrown, not swallowed as
     // false: treating a check failure as "not satisfied" would re-apply an
     // effect that may already have landed, silently duplicating it. Rethrowing
-    // aborts just this ticket's tick (tick() catches per ticket) and names the
+    // aborts just this item's tick (tick() catches per item) and names the
     // broken hook, mirroring apply()'s wording. `messageOf`, not
     // `(err as Error).message`: a hook is a plain interface, and nothing
     // stops one from throwing a non-Error — that raw access does not

@@ -3,10 +3,11 @@ import {
   ENTRY_KIND,
   GOTO_TRIGGER,
   isReservedId,
-  mayCreateTickets,
+  mayCreateItems,
   NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
   RECORD_EFFECT,
+  retiredCapabilityPointers,
   unknownCapabilities,
 } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
@@ -20,13 +21,13 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
 
   const entries = w.stages.filter((s) => s.entry);
   if (entries.length === 0) {
-    problems.push({ rule: "entry", message: "no stage has entry: true, so no ticket can start" });
+    problems.push({ rule: "entry", message: "no stage has entry: true, so no item can start" });
   }
   /*
-   * With several entry stages, a fresh ticket is placed by their triggers
-   * (decide.ts, pickEntry), so each needs one that says which fresh tickets
+   * With several entry stages, a fresh item is placed by their triggers
+   * (decide.ts, pickEntry), so each needs one that says which fresh items
    * it takes — and says *fresh*. decide() evaluates every other stage's
-   * triggers whenever a positioned ticket settles, so an entry trigger that
+   * triggers whenever a positioned item settles, so an entry trigger that
    * is not anchored on `"run.stage": null` also fires mid-workflow: a child
    * at code-review whose `rel.child-of.out.total` is 1 would be dragged back
    * to build on every pass. A sole entry stage is entered unconditionally and
@@ -53,7 +54,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
           problems.push({
             rule: "entry",
             message: `entry stage "${stage.id}" has no trigger anchored on "run.stage": null, ` +
-              "so with several entry stages it can never be chosen for a fresh ticket",
+              "so with several entry stages it can never be chosen for a fresh item",
           });
         }
         continue;
@@ -66,7 +67,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
           problems.push({
             rule: "entry",
             message: `entry stage "${stage.id}" has a trigger${t.name ? ` ("${t.name}")` : ""} not anchored on ` +
-              '"run.stage": null or on a stage, so it could also fire mid-workflow and drag a running ticket back',
+              '"run.stage": null or on a stage, so it could also fire mid-workflow and drag a running item back',
           });
         }
       }
@@ -125,7 +126,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   /*
    * A goto names a stage the way a trigger does, and is consumed by the
    * entry record its target writes on arrival. A target that writes none
-   * leaves the goto pending when the ticket lands, and a pending goto its
+   * leaves the goto pending when the item lands, and a pending goto its
    * new stage does not list halts it there — so that is refused here, with
    * an unknown target and one named twice.
    */
@@ -137,12 +138,12 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
       named.add(g.stage);
       const target = stageById.get(g.stage);
       if (!target) {
-        problems.push({ rule: "goto", message: `stage "${stage.id}" sends tickets to "${g.stage}", which is not in the workflow` });
+        problems.push({ rule: "goto", message: `stage "${stage.id}" sends items to "${g.stage}", which is not in the workflow` });
       } else if (!recordsItsEntry(target)) {
         problems.push({
           rule: "goto",
-          message: `stage "${stage.id}" sends tickets to "${g.stage}", which records no "${ENTRY_KIND}" naming {round}: ` +
-            "its entry record is what consumes a goto, so the ticket would arrive with the goto still pending",
+          message: `stage "${stage.id}" sends items to "${g.stage}", which records no "${ENTRY_KIND}" naming {round}: ` +
+            "its entry record is what consumes a goto, so the item would arrive with the goto still pending",
         });
       }
       if (g.when === null) continue;
@@ -156,7 +157,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
 
   // The name the engine logs a goto transition under. A trigger of the same
   // name would read, in the event stream and on the board, as a person
-  // sending the ticket back.
+  // sending the item back.
   for (const stage of w.stages) {
     for (const t of stage.triggers ?? []) {
       if (t.name === GOTO_TRIGGER) {
@@ -197,14 +198,15 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     // Reported here as well as refused at runtime, and this is the half that
     // matters: a capability nothing enforces is the operator reading the step
     // file, seeing the word, and believing they are covered. Meeting it at
-    // runtime means finding out on a ticket already in flight.
+    // runtime means finding out on an item already in flight.
     const unenforceable = unknownCapabilities(step?.capabilities);
     if (unenforceable.length) {
       problems.push({
         rule: "capability",
         message:
           `step ${stage.step} declares ${unenforceable.map((c) => `"${c}"`).join(", ")}, ` +
-          `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}`,
+          `which nothing enforces; this engine enforces ${CAPABILITIES.join(", ")}` +
+          retiredCapabilityPointers(unenforceable),
       });
     }
     for (const route of step?.output?.routes ?? []) {
@@ -216,8 +218,8 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
       if (route.goto !== undefined && !gotoTargetsOf(stage).some((g) => g.stage === route.goto)) {
         problems.push({
           rule: "goto",
-          message: `step ${stage.step}'s route for ${JSON.stringify(route.when)} sends tickets to "${route.goto}", ` +
-            `which stage "${stage.id}" does not list in goto, so every such answer would halt the ticket`,
+          message: `step ${stage.step}'s route for ${JSON.stringify(route.when)} sends items to "${route.goto}", ` +
+            `which stage "${stage.id}" does not list in goto, so every such answer would halt the item`,
         });
       }
     }
@@ -226,7 +228,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   // `goto` and `from` are the engine's to write on a record: a route's goto is
   // checked against its stage's list above, and an effect field of either
   // name would carry one past that check — or overwrite, on an entry record,
-  // the stage the ticket came from.
+  // the stage the item came from.
   for (const stage of w.stages) {
     const step = stage.step ? steps.get(stage.step) : undefined;
     const effects = [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).map((r) => r.effect)];
@@ -267,7 +269,7 @@ function anchorOf(when: Condition): string | null {
 
 /**
  * The run.stage value a condition can be read as, when it names one
- * reliably: a literal — a stage id, or null for "a ticket at no stage at
+ * reliably: a literal — a stage id, or null for "an item at no stage at
  * all" — at the top level, the same claim spelled as an operator
  * (`{ $eq: <literal> }`), or either form nested under $and at any depth. An
  * author writes `{ "run.stage": null, x: 0 }` and
@@ -302,16 +304,16 @@ function readableRunStage(when: Condition): string | null | undefined {
 }
 
 /**
- * True when a trigger can only fire on a ticket that is at no stage at all.
+ * True when a trigger can only fire on an item that is at no stage at all.
  *
- * `{ "run.stage": null }` is how every workflow says "a fresh ticket", and it
+ * `{ "run.stage": null }` is how every workflow says "a fresh item", and it
  * is an edge from nothing rather than an unreadable one: run.stage is the
- * position, so on a ticket that has one this can never hold — and a ticket
+ * position, so on an item that has one this can never hold — and an item
  * that has none never reaches a trigger, because decide() sends it to the
  * entry stage without evaluating any. Reading it as "unreadable" is what
  * switched all three rules below off on every workflow that exists.
  */
-function isFreshTicketOnly(when: Condition): boolean {
+function isFreshItemOnly(when: Condition): boolean {
   return readableRunStage(when) === null;
 }
 
@@ -321,8 +323,8 @@ function isFreshTicketOnly(when: Condition): boolean {
  *
  * This is the line "abstain rather than guess" draws for the entry rule: a
  * condition that never mentions run.stage at all cannot possibly anchor a
- * ticket to a position, so refusing it is not a guess. Everything that does
- * mention it but is not isFreshTicketOnly — $or, $in, $not, $ne, or a form
+ * item to a position, so refusing it is not a guess. Everything that does
+ * mention it but is not isFreshItemOnly — $or, $in, $not, $ne, or a form
  * this file has not been taught — is read here only far enough to know it
  * exists, never far enough to claim what it means, so the caller abstains
  * instead of reporting a possibly-wrong finding.
@@ -345,7 +347,7 @@ function mentionsRunStage(when: Condition): boolean {
  *
  * That is not a guess about the workflow, it is what decide() does — it
  * evaluates every *other* stage's triggers against the snapshot, so a trigger
- * saying nothing about position can fire wherever the ticket is. The shipped
+ * saying nothing about position can fire wherever the item is. The shipped
  * workflow's `blocked` is exactly this: `{ "run.lastOutputValid": false }`.
  *
  * A superset of the real edge set, which is what dead-end and reachability
@@ -360,7 +362,7 @@ function possibleEdges(w: Workflow): Array<[string, string]> {
       const from = anchorOf(t.when);
       if (from !== null) {
         out.push([from, stage.id]);
-      } else if (!isFreshTicketOnly(t.when)) {
+      } else if (!isFreshItemOnly(t.when)) {
         for (const candidate of ids) if (candidate !== stage.id) out.push([candidate, stage.id]);
       }
     }
@@ -512,7 +514,7 @@ function unboundedCycles(w: Workflow): string[][] {
  *
  * Both halves matter. Without any entry record, assess() reads the stage's
  * first round as its last one forever: the loop runs its body exactly once
- * and the ticket ping-pongs between stages that all read "complete" until the
+ * and the item ping-pongs between stages that all read "complete" until the
  * pass cap. With a record that is byte-identical every time round, the post
  * hook's satisfied() finds the first one already posted and reconcile drops
  * it — the same stall, with something in the file that looks like it should
@@ -614,12 +616,12 @@ function disjoint(a: Condition, b: Condition): boolean {
 function checkChildren(w: Workflow, steps: Map<string, Step>, relations: readonly string[] | null): Problem[] {
   const out: Problem[] = [];
   for (const stage of w.stages) {
-    const creates = mayCreateTickets(stage.step ? steps.get(stage.step)?.capabilities : undefined);
+    const creates = mayCreateItems(stage.step ? steps.get(stage.step)?.capabilities : undefined);
     const closes = (stage.on_enter ?? []).filter((e) => e.type === NODES_CLOSE_EFFECT);
     if (creates && !closes.length) {
       out.push({
         rule: "children",
-        message: `stage "${stage.id}"'s step declares tickets:create but its on_enter has no nodes.close, ` +
+        message: `stage "${stage.id}"'s step declares items:create but its on_enter has no nodes.close, ` +
           "so a re-run would leave the last round's children open beside the new ones",
       });
     }
@@ -631,7 +633,7 @@ function checkChildren(w: Workflow, steps: Map<string, Step>, relations: readonl
     if (creates && !recordsEntry) {
       out.push({
         rule: "children",
-        message: `stage "${stage.id}"'s step declares tickets:create but its on_enter writes no entry record ` +
+        message: `stage "${stage.id}"'s step declares items:create but its on_enter writes no entry record ` +
           `(a ${RECORD_EFFECT} with kind: ${ENTRY_KIND}), so its round never advances and a re-run's children ` +
           "never supersede the last round's",
       });
@@ -639,7 +641,7 @@ function checkChildren(w: Workflow, steps: Map<string, Step>, relations: readonl
     if (closes.length && !creates) {
       out.push({
         rule: "children",
-        message: `stage "${stage.id}" declares nodes.close but its step does not declare tickets:create, ` +
+        message: `stage "${stage.id}" declares nodes.close but its step does not declare items:create, ` +
           "so nothing it closes could ever exist",
       });
     }
@@ -682,7 +684,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
    * mentioned run.stage in a form the edge derivation could not read.
    *
    * `{ "run.stage": null }` was one of those forms, and it is the only way to
-   * say "a fresh ticket", so all three rules were off for every workflow that
+   * say "a fresh item", so all three rules were off for every workflow that
    * has an entry stage — which is every workflow. `landrace validate` on a
    * copy of the shipped workflow carrying an unbounded cycle, an unreachable
    * pair and a dead end reported none of them.
@@ -706,7 +708,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   }
 
   // Reachability from the entry stages, over the same superset dead-end
-  // reads. A stage any one of them reaches is reachable: a top-level ticket
+  // reads. A stage any one of them reaches is reachable: a top-level item
   // and a child start in different places and each walks its own part of the
   // graph. No entry stage at all is reported by validateStructure.
   const entries = w.stages.filter((s) => s.entry);
@@ -808,7 +810,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
        * that silently does nothing. A reserved id is not a field name but a
        * reachable key on a plain object, and runner/step.ts drops it at the
        * boundary: the value never arrives, the trigger reading it never
-       * matches, and the ticket waits with nothing to explain why.
+       * matches, and the item waits with nothing to explain why.
        */
       if (declared === null || typeof declared !== "object" || Array.isArray(declared)) continue;
       for (const field of Object.keys(declared)) {
@@ -824,9 +826,9 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   /*
    * §11.5's other half: every declared enum value has an outbound *edge*, not
    * just an outbound route. A route says where the content goes; an edge says
-   * where the ticket goes, and they are different questions — `triage`
+   * where the item goes, and they are different questions — `triage`
    * declared `question` and `unclear`, routed both to a comment, and nothing
-   * in the graph fired on either. A ticket that reached one sat at `triage`
+   * in the graph fired on either. An item that reached one sat at `triage`
    * wearing `lr:awaiting` for good, and the human's next reply did nothing,
    * because decide() excludes the current stage's own triggers.
    *
@@ -861,14 +863,14 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
         const demanded = t.when[path];
         return demanded === undefined || demanded === shape || typeof demanded === "object";
       });
-      // A route that names a goto is its own edge: the answer sends the ticket there.
+      // A route that names a goto is its own edge: the answer sends the item there.
       const sent = output.routes.some((r) => r.when[output.discriminator] === shape && r.goto !== undefined);
       if (claimed || sent) continue;
       problems.push({
         rule: "shape-edge",
         message:
           `stage "${stage.id}" can produce output shape "${shape}" and no trigger leads away from it, ` +
-          "so a ticket that produces one stops there for good",
+          "so an item that produces one stops there for good",
       });
     }
   }
@@ -908,11 +910,11 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
 
     /*
      * Eligibility rules too, and they are the quieter half. A trigger reading
-     * a path nothing provides leaves one ticket where it is; an `eligible`
-     * rule reading one skips *every* ticket in the repository, and `status`
+     * a path nothing provides leaves one item where it is; an `eligible`
+     * rule reading one skips *every* item in the repository, and `status`
      * prints the workflow's own `else` beside each, which reads exactly like
-     * the rule doing its job. `ticket.assignee` written beside a hook that
-     * provides `ticket.assignees` is how it arrives.
+     * the rule doing its job. `item.assignee` written beside a hook that
+     * provides `item.assignees` is how it arrives.
      */
     for (const rule of w.eligible ?? []) uncovered(rule.when, "eligibility rule");
   }

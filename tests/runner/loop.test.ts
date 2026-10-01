@@ -25,7 +25,7 @@ const OUTPUT: Record<string, Answer> = {
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
-  retro: 'Nothing here generalises.\n\n```json\n{"kind":"nothing","reason":"specific to this ticket"}\n```',
+  retro: 'Nothing here generalises.\n\n```json\n{"kind":"nothing","reason":"specific to this item"}\n```',
 };
 
 type World = ReturnType<typeof createFakeTracker>;
@@ -37,7 +37,7 @@ const world = (labels: string[]): World =>
  * The real GitHub hooks, as the loader classified them out of the hook module:
  * the source, whose graph carries every pull request the review half of §10
  * routes on, the tracker's two halves, and both halves of the spec artifact —
- * a ticket cannot leave `spec` without something publishing what the step
+ * an item cannot leave `spec` without something publishing what the step
  * wrote.
  */
 const hooksOf = (gh: World) => {
@@ -54,7 +54,7 @@ const queriesOf = (gh: World, operation: string) =>
   gh.graphql.filter((q) => q.query.includes(`query ${operation}(`)).length;
 
 /**
- * A person says something on the ticket. Under their own login, so it reads as
+ * A person says something on the item. Under their own login, so it reads as
  * a human entry rather than as one of ours, and dated after everything the
  * fake tracker has written so far (its clock starts at 2026-01-01 and moves a
  * second per comment), because `lastEvent.actor` is whoever spoke last.
@@ -66,7 +66,7 @@ const say = (gh: World, body: string): void => {
 };
 
 /**
- * What the world does around the ticket while the loop runs, on the in-memory
+ * What the world does around the item while the loop runs, on the in-memory
  * GitHub the real artifact hook reads.
  *
  * Nothing here is a stand-in for an engine part: opening the pull request and
@@ -206,7 +206,7 @@ describe("the §10 review cycle iterates", () => {
 describe("a crash between the entry record and the position it belongs to", () => {
   const secondReview = (e: Effect) => e.type === "tracker.status" && e.value === "code-review" && e.round === 2;
 
-  it("leaves the ticket where it was, with the entry record already written", async () => {
+  it("leaves the item where it was, with the entry record already written", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const first = await run(gh, { breakOn: secondReview });
 
@@ -240,9 +240,9 @@ describe("a crash between the entry record and the position it belongs to", () =
  * and buildSnapshot is the one caller that acts on the answer: two stage
  * labels ran a paid step at whichever one came first in the array, while
  * `landrace status` and the MCP `status` tool both reported the very same
- * ticket as unplaceable. Anyone with triage rights can add a label.
+ * item as unplaceable. Anyone with triage rights can add a label.
  */
-describe("a ticket with two stage labels", () => {
+describe("an item with two stage labels", () => {
   it("halts either way round, rather than letting array order pick a stage and pay for it", async () => {
     const forwards = await run(world(["lr:auto", "lr:stage:build", "lr:stage:done"]));
     const backwards = await run(world(["lr:auto", "lr:stage:done", "lr:stage:build"]));
@@ -258,17 +258,17 @@ describe("a ticket with two stage labels", () => {
 });
 
 /**
- * A ticket's whole position is one label, and the swap that writes it is two
+ * An item's whole position is one label, and the swap that writes it is two
  * requests with an await in between — so a crash, a 502 on the add, or a
- * person with triage rights can leave a ticket with none at all. "No position"
- * then read as "a new ticket", which is the one place the "a crash costs
+ * person with triage rights can leave an item with none at all. "No position"
+ * then read as "a new item", which is the one place the "a crash costs
  * nothing" guarantee did not hold: the crash is *inside* one effect's apply,
  * below the level reconcile can replan.
  */
-describe("a ticket that has lost its one stage label", () => {
+describe("an item that has lost its one stage label", () => {
   const stageless = (gh: World): void => {
     const issue = gh.issues.get(1);
-    if (!issue) throw new Error("no ticket #1");
+    if (!issue) throw new Error("no item #1");
     issue.labels = issue.labels.filter((l) => !l.startsWith("lr:stage:"));
   };
 
@@ -283,7 +283,7 @@ describe("a ticket that has lost its one stage label", () => {
 
     // Not `spec` again: that was a fresh paid spec step, the spec page
     // republished over the old one, and a whole build-and-review run left on
-    // the ticket unread.
+    // the item unread.
     expect(r.invocations).toEqual([]);
     expect(r.positions).toEqual([]);
     expect(r.result.settled).toBe("halt");
@@ -314,7 +314,7 @@ describe("a ticket that has lost its one stage label", () => {
  * The spec phase, driven from the entry stage by nothing but what the step
  * said. Every trigger out of `spec` and `triage` reads an output *shape*, so
  * until the marker carried the step's value this whole half of the shipped
- * workflow was unreachable and the tests above had to seed a ticket at
+ * workflow was unreachable and the tests above had to seed an item at
  * `lr:stage:build` to get past it. Seeding is the thing this must not do: a
  * test that starts after the broken part cannot notice it is broken.
  */
@@ -350,7 +350,7 @@ describe("the spec phase routes on what the step actually said", () => {
     expect(r.run.counters.spec).toBe(2);
     expect(r.labels).toContain("lr:stage:spec-human-review");
 
-    // The document is on the Pages branch, and the ticket carries only the
+    // The document is on the Pages branch, and the item carries only the
     // record that it was written — §8.2's destination, in place of the comment
     // it was rerouted to while no artifact hook existed.
     expect(r.published.get("specs/1/index.md")).toBe("# Export CSV\n\nOne file, comma separated.");
@@ -429,9 +429,9 @@ describe("the spec phase routes on what the step actually said", () => {
 
 /*
  * What is reachable without a human at all, and what this covers, is the
- * handback out of a halted ticket.
+ * handback out of a halted item.
  */
-describe("a halted ticket is handed back to a stage that records its entry", () => {
+describe("a halted item is handed back to a stage that records its entry", () => {
   it("re-enters spec, clears the blocked label and numbers the round", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const halted = await run(gh);
@@ -447,15 +447,15 @@ describe("a halted ticket is handed back to a stage that records its entry", () 
 });
 
 /**
- * The whole of §10, from a fresh ticket to `done`, over the in-memory GitHub.
+ * The whole of §10, from a fresh item to `done`, over the in-memory GitHub.
  *
  * Nothing is seeded and nothing is injected: the position comes from a label,
- * the rounds from records on the ticket, the spec from the Pages branch, and
+ * the rounds from records on the item, the spec from the Pages branch, and
  * every gate in the review half from the pull request artifact's own read. The
  * only things supplied from outside are a pull request appearing after the
  * build — see `run` for why it is not the publish stage's own — and a merge.
  */
-describe("a ticket goes all the way round §10", () => {
+describe("an item goes all the way round §10", () => {
   const answers: Record<string, Answer> = {
     spec: (round) => round === 1
       ? '```json\n{"kind":"questions","questions":["in-house or vendor?"]}\n```'
@@ -466,8 +466,8 @@ describe("a ticket goes all the way round §10", () => {
    * The position trail across several converge calls, without the repeat where
    * one call picks up where the last left off.
    *
-   * The final position comes out of the evaluation that *moved* the ticket
-   * there, not out of a later one: nothing evaluates the ticket again after
+   * The final position comes out of the evaluation that *moved* the item
+   * there, not out of a later one: nothing evaluates the item again after
    * the last transition, because `done` removes `lr:auto` and the next pass
    * finds it ineligible. So the event says where it went as well as where it
    * was, and a reader of the log never has to know how this tracker spells a
@@ -511,18 +511,18 @@ describe("a ticket goes all the way round §10", () => {
       { stage: "retro", round: 1 },
     ]);
     // Terminal: the engine's own labels are gone, so the next tick does not
-    // pick the ticket up again.
+    // pick the item up again.
     expect(done.labels).toEqual(["lr:stage:done"]);
     expect(done.result.settled).not.toBe("cap");
   });
 
   /*
    * The same walk through the children fixture, which puts a breakdown between
-   * triage and build and closes a finished ticket — the close is what a parent
+   * triage and build and closes a finished item — the close is what a parent
    * waiting on its children counts. The shipped workflow has neither, so this
    * is where the GitHub hook is shown to carry both.
    */
-  it("walks through a breakdown that chose one piece of work, and closes the ticket as finished", async () => {
+  it("walks through a breakdown that chose one piece of work, and closes the item as finished", async () => {
     const gh = world(["lr:auto"]);
     const dir = "tests/fixtures/children";
     const withBreakdown = { ...answers, breakdown: '```json\n{"kind":"single"}\n```' };
@@ -570,9 +570,9 @@ describe("a ticket goes all the way round §10", () => {
   /*
    * #31: a person's line comment at pr-human-review. The fixer answered it
    * but may not resolve it, so the reviewer's open-thread count sent the
-   * ticket back to fix-review until the review budget ran out, and a right
+   * item back to fix-review until the review budget ran out, and a right
    * fix ended `blocked`. Now the fixer's reply hands the thread to the
-   * person, and the ticket comes back to them; their reply on it is a fix
+   * person, and the item comes back to them; their reply on it is a fix
    * owed again.
    */
   it("fixes a person's line comment, answers it on the thread, and hands the pull request back to them", async () => {
@@ -604,14 +604,14 @@ describe("a ticket goes all the way round §10", () => {
 
   /*
    * What the graph costs. `read` runs on every converge pass, so this is the
-   * number that grows with the workflow: one read per pass — on a ticket with
+   * number that grows with the workflow: one read per pass — on an item with
    * no parent and no children, its issue, its sub-issues and its pull
    * requests, then one thread count per open pull request on it — and the
    * briefing's own reads only for an invocation of a step whose prompt
    * actually names it: not one per review thread, not one per round, and
    * nothing at all for the steps that have no use for the threads. Every
-   * invocation of a step that did not declare tickets:create re-reads the
-   * ticket once afterwards, to be sure it made no children — none of this
+   * invocation of a step that did not declare items:create re-reads the
+   * item once afterwards, to be sure it made no children — none of this
    * workflow's steps declares it.
    */
   it("costs one read per pass and one per invocation, plus a briefing per step that asks to see the threads or the diff", async () => {
@@ -623,17 +623,17 @@ describe("a ticket goes all the way round §10", () => {
     const briefed = r.invocations.filter((i) => i.stage === "fix-review" || i.stage === "code-review").length;
     expect(briefed).toBeGreaterThan(0);
     const reads = r.result.passes + r.invocations.length;
-    // Each read walks the ticket's subtree, which is the ticket alone.
+    // Each read walks the item's subtree, which is the item alone.
     expect(queriesOf(gh, "LandraceSubIssues")).toBe(reads);
     // A briefing's three keys — threads, diff, history — each find the
-    // ticket's pull requests the same way `read` does.
-    expect(queriesOf(gh, "LandraceTicket")).toBe(reads + 3 * briefed);
+    // item's pull requests the same way `read` does.
+    expect(queriesOf(gh, "LandraceItem")).toBe(reads + 3 * briefed);
     // One pull request, well under a page of threads: one count per read it
     // existed on, and per briefing one page for the open threads and one for
     // the history.
     expect(queriesOf(gh, "LandraceThreads")).toBeLessThanOrEqual(reads + 2 * briefed);
     expect(gh.graphql.length).toBe(
-      ["LandraceIssue", "LandraceSubIssues", "LandraceTicket", "LandraceThreads"].reduce((n, q) => n + queriesOf(gh, q), 0),
+      ["LandraceIssue", "LandraceSubIssues", "LandraceItem", "LandraceThreads"].reduce((n, q) => n + queriesOf(gh, q), 0),
     );
     // And nothing else: the build, the spec and the judge ask for no briefing.
     expect(briefed).toBeLessThan(r.invocations.length);

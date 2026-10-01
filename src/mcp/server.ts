@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ChildTool, Tools } from "#namespace.js";
-import { CHILD_TOOL, ticketIdProblem } from "#conventions.js";
+import { CHILD_TOOL, itemIdProblem } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 
 const text = (value: unknown) => ({
@@ -12,7 +12,7 @@ const text = (value: unknown) => ({
  * `extra` carries the request's own AbortSignal. The SDK aborts it when the
  * client cancels the call or the transport closes, so a tool that hands it on
  * — `landrace_ask` does — stops the agent and unwinds through the lock's
- * release, instead of leaving that ticket held for the rest of a turn nobody
+ * release, instead of leaving that item held for the rest of a turn nobody
  * is listening to any more.
  */
 const guard =
@@ -26,16 +26,16 @@ const guard =
   };
 
 /**
- * A ticket id as a client sends it. Numbers are still taken, because every
- * client written before ids were strings sends `{ ticket: 42 }`; both are
+ * An item id as a client sends it. Numbers are still taken, because every
+ * client written before ids were strings sends `{ item: 42 }`; both are
  * checked against the one id rule before any tool runs, so a hostile id never
  * reaches a lock file or a worktree path by way of the MCP plane.
  */
-const ticket = z
+const item = z
   .union([z.string(), z.number().int().positive()])
   .transform((v) => String(v))
   .superRefine((id, ctx) => {
-    const problem = ticketIdProblem(id);
+    const problem = itemIdProblem(id);
     // zod 3 (package.json pins ^3.24): ZodIssueCode.custom.
     if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
   });
@@ -45,21 +45,21 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
 
   server.tool(
     "landrace_waiting",
-    "List the tickets currently waiting on a human.",
+    "List the items currently waiting on a human.",
     {},
     guard(() => tools.waiting()),
   );
 
   server.tool(
     "landrace_status",
-    "Show a ticket's workflow position, which rounds have run, and whose turn it is.",
-    { ticket },
-    guard(({ ticket: n }) => tools.status(n)),
+    "Show an item's workflow position, which rounds have run, and whose turn it is.",
+    { item },
+    guard(({ item: n }) => tools.status(n)),
   );
 
   server.tool(
-    "landrace_create_ticket",
-    "Open a new ticket. By default it is labelled so the orchestrator picks it up on its " +
+    "landrace_create_item",
+    "Open a new item. By default it is labelled so the orchestrator picks it up on its " +
       "next tick and starts work — pass start: false to file it without starting anything.",
     {
       title: z.string().min(1),
@@ -67,69 +67,69 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
       labels: z.array(z.string()).optional(),
       start: z.boolean().optional(),
     },
-    guard((args) => tools.createTicket(args)),
+    guard((args) => tools.createItem(args)),
   );
 
   server.tool(
-    "landrace_update_ticket",
-    "Change a ticket: its title, body, open/closed state, or its labels. Adding the " +
+    "landrace_update_item",
+    "Change an item: its title, body, open/closed state, or its labels. Adding the " +
       "eligibility label starts the orchestrator on it; removing it stops further work.",
     {
-      ticket,
+      item,
       title: z.string().optional(),
       body: z.string().optional(),
       state: z.enum(["open", "closed"]).optional(),
       addLabels: z.array(z.string()).optional(),
       removeLabels: z.array(z.string()).optional(),
     },
-    guard(({ ticket: n, ...rest }) => tools.updateTicket(n, rest)),
+    guard(({ item: n, ...rest }) => tools.updateItem(n, rest)),
   );
 
   server.tool(
     "landrace_reply",
-    "Say something on a ticket as yourself — approve the work, or ask for changes. " +
+    "Say something on an item as yourself — approve the work, or ask for changes. " +
       "Posted as an ordinary comment, exactly as if you had typed it there.",
-    { ticket, message: z.string().min(1) },
-    guard(({ ticket: n, message }) => tools.reply(n, message)),
+    { item, message: z.string().min(1) },
+    guard(({ item: n, message }) => tools.reply(n, message)),
   );
 
   server.tool(
     "landrace_goto",
-    "Send a ticket back to an earlier step — spec or build, say — from a stage where it is your turn. " +
-      "The workflow says which steps each stage may send a ticket to, and how many rounds each may run; " +
+    "Send an item back to an earlier step — spec or build, say — from a stage where it is your turn. " +
+      "The workflow says which steps each stage may send an item to, and how many rounds each may run; " +
       "anything else is refused with the reason. The step re-runs on the next tick.",
-    { ticket, stage: z.string().min(1).max(64) },
-    guard(({ ticket: n, stage }) => tools.goto(n, stage)),
+    { item, stage: z.string().min(1).max(64) },
+    guard(({ item: n, stage }) => tools.goto(n, stage)),
   );
 
   server.tool(
     "landrace_clear",
-    "Overrule the security check on a ticket it stopped: the refused step — or the stage named, where the " +
-      "workflow lets the ticket go — runs its next round once without prompt screening, then every later round " +
-      "is screened as ever. Only after reading what was refused. Anything written on the ticket after the " +
-      "clearance voids it. Refused where no security check stopped the ticket.",
-    { ticket, stage: z.string().min(1).max(64).optional() },
-    guard(({ ticket: n, stage }) => tools.clear(n, stage)),
+    "Overrule the security check on an item it stopped: the refused step — or the stage named, where the " +
+      "workflow lets the item go — runs its next round once without prompt screening, then every later round " +
+      "is screened as ever. Only after reading what was refused. Anything written on the item after the " +
+      "clearance voids it. Refused where no security check stopped the item.",
+    { item, stage: z.string().min(1).max(64).optional() },
+    guard(({ item: n, stage }) => tools.clear(n, stage)),
   );
 
   server.tool(
     "landrace_ask",
     "Answer a step's open questions, or ask it something. Resumes the step's own session, so " +
-      "it still has its draft, and records both halves on the ticket. Returns its reply and " +
+      "it still has its draft, and records both halves on the item. Returns its reply and " +
       "whether it now says it has enough to proceed. One turn takes 5-70 seconds. The workflow " +
       "stays where it is until you call landrace_resolve.",
-    { ticket, message: z.string().min(1) },
-    guard(({ ticket: n, message }, extra) => tools.ask(n, message, { signal: extra.signal })),
+    { item, message: z.string().min(1) },
+    guard(({ item: n, message }, extra) => tools.ask(n, message, { signal: extra.signal })),
   );
 
   server.tool(
     "landrace_resolve",
-    "Hand the ticket back to the orchestrator: `why` (by default, that the questions are answered) " +
+    "Hand the item back to the orchestrator: `why` (by default, that the questions are answered) " +
       "is posted as your reply, with everything said here on the record, and the workflow's next " +
       "step reads it on the next tick. Use it once the conversation has answered the question — " +
       "or to move on even though the step still has questions.",
-    { ticket, why: z.string().optional() },
-    guard(({ ticket: n, why }) => tools.resolve(n, why)),
+    { item, why: z.string().optional() },
+    guard(({ item: n, why }) => tools.resolve(n, why)),
   );
 
   server.tool(
@@ -138,25 +138,25 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
       "on now and any pairing already open. With it, starts pairing on that step — its round is held for " +
       "you, the agent never runs it alone meanwhile — and returns the command to run; asked again for the " +
       "open pairing, returns the same command. End it with landrace_finish or landrace_release.",
-    { ticket, stage: z.string().min(1).max(64).optional() },
-    guard(({ ticket: n, stage }) => (stage === undefined ? tools.pairing(n) : tools.pair(n, stage))),
+    { item, stage: z.string().min(1).max(64).optional() },
+    guard(({ item: n, stage }) => (stage === undefined ? tools.pairing(n) : tools.pair(n, stage))),
   );
 
   server.tool(
     "landrace_finish",
     "Hand the pairing's work in: the session you paired in is asked for the step's answer, which is " +
-      "recorded as yours and moves the ticket on. `note` is passed to that closing turn. Anything left " +
+      "recorded as yours and moves the item on. `note` is passed to that closing turn. Anything left " +
       "uncommitted in the pairing's checkout is listed and discarded. One turn takes a minute or more.",
-    { ticket, note: z.string().optional() },
-    guard(({ ticket: n, note }) => tools.finish(n, note)),
+    { item, note: z.string().optional() },
+    guard(({ item: n, note }) => tools.finish(n, note)),
   );
 
   server.tool(
     "landrace_release",
     "Give a paired step back to the agent: the pairing ends, its checkout is removed, and the agent runs " +
       "the step alone on the next tick.",
-    { ticket },
-    guard(({ ticket: n }) => tools.release(n)),
+    { item },
+    guard(({ item: n }) => tools.release(n)),
   );
 
   return server;
@@ -166,7 +166,7 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
  * The server an agent is started with when its step may create children.
  *
  * One tool, and deliberately none of the operator ones: an agent that could
- * reach landrace_update_ticket could move its own ticket. The schema has no
+ * reach landrace_update_item could move its own item. The schema has no
  * parent, stage or round — those were fixed on this process's command line
  * before the agent existed, and zod drops any key the schema does not name.
  */
@@ -174,13 +174,13 @@ export function createChildMcpServer(tool: ChildTool, version = "0.0.0"): McpSer
   const server = new McpServer({ name: "landrace", version });
   server.tool(
     CHILD_TOOL,
-    "Create one sub-ticket of the ticket you are working on. Call once per sub-ticket. " +
+    "Create one sub-item of the item you are working on. Call once per sub-item. " +
       "Each is worked through the workflow on its own, starting at implementation.",
     {
       title: z.string().min(1),
       body: z.string().optional(),
       priority: z.number().int().min(0).max(9).optional()
-        .describe("0 (most urgent) to 9; leave it out when the sub-tickets are equally urgent"),
+        .describe("0 (most urgent) to 9; leave it out when the sub-items are equally urgent"),
     },
     guard(({ title, body, priority }) =>
       tool.createChild({ title, ...(body === undefined ? {} : { body }), ...(priority === undefined ? {} : { priority }) })),

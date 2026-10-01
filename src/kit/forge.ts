@@ -122,26 +122,26 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
 }
 
 /**
- * Derived from the ticket, never stored — the same rule the spec's path
+ * Derived from the item, never stored — the same rule the spec's path
  * follows. There is no PR id to remember and nothing to repair: the branch
- * names the ticket, and every pull request with that head is its work.
+ * names the item, and every pull request with that head is its work.
  */
-export const prBranch = (ticket: string): string => `landrace/${ticket}`;
+export const prBranch = (item: string): string => `landrace/${item}`;
 
-/** The ticket a head branch names, when it is one of ours. */
-export const ticketOfBranch = (head: string): string | null => /^landrace\/([1-9][0-9]*)$/.exec(head)?.[1] ?? null;
+/** The item a head branch names, when it is one of ours. */
+export const itemOfBranch = (head: string): string | null => /^landrace\/([1-9][0-9]*)$/.exec(head)?.[1] ?? null;
 
 /**
  * The one mapping from a pull request, as an integration reads its forge's,
  * to a pull request node. Merged is done; closed without merging is dropped.
  *
  * `branch` is the head branch, so `pull.open` can tell one branch's pull
- * request from another's: a ticket has as many as its workflow's stages name.
+ * request from another's: an item has as many as its workflow's stages name.
  * An integration leaves it undefined for a fork's, whose branch is in another
  * repository and could carry any name — ours included — and so stand in for
  * the one we would open.
  */
-export function pullNode(pull: Omit<PullRecord, "tickets">, threads?: ThreadCounts): Node {
+export function pullNode(pull: Omit<PullRecord, "items">, threads?: ThreadCounts): Node {
   return {
     id: `pr-${pull.number}`,
     kind: PULL_REQUEST_KIND,
@@ -225,19 +225,19 @@ export function newest<T>(
 }
 
 /**
- * The open review threads across every open pull request on the ticket —
+ * The open review threads across every open pull request on the item —
  * `open` is their numbers, `read` every thread on each — rendered for a
  * prompt under one `## PR #N` heading each: whose turn each is, and its last
  * reply when it has one. The ones awaiting a fix come first, so the cut falls
  * on threads already answered.
  */
 export function threadsBrief(open: number[], read: Map<number, ReviewThread[]>, bot: string): string {
-  if (open.length === 0) return "There is no pull request open on this ticket, so there is nothing to address.";
+  if (open.length === 0) return "There is no pull request open on this item, so there is nothing to address.";
 
   const unresolved = open.flatMap((pull) => (read.get(pull) ?? [])
     .filter((thread) => !thread.resolved)
     .map((thread) => ({ pull, thread, waiting: !answered(thread.last, bot) })));
-  if (unresolved.length === 0) return "No review thread on the ticket's pull requests is open. Nothing here needs addressing.";
+  if (unresolved.length === 0) return "No review thread on the item's pull requests is open. Nothing here needs addressing.";
   // Stable, so each group keeps the forge's order.
   unresolved.sort((a, b) => Number(b.waiting) - Number(a.waiting));
   const shown = unresolved.slice(0, BRIEF_THREADS);
@@ -270,12 +270,12 @@ export function threadsBrief(open: number[], read: Map<number, ReviewThread[]>, 
 }
 
 /**
- * What the ticket's open pull requests change, file by file, for a reviewer
+ * What the item's open pull requests change, file by file, for a reviewer
  * that has no shell to run `git diff` with. Files past the budget are listed
  * by name rather than dropped silently.
  */
 export function diffBrief(open: Array<{ number: number; files: ChangedFile[] }>): string {
-  if (open.length === 0) return "No pull request is open on this ticket, so there is no diff to review.";
+  if (open.length === 0) return "No pull request is open on this item, so there is no diff to review.";
   const parts: string[] = [];
   const unshown: string[] = [];
   let spent = 0;
@@ -301,7 +301,7 @@ export function diffBrief(open: Array<{ number: number; files: ChangedFile[] }>)
 const briefText = (body: string | null | undefined): string => cut((body ?? "").trim(), BRIEF_BODY_CHARS);
 
 /**
- * One ticket comment as the history shows it. Landrace's by the test
+ * One item comment as the history shows it. Landrace's by the test
  * `entriesFromComments` applies — our login *and* our marker — so a person's
  * reply the board posted as the bot reads as that person's turn, not as a
  * record. The body is cut here; the engine bounds the whole on the way in.
@@ -326,20 +326,20 @@ export function threadLine(thread: ReviewThread, bot: string): string {
 }
 
 /**
- * The ticket's whole history, for the retro: every entry each role rendered —
+ * The item's whole history, for the retro: every entry each role rendered —
  * the tracker's comments, the forge's review threads, resolved or not, merged
  * or not, because a correction that was argued and settled is exactly what a
  * retro learns from — as one timeline, oldest first, the newest kept.
  */
-export function historyBrief(items: HistoryItem[]): string {
-  if (items.length === 0) return "Nothing has been said on this ticket, and no review thread was raised on its pull requests.";
-  const at = (item: HistoryItem): number => {
-    const ms = Date.parse(item.at);
+export function historyBrief(entries: HistoryItem[]): string {
+  if (entries.length === 0) return "Nothing has been said on this item, and no review thread was raised on its pull requests.";
+  const at = (entry: HistoryItem): number => {
+    const ms = Date.parse(entry.at);
     return Number.isNaN(ms) ? 0 : ms;
   };
   // Stable, so entries at one moment keep the order their roles gave them.
-  const ordered = [...items].sort((a, b) => at(a) - at(b));
-  const { kept, left } = newest(ordered, BRIEF_HISTORY_ITEMS, "entries", (item) => item.text, 2 * BRIEF_HISTORY_HALF_CHARS);
+  const ordered = [...entries].sort((a, b) => at(a) - at(b));
+  const { kept, left } = newest(ordered, BRIEF_HISTORY_ITEMS, "entries", (entry) => entry.text, 2 * BRIEF_HISTORY_HALF_CHARS);
   return left + kept.map((k) => k.text).join("\n\n");
 }
 
@@ -355,23 +355,23 @@ export function pushSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   return head === undefined || headIn(remote, branch) === head;
 }
 
-/** What follows `landrace/` in a pull request's head, whether or not it is a ticket. */
+/** What follows `landrace/` in a pull request's head, whether or not it is an item. */
 const headOf = (pull: Pick<PullRecord, "branch">): string | undefined => {
   const ours = prBranch("");
   return pull.branch?.startsWith(ours) ? pull.branch.slice(ours.length) : undefined;
 };
 
 /**
- * Every ticket a pull request names: the ones its own text does (`Closes #n`)
- * and the one a `landrace/{ticket}` head is for, when that is one of the
- * `known` tickets. A branch named any other way — `api/{ticket}`, a fork's —
- * names nothing: anybody can call a branch after any ticket, and only our own
- * head convention is ours. Nor does a `landrace/` head that is no ticket's —
+ * Every item a pull request names: the ones its own text does (`Closes #n`)
+ * and the one a `landrace/{item}` head is for, when that is one of the
+ * `known` items. A branch named any other way — `api/{item}`, a fork's —
+ * names nothing: anybody can call a branch after any item, and only our own
+ * head convention is ours. Nor does a `landrace/` head that is no item's —
  * `landrace/7-api`, a workflow's second branch for #7 — which a tracker whose
- * ids may carry a "-" could not otherwise tell from a ticket called "7-api".
+ * ids may carry a "-" could not otherwise tell from an item called "7-api".
  */
-export function ticketsNamedBy(pull: Pick<PullRecord, "branch" | "tickets">, known: ReadonlySet<string>): Set<string> {
-  const named = new Set(pull.tickets);
+export function itemsNamedBy(pull: Pick<PullRecord, "branch" | "items">, known: ReadonlySet<string>): Set<string> {
+  const named = new Set(pull.items);
   const head = headOf(pull);
   if (head !== undefined && known.has(head)) named.add(head);
   return named;
@@ -391,10 +391,10 @@ const isOpen = (pull: PullRecord): boolean => !pull.merged && !pull.closed;
  *
  * An integration extends this and writes the abstract methods, answered in
  * the plain shapes of `src/namespace.ts`. What is here is everything else a
- * forge does: which ticket each pull request implements and the thread counts
+ * forge does: which item each pull request implements and the thread counts
  * the review loop gates on, the branch heads a push is judged by, the three
  * publishing effects and its half of `nodes.close`, the `threads` and `diff`
- * briefings, and the review threads' place in the ticket's history.
+ * briefings, and the review threads' place in the item's history.
  * `compose` makes the hooks out of it.
  *
  * To change one piece, subclass and override it: an effect by spreading
@@ -405,16 +405,16 @@ export abstract class BaseForge {
   abstract login(ctx: RuntimeContext): Promise<string>;
   /** Every open pull request, and any closed one the board should still show. */
   abstract pulls(ctx: RuntimeContext): Promise<PullRecord[]>;
-  /** Every pull request tied to a ticket — from its `landrace/{ticket}` head, or naming it — merged and closed ones too. */
-  abstract pullsNaming(ticket: string, ctx: RuntimeContext): Promise<PullRecord[]>;
+  /** Every pull request tied to an item — from its `landrace/{item}` head, or naming it — merged and closed ones too. */
+  abstract pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]>;
   /** Every review thread on a pull request, resolved or not, every page — or a refusal, never a short list. */
   abstract threads(pull: number, ctx: RuntimeContext): Promise<ReviewThread[]>;
   /** What a pull request changes, file by file. */
   abstract changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFile[]>;
   /** The body of every review posted on a pull request: its marker is what says a round is already there. */
   abstract reviews(pull: number, ctx: RuntimeContext): Promise<string[]>;
-  /** Propose `branch` for `ticket`, naming the ticket in the forge's own way. */
-  abstract openPull(pull: { ticket: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void>;
+  /** Propose `branch` for `item`, naming the item in the forge's own way. */
+  abstract openPull(pull: { item: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void>;
   /** Close a pull request without merging it. */
   abstract closePull(pull: number, ctx: RuntimeContext): Promise<void>;
   /**
@@ -437,7 +437,7 @@ export abstract class BaseForge {
   /** This checkout's branch heads, local and origin's, as `branchHeads` reads them. */
   abstract heads(ctx: RuntimeContext): Promise<BranchHeads>;
   /** Publish a branch to origin, with whatever credential the forge trusts it with — `pushBranch`, usually. */
-  abstract push(branch: string, ticket: string, ctx: HookContext): Promise<void>;
+  abstract push(branch: string, item: string, ctx: HookContext): Promise<void>;
 
   /** Run once at startup, before anything is paid for. */
   check?(ctx: RuntimeContext): Promise<void>;
@@ -462,16 +462,16 @@ export abstract class BaseForge {
   }
 
   /**
-   * The pull requests tied to the listed tickets. One naming two tickets, or
+   * The pull requests tied to the listed items. One naming two items, or
    * one the list does not carry, is left out: the first is an ambiguity `read`
-   * of either ticket halts on, and the second would be an edge that dangles.
+   * of either item halts on, and the second would be an edge that dangles.
    */
-  async list(tickets: ReadonlySet<string>, ctx: RuntimeContext): Promise<Graph> {
+  async list(items: ReadonlySet<string>, ctx: RuntimeContext): Promise<Graph> {
     const nodes: Node[] = [];
     const relationships: Relationship[] = [];
     for (const pull of await this.pulls(ctx)) {
-      const [only, ...more] = ticketsNamedBy(pull, tickets);
-      if (only === undefined || more.length > 0 || !tickets.has(only)) continue;
+      const [only, ...more] = itemsNamedBy(pull, items);
+      if (only === undefined || more.length > 0 || !items.has(only)) continue;
       const node = this.node(pull);
       nodes.push(node);
       relationships.push({ from: node.id, to: only, type: RELATIONS.implements });
@@ -480,39 +480,39 @@ export abstract class BaseForge {
   }
 
   /**
-   * Every pull request tied to any of these tickets, merged and closed ones
+   * Every pull request tied to any of these items, merged and closed ones
    * included — "every pull request is merged" is a count over all of them.
-   * One tied to two tickets halts: which it implements is not a guess. A
-   * `landrace/` head counts for a ticket in this read, and for one outside
-   * it when `isTicket` — the tracker — says it is one: #12's branch closing
+   * One tied to two items halts: which it implements is not a guess. A
+   * `landrace/` head counts for an item in this read, and for one outside
+   * it when `isItem` — the tracker — says it is one: #12's branch closing
    * #8 is tied to both, whichever is read.
    *
    * Only an open one's threads are counted. A thread left on a merged or
    * abandoned one is nothing a fix round can act on, and counting it would
-   * loop the ticket through review for ever — so a closed one is zero, not
+   * loop the item through review for ever — so a closed one is zero, not
    * absent, which keeps "no thread awaits a fix" readable once all are merged.
    */
-  async read(tickets: string[], ctx: RuntimeContext, isTicket: (id: string) => Promise<boolean>): Promise<Graph> {
+  async read(items: string[], ctx: RuntimeContext, isItem: (id: string) => Promise<boolean>): Promise<Graph> {
     const nodes = new Map<number, Node>();
     const relationships: Relationship[] = [];
-    const known = new Set(tickets);
-    for (const ticket of tickets) {
-      for (const pull of await this.pullsNaming(ticket, ctx)) {
-        const named = ticketsNamedBy(pull, known);
+    const known = new Set(items);
+    for (const item of items) {
+      for (const pull of await this.pullsNaming(item, ctx)) {
+        const named = itemsNamedBy(pull, known);
         const head = headOf(pull);
-        if (head !== undefined && !named.has(head) && (await isTicket(head))) named.add(head);
+        if (head !== undefined && !named.has(head) && (await isItem(head))) named.add(head);
         if (named.size > 1) {
           throw new Error(
-            `pull request #${pull.number} is tied to ${[...named].map((t) => `#${t}`).join(" and ")}; a pull request implements one ticket`,
+            `pull request #${pull.number} is tied to ${[...named].map((t) => `#${t}`).join(" and ")}; a pull request implements one item`,
           );
         }
-        if (nodes.has(pull.number) || !named.has(ticket)) continue;
+        if (nodes.has(pull.number) || !named.has(item)) continue;
         const threads = isOpen(pull)
           ? threadCounts(await this.threads(pull.number, ctx), await this.login(ctx))
           : { openThreads: 0, awaitingFix: 0 };
         const node = this.node(pull, threads);
         nodes.set(pull.number, node);
-        relationships.push({ from: node.id, to: ticket, type: RELATIONS.implements });
+        relationships.push({ from: node.id, to: item, type: RELATIONS.implements });
       }
     }
     return { nodes: [...nodes.values()], relationships };
@@ -522,7 +522,7 @@ export abstract class BaseForge {
     return {
       [BRANCH_PUSH_EFFECT]: {
         satisfied: pushSatisfied,
-        apply: (effect, ctx) => this.push(effectBranch(effect), ctx.ticket, ctx),
+        apply: (effect, ctx) => this.push(effectBranch(effect), ctx.item, ctx),
       },
       [PULL_OPEN_EFFECT]: {
         satisfied: (snapshot, effect) =>
@@ -531,16 +531,16 @@ export abstract class BaseForge {
           const branch = effectBranch(effect);
           // Asked of the checkout first: a branch that is nowhere has nothing
           // to propose, and a forge's own answer to it names neither the
-          // ticket nor why.
+          // item nor why.
           const { local, remote } = headsOf(ctx.snapshot);
           if (headIn(local, branch) === undefined && headIn(remote, branch) === undefined) {
             throw new Error(
-              `cannot open a pull request for #${ctx.ticket} from ${branch}: this checkout has no such branch, ` +
+              `cannot open a pull request for #${ctx.item} from ${branch}: this checkout has no such branch, ` +
               "so no step has committed anything to it",
             );
           }
-          const title = (ctx.snapshot.node as Node | undefined)?.title ?? `#${ctx.ticket}`;
-          await this.openPull({ ticket: ctx.ticket, branch, title }, ctx);
+          const title = (ctx.snapshot.node as Node | undefined)?.title ?? `#${ctx.item}`;
+          await this.openPull({ item: ctx.item, branch, title }, ctx);
         },
       },
       [PULL_REVIEW_EFFECT]: {
@@ -562,9 +562,9 @@ export abstract class BaseForge {
     };
   }
 
-  /** `threads`, what is left to address on the ticket's open pull requests, and `diff`, what they change. */
+  /** `threads`, what is left to address on the item's open pull requests, and `diff`, what they change. */
   briefs(): BriefTable {
-    const open = async (ctx: HookContext): Promise<PullRecord[]> => (await this.pullsNaming(ctx.ticket, ctx)).filter(isOpen);
+    const open = async (ctx: HookContext): Promise<PullRecord[]> => (await this.pullsNaming(ctx.item, ctx)).filter(isOpen);
     return {
       threads: async (ctx) => {
         const pulls = await open(ctx);
@@ -580,17 +580,17 @@ export abstract class BaseForge {
     };
   }
 
-  /** Every review thread on every pull request tied to the ticket, for the history's one timeline. */
+  /** Every review thread on every pull request tied to the item, for the history's one timeline. */
   async history(ctx: HookContext): Promise<HistoryItem[]> {
     const bot = await this.login(ctx);
-    const items: HistoryItem[] = [];
-    for (const pull of await this.pullsNaming(ctx.ticket, ctx)) {
+    const entries: HistoryItem[] = [];
+    for (const pull of await this.pullsNaming(ctx.item, ctx)) {
       const state = pull.merged ? "merged" : pull.closed ? "closed" : "open";
       for (const thread of await this.threads(pull.number, ctx)) {
-        items.push({ at: thread.at ?? "", text: `On PR #${pull.number} (${state}): ${threadLine(thread, bot)}` });
+        entries.push({ at: thread.at ?? "", text: `On PR #${pull.number} (${state}): ${threadLine(thread, bot)}` });
       }
     }
-    return items;
+    return entries;
   }
 
   /**
@@ -626,7 +626,7 @@ export abstract class BaseForge {
     if (!pr) {
       // Merged or closed while the review ran — or a clean review with no
       // pull request left to put it on — is nothing to fix, and halting would
-      // hold the ticket back from done. No pull request from the branch at
+      // hold the item back from done. No pull request from the branch at
       // all is a route naming the wrong branch, and that is said.
       if ((findings.length === 0 && resolved.length === 0 && replies.length === 0) || fromBranch.length > 0) {
         log("forge.review.nowhere", { branch, findings: findings.length, why: "no open pull request from the branch" });

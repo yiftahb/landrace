@@ -12,7 +12,7 @@ export const LABELS = {
   awaiting: "lr:awaiting",
   blocked: "lr:blocked",
   /**
-   * Beside `blocked`, never instead of it: a ticket a security check stopped
+   * Beside `blocked`, never instead of it: an item a security check stopped
    * is still stopped, and every reader that asks "is it blocked" must keep
    * saying yes. This one only says why, so a person knows what to look at.
    */
@@ -32,15 +32,15 @@ const STAGE_RE = /^lr:stage:(.+)$/;
 export const STAGE_LABEL_PREFIX = "lr:stage:";
 
 /**
- * Position is a label, so two of them means we cannot place the ticket.
+ * Position is a label, so two of them means we cannot place the item.
  *
  * `stage` is null when there are two, not `found[0]`. Returning the first was
  * the only first-match-wins in this codebase, and it was in the hot path of
  * the one thing the design says it never does: `landrace status` and the MCP
- * `status` tool both read `ambiguous` and reported the ticket as unplaceable,
+ * `status` tool both read `ambiguous` and reported the item as unplaceable,
  * while buildSnapshot — the one caller that *acts* — read `.stage`, dropped
  * the flag, and ran a paid step at whichever label happened to come first in
- * the array. The same ticket with its two labels the other way round ran a
+ * the array. The same item with its two labels the other way round ran a
  * different stage.
  *
  * `found` is returned so a halt can name which two, the way every other
@@ -66,7 +66,7 @@ export const RESERVED_IDS: readonly string[] = ["__proto__", "constructor", "pro
 export const isReservedId = (id: string): boolean => RESERVED_IDS.includes(id);
 
 /**
- * What a ticket id may look like, whatever tracker it came from.
+ * What an item id may look like, whatever tracker it came from.
  *
  * Opaque to the engine — "42" and "PROJ-7" are both fine — but not arbitrary:
  * an id becomes a lock file name, a worktree directory, a branch name and part
@@ -75,18 +75,18 @@ export const isReservedId = (id: string): boolean => RESERVED_IDS.includes(id);
  * lets every one of those use it as-is instead of each growing its own escaping
  * — and a path segment of `..` or `a/b` cannot be written at all.
  */
-const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-export function ticketIdProblem(id: unknown): string | null {
-  if (typeof id !== "string") return `a ticket id must be a string, got ${id === null ? "null" : typeof id}`;
-  if (isReservedId(id)) return `"${id}" is a reserved object key and cannot be a ticket id`;
-  if (!TICKET_ID.test(id)) {
-    return `"${id.slice(0, 80)}" is not a usable ticket id: 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit`;
+export function itemIdProblem(id: unknown): string | null {
+  if (typeof id !== "string") return `an item id must be a string, got ${id === null ? "null" : typeof id}`;
+  if (isReservedId(id)) return `"${id}" is a reserved object key and cannot be an item id`;
+  if (!ITEM_ID.test(id)) {
+    return `"${id.slice(0, 80)}" is not a usable item id: 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit`;
   }
   return null;
 }
 
-export const isTicketId = (id: unknown): id is string => ticketIdProblem(id) === null;
+export const isItemId = (id: unknown): id is string => itemIdProblem(id) === null;
 
 /**
  * How ids order wherever a person reads a list of them. Numeric-aware, so
@@ -104,12 +104,12 @@ export const compareIds = (a: string, b: string): number =>
  * workflow written against any tracker reads them, or the workflow silently
  * counts zero children.
  */
-export const TICKET_KIND = "ticket";
+export const ITEM_KIND = "item";
 export const PULL_REQUEST_KIND = "pull-request";
 /**
- * A page written about a ticket — a published spec, say — reported as a node
- * so the board can draw it. It points at its ticket with `documents`, and at
- * one ticket only.
+ * A page written about an item — a published spec, say — reported as a node
+ * so the board can draw it. It points at its item with `documents`, and at
+ * one item only.
  */
 export const DOCUMENT_KIND = "document";
 export const RELATIONS = { childOf: "child-of", implements: "implements", documents: "documents" } as const;
@@ -117,26 +117,26 @@ export const RELATIONS = { childOf: "child-of", implements: "implements", docume
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 
-/** A ticket node's labels — position, eligibility and whose turn it is. Empty, never absent. */
+/** An item node's labels — position, eligibility and whose turn it is. Empty, never absent. */
 export const labelsOf = (node: Node | undefined): string[] => strings(node?.state.labels);
 
-/** A ticket node's assignees, as logins. Empty, never absent: an absent path abstains, and abstaining means eligible. */
+/** An item node's assignees, as logins. Empty, never absent: an absent path abstains, and abstaining means eligible. */
 export const assigneesOf = (node: Node | undefined): string[] => strings(node?.state.assignees);
 
 /**
- * Whether a listed node is work: a ticket, and an open one. A closed ticket
+ * Whether a listed node is work: an item, and an open one. A closed item
  * is in a graph so a parent can count it, and it keeps whatever labels it had
  * — `lr:auto` included — so reading its labels alone would pay for steps on a
- * ticket somebody already finished.
+ * item somebody already finished.
  */
-export const isOpenTicket = (node: Node): boolean => node.kind === TICKET_KIND && node.closed === null;
+export const isOpenItem = (node: Node): boolean => node.kind === ITEM_KIND && node.closed === null;
 
 /**
  * The order the tick hands work out in. Lower priority first; unprioritised
  * after every number, so a hook that forgot to map priority does not jump its
  * whole tracker to the front; then the id, so the order is total. Ordering
  * work is not choosing a transition — nothing here decides what happens to a
- * ticket, only which one gets an agent first.
+ * item, only which one gets an agent first.
  */
 export const compareWork = (a: Node, b: Node): number => {
   if (a.priority !== b.priority) {
@@ -172,7 +172,7 @@ export const OUTPUT_KIND = "output";
  * MALFORMED_KIND: the step ran and broke its output contract — the agent's
  * answer was unreadable, undeclared, ambiguous or too large. REFUSED_KIND: the
  * step was stopped on security grounds — screened out before it ran, or caught
- * afterwards doing what it never declared (a write, a child ticket). Core
+ * afterwards doing what it never declared (a write, a child item). Core
  * treats both as the same hard fail, and counts both toward the round; it
  * tells them apart only so a workflow can route a refusal somewhere a person
  * reads it as one.
@@ -188,7 +188,7 @@ export const REFUSED_KIND = "refused";
 /**
  * The two records a pairing is derived from. A pair record opens one for a
  * stage and round — written before that stage's on_enter, so a crash leaves
- * the ticket held rather than running alone — and it is open until an output
+ * the item held rather than running alone — and it is open until an output
  * record for its stage at that round or later, or a release record.
  */
 export const PAIR_KIND = "pair";
@@ -207,7 +207,7 @@ const PAIR_NAMESPACE = "7a3c5a0e-2b1d-4f6e-9c8a-5d4b3e2f1a09";
 
 /**
  * The session a pairing runs under, derived rather than remembered: the same
- * repository, ticket, stage, round and pairing number always name the same
+ * repository, item, stage, round and pairing number always name the same
  * session, so a start retried after a crash hands out the command it already
  * handed out. A version 5 UUID, because that is the shape an agent's session
  * id takes; SHA-1 is injected, since this file is read by the pure core and
@@ -215,10 +215,10 @@ const PAIR_NAMESPACE = "7a3c5a0e-2b1d-4f6e-9c8a-5d4b3e2f1a09";
  */
 export function pairSessionId(
   sha1: (data: Uint8Array) => Uint8Array,
-  p: { repo: string; ticket: string; stage: string; round: number; n: number },
+  p: { repo: string; item: string; stage: string; round: number; n: number },
 ): string {
   const namespace = (PAIR_NAMESPACE.replaceAll("-", "").match(/../g) ?? []).map((h) => parseInt(h, 16));
-  const name = new TextEncoder().encode(`${p.repo}:${p.ticket}:${p.stage}:${p.round}:${p.n}`);
+  const name = new TextEncoder().encode(`${p.repo}:${p.item}:${p.stage}:${p.round}:${p.n}`);
   const bytes = sha1(Uint8Array.from([...namespace, ...name])).slice(0, 16);
   bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
   bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
@@ -292,7 +292,7 @@ export const CLEAR_KIND = "cleared";
 /**
  * The trigger name a goto transition is logged under. A workflow's own
  * trigger may not use it (`landrace validate`), so the board can tell from
- * an event alone that a ticket was sent back.
+ * an event alone that an item was sent back.
  */
 export const GOTO_TRIGGER = "goto";
 
@@ -335,7 +335,7 @@ export const CHILD_KIND = "child";
 export const NODES_CLOSE_EFFECT = "nodes.close";
 
 /**
- * Close this ticket as done. A finished child has to read closed, or its
+ * Close this item as done. A finished child has to read closed, or its
  * parent — which routes on `rel.child-of.in.not.closed` — waits for ever.
  */
 export const CLOSE_EFFECT = "tracker.close";
@@ -346,7 +346,7 @@ export const CLOSE_EFFECT = "tracker.close";
  * both, and a forge hook for somebody else's tracker has to spell them the
  * same way or a workflow does not carry over. Which branch is always the
  * effect's own `branch` field — the workflow says, never a convention — so a
- * ticket can have as many branches as its stages name.
+ * item can have as many branches as its stages name.
  */
 export const BRANCH_PUSH_EFFECT = "branch.push";
 export const PULL_OPEN_EFFECT = "pull.open";
@@ -372,7 +372,7 @@ export function effectBranch(effect: Effect): string {
   if (unfilled) {
     throw new Error(
       `a ${effect.type} effect names its branch "${effect.branch}", and nothing filled in ${unfilled[0]}; ` +
-      "an effect's branch is named from {ticket}, {stage} and {round} only",
+      "an effect's branch is named from {item}, {stage} and {round} only",
     );
   }
   const problem = branchNameProblem(effect.branch);
@@ -381,18 +381,18 @@ export function effectBranch(effect: Effect): string {
 }
 
 /**
- * The satisfied() every `pull.open` handler shares: this ticket already has a
+ * The satisfied() every `pull.open` handler shares: this item already has a
  * pull request from this branch, open or merged, in the graph the engine read.
  *
- * By branch, never "the ticket has one": a ticket has as many branches as its
+ * By branch, never "the item has one": an item has as many branches as its
  * stages name, and a pull request from one says nothing about another. An
  * abandoned one does not count — the work on the branch is not merged and no
  * longer proposed, so a new pull request is what "open one" still means.
  */
-export function hasPullFrom(graph: Graph | undefined, ticket: string | undefined, branch: string): boolean {
+export function hasPullFrom(graph: Graph | undefined, item: string | undefined, branch: string): boolean {
   if (!graph) throw new Error("a pull.open effect cannot be checked: the snapshot has no graph");
   const implementing = new Set(graph.relationships
-    .filter((r) => r.type === RELATIONS.implements && r.to === ticket)
+    .filter((r) => r.type === RELATIONS.implements && r.to === item)
     .map((r) => r.from));
   return graph.nodes.some((n) =>
     implementing.has(n.id) && n.kind === PULL_REQUEST_KIND && n.state.branch === branch && n.closed !== "dropped");
@@ -429,7 +429,7 @@ export function branchNameProblem(name: string): string | null {
 }
 
 /**
- * How big one ticket's neighbourhood may be. `read` returns the whole
+ * How big one item's neighbourhood may be. `read` returns the whole
  * descendant subtree, because a cascade close must see every node it closes,
  * and it runs on every converge pass. Past this, the honest answer is a halt
  * naming the size, from the engine and from a source that stops reading
@@ -450,15 +450,30 @@ export const MAX_SUBGRAPH_NODES = 200;
  * marker format rather than inside the one executor that happens to know a CLI
  * flag for it — a second executor has to answer for the same two words.
  *
- * `tickets:create` is enforced twice like the others: an executor offers the
+ * `items:create` is enforced twice like the others: an executor offers the
  * create_child tool only to a step that declares it, and runStep reads the
- * ticket's graph afterwards — a child stamped with this round's origin that a
+ * item's graph afterwards — a child stamped with this round's origin that a
  * step without the word somehow made is a refusal, not a record.
  */
-export const CAPABILITIES = ["repo:read", "repo:write", "tickets:create"] as const;
+export const CAPABILITIES = ["repo:read", "repo:write", "items:create"] as const;
+
+/** Capability names a step file may still carry from before the rename, and what each became. */
+export const RETIRED_CAPABILITIES: Readonly<Record<string, string>> = { "tickets:create": "items:create" };
 
 /**
- * The name the engine's own ticket server runs under when a `tickets:create`
+ * What a refusal of these declared names appends, one pointer per retired
+ * name: a step file written before the rename must say what to write instead,
+ * not just that the word is unknown. Own keys only, so a declared
+ * "constructor" points nowhere.
+ */
+export const retiredCapabilityPointers = (declared: readonly string[]): string =>
+  declared
+    .filter((c) => Object.hasOwn(RETIRED_CAPABILITIES, c))
+    .map((c) => `; "${c}" is now "${RETIRED_CAPABILITIES[c] ?? ""}"`)
+    .join("");
+
+/**
+ * The name the engine's own item server runs under when an `items:create`
  * step is handed it, and the one tool it offers. Vocabulary rather than an
  * executor's knowledge: the engine names both in the server it hands over, so
  * an executor builds `mcp__<name>__<tool>` without knowing either.
@@ -479,8 +494,8 @@ export const mayWriteRepo = (declared: readonly string[] | undefined): boolean =
   (declared ?? []).includes("repo:write");
 
 /** Whether a step may create children. Absent and empty both mean no. */
-export const mayCreateTickets = (declared: readonly string[] | undefined): boolean =>
-  (declared ?? []).includes("tickets:create");
+export const mayCreateItems = (declared: readonly string[] | undefined): boolean =>
+  (declared ?? []).includes("items:create");
 
 /*
  * Caps on what a marker may carry, and on how much of a comment is even
@@ -578,7 +593,7 @@ export const renderMarker = (m: Marker): string => {
  * Built here rather than in each hook because the fields are the engine's:
  * which of them a hook copied was, until now, each hook's own choice, and the
  * in-memory tracker had quietly stopped copying the session. `goto` and
- * `from` are routed on — a hook that dropped either would send tickets
+ * `from` are routed on — a hook that dropped either would send items
  * nowhere, or send a judge's answers to no stage at all.
  */
 export function recordMarker(effect: Effect): Marker {
@@ -684,12 +699,12 @@ export function sameLogin(a: string, b: string): boolean {
 }
 
 /**
- * Who created this ticket, when it was a step — or null.
+ * Who created this item, when it was a step — or null.
  *
  * Authorship first, exactly as entriesFromComments: an origin is control
  * state, because a breakdown re-run closes whatever claims it. A person who
  * could write one into an issue body could have their issue — and everything
- * hanging off it — cascaded closed by somebody else's ticket.
+ * hanging off it — cascaded closed by somebody else's item.
  */
 export function parseOrigin(body: string, author: string | undefined, botLogin: string): Origin | null {
   if (!botLogin.trim()) {
@@ -699,7 +714,7 @@ export function parseOrigin(body: string, author: string | undefined, botLogin: 
   const m = parseMarker(body);
   if (!m || m.kind !== CHILD_KIND) return null;
   const { parent, round, stage } = m as { parent?: unknown; round: number; stage: string };
-  if (!isTicketId(parent) || !Number.isInteger(round) || round < 1) return null;
+  if (!isItemId(parent) || !Number.isInteger(round) || round < 1) return null;
   return { parent, stage, round };
 }
 
@@ -820,7 +835,7 @@ export function fitRecordBody(body: string): string {
  * "output" for every shape a step could produce, so every trigger in the
  * shipped workflow that routed on an output field was dead. A record written
  * before markers carried values has no value at all: undefined, not the
- * envelope — answering "output" again for exactly the tickets already in
+ * envelope — answering "output" again for exactly the items already in
  * flight is the bug, not the compatible thing to do.
  */
 const payloadOf = (m: Marker): unknown => (m.kind === OUTPUT_KIND ? m.output : m);
@@ -866,7 +881,7 @@ const byOf = (m: Marker): { by?: string } =>
  * A marker is control state, and it is trustworthy only because *we* wrote it.
  * An earlier version stamped `byAgent` on any comment whose trailing marker
  * parsed, so one comment from any account with comment access could complete a
- * stage, block a ticket, or run a counter up until the triggers went ambiguous.
+ * stage, block an item, or run a counter up until the triggers went ambiguous.
  * The trailing-marker rule does not help there: it stops a *quoted* example
  * being mistaken for a real one, not someone who deliberately puts one last.
  * Authorship is the check; syntax is not.

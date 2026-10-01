@@ -33,13 +33,13 @@ budget:
 # 1. `tracker.status` names the stage's own id, because on GitHub the status
 #    *is* the position: the hook writes it as `lr:stage:<value>` and the engine
 #    reads run.stage back out of that label. A display name there ("Building")
-#    derives a position no stage's identity matches, and the ticket cannot be
+#    derives a position no stage's identity matches, and the item cannot be
 #    placed at all.
 #
 # 2. The `enter` record comes first, before the status that moves the position.
 #    It is what tells the engine the stage owes another round — a crash between
-#    the two effects must leave the ticket at the *previous* stage. Written
-#    after the status instead, a crash would land the ticket on a stage that
+#    the two effects must leave the item at the *previous* stage. Written
+#    after the status instead, a crash would land the item on a stage that
 #    still reads as complete from its last round, and that round would be
 #    silently skipped. From the previous stage, a trigger that reads only what
 #    the crash left unchanged fires again and replans the identical entry
@@ -56,26 +56,26 @@ budget:
 # failure matched both a halt and the way on: a refused review round also
 # read "no thread awaits a fix", a failed fix round also read "the fixer
 # finished a round", a failed second spec also read the first one's
-# `kind: questions` — two triggers, an ambiguity halt, and the ticket left
+# `kind: questions` — two triggers, an ambiguity halt, and the item left
 # wearing lr:working at a stage nothing would ever run again.
 #
 # And one for a person's turn. Wherever it is theirs, a reply goes to
 # `triage`, which reads it into one closed set of answers; `triage` sends the
-# ticket on, or back to where the reply was made when the answer changes
+# item on, or back to where the reply was made when the answer changes
 # nothing there — `run.previousStage`, which the engine reads off triage's
 # own entry record. The same stages list, under `goto`, the steps a person may
-# send the ticket back to: by a `goto-*` answer, the page's Retry and "Go to
+# send the item back to: by a `goto-*` answer, the page's Retry and "Go to
 # step…", or `landrace_goto`. A goto outranks every trigger; each target's
 # round cap rides on its entry in the list, where the engine checks it before
 # it goes, and a goto past its cap is declined and the reply comes home.
-# Pull requests are graph nodes: rel.implements.in.* counts every PR tied to the ticket — "all merged" is total > 0 and not.merged: 0, never a single PR's flag.
+# Pull requests are graph nodes: rel.implements.in.* counts every PR tied to the item — "all merged" is total > 0 and not.merged: 0, never a single PR's flag.
 stages:
   # ── spec phase ───────────────────────────────────────────────────────────
   - id: spec
     step: steps/spec.md
     entry: true
     triggers:
-      - name: fresh ticket
+      - name: fresh item
         when: { "run.stage": null }
       # run.outputs.* and run.lastEvent.*, never the bare spellings: outputs and
       # lastEvent live inside `run`, and a path that reads nothing matches
@@ -104,7 +104,7 @@ stages:
 
   # Where the conversation rests while it is the person's turn — here and at
   # every stage below that lists `goto`. The list is written once, here, and
-  # the rest repeat it by reference: which steps a person may send the ticket
+  # the rest repeat it by reference: which steps a person may send the item
   # back to, and how many rounds each may run in all, a goto-driven one
   # counting like any other. The two halts list more, and say why.
   - id: spec-questions
@@ -114,7 +114,7 @@ stages:
     triggers:
       - name: the agent has blocking questions
         when: { "run.stage": spec, "run.lastOutputValid": null, "run.outputs.spec.kind": questions }
-      # Every answer that does not send the ticket on comes back here: a
+      # Every answer that does not send the item on comes back here: a
       # question, an unclear reply, an approval (there is nothing here to
       # approve), and a goto its cap declined.
       - name: your reply changed nothing here
@@ -214,26 +214,26 @@ stages:
 
   # ── build phase ──────────────────────────────────────────────────────────
   #
-  # One branch per ticket, and it is this file that says so: a stage's
+  # One branch per item, and it is this file that says so: a stage's
   # `branch` is where its step's worktree is checked out — the branch itself
   # for a step that may write, a detached look at its commit for one that may
   # not — and what a step commits there is what outlives the worktree. The
-  # engine names no branch of its own; a workflow wanting two per ticket names
+  # engine names no branch of its own; a workflow wanting two per item names
   # two.
   #
   # Reached from an approved spec, from a spec amended with a change asked for
-  # at pr-human-review, and otherwise only by a person sending the ticket back
+  # at pr-human-review, and otherwise only by a person sending the item back
   # — a `goto-build` answer, Retry, or "Go to step…".
   #
   # And from itself. publish pushes before it moves the position, so a push
-  # that fails — nothing was committed — leaves the ticket here, its round
+  # that fails — nothing was committed — leaves the item here, its round
   # settled and publish retrying the push on every tick. "Go to step… build"
   # runs another round instead, within build's three. publish itself lists
-  # nothing: a ticket reaches it only once the push and the pull request
+  # nothing: an item reaches it only once the push and the pull request
   # have both landed, and code-review takes it from there.
   - id: build
     step: steps/build.md
-    branch: "landrace/{ticket}"
+    branch: "landrace/{item}"
     goto: [{ stage: build, when: { "run.counters.build": { $lt: 3 } } }]
     triggers:
       - name: you approved the spec
@@ -268,7 +268,7 @@ stages:
   # orchestrator's, so there is no step. `branch.push` stays as the safety
   # net: satisfied when the agent pushed, and pushing what it committed and
   # left unpushed. The push and the pull request come before the status that
-  # moves the position: a crash between them leaves the ticket at build,
+  # moves the position: a crash between them leaves the item at build,
   # whose trigger fires again and replans both — each dropped as satisfied
   # if it had already landed.
   - id: publish
@@ -276,14 +276,14 @@ stages:
       - name: the build is done
         when: { "run.stage": build, "run.lastOutputValid": null, "run.outputs.build.kind": done }
     on_enter:
-      - { type: branch.push, branch: "landrace/{ticket}" }
-      - { type: pull.open, branch: "landrace/{ticket}" }
+      - { type: branch.push, branch: "landrace/{item}" }
+      - { type: pull.open, branch: "landrace/{item}" }
       - { type: tracker.status, value: publish }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 
   - id: code-review
     step: steps/code-review.md
-    branch: "landrace/{ticket}"
+    branch: "landrace/{item}"
     requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
       - name: the pull request is open
@@ -300,7 +300,7 @@ stages:
       # Pushed first: a fix round's commits have to be on the pull request
       # before the reviewer reads it. The fixer pushes its own; this pushes
       # any it left unpushed, and otherwise reconciles away as satisfied.
-      - { type: branch.push, branch: "landrace/{ticket}" }
+      - { type: branch.push, branch: "landrace/{item}" }
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
       - { type: tracker.status, value: code-review }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
@@ -312,7 +312,7 @@ stages:
   # fixer answered never loops; the person resolves it, or replies.
   - id: fix-review
     step: steps/fix-review.md
-    branch: "landrace/{ticket}"
+    branch: "landrace/{item}"
     triggers:
       - name: the reviewer left threads awaiting a fix
         when:
@@ -342,10 +342,10 @@ stages:
       - { type: tracker.status, value: fix-review }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
-  # A correction fixes only the ticket it was made on. Once the review settles
-  # on a ticket that was corrected anywhere — a spec revised, a build redone,
+  # A correction fixes only the item it was made on. Once the review settles
+  # on an item that was corrected anywhere — a spec revised, a build redone,
   # a finding fixed — the retro reads the whole history and commits what a
-  # later ticket should not have to learn again, to the prompts, instructions
+  # later item should not have to learn again, to the prompts, instructions
   # and skills alone, on this branch. A person reviews that commit beside the
   # feature; a lesson they reject is a thread, and fix-review reverts it.
   #
@@ -356,7 +356,7 @@ stages:
   # will merge again.
   - id: retro
     step: steps/retro.md
-    branch: "landrace/{ticket}"
+    branch: "landrace/{item}"
     requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
       - name: the review settled after corrections
@@ -371,7 +371,7 @@ stages:
             - { "run.counters.build": { $gt: 1 } }
             - { "run.counters.fix-review": { $gt: 0 } }
     on_enter:
-      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Learning from this ticket's corrections, round {round}." }
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Learning from this item's corrections, round {round}." }
       - { type: tracker.status, value: retro }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
@@ -395,7 +395,7 @@ stages:
       - name: the retro is done
         when: { "run.stage": retro, "run.lastOutputValid": null }
       # Nothing a reply says approves or merges a pull request — that is done
-      # on the pull request — so every answer that does not send the ticket
+      # on the pull request — so every answer that does not send the item
       # back comes home. A changed requirement is `revise`, which amends the
       # spec; work that changes none is `rework`, which the fixer takes.
       - name: your reply changed nothing here
@@ -407,7 +407,7 @@ stages:
     on_enter:
       # The retro pushes its own commit; this pushes one it left unpushed, and
       # otherwise reconciles away as satisfied.
-      - { type: branch.push, branch: "landrace/{ticket}" }
+      - { type: branch.push, branch: "landrace/{item}" }
       - { type: tracker.status, value: pr-human-review }
       - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
 
@@ -425,7 +425,7 @@ stages:
       - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
 
   # The halts list every step, where the stages waiting on a person list two.
-  # Retry is a goto to the step whose failure put the ticket here, and any
+  # Retry is a goto to the step whose failure put the item here, and any
   # step can fail. A review or a fix that broke its contract or was refused
   # would otherwise be retried only by a rewritten spec or a rebuild, neither
   # of which is what failed. A judge that failed is read again by any new
@@ -490,7 +490,7 @@ stages:
       # `screened` below split every failure between them, one each.
       - name: a step broke its output contract
         when: { "run.lastOutputValid": false, "run.lastRefused": false }
-      # A halt is left by sending the ticket back to a step — a `goto-*`
+      # A halt is left by sending the item back to a step — a `goto-*`
       # answer, Retry, or "Go to step…" — and by nothing else, so every
       # other answer comes home.
       - name: your reply changed nothing here
@@ -501,7 +501,7 @@ stages:
 
   # A step a security check stopped: screened out before it ran, or caught
   # afterwards doing what its step never declared. Still a halt, and still
-  # `lr:blocked` — everything that asks whether a ticket is stopped must keep
+  # `lr:blocked` — everything that asks whether an item is stopped must keep
   # hearing yes — with `lr:screened` beside it to say it was not the agent's
   # answer that failed but the prompt, or what the agent did.
   - id: screened
@@ -509,7 +509,7 @@ stages:
     triggers:
       - name: a security check refused a step
         when: { "run.lastOutputValid": false, "run.lastRefused": true }
-      # A halt is left by sending the ticket back to a step — a `goto-*`
+      # A halt is left by sending the item back to a step — a `goto-*`
       # answer, Retry, or "Go to step…" — and by nothing else, so every
       # other answer comes home.
       - name: your reply changed nothing here

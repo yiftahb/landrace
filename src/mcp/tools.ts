@@ -7,7 +7,7 @@ import {
   RECORD_EFFECT,
   recordBodyProblem,
   stageFromLabels,
-  isOpenTicket,
+  isOpenItem,
 } from "#conventions.js";
 import type { Node, PairDeps, ReplyDeps, Snapshot, Source } from "#namespace.js";
 import type { Operator, Registry, RuntimeContext, ToolOptions, Tools } from "#namespace.js";
@@ -52,14 +52,14 @@ function requireOperator(operator: Operator | null, what: string): Operator {
 /**
  * A source is optional here as an operator is, so what needs one reports its
  * absence when asked — not at startup, where a process with no source can
- * still create a ticket.
+ * still create an item.
  */
 const noSource = (): never => {
   throw new Error("no source hook is configured, so there is nothing to enumerate");
 };
 
 /**
- * A person's reply on a ticket, posted as the operator: what `landrace_reply`
+ * A person's reply on an item, posted as the operator: what `landrace_reply`
  * posts. The board's Retry is not a reply: it is a goto, and goes through
  * `sendTo`.
  *
@@ -72,9 +72,9 @@ const noSource = (): never => {
  * marker cannot forge state.
  *
  * And no lock, unlike `resolve`, which is a decision rather than an
- * oversight. `resolve` reads the ticket, decides from derived state whether it
+ * oversight. `resolve` reads the item, decides from derived state whether it
  * is already handed back, and writes only if it is not: that
- * read-decide-write is what a per-ticket lock exists to make atomic. This
+ * read-decide-write is what a per-item lock exists to make atomic. This
  * posts one comment unconditionally, so there is nothing to serialise — and
  * taking the lock would make a person's reply wait on, or fail against, the
  * ten-minute step they are replying to, which is the one moment a reply is
@@ -84,14 +84,14 @@ const noSource = (): never => {
  * tracker refuses throws with the API's own 422 instead of a sentence naming
  * the limit.
  */
-export async function postReply(deps: ReplyDeps, ticket: string, message: string): Promise<void> {
+export async function postReply(deps: ReplyDeps, item: string, message: string): Promise<void> {
   const tooLong = recordBodyProblem(message);
   if (tooLong) throw new Error(`cannot reply: the message ${tooLong}`);
 
-  const snapshot = await buildSnapshot({ ticket, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, ticket } });
+  const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, ctx: { ...deps.ctx, item } });
   await deps.dispatcher.apply(
     { type: RECORD_EFFECT, body: neutraliseMarkers(message) },
-    { ...deps.ctx, ticket, snapshot },
+    { ...deps.ctx, item, snapshot },
   );
 }
 
@@ -124,10 +124,10 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     ...(opts.activity ? { activity: opts.activity } : {}),
   });
 
-  const snapshotOf = (ticket: string): Promise<Snapshot> =>
-    buildSnapshot({ ticket, source: source(), hooks: registry.pre, ctx: { ...ctx, ticket } });
+  const snapshotOf = (item: string): Promise<Snapshot> =>
+    buildSnapshot({ item, source: source(), hooks: registry.pre, ctx: { ...ctx, item } });
 
-  const summarise = (n: Node) => ({ ticket: n.id, title: n.title, url: n.link, labels: labelsOf(n) });
+  const summarise = (n: Node) => ({ item: n.id, title: n.title, url: n.link, labels: labelsOf(n) });
 
   // Called once a write has succeeded, never after a throw: a throw wrote
   // nothing a pass could pick up. And never at the answer's expense — the
@@ -145,36 +145,36 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
     async waiting() {
       // Filtered here, not in the hook: whose turn it is is the engine's own
       // vocabulary, and a source that had to know it would be a source that
-      // had to know the workflow. Labels ride along on a ticket node precisely
-      // so this costs no snapshot per ticket.
+      // had to know the workflow. Labels ride along on an item node precisely
+      // so this costs no snapshot per item.
       return (await source().list(ctx)).nodes
-        .filter((n) => isOpenTicket(n) && labelsOf(n).includes(LABELS.awaiting))
-        .map((n) => ({ ticket: n.id, title: n.title, url: n.link }));
+        .filter((n) => isOpenItem(n) && labelsOf(n).includes(LABELS.awaiting))
+        .map((n) => ({ item: n.id, title: n.title, url: n.link }));
     },
 
-    async status(ticket) {
+    async status(item) {
       // The same snapshot the tick builds, from the same pre hooks in the same
       // order, so what an operator is shown is what the engine would decide
       // on — not a second derivation free to drift from it.
-      const snapshot = await snapshotOf(ticket);
+      const snapshot = await snapshotOf(item);
       const node = snapshot.node as Node;
       const labels = labelsOf(node);
       const { stage, ambiguous, found } = stageFromLabels(labels);
       const run = snapshot.run;
 
       return {
-        ticket,
+        item,
         title: node.title,
         url: node.link,
         // The one piece of lifecycle every source reports the same way: open
-        // is null, a closed ticket says whether it was finished or dropped.
+        // is null, a closed item says whether it was finished or dropped.
         closed: node.closed,
         labels,
         stage,
         // Which ones: taking one of them off is the fix, and the engine now
         // halts on this same fact rather than picking one and paying for it.
         ...(ambiguous
-          ? { problem: `more than one lr:stage:* label (${found.join(", ")}) — the ticket cannot be placed` }
+          ? { problem: `more than one lr:stage:* label (${found.join(", ")}) — the item cannot be placed` }
           : {}),
         eligible: labels.includes(LABELS.eligible),
         waitingOnYou: labels.includes(LABELS.awaiting),
@@ -185,26 +185,26 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       };
     },
 
-    async createTicket({ title, body = "", labels = [], start = true }) {
-      const operator = requireOperator(registry.operator, "create a ticket");
+    async createItem({ title, body = "", labels = [], start = true }) {
+      const operator = requireOperator(registry.operator, "create an item");
       refuseEngineLabels(labels, "set");
       // `start` is the one exception, and it is ours to set, not the caller's.
       const wanted = [...new Set([...labels, ...(start ? [LABELS.eligible] : [])])];
       // A marker pasted into a body would read back as something we wrote.
-      const created = await operator.createTicket({ title, body: neutraliseMarkers(body), labels: wanted }, ctx);
+      const created = await operator.createItem({ title, body: neutraliseMarkers(body), labels: wanted }, ctx);
       wakeLoop();
       return { ...summarise(created), started: wanted.includes(LABELS.eligible) };
     },
 
-    async updateTicket(ticket, { title, body, state, addLabels = [], removeLabels = [] }) {
-      const operator = requireOperator(registry.operator, "update a ticket");
+    async updateItem(item, { title, body, state, addLabels = [], removeLabels = [] }) {
+      const operator = requireOperator(registry.operator, "update an item");
       // Both lists are checked before anything is written, so a rejected call
-      // leaves the ticket exactly as it was.
+      // leaves the item exactly as it was.
       refuseEngineLabels(addLabels, "add");
       refuseEngineLabels(removeLabels, "remove");
 
-      const updated = await operator.updateTicket(
-        ticket,
+      const updated = await operator.updateItem(
+        item,
         {
           ...(title === undefined ? {} : { title }),
           ...(body === undefined ? {} : { body: neutraliseMarkers(body) }),
@@ -218,75 +218,75 @@ export function createTools(registry: Registry, ctx: RuntimeContext, opts: ToolO
       return summarise(updated);
     },
 
-    async reply(ticket, message) {
-      await postReply({ source: source(), pre: registry.pre, dispatcher, ctx }, ticket, message);
+    async reply(item, message) {
+      await postReply({ source: source(), pre: registry.pre, dispatcher, ctx }, item, message);
       wakeLoop();
-      return { ticket, posted: true };
+      return { item, posted: true };
     },
 
-    async goto(ticket, stage) {
-      // The workflow is what says where a stage may send a ticket; guessing
+    async goto(item, stage) {
+      // The workflow is what says where a stage may send an item; guessing
       // it here would be a second answer free to differ from the loop's.
-      if (!opts.workflow) throw new Error("cannot send a ticket back: this process was not given the workflow");
+      if (!opts.workflow) throw new Error("cannot send an item back: this process was not given the workflow");
       // And the lock this process was told the tick takes, as the
       // conversation is: a goto has to wait on the tick that would take it.
       const r = await sendTo(
         { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
-        ticket,
+        item,
         stage,
       );
       if ("refused" in r) throw new Error(r.refused);
       wakeLoop();
-      return { ticket, to: r.to, posted: true };
+      return { item, to: r.to, posted: true };
     },
 
-    async clear(ticket, stage) {
+    async clear(item, stage) {
       if (!opts.workflow) throw new Error("cannot clear a step: this process was not given the workflow");
       const r = await sendTo(
         { source: source(), pre: registry.pre, dispatcher, ctx, workflow: opts.workflow, ...(opts.lock ? { lock: opts.lock } : {}) },
-        ticket,
+        item,
         stage ?? null,
         { clear: true },
       );
       if ("refused" in r) throw new Error(r.refused);
       wakeLoop();
-      return { ticket, to: r.to, cleared: true, posted: true };
+      return { item, to: r.to, cleared: true, posted: true };
     },
 
-    async ask(ticket, message, askOpts) {
-      const answered = await conversation.ask(ticket, message, askOpts);
+    async ask(item, message, askOpts) {
+      const answered = await conversation.ask(item, message, askOpts);
       wakeLoop();
       return answered;
     },
 
-    async resolve(ticket, why) {
-      const resolved = await conversation.resolve(ticket, why);
+    async resolve(item, why) {
+      const resolved = await conversation.resolve(item, why);
       wakeLoop();
       return resolved;
     },
 
-    async pairing(ticket) {
-      return pairingView(pairDeps(), ticket);
+    async pairing(item) {
+      return pairingView(pairDeps(), item);
     },
 
-    async pair(ticket, stage) {
-      const started = await startPair(pairDeps(), ticket, stage);
+    async pair(item, stage) {
+      const started = await startPair(pairDeps(), item, stage);
       wakeLoop();
       return started;
     },
 
-    async finish(ticket, note) {
+    async finish(item, note) {
       // Woken whichever way it ends: a refused hand-in has written the
-      // rejected round, and the loop is what halts the ticket on it.
+      // rejected round, and the loop is what halts the item on it.
       try {
-        return await finishPair(pairDeps(), ticket, note);
+        return await finishPair(pairDeps(), item, note);
       } finally {
         wakeLoop();
       }
     },
 
-    async release(ticket) {
-      const released = await releasePair(pairDeps(), ticket);
+    async release(item) {
+      const released = await releasePair(pairDeps(), item);
       wakeLoop();
       return released;
     },

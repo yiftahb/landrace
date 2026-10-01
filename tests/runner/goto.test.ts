@@ -33,7 +33,7 @@ const world = (labels: string[]) => {
     lock: { root },
   };
   const run = async () =>
-    (await buildSnapshot({ ticket: "3", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, ticket: "3" } })).run;
+    (await buildSnapshot({ item: "3", source, hooks: tracker.registry.pre, ctx: { ...tracker.ctx, item: "3" } })).run;
   const failed = (stage: string, round: number) =>
     tracker.say(3, `broken${renderMarker({ stage, kind: "malformed", round })}`);
   const settled = (stage: string, round: number) => {
@@ -50,7 +50,7 @@ const world = (labels: string[]) => {
 /*
  * A person clearing a refused step: the round the retry will run is named on
  * a clearance record, and the goto is the same one a Retry writes. Only where
- * a security check stopped the ticket, and never where the goto itself would
+ * a security check stopped the item, and never where the goto itself would
  * be refused — a clearance nothing will run is a standing waiver.
  */
 describe("clearing a step the security check refused", () => {
@@ -60,7 +60,7 @@ describe("clearing a step the security check refused", () => {
     w.tracker.say(3, `refused${renderMarker({ stage, kind: "refused", round })}`);
   };
 
-  it("clears the round the retry will run, and sends the ticket back to it", async () => {
+  it("clears the round the retry will run, and sends the item back to it", async () => {
     const w = world(SCREENED);
     refusedAt(w, "spec", 1);
     expect(await sendTo(w.deps, "3", null, { clear: true })).toEqual({ to: "spec" });
@@ -76,7 +76,7 @@ describe("clearing a step the security check refused", () => {
     expect((await w.run())?.cleared).toEqual({ stage: "build", round: 1 });
   });
 
-  it("refuses a ticket no security check stopped, and writes nothing", async () => {
+  it("refuses an item no security check stopped, and writes nothing", async () => {
     const w = world(["lr:stage:blocked", "lr:blocked"]);
     w.rejected("spec", 1);
     const r = await sendTo(w.deps, "3", null, { clear: true });
@@ -94,7 +94,7 @@ describe("clearing a step the security check refused", () => {
   });
 });
 
-describe("sending a ticket back to a step", () => {
+describe("sending an item back to a step", () => {
   it("writes a goto the engine reads back as Landrace's own", async () => {
     const { deps, run } = world(["lr:stage:blocked", "lr:blocked"]);
     expect(await sendTo(deps, "3", "spec")).toEqual({ to: "spec" });
@@ -110,7 +110,7 @@ describe("sending a ticket back to a step", () => {
   });
 
   // The ordinary conversation at a halt: a question goes through the judge
-  // and comes home. That round trip is not what put the ticket here.
+  // and comes home. That round trip is not what put the item here.
   it("retries the failed step after a question at the halt came home from the judge", async () => {
     const { deps, run, rejected, tracker } = world(["lr:stage:blocked", "lr:blocked"]);
     rejected("build", 1);
@@ -121,10 +121,10 @@ describe("sending a ticket back to a step", () => {
     expect((await run())?.goto).toBe("build");
   });
 
-  it("refuses a retry of an older failure the ticket was since sent around, and writes nothing", async () => {
-    // spec failed, a person sent the ticket on to build, and it came back
+  it("refuses a retry of an older failure the item was since sent around, and writes nothing", async () => {
+    // spec failed, a person sent the item on to build, and it came back
     // here for another reason. spec is still failed — nothing has run it
-    // since — but it is not what put the ticket here, and a Retry that
+    // since — but it is not what put the item here, and a Retry that
     // reached back to it would pay for a round nobody asked for.
     const { deps, tracker, rejected, settled } = world(["lr:stage:blocked", "lr:blocked"]);
     rejected("spec", 1);
@@ -154,7 +154,7 @@ describe("sending a ticket back to a step", () => {
     expect(tracker.comments.get(3)?.length ?? 0).toBe(before);
   });
 
-  it("refuses a step its stage does not send tickets to, naming what it does", async () => {
+  it("refuses a step its stage does not send items to, naming what it does", async () => {
     const { deps, tracker } = world(["lr:stage:blocked", "lr:blocked"]);
     const before = tracker.comments.get(3)?.length ?? 0;
     expect(await sendTo(deps, "3", "done")).toEqual({ refused: expect.stringMatching(/"blocked".*"spec" or "build".*"done"/) });
@@ -198,11 +198,11 @@ describe("sending a ticket back to a step", () => {
   });
 
   /*
-   * Read, decide, write: a tick moving the ticket between the read and the
-   * write would leave a goto recorded against a stage the ticket has left,
+   * Read, decide, write: a tick moving the item between the read and the
+   * write would leave a goto recorded against a stage the item has left,
    * which reads as consumed — after the page had already said "sent".
    */
-  it("refuses, and writes nothing, while something else holds the ticket", async () => {
+  it("refuses, and writes nothing, while something else holds the item", async () => {
     const { deps, tracker, run } = world(["lr:stage:blocked", "lr:blocked"]);
     await acquire("3", "tick", { root, holder: "tick:9" });
     try {
@@ -218,7 +218,7 @@ describe("sending a ticket back to a step", () => {
     expect((await run())?.goto).toBe("spec");
   });
 
-  it("gives the ticket's lock back, whether it sent the ticket or refused", async () => {
+  it("gives the item's lock back, whether it sent the item or refused", async () => {
     const { deps } = world(["lr:stage:blocked", "lr:blocked"]);
     expect(await sendTo(deps, "3", "spec")).toEqual({ to: "spec" });
     expect(await held("3", { root })).toBeNull();
@@ -226,9 +226,9 @@ describe("sending a ticket back to a step", () => {
     expect(await held("3", { root })).toBeNull();
   });
 
-  // decide() skips a ticket the workflow's `eligible` rules turn away before
+  // decide() skips an item the workflow's `eligible` rules turn away before
   // it reads anything else, so a goto written there would sit unread.
-  it("refuses, with the workflow's own reason, a ticket its eligible rules skip", async () => {
+  it("refuses, with the workflow's own reason, an item its eligible rules skip", async () => {
     const eligible: Workflow = {
       ...workflow, eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
     };
@@ -242,7 +242,7 @@ describe("sending a ticket back to a step", () => {
     expect(tracker.comments.get(13)?.length ?? 0).toBe(before);
   });
 
-  it("refuses a ticket it cannot place", async () => {
+  it("refuses an item it cannot place", async () => {
     const { deps, tracker } = world(["lr:stage:blocked", "lr:stage:spec"]);
     const before = tracker.comments.get(3)?.length ?? 0;
     expect(await sendTo(deps, "3", "spec")).toEqual({ refused: expect.stringMatching(/cannot be placed/) });
@@ -250,7 +250,7 @@ describe("sending a ticket back to a step", () => {
   });
 
   it("names every stage it matches, rather than refusing to place it at all", async () => {
-    // Two stages whose identity both read the one label a ticket may carry:
+    // Two stages whose identity both read the one label an item may carry:
     // ambiguous, and locate() already says which — the refusal should too.
     const ambiguous: Workflow = { version: 1, name: "t", stages: [
       { id: "blocked", identity: { "run.stage": "blocked" }, goto: ["spec"] },

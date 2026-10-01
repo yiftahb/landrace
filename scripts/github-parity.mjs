@@ -9,7 +9,7 @@
  * (`main` unless named) is copied beside this one for the run, so its imports
  * resolve the same way, and removed after. One context — `tracker` out of
  * .landrace/landrace.yaml, the token out of GITHUB_TOKEN — so both read as the
- * same account. `list()` once, then `read()` of every ticket it listed; each
+ * same account. `list()` once, then `read()` of every item it listed; each
  * graph's nodes and edges are compared sorted. Prints `equal` and exits 0, or
  * each node and edge that differs and exits 1.
  *
@@ -100,14 +100,14 @@ try {
   const listed = await compare("list", (source) => source.list(ctx));
   // Nothing listed through `ref` is nothing compared, which is not parity.
   if (listed === undefined && found.length === 0) found.push(`list: ${ref}'s hook could not list the repository, so nothing was compared`);
-  const tickets = (listed?.nodes ?? []).filter((n) => n.kind === "ticket").map((n) => n.id);
-  for (const id of tickets) {
+  const items = (listed?.nodes ?? []).filter((n) => n.kind === "item").map((n) => n.id);
+  for (const id of items) {
     await compare(`read #${id}`, (source) => source.read(id, ctx));
   }
   // Likewise every read throwing on both sides: the list alone is not parity.
-  if (tickets.length > 0 && threw === tickets.length) found.push(`read: all ${threw} reads threw on both sides, so no read was compared`);
+  if (items.length > 0 && threw === items.length) found.push(`read: all ${threw} reads threw on both sides, so no read was compared`);
 
-  const note = threw === 0 ? "" : ` (${tickets.length - threw} of ${tickets.length} reads compared; ${threw} threw on both sides)`;
+  const note = threw === 0 ? "" : ` (${items.length - threw} of ${items.length} reads compared; ${threw} threw on both sides)`;
   console.log(found.length === 0 ? `equal${note}` : found.join("\n"));
   process.exitCode = found.length === 0 ? 0 : 1;
 } finally {

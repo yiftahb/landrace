@@ -4,8 +4,8 @@ import type { Location, Snapshot, Stage, Workflow } from "#namespace.js";
 /**
  * Default identity: you are here if the tracker says so.
  * Exported so workflow/validate.ts checks the same definition locate() uses
- * to place a ticket — two copies of this default previously let the
- * validator and the engine silently disagree about where a ticket is.
+ * to place an item — two copies of this default previously let the
+ * validator and the engine silently disagree about where an item is.
  */
 export const identityOf = (stage: Stage) => stage.identity ?? { "run.stage": stage.id };
 

@@ -6,7 +6,7 @@ import type { Decision, Effect, Snapshot, Stage } from "#namespace.js";
  * One `{}` template syntax, and one place that knows what a name looks like.
  *
  * Three passes fill these in and each answers for a different vocabulary: the
- * engine's own `{round}`, `{stage}` and `{ticket}` on an effect field (below), a snapshot
+ * engine's own `{round}`, `{stage}` and `{item}` on an effect field (below), a snapshot
  * path in a step's prompt (runner/step.ts), and `{vars.x}` from the
  * configuration at load (workflow/vars.ts). What they must agree on is the
  * *shape* of a name and what happens to one nobody answers for — it is left
@@ -18,7 +18,7 @@ import type { Decision, Effect, Snapshot, Stage } from "#namespace.js";
  * The dot is admitted deliberately even though only two of the three
  * vocabularies use it: a name this pass does not recognise is left alone
  * anyway, so widening the pattern changes no output — it only stops
- * `{ticket.body}` meaning "a template" in one pass and "ordinary text" in
+ * `{item.body}` meaning "a template" in one pass and "ordinary text" in
  * another.
  */
 const TEMPLATE = /\{([a-zA-Z0-9_.]+)\}/g;
@@ -33,13 +33,13 @@ const expand = (value: unknown, vars: Record<string, string>): unknown =>
 
 /**
  * An effect's fields, templated only with what the engine itself knows about
- * this entry or this invocation — the round, the stage id, the ticket's own
+ * this entry or this invocation — the round, the stage id, the item's own
  * id, the already-validated output shape — never with snapshot content. The
  * id is identity rather than content: the engine locks, sandboxes and names
- * branches by it, and it has passed `ticketIdProblem` before anything is
+ * branches by it, and it has passed `itemIdProblem` before anything is
  * planned for it. An effect is
- * structure, not prose: a marker assembled from a ticket body would be a
- * control token forged by whoever opened the ticket, which is exactly what
+ * structure, not prose: a marker assembled from an item body would be a
+ * control token forged by whoever opened the item, which is exactly what
  * neutraliseMarkers exists to prevent downstream. An unrecognised `{name}` is
  * left visible, matching renderPrompt's "unknown path stays visible" rule
  * rather than silently vanishing.
@@ -68,14 +68,14 @@ export const expandEffectFields = (
  * that already landed, which is what makes crash recovery free.
  *
  * The round is stamped on every planned effect because re-entry is a fact the
- * ticket has to record: an entry effect whose marker did not name the round
+ * item has to record: an entry effect whose marker did not name the round
  * would read as already satisfied the second time round, be reconciled away,
  * and leave the stage unable to tell it owed another pass. The round is the
  * destination's own output counter plus one (decide.ts), so replanning the
  * same entry — after a crash, or on the next poll — produces the identical
  * marker rather than a second record of one entry.
  */
-export function planEffects(d: Decision, s: Snapshot, ticket: string | null): Effect[] {
+export function planEffects(d: Decision, s: Snapshot, item: string | null): Effect[] {
   if (d.action !== "transition" || !d.to) return [];
 
   const to = d.to;
@@ -83,7 +83,7 @@ export function planEffects(d: Decision, s: Snapshot, ticket: string | null): Ef
   const round = d.round ?? 1;
   // An argument, not `s.node.id`: what may reach an effect is decided by what
   // this function is handed, and the snapshot is handed to it for the graph.
-  const vars = { round: String(round), stage, ...(ticket === null ? {} : { ticket }) };
+  const vars = { round: String(round), stage, ...(item === null ? {} : { item }) };
   // Expanded once, in declaration order: a close declared first is applied
   // first, which is what the shipped workflow relies on — see its on_enter.
   const closes = planNodesClose(to, s, round);
@@ -99,7 +99,7 @@ export function planEffects(d: Decision, s: Snapshot, ticket: string | null): Ef
       // overruling the workflow about where a record belongs.
       ...(effect.stage === undefined ? { stage } : {}),
       ...(effect.round === undefined ? { round } : {}),
-      // Where the ticket came from, on the record that says it entered —
+      // Where the item came from, on the record that says it entered —
       // what `run.previousStage` reads back, so one judge can serve several
       // waiting stages and send each answer home. The engine's to write:
       // `landrace validate` refuses a `from` in the workflow file.
@@ -109,24 +109,24 @@ export function planEffects(d: Decision, s: Snapshot, ticket: string | null): Ef
 }
 
 /**
- * The branch a stage's step works on, for this ticket and round — null for a
+ * The branch a stage's step works on, for this item and round — null for a
  * stage that names none — or why there cannot be one.
  *
- * The workflow names it, per stage, so a ticket has as many branches as its
+ * The workflow names it, per stage, so an item has as many branches as its
  * stages say and the engine assumes none. Filled from the same three names an
  * effect may use and nothing else: a branch is argv for git, and a name this
  * does not recognise would otherwise stay in it as literal braces, which git
- * accepts. `landrace validate` asks this of every stage with an example ticket;
- * the runner asks it again with the real one, because a valid ticket id —
+ * accepts. `landrace validate` asks this of every stage with an example item;
+ * the runner asks it again with the real one, because a valid item id —
  * "a..b" — is not always a valid ref.
  */
 export function stageBranch(
   stage: Stage,
-  ticket: string,
+  item: string,
   round: number,
 ): { ok: true; branch: string | null } | { ok: false; reason: string } {
   if (stage.branch === undefined) return { ok: true, branch: null };
-  const vars: Record<string, string> = { ticket, stage: stage.id, round: String(round) };
+  const vars: Record<string, string> = { item, stage: stage.id, round: String(round) };
   const unknown: string[] = [];
   const branch = fillTemplate(stage.branch, (name) => {
     if (Object.hasOwn(vars, name)) return vars[name];
@@ -137,11 +137,11 @@ export function stageBranch(
     return {
       ok: false,
       reason: `stage "${stage.id}" names its branch with {${unknown.join("}, {")}}; ` +
-        "a branch is named from {ticket}, {stage} and {round} only",
+        "a branch is named from {item}, {stage} and {round} only",
     };
   }
   const problem = branchNameProblem(branch);
   return problem === null
     ? { ok: true, branch }
-    : { ok: false, reason: `stage "${stage.id}" cannot name a branch for #${ticket}: ${problem}` };
+    : { ok: false, reason: `stage "${stage.id}" cannot name a branch for #${item}: ${problem}` };
 }

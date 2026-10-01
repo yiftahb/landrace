@@ -4,7 +4,7 @@ import type { Snapshot } from "#namespace.js";
  * Excluded from the hash: it changes every tick and means nothing to a
  * decision. Only the snapshot's own top-level `now` is volatile in this
  * sense — a hook-defined field that happens to be named `now` somewhere
- * inside the snapshot (e.g. `ticket.now`) is ordinary data and must still
+ * inside the snapshot (e.g. `item.now`) is ordinary data and must still
  * affect the hash like any other field.
  */
 const VOLATILE_TOP_LEVEL_KEY = "now";
@@ -14,7 +14,7 @@ const VOLATILE_TOP_LEVEL_KEY = "now";
  * that the recursion below cannot exhaust the stack. A comment carrying
  * ~5000-deep JSON used to reach here and throw a bare RangeError from
  * somewhere inside the hashing path, which named nothing and could not be
- * attributed; the ticket then failed the same way on every tick. Markers are
+ * attributed; the item then failed the same way on every tick. Markers are
  * capped at their own boundary too — this is the guard for any *other* path
  * to deep data, so the same crash cannot come back through a different door.
  */

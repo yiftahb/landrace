@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 
 /**
  * `pnpm parity` end to end, over a repository whose hook is a stand-in: the
- * same file at `main` and in the checkout, its `read` throwing for the tickets
+ * same file at `main` and in the checkout, its `read` throwing for the items
  * `THROW` names — on both sides, as a rate limit partway through a run would.
  */
 describe("the parity script", () => {
@@ -17,7 +17,7 @@ describe("the parity script", () => {
     await mkdir(join(root, ".landrace", "hooks"), { recursive: true });
     await writeFile(join(root, ".landrace", "landrace.yaml"), "tracker: {}\n");
     await writeFile(join(root, ".landrace", "hooks", "github.ts"), `
-const graph = (...ids) => ({ nodes: ids.map((id) => ({ id, kind: "ticket" })), relationships: [] });
+const graph = (...ids) => ({ nodes: ids.map((id) => ({ id, kind: "item" })), relationships: [] });
 export const source = {
   list: async () => graph("1", "2"),
   read: async (id) => {

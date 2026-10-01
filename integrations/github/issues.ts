@@ -3,16 +3,16 @@
  * reasons, the sub-issue link, and the classic token's scope. Everything else
  * a tracker does is `BaseTracker`'s.
  */
-import { type Closed, type RuntimeContext, STAGE_LABEL_PREFIX, type TicketPatch } from "landrace/hooks";
+import { type Closed, type RuntimeContext, STAGE_LABEL_PREFIX, type ItemPatch } from "landrace/hooks";
 import {
-  BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, TICKET_PAGE,
-  type TicketRecord, type TrackerComment,
+  BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
+  type ItemRecord, type TrackerComment,
 } from "landrace/kit";
 import { type Client, clientFor, issueNumber, unseen } from "./client.js";
 
 /**
  * An issue as GraphQL answers `ISSUE_FIELDS`: the one reading of an issue that
- * becomes a ticket, whichever query asked for it.
+ * becomes an item, whichever query asked for it.
  */
 interface IssueNode {
   number: number;
@@ -79,7 +79,7 @@ query LandraceIssue($owner: String!, $name: String!, $number: Int!) {
 const SUB_ISSUES_QUERY = `
 query LandraceSubIssues($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    issue(number: $number) { subIssues(first: ${TICKET_PAGE}) { totalCount nodes { ${ISSUE_FIELDS} } } }
+    issue(number: $number) { subIssues(first: ${ITEM_PAGE}) { totalCount nodes { ${ISSUE_FIELDS} } } }
   }
 }`;
 
@@ -136,8 +136,8 @@ function closedOf(issue: IssueNode): Closed {
   );
 }
 
-/** An issue as GraphQL answers it, as the kit reads a ticket. */
-const recordOf = (issue: IssueNode, parent: string | null): TicketRecord => ({
+/** An issue as GraphQL answers it, as the kit reads an item. */
+const recordOf = (issue: IssueNode, parent: string | null): ItemRecord => ({
   id: String(issue.number),
   title: issue.title,
   link: issue.url,
@@ -178,10 +178,10 @@ export class GitHubIssues extends BaseTracker {
    * one bad issue must not fail the tick for the rest, and `read` of anything
    * whose neighbourhood holds it halts, naming it.
    */
-  async tickets(ctx: RuntimeContext): Promise<TicketRecord[]> {
+  async items(ctx: RuntimeContext): Promise<ItemRecord[]> {
     const gh = this.gh(ctx);
     const { owner, name } = gh;
-    const records = new Map<string, TicketRecord>();
+    const records = new Map<string, ItemRecord>();
     const parentOf = new Map<string, string>();
     const keep = (issue: IssueNode): void => {
       try {
@@ -202,7 +202,7 @@ export class GitHubIssues extends BaseTracker {
       for (const issue of issues.nodes) {
         const id = String(issue.number);
         // An open sub-issue is listed twice — as an issue, and under its
-        // parent. It is one ticket, and the reading as an issue is the full
+        // parent. It is one item, and the reading as an issue is the full
         // one (SUB_ISSUE_FIELDS asks for fewer labels), so that one wins.
         records.delete(id);
         keep(issue);
@@ -217,7 +217,7 @@ export class GitHubIssues extends BaseTracker {
       cursor = issues.pageInfo.endCursor;
     }
 
-    // The board's Done lane: tickets Landrace moved — an lr:stage:* label says
+    // The board's Done lane: items Landrace moved — an lr:stage:* label says
     // it did — that closed inside the window. A closed issue nobody routed is
     // not Landrace's to show. Bounded like the rest, but past the bound it
     // stops quietly rather than failing the tick: this is for the page, not
@@ -245,7 +245,7 @@ export class GitHubIssues extends BaseTracker {
     return [...records.values()].map((r) => ({ ...r, parent: parentOf.get(r.id) ?? null }));
   }
 
-  async ticket(id: string, ctx: RuntimeContext): Promise<TicketRecord> {
+  async item(id: string, ctx: RuntimeContext): Promise<ItemRecord> {
     const number = issueNumber(id);
     const gh = this.gh(ctx);
     const data = await gh.graphql<{ repository: { issue: (IssueNode & { parent: { number: number } | null }) | null } | null }>(
@@ -257,8 +257,8 @@ export class GitHubIssues extends BaseTracker {
     return recordOf(issue, issue.parent ? String(issue.parent.number) : null);
   }
 
-  /** A count over the first page is a number known to be short: past the page, the ticket halts saying so. */
-  async children(id: string, ctx: RuntimeContext): Promise<TicketRecord[]> {
+  /** A count over the first page is a number known to be short: past the page, the item halts saying so. */
+  async children(id: string, ctx: RuntimeContext): Promise<ItemRecord[]> {
     const number = issueNumber(id);
     const gh = this.gh(ctx);
     const data = await gh.graphql<{ repository: { issue: { subIssues: { totalCount: number; nodes: IssueNode[] } } | null } | null }>(
@@ -269,7 +269,7 @@ export class GitHubIssues extends BaseTracker {
     if (!issue) throw new Error(`#${number} is not an issue in ${gh.repo}`);
     const { totalCount, nodes } = issue.subIssues;
     if (totalCount > nodes.length) {
-      throw new Error(`#${id} has ${totalCount} sub-issues, more than the ${TICKET_PAGE} one read carries`);
+      throw new Error(`#${id} has ${totalCount} sub-issues, more than the ${ITEM_PAGE} one read carries`);
     }
     return nodes.map((sub) => recordOf(sub, id));
   }
@@ -338,7 +338,7 @@ export class GitHubIssues extends BaseTracker {
     return String(created.number);
   }
 
-  async update(id: string, fields: Pick<TicketPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void> {
+  async update(id: string, fields: Pick<ItemPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void> {
     await this.gh(ctx).updateIssue(issueNumber(id), fields);
   }
 

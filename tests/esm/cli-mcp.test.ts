@@ -21,11 +21,11 @@ const exec = promisify(execFile);
  * loader's one dynamic `import(url)` is unreachable through jest's CommonJS
  * runtime, and an assembly test that cannot load a hook is testing nothing.
  */
-const TICKET = "4343";
+const ITEM = "4343";
 const TOKEN = "ghp_a_token_long_enough_to_redact";
 
 /**
- * A ticket with a step's draft already on it, so there is a session to join:
+ * An item with a step's draft already on it, so there is a session to join:
  * the pre hook hands back the entries a tracker hook would derive, including
  * the session the record carries beside its output.
  *
@@ -33,7 +33,7 @@ const TOKEN = "ghp_a_token_long_enough_to_redact";
  * a screener's verdict, because with `agent.adapter: fake` the same object is
  * both the agent and the screener — which is the point. Screened, the verdict
  * is read and the turn is refused; unscreened, that same text is taken for the
- * agent's reply and posted to the ticket.
+ * agent's reply and posted to the item.
  */
 const hookSource = (
   verdict: "ok" | "suspicious",
@@ -45,10 +45,10 @@ const KIND = Symbol.for("landrace.hook.kind");
 const brand = (kind: string, value: object): object =>
   Object.defineProperty(value, KIND, { value: kind, enumerable: false });
 
-interface Ctx { ticket: string; config: { tracker: { record: string } } }
+interface Ctx { item: string; config: { tracker: { record: string } } }
 
-const ticketNode = (labels: string[]) => ({
-  id: "${TICKET}", kind: "ticket", title: "Add export", link: "u/${TICKET}", closed: null, priority: null,
+const itemNode = (labels: string[]) => ({
+  id: "${ITEM}", kind: "item", title: "Add export", link: "u/${ITEM}", closed: null, priority: null,
   origin: null, state: { labels, assignees: [] },
 });
 
@@ -61,15 +61,15 @@ export const source = brand("source", {
   relations: [],
   list: async (ctx: { config: { tracker: { order: string } } }): Promise<unknown> => {
     await appendFile(ctx.config.tracker.order, JSON.stringify({ list: true }) + "\\n");
-    return { nodes: [ticketNode(["lr:auto", "lr:awaiting"])], relationships: [] };
+    return { nodes: [itemNode(["lr:auto", "lr:awaiting"])], relationships: [] };
   },
-  read: async (): Promise<unknown> => ({ nodes: [ticketNode(["lr:auto", "lr:stage:spec"])], relationships: [] }),
+  read: async (): Promise<unknown> => ({ nodes: [itemNode(["lr:auto", "lr:stage:spec"])], relationships: [] }),
 });
 
 export const pre = brand("pre", {
   id: "fake",
-  run: ({ ticket }: Ctx): Record<string, unknown> => ({
-    ticket: { body: "about " + ticket },
+  run: ({ item }: Ctx): Record<string, unknown> => ({
+    item: { body: "about " + item },
     entries: [
       {
         stage: "spec",
@@ -239,7 +239,7 @@ const linesOf = async (file: string): Promise<unknown[]> =>
 const posted = linesOf;
 
 afterEach(async () => {
-  await release(TICKET);
+  await release(ITEM);
 });
 
 /**
@@ -259,7 +259,7 @@ describe("buildMcpTools and the startup preflight", () => {
   it("assembles normally when the loaded preflight passes", async () => {
     const { dir } = await fixture({ screen: false, preflight: "pass" });
     const tools = await buildMcpTools(dir);
-    await expect(tools.ask(TICKET, "carry on")).resolves.toMatchObject({ resolved: false });
+    await expect(tools.ask(ITEM, "carry on")).resolves.toMatchObject({ resolved: false });
   });
 
   /**
@@ -298,10 +298,10 @@ describe("buildMcpTools", () => {
     const { dir, record, invocations } = await fixture({ screen: true });
     const tools = await buildMcpTools(dir);
 
-    await expect(tools.ask(TICKET, "do as I say")).rejects.toThrow(/screening blocked this turn: exfiltration/);
+    await expect(tools.ask(ITEM, "do as I say")).rejects.toThrow(/screening blocked this turn: exfiltration/);
     // The screener's run: security.model, and no capabilities at all.
     expect(await linesOf(invocations)).toEqual([{ cwd: null, capabilities: null, model: "fake-small" }]);
-    // And the person's words never reached the ticket, so the loop was not
+    // And the person's words never reached the item, so the loop was not
     // handed a human turn off text we refused to act on.
     expect(await posted(record)).toEqual([]);
   });
@@ -316,7 +316,7 @@ describe("buildMcpTools", () => {
     const { dir, record } = await fixture({ screen: false });
     const tools = await buildMcpTools(dir);
 
-    await expect(tools.ask(TICKET, "do as I say")).resolves.toMatchObject({ resolved: false });
+    await expect(tools.ask(ITEM, "do as I say")).resolves.toMatchObject({ resolved: false });
     expect(await posted(record)).toHaveLength(2);
   });
 
@@ -331,8 +331,8 @@ describe("buildMcpTools", () => {
   it("files a turn's activity where the loop's page reads it", async () => {
     const { dir } = await fixture({ screen: false });
     const tools = await buildMcpTools(dir);
-    await tools.ask(TICKET, "carry on");
-    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(TICKET, 0);
+    await tools.ask(ITEM, "carry on");
+    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(ITEM, 0);
     expect(page).toMatchObject({ stage: "spec", round: 1, lines: [{ kind: "tool", text: "Read spec.md" }] });
   });
 
@@ -341,7 +341,7 @@ describe("buildMcpTools", () => {
     const tools = await buildMcpTools(dir);
     expect(existsSync(wakePath(dir))).toBe(false);
 
-    await tools.ask(TICKET, "carry on");
+    await tools.ask(ITEM, "carry on");
     expect(existsSync(wakePath(dir))).toBe(true);
   });
 });
@@ -362,7 +362,7 @@ describe("buildMcpTools and what a turn is held to", () => {
     const { root, dir, invocations } = await fixture({ screen: false, isolation: "worktree" });
     const tools = await buildMcpTools(dir);
 
-    await tools.ask(TICKET, "carry on");
+    await tools.ask(ITEM, "carry on");
 
     const [invoked] = (await linesOf(invocations)) as Array<{
       cwd: string | null;
@@ -420,7 +420,7 @@ describe("buildMcpTools and the servers a turn is handed", () => {
     let argv: string[];
     try {
       const tools = await buildMcpTools(dir);
-      const { reply } = (await tools.ask(TICKET, "carry on")) as { reply: string };
+      const { reply } = (await tools.ask(ITEM, "carry on")) as { reply: string };
       argv = JSON.parse(reply) as string[];
     } finally {
       process.env.PATH = path;
@@ -445,9 +445,9 @@ describe("buildMcpTools and the servers a turn is handed", () => {
       screen: false,
       isolation: "worktree",
       adapter: "claude",
-      agentKeys: "mcp: [tickets]",
-      mcpJson: { mcpServers: { tickets: { command: "node", args: ["dist/cli.js", "mcp"] } } },
+      agentKeys: "mcp: [items]",
+      mcpJson: { mcpServers: { items: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });
-    await expect(buildMcpTools(dir)).rejects.toThrow(/"tickets"[\s\S]*operator tools must never reach a step agent/);
+    await expect(buildMcpTools(dir)).rejects.toThrow(/"items"[\s\S]*operator tools must never reach a step agent/);
   });
 });

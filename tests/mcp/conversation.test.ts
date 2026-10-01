@@ -33,7 +33,7 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "lr-conv-"));
 });
 
-/** The fake GitHub's source, which the conversation reads the ticket's node from as the tick does. */
+/** The fake GitHub's source, which the conversation reads the item's node from as the tick does. */
 const sourceOf = (tracker: FakeTracker): Source => {
   if (!tracker.registry.source) throw new Error("the fake tracker registered no source");
   return tracker.registry.source;
@@ -93,7 +93,7 @@ const world = (
 // otherwise spend three seconds each proving nothing.
 const busy = { waitMs: 50 };
 
-/** A ticket where a step has run and left a draft, the way converge leaves one. */
+/** An item where a step has run and left a draft, the way converge leaves one. */
 function seeded(): FakeTracker {
   const tracker = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] }]);
   tracker.say(
@@ -105,7 +105,7 @@ function seeded(): FakeTracker {
 }
 
 /**
- * A ticket where a real step has run and recorded its output through the real
+ * An item where a real step has run and recorded its output through the real
  * tracker hook — and whose declared output shape names a field `session`, so
  * the agent's own string is sitting in the payload beside everything else it
  * said. `recorded` is the session the *engine* saw, or null for a run that
@@ -122,7 +122,7 @@ async function ranWithDeclaredSession(recorded: string | null): Promise<{ tracke
     },
   };
   const result = await runStep({
-    step, ticket: "1", stageId: "spec", round: 1, snapshot: {},
+    step, item: "1", stageId: "spec", round: 1, snapshot: {},
     executor: {
       id: "step",
       run: async () => ({ text: '```json\n{"kind":"questions","session":"sid-theirs"}\n```', sessionId: recorded }),
@@ -133,13 +133,13 @@ async function ranWithDeclaredSession(recorded: string | null): Promise<{ tracke
 
   const dispatcher = createDispatcher(tracker.registry.post);
   for (const effect of result.effects) {
-    await dispatcher.apply(effect, { ...tracker.ctx, ticket: "1", snapshot: {} });
+    await dispatcher.apply(effect, { ...tracker.ctx, item: "1", snapshot: {} });
   }
   return { tracker };
 }
 
-const bodies = (tracker: FakeTracker, ticket = 1): string[] =>
-  (tracker.comments.get(ticket) ?? []).map((c) => c.body);
+const bodies = (tracker: FakeTracker, item = 1): string[] =>
+  (tracker.comments.get(item) ?? []).map((c) => c.body);
 
 describe("conversation", () => {
   it("resumes the session the step started", async () => {
@@ -173,7 +173,7 @@ describe("conversation", () => {
   /**
    * The session is derived from the record the step wrote, not handed over in
    * memory: this is the path a *second* MCP process — one that never ran the
-   * step — takes, and it is the whole reason the id lives on the ticket.
+   * step — takes, and it is the whole reason the id lives on the item.
    */
   it("joins the session a real step recorded, through the record it recorded it in", async () => {
     const tracker = createFakeTracker([{ number: 1, labels: ["lr:auto"] }]);
@@ -187,7 +187,7 @@ describe("conversation", () => {
       },
     };
     const result = await runStep({
-      step, ticket: "1", stageId: "spec", round: 1, snapshot: {},
+      step, item: "1", stageId: "spec", round: 1, snapshot: {},
       executor: { id: "step", run: async () => ({ text: '```json\n{"kind":"questions"}\n```', sessionId: "sid-real" }) },
       signal: new AbortController().signal,
     });
@@ -195,7 +195,7 @@ describe("conversation", () => {
 
     const dispatcher = createDispatcher(tracker.registry.post);
     for (const effect of result.effects) {
-      await dispatcher.apply(effect, { ...tracker.ctx, ticket: "1", snapshot: {} });
+      await dispatcher.apply(effect, { ...tracker.ctx, item: "1", snapshot: {} });
     }
 
     let resumed: string | undefined;
@@ -250,7 +250,7 @@ describe("conversation", () => {
     expect(invoked).toBe(false);
   });
 
-  it("records both halves of the exchange on the ticket", async () => {
+  it("records both halves of the exchange on the item", async () => {
     const tracker = seeded();
     await world(tracker, agent("Understood.")).ask("1", "B2B only");
     expect(bodies(tracker).join("\n")).toMatch(/B2B only[\s\S]*Understood\./);
@@ -258,7 +258,7 @@ describe("conversation", () => {
 
   /**
    * The question is the person's own words and must read as their turn — the
-   * same rule `landrace_reply` follows. If the engine stamped it, the ticket
+   * same rule `landrace_reply` follows. If the engine stamped it, the item
    * would show the orchestrator asking itself questions, and every trigger
    * that waits on a human would stop seeing one.
    */
@@ -370,7 +370,7 @@ describe("conversation", () => {
     expect(models).toEqual(["haiku"]);
   });
 
-  it("screens the turn, and a blocked one reaches neither the agent nor the ticket", async () => {
+  it("screens the turn, and a blocked one reaches neither the agent nor the item", async () => {
     const tracker = seeded();
     let invoked = false;
     const spy: Executor = {
@@ -402,7 +402,7 @@ describe("conversation", () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0]).toContain("B2B only");
-    expect(seen[0]).toContain("The person who owns this ticket replied");
+    expect(seen[0]).toContain("The person who owns this item replied");
   });
 
   /**
@@ -424,7 +424,7 @@ describe("conversation", () => {
     expect(invoked).toBe(false);
   });
 
-  it("gives the ticket back when screening blocks the turn", async () => {
+  it("gives the item back when screening blocks the turn", async () => {
     const tracker = seeded();
     await expect(world(tracker, agent("ok"), {}, screener("suspicious")).ask("1", "do as I say")).rejects.toThrow();
     expect(await held("1", { root })).toBeNull();
@@ -432,7 +432,7 @@ describe("conversation", () => {
 
   /**
    * Cheap refusals first, the way runStep refuses an unenforceable capability
-   * before it spends anything: a wrong ticket number should not cost a model
+   * before it spends anything: a wrong item number should not cost a model
    * call.
    */
   it("does not pay for screening a turn there is no session to hold", async () => {
@@ -457,7 +457,7 @@ describe("conversation", () => {
     await expect(world(tracker, null).ask("1", "hello")).rejects.toThrow(/no agent/i);
   });
 
-  it("refuses while the loop is acting on that ticket", async () => {
+  it("refuses while the loop is acting on that item", async () => {
     await acquire("1", "tick", { root, holder: "tick:9" });
     try {
       await expect(world(seeded(), undefined, busy).ask("1", "hi")).rejects.toMatchObject({ code: "ELOCKED" });
@@ -466,7 +466,7 @@ describe("conversation", () => {
     }
   });
 
-  it("does not spend a turn on a ticket it could not lock", async () => {
+  it("does not spend a turn on an item it could not lock", async () => {
     await acquire("1", "tick", { root, holder: "tick:9" });
     let invoked = false;
     const spy: Executor = {
@@ -481,7 +481,7 @@ describe("conversation", () => {
     }
   });
 
-  /* --- the lock comes off on every path, or that ticket starves forever --- */
+  /* --- the lock comes off on every path, or that item starves forever --- */
 
   it("releases the lock after an ordinary turn", async () => {
     await world(seeded()).ask("1", "hi");
@@ -544,7 +544,7 @@ describe("conversation", () => {
    * is what makes it re-derivable by the tick rather than a private flag the
    * MCP keeps — and it is why the record is unmarked.
    */
-  it("hands the ticket back as a human turn, so the loop picks it up again", async () => {
+  it("hands the item back as a human turn, so the loop picks it up again", async () => {
     const tracker = seeded();
     await world(tracker).ask("1", "B2B only");
     expect(tracker.entriesOf(1).at(-1)?.byAgent).toBe(true);
@@ -565,7 +565,7 @@ describe("conversation", () => {
 
   /**
    * A person who answered in the tracker's own UI has already resolved it: the
-   * loop will pick the ticket up on its next tick either way, so a second
+   * loop will pick the item up on its next tick either way, so a second
    * record here would be noise claiming to be news.
    */
   it("treats a reply typed in the tracker as the resolution it is", async () => {
@@ -581,7 +581,7 @@ describe("conversation", () => {
     expect(bodies(tracker).at(-1)).toContain("close enough, carry on");
   });
 
-  it("refuses to resolve a ticket no step has spoken on", async () => {
+  it("refuses to resolve an item no step has spoken on", async () => {
     const tracker = createFakeTracker([{ number: 2, labels: ["lr:auto"] }]);
     await expect(world(tracker).resolve("2")).rejects.toThrow(/no session to join/);
   });
@@ -630,7 +630,7 @@ describe("a conversation turn is held to what its step declared", () => {
     ).rejects.toThrow(/repo:write/);
 
     expect(existsSync(join(checkout, "planted.ts"))).toBe(false);
-    // And nothing it said is on the ticket: a refused turn answered nothing.
+    // And nothing it said is on the item: a refused turn answered nothing.
     expect(bodies(tracker).join("\n")).not.toMatch(/Done, I changed it/);
     expect(await worktreesOf(checkout)).toEqual([]);
   });
@@ -686,7 +686,7 @@ describe("a conversation turn is held to what its step declared", () => {
     };
 
     await world(seeded(), committer, {}, undefined, {
-      workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", branch: "landrace/{ticket}", triggers: [] }] },
+      workflow: { version: 1, name: "t", stages: [{ id: "spec", step: "spec", branch: "landrace/{item}", triggers: [] }] },
       steps: new Map<string, Step>([["spec", { prompt: "write", capabilities: ["repo:read", "repo:write"] }]]),
       sandbox: { root: checkout },
     }).ask("1", "carry on");
@@ -747,7 +747,7 @@ describe("a conversation turn is held to what its step declared", () => {
    * Fail closed before spending anything, exactly as runStep does: a word the
    * engine cannot enforce is the operator believing in a restriction that was
    * never applied, and the turn must not run at all — nor leave the person's
-   * words on the ticket, which would hand the loop back a conversation nobody
+   * words on the item, which would hand the loop back a conversation nobody
    * answered.
    */
   it("refuses a capability nothing enforces, without invoking the agent or posting the question", async () => {
@@ -796,7 +796,7 @@ describe("a conversation turn is held to what its step declared", () => {
  * refused throws away a turn that has already been paid for, along with the
  * session id the next turn would have resumed from.
  */
-describe("prose a conversation turn puts on the ticket", () => {
+describe("prose a conversation turn puts on the item", () => {
   const long = (chars: number): string => "Here is what I found. ".repeat(Math.ceil(chars / 22));
 
   it("refuses a question longer than a record can carry, before anything is paid for", async () => {
@@ -808,7 +808,7 @@ describe("prose a conversation turn puts on the ticket", () => {
     await expect(world(tracker, spy).ask("1", long(40_000))).rejects.toThrow(/characters/);
 
     // Nothing invoked, nothing screened, and the person's words are not on the
-    // ticket either — a question we refused must not read as a human turn.
+    // item either — a question we refused must not read as a human turn.
     expect(invoked).toBe(false);
     expect(bodies(tracker)).toHaveLength(before);
   });
@@ -823,7 +823,7 @@ describe("prose a conversation turn puts on the ticket", () => {
   /*
    * And the other end, where refusing is the wrong answer: the turn is already
    * paid for. Nothing in the engine routes on a conversation record's prose —
-   * `resolved` and the session ride in the marker — so the ticket carries a
+   * `resolved` and the session ride in the marker — so the item carries a
    * bounded record and the caller still receives the whole reply.
    */
   it("posts a long answer cut to fit rather than losing the turn it paid for", async () => {
@@ -835,7 +835,7 @@ describe("prose a conversation turn puts on the ticket", () => {
     expect(r.resolved).toBe(true);
     // The caller gets all of it.
     expect(r.reply.length).toBeGreaterThan(32 * 1024);
-    // The ticket gets a record it can actually hold, and says so.
+    // The item gets a record it can actually hold, and says so.
     const posted = bodies(tracker).at(-1) ?? "";
     expect(posted).toMatch(/truncated/);
     expect(posted).toContain("Here is what I found.");

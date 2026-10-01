@@ -12,9 +12,9 @@ import { sandboxRoot } from "#sandbox.js";
  * was 15 minutes of work, and nothing in the engine ever refreshed it — while
  * one converge of the shipped workflow legitimately makes eight paid
  * invocations at `budget.stepTimeout` (10m) each, so from minute 15 the next
- * tick stole the lock and a second converge drove the same ticket: the same
+ * tick stole the lock and a second converge drove the same item: the same
  * rounds paid for twice, both `--resume`-ing one agent session, and one
- * deterministic per-ticket worktree that whichever converge unwound first
+ * deterministic per-item worktree that whichever converge unwound first
  * deleted out from under the other.
  *
  * Deriving the number from the work instead — `stepTimeout × maxPasses` — is
@@ -23,7 +23,7 @@ import { sandboxRoot } from "#sandbox.js";
  * again. So `withLock` says it is still working while it works (see `beat`),
  * and this is how long a record may go untouched before its holder counts as
  * gone. The purpose the deadline was written for survives intact: a crashed
- * process does not hold a ticket for longer than this, and usually not at all
+ * process does not hold an item for longer than this, and usually not at all
  * — a dead pid is stealable at once.
  */
 const DEFAULT_DEADLINE_MS = 5 * 60_000;
@@ -50,7 +50,7 @@ const GATE_DEADLINE_MS = 5_000;
 // §7: `$TMPDIR/landrace/<repo>/locks/`. What `<repo>` is — and why it cannot
 // be a directory name — is src/sandbox.ts, which the agent's worktrees share.
 const dirOf = (o?: LockOptions) => join(o?.root ?? sandboxRoot(process.cwd()), "locks");
-const fileOf = (ticket: string, o?: LockOptions) => join(dirOf(o), `${ticket}.lock`);
+const fileOf = (item: string, o?: LockOptions) => join(dirOf(o), `${item}.lock`);
 
 /**
  * The lock root, made on demand by *every* path into this module rather than
@@ -59,7 +59,7 @@ const fileOf = (ticket: string, o?: LockOptions) => join(dirOf(o), `${ticket}.lo
  * The gate below is opened with "wx", and a missing parent directory is an
  * ENOENT rather than the EEXIST that means "somebody else holds it" — so with
  * the mkdir in `tryOnce` alone, anything that took the gate without first
- * taking a lock threw `ENOENT … locks/<ticket>.lock.steal` from inside the
+ * taking a lock threw `ENOENT … locks/<item>.lock.steal` from inside the
  * `finally` that was giving the lock back. It reads as a flake because the
  * root survives between runs: it needs a machine that has never run a tick for
  * this repository, or a `$TMPDIR` the OS has swept — and, with a converge
@@ -90,11 +90,11 @@ async function read(path: string): Promise<Held | null> {
  * Whether this record may be taken from whoever wrote it.
  *
  * Two independent answers, and both are load-bearing. A holder whose pid is
- * gone crashed: its ticket is free immediately, which is the ordinary case and
+ * gone crashed: its item is free immediately, which is the ordinary case and
  * the one a Ctrl-C leaves behind. A holder that has stopped refreshing is gone
  * in the way pid liveness cannot see — a crashed process whose pid the OS has
  * since handed to something unrelated, or a process wedged so hard it is no
- * longer doing the work it is holding the ticket for.
+ * longer doing the work it is holding the item for.
  *
  * The `||` used to defeat the liveness check, because the second clause asked
  * "has this taken too long" and a long converge answers yes while running
@@ -105,20 +105,20 @@ const stale = (h: Held | null): boolean =>
   !h || Date.now() - h.at > h.deadlineMs || (h.pid !== process.pid && !alive(h.pid));
 
 /** The live holder, or null when the lock is free or stealable. */
-export async function held(ticket: string, opts?: LockOptions): Promise<Held | null> {
-  const h = await read(fileOf(ticket, opts));
+export async function held(item: string, opts?: LockOptions): Promise<Held | null> {
+  const h = await read(fileOf(item, opts));
   return stale(h) ? null : h;
 }
 
-function makeRecord(ticket: string, kind: LockKind, opts?: LockOptions): Held {
+function makeRecord(item: string, kind: LockKind, opts?: LockOptions): Held {
   return {
-    ticket,
+    item,
     holder: opts?.holder ?? `${kind}:${process.pid}`,
     kind,
     pid: process.pid,
     at: Date.now(),
     deadlineMs: opts?.deadlineMs ?? DEFAULT_DEADLINE_MS,
-    // Per acquisition, not per process: two converges of one ticket in one
+    // Per acquisition, not per process: two converges of one item in one
     // process — the loop deliberately lets ticks overlap — share a pid and a
     // holder string, so neither of those can tell "my lock" from "the lock
     // that replaced mine". `release` and `beat` both turn on exactly that
@@ -128,8 +128,8 @@ function makeRecord(ticket: string, kind: LockKind, opts?: LockOptions): Held {
 }
 
 /** Plain atomic create. Succeeds only when `path` does not currently exist. */
-async function createFresh(path: string, ticket: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
-  const record = makeRecord(ticket, kind, opts);
+async function createFresh(path: string, item: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
+  const record = makeRecord(item, kind, opts);
   try {
     const fh = await open(path, "wx");
     await fh.writeFile(JSON.stringify(record));
@@ -161,7 +161,7 @@ async function createFresh(path: string, ticket: string, kind: LockKind, opts?: 
  * the body's own answer: a caller that must not write blind has to be able to
  * tell the two apart, and `release` retries on it.
  */
-async function withGate<T>(ticket: string, kind: LockKind, path: string, fn: () => Promise<T>): Promise<Gated<T>> {
+async function withGate<T>(item: string, kind: LockKind, path: string, fn: () => Promise<T>): Promise<Gated<T>> {
   const gate = `${path}.steal`;
   await ensureRoot(gate);
 
@@ -171,14 +171,14 @@ async function withGate<T>(ticket: string, kind: LockKind, path: string, fn: () 
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     // A gate stuck past its own short deadline means its holder crashed
-    // mid-steal; clear it so this ticket doesn't stay unstealable forever.
+    // mid-steal; clear it so this item doesn't stay unstealable forever.
     if (stale(await read(gate))) await unlink(gate).catch(() => {});
     return { ran: false };
   }
 
   try {
     const gateRecord: Held = {
-      ticket,
+      item,
       holder: "steal-gate",
       kind,
       pid: process.pid,
@@ -206,13 +206,13 @@ async function replace(path: string, record: Held): Promise<Held> {
   return record;
 }
 
-async function steal(ticket: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
-  const path = fileOf(ticket, opts);
-  const gated = await withGate(ticket, kind, path, async () => {
+async function steal(item: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
+  const path = fileOf(item, opts);
+  const gated = await withGate(item, kind, path, async () => {
     // Fresh re-read, now that we are the only racer allowed to act: another
     // gate-holder may already have replaced the lock while we waited.
     if (!stale(await read(path))) return null;
-    return replace(path, makeRecord(ticket, kind, opts));
+    return replace(path, makeRecord(item, kind, opts));
   });
   return gated.ran ? gated.value : null;
 }
@@ -226,23 +226,23 @@ async function steal(ticket: string, kind: LockKind, opts?: LockOptions): Promis
  * three more are due before the deadline, which is what the quarter in
  * `beatEvery` buys.
  */
-async function beat(ticket: string, lease: Held, opts?: LockOptions): Promise<void> {
-  const path = fileOf(ticket, opts);
-  await withGate(ticket, lease.kind, path, async () => {
+async function beat(item: string, lease: Held, opts?: LockOptions): Promise<void> {
+  const path = fileOf(item, opts);
+  await withGate(item, lease.kind, path, async () => {
     const current = await read(path);
     if (current?.token !== lease.token) return;
     await replace(path, { ...lease, at: Date.now() });
   });
 }
 
-async function tryOnce(ticket: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
-  const path = fileOf(ticket, opts);
+async function tryOnce(item: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
+  const path = fileOf(item, opts);
   await ensureRoot(path);
 
-  const fresh = await createFresh(path, ticket, kind, opts);
+  const fresh = await createFresh(path, item, kind, opts);
   if (fresh) return fresh;
   if (!stale(await read(path))) return null;
-  return steal(ticket, kind, opts);
+  return steal(item, kind, opts);
 }
 
 /**
@@ -250,10 +250,10 @@ async function tryOnce(ticket: string, kind: LockKind, opts?: LockOptions): Prom
  * caller's proof that the lock on disk is still the one it took, which is
  * what `release` refuses to unlink without.
  */
-async function take(ticket: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
+async function take(item: string, kind: LockKind, opts?: LockOptions): Promise<Held | null> {
   const deadline = Date.now() + (opts?.waitMs ?? 0);
   for (;;) {
-    const lease = await tryOnce(ticket, kind, opts);
+    const lease = await tryOnce(item, kind, opts);
     if (lease) return lease;
     if (Date.now() >= deadline) return null;
     await new Promise((r) => setTimeout(r, 25));
@@ -261,7 +261,7 @@ async function take(ticket: string, kind: LockKind, opts?: LockOptions): Promise
 }
 
 /**
- * The loop passes no waitMs and skips a busy ticket — it will still be there
+ * The loop passes no waitMs and skips a busy item — it will still be there
  * next tick. An interactive caller waits a moment, because losing a race to a
  * 200ms label write should not fail a person's request.
  *
@@ -269,27 +269,27 @@ async function take(ticket: string, kind: LockKind, opts?: LockOptions): Promise
  * holds its own bookkeeping, and this is the primitive `withLock` is built
  * from rather than a second way to run work under a lock.
  */
-export const acquire = async (ticket: string, kind: LockKind, opts?: LockOptions): Promise<boolean> =>
-  (await take(ticket, kind, opts)) !== null;
+export const acquire = async (item: string, kind: LockKind, opts?: LockOptions): Promise<boolean> =>
+  (await take(item, kind, opts)) !== null;
 
 /**
  * Give the lock up — but only if it is still ours.
  *
  * This used to unlink whatever was at the path, with no check at all, so a
  * holder that had already lost its lock deleted its successor's on the way
- * out and the ticket ended up held by nobody while two converges ran. With a
+ * out and the item ended up held by nobody while two converges ran. With a
  * `lease` the question is exact: the token on disk is either the one we wrote
  * or somebody else's. Without one — the direct `acquire`/`release` pairing
  * tests use — the pid is the best available answer, and it is still strictly
  * better than none: another process's lock is never removed.
  */
-export async function release(ticket: string, opts?: LockOptions, lease?: Held): Promise<void> {
-  const path = fileOf(ticket, opts);
+export async function release(item: string, opts?: LockOptions, lease?: Held): Promise<void> {
+  const path = fileOf(item, opts);
   const kind = lease?.kind ?? "tick";
   // Retried, because the gate being busy means some other writer is mid-steal
   // and giving up silently would leave our own record behind to be waited out.
   for (let attempt = 0; attempt < 5; attempt++) {
-    const gated = await withGate(ticket, kind, path, async () => {
+    const gated = await withGate(item, kind, path, async () => {
       const current = await read(path);
       if (!current) return;
       const ours = lease ? current.token === lease.token : current.pid === process.pid;
@@ -301,15 +301,15 @@ export async function release(ticket: string, opts?: LockOptions, lease?: Held):
 }
 
 export async function withLock<T>(
-  ticket: string,
+  item: string,
   kind: LockKind,
   fn: () => Promise<T>,
   opts?: LockOptions,
 ): Promise<T> {
-  const lease = await take(ticket, kind, opts);
+  const lease = await take(item, kind, opts);
   if (!lease) {
-    const by = await held(ticket, opts);
-    const err = new Error(`#${ticket} is locked by ${by?.holder ?? "another process"}`) as Error & { code: string };
+    const by = await held(item, opts);
+    const err = new Error(`#${item} is locked by ${by?.holder ?? "another process"}`) as Error & { code: string };
     err.code = "ELOCKED";
     throw err;
   }
@@ -319,7 +319,7 @@ export async function withLock<T>(
   // release retry, or at worst leave a released lock on disk to be waited out.
   let beating: Promise<void> = Promise.resolve();
   const timer = setInterval(() => {
-    beating = beating.then(() => beat(ticket, lease, opts)).catch(() => undefined);
+    beating = beating.then(() => beat(item, lease, opts)).catch(() => undefined);
   }, beatEvery(lease.deadlineMs));
   // A lock never keeps the process alive. The work does.
   timer.unref();
@@ -329,6 +329,6 @@ export async function withLock<T>(
   } finally {
     clearInterval(timer);
     await beating;
-    await release(ticket, opts, lease);
+    await release(item, opts, lease);
   }
 }

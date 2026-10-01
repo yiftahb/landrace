@@ -7,7 +7,7 @@
 import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
-  repositoryOf, TICKET_PAGE,
+  repositoryOf, ITEM_PAGE,
   type BranchHeads, type ChangedFile, type Git, type PullRecord, type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, PER_PAGE, statusOf, tokenRejected } from "./client.js";
@@ -72,7 +72,7 @@ const recordOf = (mr: MergeRequest): PullRecord => ({
   branch: mr.source_project_id === mr.target_project_id ? mr.source_branch : undefined,
   createdAt: mr.created_at,
   updatedAt: mr.updated_at ?? undefined,
-  tickets: [],
+  items: [],
 });
 
 const commentOf = (n: Note | undefined): ThreadComment | null =>
@@ -169,7 +169,7 @@ function oldLineOf(diff: string, line: number): number | null {
  * are cleared so nothing git starts sees it. Whatever git says back is
  * scrubbed of the token and its base64 before it becomes an error.
  */
-async function push(git: Git, { token, baseUrl, project }: Client, branch: string, ticket: string, signal: AbortSignal): Promise<void> {
+async function push(git: Git, { token, baseUrl, project }: Client, branch: string, item: string, signal: AbortSignal): Promise<void> {
   const basic = Buffer.from(`oauth2:${token}`).toString("base64");
   const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
   const url = await originPushUrl(git, branch, signal);
@@ -178,7 +178,7 @@ async function push(git: Git, { token, baseUrl, project }: Client, branch: strin
     ? [[header, ""], [header, `AUTHORIZATION: basic ${basic}`], ["credential.helper", ""], ["core.askPass", ""]]
     : [];
   try {
-    await pushBranch(git, branch, ticket, signal, auth);
+    await pushBranch(git, branch, item, signal, auth);
   } catch (e) {
     throw new Error(scrub(e instanceof Error ? e.message : String(e)));
   }
@@ -265,13 +265,13 @@ export class GitLab extends BaseForge {
     return [...open.items, ...done].map(recordOf);
   }
 
-  /** Every merge request from the ticket's `landrace/{ticket}` branch, merged and closed ones too, and never a fork's. */
-  async pullsNaming(ticket: string, ctx: RuntimeContext): Promise<PullRecord[]> {
-    const { items, more } = await this.gl(ctx).pages<MergeRequest>(
-      `/merge_requests?state=all&order_by=created_at&sort=desc&source_branch=${encodeURIComponent(prBranch(ticket))}`, 1,
+  /** Every merge request from the item's `landrace/{item}` branch, merged and closed ones too, and never a fork's. */
+  async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
+    const { items: requests, more } = await this.gl(ctx).pages<MergeRequest>(
+      `/merge_requests?state=all&order_by=created_at&sort=desc&source_branch=${encodeURIComponent(prBranch(item))}`, 1,
     );
-    if (more || items.length > TICKET_PAGE) throw tooMany(`#${ticket} has more than ${TICKET_PAGE} merge requests on its branch`);
-    return items.filter((mr) => mr.source_project_id === mr.target_project_id).map(recordOf);
+    if (more || requests.length > ITEM_PAGE) throw tooMany(`#${item} has more than ${ITEM_PAGE} merge requests on its branch`);
+    return requests.filter((mr) => mr.source_project_id === mr.target_project_id).map(recordOf);
   }
 
   /**
@@ -308,7 +308,7 @@ export class GitLab extends BaseForge {
     return items;
   }
 
-  async openPull({ branch, title }: { ticket: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void> {
+  async openPull({ branch, title }: { item: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void> {
     const gl = this.gl(ctx);
     // The project's own default branch, never an assumed "main".
     const info = await gl.get<{ default_branch?: unknown }>("");
@@ -404,8 +404,8 @@ export class GitLab extends BaseForge {
     return branchHeads(this.git);
   }
 
-  async push(branch: string, ticket: string, ctx: HookContext): Promise<void> {
-    await push(this.git, this.gl(ctx), branch, ticket, ctx.signal);
+  async push(branch: string, item: string, ctx: HookContext): Promise<void> {
+    await push(this.git, this.gl(ctx), branch, item, ctx.signal);
   }
 
   /**

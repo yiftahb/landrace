@@ -5,12 +5,13 @@ import {
   CAPABILITIES,
   durationMs,
   isReservedId,
-  mayCreateTickets,
+  mayCreateItems,
   mayWriteRepo,
   OUTPUT_KIND,
   outputValueProblem,
   RECORD_EFFECT,
   recordBodyProblem,
+  retiredCapabilityPointers,
   unknownCapabilities,
 } from "#conventions.js";
 import type { Executor, Screener } from "#namespace.js";
@@ -68,7 +69,7 @@ export function renderPrompt(
     // stays visible.
     if (value === null) return "none";
     // String() runs a list together — "code-review,build" — and a model
-    // reading which steps failed has to be able to tell the items apart.
+    // reading which steps failed has to be able to tell them apart.
     return quote(Array.isArray(value) ? value.join(", ") : String(value));
   });
 }
@@ -163,8 +164,8 @@ export async function sandboxTrespass(
 
 export async function runStep(opts: {
   step: Step;
-  /** The ticket this step runs for: the parent any child it creates is bound to. */
-  ticket: string;
+  /** The item this step runs for: the parent any child it creates is bound to. */
+  item: string;
   stageId: string;
   round: number;
   snapshot: Snapshot;
@@ -186,7 +187,7 @@ export async function runStep(opts: {
    */
   sandbox?: { path: string };
   /**
-   * The ticket's graph as it stands after the step, for the tickets:create
+   * The item's graph as it stands after the step, for the items:create
    * backstop. Absent, nothing is checked — like `sandbox`, it is what makes
    * the check possible, and a caller with no tracker to ask has none.
    */
@@ -194,9 +195,9 @@ export async function runStep(opts: {
   log?: Logger;
   /** For a step that names no `timeout`: the workflow's budget. */
   defaultTimeoutMs?: number;
-  /** How to start the engine's ticket server; see ConvergeDeps.childServer. */
+  /** How to start the engine's item server; see ConvergeDeps.childServer. */
   childServer?: ServerCommand;
-  /** Where the agent's tool calls and messages go as they happen — the ticket panel's live lines. */
+  /** Where the agent's tool calls and messages go as they happen — the item panel's live lines. */
   onActivity?: (e: AgentActivity) => void;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
@@ -217,7 +218,7 @@ export async function runStep(opts: {
       kind: "refused",
       reason:
         `step declares ${unenforceable.map((c) => `"${c}"`).join(", ")}, which nothing enforces; ` +
-        `this engine enforces ${CAPABILITIES.join(", ")}`,
+        `this engine enforces ${CAPABILITIES.join(", ")}${retiredCapabilityPointers(unenforceable)}`,
     };
   }
 
@@ -232,12 +233,12 @@ export async function runStep(opts: {
   // about this step and this round, not a transient failure worth retrying,
   // let alone one worth paying a screening call to discover.
   let childOpt: { child: { parent: string; stage: string; round: number; server?: RunServer } } | Record<string, never> = {};
-  if (mayCreateTickets(step.capabilities)) {
+  if (mayCreateItems(step.capabilities)) {
     try {
       childOpt = {
         child: {
-          parent: opts.ticket, stage: stageId, round,
-          ...(opts.childServer ? { server: childServerFor(opts.childServer, { parent: opts.ticket, stage: stageId, round }) } : {}),
+          parent: opts.item, stage: stageId, round,
+          ...(opts.childServer ? { server: childServerFor(opts.childServer, { parent: opts.item, stage: stageId, round }) } : {}),
         },
       };
     } catch (e) {
@@ -276,9 +277,9 @@ export async function runStep(opts: {
       // two-hour build's.
       timeoutMs: fallbackMs,
       signal,
-      // With whose screening it was: tickets are screened side by side, and
+      // With whose screening it was: items are screened side by side, and
       // a reply that failed closed is only evidence once it can be placed.
-      ...(log ? { log: (name, data) => log(name, { ticket: opts.ticket, stage: stageId, round, ...data }) } : {}),
+      ...(log ? { log: (name, data) => log(name, { item: opts.item, stage: stageId, round, ...data }) } : {}),
     });
     if (!verdict.ok) {
       log?.("screen.blocked", { stage: stageId, round, reason: verdict.reason });
@@ -321,7 +322,7 @@ export async function runStep(opts: {
   const timeoutMs = (step.timeout === undefined ? null : durationMs(step.timeout)) ?? fallbackMs;
   // And signals it: an executor may never read `timeoutMs`, so the run's
   // signal aborts at the limit too. Nothing races the run itself — one that
-  // honours neither holds its ticket until it returns.
+  // honours neither holds its item until it returns.
   const limit = AbortSignal.timeout(timeoutMs);
   const runSignal = AbortSignal.any([signal, limit]);
 
@@ -362,38 +363,38 @@ export async function runStep(opts: {
   const trespass = await sandboxTrespass(opts.sandbox, before);
   if (trespass) return { ok: false, kind: "refused", reason: trespass };
 
-  // The engine's half of tickets:create, like the worktree diff is repo:write's:
+  // The engine's half of items:create, like the worktree diff is repo:write's:
   // a child carrying this very round's origin, made by a step that never
   // declared the word, is a step that found a way around its executor.
   //
   // A re-read that fails keeps the step. The backstop is defence in depth —
   // the executor is never handed the tool without the word — and discarding
   // a finished, paid step over a rate limit on the check is the costlier
-  // mistake; the skipped check is logged instead, naming the ticket.
+  // mistake; the skipped check is logged instead, naming the item.
   let graph: Graph | null = null;
-  if (!mayCreateTickets(step.capabilities) && opts.readGraph) {
+  if (!mayCreateItems(step.capabilities) && opts.readGraph) {
     try {
       graph = await opts.readGraph();
     } catch (e) {
       log?.("step.unchecked", {
-        ticket: opts.ticket, stage: stageId, round,
-        reason: `the ticket could not be re-read to check what the step created: ${messageOf(e)}`,
+        item: opts.item, stage: stageId, round,
+        reason: `the item could not be re-read to check what the step created: ${messageOf(e)}`,
       });
     }
   }
   if (graph) {
     const made = graph.nodes.filter((n) =>
-      n.origin?.parent === opts.ticket && n.origin.stage === stageId && n.origin.round === round);
+      n.origin?.parent === opts.item && n.origin.stage === stageId && n.origin.round === round);
     if (made.length) {
       return {
         ok: false,
         kind: "refused",
-        reason: `the step created children (${made.map((n) => n.id).join(", ")}) without declaring tickets:create`,
+        reason: `the step created children (${made.map((n) => n.id).join(", ")}) without declaring items:create`,
       };
     }
   }
 
-  return settleOutput({ step, ticket: opts.ticket, stageId, round, text, sessionId, by: AGENT_BY });
+  return settleOutput({ step, item: opts.item, stageId, round, text, sessionId, by: AGENT_BY });
 }
 
 /**
@@ -409,7 +410,7 @@ export async function runStep(opts: {
  */
 export function settleOutput(opts: {
   step: Step;
-  ticket: string;
+  item: string;
   stageId: string;
   round: number;
   text: string;
@@ -431,7 +432,7 @@ export function settleOutput(opts: {
   // `{"kind":"spec"}` are all inert, not a second candidate to be ambiguous
   // with. See json-block.ts for why counting candidates was the wrong tool
   // for deciding which text is the answer at all — `spec.md` interpolates
-  // `{ticket.body}` straight into the prompt, so a candidate that could be
+  // `{item.body}` straight into the prompt, so a candidate that could be
   // planted by whoever opened the issue must never compete with the real
   // answer for "ambiguous, refusing to guess".
   const extracted = extractJsonBlock(text);
@@ -524,7 +525,7 @@ export function settleOutput(opts: {
    * An output value is agent-chosen and unbounded, and it has to fit in a
    * record we can read back. Rejected here, as a broken contract, rather than
    * left to throw at apply time: an apply that throws leaves nothing durable
-   * on the ticket, so the next tick re-derives "pending" and pays for the
+   * on the item, so the next tick re-derives "pending" and pays for the
    * step all over again — the money-burning shape of failure this codebase
    * keeps closing. A hard fail records the reason and never retries.
    */
@@ -537,7 +538,7 @@ export function settleOutput(opts: {
     };
   }
 
-  const vars = { round: String(round), stage: stageId, ticket: opts.ticket, shape };
+  const vars = { round: String(round), stage: stageId, item: opts.item, shape };
   // The exact span extractJsonBlock parsed — not a second, independently-run
   // regex — is what gets removed to build the body. Two regexes matching
   // different spans is how a recognised block whose own value happened to
@@ -561,7 +562,7 @@ export function settleOutput(opts: {
   // findings) needs and a route must not be able to write over.
   const destination: Effect = { body, stage: stageId, round, ...expanded, output: value };
 
-  // Where the answer sends the ticket, on the record that settles this round
+  // Where the answer sends the item, on the record that settles this round
   // — never a record of its own, which could land without the other and
   // leave either a judge that re-runs or a goto nobody asked for.
   const sent = route.goto === undefined ? {} : { goto: route.goto };
@@ -594,7 +595,7 @@ export function settleOutput(opts: {
    *
    * A route that writes to the tracker carries the record itself; one that
    * sends the content somewhere else — an artifact, a page — needs its own,
-   * because nothing it wrote is on the ticket to read back. `kind` defaults to
+   * because nothing it wrote is on the item to read back. `kind` defaults to
    * OUTPUT_KIND and a route may override it, but `output` goes on last: it is
    * the one field the workflow does not get to write, being what the step
    * actually produced, already cut to the declared shape.

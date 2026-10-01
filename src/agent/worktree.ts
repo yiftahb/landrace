@@ -39,26 +39,26 @@ async function rootFor(repoRoot: string): Promise<string> {
 }
 
 /**
- * Where #ticket's sandbox goes — proven to be inside this repository's own
+ * Where #item's sandbox goes — proven to be inside this repository's own
  * sandbox root before anything is created there and, more to the point,
  * before anything is deleted there.
  *
  * `rm -rf` on a path assembled from outside input is the highest-consequence
- * operation in this codebase, and a ticket is a validated string to the
+ * operation in this codebase, and an item is a validated string to the
  * typechecker and a value out of a tracker hook at runtime, which are not the
  * same claim. `containedPath` is the existing answer to exactly this shape:
  * it rejects a segment that climbs out before resolving anything, and
  * compares both ends after fs.realpath, so a path that exists but leads
  * somewhere else is refused rather than followed.
  */
-export async function pathFor(ticket: string, repoRoot: string): Promise<string> {
+export async function pathFor(item: string, repoRoot: string): Promise<string> {
   const root = await rootFor(repoRoot);
-  const where = await containedPath(root, ticket);
+  const where = await containedPath(root, item);
   if (where.ok) return where.path;
   // Not there yet, which is the ordinary case — and the shape check and the
   // containment check both ran before the lookup that said so.
-  if (where.kind === "missing") return join(root, ticket);
-  throw new Error(`refusing to touch a sandbox for #${ticket} under ${root}: that path ${where.reason}`);
+  if (where.kind === "missing") return join(root, item);
+  throw new Error(`refusing to touch a sandbox for #${item} under ${root}: that path ${where.reason}`);
 }
 
 /** git's own message, not a stack trace: an operator can act on "not a git repository". */
@@ -77,7 +77,7 @@ async function git(args: string[], cwd: string, what: string): Promise<string> {
  *
  * Asked once at startup rather than at the first invoke: a loop started
  * outside a repository would otherwise assemble happily, poll happily, and
- * fail at its first paid step — hours in, on a ticket it has already moved.
+ * fail at its first paid step — hours in, on an item it has already moved.
  */
 export async function repositoryRoot(dir: string): Promise<string> {
   const out = await git(
@@ -114,14 +114,14 @@ function registered(porcelain: string): Array<{ path: string; head: string | nul
 }
 
 /**
- * A worktree for one ticket, checked out on what its stage names.
+ * A worktree for one item, checked out on what its stage names.
  *
  * With no branch — a stage that names none — a detached HEAD: the agent sees
  * committed state only, cannot read the operator's work in progress and
  * cannot damage it, and nothing it commits outlives the worktree. With one, a
  * step that may write gets the branch itself, created at HEAD the first time,
  * so its commits are kept when the worktree goes; a read-only step gets the
- * branch's commit detached — the ticket's code, not main's, and no branch for
+ * branch's commit detached — the item's code, not main's, and no branch for
  * a commit it should never have made to land on.
  *
  * This is filesystem isolation, not process isolation — the agent still runs
@@ -130,18 +130,18 @@ function registered(porcelain: string): Array<{ path: string; head: string | nul
  * of this that actually refuses something.
  */
 export async function ensureWorktree(
-  ticket: string,
+  item: string,
   repoRoot: string,
   on?: WorktreeBranch,
   /**
-   * The directory's name, when it is not the ticket's own: a pairing's
-   * `<ticket>.pair`, which the tick and a conversation — each cutting and
-   * removing `<ticket>` as they run — never touch.
+   * The directory's name, when it is not the item's own: a pairing's
+   * `<item>.pair`, which the tick and a conversation — each cutting and
+   * removing `<item>` as they run — never touch.
    */
-  slot: string = ticket,
+  slot: string = item,
 ): Promise<string> {
   const path = await pathFor(slot, repoRoot);
-  const what = `could not create a worktree for #${ticket}`;
+  const what = `could not create a worktree for #${item}`;
   // Pruned first, so a registration whose directory is already gone reads as
   // gone rather than as a worktree to reuse or a branch someone still holds.
   await git(["worktree", "prune"], repoRoot, what);
@@ -154,14 +154,14 @@ export async function ensureWorktree(
   if (attach !== null) {
     // git checks a branch out in one place at a time, and the other place is
     // usually the operator's own checkout. Taking it from there is not ours
-    // to do, and git would refuse in words that name neither the ticket nor
+    // to do, and git would refuse in words that name neither the item nor
     // the way out.
     const holder = all.find((w) => w.branch === attach && w.path !== path);
     if (holder) {
       throw new Error(
-        `#${ticket}'s branch ${attach} is checked out at ${holder.path}, and git checks a branch out in one ` +
+        `#${item}'s branch ${attach} is checked out at ${holder.path}, and git checks a branch out in one ` +
         "place at a time; landrace will not take it from there. Switch that checkout to another branch and " +
-        "the ticket carries on.",
+        "the item carries on.",
       );
     }
   }
@@ -193,7 +193,7 @@ export async function ensureWorktree(
  * reached because something already went wrong. A removal that threw there
  * would replace the real failure with its own.
  */
-export async function removeWorktree(ticket: string, repoRoot: string, slot: string = ticket): Promise<void> {
+export async function removeWorktree(item: string, repoRoot: string, slot: string = item): Promise<void> {
   // A path this refuses is one that is not ours, and there is nothing of ours
   // at it to remove: doing nothing is the whole answer, and reporting it here
   // would be reporting it from the unwind of something else.

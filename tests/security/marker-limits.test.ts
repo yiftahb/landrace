@@ -17,7 +17,7 @@ const deepData = (depth: number): unknown => {
   return v;
 };
 
-describe("deep marker JSON cannot poison a ticket", () => {
+describe("deep marker JSON cannot poison an item", () => {
   it("treats a 5000-deep marker as no marker at all", () => {
     expect(parseMarker(deepMarkerBody(5000))).toBeNull();
   });
@@ -44,7 +44,7 @@ describe("deep marker JSON cannot poison a ticket", () => {
   });
 
   it("canonicalize reports deep data instead of blowing the stack", () => {
-    const s = { ticket: deepData(5000) } as unknown as Snapshot;
+    const s = { item: deepData(5000) } as unknown as Snapshot;
     let thrown: unknown;
     try {
       canonicalize(s);

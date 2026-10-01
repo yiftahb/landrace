@@ -9,7 +9,7 @@ stages:
         when: { "run.stage": null }
     on_enter:
       # The entry record first, then the status that moves the position: a
-      # crash between them must leave the ticket at the previous stage, whose
+      # crash between them must leave the item at the previous stage, whose
       # trigger replans the identical record.
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
       - { type: tracker.status, value: spec }

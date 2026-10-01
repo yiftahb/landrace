@@ -77,7 +77,7 @@ describe("the Codex integration", () => {
 
     /*
      * workspace-write also opens $TMPDIR and /tmp unless told not to, and
-     * $TMPDIR/landrace/<repo>/ holds every other ticket's worktree, the locks
+     * $TMPDIR/landrace/<repo>/ holds every other item's worktree, the locks
      * and the pairing seeds, and the screener's own directory.
      */
     it("runs a writing step in the workspace-write sandbox, with no network and no temp directory", async () => {
@@ -166,7 +166,7 @@ describe("the Codex integration", () => {
         tools: { memory: ["search_graph"] },
       });
       const set = overrides(await argvOf(executor, {
-        capabilities: ["tickets:create", "repo:read"], child: { parent: "12", stage: "s", round: 1, server: SERVER },
+        capabilities: ["items:create", "repo:read"], child: { parent: "12", stage: "s", round: 1, server: SERVER },
       }));
       expect(set).toEqual(expect.arrayContaining([
         'mcp_servers.memory.command="cbm"', 'mcp_servers.memory.args=["--x"]', 'mcp_servers.memory.env.MEMORY_HOME="/var/m"',

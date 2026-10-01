@@ -5,7 +5,7 @@ import type { NewChild } from "#namespace.js";
 
 async function connect(onCreate: (i: NewChild) => void) {
   const server = createChildMcpServer({
-    createChild: async (i) => { onCreate(i); return { ticket: "7", title: i.title, link: "u/7" }; },
+    createChild: async (i) => { onCreate(i); return { item: "7", title: i.title, link: "u/7" }; },
   });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "t", version: "0" });

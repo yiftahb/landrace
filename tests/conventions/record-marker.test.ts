@@ -21,7 +21,7 @@ describe("the marker a record effect stamps", () => {
     expect(readBack(m)).toMatchObject({ kind: "output", stage: "triage", round: 2, goto: "build", data: { intent: "goto-build" } });
   });
 
-  it("carries the stage an entry record says the ticket left", () => {
+  it("carries the stage an entry record says the item left", () => {
     const m = recordMarker({ type: "tracker.comment", kind: "enter", stage: "triage", round: 1, marker: "enter:triage:1", from: "blocked" });
     expect(readBack(m)).toMatchObject({ kind: "enter", from: "blocked" });
   });

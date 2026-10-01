@@ -1,6 +1,6 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
-import { mayCreateTickets, ticketIdProblem } from "#conventions.js";
+import { mayCreateItems, itemIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import type { ChildBinding, ChildTool, ExecutorContext, RuntimeContext, Tools } from "#namespace.js";
 import { createChildMcpServer, createMcpServer } from "#mcp/server.js";
@@ -95,7 +95,7 @@ export async function buildMcpTools(dir: string): Promise<Tools> {
    * The same executor the loop invokes steps with, resolved the same way and
    * refused at startup for the same reason: `landrace_ask` resumes a session
    * the loop started, so the two processes have to agree about what an agent
-   * is. They coordinate through the per-ticket lock, and it is the default one
+   * is. They coordinate through the per-item lock, and it is the default one
    * — the same $TMPDIR path the loop takes — because the entire mechanism is
    * two processes finding the same file.
    *
@@ -171,7 +171,7 @@ export async function runMcp(dir: string): Promise<void> {
  * already, moments ago, against the same configuration.
  */
 export async function buildChildTool(dir: string, binding: ChildBinding): Promise<ChildTool> {
-  const parentProblem = ticketIdProblem(binding.parent);
+  const parentProblem = itemIdProblem(binding.parent);
   if (parentProblem) throw new Error(parentProblem);
   if (!Number.isInteger(binding.round) || binding.round < 1) {
     throw new Error(`round must be a positive integer, got ${binding.round}`);
@@ -183,8 +183,8 @@ export async function buildChildTool(dir: string, binding: ChildBinding): Promis
   const stage = workflow.stages.find((s) => s.id === binding.stage);
   if (!stage) throw new Error(`the workflow has no stage "${binding.stage}"`);
   const step = stage.step ? steps.get(stage.step) : undefined;
-  if (!mayCreateTickets(step?.capabilities)) {
-    throw new Error(`stage "${binding.stage}"'s step does not declare tickets:create, so it may not create children`);
+  if (!mayCreateItems(step?.capabilities)) {
+    throw new Error(`stage "${binding.stage}"'s step does not declare items:create, so it may not create children`);
   }
 
   const registry = await loadHooks({ dir, modules: workflow.hooks ?? [] });
@@ -200,7 +200,7 @@ export async function buildChildTool(dir: string, binding: ChildBinding): Promis
   return {
     async createChild(input) {
       const node = await createChild(registry.operator, binding, input, ctx);
-      return { ticket: node.id, title: node.title, link: node.link };
+      return { item: node.id, title: node.title, link: node.link };
     },
   };
 }

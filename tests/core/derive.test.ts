@@ -68,7 +68,7 @@ describe("deriveRun", () => {
     });
   });
 
-  it("reads the unblock point so a returned ticket gets a fresh budget", () => {
+  it("reads the unblock point so a returned item gets a fresh budget", () => {
     const unblocked: Entry = { stage: "spec", kind: "unblocked", round: 3, at: at(), byAgent: true };
     expect(deriveRun([out("spec", 3), unblocked], "spec").unblockedAt).toBe(3);
     expect(deriveRun([out("spec", 1)], "spec").unblockedAt).toBe(0);
@@ -148,7 +148,7 @@ describe("deriveRun", () => {
      * The handback. A rejection judges the round it was written for, not the
      * stage forever: a later entry record — which only a workflow trigger can
      * produce — asks for a new round, and the stage has to be invocable again
-     * or the ticket bounces between blocked and here until the pass cap.
+     * or the item bounces between blocked and here until the pass cap.
      */
     it("clears once the stage has been entered again for a later round", () => {
       const r = deriveRun([entered("spec", 1), malformed("spec", 1), entered("spec", 2)], "spec");
@@ -239,7 +239,7 @@ describe("deriveRun", () => {
 describe("assess uses deriveRun's per-stage failedStages, not the stage lastOutputValid answers for", () => {
   // Regression for the bug verified in review: deriveRun is called with the
   // raw snapshot's own run.stage (here "spec"), but decide() places the
-  // ticket independently via locate()'s identity predicates, which can name
+  // item independently via locate()'s identity predicates, which can name
   // a *different* stage (here "review") when a workflow uses a custom
   // identity. assess() must answer about the stage it is actually asked
   // about, not leak "spec"'s rejection into "review"'s subState.
@@ -263,7 +263,7 @@ describe("assess uses deriveRun's per-stage failedStages, not the stage lastOutp
 describe("run.goto, derived from records and consumed by entering a stage", () => {
   const going = (stage: string, to: string): Entry => ({ stage, kind: "goto", round: 0, goto: to, at: at(), byAgent: true });
 
-  it("is the latest goto written since the ticket last entered a stage", () => {
+  it("is the latest goto written since the item last entered a stage", () => {
     expect(deriveRun([entered("spec", 1), going("blocked", "spec"), going("blocked", "build")], "blocked").goto).toBe("build");
   });
 
@@ -290,7 +290,7 @@ describe("run.goto, derived from records and consumed by entering a stage", () =
     const e = { ...entered("build", 2), at: same };
     expect(deriveRun([g, e], "build").goto).toBeNull();
     // The entry comes first here, so it is the goto — written at "blocked" —
-    // that survives, and it answers only while the ticket is still there.
+    // that survives, and it answers only while the item is still there.
     expect(deriveRun([e, g], "blocked").goto).toBe("build");
   });
 
@@ -300,9 +300,9 @@ describe("run.goto, derived from records and consumed by entering a stage", () =
 
   /*
    * A decline leaves a goto unconsumed, and a trigger can then carry the
-   * ticket on to a stage — `blocked`, a terminal `done` — that writes no
+   * item on to a stage — `blocked`, a terminal `done` — that writes no
    * entry record of its own. Read back there, the goto must not still
-   * answer: it was written at "triage", not at the stage the ticket now
+   * answer: it was written at "triage", not at the stage the item now
    * sits in, and nothing has consumed it in between.
    */
   it("is null once the position has moved on from the stage that wrote it, with no entry record in between", () => {
@@ -354,7 +354,7 @@ describe("run.cleared, a person's clearance of the security check", () => {
 describe("run.previousStage, from the current stage's own entry record", () => {
   const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
 
-  it("is the stage that record says the ticket left", () => {
+  it("is the stage that record says the item left", () => {
     expect(deriveRun([from("spec", 1, "x"), from("triage", 1, "spec-human-review")], "triage").previousStage)
       .toBe("spec-human-review");
   });
@@ -370,12 +370,12 @@ describe("run.previousStage, from the current stage's own entry record", () => {
 
 /*
  * What Retry re-runs and what the judge is told failed: the failure that put
- * the ticket where it is, never an older one the ticket has since been sent
+ * the item where it is, never an older one the item has since been sent
  * around. `failedStages` alone kept a spec that failed before a person sent
- * the ticket on to build, and Retry — reading it — paid for a spec round
+ * the item on to build, and Retry — reading it — paid for a spec round
  * after the reviews ran out, which nobody had asked for.
  */
-describe("run.failedStage, the failure that put the ticket where it is", () => {
+describe("run.failedStage, the failure that put the item where it is", () => {
   const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
   const going = (stage: string, to: string): Entry => ({ stage, kind: "goto", round: 0, goto: to, at: at(), byAgent: true });
 
@@ -387,7 +387,7 @@ describe("run.failedStage, the failure that put the ticket where it is", () => {
   /*
    * A reply at a halt goes through the judge and, unless it asks for a goto,
    * comes home. That round trip left from here and settled; it did not put
-   * the ticket here. Read as "the stage it last left", Retry answered
+   * the item here. Read as "the stage it last left", Retry answered
    * "nothing has failed" to the ordinary conversation at a halt.
    */
   it("looks past a settled round trip from here — a question at the halt the judge sent home", () => {
@@ -407,7 +407,7 @@ describe("run.failedStage, the failure that put the ticket where it is", () => {
 
   /*
    * The round-trip skip is scoped to the current visit. A judge's earlier
-   * visit also sent the ticket on *from triage* — goto-spec after a failed
+   * visit also sent the item on *from triage* — goto-spec after a failed
    * build — and at the judge's next visit, read as a round trip, that move
    * was walked past and the judge at spec-human-review was told "build".
    */
@@ -435,7 +435,7 @@ describe("run.failedStage, the failure that put the ticket where it is", () => {
     });
   });
 
-  it("is null once the ticket was sent on past an older failure and came back for another reason", () => {
+  it("is null once the item was sent on past an older failure and came back for another reason", () => {
     // The walk stops at the last review round: entered from another stage,
     // and not failed. The build before it was a round trip from the halt,
     // but the reviews came in between.
@@ -482,7 +482,7 @@ describe("a pairing, derived from its records", () => {
     expect(deriveRun([entered("spec", 1), p], "spec").pairing).toEqual({ stage: "spec", round: 1, n: 1, at: p.at });
   });
 
-  it("is none on a ticket nobody paired on", () => {
+  it("is none on an item nobody paired on", () => {
     expect(deriveRun([entered("spec", 1)], "spec").pairing).toBeNull();
   });
 

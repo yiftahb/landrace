@@ -125,7 +125,7 @@ export function parseStep(source: string): Step {
 /**
  * The graph and its steps, with every `{vars.x}` already filled in.
  *
- * `vars` is configuration, not state: it does not vary per ticket, so it is
+ * `vars` is configuration, not state: it does not vary per item, so it is
  * resolved once (config/load.ts) and substituted here, before anything
  * validates anything. Everything downstream — the schema's judgement, the
  * operator allowlist, path-coverage, the predicate itself — then sees a
@@ -217,12 +217,12 @@ export async function loadWorkflow(
   }
 
   /*
-   * A branch is a template the runner fills per ticket and hands to git as
-   * argv, so what it can be is settled here, with an example ticket standing
+   * A branch is a template the runner fills per item and hands to git as
+   * argv, so what it can be is settled here, with an example item standing
    * in for every one: a template git refuses for "1" it refuses for all of
    * them, and finding that out at the first build is finding it out after the
    * spec was paid for. The runner asks again with the real id — a valid
-   * ticket id is not always a valid ref. After the vars, so `{vars.x}` in a
+   * item id is not always a valid ref. After the vars, so `{vars.x}` in a
    * branch is reported as the var it is.
    */
   for (const stage of workflow.stages) {

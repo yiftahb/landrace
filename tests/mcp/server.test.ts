@@ -37,7 +37,7 @@ describe("mcp server over a real transport", () => {
     expect(names).toEqual([
       "landrace_ask",
       "landrace_clear",
-      "landrace_create_ticket",
+      "landrace_create_item",
       "landrace_finish",
       "landrace_goto",
       "landrace_pair",
@@ -45,7 +45,7 @@ describe("mcp server over a real transport", () => {
       "landrace_reply",
       "landrace_resolve",
       "landrace_status",
-      "landrace_update_ticket",
+      "landrace_update_item",
       "landrace_waiting",
     ]);
     await client.close();
@@ -64,27 +64,27 @@ describe("mcp server over a real transport", () => {
       steps: new Map<string, Step>([["spec", { prompt: "write the spec", capabilities: ["repo:read"] }]]),
       sandbox: { root: process.cwd() },
     });
-    const view = await client.callTool({ name: "landrace_pair", arguments: { ticket: 1 } });
+    const view = await client.callTool({ name: "landrace_pair", arguments: { item: 1 } });
     expect(JSON.parse(textOf(view))).toEqual({ open: null, offers: [] });
 
-    const r = await client.callTool({ name: "landrace_pair", arguments: { ticket: 1, stage: "spec" } });
+    const r = await client.callTool({ name: "landrace_pair", arguments: { item: 1, stage: "spec" } });
     expect((r as { isError?: boolean }).isError).toBe(true);
     expect(textOf(r)).toMatch(/cannot hand a session/);
     expect(gh.comments.get(1) ?? []).toEqual([]);
     await client.close();
   });
 
-  it("creates a ticket end to end through the protocol", async () => {
+  it("creates an item end to end through the protocol", async () => {
     const { client, gh } = await connect();
-    const r = await client.callTool({ name: "landrace_create_ticket", arguments: { title: "Add CSV export" } });
-    expect(JSON.parse(textOf(r))).toMatchObject({ ticket: "1", started: true });
+    const r = await client.callTool({ name: "landrace_create_item", arguments: { title: "Add CSV export" } });
+    expect(JSON.parse(textOf(r))).toMatchObject({ item: "1", started: true });
     expect(gh.issues.get(1)?.title).toBe("Add CSV export");
     await client.close();
   });
 
-  it("returns an error result rather than throwing when a ticket is missing", async () => {
+  it("returns an error result rather than throwing when an item is missing", async () => {
     const { client } = await connect();
-    const r = await client.callTool({ name: "landrace_status", arguments: { ticket: 99 } });
+    const r = await client.callTool({ name: "landrace_status", arguments: { item: 99 } });
     expect((r as { isError?: boolean }).isError).toBe(true);
     expect(textOf(r)).toMatch(/error: .*#99 is not an issue/);
     await client.close();
@@ -92,31 +92,31 @@ describe("mcp server over a real transport", () => {
 
   it("enforces the argument schema and says why", async () => {
     const { client } = await connect();
-    const r = await client.callTool({ name: "landrace_status", arguments: { ticket: -1 } });
+    const r = await client.callTool({ name: "landrace_status", arguments: { item: -1 } });
     expect((r as { isError?: boolean }).isError).toBe(true);
-    expect(textOf(r)).toMatch(/validation error.*ticket/i);
+    expect(textOf(r)).toMatch(/validation error.*item/i);
     await client.close();
   });
 
-  it("still accepts a numeric ticket id, for clients written before ids were strings", async () => {
+  it("still accepts a numeric item id, for clients written before ids were strings", async () => {
     const { client } = await connect();
-    const r = await client.callTool({ name: "landrace_status", arguments: { ticket: 99 } });
+    const r = await client.callTool({ name: "landrace_status", arguments: { item: 99 } });
     expect(textOf(r)).toMatch(/#99 is not an issue/); // reached the tool
     await client.close();
   });
 
-  it("accepts a string ticket id", async () => {
+  it("accepts a string item id", async () => {
     const { client } = await connect();
-    const r = await client.callTool({ name: "landrace_status", arguments: { ticket: "99" } });
-    expect(textOf(r)).toMatch(/#99 is not an issue/); // reached the tool, as the same ticket
+    const r = await client.callTool({ name: "landrace_status", arguments: { item: "99" } });
+    expect(textOf(r)).toMatch(/#99 is not an issue/); // reached the tool, as the same item
     await client.close();
   });
 
-  it("refuses a hostile ticket id before any tool runs", async () => {
+  it("refuses a hostile item id before any tool runs", async () => {
     const { client } = await connect();
-    const r = await client.callTool({ name: "landrace_status", arguments: { ticket: "../x" } });
+    const r = await client.callTool({ name: "landrace_status", arguments: { item: "../x" } });
     expect((r as { isError?: boolean }).isError).toBe(true);
-    expect(textOf(r)).toMatch(/ticket id/);
+    expect(textOf(r)).toMatch(/item id/);
     expect(textOf(r)).not.toMatch(/404|not an issue/);
     await client.close();
   });
@@ -124,11 +124,11 @@ describe("mcp server over a real transport", () => {
   /**
    * The lock a conversation holds is the one that stops a tick resuming the
    * same session underneath it — and a conversation that takes it and never
-   * gives it back starves that ticket for as long as the process lives. A
+   * gives it back starves that item for as long as the process lives. A
    * client that disconnects mid-call is the path nothing else covers: the
    * promise is still pending, so only the request's own abort signal ends it.
    */
-  it("gives the ticket's lock back when a client disconnects in the middle of a turn", async () => {
+  it("gives the item's lock back when a client disconnects in the middle of a turn", async () => {
     const root = await mkdtemp(join(tmpdir(), "lr-mcp-"));
     const hanging: Executor = {
       id: "hanging",
@@ -154,7 +154,7 @@ describe("mcp server over a real transport", () => {
         renderMarker({ stage: "spec", kind: OUTPUT_KIND, round: 1, session: "sid-1", output: { kind: "questions" } }),
     );
 
-    const call = client.callTool({ name: "landrace_ask", arguments: { ticket: 1, message: "B2B only" } });
+    const call = client.callTool({ name: "landrace_ask", arguments: { item: 1, message: "B2B only" } });
     // Polled, not slept for. Both of these used to be a flat 30ms — a bet on
     // how long the handler takes to reach the lock and how long its finally
     // takes to give it back, on a machine running the rest of this suite
@@ -167,10 +167,10 @@ describe("mcp server over a real transport", () => {
     await until(async () => (await held("1", { root })) === null, "the turn to give the lock back");
   });
 
-  it("starting a ticket is opt-out, and the tool says which it did", async () => {
+  it("starting an item is opt-out, and the tool says which it did", async () => {
     const { client, gh } = await connect();
     const r = await client.callTool({
-      name: "landrace_create_ticket",
+      name: "landrace_create_item",
       arguments: { title: "File for later", start: false },
     });
     expect(JSON.parse(textOf(r))).toMatchObject({ started: false });

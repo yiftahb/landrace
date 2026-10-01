@@ -3,24 +3,24 @@ import type { Effect, Graph, HookContext, Node, Snapshot } from "#namespace.js";
 import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
 
 /*
- * code-review ran on every ticket and never raised a thread: it had no way to.
+ * code-review ran on every item and never raised a thread: it had no way to.
  * Its findings stayed in its summary, "no threads are open" routed every
- * ticket straight to a person, and fix-review never ran. The reviewer now
+ * item straight to a person, and fix-review never ran. The reviewer now
  * answers with a list, and this effect is what puts that list on the pull
  * request — one review, a thread per finding — so the workflow's open-thread
  * count sees it.
  */
 
-const snapshotOf = async (gh: FakeTracker, ticket = "7"): Promise<Snapshot> => {
-  const graph = await gh.registry.source?.read(ticket, gh.ctx);
-  const snapshot: Snapshot = { graph, node: graph?.nodes.find((n) => n.id === ticket) };
+const snapshotOf = async (gh: FakeTracker, item = "7"): Promise<Snapshot> => {
+  const graph = await gh.registry.source?.read(item, gh.ctx);
+  const snapshot: Snapshot = { graph, node: graph?.nodes.find((n) => n.id === item) };
   let merged = snapshot;
-  for (const hook of gh.registry.pre) merged = { ...merged, ...(await hook.run({ ...gh.ctx, ticket, snapshot: merged })) };
+  for (const hook of gh.registry.pre) merged = { ...merged, ...(await hook.run({ ...gh.ctx, item, snapshot: merged })) };
   return merged;
 };
 
 const contextOf = (gh: FakeTracker, snapshot: Snapshot, log: HookContext["log"] = () => {}): HookContext =>
-  ({ ...gh.ctx, ticket: "7", snapshot, log });
+  ({ ...gh.ctx, item: "7", snapshot, log });
 
 const post = (gh: FakeTracker) => {
   const hook = gh.registry.post[0];
@@ -78,7 +78,7 @@ describe("pull.review", () => {
     expect(thread).toContain("this breaks on empty input");
     expect(parseMarker(thread)?.marker).toBe("finding:code-review:1:0");
 
-    // What routes the ticket to fix-review: the graph now counts it open.
+    // What routes the item to fix-review: the graph now counts it open.
     const pr = ((await snapshotOf(gh)).graph as Graph | undefined)?.nodes.find((n: Node) => n.id === "pr-20");
     expect(pr?.state.openThreads).toBe(1);
   });
@@ -221,7 +221,7 @@ describe("pull.review", () => {
   /*
    * The pull request merged while the review ran, or the review is clean and
    * there is no pull request to put it on: nothing to fix, and a throw here
-   * would hold the ticket back from done.
+   * would hold the item back from done.
    */
   it("does nothing, and says so, when the branch's pull request is no longer open", async () => {
     const gh = createFakeTracker([{ number: 7 }]);

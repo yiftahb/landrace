@@ -1,5 +1,5 @@
 /**
- * Slack, told when a ticket needs you — through an incoming webhook, so one
+ * Slack, told when an item needs you — through an incoming webhook, so one
  * line per event and no thread: a webhook cannot reply to its own post.
  *
  * Two secrets: `slackWebhookUrl`, the webhook, which is the credential and is
@@ -11,7 +11,7 @@ import { defineNotifier } from "landrace/hooks";
 /** Slack's own three: `<` and `>` make a mention or a link, and `&` starts an entity. */
 const escape = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** Long enough for a webhook that is merely slow; a send is never awaited by a ticket either way. */
+/** Long enough for a webhook that is merely slow; a send is never awaited by an item either way. */
 const TIMEOUT_MS = 5_000;
 
 export const slack = defineNotifier({
@@ -21,11 +21,11 @@ export const slack = defineNotifier({
     if (!url) throw new Error("the slackWebhookUrl secret is not set");
     const user = ctx.secrets.get("slackNotifyUser");
 
-    const ticket = /^https?:\/\//i.test(event.link)
-      ? `<${escape(event.link)}|#${escape(event.ticket)}>`
-      : `#${escape(event.ticket)}`;
+    const item = /^https?:\/\//i.test(event.link)
+      ? `<${escape(event.link)}|#${escape(event.item)}>`
+      : `#${escape(event.item)}`;
     const board = event.board ? ` · <${escape(event.board)}|board>` : "";
-    const text = `${user ? `<@${user}> ` : ""}${ticket} needs you — ${escape(event.title)} · ${escape(event.why)}${board}`;
+    const text = `${user ? `<@${user}> ` : ""}${item} needs you — ${escape(event.title)} · ${escape(event.why)}${board}`;
 
     // Never the URL, which is the credential: fetch quotes one it cannot
     // parse, so its own failure is said with the URL taken out.

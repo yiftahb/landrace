@@ -45,45 +45,45 @@ describe("planEffects", () => {
 
     /*
      * The same rule step.ts applies to a route's effect fields: an effect is
-     * structure, not prose. A body is attacker-controlled text once a ticket
+     * structure, not prose. A body is attacker-controlled text once an item
      * title or comment can reach it, and a marker assembled from one is a
      * forged control token.
      */
-    it("substitutes nothing but the round, the stage and the ticket id, so ticket content cannot reach an effect field", () => {
+    it("substitutes nothing but the round, the stage and the item id, so item content cannot reach an effect field", () => {
       const nosy: Stage = {
         id: "s",
-        on_enter: [{ type: "tracker.comment", body: "{ticket.body} {run.stage} {outputs.spec.title} {toString}" }],
+        on_enter: [{ type: "tracker.comment", body: "{item.body} {run.stage} {outputs.spec.title} {toString}" }],
       };
       expect(planEffects({ action: "transition", to: nosy, round: 1 }, {}, "1")[0]?.body)
-        .toBe("{ticket.body} {run.stage} {outputs.spec.title} {toString}");
+        .toBe("{item.body} {run.stage} {outputs.spec.title} {toString}");
     });
 
     /*
-     * The ticket's id is the engine's own identity for what it is acting on —
-     * a lock name, a worktree, a branch — and it has passed ticketIdProblem
-     * before anything is planned for it. It is the one piece of the ticket an
+     * The item's id is the engine's own identity for what it is acting on —
+     * a lock name, a worktree, a branch — and it has passed itemIdProblem
+     * before anything is planned for it. It is the one piece of the item an
      * effect may name, and it arrives as an argument rather than out of the
      * snapshot, so the snapshot's own text stays unreachable even when it
      * spells an id of its own.
      */
-    it("fills {ticket} from the ticket being acted on, and still nothing from the snapshot", () => {
+    it("fills {item} from the item being acted on, and still nothing from the snapshot", () => {
       const pushing: Stage = {
         id: "publish",
-        on_enter: [{ type: "branch.push", branch: "landrace/{ticket}", note: "{node.id} {ticket.title} {node.title}" }],
+        on_enter: [{ type: "branch.push", branch: "landrace/{item}", note: "{node.id} {item.title} {node.title}" }],
       };
       const snapshot = {
-        node: { id: "999", title: "evil/{ticket}" },
-        ticket: { title: "hostile", body: "{ticket}" },
+        node: { id: "999", title: "evil/{item}" },
+        item: { title: "hostile", body: "{item}" },
       } as unknown as Snapshot;
       expect(planEffects({ action: "transition", to: pushing, round: 1 }, snapshot, "7")[0]).toEqual({
-        type: "branch.push", branch: "landrace/7", note: "{node.id} {ticket.title} {node.title}",
+        type: "branch.push", branch: "landrace/7", note: "{node.id} {item.title} {node.title}",
         stage: "publish", round: 1,
       });
     });
 
-    it("leaves {ticket} visible when there is no ticket to name", () => {
-      const pushing: Stage = { id: "p", on_enter: [{ type: "branch.push", branch: "landrace/{ticket}" }] };
-      expect(planEffects({ action: "transition", to: pushing, round: 1 }, {}, null)[0]?.branch).toBe("landrace/{ticket}");
+    it("leaves {item} visible when there is no item to name", () => {
+      const pushing: Stage = { id: "p", on_enter: [{ type: "branch.push", branch: "landrace/{item}" }] };
+      expect(planEffects({ action: "transition", to: pushing, round: 1 }, {}, null)[0]?.branch).toBe("landrace/{item}");
     });
 
     it("leaves an authored stage or round alone rather than overwriting it", () => {
@@ -103,7 +103,7 @@ describe("planEffects", () => {
     expect(planEffects({ action: "wait" }, {}, "1")).toEqual([]);
   });
 
-  it("plans nothing when skipped — a skipped ticket must not be written to", () => {
+  it("plans nothing when skipped — a skipped item must not be written to", () => {
     expect(planEffects({ action: "skip", why: "no lr:auto label" }, {}, "1")).toEqual([]);
   });
 
@@ -117,34 +117,34 @@ describe("planEffects", () => {
  * what the engine itself knows about this invocation and nothing else.
  */
 describe("stageBranch", () => {
-  const building: Stage = { id: "build", step: "steps/build.md", branch: "landrace/{ticket}" };
+  const building: Stage = { id: "build", step: "steps/build.md", branch: "landrace/{item}" };
 
   it("names no branch for a stage that declares none", () => {
     expect(stageBranch({ id: "spec", step: "steps/spec.md" }, "1", 1)).toEqual({ ok: true, branch: null });
   });
 
-  it("fills in the ticket, the stage and the round", () => {
+  it("fills in the item, the stage and the round", () => {
     expect(stageBranch(building, "42", 1)).toEqual({ ok: true, branch: "landrace/42" });
-    expect(stageBranch({ ...building, branch: "{stage}/{ticket}-r{round}" }, "PROJ-7", 3))
+    expect(stageBranch({ ...building, branch: "{stage}/{item}-r{round}" }, "PROJ-7", 3))
       .toEqual({ ok: true, branch: "build/PROJ-7-r3" });
   });
 
   /*
-   * `{ticket.title}` is snapshot content, and a branch is argv for git. Left
+   * `{item.title}` is snapshot content, and a branch is argv for git. Left
    * in place it would still be a legal ref — git accepts braces — so it is
    * refused by name instead of by shape.
    */
   it("refuses any other name, rather than leaving it in the branch", () => {
-    const r = stageBranch({ ...building, branch: "landrace/{ticket.title}" }, "1", 1);
+    const r = stageBranch({ ...building, branch: "landrace/{item.title}" }, "1", 1);
     expect(r).toMatchObject({ ok: false });
-    expect(r.ok ? "" : r.reason).toMatch(/\{ticket\.title\}/);
+    expect(r.ok ? "" : r.reason).toMatch(/\{item\.title\}/);
   });
 
   /*
-   * A valid ticket id is not always a valid ref: "a..b" is a fine id and no
-   * branch at all. Refused with the ticket named, before git is asked.
+   * A valid item id is not always a valid ref: "a..b" is a fine id and no
+   * branch at all. Refused with the item named, before git is asked.
    */
-  it("refuses a name git would refuse, saying which ticket made it", () => {
+  it("refuses a name git would refuse, saying which item made it", () => {
     const r = stageBranch(building, "a..b", 1);
     expect(r).toMatchObject({ ok: false });
     expect(r.ok ? "" : r.reason).toMatch(/#a\.\.b[\s\S]*"landrace\/a\.\.b"/);
@@ -173,7 +173,7 @@ describe("reconcile", () => {
   });
 });
 
-describe("where an entry record says the ticket came from", () => {
+describe("where an entry record says the item came from", () => {
   const triage: Stage = {
     id: "triage",
     on_enter: [
@@ -189,7 +189,7 @@ describe("where an entry record says the ticket came from", () => {
     expect(planned[1]).not.toHaveProperty("from");
   });
 
-  it("stamps nothing on a fresh ticket's first entry, which left no stage", () => {
+  it("stamps nothing on a fresh item's first entry, which left no stage", () => {
     expect(planEffects({ action: "transition", to: triage, round: 1 }, {}, "1")[0]).not.toHaveProperty("from");
   });
 });

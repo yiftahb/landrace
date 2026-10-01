@@ -67,7 +67,7 @@ describe("a step that exceeds what it declared", () => {
     const path = await ensureWorktree("101", root);
 
     const r = await runStep({
-      ticket: "1", step: step(["repo:read"]),
+      item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
@@ -100,7 +100,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     const r = await runStep({
-      ticket: "1", step: step(["repo:read"]),
+      item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: committer,
       signal: new AbortController().signal,
@@ -117,7 +117,7 @@ describe("a step that exceeds what it declared", () => {
     const path = await ensureWorktree("103", root);
 
     const r = await runStep({
-      ticket: "1", step: step(["repo:read"]),
+      item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
@@ -133,7 +133,7 @@ describe("a step that exceeds what it declared", () => {
     const path = await ensureWorktree("104", root);
 
     const r = await runStep({
-      ticket: "1", step: step(["repo:read", "repo:write"]),
+      item: "1", step: step(["repo:read", "repo:write"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
@@ -150,7 +150,7 @@ describe("a step that exceeds what it declared", () => {
     const path = await ensureWorktree("105", root);
 
     const r = await runStep({
-      ticket: "1", step: step(["repo:read"]),
+      item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: wellBehaved(),
       signal: new AbortController().signal,
@@ -174,7 +174,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     const r = await runStep({
-      ticket: "1", step: step(["repo:read"]),
+      item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
       signal: new AbortController().signal,
@@ -198,7 +198,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     const r = await runStep({
-      ticket: "1", step: step(["repo:read"]),
+      item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: vanishing,
       signal: new AbortController().signal,
@@ -222,7 +222,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     const r = await runStep({
-      ticket: "1", step: step(["repo:read", "net:egress"]),
+      item: "1", step: step(["repo:read", "net:egress"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
       signal: new AbortController().signal,
@@ -230,6 +230,22 @@ describe("a step that exceeds what it declared", () => {
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
     expect((r as Fail).reason).toMatch(/net:egress/);
+    expect(invoked).toBe(false);
+  });
+
+  // A step file written before the rename must say what to write instead,
+  // not just that the word is unknown.
+  it("refuses the retired capability tickets:create, naming items:create", async () => {
+    let invoked = false;
+    const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
+    const r = await runStep({
+      item: "1", step: step(["repo:read", "tickets:create"]),
+      stageId: "spec", round: 1, snapshot: {},
+      executor: spy,
+      signal: new AbortController().signal,
+    });
+    expect(r).toMatchObject({ ok: false, kind: "refused" });
+    expect((r as Fail).reason).toMatch(/"tickets:create" is now "items:create"/);
     expect(invoked).toBe(false);
   });
 
@@ -241,7 +257,7 @@ describe("a step that exceeds what it declared", () => {
     };
 
     await runStep({
-      ticket: "1", step: { prompt: "go" },
+      item: "1", step: { prompt: "go" },
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
       signal: new AbortController().signal,
@@ -278,7 +294,7 @@ function world() {
       list: async () => ({ nodes: [], relationships: [] }),
       read: async (id) => ({
         nodes: [{
-          id, kind: "ticket", title: `ticket ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
+          id, kind: "item", title: `item ${id}`, link: `u/${id}`, closed: null, priority: null, origin: null,
           state: { labels: [...labels], assignees: [] },
         }],
         relationships: [],
@@ -320,7 +336,7 @@ const deps = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) =
   dispatcher: createDispatcher([w.post]),
   executor: wellBehaved(),
   ctx: {
-    ticket: "1", config: {} as HookContext["config"], secrets: new Map(),
+    item: "1", config: {} as HookContext["config"], secrets: new Map(),
     signal: new AbortController().signal, log: () => {},
   },
   log: createLogger({ sink: () => {} }),
@@ -448,9 +464,9 @@ describe("converge and the sandbox", () => {
   /**
    * End to end, against the file system: a read-only step whose agent writes
    * is stopped, its write never reaches the operator's checkout, and the
-   * ticket carries the refusal where a person can read it.
+   * item carries the refusal where a person can read it.
    */
-  it("records the refusal on the ticket and keeps the write out of the repository", async () => {
+  it("records the refusal on the item and keeps the write out of the repository", async () => {
     const root = await repo();
     const w = world();
     await converge("1", deps(w, { executor: writer("planted.ts"), sandbox: { root } }));
@@ -486,7 +502,7 @@ describe("converge and the sandbox", () => {
  * The branch a stage names is where its step's commits go, and what outlives
  * the worktree converge removes on the way out. Before this, a build committed
  * onto a detached HEAD in a directory that was then deleted: the work was
- * unreferenced, the pull request never came, and the ticket waited at build.
+ * unreferenced, the pull request never came, and the item waited at build.
  */
 describe("converge and a stage's branch", () => {
   const git = async (cwd: string, ...args: string[]): Promise<string> => (await exec("git", args, { cwd })).stdout.trim();
@@ -517,7 +533,7 @@ describe("converge and a stage's branch", () => {
     const made: string[] = [];
 
     const r = await converge("1", deps(world(), {
-      workflow: branched("landrace/{ticket}"),
+      workflow: branched("landrace/{item}"),
       steps: new Map<string, Step>([["spec", writing]]),
       executor: committer(made),
       sandbox: { root },
@@ -548,16 +564,16 @@ describe("converge and a stage's branch", () => {
   });
 
   /*
-   * "a..b" is a perfectly good ticket id and no branch at all. Found before
+   * "a..b" is a perfectly good item id and no branch at all. Found before
    * the step is paid for, and said in a sentence rather than as git's stderr.
    */
-  it("halts before the step when this ticket's id cannot make the stage's branch", async () => {
+  it("halts before the step when this item's id cannot make the stage's branch", async () => {
     const root = await repo();
     let invoked = false;
     const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
 
     const r = await converge("a..b", deps(world(), {
-      workflow: branched("landrace/{ticket}"),
+      workflow: branched("landrace/{item}"),
       steps: new Map<string, Step>([["spec", writing]]),
       executor: spy,
       sandbox: { root },
@@ -576,7 +592,7 @@ describe("converge and a stage's branch", () => {
     const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
 
     const r = await converge("1", deps(world(), {
-      workflow: branched("landrace/{ticket}"),
+      workflow: branched("landrace/{item}"),
       steps: new Map<string, Step>([["spec", writing]]),
       executor: spy,
       sandbox: { root },
@@ -589,23 +605,23 @@ describe("converge and a stage's branch", () => {
   });
 
   /*
-   * Nothing in the engine limits a ticket to one branch: each stage names its
+   * Nothing in the engine limits an item to one branch: each stage names its
    * own, and two stages naming two templates leave two branches, each holding
    * only what its own stage committed.
    */
-  it("gives one ticket two branches when two stages name two", async () => {
+  it("gives one item two branches when two stages name two", async () => {
     const root = await repo();
     const made: string[] = [];
     const twoBranches: Workflow = {
       version: 1, name: "t",
       stages: [
         {
-          id: "api", step: "api", entry: true, branch: "api/{ticket}",
+          id: "api", step: "api", entry: true, branch: "api/{item}",
           triggers: [{ when: { "run.stage": null } }],
           on_enter: [{ type: "tracker.status", value: "api" }],
         },
         {
-          id: "ui", step: "ui", branch: "ui/{ticket}",
+          id: "ui", step: "ui", branch: "ui/{item}",
           triggers: [{ when: { "run.stage": "api", "run.outputs.api": { $exists: true } } }],
           on_enter: [{ type: "tracker.status", value: "ui" }],
         },

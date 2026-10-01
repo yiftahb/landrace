@@ -4,13 +4,13 @@ import { createFakeNotion, type FakeNotion, type FakeRequest } from "#tests/inte
 import type { Effect, EffectHandler, HookContext, RuntimeConfig, RuntimeContext } from "#namespace.js";
 
 /**
- * Notion as a project's docs, over the in-memory Notion: a ticket's spec is a
+ * Notion as a project's docs, over the in-memory Notion: an item's spec is a
  * row of the `Landrace specs` database in a page the operator shared — its
- * `Ticket` the ticket, its body the spec as blocks, its `Source` the markdown
+ * `Ticket` the item, its body the spec as blocks, its `Source` the markdown
  * itself, written last.
  */
 const ctx: RuntimeContext = { config: {} as RuntimeConfig, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
-const at = (ticket: string): HookContext => ({ ...ctx, ticket, snapshot: {} });
+const at = (item: string): HookContext => ({ ...ctx, item, snapshot: {} });
 
 const world = (fake: FakeNotion = createFakeNotion()) => ({
   fake,
@@ -23,7 +23,7 @@ const handler = (notion: Notion): EffectHandler => {
   if (!publish) throw new Error("Notion publishes nothing");
   return publish;
 };
-const apply = (notion: Notion, body: string, ticket = "12") => handler(notion).apply(effect(body), at(ticket));
+const apply = (notion: Notion, body: string, item = "12") => handler(notion).apply(effect(body), at(item));
 
 /** Everything but a read: a query is a POST that changes nothing. */
 const writes = (fake: FakeNotion): FakeRequest[] => fake.requests.filter((r) => r.method !== "GET" && !r.path.endsWith("/query"));
@@ -90,14 +90,14 @@ describe("check, before landrace start pays for anything", () => {
   });
 });
 
-describe("publishing a ticket's spec", () => {
-  it("makes one row: Ticket the ticket, the body the spec as blocks, Source the markdown", async () => {
+describe("publishing an item's spec", () => {
+  it("makes one row: Ticket the item, the body the spec as blocks, Source the markdown", async () => {
     const { fake, notion } = world();
     await apply(notion, "# Spec\n\nthe plan");
 
     const [row, ...more] = fake.rows();
     expect(more).toEqual([]);
-    expect(row?.ticket).toBe("12");
+    expect(row?.item).toBe("12");
     expect(textOf(row?.source ?? [])).toBe("# Spec\n\nthe plan");
     expect(row?.blocks.map((b) => b.type)).toEqual(["heading_1", "paragraph"]);
   });
@@ -223,7 +223,7 @@ describe("publishing a ticket's spec", () => {
   });
 });
 
-describe("reading which tickets have a page", () => {
+describe("reading which items have a page", () => {
   /*
    * `landrace status` only reads, and says so. A read that made the database
    * would make it on a project whose start never ran — and there is nothing
@@ -239,7 +239,7 @@ describe("reading which tickets have a page", () => {
     expect(fake.databases()).toEqual([]);
   });
 
-  it("has no page, and links the parent, for a ticket with no row", async () => {
+  it("has no page, and links the parent, for an item with no row", async () => {
     const { fake, notion } = world();
     fake.seedDatabase();
     expect(await notion.page("99", ctx)).toBeNull();
@@ -255,16 +255,16 @@ describe("reading which tickets have a page", () => {
     expect(await notion.link("12", ctx)).toBe(fake.rows()[0]?.url);
   });
 
-  it("halts on two rows for one ticket rather than pick one", async () => {
+  it("halts on two rows for one item rather than pick one", async () => {
     const { fake, notion } = world();
     fake.seedDatabase();
     fake.seedRow("12", ["one"]);
     fake.seedRow("12", ["two"]);
-    await expect(notion.page("12", ctx)).rejects.toThrow(/2 rows are ticket 12/);
-    await expect(notion.published(ctx)).rejects.toThrow(/2 rows are ticket 12/);
+    await expect(notion.page("12", ctx)).rejects.toThrow(/2 rows are item 12/);
+    await expect(notion.published(ctx)).rejects.toThrow(/2 rows are item 12/);
   });
 
-  it("lists the pages from one query, each linked to its row, with no query per ticket", async () => {
+  it("lists the pages from one query, each linked to its row, with no query per item", async () => {
     const { fake, notion } = world();
     fake.seedDatabase();
     const twelve = fake.seedRow("12", ["# Twelve"]);

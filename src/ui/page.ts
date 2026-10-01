@@ -44,17 +44,17 @@ const ICON_BUTTON =
   "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800";
 
 /**
- * The ticket panel: fixed to the right, the board pushed left beside it from
+ * The item panel: fixed to the right, the board pushed left beside it from
  * `sm` up and covered by it below. A static skeleton the script fills with
  * textContent — the composer lives here, outside anything a poll redraws, so
  * what someone is typing survives every poll.
  */
 const PANEL = `
-<aside id="panel" hidden aria-label="Ticket" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]">
+<aside id="panel" hidden aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]">
 <div class="flex items-start gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
 <h2 id="panel-title" class="min-w-0 flex-1 break-words text-sm font-semibold"></h2>
 <div class="relative shrink-0">
-<button id="panel-more" type="button" aria-label="Ticket actions" aria-haspopup="menu" aria-expanded="false" title="Ticket actions" data-key="panel:trigger" class="${ICON_BUTTON}">⋯</button>
+<button id="panel-more" type="button" aria-label="Item actions" aria-haspopup="menu" aria-expanded="false" title="Item actions" data-key="panel:trigger" class="${ICON_BUTTON}">⋯</button>
 <div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
 <button id="panel-pairing-item" type="button" role="menuitem" class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800">Pairing…</button>
 </div>
@@ -101,7 +101,7 @@ export const PAGE_HTML = `<!doctype html>
 <span id="next" class="rounded-full border border-neutral-200 px-3 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">No tick scheduled</span>
 <button id="tick" type="button" class="${BUTTON}">Run next tick now</button>
 </div>
-<button id="notify-toggle" type="button" aria-pressed="false" aria-label="Notify me when a ticket needs you" title="Notify me when a ticket needs you" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-50 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">🔔</button>
+<button id="notify-toggle" type="button" aria-pressed="false" aria-label="Notify me when an item needs you" title="Notify me when an item needs you" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-50 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">🔔</button>
 <button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
@@ -111,7 +111,7 @@ export const PAGE_HTML = `<!doctype html>
 </header>
 <main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
-<input id="search" type="search" placeholder="Search tickets…" aria-label="Search tickets" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
+<input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
 <div class="flex items-center gap-2">
 <button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all (c)" class="${BUTTON}">Collapse all</button>
 <button id="refresh" type="button" aria-label="Refresh" title="Re-read the tracker" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
@@ -273,8 +273,8 @@ let openMenuKey = null;
 const writeNotes = new Map();
 const writing = new Set();
 
-// Tickets a write just went through for, by id: the lane the server had each
-// in, when, and the ticks armed since. The server moves a ticket only once a
+// Items a write just went through for, by id: the lane the server had each
+// in, when, and the ticks armed since. The server moves an item only once a
 // tick lists the tracker again — up to a whole interval after the click, and
 // a Reply wakes no tick at all — so until then the page shows it in Waiting.
 // ponytail: top-level rows only; a child's lane is its root's, and stays put.
@@ -286,7 +286,7 @@ function moved(id) {
   if (row && lastView.nextTickAt !== null) moves.set(id, { lane: row.lane, next: lastView.nextTickAt, ticks: 0, at: Date.now() });
 }
 
-// A fresh view with each moving ticket in Waiting, until the server moves it
+// A fresh view with each moving item in Waiting, until the server moves it
 // itself or two ticks have been armed since — one came and went and left it
 // where it was, so the server's word stands again.
 function withMoves(view, moves) {
@@ -365,7 +365,7 @@ function closeMenu(opts) {
   const previous = openMenuKey;
   openMenuKey = null;
   // A refusal is shown for the menu it was asked from, not for good. Keyed
-  // by write, so every note under this menu's ticket goes.
+  // by write, so every note under this menu's item goes.
   const prefix = previous.slice(0, previous.length - "menu".length);
   for (const key of [...writeNotes.keys()]) if (key.startsWith(prefix)) writeNotes.delete(key);
   applyMenuState(previous);
@@ -396,7 +396,7 @@ function isTypingTarget(el) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
-// Escape closes whatever row menu is open, else the ticket panel; an
+// Escape closes whatever row menu is open, else the item panel; an
 // unmodified "c" answers a click on Collapse all / Expand all — never while
 // it would be typed instead, and never while a row's own menu is open, so its
 // own keys are never raced.
@@ -426,11 +426,11 @@ function onBoard(el) {
   return !isTypingTarget(el) && typeof el.closest === "function" && el.closest("main") !== null;
 }
 
-// The ticket titles on screen, in the order drawn — a closed lane's or a
+// The item titles on screen, in the order drawn — a closed lane's or a
 // search-hidden one's take no focus — and the one a step lands on: the next
 // or previous from the row focus is in, the first or last from none.
 // checkVisibility, not boxes: Chromium lays out a closed <details>' content
-// and refuses focus there silently, so with every ticket in a collapsed Done
+// and refuses focus there silently, so with every item in a collapsed Done
 // the arrows walked into it and nothing moved.
 function stepFocus(by) {
   const titles = [...document.querySelectorAll('[data-key$=":open"]')].filter((t) => t.checkVisibility());
@@ -449,7 +449,7 @@ function menuItem(tag) {
   return node;
 }
 
-// One of a ticket's writes — Retry, or a step to send it back to. Offered
+// One of an item's writes — Retry, or a step to send it back to. Offered
 // only where the server put a path in the row, and posted to that path alone.
 function writeItem(w) {
   const item = menuItem("button");
@@ -465,7 +465,7 @@ function writeItem(w) {
 }
 
 // Each write re-runs a paid step, so it asks first. The server checks again
-// that the ticket may go there now, and what it says when it refuses is
+// that the item may go there now, and what it says when it refuses is
 // shown where it was asked.
 function send(w) {
   if (writing.has(w.key)) return;
@@ -489,8 +489,8 @@ function send(w) {
     });
 }
 
-// A stopped ticket's Retry — back to the step that failed — and the steps
-// its stage may send it back to, under a caption that is not itself an item.
+// A stopped item's Retry — back to the step that failed — and the steps
+// its stage may send it back to, under a caption that is not itself a menu item.
 function writesOf(row) {
   const items = [];
   if (row.retry) {
@@ -499,14 +499,14 @@ function writesOf(row) {
       ask: "Retry #" + row.id + "? This sends it back to the step that failed and re-runs a paid step.",
     }));
   }
-  // A screened ticket's overrule: the refused step's next round runs once
-  // without the security check. The server re-reads the ticket and alone
+  // A screened item's overrule: the refused step's next round runs once
+  // without the security check. The server re-reads the item and alone
   // decides; this is only its offer.
   if (row.clear) {
     items.push(writeItem({
       id: row.id, key: row.id + ":clear", label: "Clear & retry", busy: "Clearing…", path: row.clear, action: "clear",
       ask: "Retry #" + row.id + " without the security check? Its next round runs once unscreened — only if you have " +
-        "read what was refused and trust it. Anything written on the ticket after this voids it.",
+        "read what was refused and trust it. Anything written on the item after this voids it.",
     }));
   }
   const targets = row.goto || [];
@@ -532,7 +532,7 @@ function buildRowMenu(row) {
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const writes = writesOf(row);
-  // Pairing… opens the ticket's panel on its Pairing section, which asks the
+  // Pairing… opens the item's panel on its Pairing section, which asks the
   // server what may be paired on — the row itself cannot tell.
   if (row.panel) {
     const pairing = menuItem("button");
@@ -632,7 +632,7 @@ const indentOf = (depth) => INDENT[Math.min(depth, INDENT.length - 1)];
 // render: a poll landing every two seconds must never undo what someone just
 // clicked. Every row starts open and stays so until someone closes it: the
 // board is read top to bottom, and a branch that arrives shut hides the very
-// ticket someone came to look at. An entry lives until its node leaves the
+// item someone came to look at. An entry lives until its node leaves the
 // view (see forgetGone), so a returning id starts open again rather than
 // carrying a choice made about another node.
 const userExpanded = new Map();
@@ -864,7 +864,7 @@ function ago(at, now) {
   return h < 48 ? h + "h" : Math.floor(h / 24) + "d";
 }
 
-// A ticket a security check stopped: a shield beside its badge, drawn inline
+// An item a security check stopped: a shield beside its badge, drawn inline
 // — the page loads no image — and named, so hovering or a screen reader says
 // what it means rather than leaving an icon to be guessed at.
 function shieldMark() {
@@ -903,7 +903,7 @@ function treeItem(row, depth, cls, open) {
   return li;
 }
 
-// The ▸/▾ in front of any row with children — ticket or artifact, since a
+// The ▸/▾ in front of any row with children — item or artifact, since a
 // document can sit under a pull request too, and a row nobody can open would
 // hide its children for good. Keyed like the menu, so render()'s restore-by-key
 // keeps a keyboard user's focus on it across the re-render its own click causes.
@@ -937,7 +937,7 @@ function toggleSlot(row, open) {
   return blank;
 }
 
-function ticketRowFor(row, depth, now, open) {
+function itemRowFor(row, depth, now, open) {
   // Stacked below the sm breakpoint, side-by-side above it — a breakpoint, not a
   // content-based flex-wrap. flex-wrap's own line-breaking runs on each
   // item's *hypothetical* (content) size: flex-1's 0% basis told the browser
@@ -945,7 +945,7 @@ function ticketRowFor(row, depth, now, open) {
   // down, while flex-auto's content-sized basis wrapped the button down but
   // then sized the title/stage row itself off the unwrapped content width,
   // pushing the stage chip past the edge instead. Neither reliably fits
-  // arbitrary ticket titles at 400px, so the breakpoint sidesteps both.
+  // arbitrary item titles at 400px, so the breakpoint sidesteps both.
   const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1", open);
   // The toggle, when there is one, is a column of its own beside the body:
   // inside the title line it pushed the number right but not the note or a
@@ -963,7 +963,7 @@ function ticketRowFor(row, depth, now, open) {
   // it — flex-1 here previously grew title to fill *all* of main's leftover
   // width, shoving the chip down to the row's far edge, next to the action
   // button, instead of next to the title it names.
-  // A ticket's title opens its panel — a button, so a keyboard reaches it too.
+  // An item's title opens its panel — a button, so a keyboard reaches it too.
   const title = row.panel
     ? el("button", "title min-w-0 cursor-pointer text-left font-medium text-neutral-900 hover:underline dark:text-neutral-100", row.title)
     : el("span", "title min-w-0 font-medium text-neutral-900 dark:text-neutral-100", row.title);
@@ -973,7 +973,7 @@ function ticketRowFor(row, depth, now, open) {
     title.addEventListener("click", () => openPanel(row.id));
   }
   top.append(num, title);
-  // No stage at all (a halted ticket, say) shows no chip — not an empty or
+  // No stage at all (a halted item, say) shows no chip — not an empty or
   // placeholder one. A row with a round but no stage cannot happen (round is
   // only ever set alongside a running row's own stage), so this only ever
   // omits the chip, never leaves a lone "· r2" behind.
@@ -986,7 +986,7 @@ function ticketRowFor(row, depth, now, open) {
     top.append(el("span", "badge shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium " + cls, label));
   }
   if (row.screened) top.append(shieldMark());
-  // A ticket row names no system: its tracker is the whole board's, and the
+  // An item row names no system: its tracker is the whole board's, and the
   // mark earns its place only on an artifact row, where it tells a pull
   // request from a document. An unset priority shows nothing rather than a
   // placeholder chip on every row.
@@ -1019,7 +1019,7 @@ function ticketRowFor(row, depth, now, open) {
   return li;
 }
 
-// A pull request, a document — anything that is not a ticket — as one line:
+// A pull request, a document — anything that is not an item — as one line:
 // what it is, where it lives, its title, how long ago it was opened, and ↗ at
 // the far edge, the whole line one link that opens in a new tab. The two
 // marks say kind and system without words; the names beside them only
@@ -1030,7 +1030,7 @@ function artifactRowFor(row, depth, open, now) {
   const li = treeItem(row, depth, "flex items-center gap-2 py-1 pr-4 text-sm", open);
   // The padding is the link's own, so the whole band it lights up on hover
   // is what a click lands on; the negative margin puts the mark back in the
-  // column a ticket's number takes at this depth.
+  // column an item's number takes at this depth.
   const line = row.link
     ? external(el("a", "-mx-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-neutral-800 dark:focus-visible:outline-blue-400"), row)
     : el("span", "flex min-w-0 flex-1 items-center gap-2 py-1.5");
@@ -1069,7 +1069,7 @@ function treeRows(rows, depth, seen, now, out, search, inMatch) {
     if (!inMatch && !shows(row, search)) continue;
     seen.add(row.id);
     const open = row.children.length > 0 && openOf(row, search);
-    out.push(row.kind === "ticket" ? ticketRowFor(row, depth, now, open) : artifactRowFor(row, depth, open, now));
+    out.push(row.kind === "item" ? itemRowFor(row, depth, now, open) : artifactRowFor(row, depth, open, now));
     if (open) treeRows(row.children, depth + 1, seen, now, out, search, inMatch || (search !== null && search.self.has(row.id)));
   }
   return out;
@@ -1294,17 +1294,17 @@ refreshButton.addEventListener("click", () => {
     .catch(() => refreshAnswered(0));
 });
 
-// ---- the ticket panel -------------------------------------------------------
+// ---- the item panel -------------------------------------------------------
 
 // Faster than the board's own poll, so a running step's tool lines land
 // within two seconds of the agent reporting them.
 const PANEL_POLL_MS = 1500;
 
-// The ticket the panel is open on, or null. The hash is its one source:
+// The item the panel is open on, or null. The hash is its one source:
 // Back closes the panel, and a reload reopens it (see showPanel).
 let panelId = null;
-// The ticket the state below belongs to — kept across a close, so Escape
-// halfway through a reply loses nothing if the same ticket is reopened.
+// The item the state below belongs to — kept across a close, so Escape
+// halfway through a reply loses nothing if the same item is reopened.
 let panelHeld = null;
 // ⤢: the panel over the whole page, rather than beside the board.
 let panelWide = false;
@@ -1321,7 +1321,7 @@ let chatShownFor = null;
 // The Pairing section: whether it is shown, the server's last answer, the
 // command a start handed back, and what the last write heard.
 let pairing = { shown: false, view: null, command: null, note: "", busy: false, error: "" };
-// A row's Pairing… asked for this ticket's panel before it had opened.
+// A row's Pairing… asked for this item's panel before it had opened.
 let pairingOnOpen = null;
 
 const panelEl = document.getElementById("panel");
@@ -1340,10 +1340,10 @@ const replyButton = document.getElementById("panel-reply");
 const askButton = document.getElementById("panel-ask");
 const resolveButton = document.getElementById("panel-resolve");
 
-// "#ticket=12" names ticket 12; any other hash, or one that will not
+// "#item=12" names item 12; any other hash, or one that will not
 // decode, names none.
-function ticketOfHash(hash) {
-  const m = /^#ticket=(.+)$/.exec(hash || "");
+function itemOfHash(hash) {
+  const m = /^#item=(.+)$/.exec(hash || "");
   if (!m) return null;
   try { return decodeURIComponent(m[1]); } catch (e) { return null; }
 }
@@ -1361,15 +1361,15 @@ function findRow(rows, id) {
   return null;
 }
 
-// The panel's row: a ticket the board still lists, with the paths the
+// The panel's row: an item the board still lists, with the paths the
 // server gave it. Nothing else opens a panel.
 function currentRow() {
   if (panelId === null || !lastView) return null;
   const row = findRow(lastView.rows, panelId);
-  return row && row.kind === "ticket" && row.panel ? row : null;
+  return row && row.kind === "item" && row.panel ? row : null;
 }
 
-// Which bottom half a ticket gets: live lines while its agent runs, the
+// Which bottom half an item gets: live lines while its agent runs, the
 // composer while it waits on a person, its conversation — and, while another
 // process holds it, what that process's agent is doing — otherwise.
 function modeOf(row) {
@@ -1447,7 +1447,7 @@ function panelBottomOf(row, mode, state, now) {
   const out = [];
   const conv = state.conversation;
   if (conv.lines === null) out.push(panelNote(conv.error || "Reading the conversation…"));
-  else if (!conv.lines.length) out.push(panelNote("Nothing has been said on this ticket yet."));
+  else if (!conv.lines.length) out.push(panelNote("Nothing has been said on this item yet."));
   else out.push(...conv.lines.map((l) => conversationItem(l, now)));
   if (conv.lines !== null && conv.error) out.push(panelNote(conv.error));
   if (mode === "elsewhere") {
@@ -1457,8 +1457,8 @@ function panelBottomOf(row, mode, state, now) {
     const lastWord = conv.lines && conv.lines.length ? Date.parse(conv.lines[conv.lines.length - 1].at) : 0;
     const lines = progressLines(state.activity.lines, Number.isNaN(lastWord) ? 0 : lastWord);
     out.push(panelNote(lines.length
-      ? "Another process holds this ticket — what its agent is doing:"
-      : "Another process holds this ticket; its agent has reported nothing yet."));
+      ? "Another process holds this item — what its agent is doing:"
+      : "Another process holds this item; its agent has reported nothing yet."));
     out.push(...lines.map(activityItem));
   }
   if (state.asking) {
@@ -1470,7 +1470,7 @@ function panelBottomOf(row, mode, state, now) {
       el("div", "mb-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400", "The step answered"),
       el("p", "whitespace-pre-wrap break-words text-sm text-neutral-800 dark:text-neutral-200", state.answer.reply),
       el("div", "mt-1 text-[11px] text-neutral-500 dark:text-neutral-400",
-        state.answer.resolved ? "It has what it needs — Resolve hands the ticket back." : "It still has questions."),
+        state.answer.resolved ? "It has what it needs — Resolve hands the item back." : "It still has questions."),
     );
     out.push(answer);
   }
@@ -1487,7 +1487,7 @@ function panelLink(a, href, key) {
   return a;
 }
 
-// An artifact under the ticket, with the board's own kind and state marks.
+// An artifact under the item, with the board's own kind and state marks.
 function artifactItem(row, now) {
   const li = el("li", "flex min-w-0 items-center gap-2");
   const kind = kindMark(row);
@@ -1501,7 +1501,7 @@ function artifactItem(row, now) {
 }
 
 // The panel's top half: the BoardRow already in /board.json, and nothing
-// else — no second read of the ticket's status. \`last\` is the newest line
+// else — no second read of the item's status. \`last\` is the newest line
 // of activity the panel has read.
 function panelTopOf(row, last, now) {
   const head = el("div", "flex flex-wrap items-center gap-2");
@@ -1525,7 +1525,7 @@ function panelTopOf(row, last, now) {
     ["Last activity", last ? agoLabel(last.at, now) : "—"],
   ]) facts.append(el("dt", "text-neutral-500 dark:text-neutral-400", name), el("dd", "min-w-0 truncate font-mono", value));
   const out = [head, facts];
-  const artifacts = row.children.filter((c) => c.kind !== "ticket");
+  const artifacts = row.children.filter((c) => c.kind !== "item");
   if (artifacts.length) {
     const list = el("ul", "mt-1 space-y-1");
     for (const a of artifacts) list.append(artifactItem(a, now));
@@ -1534,7 +1534,7 @@ function panelTopOf(row, last, now) {
   return out;
 }
 
-// The Chat deep links stay beside the composer. Built once per ticket: they
+// The Chat deep links stay beside the composer. Built once per item: they
 // depend on nothing a poll changes, and rebuilding them would steal focus.
 function renderChat(row) {
   if (chatShownFor === row.id) return;
@@ -1588,7 +1588,7 @@ function renderPanel() {
   keepingFocus(() => {
     const row = currentRow();
     const now = Date.now();
-    // Its only action is pairing, which a ticket with no panel paths has not.
+    // Its only action is pairing, which an item with no panel paths has not.
     panelMore.hidden = !(row && row.panel);
     if (panelMore.hidden && openMenuKey === "panel") closeMenu();
     pairingItem.textContent = pairing.shown ? "Hide pairing" : "Pairing…";
@@ -1713,9 +1713,9 @@ function panelWrite(kind) {
       panelBusy = false;
       asking = null;
       if (ok && kind !== "ask") moved(id);
-      // The answer belongs to its ticket, not to whether the panel is open:
-      // closed mid-Ask, it is there when the ticket is reopened, rather than
-      // "Asking the step…" for good. Only another ticket's panel is left alone.
+      // The answer belongs to its item, not to whether the panel is open:
+      // closed mid-Ask, it is there when the item is reopened, rather than
+      // "Asking the step…" for good. Only another item's panel is left alone.
       if (panelHeld !== id) return;
       if (!ok) {
         // The words stay in the box, so nothing typed is lost to a refusal.
@@ -1810,7 +1810,7 @@ function togglePairing() {
   renderPanel();
 }
 
-// A row's Pairing…: its ticket's panel, open on the Pairing section.
+// A row's Pairing…: its item's panel, open on the Pairing section.
 function openPairing(id) {
   if (panelId === id) {
     if (!pairing.shown) togglePairing();
@@ -1843,7 +1843,7 @@ function pairWrite(kind, stage) {
     if (fresh && !confirm("Pair on " + stage + " for #" + row.id + "? Its round is held for you: the agent does not run it alone until you finish or release it.")) return;
     body = stage;
   } else if (kind === "finish") {
-    const note = prompt("Finish the pairing on #" + row.id + "? Your session is asked for the step's answer, a paid agent turn, and the ticket moves on. A note for it, if you like:", "");
+    const note = prompt("Finish the pairing on #" + row.id + "? Your session is asked for the step's answer, a paid agent turn, and the item moves on. A note for it, if you like:", "");
     if (note === null) return;
     body = note;
   } else if (!confirm("Release the pairing on #" + row.id + "? The agent runs the step alone from the next tick, and the pairing's checkout is removed.")) {
@@ -1884,7 +1884,7 @@ function pairWrite(kind, stage) {
     });
 }
 
-// The one way the panel opens, shuts or changes ticket: the hash changed.
+// The one way the panel opens, shuts or changes item: the hash changed.
 function showPanel(id) {
   if (openMenuKey === "panel") closeMenu();
   if (id !== null && id !== panelHeld) {
@@ -1913,7 +1913,7 @@ function showPanel(id) {
   renderPanel();
 }
 
-// The panel's ticket, marked on its own row of the list — looked up by key,
+// The panel's item, marked on its own row of the list — looked up by key,
 // since a render replaces every row.
 function markSelected() {
   for (const li of document.querySelectorAll('[role="treeitem"][aria-selected="true"]')) li.removeAttribute("aria-selected");
@@ -1925,7 +1925,7 @@ function markSelected() {
 // A row click: pushed onto the hash, so Back closes the panel and a reload
 // reopens it.
 function openPanel(id) {
-  location.hash = "ticket=" + encodeURIComponent(id);
+  location.hash = "item=" + encodeURIComponent(id);
 }
 
 // ✕ and Escape: the hash goes, as Back would take it, with no history entry
@@ -1961,15 +1961,15 @@ function onMessageKey(e) {
 messageBox.addEventListener("keydown", onMessageKey);
 askButton.addEventListener("click", () => panelWrite("ask"));
 resolveButton.addEventListener("click", () => panelWrite("resolve"));
-window.addEventListener("hashchange", () => showPanel(ticketOfHash(location.hash)));
-showPanel(ticketOfHash(location.hash));
+window.addEventListener("hashchange", () => showPanel(itemOfHash(location.hash)));
+showPanel(itemOfHash(location.hash));
 
-// Every ticket the board badges needs-you, children included, by id — and
+// Every item the board badges needs-you, children included, by id — and
 // one that needed you at the last poll and is only held elsewhere now: a
-// conversation turn or a pairing holds its lock a while, but the ticket never
+// conversation turn or a pairing holds its lock a while, but the item never
 // left you, and its return is no arrival. A needs-you read from stale labels
 // counts the same way: once a step has run, the labels may still be the stage
-// the ticket is leaving — a spec approval heading into build reads needs-you
+// the item is leaving — a spec approval heading into build reads needs-you
 // between triage's step and the next list — so only a fresh list says it
 // arrived.
 function needingYou(rows, into, before) {
@@ -1982,15 +1982,15 @@ function needingYou(rows, into, before) {
   return into;
 }
 
-// The tickets that need you now and did not at the last poll. The first poll
+// The items that need you now and did not at the last poll. The first poll
 // has no last one and only seeds: opening the board announces nothing that
 // was already waiting.
 function arrived(before, now) {
   return before === null ? [] : [...now.values()].filter((row) => !before.has(row.id));
 }
 
-// One system notification for a ticket that has just come to need you, only
-// with the bell on and the browser's leave. Tagged by ticket, so a second
+// One system notification for an item that has just come to need you, only
+// with the bell on and the browser's leave. Tagged by item, so a second
 // arrival replaces the first rather than stacking — and renotify, so the
 // replacing one still alerts: a return is notified again, not swapped in
 // silently over one still sitting in the notification centre. A click opens
@@ -2018,8 +2018,8 @@ function bellState(on, permission) {
     return { icon: "🔔", pressed: "false", label: "Your browser has not allowed notifications — allow them for this site in its site settings, or click to ask again" };
   }
   return on && permission === "granted"
-    ? { icon: "🔔", pressed: "true", label: "Notifying you when a ticket needs you — click to stop" }
-    : { icon: "🔔", pressed: "false", label: "Notify me when a ticket needs you" };
+    ? { icon: "🔔", pressed: "true", label: "Notifying you when an item needs you — click to stop" }
+    : { icon: "🔔", pressed: "false", label: "Notify me when an item needs you" };
 }
 
 // Toggled from what the bell shows, not what was stored: on with the prompt
@@ -2031,7 +2031,7 @@ function clickedBell(on, permission) {
 const bell = document.getElementById("notify-toggle");
 let notifyOn = false;
 try { notifyOn = localStorage.getItem(NOTIFY_KEY) === "on"; } catch (e) {}
-// Which tickets needed you at the last poll that landed; null until one has.
+// Which items needed you at the last poll that landed; null until one has.
 let neededYou = null;
 
 function permissionNow() {

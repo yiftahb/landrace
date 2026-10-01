@@ -50,7 +50,7 @@ describe("the activity log", () => {
     expect(await log.read("25", 0)).toMatchObject({ stage: "build", round: 2, total: 1 });
   });
 
-  it("reads nothing for a ticket that has recorded nothing", async () => {
+  it("reads nothing for an item that has recorded nothing", async () => {
     expect(await createActivityLog(rootDir(), redact).read("99", 0)).toEqual({ stage: null, round: null, lines: [], total: 0 });
   });
 

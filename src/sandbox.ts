@@ -10,11 +10,11 @@ import { basename, dirname, join, resolve } from "node:path";
  * The common git directory, resolved: it is the one path every way into a
  * repository agrees on — the top level, any subdirectory below it, a symlink
  * to either, and a linked worktree, which is the same repository driving the
- * same tickets. Both the lock root and the agent's sandbox used to be keyed
+ * same items. Both the lock root and the agent's sandbox used to be keyed
  * on a directory *name* instead, and a name is not an identity: the loop and
  * the MCP server found each other's locks only when they were started from
  * the same place, and two unrelated checkouts called `widgets` shared one
- * root — one blocking the other's tickets, and the other deleting the first
+ * root — one blocking the other's items, and the other deleting the first
  * one's worktree mid-step.
  *
  * Outside a repository — or with no git on the machine — the resolved working
@@ -47,7 +47,7 @@ const nameOf = (identity: string): string => {
 
 // One git call per directory asked about, not one per operation: `held`,
 // `acquire` and `release` each ask for the root, and a tick asks for all
-// three per ticket.
+// three per item.
 const roots = new Map<string, string>();
 const identities = new Map<string, string>();
 
@@ -62,7 +62,7 @@ const identityOf = (dir: string): string => {
 /**
  * The repository, as a short digest of its identity: what keeps two
  * repositories' scratch apart, and what a pairing's session id is derived
- * from, so two checkouts pairing on their own ticket 29 never share one.
+ * from, so two checkouts pairing on their own item 29 never share one.
  */
 export const repoDigest = (dir: string): string =>
   createHash("sha256").update(identityOf(dir)).digest("hex").slice(0, 12);

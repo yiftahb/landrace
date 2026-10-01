@@ -28,7 +28,7 @@ describe("who produced a record", () => {
 });
 
 describe("a pairing's session id", () => {
-  const name = { repo: "abc123", ticket: "29", stage: "spec", round: 1, n: 1 };
+  const name = { repo: "abc123", item: "29", stage: "spec", round: 1, n: 1 };
 
   it("is the same every time it is derived, so a retried start hands out the same session", () => {
     expect(pairSessionId(sha1, name)).toBe(pairSessionId(sha1, name));
