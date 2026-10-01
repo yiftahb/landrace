@@ -509,11 +509,16 @@ describe("the arrow keys on the board", () => {
     expect(press("ArrowDown", { active: "body", metaKey: true }).steps).toEqual([]);
   });
 
-  // Only titles on screen: a closed lane's or a search-hidden one's take no focus.
+  /*
+   * Only titles on screen: a closed lane's or a search-hidden one's take no
+   * focus. Chromium still lays out a closed <details>' content — boxes and
+   * all — and refuses focus there without a word: with every ticket in a
+   * collapsed Done, the arrows walked into it and nothing moved.
+   */
   describe("stepping between ticket titles", () => {
     const title = (id: string, shown = true) => {
       const li = { id };
-      return { id, li, focused: 0, getClientRects: () => (shown ? [{}] : []), closest: () => li, focus() { this.focused++; }, scrollIntoView: () => {} };
+      return { id, li, focused: 0, getClientRects: () => [{}], checkVisibility: () => shown, closest: () => li, focus() { this.focused++; }, scrollIntoView: () => {} };
     };
     const step = (by: number, titles: Array<ReturnType<typeof title>>, active: unknown) => {
       runInNewContext(`${fnSource("stepFocus")} stepFocus(BY)`, {
@@ -541,6 +546,10 @@ describe("the arrow keys on the board", () => {
       const t = [title("1"), title("2", false), title("3")];
       expect(step(1, t, { closest: () => t[0]?.li })).toEqual(["3"]);
     });
+
+    it("focuses nothing when every title is in a closed lane", () => {
+      expect(step(1, [title("1", false), title("2", false)], null)).toEqual([]);
+    });
   });
 });
 
@@ -548,7 +557,8 @@ describe("the chosen row", () => {
   it("has its own background while focused or open in the panel, in light and dark", () => {
     const li = runInNewContext(`${constSource("INDENT")}${constSource("indentOf")}${["el", "treeItem"].map(fnSource).join("")}
       treeItem({ children: [] }, 0, "", false)`, { document: fakeDocument }) as FakeElement;
-    for (const cls of ["focus-within:bg-neutral-100", "dark:focus-within:bg-neutral-800", "aria-selected:bg-neutral-100", "dark:aria-selected:bg-neutral-800"]) {
+    // A tint, not a grey: neutral-100 on a white card was there and unseen.
+    for (const cls of ["focus-within:bg-blue-50", "dark:focus-within:bg-blue-950", "aria-selected:bg-blue-50", "dark:aria-selected:bg-blue-950"]) {
       expect(li.className.split(" ")).toContain(cls);
     }
   });

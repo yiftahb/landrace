@@ -429,8 +429,11 @@ function onBoard(el) {
 // The ticket titles on screen, in the order drawn — a closed lane's or a
 // search-hidden one's take no focus — and the one a step lands on: the next
 // or previous from the row focus is in, the first or last from none.
+// checkVisibility, not boxes: Chromium lays out a closed <details>' content
+// and refuses focus there silently, so with every ticket in a collapsed Done
+// the arrows walked into it and nothing moved.
 function stepFocus(by) {
-  const titles = [...document.querySelectorAll('[data-key$=":open"]')].filter((t) => t.getClientRects().length > 0);
+  const titles = [...document.querySelectorAll('[data-key$=":open"]')].filter((t) => t.checkVisibility());
   if (!titles.length) return;
   const active = document.activeElement;
   const here = active && typeof active.closest === "function" ? active.closest('[role="treeitem"]') : null;
@@ -889,7 +892,8 @@ function shieldMark() {
 
 function treeItem(row, depth, cls, open) {
   // The chosen row stands out: focused, or open in the panel (aria-selected).
-  const chosen = " focus-within:bg-neutral-100 dark:focus-within:bg-neutral-800 aria-selected:bg-neutral-100 dark:aria-selected:bg-neutral-800";
+  // A tint, not a grey: neutral-100 on a white card was there and unseen.
+  const chosen = " focus-within:bg-blue-50 dark:focus-within:bg-blue-950 aria-selected:bg-blue-50 dark:aria-selected:bg-blue-950";
   const li = el("li", cls + " " + indentOf(depth) + chosen + (row.closed === "dropped" ? " opacity-50" : ""));
   li.setAttribute("role", "treeitem");
   // The tree is drawn flat, one <li> per visible node, so depth is told to
