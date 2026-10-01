@@ -514,6 +514,39 @@ export const { preflight, source, operator, pre, post, spec } = compose({
 
 Built with no client, each role builds one from `tracker.repo`, the `githubToken` secret and `tracker.bot` — one per configuration, shared by all three, so one `GET /user` resolves the login they post as. The forge runs git in the repository of the file that constructs it, never the directory the process was started from; `git` hands it another. `closingRefs` says the tracker beside it is GitHub's own issues: on, a pull request it opens says `Closes #n`, and one closing a ticket's issue is tied to that ticket; off — beside another vendor's tracker, where `#7` is somebody else's GitHub issue that a merge would close — it writes and reads none, and the `landrace/{ticket}` head is the only tie. To check a change to it against the live repository, `pnpm build && pnpm parity` with `GITHUB_TOKEN` set reads every listed ticket through `main`'s hook and this one, and prints `equal`, or each node and edge that differs and exits 1.
 
+#### GitLab
+
+`landrace/integrations/gitlab` is a forge: GitLab merge requests, beside whichever tracker the project uses. The hook file names the project by its full path:
+
+```ts
+import { compose } from "landrace/kit";
+import { GitLab } from "landrace/integrations/gitlab";
+export const { preflight, source, operator, pre, post } = compose({
+  tracker: new MyTracker(), forge: new GitLab({ project: "group/app" }),
+});
+```
+
+And `landrace.yaml` gives it its token, redacted, and — off gitlab.com — the instance, as `https://host[:port]` and nothing more, so the token never travels in cleartext:
+
+```yaml
+secrets:
+  gitlabToken: $GITLAB_TOKEN
+  # gitlabBaseUrl: $GITLAB_BASE_URL   # only off gitlab.com — a declared secret whose variable is unset refuses to start
+log:
+  redact: [gitlabToken]
+agent:
+  sandbox:
+    hosts: [gitlab.com, registry.npmjs.org]   # your instance's host, so a write step can fetch and push
+```
+
+The token — personal, project or group — needs the `api` scope, and its user Developer access to the project, direct, inherited or through a group the project is shared with. `landrace start` refuses one without either, naming which, and names a missing `gitlabToken` too. The forge needs GitLab 16.4 or later, for a finding on a file.
+
+Everything it posts is made inert to GitLab's quick actions first — a line starting `/close` or `/merge` in a finding or a reply is an agent's text, which can quote the code under review, and GitLab would run it as the token's user — by a backslash before the slash, which renders as the slash alone.
+
+A ticket's work is a merge request from `landrace/{ticket}` into the project's default branch, its node `pr-{iid}`; a fork's merge request is never a ticket's, whatever its branch is called. A review's findings become diff discussions — on an added line by its new number, on a context line by both, and on the file when the line is outside every hunk — and its prose a plain note, which nobody can resolve and no count includes. Only a resolvable discussion somebody started is a thread: GitLab's own system notes and plain notes never are. A round's note is told posted by our login and its marker both, so a marker pasted into somebody else's note cannot skip one. The forge pushes as GitHub's does, in the repository of the file that constructs it: the token goes as an `oauth2:` basic header only when origin's push URL is exactly `{gitlabBaseUrl}/{project}`, with or without `.git`; any other origin is pushed with your own credentials, and git's own words are scrubbed of the token before they reach an error.
+
+To check it against a live project, `pnpm build && node scripts/gitlab-check.mjs` with `GITLAB_TOKEN`, `GITLAB_PROJECT` and, off gitlab.com, `GITLAB_BASE_URL` set. On a throwaway branch `landrace/{n}` it appends a line to `README.md`, opens the merge request (twice — the second is GitLab's 409, counted as done), puts findings on the added line and the context line above it, replies and resolves, and prints each check with the counts after it; it exits 1 on the first that fails, and closes the merge request and deletes the branch whatever happened.
+
 The functions the bases are made of stay exported, over the same plain shapes, for an integration not built on one:
 
 | From `landrace/kit` | What it is |
@@ -574,6 +607,42 @@ pnpm build && JIRA_BASE_URL=https://<site>.atlassian.net JIRA_EMAIL=… JIRA_TOK
 ```
 
 `JIRA_OPTIONS` takes the options above as JSON, `{"transitions":{"dropped":"Cancelled"}}`. It exits 1 on any failed check, and when none passed.
+
+#### Notion
+
+`landrace/integrations/notion` keeps each ticket's spec in Notion rather than on gh-pages: `Notion` is a docs role, beside any tracker and forge.
+
+1. Create an internal integration at notion.so/profile/integrations with the **Read content**, **Update content** and **Insert content** capabilities, and copy its secret.
+2. Share the parent page with it — open the page, ••• → Connections, add the integration — and take the page's id: the 32 hex digits its link ends in.
+3. Declare the secret, and redact it:
+
+   ```yaml
+   log:
+     redact: [githubToken, notionToken]
+   secrets:
+     githubToken: $GITHUB_TOKEN
+     notionToken: $NOTION_TOKEN
+   ```
+
+4. Hand `compose` the role:
+
+   ```ts
+   import { compose } from "landrace/kit";
+   import { GitHubForge, GitHubIssues } from "landrace/integrations/github";
+   import { Notion } from "landrace/integrations/notion";
+   export const { preflight, source, operator, pre, post, spec } = compose({
+     tracker: new GitHubIssues(), forge: new GitHubForge({ closingRefs: true }),
+     docs: new Notion({ parent: "0123456789abcdef0123456789abcdef" }),
+   });
+   ```
+
+`landrace start` reads the parent page and creates a `Landrace specs` database in it when there is none, then rewrites its title unchanged — since an integration's capabilities can only be tried, that is how a token without **Update content** refuses to start rather than fail its first publish. **Insert content** is tried only on the start that creates the database: once it exists, a token that lost that capability, or a narrower integration shared on the parent later, still starts, and every publish then fails on Notion's 403. A parent not shared with the integration, a token Notion rejects, or no `notionToken` refuses to start, saying which. So do two databases of that title in the parent: which one holds the specs is not a guess.
+
+Each spec is a row of that database. `Ticket`, its title, is the ticket's id; the body is the spec as blocks, for a person to read; and `Source`, a text property, is the markdown itself. `Source` is what `{brief.spec.content}` hands a step, read whole, so a step works from exactly what was published, whatever the body made of it. It is written last, and a row whose `Source` is empty was never published. Publishing the same text again writes nothing. Changed text clears `Source`, replaces the body a block at a time, and writes `Source` again, so a publish cut off anywhere is redone on the same row by the next tick. Two rows for one ticket halt it. A spec link opens the ticket's row, or the parent page while there is none. Reading never creates the database, so `landrace status` writes nothing here either. Give each project a parent page of its own: two projects in one parent share one database, where ticket 12 of one is ticket 12 of the other. And anyone who can edit the parent page can edit `Source`, which the steps after the spec are briefed with.
+
+The body shows `#` to `###` headings (deeper ones as `###`), paragraphs, bulleted and numbered lists one level deep, fenced code (in plain text when Notion does not know the language), quotes, inline code, and links to absolute http(s) addresses. A table, a rule or HTML on lines of its own is shown as written, in a markdown code block; inside a paragraph or a list item, anything else — bold, an indented table — stays the text it was, as does a line with more inline code and links than one block takes, and a link longer than 2,000 characters. `Source` holds at most a hundred pieces of 2,000 characters; a longer spec is refused before anything is written to the database. Every request names `Notion-Version: 2025-09-03`; one that appends blocks carries at most 100, nested ones counted; and a 429 is waited out for as long as Notion's `Retry-After` says, five tries in all.
+
+To check it against a real workspace, `pnpm build && NOTION_TOKEN=… NOTION_PARENT=<the page's id> node scripts/notion-check.mjs` runs the check, a publish, the same text, changed text (over a hundred blocks, 60,000 characters with an emoji astride a piece boundary, a fence, a table, an item with 120 children) and the read back. It prints each step, and exits 1 when one failed or nothing was checked. It leaves its `check-<time>` row in the database for you to look at.
 
 ### Executors: the coding agent is a hook
 
