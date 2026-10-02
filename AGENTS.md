@@ -39,7 +39,7 @@ Two stages whose identity predicates both match, two triggers that both fire, tw
 
 Several workflows share one start; each open item is claimed by exactly one (`claimItems`, `src/core/claims.ts`, judged by `eligible`). Two claimants or two sources reporting an id halt and name both; unclaimed is Not admitted. `validate`'s `claims` check abstains where it cannot tell.
 
-Whose turn it is comes from the located stage's `waits`, never `lr:awaiting`; a workflow whose stages are all placed by state writes nothing.
+Whose turn it is comes from the located stage's `waits`, never `lr:awaiting`; a workflow whose every open stage is placed by state, and that runs no step, has no trigger and no `on_enter`, writes nothing.
 
 ### State is derived, never stored
 
