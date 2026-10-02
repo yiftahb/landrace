@@ -36,6 +36,7 @@ export const ENGINE_PROVIDES: readonly string[] = [
   // itself — the point of the rule is that a path off by one letter is caught.
   "run.counters", "run.counters.*",
   "run.rounds", "run.rounds.*",
+  "run.next", "run.next.*",
   "run.outputs", "run.outputs.*",
   "run.lastEvent", "run.lastEvent.*",
   "run.lastHuman", "run.lastHuman.*",

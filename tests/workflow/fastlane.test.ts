@@ -385,6 +385,7 @@ function snapshotOf(f: Facts): Snapshot {
     stage: f.stage,
     counters: Object.fromEntries(Object.entries(f.counters ?? {}).filter(([, n]) => n > 0)),
     rounds: {},
+    next: {},
     outputs: { build: { kind: "done" }, triage: { intent: f.intent ?? "rework" } },
     lastEvent: { actor: f.actor ?? "agent", at: null },
     lastHuman: f.human ? { stage: f.stage, kind: "human", round: 0, at: "2026-10-02T00:00:00.000Z", byAgent: false } : null,

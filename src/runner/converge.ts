@@ -441,7 +441,20 @@ async function converging(
       // a question this same round's own output could ever have answered.
       const applied = await tryApply(result.effects, item, snapshot, deps);
       if (!applied.ok) {
-        deps.log("effect.failed", { item, reason: applied.reason });
+        deps.log("effect.failed", { item, reason: applied.reason, refused: applied.refused });
+        // An answer the forge or the tracker refuses to take is this round
+        // failed, as a broken answer is: recorded, and routed by the halts.
+        // Left unrecorded, the round reads as owed, and the paid step would
+        // run again on every tick to be refused again. An outage is not one:
+        // the round runs again, as for an agent that never answered.
+        if (applied.refused) {
+          const posted = await tryApply(
+            [malformedEffect(stage.id, round, applied.reason, scrub, MALFORMED_KIND, `Could not record ${stage.id}'s answer`)],
+            item, snapshot, deps,
+          );
+          if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });
+          else continue;
+        }
         return { passes: pass, settled: "halt", why: applied.reason };
       }
       continue;

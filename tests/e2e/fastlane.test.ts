@@ -6,11 +6,12 @@ import { createLogger } from "#runner/events.js";
 import { sendTo } from "#runner/goto.js";
 import { BLOCKED_NOTE, laneOf, statusRows } from "#runner/status.js";
 import { tickWorkspace } from "#runner/tick.js";
-import { createExternalState, createHarness } from "#testing/index.js";
+import { compose } from "#kit/compose.js";
+import { createExternalState, createHarness, MemoryForge, MemoryTracker } from "#testing/index.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 import type {
-  Effect, Executor, ExternalPull, ExternalState, GotoDeps, LoadedWorkflow, Node, PostHook, RuntimeContext, ScriptedAnswer, StatusRow,
+  Effect, Executor, ExternalPull, ExternalState, GotoDeps, LoadedWorkflow, MergeAnswer, Node, PostHook, RuntimeContext, ScriptedAnswer, StatusRow,
   Workspace,
 } from "#namespace.js";
 
@@ -87,20 +88,22 @@ function road(opts: {
     answers: { ...ANSWERS, ...opts.answers },
     ...(opts.during ? { during: (at: { stage: string; round: number }) => opts.during?.(at, pr) } : {}),
   });
-  const retry = async (): Promise<unknown> => {
+  /** A person's goto, as the board and `landrace_goto` send it: to `target`, or Retry with none. */
+  const goto = async (target: string | null): Promise<unknown> => {
     const deps: GotoDeps = {
       source: state.source, pre: [state.pre], dispatcher: createDispatcher([post]), ctx, workflow,
       lock: { root: await mkdtemp(join(tmpdir(), "lr-fastlane-")) },
     };
-    return sendTo(deps, "1", null);
+    return sendTo(deps, "1", target);
   };
+  const retry = (): Promise<unknown> => goto(null);
   const row = async (): Promise<StatusRow & { lane: string }> => {
     const graph = await state.source.read("1", ctx);
     const [found] = statusRows(workflow, graph.nodes.filter((n: Node) => n.id === "1"));
     if (!found) throw new Error("no status row for #1");
     return { ...found, lane: laneOf(found, workflow) };
   };
-  return { state, run, pr, merges: () => merges, retry, row };
+  return { state, run, pr, merges: () => merges, retry, goto, row };
 }
 
 /** CI as a push leaves it: the checks on the new head, nothing failed. */
@@ -152,6 +155,10 @@ describe("fastlane, end to end", () => {
     expect(second?.prompt).toContain("AssertionError: expected 'a,b' to equal 'a;b'");
 
     expect(pr()).toMatchObject({ merged: true, closed: "done", headSha: "sha-1" });
+    // Each build's publish is a round of its own.
+    expect(state.comments("1").filter((c) => c.startsWith("Publishing, round"))).toEqual([
+      expect.stringContaining("Publishing, round 1."), expect.stringContaining("Publishing, round 2."),
+    ]);
     expect(state.item("1").closed).toBe("done");
     expect(state.item("1").labels).toContain("lr:stage:done");
     expect(state.item("1").labels).not.toEqual(expect.arrayContaining(["lr:fast"]));
@@ -172,9 +179,11 @@ describe("fastlane, end to end", () => {
 
   /*
    * The race: green on the head the snapshot read, and a push lands before
-   * the merge applies — the forge's row moves after the read, so the merge
-   * answers moved. The new head is code nobody reviewed: back to review, then
-   * CI on it, and only then the merge, at the new head.
+   * the merge applies — the forge's row moves after the read. The kit's own
+   * re-read just before the merge sees the new head and answers moved without
+   * asking the forge to merge (scenario 3c has the forge itself say it). The
+   * new head is code nobody reviewed: back to review, then CI on it, and only
+   * then the merge, at the new head.
    */
   it("3. sends a head that moved before the merge back to review, and merges at the new head", async () => {
     let raced = false;
@@ -195,6 +204,70 @@ describe("fastlane, end to end", () => {
     expect(run.counts()).toEqual({ build: 1, "code-review": 2 });
     expect(pr()).toMatchObject({ merged: true, headSha: "sha-new" });
     expect(state.item("1").closed).toBe("done");
+    expect(state.item("1").labels).toContain("lr:stage:done");
+    expect(state.item("1").labels).not.toContain("lr:fast");
+    // Each visit to merge is a round of its own, with its own record.
+    expect(state.comments("1").filter((c) => c.startsWith("Merging the pull request"))).toEqual([
+      expect.stringContaining("round 1."), expect.stringContaining("round 2."),
+    ]);
+  });
+
+  /*
+   * The same race, then the forge refuses the merge on the new head. The
+   * second visit to merge is a round of its own, so its refusal is read where
+   * the item stands and the forge is asked once — not a refusal recorded
+   * against the first visit's entry, unread, and the forge asked again.
+   */
+  it("3b. halts at the refusal on a later visit to merge, asking the forge once, with Retry still to give", async () => {
+    let raced = false;
+    const { state, run, pr, merges, retry } = road({
+      before: (effect, s) => {
+        if (effect.type !== "pull.merge" || raced) return;
+        raced = true;
+        Object.assign(s.pull("pr-1"), { headSha: "sha-new", checks: "pending" });
+      },
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 2) Object.assign(pull(), { checks: "success", mergeable: false });
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "merge", "code-review", "ci", "merge", "ci", "blocked"]);
+    expect(r.result.settled).toBe("wait");
+    expect(merges()).toBe(2);
+    expect(state.entriesOf("1").filter((e) => e.kind === "malformed")).toEqual([expect.objectContaining({ stage: "merge", round: 2, from: "ci" })]);
+    expect(pr()).toMatchObject({ merged: false, closed: null });
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+    expect(await retry()).toEqual({ to: "merge" });
+  });
+
+  /*
+   * The head moves after the kit's re-read and before the forge merges: the
+   * forge's own guard, the head the merge was asked at, answers moved.
+   */
+  it("3c. sends the item back to review when the forge itself answers that the head moved", async () => {
+    class RacingForge extends MemoryForge {
+      raced = false;
+      override async merge(pull: number, headSha: string): Promise<MergeAnswer> {
+        if (!this.raced) {
+          this.raced = true;
+          Object.assign(this.pull(`pr-${pull}`), { headSha: "sha-new" });
+        }
+        return super.merge(pull, headSha);
+      }
+    }
+    const tracker = new MemoryTracker({ items: [{ id: "1", title: "Export", body: "Export as CSV.", labels: ["lr:fast"] }] });
+    const forge = new RacingForge();
+    const hooks = compose({ tracker, forge });
+    const { workflow, steps } = flow("fastlane");
+    const run = createHarness({ workflow, steps, source: hooks.source, pre: [hooks.pre], post: [hooks.post], answers: ANSWERS });
+    const r = await run.converge();
+
+    expect(forge.raced).toBe(true);
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "merge", "code-review", "ci", "merge", "done"]);
+    expect(r.result.settled).toBe("terminal");
+    expect(forge.pull("pr-1")).toMatchObject({ merged: true, headSha: "sha-new" });
+    expect(tracker.row("1").labels).toContain("lr:stage:done");
   });
 
   it("4. leaves the item stuck for a person after three builds CI keeps failing", async () => {
@@ -284,6 +357,8 @@ describe("fastlane, end to end", () => {
     expect(r.result.settled).toBe("wait");
     expect(run.counts()).toEqual({ build: 1, "code-review": 4, "fix-review": 3 });
     expect(state.stage("1")).toBe("stuck");
+    expect(state.item("1").labels).toContain("lr:awaiting");
+    expect(state.item("1").labels).not.toContain("lr:working");
     expect(pr()).toMatchObject({ merged: false, awaitingFix: 1 });
   });
 

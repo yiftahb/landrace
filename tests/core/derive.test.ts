@@ -1,4 +1,4 @@
-import { deriveRun, locatedRun } from "#core/derive.js";
+import { deriveRun, locatedRun, nextRound } from "#core/derive.js";
 import { assess } from "#core/assess.js";
 import { stageFromLabels } from "#conventions.js";
 import type { Entry, Node, Snapshot, Stage, Workflow } from "#namespace.js";
@@ -234,6 +234,57 @@ describe("deriveRun", () => {
     it("does not advance on a round that produced nothing at all", () => {
       expect(deriveRun([entered("spec", 1)], "spec").counters.spec).toBeUndefined();
     });
+  });
+});
+
+/*
+ * The round a stage is entered or run at, from round numbers on its records:
+ * the highest it was entered at and the highest it settled. A visit in
+ * flight — the stage's own entry is the latest record of any entry, and
+ * nothing settled it — is that same round, so a crash between the entry and
+ * the position replans the identical record. Anything after it is a new
+ * round: a stage with no step settles a round only when its way in is
+ * refused, and re-entered at the round it last used, its entry would already
+ * be there and reconcile away, leaving a refusal nothing could read.
+ */
+describe("the next round of a stage", () => {
+  const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
+  const rejected = (stage: string, round: number, left: string): Entry => ({ ...malformed(stage, round), from: left });
+
+  it("is one for a stage with no records", () => {
+    expect(nextRound(deriveRun([], null), "merge")).toBe(1);
+  });
+
+  it("is past the last settled round of a step", () => {
+    const run = deriveRun([entered("build", 1), out("build", 1), from("code-review", 1, "build"), out("code-review", 1)], "code-review");
+    expect([nextRound(run, "build"), nextRound(run, "code-review")]).toEqual([2, 2]);
+  });
+
+  it("is the same round while its visit is in flight: the step owed, or a crash before the position moved", () => {
+    const owed = deriveRun([entered("build", 1), out("build", 1), from("build", 2, "ci")], "build");
+    expect(nextRound(owed, "build")).toBe(2);
+    const crashed = deriveRun([entered("build", 1), out("build", 1), from("publish", 1, "build")], "build");
+    expect(nextRound(crashed, "publish")).toBe(1);
+  });
+
+  it("is a new round for a stage with no step entered again after another stage's entry", () => {
+    const run = deriveRun([from("merge", 1, "ci"), from("code-review", 2, "merge"), out("code-review", 2)], "code-review");
+    expect(nextRound(run, "merge")).toBe(2);
+  });
+
+  it("is past a refused round, from the halt as from anywhere", () => {
+    const run = deriveRun([from("merge", 1, "ci"), from("code-review", 2, "merge"), from("merge", 2, "ci"), rejected("merge", 2, "ci")], "blocked");
+    expect(nextRound(run, "merge")).toBe(3);
+  });
+
+  it("counts a stage's rounds apart from its counter, which counts only what settled", () => {
+    const run = deriveRun([from("merge", 1, "ci"), from("code-review", 2, "merge"), from("merge", 2, "ci"), rejected("merge", 2, "ci")], "blocked");
+    expect(run.counters.merge).toBe(1);
+  });
+
+  it("is counted from the counter for a run built without it", () => {
+    expect(nextRound({ counters: { build: 2 } } as unknown as ReturnType<typeof deriveRun>, "build")).toBe(3);
+    expect(nextRound(undefined, "build")).toBe(1);
   });
 });
 

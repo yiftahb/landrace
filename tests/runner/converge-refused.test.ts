@@ -140,6 +140,40 @@ describe("a merge the forge refuses on the way into the stage", () => {
   });
 });
 
+describe("a person's Retries, each refused", () => {
+  /*
+   * At the halt a refused Retry is read as a failure where the item stands,
+   * so a second one would be the halt's own way out failing again — but it
+   * is a person's goto, and each one is recorded: Retry then finds the stage
+   * that refused, until its cap declines it in a sentence.
+   */
+  it("records every one, so Retry always finds what refused, until the cap declines it", async () => {
+    const state = at();
+    state.openPull("1", { branch: "landrace/1", checks: "success", mergeable: false });
+    const { post, merges } = counted(state);
+    const run = harness(state, post);
+    await run.converge();
+    const deps: GotoDeps = {
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([post]), ctx, workflow: flow(),
+      lock: { root: await mkdtemp(join(tmpdir(), "lr-refused-")) },
+    };
+
+    expect(await sendTo(deps, "1", null)).toEqual({ to: "merge" });
+    await run.converge();
+    expect(await sendTo(deps, "1", null)).toEqual({ to: "merge" });
+    await run.converge();
+
+    expect(merges()).toBe(3);
+    expect(rejections(state)).toEqual([
+      expect.objectContaining({ stage: "merge", round: 1, from: "ready" }),
+      expect.objectContaining({ stage: "merge", round: 2, from: "blocked" }),
+      expect.objectContaining({ stage: "merge", round: 3, from: "blocked" }),
+    ]);
+    expect(state.stage("1")).toBe("blocked");
+    expect(await sendTo(deps, "1", null)).toEqual({ refused: expect.stringMatching(/"blocked" sends an item to "merge" only while/) });
+  });
+});
+
 describe("what is left as it was", () => {
   it("leaves an outage unrecorded, and the next tick merges", async () => {
     const state = at();
@@ -184,6 +218,23 @@ describe("what is left as it was", () => {
     expect(rejections(state)).toEqual([]);
   });
 
+  /*
+   * The entry record itself refused — the tracker would not take the
+   * comment — is a stage nothing entered: there is no record to read a
+   * rejection beside, so none is written.
+   */
+  it("leaves a refusal of the entry record itself unrecorded", async () => {
+    const state = at();
+    state.openPull("1", { branch: "landrace/1", checks: "success" });
+    const { post, merges } = counted(state, (e) => (e.type === "tracker.comment" && e.kind === "enter" ? "the tracker refused the comment" : null));
+    const r = await harness(state, post).converge();
+
+    expect(r.result).toMatchObject({ settled: "halt", why: expect.stringContaining("refused the comment") });
+    expect(merges()).toBe(0);
+    expect(rejections(state)).toEqual([]);
+    expect(state.stage("1")).toBe("ready");
+  });
+
   it("leaves a refusal unrecorded for an item with no position yet", async () => {
     const state = at([]);
     const { post } = counted(state, (e) => (e.type === "tracker.status" ? "the tracker refused the label" : null));
@@ -214,3 +265,65 @@ describe("what is left as it was", () => {
     expect(rejections(state)).toEqual([expect.objectContaining({ stage: "merge", round: 1 })]);
   });
 });
+
+/*
+ * The round a stage with no step is entered at. It settles a round only when
+ * its way in is refused, so a visit that went through leaves its round
+ * unsettled: a crash between its entry and its position replans that same
+ * round, the identical record reconciling away; a later visit is a round of
+ * its own, with an entry record the refusal can be read beside.
+ */
+describe("the round a stage with no step is entered at", () => {
+  const enters = (state: ExternalState) => state.entriesOf("1").filter((e) => e.kind === "enter" && e.stage === "merge").map((e) => e.round);
+
+  it("is the same round after a crash between its entry record and its status", async () => {
+    const state = at();
+    state.openPull("1", { branch: "landrace/1", checks: "success" });
+    let alive = true;
+    const run = createHarness({
+      workflow: flow(), steps: new Map(), source: state.source, pre: [state.pre], post: [state.post],
+      interrupt: (e) => {
+        if (alive && e.type === "pull.merge") {
+          alive = false;
+          return true;
+        }
+        return false;
+      },
+    });
+    await run.converge();
+    expect(enters(state)).toEqual([1]);
+    expect(state.stage("1")).toBe("ready");
+
+    expect((await run.converge()).result.settled).toBe("terminal");
+    expect(enters(state)).toEqual([1]);
+  });
+
+  it("is a new round on a later visit, so a refusal then is read and the forge asked once", async () => {
+    const state = at();
+    state.openPull("1", { branch: "landrace/1", checks: "success", headSha: "a" });
+    const looping: Workflow = {
+      ...flow(),
+      stages: flow().stages.map((s) => (s.id === "ready"
+        ? { ...s, triggers: [...(s.triggers ?? []), { name: "moved", when: { "run.stage": "merge", "run.lastOutputValid": null, "rel.implements.in.not.merged": { $gt: 0 } } }],
+          on_enter: [ENTER, { type: "tracker.status", value: "ready" }] }
+        : s)),
+    };
+    let moved = false;
+    const { post, merges } = counted(state, (e) => {
+      if (e.type !== "pull.merge") return null;
+      if (!moved) {
+        moved = true;
+        state.pull("pr-1").headSha = "b";
+        return null;
+      }
+      return "pr-1 for #1 cannot be merged: the forge finds it not mergeable";
+    });
+    await harness(state, post, looping).converge();
+
+    expect(enters(state)).toEqual([1, 2]);
+    expect(merges()).toBe(2);
+    expect(rejections(state)).toEqual([expect.objectContaining({ stage: "merge", round: 2, from: "ready" })]);
+    expect(state.stage("1")).toBe("blocked");
+  });
+});
+

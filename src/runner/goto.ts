@@ -1,5 +1,5 @@
 import { CLEAR_KIND, GOTO_KIND, LABELS, RECORD_EFFECT } from "#conventions.js";
-import { assess, checkEligible, compile, gotoDeclined, gotoNotListed, locate } from "#core/index.js";
+import { assess, checkEligible, compile, gotoDeclined, gotoNotListed, locate, nextRound } from "#core/index.js";
 import type { GotoDeps, GotoResult, Node, Snapshot, Stage, Workflow } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
@@ -141,7 +141,7 @@ async function sendAt(deps: GotoDeps, item: string, target: string | null, clear
   if (clear) {
     // The round decide() will enter `to` at, so the clearance covers exactly
     // the run this goto starts and nothing after it.
-    const round = (snapshot.run?.counters[to] ?? 0) + 1;
+    const round = nextRound(snapshot.run, to);
     await deps.dispatcher.apply(
       {
         type: RECORD_EFFECT, kind: CLEAR_KIND, stage: to, round, marker: `${CLEAR_KIND}:${to}:${round}`,

@@ -17,7 +17,7 @@ import {
   RELEASE_KIND,
   shellLine,
 } from "#conventions.js";
-import { assess, gotoDeclined, gotoNotListed, gotoTargetsOf, planEffects, reconcile, stageBranch } from "#core/index.js";
+import { assess, gotoDeclined, gotoNotListed, gotoTargetsOf, nextRound, planEffects, reconcile, stageBranch } from "#core/index.js";
 import type {
   Effect, Entry, PairDeps, PairFinished, PairingView, PairOffer, PairStarted, Pairing, Snapshot, Stage, Step,
 } from "#namespace.js";
@@ -81,8 +81,8 @@ const sha1 = (data: Uint8Array): Uint8Array => new Uint8Array(createHash("sha1")
 const ordered = (s: Snapshot): Entry[] =>
   [...(s.entries ?? [])].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 
-/** The round a stage would work next, counted as decide() counts it. */
-const nextRound = (s: Snapshot, stage: string): number => (s.run?.counters[stage] ?? 0) + 1;
+/** The round a stage would work next, as decide() numbers it. */
+const nextRoundOf = (s: Snapshot, stage: string): number => nextRound(s.run, stage);
 
 /** The latest session the agent left at a stage — a step's own, or a turn on it — for "Continue … together". */
 const agentSession = (s: Snapshot, stage: string): string | null =>
@@ -150,7 +150,7 @@ export function pairOffers(deps: PairDeps, snapshot: Snapshot, item: string): Pa
   if ("refused" in origin) return [];
   const { from } = origin;
   const offer = (stage: Stage): PairOffer =>
-    ({ stage: stage.id, round: nextRound(snapshot, stage.id), continue: agentSession(snapshot, stage.id) !== null });
+    ({ stage: stage.id, round: nextRoundOf(snapshot, stage.id), continue: agentSession(snapshot, stage.id) !== null });
   const loaded = (stage: Stage | undefined): stage is Stage => stage?.step !== undefined && deps.steps.has(stage.step);
 
   if (from.step !== undefined && assess(snapshot, from) === "pending") return loaded(from) ? [offer(from)] : [];
@@ -290,7 +290,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
 
     const origin = gotoOrigin(deps.workflow, snapshot, item);
     if ("refused" in origin) throw new Error(`cannot finish: ${origin.refused}`);
-    const round = nextRound(snapshot, stage.id);
+    const round = nextRoundOf(snapshot, stage.id);
     // Where the item stands, settled is a round a crash left unentered —
     // entered here like any goto target; only a rejected one waits for the halt.
     const here = origin.from.id === stage.id ? assess(snapshot, stage) : null;

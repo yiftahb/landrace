@@ -656,6 +656,38 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     expect(gh.labelsOf(1)).not.toContain("lr:blocked");
   });
 
+  /*
+   * A step's answer the forge refuses to take — GitHub answering 403 to the
+   * review a round posts — is that round failed, as a broken answer is: the
+   * item halts at `blocked` with GitHub's words, and the paid step is never
+   * run again on its own. Left unrecorded, the round would read as owed and
+   * run again on every tick.
+   */
+  it("fails the review round GitHub refuses to take, halting rather than paying for it again", async () => {
+    const { gh, root } = await world();
+    const { workflow, steps } = await loadShipped();
+    const during = async ({ stage }: { stage: string }) => {
+      if (stage === "build") await commitOn(root, "landrace/1", "build.ts");
+    };
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
+
+    await run.converge();
+    gh.sayAs("a-person", 1, "in-house, and CSV only", new Date(Date.UTC(2026, 1, 1)).toISOString());
+    await run.converge();
+    gh.sayAs("a-person", 1, "looks right, go ahead", new Date(Date.UTC(2026, 1, 2)).toISOString());
+    gh.breakOn((r) => r.method === "POST" && /^\/pulls\/\d+\/reviews$/.test(r.path), 403);
+    const refused = await run.converge();
+
+    expect(refused.result.settled).toBe("wait");
+    expect(run.counts()["code-review"]).toBe(1);
+    expect(gh.labelsOf(1)).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+    expect(gh.entriesOf(1).filter((e) => e.kind === "malformed")).toEqual([expect.objectContaining({ stage: "code-review", round: 1 })]);
+    expect(gh.entriesOf(1).at(-1)?.text ?? "").toMatch(/token needs "Pull requests: Read and write"/);
+
+    await run.converge();
+    expect(run.counts()["code-review"]).toBe(1);
+  });
+
   it("shows each fix round the findings it is meant to address", async () => {
     const { gh, during } = await world();
     const { workflow, steps } = await loadShipped();

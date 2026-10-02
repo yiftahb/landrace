@@ -22,6 +22,18 @@ export function locatedRun(w: Workflow, s: Snapshot): Run {
 }
 
 /**
+ * The round `stage` is entered or run at now: what `deriveRun` worked out,
+ * or 1 for a stage with no record. A run built by hand without `next` is
+ * counted from its counter, as every round was before rounds and counts
+ * parted.
+ */
+export function nextRound(run: Run | undefined, stage: string): number {
+  const next = run?.next as Run["next"] | undefined;
+  if (next !== undefined && Object.hasOwn(next, stage)) return next[stage] as number;
+  return (run?.counters?.[stage] ?? 0) + 1;
+}
+
+/**
  * Everything the engine knows about an item's progress, computed from entries.
  * Nothing here is stored: recovery is re-derivation.
  */
@@ -123,6 +135,31 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     let output = 0;
     for (const r of roundsByStage.get(s) ?? []) output = Math.max(output, r);
     rounds[s] = { entered: maxEnteredRoundByStage.get(s) ?? 1, output } satisfies StageRounds;
+  }
+
+  /*
+   * The round each stage would be entered or run at now, in round numbers:
+   * the highest it was entered at, and the highest it settled — an output or
+   * a rejection. While its own entry is the latest of any stage's and nothing
+   * settled it, that visit is still in flight — the step is owed, or a crash
+   * came between the entry and the position — and replanning it must give the
+   * identical round, so the identical record reconciles away. Any later
+   * visit is a new round, with an entry of its own.
+   *
+   * Not `counters + 1`, which counts: a stage with no step settles a round
+   * only when its way in is refused, so after a visit that went through it
+   * would be entered at the round it last used, its entry reconciled away as
+   * already there, and a refusal then recorded against an entry that is not
+   * the latest — read nowhere, while the trigger that sent the item asked the
+   * forge again. Null-prototype, as `counters` is.
+   */
+  const latestEntry = [...ordered].reverse().find((e) => e.kind === ENTRY_KIND);
+  const next = Object.create(null) as Run["next"];
+  for (const s of new Set([...settledRoundsByStage.keys(), ...maxEnteredRoundByStage.keys()])) {
+    const enteredAt = maxEnteredRoundByStage.get(s) ?? 0;
+    let settledAt = 0;
+    for (const r of settledRoundsByStage.get(s) ?? []) settledAt = Math.max(settledAt, r);
+    next[s] = latestEntry?.stage === s && enteredAt > settledAt ? enteredAt : Math.max(enteredAt, settledAt) + 1;
   }
 
   const last = ordered.at(-1) ?? null;
@@ -340,6 +377,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     failedStages,
     failedStage,
     rounds,
+    next,
     unblockedAt,
     pairing,
     lastOutputBy,

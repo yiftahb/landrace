@@ -1,6 +1,7 @@
 import { GOTO_TRIGGER } from "#conventions.js";
 import { assess } from "#core/assess.js";
 import { checkEligible } from "#core/eligible.js";
+import { nextRound as roundOf } from "#core/derive.js";
 import { gotoDeclined, gotoNotListed } from "#core/goto.js";
 import { cannotPlace, locate, UNPLACED } from "#core/locate.js";
 import { compile } from "#core/predicate.js";
@@ -65,16 +66,17 @@ export function decide(w: Workflow, s: Snapshot): Decision {
 
   const run = (s.run ?? { counters: {} }) as Run;
   /*
-   * The round a stage is about to work on, derived by counting the rounds it
-   * has already settled — an output, or a rejection — and never by
-   * incrementing anything. It numbers both the invocation and the entry
-   * record planEffects stamps on the state being entered, which is what keeps
-   * the two in step: a stage that has been entered but has settled nothing
-   * re-plans the same round, so a crash between the two leaves one entry
-   * record, not two. A rejected round counts, or a stage that can no longer
-   * produce output would re-enter at the same round for ever (derive.ts).
+   * The round a stage is about to work on, derived from its records — the
+   * rounds it was entered at and settled, an output or a rejection — and
+   * never by incrementing anything. It numbers both the invocation and the
+   * entry record planEffects stamps on the state being entered, which is what
+   * keeps the two in step: a visit still in flight re-plans the same round,
+   * so a crash between the two leaves one entry record, not two; any later
+   * visit is a round of its own (derive.ts). A rejected round settles, or a
+   * stage that can no longer produce output would re-enter at the same round
+   * for ever.
    */
-  const nextRound = (stage: string): number => (run.counters[stage] ?? 0) + 1;
+  const nextRound = (stage: string): number => roundOf(run, stage);
 
   const where = locate(w, s);
   if (where.kind === "ambiguous") {

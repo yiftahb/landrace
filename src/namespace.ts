@@ -156,6 +156,13 @@ export interface Run {
    * looping instead of failing loudly.
    */
   rounds: { [stage: string]: StageRounds };
+  /**
+   * The round each stage with a record would be entered or run at now — read
+   * through `nextRound`, which answers 1 for a stage with none. Round numbers,
+   * not the count `counters` keeps: a stage with no step settles a round only
+   * when its way in is refused, so its rounds and its counter part ways.
+   */
+  next: { [stage: string]: number };
   outputs: { [stage: string]: unknown };
   lastEvent: { actor: "agent" | "human" | null; at: string | null };
   lastHuman: Entry | null;
