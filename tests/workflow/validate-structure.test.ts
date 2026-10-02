@@ -390,3 +390,55 @@ describe("goto", () => {
     expect(rules(w(["a"], { triggers: [{ name: "goto", when: { "run.stage": "a" } }] }))).toContain("trigger-name");
   });
 });
+
+/*
+ * A workflow placed by the item's own state — "merge requests waiting for my
+ * review" — has no stage an item is entered at: every stage is where an
+ * item's labels say it is, and it leaves when they change. Nothing is ever
+ * "entered", so an entry stage it lacks is not a defect, and a stage no
+ * trigger leads to is reached by its identity. A stage only the engine can
+ * put an item at — by a transition, or an identity that reads nothing but the
+ * position the engine writes — still needs a way in.
+ */
+describe("structural validation, of a workflow placed by the item's own state", () => {
+  const mine = (label: string) => ({ "node.state.labels": { $in: [label] } });
+  const notMine = (label: string) => ({ "node.state.labels": { $nin: [label] } });
+
+  it("asks no entry stage of a workflow whose every open stage its identity places", () => {
+    const w = wf([
+      { id: "reviewing", waits: "person", identity: notMine("approved") },
+      { id: "approved", terminal: true, identity: mine("approved") },
+    ]);
+    expect(validateStructure(w)).toEqual([]);
+  });
+
+  it("still asks for one when an open stage only a transition could place an item at", () => {
+    const w = wf([
+      { id: "reviewing", waits: "person", identity: notMine("approved") },
+      { id: "chasing", triggers: [{ when: { "run.stage": "reviewing" } }] },
+      { id: "approved", terminal: true, identity: mine("approved") },
+    ]);
+    expect(rules(w)).toContain("entry");
+  });
+
+  it("does not take an identity reading only the position for a placement by state", () => {
+    const w = wf([
+      { id: "reviewing", identity: { "run.stage": "reviewing" } },
+      { id: "approved", terminal: true, identity: mine("approved") },
+    ]);
+    expect(rules(w)).toContain("entry");
+  });
+
+  it("still asks for one of a workflow whose every stage is terminal", () => {
+    expect(rules(wf([{ id: "done", terminal: true, identity: mine("done") }]))).toContain("entry");
+  });
+
+  it("still flags a stage nothing reaches beside ones the item's state places it at", () => {
+    const problems = validateStructure(wf([
+      { id: "reviewing", waits: "person", identity: notMine("approved") },
+      { id: "approved", terminal: true, identity: mine("approved") },
+      { id: "archived", terminal: true },
+    ]));
+    expect(problems).toEqual([{ rule: "reachability", message: 'nothing can reach stage "archived"' }]);
+  });
+});

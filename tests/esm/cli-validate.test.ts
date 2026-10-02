@@ -65,6 +65,13 @@ describe("landrace validate, against the hooks the workflow loads", () => {
     expect(validate(workflow, steps, provided ?? undefined)).toEqual([]);
   });
 
+  // What `start` asks before it runs one: a workflow placed by the item's own
+  // labels, with no entry stage and no trigger, is one a project can run.
+  it("validates the review fixture clean, though no stage in it is entered or left by a trigger", async () => {
+    const r = await runValidate(await workspaceOf({ main: "tests/fixtures/review" }));
+    expect(r.problems.filter((p) => p.rule !== "secret")).toEqual([]);
+  });
+
   /**
    * And clean for the right reason.
    *

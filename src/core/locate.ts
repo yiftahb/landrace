@@ -1,5 +1,5 @@
 import { labelsOf, stageFromLabels } from "#conventions.js";
-import { compile, missingPaths } from "#core/predicate.js";
+import { compile, missingPaths, pathsIn } from "#core/predicate.js";
 import type { Location, Node, Run, Snapshot, Stage, Workflow } from "#namespace.js";
 
 /**
@@ -9,6 +9,17 @@ import type { Location, Node, Run, Snapshot, Stage, Workflow } from "#namespace.
  * validator and the engine silently disagree about where an item is.
  */
 export const identityOf = (stage: Stage) => stage.identity ?? { "run.stage": stage.id };
+
+/**
+ * Whether an item's own state places it at this stage: a custom identity
+ * reading more than the position the engine writes. An item is there because
+ * its labels — or whatever else the identity reads — say so, not because a
+ * transition took it there, and it leaves when they stop saying so. An
+ * identity reading only `run.stage` is the default identity spelled out: an
+ * item reaches and leaves it by a transition, like any other stage.
+ */
+export const placedByState = (stage: Stage): boolean =>
+  stage.identity !== undefined && pathsIn(stage.identity).some((path) => path !== "run.stage");
 
 /**
  * Why an item several stages match cannot be placed, in the words every

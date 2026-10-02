@@ -14,7 +14,7 @@ import {
 import { LABELS, STAGE_LABEL_PREFIX } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
 import { fillTemplate, pathsNoNodeCarries } from "#core/index.js";
-import { identityOf } from "#core/locate.js";
+import { identityOf, placedByState } from "#core/locate.js";
 import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
 import type { Condition, EligibilityRule, LoadedWorkflow, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
@@ -23,7 +23,17 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   const problems: Problem[] = [];
 
   const entries = w.stages.filter((s) => s.entry);
-  if (entries.length === 0) {
+  /*
+   * A workflow whose every open stage is placed by the item's own state
+   * enters nothing: an item is at a stage because its labels say so, never
+   * at no stage waiting to be entered — and entering is a write, which a
+   * workflow over a tracker it only reads cannot make. An item its
+   * identities leave unplaced halts saying the workflow has no entry stage,
+   * and writes nothing.
+   */
+  const open = w.stages.filter((s) => !s.terminal);
+  const placedOnly = open.length > 0 && open.every(placedByState);
+  if (entries.length === 0 && !placedOnly) {
     problems.push({ rule: "entry", message: "no stage has entry: true, so no item can start" });
   }
   /*
@@ -89,8 +99,9 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     }
   }
 
+  // A stage the item's own state places it at is reached by that state.
   for (const stage of w.stages) {
-    if (!stage.entry && (stage.triggers?.length ?? 0) === 0) {
+    if (!stage.entry && (stage.triggers?.length ?? 0) === 0 && !placedByState(stage)) {
       problems.push({ rule: "reachability", message: `nothing can reach stage "${stage.id}"` });
     }
   }
@@ -630,22 +641,96 @@ function boundsACounter(c: Condition): boolean {
 const waitsForAPerson = (c: Condition): boolean => c["run.lastEvent.actor"] === "human";
 
 /**
- * Two conditions are treated as compatible unless they demand different
- * *literal scalar* values for the same path. This is an over-approximation,
- * not a definition of disjointness: it has no notion of numeric ranges, so
- * two conditions with mutually exclusive $lt/$gt bounds on the same path
- * (e.g. one requiring { $lt: 5 } and the other { $gt: 10 }) still come back
- * "not disjoint" and get flagged below, even though no value can satisfy
- * both. That is a known, deliberate limitation — interval reasoning is out
- * of scope — not a bug to chase; the "identity" problem message says so.
+ * An item two identities both place, when one can be shown — as its paths
+ * and their values — or null. Built from what the two read, then handed to
+ * the engine's own compiler, which must say each identity matches it: a
+ * report names a real item, never a guess. The rule this replaced flagged
+ * every pair it could not tell apart, so `$in: [approved]` beside `$nin:
+ * [approved]` read as overlapping, and so did any `$lt`/`$gte` split.
+ *
+ * Built path by path, since a condition document is one conjunct per path:
+ *
+ * - the labels: every set of the labels the two name. Exhaustive for a bare
+ *   label, `$eq`, `$ne`, `$in`, `$nin` and `$all`, which ask only which named
+ *   labels an item carries — so where no set satisfies both, no item does.
+ * - any other path: the one literal both demand, or that one side demands. A
+ *   path that is not the labels holds one value, so two literals that differ
+ *   are two positions, as `run.stage` is for every default identity.
+ *
+ * Anything else builds no item and the pair is abstained on: an operator on
+ * another path ($lt, $exists), $or, $and or $not at the top, one path inside
+ * another, a reserved key, more labels than are worth enumerating. Disjoint
+ * and unknown both report nothing, which is the direction this rule may be
+ * wrong in.
  */
-function disjoint(a: Condition, b: Condition): boolean {
-  return Object.entries(a).some(([path, value]) => {
-    if (!(path in b)) return false;
-    const other = b[path];
-    const comparable = (v: unknown) => typeof v !== "object" || v === null;
-    return comparable(value) && comparable(other) && value !== other;
+function itemBothPlace(a: Condition, b: Condition): Record<string, unknown> | null {
+  const paths = [...new Set([...Object.keys(a), ...Object.keys(b)])];
+  if (paths.some((p) => p.startsWith("$") || p.split(".").some(isReservedId))) return null;
+  if (paths.some((p) => paths.some((q) => q.startsWith(`${p}.`)))) return null;
+  const item: Record<string, unknown> = {};
+  try {
+    for (const path of paths) {
+      const demands = [a, b].filter((c) => path in c).map((c) => c[path]);
+      const found = path === LABELS_PATH ? labelsAll(demands) : literalAll(demands);
+      if (found === null) return null;
+      item[path] = found.value;
+    }
+    const snapshot = nested(item);
+    return compile(a)(snapshot) && compile(b)(snapshot) ? item : null;
+  } catch {
+    // An operator outside the allowlist: the structural rules report it.
+    return null;
+  }
+}
+
+/** Past this many named labels, the sets to try outnumber what a validator should spend. */
+const MOST_LABELS = 10;
+
+/** A set of the named labels every demand on the labels accepts, or null when there is none. */
+function labelsAll(demands: unknown[]): { value: string[] } | null {
+  const named = [...new Set(demands.flatMap(stringsIn))];
+  if (named.length > MOST_LABELS) return null;
+  const accepts = demands.map((d) => compile({ [LABELS_PATH]: d }));
+  for (let set = 0; set < 2 ** named.length; set++) {
+    const labels = named.filter((_, i) => (set & (2 ** i)) !== 0);
+    if (accepts.every((accept) => accept(nested({ [LABELS_PATH]: labels })))) return { value: labels };
+  }
+  return null;
+}
+
+/** The one literal every demand names — bare or as `$eq` — or null when they differ or one is an operator. */
+function literalAll(demands: unknown[]): { value: unknown } | null {
+  const literals = demands.map((d) => {
+    const eq = d !== null && typeof d === "object" && !Array.isArray(d) && Object.keys(d).length === 1 && "$eq" in d
+      ? (d as { $eq: unknown }).$eq
+      : d;
+    return eq === null || typeof eq !== "object" ? { value: eq } : null;
   });
+  const [first] = literals;
+  return first && literals.every((l) => l !== null && l.value === first.value) ? first : null;
+}
+
+/** Every string anywhere inside a demand: the labels it names. */
+function stringsIn(demand: unknown): string[] {
+  if (typeof demand === "string") return [demand];
+  if (demand === null || typeof demand !== "object") return [];
+  return Object.values(demand).flatMap(stringsIn);
+}
+
+/** The snapshot holding each dotted path's value where the compiler reads it. */
+function nested(flat: Record<string, unknown>): Snapshot {
+  const root: Record<string, unknown> = {};
+  for (const [path, value] of Object.entries(flat)) {
+    const parts = path.split(".");
+    const last = parts.pop() as string;
+    let at = root;
+    for (const part of parts) {
+      const next = at[part];
+      at = (at[part] = next !== null && typeof next === "object" ? next : {}) as Record<string, unknown>;
+    }
+    at[last] = value;
+  }
+  return root as Snapshot;
 }
 
 /**
@@ -744,7 +829,9 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
    */
   const possible = possibleEdges(w);
   for (const stage of w.stages) {
-    if (stage.terminal) continue;
+    // Left when the state that places an item there stops saying so: by a
+    // label coming off, not by a trigger.
+    if (stage.terminal || placedByState(stage)) continue;
     if (!possible.some(([from]) => from === stage.id)) {
       problems.push({ rule: "dead-end", message: `stage "${stage.id}" has no way out and is not terminal` });
     }
@@ -754,17 +841,26 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     problems.push({ rule: "cycle-bound", message: cycleMessage(members) });
   }
 
-  // Reachability from the entry stages, over the same superset dead-end
-  // reads. A stage any one of them reaches is reachable: a top-level item
-  // and a child start in different places and each walks its own part of the
-  // graph. No entry stage at all is reported by validateStructure.
+  // Reachability from the entry stages, and from every stage the item's own
+  // state places it at, over the same superset dead-end reads. A stage any
+  // one of them reaches is reachable: a top-level item and a child start in
+  // different places, an item placed by its labels starts wherever they put
+  // it, and each walks its own part of the graph. No entry stage at all is
+  // reported by validateStructure.
   const entries = w.stages.filter((s) => s.entry);
-  if (entries.length > 0) {
+  const placed = w.stages.filter((s) => !s.entry && placedByState(s));
+  if (entries.length + placed.length > 0) {
     const reachable = new Set<string>();
-    for (const entry of entries) for (const id of reachableFrom(entry.id, possible)) reachable.add(id);
-    const from = entries.length === 1
-      ? `the entry stage "${entries[0]?.id ?? ""}"`
-      : `any entry stage (${entries.map((e) => e.id).join(", ")})`;
+    for (const root of [...entries, ...placed]) for (const id of reachableFrom(root.id, possible)) reachable.add(id);
+    const fromEntry = entries.length === 0
+      ? null
+      : entries.length === 1
+        ? `the entry stage "${entries[0]?.id ?? ""}"`
+        : `any entry stage (${entries.map((e) => e.id).join(", ")})`;
+    const fromPlaced = placed.length === 0
+      ? null
+      : `a stage an item's own state places it at (${placed.map((s) => s.id).join(", ")})`;
+    const from = [fromEntry, fromPlaced].filter((f) => f !== null).join(", nor from ");
     for (const stage of w.stages) {
       if (!reachable.has(stage.id)) {
         problems.push({ rule: "reachability", message: `stage "${stage.id}" is not reachable from ${from}` });
@@ -926,10 +1022,11 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     for (let j = i + 1; j < w.stages.length; j++) {
       const a = w.stages[i] as Stage;
       const b = w.stages[j] as Stage;
-      if (!disjoint(identityOf(a), identityOf(b))) {
+      const item = itemBothPlace(identityOf(a), identityOf(b));
+      if (item !== null) {
         problems.push({
           rule: "identity",
-          message: `stages "${a.id}" and "${b.id}" can both be the current position (this check only compares literal scalars, so a genuine $lt/$gt range split can false-positive here)`,
+          message: `stages "${a.id}" and "${b.id}" can both be the current position: an item with ${JSON.stringify(item)} matches both`,
         });
       }
     }

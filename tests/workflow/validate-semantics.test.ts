@@ -515,6 +515,11 @@ describe("the graph rules, on a workflow that has an entry stage", () => {
     expect(validate(workflow, steps)).toEqual([]);
   });
 
+  it("reports nothing on the review fixture, whose every stage is where the item's own labels place it", async () => {
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/review");
+    expect(validate(workflow, steps)).toEqual([]);
+  });
+
   it("names an unbounded cycle and an unreachable pair planted in the shipped workflow", async () => {
     const { workflow, steps } = await loadShipped();
     const tampered: Workflow = {
@@ -718,5 +723,109 @@ describe("goto edges", () => {
   it("checks the paths a goto's `when` reads, like any trigger's", () => {
     const problems = validateSemantics(loop([{ stage: "a", when: { "run.nope": 1 } }]), noSteps, ["run.stage", "run.counters.*"]);
     expect(problems.map((p) => p.message)).toContainEqual(expect.stringMatching(/"b" reads run\.nope/));
+  });
+});
+
+/*
+ * The graph rules over stages an item's own state places it at. Such a stage
+ * is reached by its identity holding and left by it ceasing to, so it is a
+ * root of reachability and no dead end for lacking triggers out. Each rule
+ * still reports the stage a transition alone would have to reach or leave.
+ */
+describe("the graph rules, on stages the item's own state places it at", () => {
+  const mine = (...labels: string[]) => ({ "node.state.labels": { $in: labels } });
+  const notMine = (...labels: string[]) => ({ "node.state.labels": { $nin: labels } });
+  const flow = (stages: Workflow["stages"]): Workflow => ({ version: 1, name: "t", description: "test", stages });
+
+  it("takes a stage its identity places an item at for one it can leave", () => {
+    const w = flow([
+      { id: "reviewing", waits: "person", identity: notMine("approved") },
+      { id: "approved", terminal: true, identity: mine("approved") },
+    ]);
+    expect(rules(w)).not.toContain("dead-end");
+  });
+
+  it("still reports a dead end whose identity reads nothing but the position", () => {
+    const w = flow([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "stuck", identity: { "run.stage": "stuck" }, triggers: [{ when: { "run.stage": "a" } }] },
+    ]);
+    expect(validateSemantics(w, noSteps).filter((p) => p.rule === "dead-end")).toEqual([
+      { rule: "dead-end", message: 'stage "stuck" has no way out and is not terminal' },
+    ]);
+  });
+
+  it("reaches what a trigger leads to from a stage the item's state places it at", () => {
+    const w = flow([
+      { id: "reviewing", waits: "person", identity: notMine("approved") },
+      { id: "approved", terminal: true, identity: mine("approved") },
+      { id: "nudged", terminal: true, triggers: [{ when: { "run.stage": "reviewing", "node.state.labels": "stale" } }] },
+    ]);
+    expect(rules(w)).not.toContain("reachability");
+  });
+
+  it("still reports stages only each other reach, naming the stages it reached them from", () => {
+    const w = flow([
+      { id: "reviewing", waits: "person", identity: notMine("approved") },
+      { id: "approved", terminal: true, identity: mine("approved") },
+      { id: "island", terminal: true, triggers: [{ when: { "run.stage": "island2" } }] },
+      { id: "island2", terminal: true, triggers: [{ when: { "run.stage": "island" } }] },
+    ]);
+    expect(validateSemantics(w, noSteps).filter((p) => p.rule === "reachability").map((p) => p.message)).toEqual([
+      'stage "island" is not reachable from a stage an item\'s own state places it at (reviewing, approved)',
+      'stage "island2" is not reachable from a stage an item\'s own state places it at (reviewing, approved)',
+    ]);
+  });
+
+  it("names both kinds of root when a workflow has an entry stage and stages placed by state", () => {
+    const w = flow([
+      { id: "a", entry: true, terminal: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "flagged", terminal: true, identity: mine("flagged") },
+      { id: "island", terminal: true, triggers: [{ when: { "run.stage": "island" } }] },
+    ]);
+    expect(validateSemantics(w, noSteps).filter((p) => p.rule === "reachability").map((p) => p.message)).toEqual([
+      'stage "island" is not reachable from the entry stage "a", nor from a stage an item\'s own state places it at (flagged)',
+    ]);
+  });
+
+  describe("two identities", () => {
+    const identities = (a: Workflow["stages"][number]["identity"], b: Workflow["stages"][number]["identity"]) =>
+      validateSemantics(flow([
+        { id: "a", waits: "person", ...(a ? { identity: a } : {}) },
+        { id: "b", terminal: true, ...(b ? { identity: b } : {}) },
+      ]), noSteps).filter((p) => p.rule === "identity");
+
+    it.each([
+      ["$in and $nin of one label", mine("approved"), notMine("approved")],
+      ["$in and $nin of the same labels", mine("approved", "merged"), notMine("approved", "merged")],
+      ["$in and a $nin that holds every label it names", mine("approved"), notMine("approved", "merged")],
+      ["$all and a $nin of one of its labels", { "node.state.labels": { $all: ["a", "b"] } }, notMine("b")],
+      ["$all and a $ne of one of its labels", { "node.state.labels": { $all: ["a", "b"] } }, { "node.state.labels": { $ne: "a" } }],
+      ["a label and its $ne", { "node.state.labels": "a" }, { "node.state.labels": { $ne: "a" } }],
+      ["two default identities", undefined, undefined],
+    ])("finds no item both hold: %s", (_, a, b) => {
+      expect(identities(a, b)).toEqual([]);
+    });
+
+    // Abstained on, not proved: nothing here reasons about numeric ranges,
+    // so a split it cannot see into is not reported — it once was, on
+    // every workflow that wrote one.
+    it("abstains on identities it cannot build a common item for", () => {
+      expect(identities({ "run.counters.a": { $lt: 3 } }, { "run.counters.a": { $gte: 3 } })).toEqual([]);
+      expect(identities({ $or: [{ "node.state.labels": "x" }] }, { $or: [{ "node.state.labels": "y" }] })).toEqual([]);
+    });
+
+    it.each([
+      ["one label and a set that holds it", mine("x"), mine("x", "y"), '{"node.state.labels":["x"]}'],
+      ["two labels an item can carry together", mine("x"), mine("y"), '{"node.state.labels":["x","y"]}'],
+      ["two labels it may lack together", notMine("x"), notMine("y"), '{"node.state.labels":[]}'],
+      ["a label and a $nin of another", mine("x"), notMine("y"), '{"node.state.labels":["x"]}'],
+      ["one identity twice", { "run.stage": "a" }, { "run.stage": "a" }, '{"run.stage":"a"}'],
+      ["a position and a label", { "run.stage": "a" }, mine("x"), '{"run.stage":"a","node.state.labels":["x"]}'],
+    ])("reports two that one item holds: %s, naming that item", (_, a, b, item) => {
+      expect(identities(a, b)).toEqual([{
+        rule: "identity", message: `stages "a" and "b" can both be the current position: an item with ${item} matches both`,
+      }]);
+    });
   });
 });
