@@ -1,6 +1,9 @@
 import { compose, globMatches, isEffectRefused } from "landrace/kit";
+import { deriveRun } from "#core/derive.js";
 import { MemoryForge, MemoryTracker } from "#testing/index.js";
-import type { ChangedFile, ChangedFiles, ComposedHooks, Effect, Graph, HookContext, MergeAnswer, RuntimeContext, Snapshot } from "#namespace.js";
+import type {
+  ChangedFile, ChangedFiles, ComposedHooks, Effect, Entry, Graph, HookContext, MergeAnswer, RuntimeContext, Snapshot,
+} from "#namespace.js";
 
 /*
  * The protected-path gate on `pull.merge` (security audit C1): a workflow
@@ -18,7 +21,7 @@ const file = (path: string, previous?: string): ChangedFile =>
   ({ path, status: previous === undefined ? "modified" : "renamed", additions: 1, deletions: 0, ...(previous === undefined ? {} : { previous }) });
 
 /** The memory forge with the item's pull request open and green, counting what the merge path asks of it. */
-function world(files: ChangedFile[] = [], opts: { complete?: false; unreadable?: string } = {}) {
+function world(files: ChangedFile[] = [], opts: { complete?: false; settling?: true; unreadable?: string } = {}) {
   const asked = { merges: 0, files: 0 };
   class Counting extends MemoryForge {
     override async merge(pull: number, headSha: string): Promise<MergeAnswer> {
@@ -28,7 +31,8 @@ function world(files: ChangedFile[] = [], opts: { complete?: false; unreadable?:
     override async changedFiles(pull: number): Promise<ChangedFiles> {
       asked.files++;
       if (opts.unreadable !== undefined) throw new Error(opts.unreadable);
-      return super.changedFiles(pull);
+      const read = await super.changedFiles(pull);
+      return opts.settling ? { ...read, complete: false, settling: true } : read;
     }
   }
   const forge = new Counting();
@@ -126,6 +130,19 @@ describe("pull.merge's protected paths", () => {
     expect(asked.merges).toBe(0);
   });
 
+  /*
+   * A list the forge is still working out — GitLab's count not computed yet
+   * on a merge request just opened — is not one cut short: it settles by
+   * itself, so the merge is left to the next tick, unmarked, as checks still
+   * running are.
+   */
+  it("leaves a merge whose changed files the forge is still working out to the next tick, unmarked", async () => {
+    const { hooks, asked } = world([file("src/a.ts")], { settling: true });
+    const said = await attempt(hooks);
+    expect(said).toMatchObject({ refused: false, message: expect.stringMatching(/will not merge pr-1 for #7 yet[\s\S]*still working out/) });
+    expect(asked.merges).toBe(0);
+  });
+
   it("refuses when the changed files could not be read at all, saying why", async () => {
     const { hooks, asked } = world([], { unreadable: "502 Bad Gateway" });
     const said = await attempt(hooks);
@@ -154,7 +171,7 @@ describe("pull.merge's protected paths", () => {
 
 /*
  * `reviewedBy` (security audit H1): the merge is held to the head the named
- * stage's latest settled round started at, as the runner recorded it. A
+ * stage's latest valid output started at, as the runner recorded it. A
  * head that review never saw — pushed after it, or recorded by nobody — is
  * answered as a moved head is: nothing merges, nothing throws, and the
  * workflow's own route sends the item back to that review.
@@ -187,6 +204,22 @@ describe("pull.merge held to the head a review saw", () => {
     expect(asked.merges).toBe(0);
     expect(forge.pull(pr).merged).toBe(false);
     expect(logged).toEqual([expect.objectContaining({ name: "forge.merge.unreviewed", data: expect.objectContaining({ pull: "pr-1", headSha: "abc" }) })]);
+  });
+
+  /*
+   * The heads as the engine derives them, off the review's records: a round
+   * whose answer was rejected judged nothing, so the head it started at —
+   * the one on the forge now — is not reviewed, though an earlier round's
+   * valid answer reviewed another.
+   */
+  it.each(["malformed", "refused"])("answers the head a %s review round started at as moved", async (kind) => {
+    const { hooks, forge, pr, asked } = world();
+    const record = (k: string, round: number, head: string): Entry =>
+      ({ stage: "code-review", kind: k, round, head, at: `2026-10-02T00:00:0${round}.000Z`, byAgent: true });
+    const { heads } = deriveRun([record("output", 1, "older"), record(kind, 2, "abc")], "ci");
+    expect(await attemptAt(hooks, heads)).toBe("resolved");
+    expect(asked.merges).toBe(0);
+    expect(forge.pull(pr).merged).toBe(false);
   });
 
   it("judges the head the forge has now, read again just before the merge", async () => {

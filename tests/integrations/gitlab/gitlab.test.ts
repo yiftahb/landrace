@@ -251,6 +251,28 @@ describe("changedFiles", () => {
     }
   });
 
+  /*
+   * GitLab names no count while it is still working the diff out — on a
+   * merge request just opened, say. That is not a list cut short but one not
+   * settled yet: the merge is left to the next tick, never refused for it.
+   */
+  it("calls a list GitLab has not counted yet still settling, not cut short", async () => {
+    const gl = createFakeGitLab();
+    gl.diffsFor("landrace/7", diffs(20));
+    const mr = gl.open({ source_branch: "landrace/7", changes_count: null });
+    expect(await forgeOver(gl).changedFiles(mr.iid, gl.ctx())).toMatchObject({ complete: false, settling: true });
+  });
+
+  it("calls a list stopped at the page bound not whole, and not settling, whatever GitLab counts", async () => {
+    for (const changes_count of [undefined, null]) {
+      const gl = createFakeGitLab();
+      gl.diffsFor("landrace/7", diffs(1_000));
+      const mr = gl.open({ source_branch: "landrace/7", ...(changes_count === undefined ? {} : { changes_count }) });
+      const read = await forgeOver(gl).changedFiles(mr.iid, gl.ctx());
+      expect(read).toEqual({ complete: false, files: expect.any(Array) });
+    }
+  });
+
   it("calls a list stopped at the page bound not whole", async () => {
     const gl = createFakeGitLab();
     gl.diffsFor("landrace/7", diffs(1_000));

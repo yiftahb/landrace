@@ -1,5 +1,5 @@
 import { GitLab } from "landrace/integrations/gitlab";
-import { compose } from "landrace/kit";
+import { compose, isEffectRefused } from "landrace/kit";
 import type { Effect, Git, Graph, HookContext, PullRecord, Snapshot } from "#namespace.js";
 import { MemoryTracker } from "#testing/external-state.js";
 import { createFakeGitLab, type FakeGitLab, type FakeMr, PROJECT } from "#tests/integrations/gitlab/fake-gitlab.js";
@@ -303,8 +303,9 @@ describe("the preflight reads pipelines too", () => {
 
 describe("pull.merge through compose", () => {
   const merge: Effect = { type: "pull.merge", branch: "landrace/1" };
-  const project = (extra: Partial<FakeMr>) => {
+  const project = (extra: Partial<FakeMr>, prepare: (gl: FakeGitLab) => void = () => {}) => {
     const gl = createFakeGitLab();
+    prepare(gl);
     const opened = gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc1234", ...extra });
     const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "1", title: "t" }] }), forge: forgeOver(gl) });
     const snapshot = async (): Promise<Snapshot> => {
@@ -330,6 +331,41 @@ describe("pull.merge through compose", () => {
     expect(opened.state).toBe("opened");
     expect(gl.requests.some((r) => r.method === "PUT")).toBe(false);
   });
+
+  /*
+   * The protected-path gate over GitLab's diff (security follow-up): a diff
+   * GitLab has not counted yet — `changes_count` null, still computing — is
+   * unsettled, an unmarked error the next tick asks again; one the page
+   * bound cut short stays a refusal, marked, for a person.
+   */
+  const guarded: Effect = { ...merge, refuse: [".landrace/hooks/**"] };
+  const files = (n: number) => Array.from({ length: n }, (_, i) => ({ new_path: `src/f${i}.ts`, diff: "@@ -1 +1 @@\n+x\n" }));
+  const attempt = async (gl: FakeGitLab, hooks: ReturnType<typeof compose>, snapshot: Snapshot) =>
+    hooks.post.apply(guarded, { ...gl.ctx(), item: "1", snapshot } as HookContext)
+      .then(() => "merged" as const, (e: unknown) => ({ message: (e as Error).message, refused: isEffectRefused(e) }));
+
+  it("leaves a merge whose diff GitLab is still counting unmarked, for the next tick, and merges once it has", async () => {
+    const { gl, hooks, opened, snapshot } = project({ changes_count: null, pipelines: [{ id: 1, sha: "abc1234", status: "success" }] });
+    expect(await attempt(gl, hooks, await snapshot())).toEqual({ message: expect.stringMatching(/still working out/), refused: false });
+    expect(opened.state).toBe("opened");
+    expect(gl.requests.some((r) => r.method === "PUT")).toBe(false);
+
+    delete opened.changes_count;
+    expect(await attempt(gl, hooks, await snapshot())).toBe("merged");
+    expect(opened.state).toBe("merged");
+  });
+
+  it.each([["counted", undefined], ["not counted yet", null]] as const)(
+    "refuses, marked, a merge whose diff the page bound cut short — %s by GitLab",
+    async (_what, changes_count) => {
+      const { gl, hooks, opened, snapshot } = project(
+        { pipelines: [{ id: 1, sha: "abc1234", status: "success" }], ...(changes_count === undefined ? {} : { changes_count }) },
+        (fake) => fake.diffsFor("landrace/1", files(1_000)),
+      );
+      expect(await attempt(gl, hooks, await snapshot())).toEqual({ message: expect.stringMatching(/stopped before the rest/), refused: true });
+      expect(opened.state).toBe("opened");
+    },
+  );
 
   it("does not halt on a head that moved after the snapshot: nothing merges, the next read has the new head", async () => {
     const { gl, hooks, opened, snapshot } = project({ pipelines: [{ id: 1, sha: "abc1234", status: "success" }] });

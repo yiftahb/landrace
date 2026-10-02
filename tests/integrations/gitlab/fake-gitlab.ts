@@ -83,8 +83,12 @@ export interface FakeMr {
   branchRefusal?: 406 | 422;
   /** What GitLab says of its mergeability, on a read of the merge request: `checking` while it works it out. */
   detailed_merge_status?: string;
-  /** How many files GitLab says it changes: the diff's length unless said — "1000+" past GitLab's diff limits. */
-  changes_count?: string;
+  /**
+   * How many files GitLab says it changes: the diff's length unless said —
+   * "1000+" past GitLab's diff limits, null while it is still working the
+   * diff out, as on a merge request just opened.
+   */
+  changes_count?: string | null;
 }
 
 export interface FakeSettings {
@@ -125,7 +129,7 @@ export interface FakeGitLab {
 const shown = (mr: FakeMr): Omit<FakeMr, "diffs" | "discussions"> => {
   const { diffs, discussions, pipelines, failedJobs, traces, mergeable, mayMerge, branchRefusal, ...rest } = mr;
   void [discussions, pipelines, failedJobs, traces, mergeable, mayMerge, branchRefusal];
-  return { ...rest, changes_count: mr.changes_count ?? String(diffs.length) };
+  return { ...rest, changes_count: mr.changes_count === undefined ? String(diffs.length) : mr.changes_count };
 };
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}): Response =>

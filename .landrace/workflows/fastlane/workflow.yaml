@@ -9,8 +9,8 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 # Nobody reads the change before it reaches the default branch, so the merge
 # is held by the engine, not by a prompt, to three guards (security audit
 # C1, H1): the checks are green on the head it merges; that head is the one
-# code review's latest round started at (`reviewedBy`); and the pull request
-# changes none of the paths in `refuse` — the engine's hooks, configuration
+# code review's latest valid answer started at (`reviewedBy`); and the pull
+# request changes none of the paths in `refuse` — the engine's hooks, configuration
 # and workflows, CI, the dependencies an install runs, the agents' own
 # instructions — which are a person's to merge. Only the item's own
 # `landrace/{item}` pull request in this repository is its work: one that

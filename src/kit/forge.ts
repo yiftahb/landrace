@@ -523,7 +523,7 @@ function mergeGuards(effect: Effect): { refuse: string[]; reviewedBy: string | n
   return { refuse: refuse as string[], reviewedBy: reviewedBy as string | null };
 }
 
-/** The commit `stage`'s latest settled round started at, as the run the snapshot carries read it off its record. */
+/** The commit `stage`'s latest valid output started at, as the run the snapshot carries read it off its record. */
 const reviewedHead = (snapshot: Snapshot, stage: string): string | undefined => {
   const heads = (snapshot.run as { heads?: unknown } | undefined)?.heads;
   if (typeof heads !== "object" || heads === null || !Object.hasOwn(heads, stage)) return undefined;
@@ -766,9 +766,10 @@ export abstract class BaseForge {
    * applies the merge again while the item stays in its stage.
    *
    * And `reviewedBy`, when the workflow names it: the head to merge must be
-   * the one the named stage's latest settled round started at, as the runner
+   * the one the named stage's latest valid output started at, as the runner
    * recorded it on that round's record. One that review never saw — pushed
-   * since, or recorded by nobody — is answered as a moved head is, logged as
+   * since, recorded by nobody, or only by a round whose answer was rejected
+   * — is answered as a moved head is, logged as
    * `forge.merge.unreviewed`: nothing merges, nothing throws, and the
    * workflow's route for a pull request still open sends it back to review.
    *
@@ -786,7 +787,8 @@ export abstract class BaseForge {
    * running are not one, nor is a forge read that failed on the way: both
    * are left to the next tick. The changed files are the exception: one read
    * that fails refuses, since a path gate that lets an outage through has
-   * checked nothing.
+   * checked nothing — bar a list the forge says it is still working out,
+   * which the next tick reads again, as it does checks still running.
    */
   protected async mergeOpen(effect: Effect, ctx: HookContext): Promise<void> {
     const branch = effectBranch(effect);
@@ -848,6 +850,11 @@ export abstract class BaseForge {
       read = await this.changedFiles(number, ctx);
     } catch (e) {
       throw new EffectRefused(`${which}: its changed files could not be read (${e instanceof Error ? e.message : String(e)}), ${unknown}`);
+    }
+    // Not a refusal: a list the forge is still working out settles by
+    // itself, as checks still running do, so the next tick asks again.
+    if (read.settling === true) {
+      throw new Error(`${which} yet: the forge is still working out its changed files, so the next tick reads them again`);
     }
     if (!read.complete) {
       throw new EffectRefused(`${which}: the forge listed ${read.files.length} of its changed files and stopped before the rest, ${unknown}`);

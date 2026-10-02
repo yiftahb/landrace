@@ -101,7 +101,9 @@ export interface Entry {
    * The commit the step's worktree started at, for a step on a branch — on
    * its output record, or its rejection's. The engine's, beside `data` and
    * never in it: an agent's answer naming a `head` is its value's, and a
-   * merge guarded by `reviewedBy` holds the head it merges to this one.
+   * merge guarded by `reviewedBy` holds the head it merges to the one on
+   * the stage's latest output — a rejection's says where a round that
+   * judged nothing started, and is never read for it.
    */
   head?: string;
   /**
@@ -230,8 +232,9 @@ export interface Run {
    */
   lastOutputBy: string | null;
   /**
-   * Per stage, the commit its latest settled round — an output or a
-   * rejection — started at, when that record carries one: `run.heads.<stage>`.
+   * Per stage, the commit its latest valid output started at, when that
+   * record carries one: `run.heads.<stage>`. Never a rejection's: a round
+   * whose answer was rejected or refused judged nothing.
    * What `pull.merge`'s `reviewedBy` holds the head it merges to, so code no
    * review saw is never merged. Null-prototype, as `counters` is.
    */
@@ -1137,6 +1140,13 @@ export interface ChangedFile {
 export interface ChangedFiles {
   files: ChangedFile[];
   complete: boolean;
+  /**
+   * True when the list is not whole only because the forge is still working
+   * it out — a count not computed yet on a pull request just opened — which
+   * asking again settles. A list cut at a cap or a page bound is not that:
+   * asking again cuts it the same way.
+   */
+  settling?: boolean | undefined;
 }
 
 /**

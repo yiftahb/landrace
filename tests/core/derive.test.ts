@@ -668,23 +668,31 @@ describe("who produced the latest output", () => {
 });
 
 /*
- * The commit each stage's latest settled round started at (security audit
+ * The commit each stage's latest valid output started at (security audit
  * H1): `pull.merge`'s `reviewedBy` merges only the head the review saw. Read
- * off the engine's own field on the record — an output's or a rejection's —
- * never off the value an agent wrote.
+ * off the engine's own field on the output record, never off the value an
+ * agent wrote — and never off a rejection's: a round whose answer was
+ * rejected or refused judged nothing, so the head it started at was not
+ * reviewed.
  */
-describe("the head each stage's latest settled round started at", () => {
+describe("the head each stage's latest valid output started at", () => {
   const at_ = (e: Entry, head: string): Entry => ({ ...e, head });
 
-  it("is the head on the latest settled round's record, output or rejection", () => {
+  it("is the head on the latest output's record", () => {
     const run = deriveRun([at_(out("code-review", 1), "a"), at_(out("code-review", 2), "b"), at_(out("build", 1), "x")], "ci");
     expect(run.heads).toEqual({ "code-review": "b", build: "x" });
-    expect(deriveRun([at_(out("code-review", 1), "a"), at_(malformed("code-review", 2), "c")], "blocked").heads).toEqual({ "code-review": "c" });
   });
 
-  it("is absent where the latest settled round recorded none, though an earlier one did", () => {
+  it.each([["broke its contract", malformed], ["was refused", refused]])(
+    "is never the head of a round that %s, though that round is the latest",
+    (_what, rejected) => {
+      expect(deriveRun([at_(out("code-review", 1), "a"), at_(rejected("code-review", 2), "c")], "blocked").heads).toEqual({ "code-review": "a" });
+      expect(deriveRun([at_(rejected("code-review", 1), "c")], "blocked").heads).toEqual({});
+    },
+  );
+
+  it("is absent where the latest output recorded none, though an earlier one did", () => {
     expect(deriveRun([at_(out("code-review", 1), "a"), out("code-review", 2)], "ci").heads).toEqual({});
-    expect(deriveRun([at_(out("code-review", 1), "a"), malformed("code-review", 2)], "blocked").heads).toEqual({});
   });
 
   it("is no round's that has not settled: an entry for the next one changes nothing", () => {

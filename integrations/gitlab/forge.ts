@@ -325,14 +325,17 @@ export class GitLab extends BaseForge {
    * Every page of the diff, and whether that is the whole of it. GitLab cuts
    * a diff at its own limits and says so only in the merge request's count
    * of changes — "1000+" — so the list is whole only when the pages ran out
-   * and that count is a plain number naming exactly the files read.
+   * and that count is a plain number naming exactly the files read. A count
+   * of null is GitLab still working the diff out, on a merge request just
+   * opened: settling, which the next read may find whole. The page bound is
+   * never that — it cuts the next read the same way.
    */
   async changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFiles> {
     const gl = this.gl(ctx);
     const { items, more } = await gl.pages<Diff>(`/merge_requests/${pull}/diffs`, MAX_ISSUE_PAGES);
     const { changes_count: counted } = await gl.get<{ changes_count?: unknown }>(`/merge_requests/${pull}`);
     const whole = !more && typeof counted === "string" && /^[0-9]+$/.test(counted) && Number(counted) === items.length;
-    return { files: items.map(fileOf), complete: whole };
+    return { files: items.map(fileOf), complete: whole, ...(!more && counted === null ? { settling: true } : {}) };
   }
 
   /** Our own notes only, by login: anyone can paste a round's marker into theirs. */
