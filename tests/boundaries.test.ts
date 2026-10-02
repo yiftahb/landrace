@@ -146,6 +146,85 @@ describe("an integration imports only what any integration author can", () => {
   });
 });
 
+/*
+ * The kit is what every integration builds on, published as `landrace/kit`,
+ * so it is held to what any integration author has beside it: the shared
+ * vocabulary, the namespace's types, the hook brands, node, and itself —
+ * never the runner, the core or the loader, which would make an integration
+ * part of the engine without anyone writing an engine import.
+ */
+const KIT = filesUnder(join("src", "kit"));
+
+/** Every specifier a source line imports from: `from "x"`, `import "x"` and `import("x")`. */
+const specifiers = (line: string): string[] =>
+  [...line.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"']+)["']/g)].flatMap(([, specifier]) => (specifier === undefined ? [] : [specifier]));
+
+/**
+ * The names a base logs in, by the file that holds it: its role's. The
+ * executor's are the agent's own events and the step's end, which the
+ * engine's activity feed reads by those names.
+ */
+const ROLE_EVENTS: Record<string, RegExp> = {
+  [join("src", "kit", "forge.ts")]: /^forge\./,
+  [join("src", "kit", "docs.ts")]: /^docs\./,
+  [join("src", "kit", "tracker.ts")]: /^tracker\./,
+  [join("src", "kit", "executor.ts")]: /^(agent|step)\./,
+};
+
+/** Each line a top-level class covers, from `class` to the closing brace in the first column. */
+const classLines = (lines: string[]): Set<number> => {
+  const inside = new Set<number>();
+  let open = false;
+  lines.forEach((line, i) => {
+    if (/^export (abstract )?class\b/.test(line)) open = true;
+    if (open) inside.add(i);
+    if (open && line === "}") open = false;
+  });
+  return inside;
+};
+
+describe("the kit holds to what an integration author has", () => {
+  it("imports only #conventions, #namespace, #hooks/contracts, node:* and its own files", () => {
+    const strays = KIT.flatMap((file) => readFileSync(file, "utf8").split("\n").flatMap((line, i) =>
+      specifiers(line)
+        .filter((specifier) => !/^(#conventions\.js|#namespace\.js|#hooks\/contracts\.js|#kit\/[A-Za-z0-9_-]+\.js|node:.+)$/.test(specifier))
+        .map((specifier) => `${file}:${i + 1}: ${specifier}`)));
+    expect(KIT.length).toBeGreaterThan(0);
+    expect(strays).toEqual([]);
+  });
+
+  /*
+   * A function the kit exports is called by an integration not built on a
+   * base, in that integration's name, so it never logs: what it says, it
+   * says by returning or throwing. A base logs — through the context the
+   * engine hands it — and only in its role's name, so an event names the
+   * role that said it, whichever integration extends the base.
+   */
+  it("logs only inside a base, through the context's log, in its role's name", () => {
+    const strays = KIT.flatMap((file) => {
+      const lines = readFileSync(file, "utf8").split("\n");
+      const inside = classLines(lines);
+      return lines.flatMap((line, i) => {
+        const where = `${file}:${i + 1}: ${line.trim()}`;
+        if (/\bconsole\./.test(line)) return [`${where} (console)`];
+        const calls = [...line.matchAll(/(?<![\w.])(?:ctx\.)?log(?:\?\.)?\(\s*(?:["'`]([^"'`]*)["'`])?/g)];
+        return calls.flatMap(([, name]) => {
+          if (!inside.has(i)) return [`${where} (outside a base)`];
+          const role = ROLE_EVENTS[file];
+          if (name === undefined || role === undefined || !role.test(name)) return [`${where} (not in its role's name)`];
+          return [];
+        });
+      });
+    });
+    expect(strays).toEqual([]);
+  });
+
+  it("finds every log call there is to judge", () => {
+    const calls = KIT.flatMap((file) => [...readFileSync(file, "utf8").matchAll(/(?<![\w.])(?:ctx\.)?log(?:\?\.)?\(/g)]);
+    expect(calls.length).toBeGreaterThanOrEqual(8);
+  });
+});
+
 describe("the one display-only file that may name a vendor", () => {
   const source = readFileSync(DISPLAY_ONLY, "utf8");
 
