@@ -237,6 +237,82 @@ describe("deriveRun", () => {
   });
 });
 
+/*
+ * An effect refused while the item was entering a stage: the stage's entry
+ * record landed, then the forge or the tracker refused what came after it,
+ * and the engine recorded the stage's round as rejected, saying where the
+ * item was leaving from. The item is still there — the position was to be
+ * written after the refused effect — so that is where the failure is read:
+ * the way on from here was refused, and only a halt may take the item.
+ */
+describe("a way into a stage refused while the item was leaving another", () => {
+  const from = (stage: string, round: number, left: string): Entry => ({ ...entered(stage, round), from: left });
+  const rejected = (stage: string, round: number, left: string): Entry => ({ ...malformed(stage, round), from: left });
+  const built = [entered("build", 1), out("build", 1, { kind: "done" })];
+
+  it("reads as a failure at the stage it was leaving, a broken contract rather than a refusal", () => {
+    const r = deriveRun([...built, from("publish", 1, "build"), rejected("publish", 1, "build")], "build");
+    expect(r.lastOutputValid).toBe(false);
+    expect(r.lastRefused).toBe(false);
+  });
+
+  it("counts the round it refused, and lists the stage among the failed", () => {
+    const r = deriveRun([...built, from("publish", 1, "build"), rejected("publish", 1, "build")], "build");
+    expect(r.counters.publish).toBe(1);
+    expect(r.failedStages).toContain("publish");
+    expect(r.failedStages).not.toContain("build");
+  });
+
+  it("is not read at the halt it led to, where Retry finds the stage it refused", () => {
+    const r = deriveRun([...built, from("publish", 1, "build"), rejected("publish", 1, "build")], "blocked");
+    expect(r.lastOutputValid).toBeNull();
+    expect(r.failedStage).toBe("publish");
+  });
+
+  it("is not read where the entry landed and nothing was refused after it — an outage, or a crash", () => {
+    expect(deriveRun([...built, from("publish", 1, "build")], "build").lastOutputValid).toBeNull();
+  });
+
+  /*
+   * A step's own failure carries no `from`: a judge that broke its contract
+   * at triage, entered from the halt, and was routed back to it. That is the
+   * judge's failure, read at triage as it always was, not the halt's.
+   */
+  it("is not read for a step's own failure, which names no stage it was leaving", () => {
+    const r = deriveRun([entered("build", 1), malformed("build", 1), human(), from("triage", 1, "blocked"), malformed("triage", 1)], "blocked");
+    expect(r.lastOutputValid).toBeNull();
+  });
+
+  it("is not read for a refusal written leaving another stage", () => {
+    expect(deriveRun([...built, from("publish", 1, "build"), rejected("publish", 1, "ci")], "build").lastOutputValid).toBeNull();
+  });
+
+  it("is over once the stage is entered again, and read again if that entry is refused too", () => {
+    const first = [...built, from("publish", 1, "build"), rejected("publish", 1, "build")];
+    const retried = deriveRun([...first, from("publish", 2, "blocked")], "publish");
+    expect(retried.lastOutputValid).toBeNull();
+    expect(retried.failedStages).not.toContain("publish");
+    const again = deriveRun([...first, from("publish", 2, "blocked"), rejected("publish", 2, "blocked")], "blocked");
+    expect(again.lastOutputValid).toBe(false);
+    expect(again.failedStage).toBe("publish");
+    expect(again.counters.publish).toBe(2);
+  });
+
+  it("is not read for an earlier round's refusal, once the stage was entered from here again", () => {
+    const entries = [
+      ...built, from("publish", 1, "build"), rejected("publish", 1, "build"),
+      from("build", 2, "blocked"), out("build", 2, { kind: "done" }), from("publish", 2, "build"),
+    ];
+    expect(deriveRun(entries, "build").lastOutputValid).toBeNull();
+  });
+
+  it("is judged a refusal when the record says so", () => {
+    const r = deriveRun([...built, from("publish", 1, "build"), { ...refused("publish", 1), from: "build" }], "build");
+    expect(r.lastOutputValid).toBe(false);
+    expect(r.lastRefused).toBe(true);
+  });
+});
+
 describe("assess uses deriveRun's per-stage failedStages, not the stage lastOutputValid answers for", () => {
   // Regression for the bug verified in review: deriveRun is called with the
   // raw snapshot's own run.stage (here "spec"), but decide() places the

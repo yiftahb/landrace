@@ -172,7 +172,28 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     const enteredRound = maxEnteredRoundByStage.get(s) ?? 1;
     if (rejectedRound >= outRound && rejectedRound >= enteredRound) failedStages.push(s);
   }
-  const lastOutputValid: false | null = stage !== null && failedStages.includes(stage) ? false : null;
+  /*
+   * The way on from here, refused. A stage's on_enter writes its entry record
+   * first and its position last, with a forge's merge or a pull request in
+   * between; when the forge refuses that, the engine records the stage's
+   * round as rejected, naming where the item was leaving from — and the item
+   * is still there. Read here, where it is, the refusal routes it to a halt
+   * as a broken output does; read only at the stage it never reached, the
+   * trigger that sent it would fire again on every tick and ask again.
+   *
+   * Only while that entry is the latest one, and only for a rejection written
+   * leaving this very stage: a step's own failure names no stage it was
+   * leaving, and entering any stage after it — the same one, on a Retry — is
+   * a new attempt with nothing refused yet.
+   */
+  const lastEntry = [...ordered].reverse().find((e) => e.kind === ENTRY_KIND);
+  const leaving = lastEntry !== undefined && stage !== null
+    ? ordered.findLast((e) =>
+      (e.kind === MALFORMED_KIND || e.kind === REFUSED_KIND) && e.stage === lastEntry.stage && e.round === lastEntry.round && e.from === stage)
+    : undefined;
+
+  const failedHere = stage !== null && failedStages.includes(stage);
+  const lastOutputValid: false | null = failedHere || leaving !== undefined ? false : null;
 
   /*
    * Of that failure, whether the round it judges was refused. The failing
@@ -181,10 +202,13 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * person is now looking at. One invocation writes one verdict; should a
    * round ever carry both, the refusal is what it reads as — a security
    * verdict a person has not seen is the costlier one to hide, and this is a
-   * rule about the set of records, not about which came first.
+   * rule about the set of records, not about which came first. A way on that
+   * was refused is judged by its own record.
    */
   const lastRefused: boolean | null = lastOutputValid === false && stage !== null
-    ? maxRefusedRoundByStage.get(stage) === maxRejectedRoundByStage.get(stage)
+    ? failedHere
+      ? maxRefusedRoundByStage.get(stage) === maxRejectedRoundByStage.get(stage)
+      : leaving?.kind === REFUSED_KIND
     : null;
 
   /** Per-stage: an unblock recorded against a different stage must not reset this one's budget. */
@@ -240,7 +264,6 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * turn — would otherwise read the `from` of whatever step ran before it,
    * which names the wrong stage with complete confidence.
    */
-  const lastEntry = [...ordered].reverse().find((e) => e.kind === ENTRY_KIND);
   const previousStage = lastEntry !== undefined && lastEntry.stage === stage ? lastEntry.from ?? null : null;
 
   /*

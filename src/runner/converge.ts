@@ -1,8 +1,8 @@
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
-import { MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
+import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
-  AgentActivity, ConvergeDeps, ConvergeResult, Dispatcher, Effect, Snapshot, StepResult, WorktreeBranch,
+  AgentActivity, ConvergeDeps, ConvergeResult, Decision, Dispatcher, Effect, Snapshot, StepResult, WorktreeBranch,
 } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { scrubberOf } from "#runner/events.js";
@@ -23,7 +23,7 @@ const DEFAULT_MAX_PASSES = 30;
  */
 const MAX_MALFORMED_BODY = 4000;
 
-function malformedBody(reason: string, scrub: (text: string) => string, kind: string = MALFORMED_KIND): string {
+function malformedBody(reason: string, scrub: (text: string) => string, kind: string = MALFORMED_KIND, heading?: string): string {
   // `reason` is not our own text: it can carry the screening executor's own
   // error output verbatim ("agent exited N: <up to 400 chars of stderr>"),
   // and stderr can contain a secret the same way any subprocess output can.
@@ -33,8 +33,8 @@ function malformedBody(reason: string, scrub: (text: string) => string, kind: st
   const redacted = scrub(reason);
   // Headed as what it was: a person opening an item stopped by a security
   // check has a different job from one reading an agent's unreadable answer.
-  const heading = kind === REFUSED_KIND ? "Step refused by a security check" : "Step output rejected";
-  const full = `## ${heading}\n\n${redacted}. Nothing was retried.`;
+  const title = heading ?? (kind === REFUSED_KIND ? "Step refused by a security check" : "Step output rejected");
+  const full = `## ${title}\n\n${redacted}. Nothing was retried.`;
   return full.length > MAX_MALFORMED_BODY ? `${full.slice(0, MAX_MALFORMED_BODY)}\n\n…[truncated]` : full;
 }
 
@@ -467,8 +467,23 @@ async function converging(
     const surviving = reconciled.surviving;
     const applied = await tryApply(surviving, item, snapshot, deps);
     if (!applied.ok) {
-      deps.log("effect.failed", { item, reason: applied.reason });
-      return { passes: pass, settled: "halt", why: applied.reason };
+      const recorded = refusedEntry(decision, planned, surviving, applied, snapshot);
+      deps.log("effect.failed", {
+        item, reason: applied.reason, refused: applied.refused,
+        ...(recorded ? { recorded: { stage: recorded.stage, round: recorded.round } } : {}),
+      });
+      if (recorded === null) return { passes: pass, settled: "halt", why: applied.reason };
+      // The refusal is this stage's round, rejected, read where the item
+      // stands: the next pass routes it as a broken output is routed.
+      const posted = await tryApply(
+        [{ ...malformedEffect(recorded.stage, recorded.round, applied.reason, scrub, MALFORMED_KIND, `Could not enter ${recorded.stage}`), from: recorded.from }],
+        item, snapshot, deps,
+      );
+      if (!posted.ok) {
+        deps.log("effect.failed", { item, reason: posted.reason });
+        return { passes: pass, settled: "halt", why: applied.reason };
+      }
+      continue;
     }
 
     if (decision.action === "halt") return { passes: pass, settled: "halt", why: decision.why ?? "the workflow halted" };
@@ -494,13 +509,53 @@ async function converging(
  * contract or a refusal. Exported for a pairing's hand-in, rejected the same way.
  */
 export function malformedEffect(
-  stage: string, round: number, reason: string, scrub: (text: string) => string, kind: string = MALFORMED_KIND,
+  stage: string, round: number, reason: string, scrub: (text: string) => string, kind: string = MALFORMED_KIND, heading?: string,
 ): Effect {
   return {
     type: RECORD_EFFECT, kind, stage, round,
     marker: `${kind}:${stage}:${round}`,
-    body: malformedBody(reason, scrub, kind),
+    body: malformedBody(reason, scrub, kind, heading),
   };
+}
+
+/**
+ * The stage, round and position a refused entry is recorded against, or null
+ * when it is left as an outage is — a halt this tick, and the same
+ * transition planned again on the next.
+ *
+ * Recorded only where it can be read back, and read back only once:
+ *
+ * - **A refusal**, marked by the integration. A 5xx or a network error may
+ *   well clear by the next tick, and a person asked to Retry it is a person
+ *   asked for nothing.
+ * - **From a position.** An item with none yet would read the rejected round
+ *   as history it has no place for, and halt where no board shows it.
+ * - **After the stage's own entry record landed.** That record is what the
+ *   rejection is read beside where the item stands, what Retry finds, and
+ *   what a later entry supersedes. One planned after the refused effect, or
+ *   none at all, leaves nothing to read it by: the stage would stay failed
+ *   for life, and the trigger that sent the item would fire again.
+ * - **Not where the item's last verdict already failed**, unless a person
+ *   sent it: that transition is the halt the failure routes to, and a second
+ *   record would route it there again on every pass. A person's goto is
+ *   recorded every time — one record per click.
+ */
+function refusedEntry(
+  decision: Decision,
+  planned: Effect[],
+  surviving: Effect[],
+  applied: { refused: boolean; failedAt: number },
+  snapshot: Snapshot,
+): { stage: string; round: number; from: string } | null {
+  const { to, stage: from } = decision;
+  if (!applied.refused || decision.action !== "transition" || to === undefined || from === undefined) return null;
+  if (decision.trigger !== GOTO_TRIGGER && snapshot.run?.lastOutputValid === false) return null;
+  const entry = planned.find((e) => e.type === RECORD_EFFECT && e.kind === ENTRY_KIND && e.stage === to.id);
+  if (entry === undefined) return null;
+  const at = surviving.indexOf(entry);
+  // Not among the survivors is already landed: reconcile dropped it as satisfied.
+  if (at !== -1 && at >= applied.failedAt) return null;
+  return { stage: to.id, round: decision.round ?? 1, from: from.id };
 }
 
 /**
@@ -559,28 +614,23 @@ async function tryApply(
   item: string,
   snapshot: Snapshot,
   deps: ConvergeDeps,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<{ ok: true } | { ok: false; reason: string; refused: boolean; failedAt: number }> {
   // A stopped run writes nothing, whichever write it had reached: a
   // transition decided from a snapshot read as the item closed is as
   // unwanted as a step's answer. See the check after runStep.
-  if (deps.ctx.signal.aborted) return { ok: false, reason: "the run was aborted" };
+  if (deps.ctx.signal.aborted) return { ok: false, reason: "the run was aborted", refused: false, failedAt: 0 };
+  // Which effect failed, and whether it was refused on purpose: a refused
+  // entry is recorded only once the stage's own entry record is in.
+  let at = 0;
   try {
-    await applyAll(effects, item, snapshot, deps);
+    for (const effect of effects) {
+      deps.log("effect.planned", { item, type: effect.type });
+      await deps.dispatcher.apply(effect, { ...deps.ctx, item, snapshot });
+      deps.log("effect.applied", { item, type: effect.type });
+      at++;
+    }
     return { ok: true };
   } catch (e) {
-    return { ok: false, reason: messageOf(e) };
-  }
-}
-
-async function applyAll(
-  effects: Effect[],
-  item: string,
-  snapshot: Snapshot,
-  deps: ConvergeDeps,
-): Promise<void> {
-  for (const effect of effects) {
-    deps.log("effect.planned", { item, type: effect.type });
-    await deps.dispatcher.apply(effect, { ...deps.ctx, item, snapshot });
-    deps.log("effect.applied", { item, type: effect.type });
+    return { ok: false, reason: messageOf(e), refused: isEffectRefused(e), failedAt: at };
   }
 }
