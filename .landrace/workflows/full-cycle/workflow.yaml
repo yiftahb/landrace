@@ -300,10 +300,15 @@ stages:
   # whose trigger fires again and replans both — each dropped as satisfied
   # if it had already landed. The `enter` record comes first, so a refusal
   # of either is publish's rejected round, and a halt's Retry pushes again.
+  # Not once a person closed a pull request unmerged: that is blocked's.
   - id: publish
     triggers:
       - name: the build is done
-        when: { "run.stage": build, "run.lastOutputValid": null, "run.outputs.build.kind": done }
+        when:
+          "run.stage": build
+          "run.lastOutputValid": null
+          "run.outputs.build.kind": done
+          "rel.implements.in.dropped": 0
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Publishing, round {round}." }
       - { type: branch.push, branch: "landrace/{item}" }
@@ -524,6 +529,16 @@ stages:
           "run.stage": fix-review
           "run.lastOutputValid": null
           "run.counters.fix-review": { $gte: 20 }
+      # A person closed the pull request unmerged: their stop, and publish
+      # would open another over it. publish's trigger negated, on the
+      # engine's count of pull requests closed unmerged. Reopened, theirs is
+      # open again and not counted, and "Go to step… code-review" goes on.
+      - name: a person closed the pull request
+        when:
+          "run.stage": build
+          "run.lastOutputValid": null
+          "run.outputs.build.kind": done
+          "rel.implements.in.dropped": { $gt: 0 }
       # `run.lastRefused` is false for a broken contract and true for a
       # refusal, never null while `lastOutputValid` is false — so this and
       # `screened` below split every failure between them, one each.

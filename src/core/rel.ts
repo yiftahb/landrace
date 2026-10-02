@@ -3,6 +3,7 @@ import type { Graph, Node, Rel, RelAgg } from "#namespace.js";
 
 const empty = (): RelAgg => ({
   total: 0,
+  dropped: 0,
   is: Object.create(null) as RelAgg["is"],
   not: Object.create(null) as RelAgg["not"],
   sum: Object.create(null) as RelAgg["sum"],
@@ -32,9 +33,12 @@ const superseded = (node: Node, id: string, entered: { readonly [stage: string]:
  * whose children are not listed yet would read "all done". A count forces the
  * workflow to write `total > 0` itself.
  *
- * Dropped nodes are left out entirely: they are gone from the workflow's point
- * of view. Counting them is what would let a breakdown that produced nothing
- * read as "every child is closed".
+ * Dropped nodes are left out of every count but their own, `dropped`.
+ * Counting them in `total` and `is`/`not` is what would let a breakdown that
+ * produced nothing read as "every child is closed". Counting them apart is
+ * what lets a workflow see that a pull request was closed unmerged — a
+ * person's stop, or not, as the workflow says — rather than leaving the kit
+ * that opens pull requests to decide it.
  *
  * So are superseded ones: a node this item's own step created (its origin
  * names this item) in a round of a stage that has since been entered again,
@@ -44,6 +48,7 @@ const superseded = (node: Node, id: string, entered: { readonly [stage: string]:
  * and cannot be dropped, and counting it let a re-run that created nothing
  * read as "every child is finished" — closing the parent with the rest of the
  * work never done. A node a person created (origin null) is never superseded.
+ * A superseded node is not even `dropped`: the round that made it is over.
  *
  * Every declared type is present with zero counts even when nothing relates,
  * because a predicate reading an absent path matches nothing — `sum.x: 0`
@@ -76,7 +81,11 @@ export function deriveRel(
 
     const other = byId.get(direction === "in" ? r.from : r.to);
     // Validation (runner/graph.ts) has already refused a dangling edge.
-    if (!other || other.closed === "dropped" || superseded(other, id, entered)) continue;
+    if (!other || superseded(other, id, entered)) continue;
+    if (other.closed === "dropped") {
+      slot(r.type)[direction].dropped += 1;
+      continue;
+    }
     // `closed` is the engine's own field (fieldsOf appends it from node.closed
     // below); a state field of the same name would either double-count the
     // node — once from state, once from the engine — or, if it isn't a

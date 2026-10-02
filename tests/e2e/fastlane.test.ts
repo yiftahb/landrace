@@ -602,11 +602,12 @@ describe("fastlane, end to end", () => {
 
   /*
    * A person closing the pull request unmerged is a stop, wherever the item
-   * is. During a build, the next publish refuses to open another: the item
-   * halts with the reason, and no second pull request is opened, let alone
-   * merged. During a review, the item is stuck, a person's to settle.
+   * is, and the workflow says so itself on the engine's count of pull
+   * requests closed unmerged. After a build, the item is stuck instead of
+   * publishing: no second pull request is opened, let alone merged. During a
+   * review, the item is stuck too, a person's to settle.
    */
-  it("10. halts, and opens no second pull request, when a person closed it during a build", async () => {
+  it("10. leaves the item stuck, and opens no second pull request, when a person closed it during a build", async () => {
     const { state, run, pr } = road({
       during: ({ stage, round }, pull) => {
         if (stage === "code-review" && round === 1) red(pull);
@@ -615,12 +616,14 @@ describe("fastlane, end to end", () => {
     });
     const r = await run.converge();
 
-    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "build", "publish", "build", "blocked"]);
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "build", "stuck"]);
     expect(r.result.settled).toBe("wait");
     expect(pr()).toMatchObject({ merged: false, closed: "dropped" });
     expect(() => state.pull("pr-2")).toThrow();
-    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
-    expect(state.comments("1").at(-1)).toMatch(/pr-1 from landrace\/1 for #1 was closed unmerged/);
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:stage:stuck", "lr:awaiting"]));
+    expect(state.item("1").labels).not.toContain("lr:working");
+    // No refusal on the way: the kit was never asked to open another.
+    expect(state.entriesOf("1").filter((e) => e.kind === "refused" || e.kind === "malformed")).toEqual([]);
   });
 
   it("11. leaves the item stuck when a person closed the pull request during a review", async () => {

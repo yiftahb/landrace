@@ -416,6 +416,8 @@ interface Facts {
   intent?: string;
   counters?: Record<string, number>;
   total?: number;
+  /** Pull requests closed unmerged, which `total` leaves out: `rel.implements.in.dropped`. */
+  dropped?: number;
   notMerged?: number;
   awaitingFix?: number;
   openThreads?: number;
@@ -454,13 +456,14 @@ function snapshotOf(f: Facts): Snapshot {
   };
   const total = f.total ?? 1;
   const notMerged = f.notMerged ?? total;
+  const dropped = f.dropped ?? 0;
   const counts = total === 0
-    ? { total, is: {}, not: {}, sum: {}, stage: {} }
+    ? { total, dropped, is: {}, not: {}, sum: {}, stage: {} }
     : {
-      total, is: { merged: total - notMerged }, not: { merged: notMerged }, stage: {},
+      total, dropped, is: { merged: total - notMerged }, not: { merged: notMerged }, stage: {},
       sum: { awaitingFix: f.awaitingFix ?? 0, openThreads: f.openThreads ?? 0, ciPending: f.ciPending ?? 0, ciFailed: f.ciFailed ?? 0 },
     };
-  return { run, rel: { implements: { in: counts, out: { total: 0, is: {}, not: {}, sum: {}, stage: {} } } } };
+  return { run, rel: { implements: { in: counts, out: { total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {} } } } };
 }
 
 /** Each axis's values, every combination of them. A `counters.<stage>` axis sets that counter. */
@@ -480,7 +483,9 @@ const n = (value: number | undefined, otherwise: number): number => value ?? oth
 
 /** Each stage, the boundary values its exits read, and where the plan sends an item with those facts — null for a wait. */
 const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => string | null]> = [
-  ["build", {}, () => "publish"],
+  // A pull request a person closed unmerged is their stop: a build done
+  // after it goes to stuck, never to publish, which would open another.
+  ["build", { dropped: [0, 1] }, (f) => (n(f.dropped, 0) > 0 ? "stuck" : "publish")],
   // No pull request at publish is no exit: pull.open lands before the position moves there.
   ["publish", { total: [0, 1] }, (f) => (n(f.total, 1) > 0 ? "code-review" : null)],
   // A pull request a person closed during a review, a fix or the retro is their stop: stuck.

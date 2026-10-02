@@ -12,7 +12,7 @@ const TYPES = ["child-of", "implements"];
 describe("deriveRel", () => {
   it("reports every declared type with zero counts when nothing relates", () => {
     const r = deriveRel({ nodes: [n("1")], relationships: [] }, "1", TYPES);
-    expect(r.ok && r.rel["implements"]?.in).toEqual({ total: 0, is: {}, not: {}, sum: {}, stage: {} });
+    expect(r.ok && r.rel["implements"]?.in).toEqual({ total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {} });
     expect(r.ok && r.rel["child-of"]?.out.total).toBe(0);
   });
 
@@ -45,6 +45,7 @@ describe("deriveRel", () => {
     const r = deriveRel(g, "1", TYPES);
     expect(r.ok && r.rel["implements"]?.in).toEqual({
       total: 2,
+      dropped: 0,
       is: { merged: 1, closed: 1 },
       not: { merged: 1, closed: 1 },
       sum: { openThreads: 3 },
@@ -63,6 +64,43 @@ describe("deriveRel", () => {
     const r = deriveRel(g, "1", TYPES);
     expect(r.ok && r.rel["child-of"]?.in.total).toBe(1);
     expect(r.ok && r.rel["child-of"]?.in.not["closed"]).toBe(0);
+  });
+
+  /*
+   * Kept out of every count, but counted apart: a pull request closed
+   * unmerged is a fact a workflow routes on — a person's stop — and the kit
+   * that opens pull requests must not decide it for the workflow.
+   */
+  it("counts dropped nodes apart, per direction and type, and in nothing else", () => {
+    const g: Graph = {
+      nodes: [
+        n("1"),
+        pr("pr-1", { merged: false, openThreads: 4 }, "dropped"),
+        pr("pr-2", { merged: false, openThreads: 1 }),
+        n("0", { closed: "dropped" }),
+      ],
+      relationships: [
+        { from: "pr-1", to: "1", type: "implements" },
+        { from: "pr-2", to: "1", type: "implements" },
+        { from: "1", to: "0", type: "child-of" },
+      ],
+    };
+    const r = deriveRel(g, "1", TYPES);
+    expect(r.ok && r.rel["implements"]?.in).toEqual({
+      total: 1, dropped: 1, is: { merged: 0, closed: 0 }, not: { merged: 1, closed: 1 }, sum: { openThreads: 1 }, stage: {},
+    });
+    expect(r.ok && r.rel["implements"]?.out.dropped).toBe(0);
+    expect(r.ok && r.rel["child-of"]?.out).toMatchObject({ total: 0, dropped: 1 });
+    expect(r.ok && r.rel["child-of"]?.in.dropped).toBe(0);
+  });
+
+  it("counts a dropped node whose state could not be counted, since it is counted by nothing else", () => {
+    const g: Graph = {
+      nodes: [n("1"), pr("pr-1", { closed: true }, "dropped")],
+      relationships: [{ from: "pr-1", to: "1", type: "implements" }],
+    };
+    const r = deriveRel(g, "1", TYPES);
+    expect(r.ok && r.rel["implements"]?.in).toMatchObject({ total: 0, dropped: 1 });
   });
 
   it("counts related items by position", () => {
@@ -150,6 +188,12 @@ describe("deriveRel, and children a later round superseded", () => {
     );
     const r = deriveRel(g, "1", TYPES, { breakdown: 2 });
     expect(r.ok && r.rel["child-of"]?.in).toMatchObject({ total: 1, not: { closed: 1 }, is: { closed: 0 } });
+  });
+
+  it("leaves a child an earlier round made and its re-entry dropped out of the dropped count too", () => {
+    const g = under(child("2", { origin: origin("1", 1), closed: "dropped" }), child("3", { origin: origin("1", 2), closed: "dropped" }));
+    const r = deriveRel(g, "1", TYPES, { breakdown: 2 });
+    expect(r.ok && r.rel["child-of"]?.in).toMatchObject({ total: 0, dropped: 1 });
   });
 
   it("keeps a child the current round made", () => {

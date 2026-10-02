@@ -70,6 +70,13 @@ export interface RelationDecl { type: string; singular: boolean }
 /** The counts over one direction of one relationship type. */
 export interface RelAgg {
   total: number;
+  /**
+   * The related nodes closed without being done — a pull request closed
+   * unmerged, a child dropped — which `total` and every other count leave
+   * out. Counted apart, so a workflow can route on one: whether a person
+   * closing a pull request is their stop is the workflow's to say.
+   */
+  dropped: number;
   is: { [field: string]: number };
   not: { [field: string]: number };
   sum: { [field: string]: number };

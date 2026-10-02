@@ -436,7 +436,10 @@ export function effectBranch(effect: Effect): string {
  * By branch, never "the item has one": an item has as many branches as its
  * stages name, and a pull request from one says nothing about another. An
  * abandoned one does not count — the work on the branch is not merged and no
- * longer proposed, so a new pull request is what "open one" still means.
+ * longer proposed, so a new pull request is what "open one" still means, and
+ * what apply() opens. Whether a person's close is their stop is not the
+ * effect's to judge: the workflow routes on `rel.<type>.in.dropped` before it
+ * plans one.
  */
 export function hasPullFrom(graph: Graph | undefined, item: string | undefined, branch: string): boolean {
   return pullsFrom(graph, item, branch, PULL_OPEN_EFFECT).length > 0;

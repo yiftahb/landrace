@@ -56,7 +56,7 @@ export const ENGINE_PROVIDES: readonly string[] = [
 ];
 
 /** What `rel.<type>` carries per direction, spelled out for the same reason `run.*` is above. */
-const REL_AGG: readonly string[] = ["total", "is", "is.*", "not", "not.*", "sum", "sum.*", "stage", "stage.*"];
+const REL_AGG: readonly string[] = ["total", "dropped", "is", "is.*", "not", "not.*", "sum", "sum.*", "stage", "stage.*"];
 
 /**
  * Every snapshot path something claims to provide, or null to check none of

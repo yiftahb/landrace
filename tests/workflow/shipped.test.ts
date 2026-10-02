@@ -174,14 +174,18 @@ describe("the shipped workflow splits every failure between blocked and screened
 
 const HOMES = ["spec-questions", "spec-human-review", "pr-human-review", "blocked", "screened"] as const;
 
-/** `openThreads` defaults to `awaitingFix`: every open thread awaits a fix unless a test says some were answered. */
-type Pulls = { total: number; merged: number; awaitingFix: number; openThreads?: number };
+/**
+ * `openThreads` defaults to `awaitingFix`: every open thread awaits a fix
+ * unless a test says some were answered. `dropped` — closed unmerged, and in
+ * no other count — defaults to none.
+ */
+type Pulls = { total: number; merged: number; awaitingFix: number; openThreads?: number; dropped?: number };
 
 const snapshotAt = (stage: string, run: object, rel: Pulls = { total: 1, merged: 0, awaitingFix: 0 }): Snapshot => ({
   node: { id: "7", kind: "item", title: "t", link: "", closed: null, priority: null, origin: null,
     state: { labels: ["lr:auto", `lr:stage:${stage}`], assignees: [] } },
   rel: { implements: { in: {
-    total: rel.total, not: { merged: rel.total - rel.merged },
+    total: rel.total, dropped: rel.dropped ?? 0, not: { merged: rel.total - rel.merged },
     sum: { openThreads: rel.openThreads ?? rel.awaitingFix, awaitingFix: rel.awaitingFix }, stage: {},
   }, out: { total: 0, stage: {} } } },
   run: {
@@ -778,6 +782,35 @@ describe("the shipped write steps merge, test, commit and push their own branch"
 
   it("declines it past build's rounds, and publish's own trigger stands", async () => {
     expect(await destination(builtAndUnpushed(3))).toBe("publish");
+  });
+});
+
+/*
+ * A person closing the pull request unmerged is their stop, and a build done
+ * after it would otherwise open another over their close. The workflow says
+ * so itself, on the engine's count of pull requests closed unmerged: the
+ * build goes to blocked, for a person, and publish's trigger is its exact
+ * negation.
+ */
+describe("the shipped workflow stops at a pull request a person closed", () => {
+  const built = (pulls: Pulls) => snapshotAt("build", {
+    counters: { spec: 1, triage: 1, build: 2 },
+    outputs: { spec: { kind: "spec" }, triage: { intent: "approve" }, build: { kind: "done" } },
+    rounds: { build: { entered: 2, output: 2 } },
+  }, pulls);
+
+  it.each([
+    [0, 0, "publish"], [1, 0, "publish"], [0, 1, "blocked"], [1, 1, "blocked"], [1, 2, "blocked"],
+  ] as const)("sends a build done with %i open and %i closed unmerged to %s", async (total, dropped, to) => {
+    expect(await destination(built({ total, merged: 0, awaitingFix: 0, dropped }))).toBe(to);
+  });
+
+  it("writes the two as each other's negation, both off a build that did not fail", async () => {
+    const { workflow } = await loadShipped();
+    const from = (stage: string) => (workflow.stages.find((s) => s.id === stage)?.triggers ?? []).filter((t) => t.when["run.stage"] === "build");
+    expect(from("publish").map((t) => t.when["rel.implements.in.dropped"])).toEqual([0]);
+    expect(from("blocked").map((t) => [t.name, t.when["rel.implements.in.dropped"], t.when["run.lastOutputValid"]]))
+      .toEqual([["a person closed the pull request", { $gt: 0 }, null]]);
   });
 });
 

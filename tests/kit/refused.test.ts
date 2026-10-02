@@ -168,28 +168,23 @@ describe("the kit's own merge guards", () => {
 });
 
 /*
- * A person closing the item's pull request unmerged is a stop, and a new one
- * opened from the same branch would overrule them — as re-closing an item a
- * person closed as not planned would. So `pull.open` refuses, naming it, and
- * says how to go on or stop.
+ * Whether a pull request a person closed unmerged is their stop is the
+ * workflow's to say — it routes on `rel.implements.in.dropped` — never the
+ * kit's. `pull.open` opens: its satisfied() reads an abandoned one as not
+ * there, and its apply() agrees, opening a fresh one from the branch.
  */
 describe("a pull request a person closed", () => {
   const open: Effect = { type: "pull.open", branch: "landrace/7" };
 
-  it("is a refusal to open another from the branch, naming it", async () => {
+  it("is no refusal: pull.open opens a fresh one from the branch, as its satisfied() says is still to do", async () => {
     const s = createExternalState({ items: [{ id: "7" }] });
     s.openPull("7", { branch: "landrace/7", closed: "dropped" });
-    const said = await failure(apply(s, open, await read(s)));
-    expect(said).toMatchObject({ refused: true, message: expect.stringMatching(/pr-1 from landrace\/7 for #7 was closed unmerged[\s\S]*[Rr]eopen it/) });
+    const before = await read(s);
+    expect(s.post.satisfied(before, open)).toBe(false);
+    await expect(apply(s, open, before)).resolves.toBeUndefined();
     expect(s.pull("pr-1").closed).toBe("dropped");
-    expect(() => s.pull("pr-2")).toThrow();
-  });
-
-  it("says nothing of one closed from another branch, or one merged", async () => {
-    const s = createExternalState({ items: [{ id: "7" }] });
-    s.openPull("7", { branch: "old/7", closed: "dropped" });
-    s.openPull("7", { branch: "landrace/7", merged: true });
-    await expect(apply(s, open, await read(s))).resolves.toBeUndefined();
+    expect(s.pull("pr-2")).toMatchObject({ branch: "landrace/7", closed: null, merged: false });
+    expect(s.post.satisfied(await read(s), open)).toBe(true);
   });
 });
 

@@ -122,10 +122,15 @@ stages:
   # so a crash between them leaves the item at build to replan both, and the
   # `enter` record before them, so a refusal of either is publish's rejected
   # round. A later build round finds its pull request open, and only pushes.
+  # Not once a person closed one unmerged: that is stuck's, below.
   - id: publish
     triggers:
       - name: the build is done
-        when: { "run.stage": build, "run.lastOutputValid": null, "run.outputs.build.kind": done }
+        when:
+          "run.stage": build
+          "run.lastOutputValid": null
+          "run.outputs.build.kind": done
+          "rel.implements.in.dropped": 0
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Publishing, round {round}." }
       - { type: branch.push, branch: "landrace/{item}" }
@@ -418,8 +423,16 @@ stages:
           "run.counters.code-review": { $gte: 4 }
       # A person closed it unmerged — their way of saying stop — during a
       # review, a fix, the retro, CI or the merge. With no pull request the
-      # item has nothing to check or merge, and is theirs. During a build,
-      # publish refuses to open another over their close, and the item halts.
+      # item has nothing to check or merge, and is theirs. After a build,
+      # publish would open another over their close, so the item comes here
+      # instead: publish's trigger negated, on the engine's count of pull
+      # requests closed unmerged. Reopened, theirs is open, and not counted.
+      - name: a person closed the pull request
+        when:
+          "run.stage": build
+          "run.lastOutputValid": null
+          "run.outputs.build.kind": done
+          "rel.implements.in.dropped": { $gt: 0 }
       - name: the pull request was closed during the review
         when: { "run.stage": code-review, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
       - name: the pull request was closed during a fix
