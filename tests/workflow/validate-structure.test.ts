@@ -509,6 +509,33 @@ describe("a merge's guards", () => {
   });
 
   /*
+   * Re-review N7: a forge names a changed file from the repository root —
+   * `.github/workflows/ci.yml`, never `/.github/…`, `./.github/…`, a
+   * directory's `.github/` or `.github//…` — so a glob written any of those
+   * ways matches nothing, and the gate is off for the very paths it names.
+   */
+  it.each([
+    ["a leading /", "/package.json", /"\/package\.json" starts with "\/".*never match.*"package\.json"/],
+    ["a leading ./", "./.github/**", /"\.\/\.github\/\*\*" starts with "\.\/".*never match.*"\.github\/\*\*"/],
+    ["a trailing /", ".github/", /"\.github\/" ends with "\/".*never match.*"\.github\/\*\*"/],
+    ["an empty segment", ".github//**", /"\.github\/\/\*\*" has an empty segment.*never match.*"\.github\/\*\*"/],
+    ["a . segment inside", ".landrace/./hooks/**", /"\.landrace\/\.\/hooks\/\*\*" has a "\." segment.*never match/],
+    ["a .. segment", "src/../package.json", /"src\/\.\.\/package\.json" has a "\.\." segment.*never match/],
+  ])("refuses a refuse glob with %s, saying why it would never match", (_what, glob, message) => {
+    const problems = said(merging({ refuse: ["package.json", glob] }));
+    expect(problems).toEqual([expect.stringMatching(message)]);
+    expect(problems[0]).toMatch(/^stage "m" has a pull\.merge whose refuse glob/);
+  });
+
+  it("names each glob that would never match, once", () => {
+    expect(said(merging({ refuse: ["/a", "b/", "c//d", "ok/**"] }))).toHaveLength(3);
+  });
+
+  it("accepts a glob whose segments are only dotted names", () => {
+    expect(said(merging({ refuse: [".landrace/**", "**/.env", ".github/*.yml", "a/.../b"] }))).toEqual([]);
+  });
+
+  /*
    * `reviewedBy` holds the merge to the head a stage's step started at, which
    * the runner records only for a step on a branch: a stage with no step or
    * no branch would record none, and every merge would answer unreviewed.

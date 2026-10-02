@@ -457,9 +457,44 @@ function haltLabelProblems(w: Workflow): Problem[] {
 }
 
 /**
+ * Why a `refuse` glob would never match a changed file, or null. A forge
+ * names a changed file from the repository root, segment by segment, with
+ * nothing before it, nothing after it and nothing to resolve. A glob
+ * written as a path on disk — `/x`, `./x`, `x/`, `x//y`, `x/../y` — is still
+ * a non-empty string, matches nothing, and leaves the gate off for the very
+ * paths it names (re-review N7).
+ */
+function unmatchable(glob: string): string | null {
+  const never = "so it would never match";
+  if (glob.startsWith("/")) {
+    return `starts with "/", but a forge names a changed file from the repository root with no "/" before it, ${never}; ` +
+      `write ${JSON.stringify(glob.replace(/^\/+/, ""))}`;
+  }
+  if (glob.startsWith("./")) {
+    return `starts with "./", but a forge names a changed file from the repository root with nothing before it, ${never}; ` +
+      `write ${JSON.stringify(glob.replace(/^(\.\/)+/, ""))}`;
+  }
+  if (glob.endsWith("/")) {
+    return `ends with "/", but a changed file's path names a file, never a directory with a "/" after it, ${never}; ` +
+      `write ${JSON.stringify(`${glob}**`)} for everything under it`;
+  }
+  const segments = glob.split("/");
+  if (segments.includes("")) {
+    return `has an empty segment, but a changed file's path never has two "/" together, ${never}; ` +
+      `write ${JSON.stringify(glob.replace(/\/{2,}/g, "/"))}`;
+  }
+  const dotted = segments.find((s) => s === "." || s === "..");
+  if (dotted !== undefined) {
+    return `has a ${JSON.stringify(dotted)} segment, but a forge names a changed file with every "." and ".." already resolved, ${never}`;
+  }
+  return null;
+}
+
+/**
  * What a `pull.merge` effect's guards would not do as written. `refuse` is
  * the paths only a person may merge: one the kit cannot read as a list of
- * globs would leave the gate on paper and off on the merge. `reviewedBy` is
+ * globs, or a glob that can match no changed file, would leave the gate on
+ * paper and off on the merge. `reviewedBy` is
  * the stage whose head the merge is held to, which the runner records only
  * for a step on a branch: a stage with neither records none, and every
  * merge would answer that nobody reviewed it.
@@ -473,6 +508,10 @@ function mergeGuardProblems(w: Workflow, stage: Stage, effect: Record<string, un
     const { refuse } = effect;
     const globs = Array.isArray(refuse) && refuse.length > 0 && refuse.every((g) => typeof g === "string" && g !== "");
     if (!globs) said(`refuse is ${JSON.stringify(refuse)}; it must be a list of path globs, each a non-empty string, naming the paths only a person may merge`);
+    else for (const glob of refuse as string[]) {
+      const why = unmatchable(glob);
+      if (why !== null) said(`refuse glob ${JSON.stringify(glob)} ${why}`);
+    }
   }
   if ("reviewedBy" in effect) {
     const by = effect.reviewedBy;
