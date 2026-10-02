@@ -175,10 +175,6 @@ export function nodesCloseSatisfied(snapshot: Snapshot, effect: Effect): boolean
 }
 
 /**
- * `tracker.close`. Closed either way counts: a person who closed it as not
- * planned decided that, and re-closing it as completed would overrule them.
- */
-/**
  * How `tracker.close` closes the item: `done`, a finished item, unless the
  * effect says `how: dropped` — a person asked for it to be dropped, which a
  * tracker that keeps a reason reports as such. A value it does not know is
@@ -190,6 +186,10 @@ export function closeHow(effect: Effect): "done" | "dropped" {
   throw new Error(`a tracker.close effect closes an item as "done" or "dropped", not ${JSON.stringify(how)}`);
 }
 
+/**
+ * `tracker.close`. Closed either way counts: a person who closed it as not
+ * planned decided that, and re-closing it as completed would overrule them.
+ */
 export function closeSatisfied(snapshot: Snapshot): boolean {
   return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
 }

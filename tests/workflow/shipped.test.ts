@@ -962,8 +962,8 @@ describe("the shipped workflow learns from a corrected item before a person revi
       // Prose, asked of the words and not of where the lines wrap.
       const prose = prompt.replace(/\s+/g, " ");
       expect(prose).toMatch(/front matter[^.]*is configuration, as out of reach as the workflow/i);
-      // A lesson a person reverted does not come back next round.
-      expect(prose).toMatch(/a lesson a person rejected[^.]*stays rejected/i);
+      // A lesson rejected on review, or reverted, does not come back next round.
+      expect(prose).toMatch(/a lesson that was rejected — a review thread asking to drop it, or a commit reverting it — stays rejected/i);
       // Tests pin several prompts' wording; a lesson that breaks one is not pushed.
       expect(prompt).toContain("`pnpm install`");
       expect(prose).toMatch(/run the test suite and the lint checks before you push/i);

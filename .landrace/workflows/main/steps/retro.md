@@ -68,9 +68,9 @@ changed, and why. Done when every correction in the history is on your list.
 **Step 2 — Read the lessons already committed from it.** Run
 `git log --grep '^retro:'` on this branch and read the lessons already
 committed from this item. Do not repeat one; refine it only if the new
-history shows it was wrong or too narrow. A lesson a person rejected — a thread
-asking to drop it, or a commit reverting it — stays rejected: do not bring it
-back in any form.
+history shows it was wrong or too narrow. A lesson that was rejected — a review
+thread asking to drop it, or a commit reverting it — stays rejected: do not
+bring it back in any form.
 
 **Step 3 — Decide, for each correction, whether it generalises.** A lesson is a
 mistake a future item would plausibly make again, stated so it would stop
