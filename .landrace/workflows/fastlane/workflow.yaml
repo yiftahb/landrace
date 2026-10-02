@@ -122,10 +122,13 @@ stages:
   # retro's commit once; and a head that moved under the merge, or a thread
   # opened while the checks ran, within code review's own four — loops through
   # stages with no step, which count nothing of their own.
+  #
+  # No `requires` here or on the retro: a pull request a person closed while
+  # either ran is their stop, routed to `stuck`, where a failed precondition
+  # would halt the item on every tick where no board shows it.
   - id: code-review
     step: steps/code-review.md
     branch: "landrace/{item}"
-    requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
       - name: the pull request is open
         when: { "run.stage": publish, "run.lastOutputValid": null, "rel.implements.in.total": { $gt: 0 } }
@@ -133,9 +136,10 @@ stages:
         when:
           "run.stage": fix-review
           "run.lastOutputValid": null
+          "rel.implements.in.total": { $gt: 0 }
           "run.counters.fix-review": { $lt: 8 }
       - name: the retro is done
-        when: { "run.stage": retro, "run.lastOutputValid": null }
+        when: { "run.stage": retro, "run.lastOutputValid": null, "rel.implements.in.total": { $gt: 0 } }
       - name: the head moved before the merge
         when:
           "run.stage": merge
@@ -204,7 +208,6 @@ stages:
   - id: retro
     step: steps/retro.md
     branch: "landrace/{item}"
-    requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
       - name: the checks passed after corrections
         when:
@@ -340,6 +343,7 @@ stages:
         when:
           "run.stage": fix-review
           "run.lastOutputValid": null
+          "rel.implements.in.total": { $gt: 0 }
           "run.counters.fix-review": { $gte: 8 }
       - name: CI is still failing after three builds
         when:
@@ -354,8 +358,16 @@ stages:
           "run.lastOutputValid": null
           "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $gte: 4 }
-      # A person closed it unmerged — their way of saying stop. With no pull
-      # request the item has nothing to check or merge, and is theirs.
+      # A person closed it unmerged — their way of saying stop — during a
+      # review, a fix, the retro, CI or the merge. With no pull request the
+      # item has nothing to check or merge, and is theirs. During a build,
+      # publish refuses to open another over their close, and the item halts.
+      - name: the pull request was closed during the review
+        when: { "run.stage": code-review, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
+      - name: the pull request was closed during a fix
+        when: { "run.stage": fix-review, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
+      - name: the pull request was closed during the retro
+        when: { "run.stage": retro, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
       - name: the pull request was closed during CI
         when: { "run.stage": ci, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
       - name: the pull request was closed before the merge

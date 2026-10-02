@@ -486,6 +486,44 @@ describe("fastlane, end to end", () => {
   });
 
   /*
+   * A person closing the pull request unmerged is a stop, wherever the item
+   * is. During a build, the next publish refuses to open another: the item
+   * halts with the reason, and no second pull request is opened, let alone
+   * merged. During a review, the item is stuck, a person's to settle.
+   */
+  it("10. halts, and opens no second pull request, when a person closed it during a build", async () => {
+    const { state, run, pr } = road({
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) red(pull);
+        if (stage === "build" && round === 2) pull().closed = "dropped";
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "build", "publish", "build", "blocked"]);
+    expect(r.result.settled).toBe("wait");
+    expect(pr()).toMatchObject({ merged: false, closed: "dropped" });
+    expect(() => state.pull("pr-2")).toThrow();
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+    expect(state.comments("1").at(-1)).toMatch(/pr-1 from landrace\/1 for #1 was closed unmerged/);
+  });
+
+  it("11. leaves the item stuck when a person closed the pull request during a review", async () => {
+    const { state, run, pr } = road({
+      during: ({ stage }, pull) => {
+        if (stage === "code-review") pull().closed = "dropped";
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "stuck"]);
+    expect(r.result.settled).toBe("wait");
+    expect(pr()).toMatchObject({ merged: false, closed: "dropped" });
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:stage:stuck", "lr:awaiting"]));
+    expect(state.item("1").labels).not.toContain("lr:working");
+  });
+
+  /*
    * A merge that failed on the way — a 502, a dropped connection — is not a
    * refusal: nothing is recorded, the item stays at ci for this tick, and the
    * next tick merges. Over the in-memory forge, and over the fake GitHub,

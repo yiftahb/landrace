@@ -450,14 +450,17 @@ const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => s
   ["build", {}, () => "publish"],
   // No pull request at publish is no exit: pull.open lands before the position moves there.
   ["publish", { total: [0, 1] }, (f) => (n(f.total, 1) > 0 ? "code-review" : null)],
+  // A pull request a person closed during a review, a fix or the retro is their stop: stuck.
   ["code-review", {
-    awaitingFix: [0, 1], openThreads: [0, 1], notMerged: [0, 1], "counters.code-review": [3, 4],
+    total: [0, 1], awaitingFix: [0, 1], openThreads: [0, 1], notMerged: [0, 1], "counters.code-review": [3, 4],
   }, (f) => {
+    if (n(f.total, 1) === 0) return "stuck";
     if (n(f.awaitingFix, 0) > 0) return count(f, "code-review") < 4 ? "fix-review" : "stuck";
     if (n(f.openThreads, 0) > 0) return "stuck";
     return n(f.notMerged, 1) > 0 ? "ci" : "done";
   }],
-  ["fix-review", { "counters.fix-review": [7, 8] }, (f) => (count(f, "fix-review") < 8 ? "code-review" : "stuck")],
+  ["fix-review", { total: [0, 1], "counters.fix-review": [7, 8] }, (f) =>
+    (n(f.total, 1) === 0 ? "stuck" : count(f, "fix-review") < 8 ? "code-review" : "stuck")],
   // Checks still running is the one wait here. A thread opened while they ran goes to review first.
   ["ci", {
     total: [0, 1], openThreads: [0, 1], ciPending: [0, 1], ciFailed: [0, 1], notMerged: [0, 1],
@@ -470,7 +473,7 @@ const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => s
     if (n(f.ciPending, 0) > 0) return null;
     return count(f, "retro") < 1 && friction(f) && n(f.notMerged, 1) > 0 ? "retro" : "merge";
   }],
-  ["retro", {}, () => "code-review"],
+  ["retro", { total: [0, 1] }, (f) => (n(f.total, 1) === 0 ? "stuck" : "code-review")],
   ["merge", { total: [0, 1], notMerged: [0, 1], "counters.code-review": [3, 4] }, (f) => {
     if (n(f.total, 1) === 0) return "stuck";
     if (n(f.notMerged, 1) === 0) return "done";

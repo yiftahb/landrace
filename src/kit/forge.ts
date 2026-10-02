@@ -442,6 +442,26 @@ const isOpen = (pull: PullRecord): boolean => !pull.merged && !pull.closed;
 const proposed = (pr: Node): boolean => pr.closed === null && pr.state.merged !== true;
 
 /**
+ * A pull request from `branch` for `item` that was closed unmerged — by a
+ * person, since landrace closes one only as it drops the item — and their
+ * stop: `pull.open` refuses rather than open another from the same branch,
+ * which would overrule them, as re-closing an item a person closed as not
+ * planned would. Reopened, it is open again, and `pull.open` is satisfied.
+ */
+export function refuseClosedByPerson(snapshot: Snapshot, item: string, branch: string): void {
+  const graph = snapshot.graph as Graph | undefined;
+  if (!graph) return;
+  const implementing = new Set(graph.relationships.filter((r) => r.type === RELATIONS.implements && r.to === item).map((r) => r.from));
+  const closed = graph.nodes.find((n) =>
+    implementing.has(n.id) && n.kind === PULL_REQUEST_KIND && n.state.branch === branch && n.closed === "dropped");
+  if (closed === undefined) return;
+  throw new EffectRefused(
+    `${closed.id} from ${branch} for #${item} was closed unmerged, and landrace will not open another over a person's close. ` +
+    "Reopen it to go on, or take off the label that started the item to stop it",
+  );
+}
+
+/**
  * A forge integration: its vendor's calls, and nothing else.
  *
  * An integration extends this and writes the abstract methods, answered in
@@ -599,6 +619,7 @@ export abstract class BaseForge {
           hasPullFrom(snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect)),
         apply: async (effect, ctx) => {
           const branch = effectBranch(effect);
+          refuseClosedByPerson(ctx.snapshot, ctx.item, branch);
           // Asked of the checkout first: a branch that is nowhere has nothing
           // to propose, and a forge's own answer to it names neither the
           // item nor why.

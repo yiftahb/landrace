@@ -13,7 +13,7 @@ import {
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
-import { BaseForge, prBranch } from "#kit/forge.js";
+import { BaseForge, prBranch, refuseClosedByPerson } from "#kit/forge.js";
 import { BaseTracker, commentSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
@@ -458,7 +458,11 @@ export class MemoryForge extends BaseForge {
       // No checkout to ask whether the branch has anything on it.
       [PULL_OPEN_EFFECT]: {
         satisfied: (effects[PULL_OPEN_EFFECT] as EffectHandler).satisfied,
-        apply: (effect, { item }) => this.openPull({ item, branch: effectBranch(effect) }),
+        apply: (effect, { item, snapshot }) => {
+          // A person's close is a stop here too, as the kit's own apply says.
+          refuseClosedByPerson(snapshot, item, effectBranch(effect));
+          return this.openPull({ item, branch: effectBranch(effect) });
+        },
       },
       [PULL_REVIEW_EFFECT]: {
         satisfied: (effects[PULL_REVIEW_EFFECT] as EffectHandler).satisfied,

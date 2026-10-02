@@ -106,6 +106,21 @@ describe("a pull request GitHub will not open", () => {
   });
 });
 
+describe("a pull request a person closed on GitHub", () => {
+  it("refuses to open another from the branch, before GitHub is asked", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 8, closes: [1], state: "CLOSED" });
+    const post = gh.registry.post[0];
+    if (!post) throw new Error("the fake tracker registered no post hook");
+    const graph = await gh.registry.source?.read("1", gh.ctx);
+    const snapshot: Snapshot = { graph, node: graph?.nodes.find((n) => n.id === "1"), git: { local: { "landrace/1": "abc" }, remote: {} } };
+    expect(await failure(post.apply({ type: "pull.open", branch: "landrace/1" }, { ...gh.ctx, item: "1", snapshot }))).toMatchObject({
+      message: expect.stringContaining("pr-8 from landrace/1 for #1 was closed unmerged"), refused: true,
+    });
+    expect(gh.requests.filter((r) => r.method === "POST" && r.path === "/pulls")).toEqual([]);
+  });
+});
+
 describe("a pull request GitHub will not close", () => {
   it("marks a token that may not close it", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
