@@ -1328,10 +1328,11 @@ describe("the page", () => {
     // Ask the step, Resolve, and the window's hashchange. And pairing's: the
     // row menu's Pairing…, the panel header's ⋯ and its Pairing… item, and
     // one for every button of its Pairing section (defined once, in
-    // pairingSectionOf). And the bell's: its own click, and a notification's
-    // (defined once, in notifyOf). And the message box's Ctrl/⌘+Enter.
+    // pairingSectionOf). And the bell's: its own click, its note's ✕, and a
+    // notification's (defined once, in notifyOf). And the message box's
+    // Ctrl/⌘+Enter.
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(28);
+    expect(listeners).toHaveLength(29);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -2386,9 +2387,132 @@ describe("the notify bell", () => {
         runInNewContext(`${fnSource("bellState")}${fnSource("clickedBell")} clickedBell(ON, PERMISSION)`, { ON: on, PERMISSION: permission });
       expect([next(true, "default"), next(false, "granted"), next(true, "granted")]).toEqual([true, true, false]);
     });
+  });
 
-    it("is toggled through clickedBell", () => {
-      expect(APP_JS).toContain("notifyOn = clickedBell(notifyOn, permissionNow());");
+  /*
+   * A page cannot ask again once the browser blocked it, and Chrome blocks a
+   * site by itself after a few dismissed prompts, so a click that cannot get
+   * notifications says why, on the page, beside the bell — never nothing.
+   */
+  describe("a click on the bell", () => {
+    const BLOCKED = /blocked for this site[\s\S]*site settings \(the icon left of the address bar → Notifications → Allow\)[\s\S]*update by itself/;
+    const UNANSWERED = /dismissed or blocked, or shown quietly in the address bar/;
+
+    const decided = (on: boolean, permission: string) =>
+      runInNewContext(`${["bellState", "clickedBell", "bellClick"].map(fnSource).join("")} bellClick(ON, PERMISSION)`, { ON: on, PERMISSION: permission }) as {
+        on: boolean; ask: boolean;
+      };
+    const noted = (permission: string, asked: boolean) =>
+      runInNewContext(`${fnSource("bellNote")} bellNote(PERMISSION, ASKED)`, { PERMISSION: permission, ASKED: asked }) as string;
+
+    // The real click handler, against a browser whose permission starts at
+    // `permission` (none: no Notification at all) and turns to `answer` once
+    // asked. Its requestPermission resolves to nothing, as old Safari's did,
+    // so the answer is read from Notification.permission, never the promise.
+    const clicked = async (opts: { on: boolean; permission?: string; answer?: string; refuses?: boolean }) => {
+      let asked = 0;
+      let synced = 0;
+      const note = { textContent: "an earlier note" };
+      class FakeNotification {
+        static permission = opts.permission;
+        static async requestPermission(): Promise<void> {
+          asked++;
+          if (opts.refuses) throw new Error("refused");
+          if (opts.answer !== undefined) FakeNotification.permission = opts.answer;
+        }
+      }
+      const context: Record<string, unknown> = {
+        notifyOn: opts.on,
+        NOTIFY_KEY: "landrace-notify",
+        localStorage: { setItem: () => {} },
+        bellNoteText: note,
+        syncBell: () => { synced++; },
+        ...(opts.permission === undefined ? {} : { Notification: FakeNotification }),
+      };
+      await runInNewContext(`${["bellState", "clickedBell", "bellClick", "bellNote", "permissionNow", "onBellClick"].map(fnSource).join("")} onBellClick()`, context);
+      return { asked, on: context.notifyOn, says: note.textContent, synced };
+    };
+
+    it.each([
+      [true, "granted", { on: false, ask: false }],
+      [false, "granted", { on: true, ask: false }],
+      [false, "default", { on: true, ask: true }],
+      [true, "default", { on: true, ask: true }],
+      [false, "denied", { on: true, ask: false }],
+      [true, "denied", { on: true, ask: false }],
+      [false, "unsupported", { on: true, ask: false }],
+    ])("decides, on %s with the browser %s: %j", (on, permission, then) => {
+      expect(decided(on, permission)).toEqual(then);
+    });
+
+    it.each([
+      ["granted", false, /^$/],
+      ["granted", true, /^$/],
+      ["denied", false, BLOCKED],
+      ["denied", true, UNANSWERED],
+      ["default", true, UNANSWERED],
+      ["unsupported", false, /cannot show notifications/],
+    ])("notes, with the browser %s after a click that asked: %s, %s", (permission, asked, says) => {
+      expect(noted(permission, asked)).toMatch(says);
+    });
+
+    it("turns it off when on and allowed, asking nothing and clearing the note", async () => {
+      expect(await clicked({ on: true, permission: "granted" })).toEqual({ asked: 0, on: false, says: "", synced: 1 });
+    });
+
+    it("turns it on when off and allowed, asking nothing and saying nothing", async () => {
+      expect(await clicked({ on: false, permission: "granted" })).toEqual({ asked: 0, on: true, says: "", synced: 1 });
+    });
+
+    it("asks when the browser has not answered, and says nothing once it allows", async () => {
+      expect(await clicked({ on: false, permission: "default", answer: "granted" })).toEqual({ asked: 1, on: true, says: "", synced: 1 });
+    });
+
+    it.each([
+      ["answered by blocking", { answer: "denied" }],
+      ["left unanswered or shown quietly", { answer: "default" }],
+      ["refused outright", { refuses: true }],
+    ])("asks, and says so when the prompt was %s", async (_, opts) => {
+      const after = await clicked({ on: false, permission: "default", ...opts });
+      expect(after).toEqual(expect.objectContaining({ asked: 1, on: true, synced: 1 }));
+      expect(after.says).toMatch(UNANSWERED);
+    });
+
+    it("never asks once the browser blocked the page, and says how to allow it instead", async () => {
+      for (const on of [true, false]) {
+        const after = await clicked({ on, permission: "denied" });
+        expect(after).toEqual(expect.objectContaining({ asked: 0, on: true, synced: 1 }));
+        expect(after.says).toMatch(BLOCKED);
+      }
+    });
+
+    it("says so in a browser with no notifications", async () => {
+      const after = await clicked({ on: false });
+      expect(after).toEqual(expect.objectContaining({ asked: 0, on: true, synced: 1 }));
+      expect(after.says).toMatch(/cannot show notifications/);
+    });
+
+    it("asks the browser only from the bell's own click", () => {
+      expect(APP_JS.match(/requestPermission\(/g)).toHaveLength(1);
+      expect(fnSource("onBellClick")).toContain("await Notification.requestPermission()");
+      expect(APP_JS.match(/onBellClick\b/g)).toHaveLength(2);
+      expect(APP_JS).toContain('bell.addEventListener("click", onBellClick);');
+    });
+
+    // A live region toggled in and out of display is not reliably announced:
+    // this one stays put, and its box hides itself while it says nothing.
+    it("says it beside the bell, in a status region that stays in place, which its ✕ empties", () => {
+      const note = /<div class="([^"]*)"><p id="notify-note"([^>]*)><\/p><button id="notify-note-close"([^>]*)>✕<\/button><\/div>/.exec(PAGE_HTML);
+      expect(note).not.toBeNull();
+      const [, box = "", region = "", close = ""] = note ?? [];
+      expect(box).toContain("has-[p:empty]:hidden");
+      expect(region).toMatch(/role="status"/);
+      expect(region).toMatch(/aria-live="polite"/);
+      expect(region).not.toMatch(/\shidden[\s>]/);
+      expect(close).toMatch(/type="button" aria-label="Dismiss"/);
+      expect(PAGE_HTML.slice(PAGE_HTML.indexOf("</button>", PAGE_HTML.indexOf('<button id="notify-toggle"')) + "</button>".length, note?.index).trim()).toBe("");
+      expect(APP_JS).toContain('const bellNoteText = document.getElementById("notify-note");');
+      expect(APP_JS).toContain('getElementById("notify-note-close").addEventListener("click", () => { bellNoteText.textContent = ""; });');
     });
   });
 });

@@ -102,6 +102,7 @@ export const PAGE_HTML = `<!doctype html>
 <button id="tick" type="button" class="${BUTTON}">Run next tick now</button>
 </div>
 <button id="notify-toggle" type="button" aria-pressed="false" aria-label="Notify me when an item needs you" title="Notify me when an item needs you" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-50 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">🔔</button>
+<div class="flex max-w-sm items-start gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 has-[p:empty]:hidden dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"><p id="notify-note" role="status" aria-live="polite"></p><button id="notify-note-close" type="button" aria-label="Dismiss" title="Dismiss" class="shrink-0 rounded px-1 hover:bg-amber-100 dark:hover:bg-amber-900">✕</button></div>
 <button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
@@ -2272,7 +2273,27 @@ function clickedBell(on, permission) {
   return bellState(on, permission).pressed !== "true";
 }
 
+// What a click on the bell does: toggles it, and asks only while the browser
+// has not answered — once it has blocked the page, the page cannot ask again.
+function bellClick(on, permission) {
+  const next = clickedBell(on, permission);
+  return { on: next, ask: next && permission === "default" };
+}
+
+// What the note beside the bell says after a click, from the permission the
+// click left: nothing once allowed, and otherwise why nothing will arrive —
+// the tooltip alone made a click on a blocked bell read as doing nothing.
+function bellNote(permission, asked) {
+  if (permission === "granted") return "";
+  if (permission === "unsupported") return "This browser cannot show notifications.";
+  if (asked) {
+    return "Notifications were not allowed: the browser's prompt was dismissed or blocked, or shown quietly in the address bar. Allow them there, or in the site settings (the icon left of the address bar → Notifications → Allow), and the bell will update by itself.";
+  }
+  return "Notifications are blocked for this site, and a page cannot ask again. Allow them in the site settings (the icon left of the address bar → Notifications → Allow), and the bell will update by itself.";
+}
+
 const bell = document.getElementById("notify-toggle");
+const bellNoteText = document.getElementById("notify-note");
 let notifyOn = false;
 try { notifyOn = localStorage.getItem(NOTIFY_KEY) === "on"; } catch (e) {}
 // Which items needed you at the last poll that landed; null until one has.
@@ -2291,13 +2312,22 @@ function syncBell() {
   bell.classList.toggle("opacity-50", state.pressed !== "true");
 }
 
-bell.addEventListener("click", async () => {
-  notifyOn = clickedBell(notifyOn, permissionNow());
+// The answer is read back from Notification.permission, not the promise: an
+// older browser's resolves to nothing, and a refusal must still be noted.
+async function onBellClick() {
+  const click = bellClick(notifyOn, permissionNow());
+  notifyOn = click.on;
   try { localStorage.setItem(NOTIFY_KEY, notifyOn ? "on" : "off"); } catch (e) {}
   // Asked from the click, the one moment a browser lets a page ask.
-  if (notifyOn && permissionNow() === "default") await Notification.requestPermission();
+  if (click.ask) {
+    try { await Notification.requestPermission(); } catch (e) {}
+  }
+  bellNoteText.textContent = bellNote(permissionNow(), click.ask);
   syncBell();
-});
+}
+
+bell.addEventListener("click", onBellClick);
+document.getElementById("notify-note-close").addEventListener("click", () => { bellNoteText.textContent = ""; });
 syncBell();
 
 pollOnce().then(() => schedulePoll(POLL_MS));
