@@ -2312,8 +2312,8 @@ function syncBell() {
   bell.classList.toggle("opacity-50", state.pressed !== "true");
 }
 
-// The answer is read back from Notification.permission, not the promise: an
-// older browser's resolves to nothing, and a refusal must still be noted.
+// The answer is read back from Notification.permission, never the promise,
+// so a prompt that throws is noted as one that went unanswered.
 async function onBellClick() {
   const click = bellClick(notifyOn, permissionNow());
   notifyOn = click.on;
@@ -2327,13 +2327,17 @@ async function onBellClick() {
 }
 
 // Allowed or blocked in the site settings, the bell follows without a
-// reload, and a note about the old permission goes with it. Caught: a
-// browser without the Permissions API, or that will not query
+// reload, and once allowed its note goes. Only then: a change can land
+// after the click that caused it wrote its note, and must not wipe it.
+// Caught: a browser without the Permissions API, or that will not query
 // notifications, keeps the bell as it was.
 async function followPermission() {
   try {
     const status = await navigator.permissions.query({ name: "notifications" });
-    status.addEventListener("change", () => { bellNoteText.textContent = ""; syncBell(); });
+    status.addEventListener("change", () => {
+      if (permissionNow() === "granted") bellNoteText.textContent = "";
+      syncBell();
+    });
   } catch (e) {}
 }
 

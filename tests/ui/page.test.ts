@@ -2408,8 +2408,8 @@ describe("the notify bell", () => {
 
     // The real click handler, against a browser whose permission starts at
     // `permission` (none: no Notification at all) and turns to `answer` once
-    // asked. Its requestPermission resolves to nothing, as old Safari's did,
-    // so the answer is read from Notification.permission, never the promise.
+    // asked. Its requestPermission resolves to nothing, so a handler that
+    // trusted the promise's value over Notification.permission would fail.
     const clicked = async (opts: { on: boolean; permission?: string; answer?: string; refuses?: boolean }) => {
       let asked = 0;
       let synced = 0;
@@ -2520,22 +2520,41 @@ describe("the notify bell", () => {
   // Allowed in the site settings, as the note says: the bell updates by
   // itself, and the note that told them how goes with the old permission.
   describe("following the browser's permission", () => {
-    const followed = async (navigator: unknown) => {
+    const followed = async (navigator: unknown, Notification: { permission: string } = { permission: "default" }) => {
       let synced = 0;
       const note = { textContent: "Notifications are blocked for this site" };
-      await runInNewContext(`${fnSource("followPermission")} followPermission()`, { navigator, bellNoteText: note, syncBell: () => { synced++; } });
+      await runInNewContext(`${fnSource("permissionNow")}${fnSource("followPermission")} followPermission()`, {
+        navigator, Notification, bellNoteText: note, syncBell: () => { synced++; },
+      });
       return { note, synced: () => synced };
     };
+    const changing = () => {
+      const seen: { change?: () => void; queried?: unknown } = {};
+      const status = { addEventListener: (type: string, f: () => void) => { if (type === "change") seen.change = f; } };
+      return { seen, navigator: { permissions: { query: async (q: unknown) => { seen.queried = q; return status; } } } };
+    };
 
-    it("redraws the bell and drops its note when the permission changes, without a reload", async () => {
-      let change: (() => void) | undefined;
-      let queried: unknown;
-      const status = { addEventListener: (type: string, f: () => void) => { if (type === "change") change = f; } };
-      const { note, synced } = await followed({ permissions: { query: async (q: unknown) => { queried = q; return status; } } });
-      expect(queried).toEqual({ name: "notifications" });
+    it("redraws the bell and drops its note once the browser allows it, without a reload", async () => {
+      const { seen, navigator } = changing();
+      const browser = { permission: "denied" };
+      const { note, synced } = await followed(navigator, browser);
+      expect(seen.queried).toEqual({ name: "notifications" });
       expect(synced()).toBe(0);
-      change?.();
+      browser.permission = "granted";
+      seen.change?.();
       expect([synced(), note.textContent]).toEqual([1, ""]);
+    });
+
+    // The order of a prompt's answer and the change it makes is the
+    // browser's: a change landing after the click wrote its note must not
+    // wipe it, or blocking from the prompt says nothing again.
+    it.each(["denied", "default"])("redraws the bell but keeps the note when the permission turns %s", async (permission) => {
+      const { seen, navigator } = changing();
+      const browser = { permission: "default" };
+      const { note, synced } = await followed(navigator, browser);
+      browser.permission = permission;
+      seen.change?.();
+      expect([synced(), note.textContent]).toEqual([1, "Notifications are blocked for this site"]);
     });
 
     it.each([
