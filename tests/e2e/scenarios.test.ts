@@ -227,6 +227,37 @@ describe("an item in review whose only pull request merges", () => {
 });
 
 /*
+ * main, after a build, over a pull request a person closed unmerged: with
+ * nothing open or merged beside it, their stop — the build goes to blocked
+ * and no other is opened over it. With a replacement they opened from the
+ * item's branch, them carrying on — publish and review go on.
+ */
+describe("a build done once a person closed the item's pull request", () => {
+  const built = async (replacement: boolean) => {
+    const state = createExternalState({ items: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:build"] }] });
+    state.openPull("1", { branch: "landrace/1", closed: "dropped" });
+    if (replacement) state.openPull("1", { branch: "landrace/1" });
+    const { workflow, steps } = await loadShipped();
+    const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: ANSWERS });
+    return { state, run, r: await run.converge() };
+  };
+
+  it("goes to blocked, and opens nothing, when nothing is open or merged beside it", async () => {
+    const { state, run, r } = await built(false);
+    expect(run.trail()).toEqual(["build", "blocked"]);
+    expect(r.result.settled).toBe("wait");
+    expect(() => state.pull("pr-2")).toThrow();
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+  });
+
+  it("publishes and reviews when a replacement is open from the item's branch", async () => {
+    const { state, run } = await built(true);
+    expect(run.trail().slice(0, 3)).toEqual(["build", "publish", "code-review"]);
+    expect(() => state.pull("pr-3")).toThrow();
+  });
+});
+
+/*
  * The shipped workflow's publish half over the in-memory tracker, which knows
  * no forge: `pull.open` is a record it keeps and `branch.push` one it is told
  * about — enough to drive the graph and watch the order things happen in.

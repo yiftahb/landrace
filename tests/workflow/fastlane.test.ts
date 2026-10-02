@@ -493,9 +493,11 @@ const n = (value: number | undefined, otherwise: number): number => value ?? oth
 
 /** Each stage, the boundary values its exits read, and where the plan sends an item with those facts — null for a wait. */
 const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => string | null]> = [
-  // A pull request a person closed unmerged is their stop: a build done
-  // after it goes to stuck, never to publish, which would open another.
-  ["build", { dropped: [0, 1] }, (f) => (n(f.dropped, 0) > 0 ? "stuck" : "publish")],
+  // A pull request a person closed unmerged, with nothing open or merged
+  // beside it, is their stop: a build done after it goes to stuck, never to
+  // publish, which would open another. A replacement they opened is them
+  // carrying on.
+  ["build", { dropped: [0, 1, 2], total: [0, 1] }, (f) => (n(f.dropped, 0) > 0 && n(f.total, 1) === 0 ? "stuck" : "publish")],
   // No pull request at publish is no exit: pull.open lands before the position moves there.
   ["publish", { total: [0, 1] }, (f) => (n(f.total, 1) > 0 ? "code-review" : null)],
   // A pull request a person closed during a review, a fix or the retro is their stop: stuck.

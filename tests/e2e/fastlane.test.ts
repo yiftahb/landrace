@@ -626,6 +626,34 @@ describe("fastlane, end to end", () => {
     expect(state.entriesOf("1").filter((e) => e.kind === "refused" || e.kind === "malformed")).toEqual([]);
   });
 
+  /*
+   * A replacement a person opened from the item's branch, beside the one
+   * they closed, is them carrying on: the build publishes, its push lands on
+   * the open one, and review goes on — no second pull request is opened by
+   * landrace, and none is left to stop on.
+   */
+  it("10b. goes on to publish and review when a person closed the pull request and opened a replacement during a build", async () => {
+    let world: ExternalState | undefined;
+    const { state, run, pr } = road({
+      seed: (s) => { world = s; },
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) red(pull);
+        if (stage === "build" && round === 2) {
+          pull().closed = "dropped";
+          world?.openPull("1", { branch: "landrace/1" });
+        }
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail().slice(0, 7)).toEqual(["build", "publish", "code-review", "ci", "build", "publish", "code-review"]);
+    expect(r.result.settled).toBe("terminal");
+    expect(pr()).toMatchObject({ merged: false, closed: "dropped" });
+    expect(state.pull("pr-2")).toMatchObject({ branch: "landrace/1", merged: true });
+    expect(() => state.pull("pr-3")).toThrow();
+    expect(state.item("1").closed).toBe("done");
+  });
+
   it("11. leaves the item stuck when a person closed the pull request during a review", async () => {
     const { state, run, pr } = road({
       during: ({ stage }, pull) => {

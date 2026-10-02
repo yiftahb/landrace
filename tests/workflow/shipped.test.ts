@@ -786,11 +786,11 @@ describe("the shipped write steps merge, test, commit and push their own branch"
 });
 
 /*
- * A person closing the pull request unmerged is their stop, and a build done
- * after it would otherwise open another over their close. The workflow says
- * so itself, on the engine's count of pull requests closed unmerged: the
- * build goes to blocked, for a person, and publish's trigger is its exact
- * negation.
+ * A person closing the pull request unmerged, with nothing open or merged
+ * beside it, is their stop, and a build done after it would otherwise open
+ * another over their close. A replacement they opened is them carrying on.
+ * The workflow says so itself, on the engine's counts: the build goes to
+ * blocked, for a person, and publish's trigger is its exact negation.
  */
 describe("the shipped workflow stops at a pull request a person closed", () => {
   const built = (pulls: Pulls) => snapshotAt("build", {
@@ -800,17 +800,17 @@ describe("the shipped workflow stops at a pull request a person closed", () => {
   }, pulls);
 
   it.each([
-    [0, 0, "publish"], [1, 0, "publish"], [0, 1, "blocked"], [1, 1, "blocked"], [1, 2, "blocked"],
-  ] as const)("sends a build done with %i open and %i closed unmerged to %s", async (total, dropped, to) => {
+    [0, 0, "publish"], [1, 0, "publish"], [0, 1, "blocked"], [0, 2, "blocked"], [1, 1, "publish"], [1, 2, "publish"],
+  ] as const)("sends a build done with %i open or merged and %i closed unmerged to %s", async (total, dropped, to) => {
     expect(await destination(built({ total, merged: 0, awaitingFix: 0, dropped }))).toBe(to);
   });
 
   it("writes the two as each other's negation, both off a build that did not fail", async () => {
     const { workflow } = await loadShipped();
     const from = (stage: string) => (workflow.stages.find((s) => s.id === stage)?.triggers ?? []).filter((t) => t.when["run.stage"] === "build");
-    expect(from("publish").map((t) => t.when["rel.implements.in.dropped"])).toEqual([0]);
-    expect(from("blocked").map((t) => [t.name, t.when["rel.implements.in.dropped"], t.when["run.lastOutputValid"]]))
-      .toEqual([["a person closed the pull request", { $gt: 0 }, null]]);
+    expect(from("publish").map((t) => t.when.$or)).toEqual([[{ "rel.implements.in.dropped": 0 }, { "rel.implements.in.total": { $gt: 0 } }]]);
+    expect(from("blocked").map((t) => [t.name, t.when["rel.implements.in.dropped"], t.when["rel.implements.in.total"], t.when["run.lastOutputValid"]]))
+      .toEqual([["a person closed the pull request", { $gt: 0 }, 0, null]]);
   });
 });
 
