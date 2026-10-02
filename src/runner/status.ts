@@ -1,6 +1,7 @@
 import { compareIds, isOpenItem, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
 import { cannotPlace, locateNode, UNPLACED } from "#core/index.js";
-import type { Lane, ListedWorkflow, Node, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
+import type { Lane, ListedWorkflow, Node, NodeLocation, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
+import { messageOf } from "#runner/errors.js";
 import { claimedBy, eligibilityOf, reportedBy, turnedAway } from "#runner/tick.js";
 
 /** Stands in for an item that has no position yet, so the column still lines up. */
@@ -124,7 +125,15 @@ export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
     // Which ones, because taking one of them off is the fix and an operator
     // reading a table cannot see the labels from here.
     if (ambiguous) return { ...row, stage: null, note: `halted: more than one lr:stage:* label (${found.join(", ")})` };
-    const where = locateNode(workflow, node);
+    let where: NodeLocation;
+    try {
+      where = locateNode(workflow, node);
+    } catch (e) {
+      // An identity that throws — an operator the allowlist refuses — is this
+      // row's error, as it is this item's in the tick: thrown, it blanked the
+      // whole board.
+      return { ...row, stage: null, note: `error: ${messageOf(e)}` };
+    }
     // In decide's own words, since it halts on the same fact.
     if (where.kind === "ambiguous") return { ...row, stage: null, note: `halted: ${cannotPlace(where.ids)}` };
     // Every identity judged and none placing it, no label, and no entry stage

@@ -65,6 +65,26 @@ describe("laneOf", () => {
 });
 
 /*
+ * A stage identity the allowlist refuses throws where a row asks where the
+ * item is. One row says so; the rest of the page is drawn, as the tick works
+ * every other item.
+ */
+describe("boardView: an item whose stage identity the allowlist refuses", () => {
+  it("draws that item's row as its error, and every other row as before", () => {
+    const refused: Workflow = { ...workflow, stages: [{ id: "spec", entry: true, terminal: true, identity: { $where: "1" } }] };
+    const g = graph([item("1"), item("2", {}, [])]);
+    const rows = boardView({
+      workflows: [{ id: "t", workflow: refused }], listing: { graphs: [g], claims: claimItems([{ id: "t", workflow: refused, source: 0 }], [g]) },
+      nest: NEST, now: 100, pid: 1, nextTickAt: null, running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace",
+    }).rows;
+    expect(rows.map((r) => [r.id, r.stage, r.note])).toEqual([
+      ["1", null, "error: operator $where is not allowed in a predicate"],
+      ["2", null, "skipped: no go label"],
+    ]);
+  });
+});
+
+/*
  * Needs you, like any blocked item — it is one — with the reason on the row,
  * so the person who opens it knows to read a security verdict rather than an
  * agent's broken answer. The reason itself is on the item, in a comment the

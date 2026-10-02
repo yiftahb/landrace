@@ -179,10 +179,19 @@ function stopStopped(runtime: WorkspaceRuntime, listing: WorkspaceListing): Map<
   return moved;
 }
 
-/** Where `node` is under `workflow`, when it is at one stage. */
+/**
+ * Where `node` is under `workflow`, when it is at one stage. Asked of every
+ * item before any is worked, so an identity that throws — an operator the
+ * allowlist refuses — is that item not seen, never the whole tick: its own
+ * converge meets the same refusal and reports it on its row.
+ */
 function seenAt(workflow: WorkflowRuntime, node: Node): SeenAt | null {
-  const where = locateNode(workflow.deps.workflow, node);
-  return where.kind === "at" ? { workflow: workflow.id, stage: where.stage.id } : null;
+  try {
+    const where = locateNode(workflow.deps.workflow, node);
+    return where.kind === "at" ? { workflow: workflow.id, stage: where.stage.id } : null;
+  } catch {
+    return null;
+  }
 }
 
 const sameStage = (a: SeenAt | undefined, b: SeenAt): boolean => a?.workflow === b.workflow && a.stage === b.stage;

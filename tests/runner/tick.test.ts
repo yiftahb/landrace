@@ -184,6 +184,20 @@ describe("tick", () => {
     ]);
   });
 
+  /*
+   * An identity the allowlist refuses is asked of every item before any is
+   * worked — where each one is, to tell a person of one that came to wait on
+   * them — and that ask is no item's own row. It rejected the whole tick,
+   * where a refused identity had always been one item's error.
+   */
+  it("reports each item whose stage's identity the allowlist refuses, and still finishes the tick", async () => {
+    const refused: Workflow = { ...workflow, stages: [{ id: "a", entry: true, terminal: true, identity: { $where: "1" } }] };
+    const out = await tick({ source: source([itemNode("1"), itemNode("2")]), deps: deps({ workflow: refused }), lock: { root } });
+
+    expect(out.map((r) => r.item)).toEqual(["1", "2"]);
+    for (const row of out) expect(row.outcome).toMatch(/operator \$where is not allowed in a predicate/);
+  });
+
   it("reports an item whose hook rejected with something that is not an Error", async () => {
     const weird = definePreHook({
       id: "weird",
