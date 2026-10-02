@@ -391,6 +391,123 @@ describe("a stage's branch", () => {
   });
 });
 
+/*
+ * A branch someone else moved on origin — a person's push, the forge's
+ * "Update branch" — once the checkout has fetched it. The step starts from
+ * that head, not the older one the local branch still names: a reviewer
+ * sent back because the head moved must read the head that moved. Only ever
+ * forward, and only a branch no other checkout holds: commits the local
+ * branch has and origin does not are never dropped.
+ */
+describe("a branch origin has moved on", () => {
+  const git = async (cwd: string, ...args: string[]): Promise<string> =>
+    (await run("git", args, { cwd })).stdout.trim();
+  const sha = (cwd: string, ref: string): Promise<string | null> =>
+    run("git", ["rev-parse", "--verify", "-q", ref], { cwd }).then((r) => r.stdout.trim(), () => null);
+
+  /** The operator's checkout with a bare origin, and the item's branch pushed to it once. */
+  async function published(item: string): Promise<{ root: string; origin: string; branch: string; ours: string }> {
+    const root = await repo();
+    const origin = await mkdtemp(join(tmpdir(), "lr-wt-origin-"));
+    roots.push(origin);
+    await git(origin, "init", "-q", "--bare", "-b", "main");
+    await git(root, "remote", "add", "origin", `file://${origin}`);
+    await git(root, "push", "-q", "origin", "main");
+    const branch = `landrace/${item}`;
+    const built = await ensureWorktree(item, root, { branch, write: true });
+    await writeFile(join(built, "built.ts"), "export const built = 1;\n");
+    await git(built, "add", "-A");
+    await git(built, "commit", "-qm", "build");
+    await removeWorktree(item, root);
+    await git(root, "push", "-q", "origin", branch);
+    return { root, origin, branch, ours: (await sha(root, `refs/heads/${branch}`)) as string };
+  }
+
+  /** Someone else's commit on the branch, pushed to origin from a clone of their own; the checkout then fetches. */
+  async function pushedElsewhere(origin: string, root: string, branch: string, file: string): Promise<string> {
+    const theirs = await mkdtemp(join(tmpdir(), "lr-wt-theirs-"));
+    roots.push(theirs);
+    await run("git", ["clone", "-q", "--branch", branch, `file://${origin}`, theirs]);
+    await git(theirs, "config", "user.email", "them@example.com");
+    await git(theirs, "config", "user.name", "them");
+    await writeFile(join(theirs, file), "export const theirs = 1;\n");
+    await git(theirs, "add", "-A");
+    await git(theirs, "commit", "-qm", `add ${file}`);
+    await git(theirs, "push", "-q", "origin", branch);
+    await git(root, "fetch", "-q", "origin");
+    return git(theirs, "rev-parse", "HEAD");
+  }
+
+  it("shows a read-only step the head someone else pushed, and moves the branch forward to it", async () => {
+    const { root, origin, branch } = await published("60");
+    const pushed = await pushedElsewhere(origin, root, branch, "theirs.ts");
+
+    const path = await ensureWorktree("60", root, { branch, write: false });
+
+    expect(await sha(path, "HEAD")).toBe(pushed);
+    expect(existsSync(join(path, "theirs.ts"))).toBe(true);
+    expect(await sha(root, `refs/heads/${branch}`)).toBe(pushed);
+    await removeWorktree("60", root);
+  });
+
+  it("gives a writing step the branch at that head, so what it commits goes on top", async () => {
+    const { root, origin, branch } = await published("61");
+    const pushed = await pushedElsewhere(origin, root, branch, "theirs.ts");
+
+    const path = await ensureWorktree("61", root, { branch, write: true });
+
+    expect(await sha(path, "HEAD")).toBe(pushed);
+    expect(existsSync(join(path, "theirs.ts"))).toBe(true);
+    await removeWorktree("61", root);
+  });
+
+  it("rebuilds a worktree a crashed run left on the older head", async () => {
+    const { root, origin, branch, ours } = await published("62");
+    const left = await ensureWorktree("62", root, { branch, write: true });
+    expect(await sha(left, "HEAD")).toBe(ours);
+    const pushed = await pushedElsewhere(origin, root, branch, "theirs.ts");
+
+    const path = await ensureWorktree("62", root, { branch, write: true });
+
+    expect(await sha(path, "HEAD")).toBe(pushed);
+    expect(existsSync(join(path, "theirs.ts"))).toBe(true);
+    expect(await git(path, "status", "--porcelain")).toBe("");
+    await removeWorktree("62", root);
+  });
+
+  it("never moves a branch with commits origin does not have", async () => {
+    const { root, origin, branch } = await published("63");
+    await pushedElsewhere(origin, root, branch, "theirs.ts");
+    const mine = await ensureWorktree("63", root, { branch, write: true });
+    // Only the local branch has this one: the step's own, not yet pushed.
+    await writeFile(join(mine, "mine.ts"), "export const mine = 1;\n");
+    await git(mine, "add", "-A");
+    await git(mine, "commit", "-qm", "mine");
+    const local = await sha(mine, "HEAD");
+    await removeWorktree("63", root);
+
+    const path = await ensureWorktree("63", root, { branch, write: false });
+
+    expect(await sha(root, `refs/heads/${branch}`)).toBe(local);
+    expect(await sha(path, "HEAD")).toBe(local);
+    expect(existsSync(join(path, "mine.ts"))).toBe(true);
+    await removeWorktree("63", root);
+  });
+
+  it("leaves a branch another checkout holds where it is", async () => {
+    const { root, origin, branch, ours } = await published("64");
+    await pushedElsewhere(origin, root, branch, "theirs.ts");
+    await git(root, "checkout", "-q", branch);
+
+    const path = await ensureWorktree("64", root, { branch, write: false });
+
+    expect(await sha(root, `refs/heads/${branch}`)).toBe(ours);
+    expect(await sha(path, "HEAD")).toBe(ours);
+    expect(await git(root, "status", "--porcelain")).toBe("");
+    await removeWorktree("64", root);
+  });
+});
+
 /**
  * Where a sandbox lives, and what is allowed to be deleted there.
  *

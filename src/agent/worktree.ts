@@ -102,6 +102,34 @@ async function commitOf(ref: string, cwd: string, what: string): Promise<string 
   }
 }
 
+/**
+ * The branch moved forward to what the checkout knows of origin's, when
+ * origin's has everything the local one has and more — a person's push, the
+ * forge's "Update branch", once a fetch brought it here — and the commit the
+ * step should start from either way.
+ *
+ * Never backwards, never across a fork: a local commit origin does not have
+ * is a step's own, not yet pushed, and is kept. And never a branch another
+ * checkout has out — the operator's own, say — whose files would no longer
+ * match it. The update names the commit it moves from, so a branch that
+ * moved meanwhile is left as it is.
+ */
+async function caughtUp(branch: string, local: string, repoRoot: string, what: string): Promise<string> {
+  const theirs = await commitOf(`refs/remotes/origin/${branch}`, repoRoot, what);
+  if (theirs === null || theirs === local) return local;
+  const behind = await exec("git", ["merge-base", "--is-ancestor", local, theirs], { cwd: repoRoot }).then(
+    () => true,
+    (e: unknown) => {
+      // Exit 1 is "not an ancestor"; anything else is a failure, not an answer.
+      if ((e as { code?: unknown }).code === 1) return false;
+      throw new Error(`${what}: ${String((e as { stderr?: unknown }).stderr ?? "").trim() || messageOf(e)}`);
+    },
+  );
+  if (!behind) return local;
+  await git(["update-ref", `refs/heads/${branch}`, theirs, local], repoRoot, what);
+  return theirs;
+}
+
 /** `git worktree list --porcelain`, one entry per worktree: where, at which commit, on which branch (null when detached). */
 function registered(porcelain: string): Array<{ path: string; head: string | null; branch: string | null }> {
   return porcelain.split("\n\n").flatMap((block) => {
@@ -147,7 +175,11 @@ export async function ensureWorktree(
   await git(["worktree", "prune"], repoRoot, what);
   const all = registered(await git(["worktree", "list", "--porcelain"], repoRoot, what));
 
-  const tip = on === undefined ? null : await commitOf(`refs/heads/${on.branch}`, repoRoot, what);
+  // Started from origin's head when origin has moved the branch on: a step
+  // sent back because the head moved must read the head that moved.
+  const holder = on === undefined ? undefined : all.find((w) => w.branch === on.branch && w.path !== path);
+  const local = on === undefined ? null : await commitOf(`refs/heads/${on.branch}`, repoRoot, what);
+  const tip = on === undefined || local === null || holder ? local : await caughtUp(on.branch, local, repoRoot, what);
   const attach = on?.write ? on.branch : null;
   const detach = attach === null ? (tip ?? (await commitOf("HEAD", repoRoot, what))) : null;
 
@@ -156,7 +188,6 @@ export async function ensureWorktree(
     // usually the operator's own checkout. Taking it from there is not ours
     // to do, and git would refuse in words that name neither the item nor
     // the way out.
-    const holder = all.find((w) => w.branch === attach && w.path !== path);
     if (holder) {
       throw new Error(
         `#${item}'s branch ${attach} is checked out at ${holder.path}, and git checks a branch out in one ` +
@@ -168,9 +199,10 @@ export async function ensureWorktree(
 
   // Re-used as it stands when it is already on what this step needs: a run
   // that crashed mid-step left it registered, and git refuses to add a second
-  // worktree at the same path anyway.
+  // worktree at the same path anyway. On the branch, at the commit the branch
+  // names now: one moved forward under it is rebuilt there.
   const mine = all.find((w) => w.path === path);
-  if (mine && (attach !== null ? mine.branch === attach : mine.branch === null && mine.head === detach)) return path;
+  if (mine && (attach !== null ? mine.branch === attach && mine.head === tip : mine.branch === null && mine.head === detach)) return path;
 
   // Anything else is rebuilt rather than switched: the worktree is disposable
   // and a commit lives on a branch, so what a previous step left uncommitted
