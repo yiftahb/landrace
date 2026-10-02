@@ -12,20 +12,23 @@ import {
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
-import { BaseForge, prBranch } from "#kit/forge.js";
+import { BaseForge, checkCounts, prBranch } from "#kit/forge.js";
 import { BaseTracker, commentSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
   ChangedFile,
-  Closed,
+  CheckState,
   Effect,
   EffectHandler,
   EffectTable,
   ExternalPull,
+  ExternalPullSeed,
   ExternalState,
   ExternalItem,
+  FailedCheck,
   Graph,
   HookContext,
+  MergeAnswer,
   Node,
   PullRecord,
   RelationDecl,
@@ -259,7 +262,7 @@ const pullRecordOf = (p: ExternalPull): PullRecord => ({
   link: `memory://pulls/${p.number}`,
   merged: p.merged,
   closed: p.closed !== null,
-  headSha: "",
+  headSha: p.headSha,
   branch: p.branch,
   createdAt: undefined,
   items: [p.item],
@@ -277,22 +280,28 @@ const countsOnly = (): Error => new Error("the in-memory forge keeps review thre
  * request node carries the live counts, and `pull.review` moves them. With no
  * repository behind it, nothing can say a push has landed, so one is taken
  * every time it is planned, and a pull request is opened from any branch.
+ * Its checks are a field a test sets, and a push a test makes is a new
+ * `headSha` — which is what a merge guarded by the old one is refused on.
  */
 export class MemoryForge extends BaseForge {
   /** Every pull request, by node id: live, so a test merges, closes or comments on one the way a person would. */
   readonly rows = new Map<string, ExternalPull>();
   private readonly pushed: string[] = [];
+  /** How many times a pull request's checks were asked for: a closed one's never should be. */
+  checkCalls = 0;
 
   /**
    * Open a pull request implementing `item`, numbered from 1 in creation
    * order. Merged means closed as done unless `closed` says otherwise, and
    * `awaitingFix` defaults to `openThreads`: a thread nobody answered awaits a fix.
+   * Its head is `sha-<number>` and nothing checks it, unless the test says.
    */
-  add(item: string, pr: { merged?: boolean; openThreads?: number; awaitingFix?: number; closed?: Closed; branch?: string } = {}): string {
+  add(item: string, pr: ExternalPullSeed = {}): string {
     const number = this.rows.size + 1;
     const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
     const pull: ExternalPull = {
-      id: `pr-${number}`, number, item, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, ...pr, closed,
+      id: `pr-${number}`, number, item, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0,
+      headSha: `sha-${number}`, checks: "none", failed: [], ...pr, closed,
     };
     this.rows.set(pull.id, pull);
     return pull.id;
@@ -355,6 +364,25 @@ export class MemoryForge extends BaseForge {
     if (open.closed === null) open.closed = "dropped";
   }
 
+  async checks(pull: PullRecord): Promise<CheckState> {
+    this.checkCalls++;
+    return this.pull(`pr-${pull.number}`).checks;
+  }
+
+  async failedChecks(pull: PullRecord): Promise<FailedCheck[]> {
+    return this.pull(`pr-${pull.number}`).failed;
+  }
+
+  /** As a forge guards one: merged already is merged, and another head than the one asked for is refused as moved. */
+  async merge(pull: number, headSha: string): Promise<MergeAnswer> {
+    const row = this.pull(`pr-${pull}`);
+    if (row.merged) return "merged";
+    if (headSha !== row.headSha) return "moved";
+    row.merged = true;
+    row.closed = "done";
+    return "merged";
+  }
+
   async heads(): Promise<BranchHeads> {
     return { local: {}, remote: {} };
   }
@@ -377,9 +405,12 @@ export class MemoryForge extends BaseForge {
    * — an open pull request's only, as a forge reports them: a thread left on
    * a merged or abandoned one is nothing a fix round can act on. Zero rather
    * than absent, so "no thread awaits a fix" stays readable once all merge.
+   * Its checks likewise: a merged or abandoned one reads `none`, as the
+   * kit's `read()` reads one it never asks.
    */
   protected override node(pull: PullRecord): Node {
     const p = this.pull(`pr-${pull.number}`);
+    const open = p.closed === null && !p.merged;
     return {
       id: p.id,
       kind: PULL_REQUEST_KIND,
@@ -390,9 +421,11 @@ export class MemoryForge extends BaseForge {
       origin: null,
       state: {
         merged: p.merged,
+        headSha: p.headSha,
         openThreads: p.closed === null ? p.openThreads : 0,
         awaitingFix: p.closed === null ? p.awaitingFix : 0,
         ...(p.branch === undefined ? {} : { branch: p.branch }),
+        ...checkCounts(open ? p.checks : "none"),
       },
     };
   }

@@ -41,6 +41,17 @@ describe("the in-memory tracker's graph", () => {
     expect(() => s.openPull("9")).toThrow(/no such item/);
   });
 
+  it("gives a pull request a head of its own and nothing checking it, unless told", async () => {
+    const s = createExternalState({ items: [{ id: "1" }] });
+    const plain = s.openPull("1");
+    const told = s.openPull("1", { headSha: "abc", checks: "pending", failed: [{ name: "test", log: null }] });
+    const g = await s.source.read("1", ctx);
+    expect(g.nodes.find((n) => n.id === plain)?.state).toMatchObject({ headSha: "sha-1", checks: "none", ciPending: 0, ciFailed: 0 });
+    expect(g.nodes.find((n) => n.id === told)?.state).toMatchObject({ headSha: "abc", checks: "pending", ciPending: 1, ciFailed: 0 });
+    expect(s.pull(plain).failed).toEqual([]);
+    expect(s.pull(told).failed).toEqual([{ name: "test", log: null }]);
+  });
+
   it("closes a merged pull request as done unless told otherwise", async () => {
     const s = createExternalState({ items: [{ id: "1" }] });
     expect(s.pull(s.openPull("1", { merged: true })).closed).toBe("done");

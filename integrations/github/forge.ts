@@ -12,7 +12,8 @@ import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
   ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
-  type BranchHeads, type ChangedFile, type Git, type PullRecord, type ReviewThread, type ThreadComment,
+  type BranchHeads, type ChangedFile, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
+  type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, issueNumber, tokenRejected, unseen } from "./client.js";
 
@@ -549,6 +550,22 @@ export class GitHubForge extends BaseForge {
 
   async closePull(pull: number, ctx: RuntimeContext): Promise<void> {
     await this.gh(ctx).closePull(pull);
+  }
+
+  // PLACEHOLDER — replaced in P6 Task 2. Only so the build holds while the
+  // kit's abstract CI and merge land first: nothing is read, and nothing merges.
+  async checks(): Promise<CheckState> {
+    return "none";
+  }
+
+  // PLACEHOLDER — replaced in P6 Task 2.
+  async failedChecks(): Promise<FailedCheck[]> {
+    return [];
+  }
+
+  // PLACEHOLDER — replaced in P6 Task 2.
+  async merge(): Promise<MergeAnswer> {
+    throw new Error("merging is not implemented for this forge yet");
   }
 
   /** File threads first, the review last: its marker is what says the round is on GitHub. */

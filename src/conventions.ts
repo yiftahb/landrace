@@ -359,6 +359,11 @@ export const PULL_OPEN_EFFECT = "pull.open";
  * lists as resolved closed — the route's destination, fed the step's output.
  */
 export const PULL_REVIEW_EFFECT = "pull.review";
+/**
+ * Merge the open pull request from the effect's `branch`, at the head the
+ * engine read it at and only while its checks are green, or none run.
+ */
+export const PULL_MERGE_EFFECT = "pull.merge";
 
 /**
  * The branch a publishing effect names. Which branch is the workflow's to
@@ -393,11 +398,21 @@ export function effectBranch(effect: Effect): string {
  * longer proposed, so a new pull request is what "open one" still means.
  */
 export function hasPullFrom(graph: Graph | undefined, item: string | undefined, branch: string): boolean {
-  if (!graph) throw new Error("a pull.open effect cannot be checked: the snapshot has no graph");
+  return pullsFrom(graph, item, branch, PULL_OPEN_EFFECT).length > 0;
+}
+
+/**
+ * The pull requests from this branch implementing this item, open or merged,
+ * in the graph the engine read — what `pull.open` asks whether there is one
+ * of, and `pull.merge` merges the open one of. `type` is the effect asking,
+ * named when there is no graph to ask.
+ */
+export function pullsFrom(graph: Graph | undefined, item: string | undefined, branch: string, type: string): Node[] {
+  if (!graph) throw new Error(`a ${type} effect cannot be checked: the snapshot has no graph`);
   const implementing = new Set(graph.relationships
     .filter((r) => r.type === RELATIONS.implements && r.to === item)
     .map((r) => r.from));
-  return graph.nodes.some((n) =>
+  return graph.nodes.filter((n) =>
     implementing.has(n.id) && n.kind === PULL_REQUEST_KIND && n.state.branch === branch && n.closed !== "dropped");
 }
 

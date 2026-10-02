@@ -1057,6 +1057,25 @@ export interface ThreadCounts {
   awaitingFix: number;
 }
 
+/** A pull request's checks on its head commit. `none`: nothing is configured to check it — or nothing has started yet. */
+export type CheckState = "pending" | "success" | "failure" | "none";
+
+/** One failed check: its name, and the tail of its log — null when the forge would not give it. */
+export interface FailedCheck {
+  name: string;
+  log: string | null;
+}
+
+/** A pull-request node's CI state: the state for reading, and the two counts relationships sum. */
+export interface CheckCounts {
+  checks: CheckState;
+  ciPending: number;
+  ciFailed: number;
+}
+
+/** What a merge guarded by a head SHA answered: merged (now or already), or refused because the head moved. */
+export type MergeAnswer = "merged" | "moved";
+
 /** One finding a review step reported, on a file and a line. */
 export interface Finding {
   file: string;
@@ -1657,7 +1676,18 @@ export interface ExternalPull {
   raised?: number;
   /** The markers of the reviews `pull.review` posted, so a round is posted once. */
   reviews?: string[];
+  /** The head commit, `sha-<number>` unless a test says: what a merge is guarded by, and what a push moves. */
+  headSha: string;
+  /** Its checks on that head, `none` unless a test says. */
+  checks: CheckState;
+  /** The checks that failed, with their logs: what `failedChecks` answers. */
+  failed: FailedCheck[];
 }
+
+/** What a test may set on a pull request it opens in memory; everything else is defaulted. */
+export type ExternalPullSeed = Partial<Pick<
+  ExternalPull, "merged" | "openThreads" | "awaitingFix" | "closed" | "branch" | "headSha" | "checks" | "failed"
+>>;
 
 /**
  * An in-memory stand-in for a tracker, speaking the conventions and no
@@ -1676,8 +1706,9 @@ export interface ExternalState extends ComposedHooks {
   /**
    * Open a pull request implementing `item`; returns its node id, `pr-<n>`, numbered from 1 in creation order.
    * `awaitingFix` defaults to `openThreads`: a thread nobody has answered awaits a fix.
+   * Its head is `sha-<n>` and its checks `none`, unless the test says.
    */
-  openPull(item: string, pr?: { merged?: boolean; openThreads?: number; awaitingFix?: number; closed?: Closed; branch?: string }): string;
+  openPull(item: string, pr?: ExternalPullSeed): string;
   /** Every branch a `branch.push` was applied for, in order: there is no repository here to push to. */
   pushes(): string[];
   /** The live record behind a pull request node, for a test to merge, close or comment on. */

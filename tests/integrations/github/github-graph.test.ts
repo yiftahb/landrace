@@ -428,7 +428,9 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", number: 42, headSha: "abc123", threads: threads([false, true, false]) });
     const g = await sourceOf(gh).read("1", ctx(gh));
-    expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({ merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2 });
+    expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({
+      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2, checks: "none", ciPending: 0, ciFailed: 0,
+    });
   });
 
   it("reports zero when every thread is resolved, which is what lets the item out of the loop", async () => {
@@ -478,7 +480,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     });
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({
-      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 5, awaitingFix: 4,
+      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 5, awaitingFix: 4, checks: "none", ciPending: 0, ciFailed: 0,
     });
     expect(gate({ "rel.implements.in.sum.awaitingFix": 4 }, g, "1")).toBe(true);
   });
@@ -515,7 +517,9 @@ describe("untrusted thread text does not reach the graph", () => {
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(JSON.stringify(g)).not.toContain("landrace:");
     expect(JSON.stringify(g)).not.toContain("rm -rf");
-    expect(g.nodes.find((n) => n.kind === "pull-request")?.state).toEqual({ merged: false, headSha: "sha-100", branch: "landrace/1", openThreads: 2, awaitingFix: 2 });
+    expect(g.nodes.find((n) => n.kind === "pull-request")?.state).toEqual({
+      merged: false, headSha: "sha-100", branch: "landrace/1", openThreads: 2, awaitingFix: 2, checks: "none", ciPending: 0, ciFailed: 0,
+    });
   });
 
   it("stays small on a pull request with a thousand threads", async () => {

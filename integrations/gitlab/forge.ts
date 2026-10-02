@@ -8,7 +8,8 @@ import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "l
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
   repositoryOf, ITEM_PAGE,
-  type BranchHeads, type ChangedFile, type Git, type PullRecord, type ReviewThread, type ThreadComment,
+  type BranchHeads, type ChangedFile, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
+  type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, PER_PAGE, statusOf, tokenRejected } from "./client.js";
 
@@ -328,6 +329,22 @@ export class GitLab extends BaseForge {
 
   async closePull(pull: number, ctx: RuntimeContext): Promise<void> {
     await this.gl(ctx).put(`/merge_requests/${pull}`, { state_event: "close" });
+  }
+
+  // PLACEHOLDER — replaced in P6 Task 3. Only so the build holds while the
+  // kit's abstract CI and merge land first: nothing is read, and nothing merges.
+  async checks(): Promise<CheckState> {
+    return "none";
+  }
+
+  // PLACEHOLDER — replaced in P6 Task 3.
+  async failedChecks(): Promise<FailedCheck[]> {
+    return [];
+  }
+
+  // PLACEHOLDER — replaced in P6 Task 3.
+  async merge(): Promise<MergeAnswer> {
+    throw new Error("merging is not implemented for this forge yet");
   }
 
   /**

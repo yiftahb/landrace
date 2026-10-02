@@ -18,6 +18,7 @@ export * from "#kit/git.js";
 export * from "#kit/tracker.js";
 
 export type {
-  BranchHeads, BriefTable, ChangedFile, ComposedHooks, EffectHandler, EffectTable, Finding, Git, HistoryItem, PullRecord,
-  Reply, ReviewThread, Roles, SnapshotComment, ThreadComment, ThreadCounts, ItemRecord, TrackerComment,
+  BranchHeads, BriefTable, ChangedFile, CheckCounts, CheckState, ComposedHooks, EffectHandler, EffectTable, FailedCheck, Finding,
+  Git, HistoryItem, MergeAnswer, PullRecord, Reply, ReviewThread, Roles, SnapshotComment, ThreadComment, ThreadCounts, ItemRecord,
+  TrackerComment,
 } from "#namespace.js";

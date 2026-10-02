@@ -12,14 +12,15 @@
  * forge's own name.
  */
 import {
-  BRANCH_PUSH_EFFECT, effectBranch, hasPullFrom, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_OPEN_EFFECT,
-  PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, RELATIONS, renderMarker, sameLogin, stripMarker,
+  BRANCH_PUSH_EFFECT, effectBranch, hasPullFrom, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_MERGE_EFFECT,
+  PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, pullsFrom, RELATIONS, renderMarker, sameLogin, stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
 import { createdAtOf, MAX_COMMENT_CHARS, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
 import type {
-  BranchHeads, BriefTable, ChangedFile, Effect, EffectTable, Finding, Graph, HistoryItem, HookContext, Node, PullRecord,
-  RelationDecl, Relationship, Reply, ReviewThread, RuntimeContext, Snapshot, SnapshotComment, ThreadComment, ThreadCounts,
+  BranchHeads, BriefTable, ChangedFile, CheckCounts, CheckState, Effect, EffectTable, FailedCheck, Finding, Graph, HistoryItem,
+  HookContext, MergeAnswer, Node, PullRecord, RelationDecl, Relationship, Reply, ReviewThread, RuntimeContext, Snapshot,
+  SnapshotComment, ThreadComment, ThreadCounts,
 } from "#namespace.js";
 
 export type { ChangedFile, Finding, Reply, ReviewThread, ThreadComment, ThreadCounts } from "#namespace.js";
@@ -141,7 +142,7 @@ export const itemOfBranch = (head: string): string | null => /^landrace\/([1-9][
  * repository and could carry any name — ours included — and so stand in for
  * the one we would open.
  */
-export function pullNode(pull: Omit<PullRecord, "items">, threads?: ThreadCounts): Node {
+export function pullNode(pull: Omit<PullRecord, "items">, threads?: ThreadCounts, ci?: CheckCounts): Node {
   return {
     id: `pr-${pull.number}`,
     kind: PULL_REQUEST_KIND,
@@ -155,11 +156,29 @@ export function pullNode(pull: Omit<PullRecord, "items">, threads?: ThreadCounts
       headSha: pull.headSha,
       ...(pull.branch === undefined ? {} : { branch: pull.branch }),
       ...threads,
+      ...ci,
     },
     ...createdAtOf(pull.createdAt),
     ...updatedAtOf(pull.updatedAt),
   };
 }
+
+/**
+ * A pull request's checks as its node carries them: the state, for a prompt
+ * or a person to read, and the two counts a workflow sums across an item's
+ * pull requests — `rel.implements.in.sum.ciFailed` — since a string is never
+ * counted. Green and nothing configured are both zero: neither holds a merge back.
+ */
+export const checkCounts = (checks: CheckState): CheckCounts =>
+  ({ checks, ciPending: checks === "pending" ? 1 : 0, ciFailed: checks === "failure" ? 1 : 0 });
+
+/**
+ * What the `ci` briefing carries: each failed check's log from its end, where
+ * a test runner prints what failed, and the whole cut at a bound that leaves
+ * room for the other keys inside the engine's 32 KB per hook.
+ */
+export const BRIEF_LOG_CHARS = 4_000;
+export const BRIEF_CI_CHARS = 16_000;
 
 /**
  * What the briefing carries, and it is not the same bound as the count's.
@@ -298,6 +317,27 @@ export function diffBrief(open: Array<{ number: number; files: ChangedFile[] }>)
   return parts.join("\n\n") + tail;
 }
 
+/** A log from its end, where a runner prints what failed, saying it was cut. */
+const logTail = (log: string): string => (log.length > BRIEF_LOG_CHARS ? `…${log.slice(-BRIEF_LOG_CHARS)}` : log);
+
+/**
+ * Each open pull request's checks on its head, and for a failing one each
+ * failed check with its log's tail, for a fix round that has no way to ask
+ * the forge why the build is red. `failed` is read only for a failing one.
+ */
+export function ciBrief(open: Array<{ number: number; checks: CheckState; failed: FailedCheck[] }>): string {
+  if (open.length === 0) return "There is no open pull request on this item, so there are no checks to read.";
+  const sections = open.map((pull) => {
+    const head = `### pr-${pull.number}: checks ${pull.checks}`;
+    if (pull.checks !== "failure") return head;
+    // Said, so a red build with nothing under it does not read as nothing wrong.
+    if (pull.failed.length === 0) return `${head}\n\n(the forge named no failed check)`;
+    return [head, ...pull.failed.map((check) =>
+      `#### ${check.name}\n\n${check.log === null ? "(log unavailable)" : "```\n" + logTail(check.log) + "\n```"}`)].join("\n\n");
+  });
+  return cut(sections.join("\n\n"), BRIEF_CI_CHARS);
+}
+
 const briefText = (body: string | null | undefined): string => cut((body ?? "").trim(), BRIEF_BODY_CHARS);
 
 /**
@@ -391,9 +431,10 @@ const isOpen = (pull: PullRecord): boolean => !pull.merged && !pull.closed;
  *
  * An integration extends this and writes the abstract methods, answered in
  * the plain shapes of `src/namespace.ts`. What is here is everything else a
- * forge does: which item each pull request implements and the thread counts
- * the review loop gates on, the branch heads a push is judged by, the three
- * publishing effects and its half of `nodes.close`, the `threads` and `diff`
+ * forge does: which item each pull request implements, the thread counts
+ * the review loop gates on and the CI counts a merge waits on, the branch
+ * heads a push is judged by, the publishing effects — push, open, review and
+ * merge — and its half of `nodes.close`, the `threads`, `diff` and `ci`
  * briefings, and the review threads' place in the item's history.
  * `compose` makes the hooks out of it.
  *
@@ -417,6 +458,16 @@ export abstract class BaseForge {
   abstract openPull(pull: { item: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void>;
   /** Close a pull request without merging it. */
   abstract closePull(pull: number, ctx: RuntimeContext): Promise<void>;
+  /** Its checks on its head commit, every one of them: `none` only when nothing is configured or started. */
+  abstract checks(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState>;
+  /** Each check that failed on its head, with its log's tail — or null for a log the forge would not give, never a refusal. */
+  abstract failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]>;
+  /**
+   * Merge it with a merge commit, only while its head is still `headSha`:
+   * `merged` when it is merged, now or already, `moved` when the forge
+   * refused because the head is another commit. Any other refusal throws.
+   */
+  abstract merge(pull: number, headSha: string, ctx: RuntimeContext): Promise<MergeAnswer>;
   /**
    * Post one review round: `files` as threads on their files, `lines` as
    * line threads inside the review, then the review itself with `body` —
@@ -457,8 +508,8 @@ export abstract class BaseForge {
   }
 
   /** A pull request as the node the engine routes on. */
-  protected node(pull: PullRecord, threads?: ThreadCounts): Node {
-    return pullNode(pull, threads);
+  protected node(pull: PullRecord, threads?: ThreadCounts, ci?: CheckCounts): Node {
+    return pullNode(pull, threads, ci);
   }
 
   /**
@@ -491,6 +542,8 @@ export abstract class BaseForge {
    * abandoned one is nothing a fix round can act on, and counting it would
    * loop the item through review for ever — so a closed one is zero, not
    * absent, which keeps "no thread awaits a fix" readable once all are merged.
+   * Its checks likewise: only an open one's are asked for, and a closed one
+   * reads `none` with both counts zero, at no cost.
    */
   async read(items: string[], ctx: RuntimeContext, isItem: (id: string) => Promise<boolean>): Promise<Graph> {
     const nodes = new Map<number, Node>();
@@ -507,10 +560,11 @@ export abstract class BaseForge {
           );
         }
         if (nodes.has(pull.number) || !named.has(item)) continue;
-        const threads = isOpen(pull)
+        const open = isOpen(pull);
+        const threads = open
           ? threadCounts(await this.threads(pull.number, ctx), await this.login(ctx))
           : { openThreads: 0, awaitingFix: 0 };
-        const node = this.node(pull, threads);
+        const node = this.node(pull, threads, checkCounts(open ? await this.checks(pull, ctx) : "none"));
         nodes.set(pull.number, node);
         relationships.push({ from: node.id, to: item, type: RELATIONS.implements });
       }
@@ -553,6 +607,18 @@ export abstract class BaseForge {
         },
         apply: (effect, ctx) => this.review(effect, ctx),
       },
+      [PULL_MERGE_EFFECT]: {
+        // Merged is a fact the graph shows. An old merged pull request from a
+        // branch used again is not this one: while one from it is open, the
+        // merge is still to do.
+        satisfied: (snapshot, effect) => {
+          const from = pullsFrom(
+            snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect), PULL_MERGE_EFFECT,
+          );
+          return !from.some((pr) => pr.closed === null) && from.some((pr) => pr.state.merged === true);
+        },
+        apply: (effect, ctx) => this.mergeOpen(effect, ctx),
+      },
       [NODES_CLOSE_EFFECT]: {
         satisfied: nodesCloseSatisfied,
         apply: async (effect, ctx) => {
@@ -562,7 +628,42 @@ export abstract class BaseForge {
     };
   }
 
-  /** `threads`, what is left to address on the item's open pull requests, and `diff`, what they change. */
+  /**
+   * `pull.merge`: the one open pull request from the branch, merged at the
+   * head the snapshot read it at, and only while the checks read on that head
+   * are green or none run. The head is the guard: a push after the read is a
+   * commit nobody has checked, and the forge refuses it as `moved` — which
+   * merges nothing, throws nothing, and leaves the effect unsatisfied, so the
+   * next read sees the new head and its checks starting over.
+   */
+  protected async mergeOpen(effect: Effect, ctx: HookContext): Promise<void> {
+    const branch = effectBranch(effect);
+    const open = pullsFrom(ctx.snapshot.graph as Graph | undefined, ctx.item, branch, PULL_MERGE_EFFECT)
+      .filter((pr) => pr.closed === null);
+    const [pr, ...more] = open;
+    if (pr === undefined) throw new Error(`cannot merge for #${ctx.item}: there is no open pull request from ${branch}`);
+    if (more.length > 0) {
+      throw new Error(
+        `cannot merge for #${ctx.item}: ${open.map((p) => p.id).join(" and ")} are all open from ${branch}, and which to merge is not a guess`,
+      );
+    }
+    const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
+    if (head === "") throw new Error(`will not merge ${pr.id} for #${ctx.item}: its head was not read, so nothing guards what would merge`);
+    const checks = pr.state.checks;
+    if (checks !== "success" && checks !== "none") {
+      throw new Error(
+        `will not merge ${pr.id} for #${ctx.item}: its checks on ${head.slice(0, 7)} are ${typeof checks === "string" ? checks : "unread"}`,
+      );
+    }
+    if ((await this.merge(pullNumber(pr.id), head, ctx)) === "moved") {
+      ctx.log("forge.merge.moved", { pull: pr.id, branch, headSha: head, why: "the head is no longer the commit its checks were read on" });
+    }
+  }
+
+  /**
+   * `threads`, what is left to address on the item's open pull requests,
+   * `diff`, what they change, and `ci`, their checks and what failed.
+   */
   briefs(): BriefTable {
     const open = async (ctx: HookContext): Promise<PullRecord[]> => (await this.pullsNaming(ctx.item, ctx)).filter(isOpen);
     return {
@@ -576,6 +677,14 @@ export abstract class BaseForge {
         const changed: Array<{ number: number; files: ChangedFile[] }> = [];
         for (const pull of await open(ctx)) changed.push({ number: pull.number, files: await this.changedFiles(pull.number, ctx) });
         return diffBrief(changed);
+      },
+      ci: async (ctx) => {
+        const read: Array<{ number: number; checks: CheckState; failed: FailedCheck[] }> = [];
+        for (const pull of await open(ctx)) {
+          const checks = await this.checks(pull, ctx);
+          read.push({ number: pull.number, checks, failed: checks === "failure" ? await this.failedChecks(pull, ctx) : [] });
+        }
+        return ciBrief(read);
       },
     };
   }

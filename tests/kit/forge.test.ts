@@ -1,6 +1,6 @@
 import { renderMarker } from "#conventions.js";
 import {
-  answered, BRIEF_DIFF_CHARS, BRIEF_HISTORY_ITEMS, BRIEF_THREADS, commentableLines, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
+  answered, BRIEF_DIFF_CHARS, BRIEF_HISTORY_ITEMS, BRIEF_THREADS, checkCounts, commentableLines, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
   isFinding, isReply, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
   threadLine, itemOfBranch, where,
 } from "#kit/forge.js";
@@ -113,6 +113,15 @@ describe("prBranch and itemOfBranch", () => {
   });
 });
 
+describe("checkCounts", () => {
+  it("counts a pending run and a failed one, and nothing else", () => {
+    expect(checkCounts("pending")).toEqual({ checks: "pending", ciPending: 1, ciFailed: 0 });
+    expect(checkCounts("failure")).toEqual({ checks: "failure", ciPending: 0, ciFailed: 1 });
+    expect(checkCounts("success")).toEqual({ checks: "success", ciPending: 0, ciFailed: 0 });
+    expect(checkCounts("none")).toEqual({ checks: "none", ciPending: 0, ciFailed: 0 });
+  });
+});
+
 describe("pullNode", () => {
   const pull = {
     number: 5, title: "Split", link: "https://forge.example/pull/5", merged: false, closed: false, headSha: "abc",
@@ -127,6 +136,15 @@ describe("pullNode", () => {
       state: { merged: false, headSha: "abc", branch: "landrace/7", openThreads: 2, awaitingFix: 1 },
       createdAt: Date.parse("2026-09-30T00:00:00Z"), updatedAt: Date.parse("2026-09-30T12:00:00Z"),
     });
+  });
+
+  it("carries the CI state and its two counts when it is given them, and none when it is not", () => {
+    expect(pullNode(pull, { openThreads: 0, awaitingFix: 0 }, checkCounts("failure")).state).toEqual({
+      merged: false, headSha: "abc", branch: "landrace/7", openThreads: 0, awaitingFix: 0,
+      checks: "failure", ciPending: 0, ciFailed: 1,
+    });
+    // A listed pull request is not asked for its checks, as it is not for its threads.
+    expect(Object.keys(pullNode(pull).state).sort()).toEqual(["branch", "headSha", "merged"]);
   });
 
   it("is done when merged, dropped when closed without, and names no branch it was not given", () => {

@@ -1,0 +1,24 @@
+version: 1
+name: merge
+description: test
+
+# One stage that merges the item's pull request on entry, and done once it
+# reads merged. A head that moves between the read and the merge leaves the
+# pull request open: the item waits at `merge`, and nothing halts.
+stages:
+  - id: merge
+    entry: true
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+    on_enter:
+      - { type: pull.merge, branch: "landrace/{item}" }
+      - { type: tracker.status, value: merge }
+
+  - id: done
+    terminal: true
+    triggers:
+      - name: merged
+        when: { "run.stage": merge, "rel.implements.in.total": { $gt: 0 }, "rel.implements.in.not.merged": 0 }
+    on_enter:
+      - { type: tracker.status, value: done }

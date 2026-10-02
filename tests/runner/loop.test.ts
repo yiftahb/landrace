@@ -626,9 +626,9 @@ describe("an item goes all the way round §10", () => {
     const reads = r.result.passes + r.invocations.length;
     // Each read walks the item's subtree, which is the item alone.
     expect(queriesOf(gh, "LandraceSubIssues")).toBe(reads);
-    // A briefing's three keys — threads, diff, history — each find the
+    // A briefing's four keys — threads, diff, ci, history — each find the
     // item's pull requests the same way `read` does.
-    expect(queriesOf(gh, "LandraceItem")).toBe(reads + 3 * briefed);
+    expect(queriesOf(gh, "LandraceItem")).toBe(reads + 4 * briefed);
     // One pull request, well under a page of threads: one count per read it
     // existed on, and per briefing one page for the open threads and one for
     // the history.
