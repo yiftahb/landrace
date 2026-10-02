@@ -424,8 +424,17 @@ stages:
           "run.counters.retro": { $lt: 2 }
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": { $gt: 0 }
+      # The merge needs every thread resolved, a Retry's as much as the
+      # first. It merges the head the branch has now once CI is green on it:
+      # a head pushed while the item was halted is not reviewed again, so
+      # after pushing a fix send it to code-review instead (README).
       - stage: merge
-        when: { "run.failedStage": merge, "run.counters.merge": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 } }
+        when:
+          "run.failedStage": merge
+          "run.counters.merge": { $lt: 3 }
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.sum.openThreads": 0
+          "rel.implements.in.sum.awaitingFix": 0
       - { stage: closed, when: { "run.failedStage": closed, "run.counters.closed": { $lt: 3 } } }
       - stage: triage
         when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } }

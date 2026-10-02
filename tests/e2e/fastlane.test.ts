@@ -464,6 +464,28 @@ describe("fastlane, end to end", () => {
   });
 
   /*
+   * The merge needs every thread resolved, a Retry's merge as much as the
+   * first: a reviewer's thread opened while the item was halted declines the
+   * Retry, in a sentence, and nothing merges.
+   */
+  it("8f. declines a Retry of the merge while a thread awaits a fix, merging nothing", async () => {
+    const { state, run, pr, merges, retry } = road({
+      seed: (s) => { s.openPull("1", { branch: "landrace/1", mergeable: false }); },
+    });
+    await run.converge();
+    expect(state.stage("1")).toBe("blocked");
+
+    delete pr().mergeable;
+    Object.assign(pr(), { openThreads: 1, awaitingFix: 1 });
+    expect(await retry()).toEqual({ refused: expect.stringMatching(/"blocked" sends an item to "merge" only while .*openThreads/) });
+    await run.converge();
+
+    expect(merges()).toBe(1);
+    expect(pr()).toMatchObject({ merged: false, closed: null });
+    expect(state.stage("1")).toBe("blocked");
+  });
+
+  /*
    * A merge that failed on the way — a 502, a dropped connection — is not a
    * refusal: nothing is recorded, the item stays at ci for this tick, and the
    * next tick merges. Over the in-memory forge, and over the fake GitHub,
