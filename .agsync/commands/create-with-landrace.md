@@ -28,8 +28,9 @@ nothing.
 
 ## The body
 
-The body is the item's whole brief. The workflow's first step — `spec`, in
-`main` — reads it cold, with none of this conversation, and works from it.
+The body is the item's whole brief. The workflow's first step — `spec` in
+`full-cycle`, `build` in `fastlane` — reads it cold, with none of this
+conversation, and works from it.
 Write it for that reader:
 
 - **Goal**: one or two sentences saying what changes for the person using it.
