@@ -39,6 +39,10 @@ Two stages whose identity predicates both match, two triggers that both fire, tw
 
 Several workflows share one start; each open item is claimed by exactly one (`claimItems`, `src/core/claims.ts`, judged by `eligible`). Two claimants or two sources reporting an id halt and name both; unclaimed is Not admitted. `validate`'s `claims` check abstains where it cannot tell.
 
+### A stage's `waits`, not a label, says whose turn it is
+
+An item's stage is the one `locateNode` finds from the listed item — its label, and every stage whose identity it satisfies — and a stage with `waits: person` is a person's turn. Needs You (board, notifications, status, MCP) reads that, never `lr:awaiting`, which a workflow may still write for the tracker's readers; a stage placed by state writes nothing, so a read-only workflow works.
+
 ### State is derived, never stored
 
 An item's entire progress is re-derived from the tracker on every run: position from a label, rounds by counting records, findings from review threads. There is no database, no ledger, no cache to repair. Recovery is re-derivation. If you find yourself adding a field to remember something, find the external record that already implies it.
