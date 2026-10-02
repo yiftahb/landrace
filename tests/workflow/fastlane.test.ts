@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { gotoTargetsOf } from "#core/goto.js";
 import { compile, gotoDeclined, gotoNotListed, missingPaths } from "#core/index.js";
+import { globMatches } from "#kit/forge.js";
 import type { Condition, LoadedWorkflow, Run, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { splitSections } from "#workflow/extend.js";
 import { admitProblems, claimProblems, validate } from "#workflow/validate.js";
@@ -324,9 +325,34 @@ describe("fastlane's stages", () => {
     const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
     expect(merge?.refuse).toEqual([
       ".landrace/hooks/**", ".landrace/landrace.yaml", ".landrace/workflows/*/workflow.yaml", ".github/**",
-      "package.json", "pnpm-lock.yaml", ".agsync/**", ".mcp.json", "CLAUDE.md", "AGENTS.md",
+      "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs",
+      ".agsync/**", ".agents/**", ".claude/**", ".codex/**", ".cursor/**", ".mcp.json",
+      "**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md",
     ]);
   });
+
+  /*
+   * Re-review N5: what the list says it protects, by its equivalents too —
+   * the operator's own agents' settings and hooks, the skills every agent
+   * links to, instructions in any directory, and the code an install runs —
+   * judged with the kit's own matcher, root and nested.
+   */
+  it.each([
+    ".claude/settings.json", ".claude/commands/x.md", ".agents/skills/agsync/SKILL.md", ".codex/config.toml", ".cursor/mcp.json",
+    "CLAUDE.md", "docs/CLAUDE.md", "CLAUDE.local.md", "src/CLAUDE.local.md", "AGENTS.md", "packages/x/AGENTS.md",
+    ".npmrc", ".pnpmfile.cjs", "pnpm-workspace.yaml",
+  ])("refuses a merge changing %s", (path) => {
+    const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
+    expect((merge?.refuse as string[]).some((glob) => globMatches(glob, path))).toBe(true);
+  });
+
+  it.each(["src/export.ts", "README.md", "docs/notes.md", "tests/export.test.ts", "packages/x/package-notes.md"])(
+    "leaves a merge changing %s to the guards alone",
+    (path) => {
+      const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
+      expect((merge?.refuse as string[]).some((glob) => globMatches(glob, path))).toBe(false);
+    },
+  );
 
   // The review's own push published the reviewed head; one here could publish one nobody reviewed.
   it("pushes nothing as it waits for the checks", () => {

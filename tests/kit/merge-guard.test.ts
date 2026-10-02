@@ -74,6 +74,19 @@ describe("globMatches", () => {
     ["CLAUDE.md", "claude.md", true],
     // A dot is a dot, not any character.
     ["CLAUDE.md", "CLAUDEXmd", false],
+    // A leading `**/` is none too: the file at the root, and the same name anywhere below it.
+    ["**/CLAUDE.md", "CLAUDE.md", true],
+    ["**/CLAUDE.md", "docs/deep/CLAUDE.md", true],
+    ["**/AGENTS.md", "packages/x/agents.md", true],
+    ["**/CLAUDE.md", "docs/CLAUDE.md.bak", false],
+    // What a case-insensitive file system folds into the same name (re-review
+    // N4): APFS resolves `hooKs` with the Kelvin sign (U+212A) and `hookſ` with
+    // the long s (U+017F) to `hooks/`, and a checkout writes the file there.
+    [".landrace/hooks/**", ".landrace/hooKs/github.ts", true],
+    [".landrace/hooks/**", ".landrace/hookſ/github.ts", true],
+    ["CLAUDE.md", "ＣLAUDE.md", true],
+    // The glob is normalised the same way as the path.
+    ["ＣLAUDE.md", "claude.md", true],
   ] as const)("%s against %s: %s", (glob, path, expected) => {
     expect(globMatches(glob, path)).toBe(expected);
   });
@@ -148,6 +161,47 @@ describe("pull.merge's protected paths", () => {
     const said = await attempt(hooks);
     expect(said).toMatchObject({ refused: true, message: expect.stringMatching(/pr-1 for #7[\s\S]*502 Bad Gateway[\s\S]*a person must merge it/) });
     expect(asked.merges).toBe(0);
+  });
+
+  /*
+   * Re-review N4, probe: the attacker's commit names `.landrace/hooKs/github.ts`
+   * with the Kelvin sign, as plumbing on a Linux checkout makes it. `git reset
+   * --hard` or a fresh clone on macOS writes it over `.landrace/hooks/github.ts`,
+   * which the engine imports at start.
+   */
+  it("refuses a protected path spelled with characters a checkout folds into it", async () => {
+    const kelvin = ".landrace/hooKs/github.ts";
+    const { hooks, forge, pr, asked } = world([file("src/a.ts"), file(kelvin)]);
+    const said = await attempt(hooks);
+    expect(said).toEqual({ refused: true, message: expect.stringContaining(`it changes ${kelvin}, which this workflow protects`) });
+    expect(asked.merges).toBe(0);
+    expect(forge.pull(pr).merged).toBe(false);
+  });
+
+  /*
+   * And a name Unicode normalisation changes is not merged with no person,
+   * protected or not: what a checkout makes of it is the checkout's to say,
+   * and a gate matching one reading of it has checked one reading.
+   */
+  it.each([
+    ["a ligature", "src/ﬁle.ts", undefined],
+    ["decomposed letters", "src/café.ts", undefined],
+    ["a rename's old name", "src/file.ts", "src/ﬁle.ts"],
+  ])("refuses a changed file whose name normalisation changes: %s", async (_what, path, previous) => {
+    const { hooks, asked } = world([file("src/a.ts"), file(path, previous)]);
+    const said = await attempt(hooks);
+    if (said === "merged") throw new Error("merged");
+    expect(said.refused).toBe(true);
+    expect(said.message).toMatch(/pr-1 for #7[\s\S]*Unicode normalisation[\s\S]*a person must merge it/);
+    expect(said.message).toContain(path);
+    expect(said.message).not.toContain("src/a.ts");
+    expect(asked.merges).toBe(0);
+  });
+
+  it("merges a name already in normal form, accented or not", async () => {
+    const { hooks, asked } = world([file("src/café.ts"), file("docs/日本.md")]);
+    expect(await attempt(hooks)).toBe("merged");
+    expect(asked.merges).toBe(1);
   });
 
   it("reads no changed file for a merge that names no protected path", async () => {

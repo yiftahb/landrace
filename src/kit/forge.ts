@@ -450,25 +450,35 @@ const isOpen = (pull: PullRecord): boolean => !pull.merged && !pull.closed;
 const proposed = (pr: Node): boolean => pr.closed === null && pr.state.merged !== true;
 
 /**
+ * A name as a case-insensitive checkout may read it: NFKC, which takes the
+ * Kelvin sign to K and the long s to s, then upper and back down, which
+ * takes ß to ss as well as K to k. Applied to both sides of a comparison, so
+ * it only ever makes two names one.
+ */
+const folded = (name: string): string => name.normalize("NFKC").toUpperCase().toLowerCase();
+
+/**
  * Whether a repository path matches a glob, segment by segment: `**` is any
  * number of whole segments, none included — so `.landrace/hooks/**` is the
  * directory itself too, which a link put in its place would be — `*` is any
  * run of characters within one segment, and everything else is literal.
  *
- * Ignoring case. A checkout on a case-insensitive file system — macOS,
- * Windows — writes `.Landrace/hooks/x.ts` where `.landrace/hooks/x.ts` is,
- * and an agent opening CLAUDE.md there reads a `claude.md`. Matching more
- * only refuses more.
+ * Ignoring case, the way a checkout's file system does. One on macOS or
+ * Windows writes `.Landrace/hooks/x.ts` where `.landrace/hooks/x.ts` is, and
+ * an agent opening CLAUDE.md there reads a `claude.md`. APFS folds further
+ * than ASCII: `hooKs` with the Kelvin sign and `hookſ` with the long s are
+ * `hooks/` there, so both glob and path are compared as `folded` reads them.
+ * Matching more only refuses more.
  *
  * Every (segment, segment) pair is tried at most once, so a path built to be
  * long against a glob with several `**` costs their product, never more.
  */
 export function globMatches(glob: string, path: string): boolean {
-  const want = glob.split("/");
-  const have = path.split("/");
+  const want = folded(glob).split("/");
+  const have = folded(path).split("/");
   const segment = want.map((part) => part === "**"
     ? null
-    : new RegExp(`^${part.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`, "i"));
+    : new RegExp(`^${part.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`));
   const failed = new Set<number>();
   const from = (i: number, j: number): boolean => {
     const re = segment[i];
@@ -767,9 +777,11 @@ export abstract class BaseForge {
    * merge — the engine's own hooks and workflows, CI, the dependencies an
    * install runs. Last, once everything else would let the merge through,
    * the pull request's changed files are read, a rename's old name too, and
-   * one matching any of them is not merged. Neither is a list the forge
-   * could not give whole, nor one it could not give at all: what was not
-   * read was not checked.
+   * one matching any of them is not merged. Nor is one changing a file whose
+   * name Unicode normalisation changes, protected-looking or not: a checkout
+   * may read it as another path. Neither is a list the forge could not give
+   * whole, nor one it could not give at all: what was not read was not
+   * checked.
    *
    * Every guard that will not pass is a refusal, marked so: asking again on
    * the next tick finds the same red checks or the same closed pull request,
@@ -853,12 +865,21 @@ export abstract class BaseForge {
     const touched = read.files.flatMap((f) => (hit(f.path)
       ? [f.path]
       : f.previous !== undefined && hit(f.previous) ? [`${f.path} (renamed from ${f.previous})`] : []));
-    if (touched.length === 0) return;
-    const named = touched.slice(0, NAMED_PATHS).join(", ");
-    const more = touched.length - NAMED_PATHS;
-    throw new EffectRefused(
-      `${which}: it changes ${named}${more > 0 ? ` and ${more} more` : ""}, which this workflow protects, so a person must merge it`,
-    );
+    // A name normalisation changes is a name a checkout may read as another
+    // — a protected one, folded — and one matched reading of it is not all
+    // of them: in a change that merges with no person, it is a person's.
+    const unusual = (path: string): boolean => path !== path.normalize("NFKC");
+    const odd = read.files.flatMap((f) => (hit(f.path) || (f.previous !== undefined && hit(f.previous))
+      ? []
+      : unusual(f.path) ? [f.path] : f.previous !== undefined && unusual(f.previous) ? [`${f.path} (renamed from ${f.previous})`] : []));
+    if (touched.length === 0 && odd.length === 0) return;
+    const listed = (paths: string[]): string =>
+      `${paths.slice(0, NAMED_PATHS).join(", ")}${paths.length > NAMED_PATHS ? ` and ${paths.length - NAMED_PATHS} more` : ""}`;
+    const why = [
+      ...(touched.length > 0 ? [`it changes ${listed(touched)}, which this workflow protects`] : []),
+      ...(odd.length > 0 ? [`it changes ${listed(odd)}, whose name Unicode normalisation (NFKC) changes, so a checkout may read it as another path`] : []),
+    ];
+    throw new EffectRefused(`${which}: ${why.join("; and ")}, so a person must merge it`);
   }
 
   /**

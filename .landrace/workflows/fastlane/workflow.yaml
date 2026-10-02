@@ -292,11 +292,13 @@ stages:
       #
       # And the paths only a person merges, whatever the review said: the
       # engine's own hooks, imported with this project's secrets, its
-      # configuration and workflows, CI, the dependencies an install runs, and
-      # the agents' own instructions. The kit reads the pull request's changed
-      # files — a rename's old name too — and refuses one touching any of
-      # them, or one whose list it could not read to the end: `blocked`, for a
-      # person.
+      # configuration and workflows, CI, the dependencies an install runs and
+      # the code it runs doing so, and the agents' own instructions, settings
+      # and skills — in every directory an agent reads them from. The kit
+      # reads the pull request's changed files — a rename's old name too — and
+      # refuses one touching any of them, one with a name Unicode
+      # normalisation changes, or one whose list it could not read to the
+      # end: `blocked`, for a person.
       - type: pull.merge
         branch: "landrace/{item}"
         reviewedBy: code-review
@@ -307,10 +309,18 @@ stages:
           - .github/**
           - package.json
           - pnpm-lock.yaml
+          - pnpm-workspace.yaml
+          - .npmrc
+          - .pnpmfile.cjs
           - .agsync/**
+          - .agents/**
+          - .claude/**
+          - .codex/**
+          - .cursor/**
           - .mcp.json
-          - CLAUDE.md
-          - AGENTS.md
+          - "**/CLAUDE.md"
+          - "**/CLAUDE.local.md"
+          - "**/AGENTS.md"
       - { type: tracker.status, value: merge }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
