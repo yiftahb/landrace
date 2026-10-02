@@ -84,6 +84,14 @@ describe("a pull request's checks", () => {
     expect(rel.rel.implements?.in.total).toBe(3);
     expect(rel.rel.implements?.in.sum).toMatchObject({ ciFailed: 1, ciPending: 0 });
   });
+
+  it("carries no checks on a listed pull request, which is never asked for them", async () => {
+    const { hooks, forge } = world();
+    const pr = forge.add("7", { checks: "failure" });
+    const listed = await hooks.source.list(ctx);
+    expect(listed.nodes.find((n) => n.id === pr)?.state).not.toHaveProperty("checks");
+    expect(forge.checkCalls).toBe(0);
+  });
 });
 
 describe("pull.merge", () => {
@@ -111,9 +119,39 @@ describe("pull.merge", () => {
 
   it.each(["pending", "failure"] as const)("refuses to merge while checks are %s, saying so", async (checks) => {
     const s = state();
-    const pr = s.openPull("7", { branch: "landrace/7", checks, headSha: "abc" });
-    await expect(apply(s, merge, await read(s))).rejects.toThrow(`will not merge pr-1 for #7: its checks on abc are ${checks}`);
+    // A whole SHA, so the sentence's short one is the one asserted.
+    const pr = s.openPull("7", { branch: "landrace/7", checks, headSha: `abc1234${"0".repeat(33)}` });
+    await expect(apply(s, merge, await read(s))).rejects.toThrow(`will not merge pr-1 for #7: its checks on abc1234 are ${checks}`);
     expect(s.pull(pr)).toMatchObject({ merged: false, closed: null });
+  });
+
+  it("refuses a pull request whose checks were never read", async () => {
+    const s = state();
+    const pr = s.openPull("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
+    const snapshot = await read(s);
+    // As a node the kit's read() did not build carries them: a listing's, or a forge's own node().
+    const node = snapshot.graph.nodes.find((n) => n.id === pr);
+    if (!node) throw new Error(`no ${pr} in the read`);
+    delete node.state.checks;
+    delete node.state.ciPending;
+    delete node.state.ciFailed;
+    await expect(apply(s, merge, snapshot)).rejects.toThrow(/will not merge pr-1 for #7: its checks on abc are unread/);
+    expect(s.pull(pr).merged).toBe(false);
+  });
+
+  it("refuses a pull request a person closed after the read, and leaves it closed", async () => {
+    const s = state();
+    const pr = s.openPull("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
+    const snapshot = await read(s);
+    s.pull(pr).closed = "dropped";
+    await expect(apply(s, merge, snapshot)).rejects.toThrow(/pr-1 for #7 was closed without being merged/);
+    expect(s.pull(pr)).toMatchObject({ merged: false, closed: "dropped" });
+  });
+
+  it("counts a pull request that reads merged as merged, not open, whatever its closed field says", async () => {
+    const s = state();
+    s.openPull("7", { branch: "landrace/7", merged: true, closed: null });
+    expect(s.post.satisfied(await read(s), merge)).toBe(true);
   });
 
   it("refuses a pull request whose head was not read, rather than merging whatever is there", async () => {
@@ -229,6 +267,12 @@ describe("the ci briefing", () => {
     expect(ci).toContain("### pr-1: checks pending");
     expect(ci).not.toContain("#### test");
     expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("says when a failing pull request names no failed check", async () => {
+    const s = state();
+    s.openPull("7", { checks: "failure" });
+    expect(await ciBrief(s)).toContain("### pr-1: checks failure\n\n(the forge named no failed check)");
   });
 
   it("says when there is no open pull request", async () => {

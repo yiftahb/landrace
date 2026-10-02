@@ -426,6 +426,9 @@ const pullNumber = (id: string): number => {
 
 const isOpen = (pull: PullRecord): boolean => !pull.merged && !pull.closed;
 
+/** `isOpen`, of a node: neither closed nor merged, whichever field a forge's node says it with. */
+const proposed = (pr: Node): boolean => pr.closed === null && pr.state.merged !== true;
+
 /**
  * A forge integration: its vendor's calls, and nothing else.
  *
@@ -458,7 +461,7 @@ export abstract class BaseForge {
   abstract openPull(pull: { item: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void>;
   /** Close a pull request without merging it. */
   abstract closePull(pull: number, ctx: RuntimeContext): Promise<void>;
-  /** Its checks on its head commit, every one of them: `none` only when nothing is configured or started. */
+  /** Its checks on `pull.headSha`, the commit the record was read at and `merge` is guarded by: `none` only when nothing is configured or started. */
   abstract checks(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState>;
   /** Each check that failed on its head, with its log's tail — or null for a log the forge would not give, never a refusal. */
   abstract failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]>;
@@ -615,7 +618,7 @@ export abstract class BaseForge {
           const from = pullsFrom(
             snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect), PULL_MERGE_EFFECT,
           );
-          return !from.some((pr) => pr.closed === null) && from.some((pr) => pr.state.merged === true);
+          return !from.some(proposed) && from.some((pr) => pr.state.merged === true);
         },
         apply: (effect, ctx) => this.mergeOpen(effect, ctx),
       },
@@ -638,8 +641,7 @@ export abstract class BaseForge {
    */
   protected async mergeOpen(effect: Effect, ctx: HookContext): Promise<void> {
     const branch = effectBranch(effect);
-    const open = pullsFrom(ctx.snapshot.graph as Graph | undefined, ctx.item, branch, PULL_MERGE_EFFECT)
-      .filter((pr) => pr.closed === null);
+    const open = pullsFrom(ctx.snapshot.graph as Graph | undefined, ctx.item, branch, PULL_MERGE_EFFECT).filter(proposed);
     const [pr, ...more] = open;
     if (pr === undefined) throw new Error(`cannot merge for #${ctx.item}: there is no open pull request from ${branch}`);
     if (more.length > 0) {

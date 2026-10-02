@@ -12,11 +12,12 @@ import {
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
-import { BaseForge, checkCounts, prBranch } from "#kit/forge.js";
+import { BaseForge, prBranch } from "#kit/forge.js";
 import { BaseTracker, commentSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
   ChangedFile,
+  CheckCounts,
   CheckState,
   Effect,
   EffectHandler,
@@ -34,6 +35,7 @@ import type {
   RelationDecl,
   ReviewThread,
   Source,
+  ThreadCounts,
   ItemPatch,
   ItemRecord,
   TrackerComment,
@@ -373,10 +375,15 @@ export class MemoryForge extends BaseForge {
     return this.pull(`pr-${pull.number}`).failed;
   }
 
-  /** As a forge guards one: merged already is merged, and another head than the one asked for is refused as moved. */
+  /**
+   * As a forge guards one: merged already is merged, and another head than
+   * the one asked for is refused as moved. One a person closed is refused
+   * outright, before its head is looked at: merging it would undo their close.
+   */
   async merge(pull: number, headSha: string): Promise<MergeAnswer> {
     const row = this.pull(`pr-${pull}`);
     if (row.merged) return "merged";
+    if (row.closed !== null) throw new Error(`${row.id} for #${row.item} was closed without being merged, so there is nothing to merge`);
     if (headSha !== row.headSha) return "moved";
     row.merged = true;
     row.closed = "done";
@@ -405,12 +412,12 @@ export class MemoryForge extends BaseForge {
    * — an open pull request's only, as a forge reports them: a thread left on
    * a merged or abandoned one is nothing a fix round can act on. Zero rather
    * than absent, so "no thread awaits a fix" stays readable once all merge.
-   * Its checks likewise: a merged or abandoned one reads `none`, as the
-   * kit's `read()` reads one it never asks.
+   * Its checks are the kit's: what `read()` asked of an open one, `none` for
+   * a closed one, and nothing on a listed one — so the kit's own zeroing is
+   * what a test of this forge exercises, not a copy of it.
    */
-  protected override node(pull: PullRecord): Node {
+  protected override node(pull: PullRecord, _threads?: ThreadCounts, ci?: CheckCounts): Node {
     const p = this.pull(`pr-${pull.number}`);
-    const open = p.closed === null && !p.merged;
     return {
       id: p.id,
       kind: PULL_REQUEST_KIND,
@@ -425,7 +432,7 @@ export class MemoryForge extends BaseForge {
         openThreads: p.closed === null ? p.openThreads : 0,
         awaitingFix: p.closed === null ? p.awaitingFix : 0,
         ...(p.branch === undefined ? {} : { branch: p.branch }),
-        ...checkCounts(open ? p.checks : "none"),
+        ...ci,
       },
     };
   }
