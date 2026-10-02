@@ -125,25 +125,39 @@ export const PAGE_HTML = `<!doctype html>
 ${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
 <p id="listing" hidden role="status" class="px-1 py-8 text-sm italic text-neutral-400 dark:text-neutral-500">Listing…</p>
 <div id="all-set" hidden class="flex flex-col items-center gap-2 py-16 text-center text-neutral-400 dark:text-neutral-600">
-<svg role="img" aria-label="A person in a beach chair under a palm tree" viewBox="0 0 240 160" class="h-40 w-60" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-<circle cx="204" cy="28" r="9" fill="currentColor" fill-opacity=".2"></circle>
-<path d="M204 10v4M204 42v4M186 28h4M218 28h4M191 15l3 3M214 38l3 3M217 15l-3 3M194 38l-3 3" stroke-opacity=".4"></path>
-<g transform="translate(26 0)">
-<path d="M62 142C70 112 70 80 58 44" stroke-width="4"></path>
-<path d="M58 44C44 36 30 40 20 56M58 44C50 28 36 24 24 28M58 44C66 28 82 24 96 32M58 44C72 40 90 48 98 64M58 44C58 34 60 26 64 18" stroke-opacity=".75"></path>
-<circle cx="55" cy="50" r="4" fill="currentColor" fill-opacity=".5"></circle>
-<circle cx="63" cy="52" r="4" fill="currentColor" fill-opacity=".5"></circle>
-</g>
-<g transform="translate(26 0)">
-<path d="M98 88l24 36h50M122 124l-8 18M172 124l8 18" stroke-width="3"></path>
-<path d="M104 118l16 22" stroke-opacity=".5"></path>
-<circle cx="116" cy="80" r="7" fill="currentColor" fill-opacity=".35"></circle>
-<path d="M120 90l12 28" stroke-width="4"></path>
-<path d="M127 98l-14-4-2-14" stroke-opacity=".8"></path>
-<path d="M132 118h26l18-10M136 122h28l16-8" stroke-width="3"></path>
-</g>
-<path d="M8 146h224"></path>
-<path d="M20 154h16M70 154h28M130 154h20M190 154h30" stroke-opacity=".35"></path>
+<svg role="img" aria-label="Every item checked off" viewBox="0 0 240 200" class="h-40 w-48" fill="none">
+<ellipse cx="120" cy="108" rx="72" ry="52" fill="currentColor" opacity="0.04"/>
+<rect x="54" y="76" width="132" height="80" rx="8" stroke="currentColor" stroke-opacity="0.12" stroke-width="1.5"/>
+<rect x="46" y="68" width="132" height="80" rx="8" fill="white" fill-opacity="0.03" stroke="currentColor" stroke-opacity="0.2" stroke-width="1.5"/>
+<rect x="38" y="60" width="132" height="80" rx="8" fill="white" fill-opacity="0.06" stroke="currentColor" stroke-opacity="0.35" stroke-width="1.5"/>
+<rect x="38" y="60" width="132" height="18" rx="8" fill="currentColor" fill-opacity="0.06"/>
+<rect x="38" y="71" width="132" height="7" fill="currentColor" fill-opacity="0.06"/>
+<rect x="52" y="88" width="104" height="10" rx="3" stroke="currentColor" stroke-opacity="0.15" stroke-width="1"/>
+<circle cx="58" cy="93" r="4" stroke="#10b981" stroke-opacity="0.7" stroke-width="1.5"/>
+<polyline points="55.5,93 57.2,95 61,90.5" stroke="#10b981" stroke-opacity="0.8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="67" y1="93" x2="148" y2="93" stroke="currentColor" stroke-opacity="0.18" stroke-width="1.5" stroke-linecap="round"/>
+<rect x="52" y="104" width="104" height="10" rx="3" stroke="currentColor" stroke-opacity="0.15" stroke-width="1"/>
+<circle cx="58" cy="109" r="4" stroke="#10b981" stroke-opacity="0.7" stroke-width="1.5"/>
+<polyline points="55.5,109 57.2,111 61,106.5" stroke="#10b981" stroke-opacity="0.8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="67" y1="109" x2="138" y2="109" stroke="currentColor" stroke-opacity="0.18" stroke-width="1.5" stroke-linecap="round"/>
+<rect x="52" y="120" width="104" height="10" rx="3" stroke="currentColor" stroke-opacity="0.15" stroke-width="1"/>
+<circle cx="58" cy="125" r="4" stroke="#10b981" stroke-opacity="0.7" stroke-width="1.5"/>
+<polyline points="55.5,125 57.2,127 61,122.5" stroke="#10b981" stroke-opacity="0.8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="67" y1="125" x2="143" y2="125" stroke="currentColor" stroke-opacity="0.18" stroke-width="1.5" stroke-linecap="round"/>
+<circle cx="170" cy="58" r="18" fill="#10b981" fill-opacity="0.1" stroke="#10b981" stroke-opacity="0.4" stroke-width="1.5"/>
+<circle cx="170" cy="58" r="12" fill="#10b981" fill-opacity="0.15"/>
+<polyline points="163,58 167.5,62.5 177,52" stroke="#10b981" stroke-opacity="0.9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="38" cy="40" r="2" fill="currentColor" fill-opacity="0.12"/>
+<circle cx="46" cy="32" r="1.5" fill="currentColor" fill-opacity="0.08"/>
+<circle cx="30" cy="50" r="1" fill="currentColor" fill-opacity="0.08"/>
+<circle cx="202" cy="88" r="2" fill="currentColor" fill-opacity="0.12"/>
+<circle cx="210" cy="80" r="1.5" fill="currentColor" fill-opacity="0.08"/>
+<circle cx="207" cy="98" r="1" fill="currentColor" fill-opacity="0.06"/>
+<line x1="80" y1="153" x2="160" y2="153" stroke="currentColor" stroke-opacity="0.12" stroke-width="1" stroke-linecap="round"/>
+<rect x="113" y="44" width="2.5" height="12" rx="1.25" fill="currentColor" fill-opacity="0.2"/>
+<rect x="118" y="45.5" width="9" height="2" rx="1" fill="currentColor" fill-opacity="0.18"/>
+<rect x="118" y="49.5" width="6.5" height="2" rx="1" fill="currentColor" fill-opacity="0.12"/>
+<rect x="118" y="53.5" width="4" height="2" rx="1" fill="currentColor" fill-opacity="0.08"/>
 </svg>
 <p class="text-base font-semibold text-neutral-700 dark:text-neutral-200">You're all set!</p>
 <p class="text-sm text-neutral-500 dark:text-neutral-400">Nothing needs you. Landrace has it from here.</p>

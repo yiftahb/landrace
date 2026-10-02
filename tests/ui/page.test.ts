@@ -2715,17 +2715,21 @@ describe("the empty Needs You", () => {
     expect(block).not.toContain("rose");
   });
 
-  it("draws the beach in greyscale, from the page's own colour", () => {
+  it("draws every item checked off, in the page's own colour and one emerald accent", () => {
     const block = /<div id="all-set"[\s\S]*?<\/div>/.exec(PAGE_HTML)?.[0] ?? "";
     expect(block).toContain("You're all set!");
     expect(block).toContain("Nothing needs you. Landrace has it from here.");
     const svg = /<svg[\s\S]*?<\/svg>/.exec(block)?.[0] ?? "";
     expect(svg).toMatch(/role="img"/);
-    expect(svg).toMatch(/aria-label="[^"]*beach chair[^"]*palm tree[^"]*"/);
-    // No colour of its own: only currentColor and none, so the neutral token decides light and dark.
-    for (const [, value] of svg.matchAll(/(?:fill|stroke)="([^"]*)"/g)) expect(["currentColor", "none"]).toContain(value);
-    expect(svg).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|hsl\(/i);
-    expect(svg.length).toBeLessThan(3072);
+    expect(svg).toMatch(/aria-label="Every item checked off"/);
+    // The page's own colour (currentColor) so light and dark both read, plus
+    // the emerald the board's checks already use, and a faint white wash.
+    for (const [, value] of svg.matchAll(/(?:fill|stroke)="([^"]*)"/g)) {
+      expect(["currentColor", "none", "white", "#10b981"]).toContain(value);
+    }
+    // Inline markup: shapes only, nothing that runs, loads or links.
+    expect(svg).not.toMatch(/<script|<foreignObject|<image|<use|href=|\son[a-z]+=|style=/i);
+    expect(svg.length).toBeLessThan(4096);
   });
 
   it("hides the block unless all set, and the lane it replaces when it is", () => {
