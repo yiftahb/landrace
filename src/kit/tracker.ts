@@ -11,7 +11,7 @@
  * mapping what they answer into the plain fields `itemNode` takes.
  */
 import {
-  allClosed, CLOSE_EFFECT, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES,
+  allClosed, CLOSE_EFFECT, distinctRelations, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES,
   neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATED_FACTS, RELATIONS, renderMarker,
   renderOrigin, sameLogin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND,
 } from "#conventions.js";
@@ -701,11 +701,12 @@ export abstract class BaseTracker {
    * under our own login, so the origin reads back as ours and only ours; the
    * body is escaped first, so an agent cannot bring a marker of its own.
    */
-  async createItem({ title, body, labels, parent, origin, priority, relate: relations }: NewItem, ctx: RuntimeContext): Promise<Node> {
+  async createItem({ title, body, labels, parent, origin, priority, relate }: NewItem, ctx: RuntimeContext): Promise<Node> {
+    const relations = distinctRelations(relate ?? []);
     // Every type, and every item of its own it names, checked before anything
     // is written: a refusal leaves nothing behind.
-    for (const { type, item } of relations ?? []) this.writable(type, `relate a new item to #${item}`);
-    for (const { type, item } of relations ?? []) {
+    for (const { type, item } of relations) this.writable(type, `relate a new item to #${item}`);
+    for (const { type, item } of relations) {
       if (!this.ownsId(item)) continue;
       try {
         await this.item(item, ctx);
@@ -718,7 +719,7 @@ export abstract class BaseTracker {
     // Related before it is labelled: the label is what lets a tick work it,
     // and one worked before its blockers are on it is one that does not wait.
     const failed: string[] = [];
-    for (const { type, item } of relations ?? []) {
+    for (const { type, item } of relations) {
       try {
         await this.addRelation(id, type, item, ctx);
       } catch (e) {

@@ -5,6 +5,7 @@ import {
   neutraliseMarkers,
   RECORD_EFFECT,
   recordBodyProblem,
+  distinctRelations,
   relateProblem,
   stageFromLabels,
   isOpenItem,
@@ -495,15 +496,18 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
         },
         ctx,
       );
-      // After the labels, before the reply: relating is the last write.
-      for (const { type, item: other } of relate) await operator.relate(item, type, other, ctx);
-      for (const { type, item: other } of unrelate) await operator.unrelate(item, type, other, ctx);
+      // After the labels, before the reply: relating is the last write. Each
+      // once: a tracker refuses a second copy of what it already holds.
+      const relating = distinctRelations(relate);
+      const unrelating = distinctRelations(unrelate);
+      for (const { type, item: other } of relating) await operator.relate(item, type, other, ctx);
+      for (const { type, item: other } of unrelating) await operator.unrelate(item, type, other, ctx);
       wakeLoop();
       // Null for an item no one workflow owns: its edit went through no workflow.
       return {
         ...summarise(updated), workflow: edit.workflow,
-        ...(relate.length === 0 ? {} : { related: relate }),
-        ...(unrelate.length === 0 ? {} : { unrelated: unrelate }),
+        ...(relating.length === 0 ? {} : { related: relating }),
+        ...(unrelating.length === 0 ? {} : { unrelated: unrelating }),
       };
     },
 

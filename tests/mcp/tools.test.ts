@@ -947,6 +947,16 @@ describe("relationships by hand", () => {
     });
   });
 
+  it("relates and unrelates each entry once, however often it is asked for", async () => {
+    const { tools, calls } = relating();
+    const r = await tools.updateItem("4", {
+      relate: [{ type: "blocked-by", item: "10" }, { type: "blocked-by", item: "10" }],
+      unrelate: [{ type: "blocked-by", item: "9" }, { type: "blocked-by", item: "9" }],
+    });
+    expect(calls).toEqual(["update", "relate 4 blocked-by 10", "unrelate 4 blocked-by 9"]);
+    expect(r).toMatchObject({ related: [{ type: "blocked-by", item: "10" }], unrelated: [{ type: "blocked-by", item: "9" }] });
+  });
+
   it("refuses a type its tracker does not write, naming the ones it does, and writes nothing", async () => {
     const { tracker, tools, calls } = relating();
     const before = tracker.issues.size;

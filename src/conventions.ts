@@ -122,6 +122,21 @@ export function relateProblem(from: string | null, entry: { type: string; item: 
   return null;
 }
 
+/**
+ * Each relationship once, in the order first asked: asking for one twice is
+ * asking for it once. A tracker refuses a second copy of what it holds, and
+ * a write refused after its item was created drops that item.
+ */
+export function distinctRelations<T extends { type: string; item: string }>(entries: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return entries.filter(({ type, item }) => {
+    const key = JSON.stringify([type, item]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export const isItemId = (id: unknown): id is string => itemIdProblem(id) === null;
 
 /**

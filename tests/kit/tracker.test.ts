@@ -634,6 +634,12 @@ describe("relationships on the tracker base", () => {
       expect(state.writes()).toEqual(["create a new item", "relate #2 blocked-by #10", "addLabels #2"]);
     });
 
+    it("makes a relationship asked for twice once", async () => {
+      const state = createExternalState({ items: [{ id: "10" }] });
+      await state.operator.createItem({ title: "after", relate: [{ type: B, item: "10" }, { type: B, item: "10" }] }, ctx);
+      expect(state.writes()).toEqual(["create a new item", "relate #2 blocked-by #10"]);
+    });
+
     // A tracker's own UI may allow one, and reading it still flags a cycle;
     // landrace never writes one.
     it("refuses to relate an item to itself, and writes nothing", async () => {

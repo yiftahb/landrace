@@ -3,6 +3,7 @@
  * reasons, the sub-issue link, issue dependencies as `blocked-by`, and the
  * classic token's scope. Everything else a tracker does is `BaseTracker`'s.
  */
+import { createHash } from "node:crypto";
 import {
   type Closed, type ItemPatch, type NewItem, type Node, RELATIONS, type RuntimeContext, STAGE_LABEL_PREFIX, isItemId,
 } from "landrace/hooks";
@@ -10,7 +11,7 @@ import {
   BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
   type ItemRecord, type OpenRelations, type TrackerComment,
 } from "landrace/kit";
-import { type Client, type GraphQLPath, clientFor, isIssueNumber, issueNumber, unseen } from "./client.js";
+import { type Client, type Spare, clientFor, isIssueNumber, issueNumber, unseen } from "./client.js";
 
 /**
  * How many blockers one reading asks an issue for: all of them, since GitHub
@@ -73,23 +74,32 @@ interface IssueNode {
   blockedBy: Blockers<BlockerNode>;
 }
 
-/** The lighter reading a sub-issue in the issue list gets: no blockers. */
+/** A sub-issue's reading, in the issue list or a read's children: no blockers, which neither draws. */
 type SubIssueNode = Omit<IssueNode, "blockedBy">;
+
+/** A repository answer, naming the repository as GitHub does now. */
+type Named<T> = T & { nameWithOwner?: string };
 
 type Page<T> = { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: T[] };
 
 /**
- * The fields every issue query asks for, spelled once so `IssueNode` has one
- * shape whichever query it came back from. Sub-issues are asked for with these
- * too: a parent counting its children by stage reads their labels. Its
- * blockers come with each their own title, link, state and repository, so
- * naming one costs no read of it.
+ * The fields of an issue without its blockers, which a read's sub-issues are
+ * asked for: a parent counting its children by stage reads their labels, and
+ * a read draws only its own item's relationships.
  */
-const ISSUE_FIELDS = `
+const ISSUE_BASE_FIELDS = `
   number title url state stateReason createdAt updatedAt
   labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
-  body author { login } editor { login }
+  body author { login } editor { login }`;
+
+/**
+ * The fields every reading of an issue that keeps its blockers asks for,
+ * spelled once so `IssueNode` has one shape whichever query it came back
+ * from. Its blockers come with each their own title, link, state and
+ * repository, so naming one costs no read of it.
+ */
+const ISSUE_FIELDS = `${ISSUE_BASE_FIELDS}
   blockedBy(first: ${BLOCKERS_PAGE}) { totalCount nodes { title url ${WALK_BLOCKER_FIELDS} } }`;
 
 /**
@@ -111,6 +121,7 @@ const SUB_ISSUE_FIELDS = `
 const ISSUE_QUERY = `
 query LandraceIssue($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
+    nameWithOwner
     issue(number: $number) { ${ISSUE_FIELDS} parent { number } }
   }
 }`;
@@ -119,7 +130,7 @@ query LandraceIssue($owner: String!, $name: String!, $number: Int!) {
 const SUB_ISSUES_QUERY = `
 query LandraceSubIssues($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    issue(number: $number) { subIssues(first: ${ITEM_PAGE}) { totalCount nodes { ${ISSUE_FIELDS} } } }
+    issue(number: $number) { subIssues(first: ${ITEM_PAGE}) { totalCount nodes { ${ISSUE_BASE_FIELDS} } } }
   }
 }`;
 
@@ -130,6 +141,7 @@ query LandraceSubIssues($owner: String!, $name: String!, $number: Int!) {
 const ISSUES_QUERY = `
 query LandraceIssues($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
+    nameWithOwner
     issues(states: OPEN, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: CREATED_AT, direction: ASC }) {
       pageInfo { hasNextPage endCursor }
       nodes { ${ISSUE_FIELDS} parent { number } subIssues(first: 50) { nodes { ${SUB_ISSUE_FIELDS} } } }
@@ -145,6 +157,7 @@ query LandraceIssues($owner: String!, $name: String!, $cursor: String) {
 const CLOSED_QUERY = `
 query LandraceClosed($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
+    nameWithOwner
     issues(states: CLOSED, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
       nodes { ${ISSUE_FIELDS} closedAt parent { number } }
@@ -161,6 +174,7 @@ query LandraceClosed($owner: String!, $name: String!, $cursor: String) {
 const OPEN_BLOCKERS_QUERY = `
 query LandraceOpenBlockers($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
+    nameWithOwner
     issues(states: OPEN, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: CREATED_AT, direction: ASC }) {
       pageInfo { hasNextPage endCursor }
       nodes { number blockedBy(first: ${BLOCKERS_PAGE}) { totalCount nodes { ${WALK_BLOCKER_FIELDS} } } }
@@ -196,19 +210,29 @@ function closedOf(issue: Pick<IssueNode, "number" | "state" | "stateReason">): C
   );
 }
 
+/** The longest an item id may be: `itemIdProblem`'s bound. */
+const ID_CHARS = 64;
+
 /**
  * A blocker's id: its number, in this repository — GitHub's names are not
- * case-sensitive, and its answer spells them as they were created, not as
+ * case-sensitive, and its answer spells them as they are now, not as
  * configured — and `x.<owner>.<name>.<number>` in another. An owner never
- * holds a ".", so the first one ends it and the last begins the number: one
- * id per issue, never all digits, never another role's `pr-<n>` or
- * `spec-<id>`. Null for one that cannot be named so within an id's length.
+ * holds a "." (a login is letters, digits, "-", and "_" for a managed user),
+ * so the first one ends it and the last begins the number: one id per issue,
+ * never all digits, never another role's `pr-<n>` or `spec-<id>`. One too
+ * long to spell out names its repository by a hash instead,
+ * `x.<owner, cut>.<12 hex of sha1(owner/name)>.<number>` — the same every
+ * time, one per repository. Null for one with an owner GitHub cannot have,
+ * or a name no id may hold.
  */
 function blockerId({ number, repository: { owner: { login: owner }, name } }: WalkBlocker, here: Here): string | null {
   if (owner.toLowerCase() === here.owner.toLowerCase() && name.toLowerCase() === here.name.toLowerCase()) return String(number);
-  if (!/^[A-Za-z0-9-]+$/.test(owner)) return null;
-  const id = `x.${owner}.${name}.${number}`;
-  return isItemId(id) ? id : null;
+  if (!/^[A-Za-z0-9_-]+$/.test(owner)) return null;
+  const spelled = `x.${owner}.${name}.${number}`;
+  if (spelled.length <= ID_CHARS) return isItemId(spelled) ? spelled : null;
+  const tail = `.${createHash("sha1").update(`${owner}/${name}`.toLowerCase()).digest("hex").slice(0, 12)}.${number}`;
+  const hashed = `x.${owner.slice(0, ID_CHARS - 2 - tail.length)}${tail}`;
+  return isItemId(hashed) ? hashed : null;
 }
 
 /**
@@ -248,17 +272,29 @@ function blockersOf(blockedBy: Blockers<BlockerNode> | undefined, here: Here): P
 }
 
 /**
- * An answer's errors that are a blocker the token may not see — at its place
- * in a `blockedBy` connection, or at a field of it — read as that whole
- * blocker null: unreadable, never a field missing from one that otherwise
- * reads. Any other error fails the read as ever.
+ * A blocker the token may not see: GitHub answers it — or a field of it —
+ * null, with a FORBIDDEN or NOT_FOUND error at that place beside an
+ * otherwise whole answer. That whole blocker reads as null, so as
+ * unreadable, never as one missing a field, and the log says which and what
+ * GitHub said. Any other error — a fault, a rate limit — fails the read as
+ * ever, and the next tick reads it again.
  */
-const blockerAt = (path: GraphQLPath): GraphQLPath | null => {
-  for (let k = 0; k + 2 < path.length; k++) {
-    if (path[k] === "blockedBy" && path[k + 1] === "nodes" && typeof path[k + 2] === "number") return path.slice(0, k + 3);
-  }
-  return null;
-};
+const unseenBlockers = (ctx: RuntimeContext): Spare => ({
+  at: ({ path, type }) => {
+    if (type !== "FORBIDDEN" && type !== "NOT_FOUND") return null;
+    for (let k = 0; k + 2 < path.length; k++) {
+      if (path[k] === "blockedBy" && path[k + 1] === "nodes" && typeof path[k + 2] === "number") return path.slice(0, k + 3);
+    }
+    return null;
+  },
+  spared: ({ path, message }) => ctx.log("github.blocker.unreadable", { path: path.join("."), message: String(message) }),
+});
+
+/** The repository as an answer names it — following a rename the configuration may not have — or as configured, where it does not say. */
+function hereOf(repository: { nameWithOwner?: string }, gh: Client): Here {
+  const [owner, name, ...rest] = typeof repository.nameWithOwner === "string" ? repository.nameWithOwner.split("/") : [];
+  return owner && name && rest.length === 0 ? { owner, name } : gh;
+}
 
 /** An issue as GraphQL answers it, as the kit reads an item: with its blockers, from a reading that asked for them. */
 const recordOf = (issue: IssueNode, parent: string | null, here: Here): ItemRecord => ({
@@ -324,16 +360,18 @@ export class GitHubIssues extends BaseTracker {
     let cursor: string | null = null;
     for (let page = 0; ; page++) {
       if (page === MAX_ISSUE_PAGES) throw tooMany(gh.repo);
-      const data: { repository: { issues: Page<Listed> } | null } = await gh.graphql(ISSUES_QUERY, { owner, name, cursor }, blockerAt);
+      const data: { repository: Named<{ issues: Page<Listed> }> | null } =
+        await gh.graphql(ISSUES_QUERY, { owner, name, cursor }, unseenBlockers(ctx));
       if (!data.repository) throw unseen(gh.repo);
       const { issues } = data.repository;
+      const here = hereOf(data.repository, gh);
       for (const issue of issues.nodes) {
         const id = String(issue.number);
         // An open sub-issue is listed twice — as an issue, and under its
         // parent. It is one item, and the reading as an issue is the full
         // one (SUB_ISSUE_FIELDS asks for fewer labels), so that one wins.
         records.delete(id);
-        keep(issue, () => recordOf(issue, null, gh));
+        keep(issue, () => recordOf(issue, null, here));
         if (issue.parent) parentOf.set(id, String(issue.parent.number));
         for (const sub of issue.subIssues.nodes) {
           const child = String(sub.number);
@@ -353,9 +391,11 @@ export class GitHubIssues extends BaseTracker {
     const since = Date.now() - DONE_WINDOW_MS;
     cursor = null;
     closed: for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
-      const data: { repository: { issues: Page<ClosedIssue> } | null } = await gh.graphql(CLOSED_QUERY, { owner, name, cursor }, blockerAt);
+      const data: { repository: Named<{ issues: Page<ClosedIssue> }> | null } =
+        await gh.graphql(CLOSED_QUERY, { owner, name, cursor }, unseenBlockers(ctx));
       if (!data.repository) throw unseen(gh.repo);
       const { issues } = data.repository;
+      const here = hereOf(data.repository, gh);
       for (const issue of issues.nodes) {
         if (issue.updatedAt !== null && Date.parse(issue.updatedAt) < since) break closed;
         if (issue.closedAt === null || Date.parse(issue.closedAt) < since) continue;
@@ -363,7 +403,7 @@ export class GitHubIssues extends BaseTracker {
         const id = String(issue.number);
         // A closed sub-issue is already here under its open parent, read lighter; this reading is the full one.
         records.delete(id);
-        keep(issue, () => recordOf(issue, null, gh));
+        keep(issue, () => recordOf(issue, null, here));
         if (issue.parent) parentOf.set(id, String(issue.parent.number));
       }
       if (!issues.pageInfo.hasNextPage) break;
@@ -376,13 +416,13 @@ export class GitHubIssues extends BaseTracker {
   async item(id: string, ctx: RuntimeContext): Promise<ItemRecord> {
     const number = issueNumber(id);
     const gh = this.gh(ctx);
-    const data = await gh.graphql<{ repository: { issue: (IssueNode & { parent: { number: number } | null }) | null } | null }>(
-      ISSUE_QUERY, { owner: gh.owner, name: gh.name, number }, blockerAt,
+    const data = await gh.graphql<{ repository: Named<{ issue: (IssueNode & { parent: { number: number } | null }) | null }> | null }>(
+      ISSUE_QUERY, { owner: gh.owner, name: gh.name, number }, unseenBlockers(ctx),
     );
     if (!data.repository) throw unseen(gh.repo);
     const issue = data.repository.issue;
     if (!issue) throw new Error(`#${number} is not an issue in ${gh.repo}`);
-    return recordOf(issue, issue.parent ? String(issue.parent.number) : null, gh);
+    return recordOf(issue, issue.parent ? String(issue.parent.number) : null, hereOf(data.repository, gh));
   }
 
   /**
@@ -398,13 +438,14 @@ export class GitHubIssues extends BaseTracker {
     let cursor: string | null = null;
     for (let page = 0; ; page++) {
       if (page === MAX_ISSUE_PAGES) throw tooMany(gh.repo);
-      const data: { repository: { issues: Page<{ number: number; blockedBy: Blockers<WalkBlocker> }> } | null } =
-        await gh.graphql(OPEN_BLOCKERS_QUERY, { owner, name, cursor }, blockerAt);
+      const data: { repository: Named<{ issues: Page<{ number: number; blockedBy: Blockers<WalkBlocker> }> }> | null } =
+        await gh.graphql(OPEN_BLOCKERS_QUERY, { owner, name, cursor }, unseenBlockers(ctx));
       if (!data.repository) throw unseen(gh.repo);
       const { issues } = data.repository;
+      const here = hereOf(data.repository, gh);
       for (const issue of issues.nodes) {
         const id = String(issue.number);
-        const { read, whole } = readBlockers(issue.blockedBy, gh);
+        const { read, whole } = readBlockers(issue.blockedBy, here);
         answer.open.push(id);
         if (!whole) answer.partial.push(id);
         for (const { to, closed } of read) if (closed === null) answer.edges.push({ from: id, to });
@@ -419,8 +460,8 @@ export class GitHubIssues extends BaseTracker {
   async children(id: string, ctx: RuntimeContext): Promise<ItemRecord[]> {
     const number = issueNumber(id);
     const gh = this.gh(ctx);
-    const data = await gh.graphql<{ repository: { issue: { subIssues: { totalCount: number; nodes: IssueNode[] } } | null } | null }>(
-      SUB_ISSUES_QUERY, { owner: gh.owner, name: gh.name, number }, blockerAt,
+    const data = await gh.graphql<{ repository: { issue: { subIssues: { totalCount: number; nodes: SubIssueNode[] } } | null } | null }>(
+      SUB_ISSUES_QUERY, { owner: gh.owner, name: gh.name, number },
     );
     if (!data.repository) throw unseen(gh.repo);
     const issue = data.repository.issue;
@@ -429,7 +470,7 @@ export class GitHubIssues extends BaseTracker {
     if (totalCount > nodes.length) {
       throw new Error(`#${id} has ${totalCount} sub-issues, more than the ${ITEM_PAGE} one read carries`);
     }
-    return nodes.map((sub) => recordOf(sub, id, gh));
+    return nodes.map((sub) => subRecordOf(sub, id));
   }
 
   /** Every page of them: a stage whose entry record sat on the second page would read as never entered. */
@@ -516,24 +557,40 @@ export class GitHubIssues extends BaseTracker {
     return super.createItem(item, ctx);
   }
 
-  /** GitHub writes a dependency by the blocker's REST id, not its number — read first, as a sub-issue is linked by the child's. */
+  /**
+   * GitHub writes a dependency by the blocker's REST id, not its number —
+   * read first, as a sub-issue is linked by the child's. Writing one already
+   * there, or removing one already gone, is done; anything else fails,
+   * saying what was asked.
+   */
   protected async addRelation(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void> {
-    const [n, blocker] = this.dependency(`relate #${item} to #${other}`, item, type, other, ctx);
-    const gh = this.gh(ctx);
-    await gh.addBlockedBy(n, (await gh.issue(blocker)).id);
+    await this.dependency(`relate #${item} to #${other}`, item, type, other, ctx, (gh, n, blocker) => gh.addBlockedBy(n, blocker));
   }
 
   protected async removeRelation(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void> {
-    const [n, blocker] = this.dependency(`unrelate #${item} from #${other}`, item, type, other, ctx);
-    const gh = this.gh(ctx);
-    await gh.removeBlockedBy(n, (await gh.issue(blocker)).id);
+    await this.dependency(`unrelate #${item} from #${other}`, item, type, other, ctx, (gh, n, blocker) => gh.removeBlockedBy(n, blocker));
   }
 
-  /** The two issue numbers a dependency is written between, or a refusal saying why there is none. */
-  private dependency(what: string, item: string, type: string, other: string, ctx: RuntimeContext): [number, number] {
+  /** One dependency write between two issues here, by the blocker's REST id — or a refusal saying why there is none. */
+  private async dependency(
+    what: string, item: string, type: string, other: string, ctx: RuntimeContext,
+    write: (gh: Client, n: number, blocker: number) => Promise<void>,
+  ): Promise<void> {
     if (type !== RELATIONS.blockedBy) throw new Error(`cannot ${what} as "${type}": GitHub writes only "${RELATIONS.blockedBy}"`);
     this.within(what, type, [item, other], ctx);
-    return [issueNumber(item), issueNumber(other)];
+    const [n, number] = [issueNumber(item), issueNumber(other)];
+    const gh = this.gh(ctx);
+    try {
+      const blocker = await gh.issue(number);
+      // REST answers a pull request as an issue; GitHub's dependencies are between issues.
+      if (blocker.pull_request !== undefined && blocker.pull_request !== null) {
+        throw new Error(`#${other} is a pull request, not an issue: only an issue blocks another`);
+      }
+      if (!Number.isSafeInteger(blocker.id)) throw new Error(`GitHub answered #${other} with no usable id`);
+      await write(gh, n, blocker.id);
+    } catch (e) {
+      throw new Error(`cannot ${what} as "${type}": ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /**

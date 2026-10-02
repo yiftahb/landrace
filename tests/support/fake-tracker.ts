@@ -624,6 +624,7 @@ export function createFakeTracker(
         const end = from + page.length;
         return answer({
           repository: {
+            nameWithOwner: REPO,
             issues: {
               pageInfo: { hasNextPage: end < open.length, endCursor: String(end) },
               nodes: page.map((i, n) => ({
@@ -645,6 +646,7 @@ export function createFakeTracker(
         const end = from + page.length;
         return answer({
           repository: {
+            nameWithOwner: REPO,
             issues: {
               pageInfo: { hasNextPage: end < open.length, endCursor: String(end) },
               nodes: page.map((i, n) => ({ number: i.number, ...blockedByAt(i, query, ["repository", "issues", "nodes", n], errors) })),
@@ -663,6 +665,7 @@ export function createFakeTracker(
         const end = from + page.length;
         return answer({
           repository: {
+            nameWithOwner: REPO,
             issues: {
               pageInfo: { hasNextPage: end < closed.length, endCursor: String(end) },
               nodes: page.map((i, n) => ({
@@ -740,6 +743,7 @@ export function createFakeTracker(
         const issue = issues.get(Number(variables.number));
         return answer({
           repository: {
+            nameWithOwner: REPO,
             issue: issue === undefined ? null : {
               ...issueNode(issue),
               ...blockedByAt(issue, query, ["repository", "issue"], errors),
@@ -865,7 +869,14 @@ export function createFakeTracker(
       const blocker = [...issues.values()].find((i) => i.id === blockerId);
       if (!issue || !blocker) return json({ message: "Not Found" }, 404);
       if (method === "POST" && onBlockedBy[2] === undefined) {
-        if (!(issue.blockedBy ?? []).includes(blocker.number)) issue.blockedBy = [...(issue.blockedBy ?? []), blocker.number];
+        // GitHub refuses a dependency it already holds, rather than taking it twice.
+        if ((issue.blockedBy ?? []).includes(blocker.number)) {
+          return json({
+            message: "Validation Failed",
+            errors: [{ resource: "IssueDependency", code: "already_exists", field: "issue_id", message: "has already been taken" }],
+          }, 422);
+        }
+        issue.blockedBy = [...(issue.blockedBy ?? []), blocker.number];
         return json(blocker, 201);
       }
       if (method === "DELETE" && onBlockedBy[2] !== undefined) {

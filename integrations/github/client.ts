@@ -31,6 +31,8 @@ interface Issue {
   number: number;
   /** The REST id, which is not the number: a sub-issue and a blocker are linked by this. */
   id: number;
+  /** Present on a pull request, which REST answers as an issue too. */
+  pull_request?: unknown;
 }
 
 /** A comment on an issue, as REST answers it. */
@@ -104,6 +106,20 @@ export const isIssueNumber = (id: string): boolean => /^[1-9][0-9]*$/.test(id);
 
 /** Where in a GraphQL answer an error is: field names and list indexes from the top. */
 export type GraphQLPath = ReadonlyArray<string | number>;
+
+/** A GraphQL error that says where in the answer it is. */
+export interface LocatedError { path: GraphQLPath; type: unknown; message: unknown }
+
+/**
+ * The errors a caller reads as a hole in an answer rather than a failure of
+ * it: `at` answers the part of the answer to read as null for one, or null
+ * to fail as ever, and `spared` hears of each one that was — once the answer
+ * is known to stand.
+ */
+export interface Spare {
+  at(error: LocatedError): GraphQLPath | null;
+  spared(error: LocatedError): void;
+}
 
 /**
  * Null what `path` points at in `data`, answering whether it was there to
@@ -305,16 +321,11 @@ export function createClient(opts: GitHubOptions) {
    * the same reason.
    *
    * `spare` is for the one error a caller reads as a hole in the answer
-   * rather than a failure of it: given an error's path, it answers the part
-   * of the answer to read as null — or null, to fail as ever. GitHub answers
-   * an item the token may not see that way: null, or a field of it null,
-   * with an error at that place, and the rest of the answer whole.
+   * rather than a failure of it. GitHub answers an item the token may not
+   * see that way: null, or a field of it null, with an error at that place,
+   * and the rest of the answer whole.
    */
-  async function graphql<T>(
-    query: string,
-    variables: Record<string, unknown>,
-    spare?: (path: GraphQLPath) => GraphQLPath | null,
-  ): Promise<T> {
+  async function graphql<T>(query: string, variables: Record<string, unknown>, spare?: Spare): Promise<T> {
     await botLogin();
     const body = await request<{ data?: T; errors?: Array<{ message?: unknown; type?: unknown; path?: unknown }> }>(
       "POST",
@@ -326,11 +337,16 @@ export function createClient(opts: GitHubOptions) {
     // array rides on the thrown error too — a permission refusal (type
     // FORBIDDEN) and a rate limit (type RATE_LIMITED) are both this same
     // shape, and only the preflight cares which one it actually was.
+    const spared: LocatedError[] = [];
     const errors = (body.errors ?? []).filter((e) => {
       const path = Array.isArray(e.path) && e.path.every((k) => typeof k === "string" || typeof k === "number")
         ? (e.path as GraphQLPath) : null;
-      const hole = path === null || spare === undefined ? null : spare(path);
-      return hole === null || !blank(body.data, hole);
+      if (path === null || spare === undefined) return true;
+      const located = { path, type: e.type, message: e.message };
+      const hole = spare.at(located);
+      if (hole === null || !blank(body.data, hole)) return true;
+      spared.push(located);
+      return false;
     });
     if (errors.length) {
       throw Object.assign(
@@ -339,6 +355,7 @@ export function createClient(opts: GitHubOptions) {
       );
     }
     if (body.data === undefined || body.data === null) throw new Error("graphql: the response carried no data");
+    for (const e of spared) spare?.spared(e);
     return body.data;
   }
 
@@ -470,11 +487,30 @@ export function createClient(opts: GitHubOptions) {
       named(call("POST", `/issues/${parent}/sub_issues`, { sub_issue_id: child }), `"Issues: Read and write" on ${repo}`),
     /** One issue as REST answers it: for the REST id a dependency names its blocker by. */
     issue: (n: number) => call<Issue>("GET", `/issues/${n}`),
-    /** Issue `n` blocked by the issue whose REST id is `blocker` — an id, as a sub-issue's link takes, never a number. */
-    addBlockedBy: (n: number, blocker: number) =>
-      named(call("POST", `/issues/${n}/dependencies/blocked_by`, { issue_id: blocker }), `"Issues: Read and write" on ${repo}`),
-    removeBlockedBy: (n: number, blocker: number) =>
-      named(call("DELETE", `/issues/${n}/dependencies/blocked_by/${blocker}`), `"Issues: Read and write" on ${repo}`),
+    /**
+     * Issue `n` blocked by the issue whose REST id is `blocker` — an id, as a
+     * sub-issue's link takes, never a number. One GitHub already holds is the
+     * write having landed — an earlier attempt's, or a person's — and GitHub
+     * says so with a 422 naming it, which counts as done.
+     */
+    addBlockedBy: async (n: number, blocker: number): Promise<void> => {
+      try {
+        await named(call("POST", `/issues/${n}/dependencies/blocked_by`, { issue_id: blocker }), `"Issues: Read and write" on ${repo}`);
+      } catch (e) {
+        const { status, body } = e as { status?: unknown; body?: unknown };
+        if (status === 422 && /already_exists|already been taken/.test(String(body))) return;
+        throw e;
+      }
+    },
+    /** And unblocked by it: one already gone, a 404 on the delete, is the write having landed too. */
+    removeBlockedBy: async (n: number, blocker: number): Promise<void> => {
+      try {
+        await named(call("DELETE", `/issues/${n}/dependencies/blocked_by/${blocker}`), `"Issues: Read and write" on ${repo}`);
+      } catch (e) {
+        if (isMissing(e)) return;
+        throw e;
+      }
+    },
     /** One page of an issue's comments, oldest first. */
     listComments: (n: number, page: number) => call<Comment[]>("GET", `/issues/${n}/comments?per_page=100&page=${page}`),
     createComment: (n: number, body: string) => {

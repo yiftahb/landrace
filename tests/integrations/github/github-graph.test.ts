@@ -2,7 +2,7 @@ import { createFakeTracker, githubHooks, noBranches, type FakeIssue, type FakeTh
 import { createClient, GitHubIssues } from "landrace/integrations/github";
 import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
-import { hasPullFrom, MAX_SUBGRAPH_NODES, renderMarker } from "#conventions.js";
+import { hasPullFrom, itemIdProblem, MAX_SUBGRAPH_NODES, renderMarker } from "#conventions.js";
 import { staleClosure } from "#core/children.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -1230,6 +1230,46 @@ describe("an issue's blockers are read as blocked-by", () => {
     expect(nodeOf(g, "x.a.b.c.5")?.closed).toBe("done");
   });
 
+  it("reads a blocker as this repository's only when owner and name both are", async () => {
+    const gh = createFakeTracker([
+      { number: 10 },
+      { number: 12, blockedBy: [10, { repo: "acme/other", number: 10, state: "open" }, { repo: "other-org/widgets", number: 10, state: "open" }] },
+    ]);
+    for (const [, g] of await both(gh, "12")) {
+      expect(blockedBy(g).map((r) => r.to)).toEqual(["10", "x.acme.other.10", "x.other-org.widgets.10"]);
+    }
+  });
+
+  it("names a blocker whose owner is a managed user, whose login holds an underscore", async () => {
+    const gh = createFakeTracker([{ number: 12, blockedBy: [{ repo: "octocat_acme/api", number: 5, state: "open" }] }]);
+    for (const [, g] of await both(gh, "12")) {
+      expect(blockedBy(g).map((r) => r.to)).toEqual(["x.octocat_acme.api.5"]);
+      expect(nodeOf(g, "12")?.state.relatedUnreadable).toBeUndefined();
+    }
+  });
+
+  it("names a blocker whose repository's name is too long to spell out by a hash of it, the same every time, one per repository", async () => {
+    const owner = "o".repeat(39);
+    const name = "n".repeat(100);
+    const gh = createFakeTracker([{
+      number: 12,
+      blockedBy: [
+        { repo: `${owner}/${name}`, number: 1, state: "open" },
+        { repo: `${owner}/${name.slice(1)}m`, number: 1, state: "open" },
+      ],
+    }]);
+    const ids: string[][] = [];
+    for (const [, g] of await both(gh, "12")) {
+      ids.push(blockedBy(g).map((r) => r.to));
+      expect(nodeOf(g, "12")?.state.relatedUnreadable).toBeUndefined();
+    }
+    const [first, second] = ids[0] ?? [];
+    expect(ids[1]).toEqual(ids[0]);
+    expect(first).toMatch(new RegExp(`^x\\.${owner.slice(0, 20)}o*\\.[0-9a-f]{12}\\.1$`));
+    expect(second).not.toBe(first);
+    for (const id of [first, second]) expect(itemIdProblem(id)).toBeNull();
+  });
+
   it("reads a blocker in this repository as its own, whatever case GitHub spells the repository in", async () => {
     // GitHub's names are case-insensitive, and its answer spells them as the repository was created, not as configured.
     const gh = createFakeTracker([{ number: 10 }, { number: 12, blockedBy: [{ repo: "ACME/Widgets", number: 10, state: "open" }] }]);
@@ -1306,7 +1346,6 @@ describe("an issue's blockers are read as blocked-by", () => {
      * could tell.
      */
     it.each([
-      ["could only be named past the length an id may have", `o/${"r".repeat(60)}`],
       ["has an owner whose name holds a dot, which would make two repositories one", "o.x/r"],
       ["has a name outside what an id may hold", "o/r r"],
     ])("when another repository's blocker %s", async (_why, repo) => {
@@ -1321,7 +1360,7 @@ describe("an issue's blockers are read as blocked-by", () => {
       }
     });
 
-    it("in every reading of an issue: a recently closed one, and a sub-issue a read of its parent carries", async () => {
+    it("in a recently closed issue's reading too; a read's sub-issues, whose blockers it never draws, are not asked for theirs", async () => {
       const recently = new Date(Date.now() - 86_400_000).toISOString();
       const refused = { repo: "secret/vault", number: 1, state: "open", refused: true } as const;
       const gh = createFakeTracker([
@@ -1333,6 +1372,9 @@ describe("an issue's blockers are read as blocked-by", () => {
       expect(unreadable(listed, "3")).toBe(true);
       const read = await sourceOf(gh).read("1", ctx(gh));
       expect(nodeOf(read, "2")?.closed).toBeNull();
+      const subIssues = operations(gh, "LandraceSubIssues");
+      expect(subIssues.length).toBeGreaterThan(0);
+      expect(subIssues.filter((q) => q.query.includes("blockedBy"))).toEqual([]);
     });
 
     it("when the answer carries no connection at all", async () => {
@@ -1348,22 +1390,44 @@ describe("an issue's blockers are read as blocked-by", () => {
       expect(unreadable(await hooks.source.read("12", ctx(gh)), "12")).toBe(true);
     });
 
-    it.each([
-      ["the connection itself", ["repository", "issue", "blockedBy"]],
-      ["a blocker the answer does not hold", ["repository", "issue", "blockedBy", "nodes", 7]],
-      ["a field of the issue", ["repository", "issue", "labels"]],
-    ])("but still fails a read whose error is at %s", async (_where, path) => {
-      const gh = createFakeTracker([{ number: 12, blockedBy: [{ repo: "o/r", number: 1, state: "open" }] }]);
-      const failing = (async (input: string | URL, init?: RequestInit) => {
+    /** The tracker's own reading of #12, answered with `error` beside it; the forge's would fail the read whatever the tracker made of it. */
+    const erring = (gh: FakeTracker, error: Record<string, unknown>) => githubHooks({
+      repo: "acme/widgets", token: "test-token", git: noBranches,
+      fetchImpl: (async (input: string | URL, init?: RequestInit) => {
         const res = await gh.fetchImpl(input, init);
-        // The tracker's own reading only: the forge's would fail the read whatever the tracker made of it.
         if (!String(init?.body ?? "").includes("query LandraceIssue(")) return res;
         const body = (await res.json()) as Record<string, unknown>;
-        body.errors = [{ message: "Something went wrong", type: "INTERNAL", path }];
+        body.errors = [error];
         return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
-      }) as typeof fetch;
-      const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: failing, git: noBranches });
-      await expect(hooks.source.read("12", ctx(gh))).rejects.toThrow(/Something went wrong/);
+      }) as typeof fetch,
+    });
+
+    it.each([
+      ["the connection itself", "FORBIDDEN", ["repository", "issue", "blockedBy"]],
+      ["a blocker the answer does not hold", "FORBIDDEN", ["repository", "issue", "blockedBy", "nodes", 7]],
+      ["a field of the issue", "FORBIDDEN", ["repository", "issue", "labels"]],
+      ["a blocker, for a fault that is no refusal: the next tick may read it", "INTERNAL", ["repository", "issue", "blockedBy", "nodes", 0]],
+      ["a blocker, for a rate limit", "RATE_LIMITED", ["repository", "issue", "blockedBy", "nodes", 0]],
+    ])("but still fails a read whose error is at %s", async (_where, type, path) => {
+      const gh = createFakeTracker([{ number: 12, blockedBy: [{ repo: "o/r", number: 1, state: "open" }] }]);
+      await expect(erring(gh, { message: "Something went wrong", type, path }).source.read("12", ctx(gh))).rejects.toThrow(/Something went wrong/);
+    });
+
+    it("when GitHub says a blocker is not found, as it says of one the token may not see", async () => {
+      const gh = createFakeTracker([{ number: 12, blockedBy: [{ repo: "o/r", number: 1, state: "open" }] }]);
+      const error = { message: "Could not resolve to an Issue", type: "NOT_FOUND", path: ["repository", "issue", "blockedBy", "nodes", 0, "title"] };
+      expect(unreadable(await erring(gh, error).source.read("12", ctx(gh)), "12")).toBe(true);
+    });
+
+    it("saying, once for each, which blocker it could not read and what GitHub answered", async () => {
+      const gh = createFakeTracker([{ number: 12, blockedBy: [{ repo: "secret/vault", number: 1, state: "open", refused: true }] }]);
+      const events: Array<{ event: string; data: Record<string, unknown> | undefined }> = [];
+      const logged: RuntimeContext = { ...gh.ctx, log: (event, data) => { events.push({ event, data }); } };
+      await sourceOf(gh).read("12", logged);
+      expect(events.filter((e) => e.event === "github.blocker.unreadable")).toEqual([{
+        event: "github.blocker.unreadable",
+        data: { path: "repository.issue.blockedBy.nodes.0", message: "Resource not accessible by personal access token" },
+      }]);
     });
   });
 
@@ -1425,5 +1489,26 @@ describe("an issue's blockers are read as blocked-by", () => {
     const gh = createFakeTracker([{ number: 1, blockedBy: [{ repo: "o/r", number: 1, state: "open" }] }]);
     await sourceOf(gh).read("1", ctx(gh));
     expect(operations(gh, "LandraceIssues")).toEqual([]);
+    expect(operations(gh, "LandraceOpenBlockers")).toEqual([]);
+  });
+
+  /*
+   * GitHub follows a rename: a configuration still naming the old one reads
+   * the repository as ever, and the answer spells it by its new name. Its
+   * own blockers are still its own, and a cycle of them is still seen.
+   */
+  it("reads this repository's blockers as its own under a name it has since been renamed from", async () => {
+    const gh = createFakeTracker([{ number: 1, blockedBy: [2] }, { number: 2, blockedBy: [1] }]);
+    const renamed = (async (input: string | URL, init?: RequestInit) => {
+      if (!String(input).endsWith("/graphql") || typeof init?.body !== "string") return gh.fetchImpl(input, init);
+      const body = JSON.parse(init.body) as { variables?: Record<string, unknown> };
+      if (body.variables?.name === "widgets-old") body.variables.name = "widgets";
+      return gh.fetchImpl(input, { ...init, body: JSON.stringify(body) });
+    }) as typeof fetch;
+    const tracker = new GitHubIssues({ client: createClient({ repo: "acme/widgets-old", token: "test-token", fetchImpl: renamed }) });
+    for (const g of [await tracker.list(ctx(gh)), await tracker.read("1", ctx(gh))]) {
+      expect(blockedBy(g).find((r) => r.from === "1")?.to).toBe("2");
+      expect(nodeOf(g, "1")?.state.dependencyCycle).toBe(true);
+    }
   });
 });

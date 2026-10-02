@@ -758,6 +758,66 @@ describe("blocked-by on GitHub", () => {
     expect(gh.requests.slice(before).filter((r) => r.path !== "/user")).toEqual([]);
   });
 
+  it("makes a relationship asked for twice once, and the new issue keeps it", async () => {
+    const gh = createFakeTracker([{ number: 10 }]);
+    const node = await operator(gh).createItem(
+      { title: "next", relate: [{ type: "blocked-by", item: "10" }, { type: "blocked-by", item: "10" }] }, gh.ctx,
+    );
+    expect(dependencyWrites(gh)).toEqual([{ method: "POST", path: `/issues/${node.id}/dependencies/blocked_by` }]);
+    expect(gh.issues.get(Number(node.id))).toMatchObject({ state: "open", blockedBy: [10] });
+  });
+
+  it("relates again what GitHub already holds, as done", async () => {
+    const gh = createFakeTracker([{ number: 10 }, { number: 12, blockedBy: [10] }]);
+    await expect(operator(gh).relate("12", "blocked-by", "10", gh.ctx)).resolves.toBeUndefined();
+    // GitHub was asked, and answered that it already has it.
+    expect(dependencyWrites(gh)).toEqual([{ method: "POST", path: "/issues/12/dependencies/blocked_by" }]);
+    expect(gh.issues.get(12)?.blockedBy).toEqual([10]);
+  });
+
+  it("unrelates what GitHub no longer holds, as done", async () => {
+    const gh = createFakeTracker([{ number: 10 }, { number: 12 }]);
+    await expect(operator(gh).unrelate("12", "blocked-by", "10", gh.ctx)).resolves.toBeUndefined();
+    expect(dependencyWrites(gh)).toEqual([{ method: "DELETE", path: "/issues/12/dependencies/blocked_by/100010" }]);
+  });
+
+  it.each([
+    ["relate", "POST", 422],
+    ["relate", "POST", 500],
+    ["unrelate", "DELETE", 500],
+  ] as const)("fails any other answer to a %s, in a sentence: %s answering %i", async (write, method, status) => {
+    const gh = createFakeTracker([{ number: 10 }, { number: 12, blockedBy: write === "unrelate" ? [10] : [] }]);
+    gh.breakOn((r) => r.method === method && r.path.includes("/dependencies/blocked_by"), status);
+    const verb = write === "relate" ? "relate #12 to #10" : "unrelate #12 from #10";
+    await expect(operator(gh)[write]("12", "blocked-by", "10", gh.ctx))
+      .rejects.toThrow(new RegExp(`^cannot ${verb} as "blocked-by": .*${status}`));
+  });
+
+  it("fails an unrelate whose blocker is no issue at all, rather than read it as gone", async () => {
+    const gh = createFakeTracker([{ number: 12 }]);
+    await expect(operator(gh).unrelate("12", "blocked-by", "99", gh.ctx)).rejects.toThrow(/cannot unrelate #12 from #99 as "blocked-by": .*404/);
+    expect(dependencyWrites(gh)).toEqual([]);
+  });
+
+  it.each([
+    // REST answers a pull request as an issue, marked so.
+    ["a pull request", { pull_request: { url: "https://api.github.com/repos/acme/widgets/pulls/10" } }, /#10 is a pull request, not an issue/],
+    ["an answer with no usable id", { id: "100010/../../x" }, /GitHub answered #10 with no usable id/],
+  ])("refuses %s as a blocker, writing nothing", async (_what, patch, refusal) => {
+    const gh = createFakeTracker([{ number: 10 }, { number: 12 }]);
+    const patched = (async (input: string | URL, init?: RequestInit) => {
+      const res = await gh.fetchImpl(input, init);
+      if (!new URL(String(input)).pathname.endsWith("/issues/10") || (init?.method ?? "GET") !== "GET") return res;
+      const body = (await res.json()) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...body, ...patch }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const tracker = new GitHubIssues({ client: createClient({ repo: "acme/widgets", token: "test-token", fetchImpl: patched }) });
+    for (const write of ["relate", "unrelate"] as const) {
+      await expect(tracker[write]("12", "blocked-by", "10", gh.ctx)).rejects.toThrow(refusal);
+    }
+    expect(dependencyWrites(gh)).toEqual([]);
+  });
+
   it("writes no other type as a dependency, even for a subclass that says it writes one", async () => {
     class Wider extends GitHubIssues {
       protected override writableRelations(): string[] {

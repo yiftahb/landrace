@@ -56,6 +56,13 @@ describe("GitHub query cost", () => {
     expect(worstCaseNodes(query)).toBeLessThan(GITHUB_NODE_LIMIT);
   });
 
+  it("asks for blockers in every reading of an issue that keeps them, and not of a read's sub-issues, which never draws them", () => {
+    const asks = (q: string): boolean => q.includes("blockedBy(");
+    expect([GRAPHQL_QUERIES.ISSUE_QUERY, GRAPHQL_QUERIES.ISSUES_QUERY, GRAPHQL_QUERIES.CLOSED_QUERY, GRAPHQL_QUERIES.OPEN_BLOCKERS_QUERY].map(asks))
+      .toEqual([true, true, true, true]);
+    expect(asks(GRAPHQL_QUERIES.SUB_ISSUES_QUERY)).toBe(false);
+  });
+
   it("costs every query the hook sends", () => {
     expect(Object.keys(GRAPHQL_QUERIES).sort()).toEqual(
       ["CHECKS_QUERY", "CLOSED_PULLS_QUERY", "CLOSED_QUERY", "ISSUES_QUERY", "ISSUE_QUERY", "ITEM_QUERY", "OPEN_BLOCKERS_QUERY", "PREFLIGHT_PR_QUERY", "PULLS_QUERY", "REPLY_THREAD", "RESOLVE_THREAD", "SUB_ISSUES_QUERY", "THREADS_QUERY"]);
