@@ -1179,8 +1179,14 @@ function laneRoots(rows, page, lane, keep) {
 
 // A lane this page does not draw is hidden; so is one a search left empty,
 // since "None" beside a query is noise.
-function laneHidden(drawn, search) {
-  return drawn === null || (search !== null && drawn.length === 0);
+// \`done\` is the all-set state, which replaces the lane it would leave empty.
+function laneHidden(drawn, search, done) {
+  return drawn === null || done === true || (search !== null && drawn.length === 0);
+}
+
+// The all-set block is hidden whenever it is not all set.
+function allSetHidden(page, roots, search) {
+  return !allSet(page, roots, search);
 }
 
 // Only on Needs You, with nothing on it and no query: a search that matched
@@ -1211,7 +1217,8 @@ function navItem(entry, selected) {
   if (selected) a.setAttribute("aria-current", "page");
   a.append(el("span", "truncate", entry.name));
   if (entry.id === null) {
-    a.append(el("span", "rounded-full bg-rose-100 px-2 text-xs text-rose-700 dark:bg-rose-950 dark:text-rose-300", entry.needsYou));
+    // Nothing needs you is the home page's own good news; a rose "0" beside it says the opposite.
+    if (entry.needsYou > 0) a.append(el("span", "rounded-full bg-rose-100 px-2 text-xs text-rose-700 dark:bg-rose-950 dark:text-rose-300", entry.needsYou));
   } else if (entry.needsYou > 0) {
     const dot = el("span", "dot h-2 w-2 rounded-full bg-rose-500");
     dot.setAttribute("aria-label", "needs you");
@@ -1276,7 +1283,7 @@ function render(view) {
   const seen = new Set();
   let matched = 0;
   const done = allSet(page, rootsOn(view.rows, page), search);
-  document.getElementById("all-set").hidden = !done;
+  document.getElementById("all-set").hidden = allSetHidden(page, rootsOn(view.rows, page), search);
   for (const lane of document.querySelectorAll("[data-lane]")) {
     // Whole branches, filed by their root's lane — the server's cascade — and
     // counted as branches, so a lane's number is how many things to look at.
@@ -1290,7 +1297,7 @@ function render(view) {
     lane.querySelector(".lane-count").textContent = String(roots.length);
     // Without a query every lane stays, saying "None" when empty — a lane that
     // vanished would read as a fault. With one, a lane nothing matched is noise.
-    lane.hidden = laneHidden(drawn, search) || done;
+    lane.hidden = laneHidden(drawn, search, done);
     // A match inside a closed Not admitted / Done lane would show only as a count.
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;

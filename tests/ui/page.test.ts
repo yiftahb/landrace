@@ -2426,6 +2426,13 @@ describe("routing and the sidebar", () => {
     expect(home.textContent).toContain("4");
   });
 
+  it("shows no count on Needs You when nothing needs you, and keeps the entry", () => {
+    const empty = call<FakeElement>("navItem", { id: null, name: "Needs You", needsYou: 0 }, true);
+    expect(empty.href).toBe("#/");
+    expect(empty.textContent).toBe("Needs You");
+    expect(descendants(empty).some((e) => e.className.includes("rounded-full"))).toBe(false);
+  });
+
   it("lays the sidebar out as a column from sm up and a row of chips below it", () => {
     expect(PAGE_HTML).toMatch(/<nav id="sidebar"[^>]*>/);
     expect(PAGE_HTML).toMatch(/id="nav" class="[^"]*\bflex-wrap\b[^"]*\bsm:flex-col\b/);
@@ -2639,7 +2646,19 @@ describe("the empty Needs You", () => {
     expect(svg.length).toBeLessThan(3072);
   });
 
-  it("is shown by render, and hides the lane it replaces", () => {
-    expect(fnSource("render")).toContain("allSet(page, rootsOn(view.rows, page), search)");
+  it("hides the block unless all set, and the lane it replaces when it is", () => {
+    const run = (expr: string, args: unknown[]): boolean => {
+      const c: Record<string, unknown> = { args };
+      runInNewContext(fnSource("allSet") + fnSource("allSetHidden") + fnSource("laneHidden"), c);
+      return runInNewContext(expr, c) as boolean;
+    };
+    expect(run("allSetHidden(...args)", [null, [], null])).toBe(false);
+    expect(run("allSetHidden(...args)", [null, [{}], null])).toBe(true);
+    expect(run("laneHidden(...args)", [[], null, true])).toBe(true);
+    expect(run("laneHidden(...args)", [[], null, false])).toBe(false);
+    const render = fnSource("render");
+    expect(render).toContain("allSet(page, rootsOn(view.rows, page), search)");
+    expect(render).toContain("hidden = allSetHidden(page, rootsOn(view.rows, page), search)");
+    expect(render).toContain("laneHidden(drawn, search, done)");
   });
 });
