@@ -324,13 +324,15 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
    * five — and offered only where it could run: a
    * review needs a pull request, and the judge a message to read. A goto
    * that landed on a stage whose precondition fails would halt there, and
-   * nothing could send the item on.
+   * nothing could send the item on. And publish, which runs no step but
+   * whose way in the forge can refuse: its rounds are only the refused ones.
    */
-  it("lets a halt send the item back to every step, within that step's rounds and only where it can run", async () => {
+  it("lets a halt send the item back to every step and to publish, within their rounds and only where they can run", async () => {
     const { workflow } = await loadShipped();
     const every = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
+      { stage: "publish", when: { "run.counters.publish": { $lt: 3 } } },
       { stage: "code-review", when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "fix-review", when: { "run.counters.fix-review": { $lt: 20 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "retro", when: {
@@ -341,7 +343,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     for (const id of ["blocked", "screened"]) {
       expect(workflow.stages.find((s) => s.id === id)?.goto).toEqual(every);
     }
-    expect(every.map((g) => g.stage).sort()).toEqual(workflow.stages.filter((s) => s.step).map((s) => s.id).sort());
+    expect(every.map((g) => g.stage).sort()).toEqual([...workflow.stages.filter((s) => s.step).map((s) => s.id), "publish"].sort());
   });
 
   it.each(["blocked", "screened"])("from %s, a goto to a review or the judge is taken within its rounds, and declined past them", async (halt) => {
@@ -360,6 +362,9 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(at("fix-review", { "code-review": 9 }))).toBe("fix-review");
     expect(await destination(at("fix-review", { "fix-review": 20 }))).toMatch(/^wait: .*only while.*run\.counters\.fix-review/);
     expect(await destination(at("triage", { triage: 20 }))).toMatch(/^wait: .*only while/);
+    // A refused push or pull request, retried: three times in all.
+    expect(await destination(at("publish", { publish: 2 }))).toBe("publish");
+    expect(await destination(at("publish", { publish: 3 }))).toMatch(/^wait: .*only while.*run\.counters\.publish/);
   });
 
   it.each(["blocked", "screened"])("from %s, declines a review with no pull request and the judge with no message", async (halt) => {
@@ -381,7 +386,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const { workflow } = await loadShipped();
     const targets = new Set(workflow.stages.flatMap((s) => (s.goto ?? []).map((g) => (typeof g === "string" ? g : g.stage))));
     targets.delete("triage");
-    expect([...targets].sort()).toEqual(["build", "code-review", "fix-review", "retro", "spec"]);
+    expect([...targets].sort()).toEqual(["build", "code-review", "fix-review", "publish", "retro", "spec"]);
     for (const id of targets) {
       const removed = (workflow.stages.find((s) => s.id === id)?.on_enter ?? [])
         .flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));

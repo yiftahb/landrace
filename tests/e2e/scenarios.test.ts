@@ -587,10 +587,12 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
 
   /*
    * A build that committed nothing left no branch, and there is nothing to
-   * propose. Said in a sentence, from the step that would have opened it,
-   * and asked again next tick rather than opening an empty pull request.
+   * propose. The kit refuses the pull request rather than opening an empty
+   * one: publish's round, rejected, read at build where the item still is,
+   * and routed to the halt — on the board, with the reason on the item, and
+   * not asked again until a person says so.
    */
-  it("halts with the reason, rather than opening an empty pull request, when the build left no branch", async () => {
+  it("halts on the board with the reason, rather than opening an empty pull request, when the build left no branch", async () => {
     const { gh } = await world();
     const { workflow, steps } = await loadShipped();
     const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS });
@@ -601,11 +603,57 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     gh.sayAs("a-person", 1, "looks right, go ahead", new Date(Date.UTC(2026, 1, 2)).toISOString());
     const stalled = await run.converge();
 
-    expect(stalled.result.settled).toBe("halt");
-    expect(stalled.result.why).toMatch(/landrace\/1[\s\S]*no such branch/);
+    expect(stalled.result.settled).toBe("wait");
+    // publish was where it was going; the next pass read it still at build, and sent it to the halt.
+    expect(stalled.trail.slice(-3)).toEqual(["publish", "build", "blocked"]);
     expect(gh.pulls.size).toBe(0);
-    // Still at build: the position moves only after the pull request is open.
-    expect(gh.labelsOf(1)).toContain("lr:stage:build");
+    expect(gh.labelsOf(1)).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+    expect(gh.entriesOf(1).filter((e) => e.kind === "malformed")).toEqual([expect.objectContaining({ stage: "publish", round: 1, from: "build" })]);
+    expect(gh.entriesOf(1).at(-1)?.text ?? "").toMatch(/Could not enter publish[\s\S]*landrace\/1[\s\S]*no such branch/);
+  });
+
+  /*
+   * GitHub refusing the pull request — a token without "Pull requests: Read
+   * and write" — is a refusal like the kit's: the halt, with GitHub's words
+   * in the record, and GitHub is not asked again on the next tick. A
+   * person's Retry asks once more, and once it is allowed, the item goes on.
+   */
+  it("halts on the board when GitHub refuses the pull request, asks once a tick at most, and Retries once", async () => {
+    const { gh, root } = await world();
+    const { workflow, steps } = await loadShipped();
+    const during = async ({ stage }: { stage: string }) => {
+      if (stage === "build") await commitOn(root, "landrace/1", "build.ts");
+    };
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
+    const opened = () => gh.requests.filter((r) => r.method === "POST" && r.path === "/pulls").length;
+
+    await run.converge();
+    gh.sayAs("a-person", 1, "in-house, and CSV only", new Date(Date.UTC(2026, 1, 1)).toISOString());
+    await run.converge();
+    gh.sayAs("a-person", 1, "looks right, go ahead", new Date(Date.UTC(2026, 1, 2)).toISOString());
+    gh.breakOn((r) => r.method === "POST" && r.path === "/pulls", 403);
+    const refused = await run.converge();
+
+    expect(refused.result.settled).toBe("wait");
+    expect(gh.labelsOf(1)).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked"]));
+    expect(gh.entriesOf(1).at(-1)?.text ?? "").toMatch(/Could not enter publish[\s\S]*token needs "Pull requests: Read and write"/);
+    expect(opened()).toBe(1);
+
+    await run.converge();
+    expect(opened()).toBe(1);
+
+    gh.breakOn(() => false);
+    const deps = {
+      ...hooksOf(gh), dispatcher: createDispatcher(gh.registry.post), ctx: gh.ctx, workflow,
+      lock: { root: await mkdtemp(join(tmpdir(), "lr-retry-")) },
+    };
+    expect(await sendTo(deps, "1", null)).toEqual({ to: "publish" });
+    const retried = await run.converge();
+
+    expect(opened()).toBe(2);
+    expect(gh.pulls.size).toBe(1);
+    expect(retried.trail.slice(0, 2)).toEqual(["publish", "code-review"]);
+    expect(gh.labelsOf(1)).not.toContain("lr:blocked");
   });
 
   it("shows each fix round the findings it is meant to address", async () => {

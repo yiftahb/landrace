@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { gotoTargetsOf } from "#core/goto.js";
 import { compile, gotoDeclined, gotoNotListed, missingPaths } from "#core/index.js";
 import type { Condition, LoadedWorkflow, Run, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { splitSections } from "#workflow/extend.js";
@@ -102,6 +103,56 @@ describe("the .landrace workspace", () => {
     const named: string[] = [];
     for (const file of await filesUnder("src")) if ((await readFile(file, "utf8")).includes("lr:fast")) named.push(file);
     expect(named).toEqual([]);
+  });
+});
+
+/*
+ * The header's conventions for a way on the forge can refuse, held in both
+ * workflows alike. A refusal on the way into a stage is recorded as that
+ * stage's rejected round and read where the item still stands, as
+ * `run.lastOutputValid: false` — so a trigger leaving that stage which does
+ * not read it would match beside the halt's, and the item would halt on the
+ * ambiguity where no board shows it. A person's own message is outdated by
+ * the record, which is the bot's, so a trigger reading one needs nothing.
+ */
+describe.each(["main", "fastlane"])("%s's ways the forge can refuse", (id) => {
+  const PULL_EFFECTS = ["pull.open", "pull.merge", "pull.close"];
+  const workflowOf = (): Workflow => flow(id).workflow;
+  const pullingIn = (w: Workflow): Stage[] => w.stages.filter((s) => !s.step && (s.on_enter ?? []).some((e) => PULL_EFFECTS.includes(e.type)));
+
+  it("reads `run.lastOutputValid: null` on every trigger leaving a stage with no step, but a person's own message", () => {
+    const workflow = workflowOf();
+    const stepless = new Set(workflow.stages.filter((s) => !s.step).map((s) => s.id));
+    const unguarded = workflow.stages.flatMap((s) => (s.triggers ?? [])
+      .filter((t) => {
+        const from = t.when["run.stage"];
+        return typeof from === "string" && stepless.has(from) && !("run.lastEvent.actor" in t.when) && t.when["run.lastOutputValid"] !== null;
+      })
+      .map((t) => `${s.id}: ${t.name ?? ""}`));
+    expect(unguarded).toEqual([]);
+  });
+
+  it("writes its entry record first wherever a stage with no step opens, merges or closes a pull request", () => {
+    const pulling = pullingIn(workflowOf());
+    expect(pulling.map((s) => s.id).sort()).toEqual(id === "main" ? ["publish"] : ["closed", "merge", "publish"]);
+    for (const stage of pulling) {
+      expect([stage.id, stage.on_enter?.[0]]).toEqual([stage.id, expect.objectContaining({ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" })]);
+    }
+  });
+
+  it("lets a halt Retry each of them, within rounds of its own, taking the halt's labels off", () => {
+    const workflow = workflowOf();
+    const pulling = pullingIn(workflow);
+    const halts = workflow.stages.filter((s) => (s.triggers ?? []).some((t) => t.when["run.lastOutputValid"] === false));
+    expect(halts.map((h) => h.id).sort()).toEqual(["blocked", "screened"]);
+    for (const halt of halts) {
+      for (const stage of pulling) {
+        const target = gotoTargetsOf(halt).find((g) => g.stage === stage.id);
+        expect([halt.id, stage.id, target?.when?.[`run.counters.${stage.id}`]]).toEqual([halt.id, stage.id, { $lt: 3 }]);
+        const removed = (stage.on_enter ?? []).flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
+        expect([stage.id, removed]).toEqual([stage.id, expect.arrayContaining(["lr:blocked", "lr:screened"])]);
+      }
+    }
   });
 });
 
@@ -224,14 +275,16 @@ describe("fastlane's stages", () => {
   });
 
   /*
-   * The merge before the position moves, as publish pushes before it does:
-   * a refusal leaves the item at ci, where the next tick plans the merge
-   * again. Moved past it, the refusal would read as an open pull request at
-   * merge — a moved head — and send the item back to review.
+   * The merge before the position moves, as publish pushes before it does,
+   * and after the entry record: a refusal is merge's rejected round, read at
+   * ci where the item still is, and goes to a halt. Moved past it, the
+   * refusal would read as an open pull request at merge — a moved head —
+   * and send the item back to review.
    */
   it("merges before it moves the item to merge, guarded on the item's own branch", () => {
     const types = (stageOf("merge").on_enter ?? []).map((e) => e.type);
     expect(types.indexOf("pull.merge")).toBeLessThan(types.indexOf("tracker.status"));
+    expect(types.indexOf("tracker.comment")).toBeLessThan(types.indexOf("pull.merge"));
     expect(stageOf("merge").on_enter).toContainEqual({ type: "pull.merge", branch: "landrace/{item}" });
   });
 
@@ -242,8 +295,9 @@ describe("fastlane's stages", () => {
 
   /*
    * The pull request before the position moves, as merge merges before it
-   * does: a close that fails leaves the item at triage, where the next tick
-   * plans it again. Moved to the terminal stage first, nothing would.
+   * does: a close the forge refuses is closed's rejected round, read at
+   * triage, and goes to a halt; one that failed on the way leaves the item at
+   * triage for the next tick. Moved to the terminal stage first, nothing would.
    */
   it("closes the pull request at closed, before it moves the item there", () => {
     const effects = stageOf("closed").on_enter ?? [];
@@ -261,11 +315,11 @@ describe("fastlane's stages", () => {
     expect(removed).toEqual(expect.arrayContaining(["lr:fast", "lr:working", "lr:awaiting"]));
   });
 
-  it("lets a halt send the item back to every step it has, and stuck to build and review", () => {
+  it("lets a halt send the item back to every step it has and every way in the forge can refuse, and stuck to build and review", () => {
     const targets = (id: string) => (stageOf(id).goto ?? []).map((g) => (typeof g === "string" ? g : g.stage)).sort();
     const stepped = flow("fastlane").workflow.stages.filter((s) => s.step).map((s) => s.id).sort();
     expect(stepped).toEqual(STEPPED.slice().sort());
-    for (const halt of ["blocked", "screened"]) expect(targets(halt)).toEqual(stepped);
+    for (const halt of ["blocked", "screened"]) expect(targets(halt)).toEqual([...stepped, "closed", "merge", "publish"].sort());
     expect(targets("stuck")).toEqual(["build", "code-review"]);
   });
 
@@ -277,6 +331,7 @@ describe("fastlane's stages", () => {
   it.each([
     ...["blocked", "screened"].flatMap((halt) => [
       [halt, "build", 3], [halt, "code-review", 8], [halt, "fix-review", 8], [halt, "retro", 2], [halt, "triage", 20],
+      [halt, "publish", 3], [halt, "merge", 3], [halt, "closed", 3],
     ] as const),
     ["stuck", "build", 3], ["stuck", "code-review", 4],
   ] as const)("from %s, a goto to %s is taken below %i rounds and declined at it", (from, to, cap) => {
@@ -467,4 +522,20 @@ describe("every exit from a fastlane stage is exclusive", () => {
         .toEqual(facts.map((f) => [label(f), [halt]]));
     },
   );
+
+  /*
+   * A way on the forge refused, read at the stage the item was leaving: the
+   * record of it is the bot's and the latest word, so no person's message
+   * is. Every boundary value of the stage's own exits, and only the halt
+   * matches — at `blocked` itself, nothing: the item waits there for a
+   * person. A Retry from `screened` the forge refused goes to `blocked`: the
+   * newest failure is the forge's, not a security check's.
+   */
+  it.each(["publish", "ci", "merge", "stuck", "blocked", "screened"])("a refused way on from %s goes to blocked alone", (stage) => {
+    const axes = Object.fromEntries(Object.entries(STAGES.find(([id]) => id === stage)?.[1] ?? {}).filter(([axis]) => axis !== "actor"));
+    const facts = grid(stage, axes, { valid: false, refused: false, actor: "agent" });
+    const halt = stage === "blocked" ? [] : ["blocked"];
+    expect(facts.map((f) => [label(f), exitsFrom(flow("fastlane").workflow, f).map(destinationOf)]))
+      .toEqual(facts.map((f) => [label(f), halt]));
+  });
 });

@@ -65,6 +65,17 @@ budget:
 # `kind: questions` — two triggers, an ambiguity halt, and the item left
 # wearing lr:working at a stage nothing would ever run again.
 #
+# So does every trigger leaving a stage with no step, unless it waits on a
+# person's own message. The forge can refuse the way on — a pull request it
+# will not open — and the engine records that as the rejected round of the
+# stage being entered, read where the item still stands: `run.lastOutputValid`
+# is false there, and only a halt may take it. A trigger that did not read it
+# would still match, beside the halt's. The record is the bot's, so it
+# outdates a person's message, and a trigger reading one needs nothing. A
+# stage with no step that opens, merges or closes a pull request writes its
+# `enter` record first — the refusal is read beside it, Retry finds the stage
+# by it, and the next entry supersedes it — and the halts list it for Retry.
+#
 # And one for a person's turn. A stage where it is theirs says `waits:
 # person`, and that — not the `lr:awaiting` its on_enter still writes, for
 # whoever reads the issue — is what files the item under Needs you. Wherever
@@ -237,9 +248,11 @@ stages:
   # — a `goto-build` answer, Retry, or "Go to step…".
   #
   # And from itself. publish pushes before it moves the position, so a push
-  # that fails — nothing was committed — leaves the item here, its round
-  # settled and publish retrying the push on every tick. "Go to step… build"
-  # runs another round instead, within build's three. publish itself lists
+  # the forge refuses — nothing was committed — is publish's rejected round,
+  # read here, and the item halts at `blocked` with the forge's sentence.
+  # Retry pushes again; "Go to step… build" runs another round instead,
+  # within build's three. A push that failed on the way, an outage, leaves
+  # the item here and is tried again on the next tick. publish itself lists
   # nothing: an item reaches it only once the push and the pull request
   # have both landed, and code-review takes it from there.
   - id: build
@@ -281,16 +294,18 @@ stages:
   # left unpushed. The push and the pull request come before the status that
   # moves the position: a crash between them leaves the item at build,
   # whose trigger fires again and replans both — each dropped as satisfied
-  # if it had already landed.
+  # if it had already landed. The `enter` record comes first, so a refusal
+  # of either is publish's rejected round, and a halt's Retry pushes again.
   - id: publish
     triggers:
       - name: the build is done
         when: { "run.stage": build, "run.lastOutputValid": null, "run.outputs.build.kind": done }
     on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Publishing, round {round}." }
       - { type: branch.push, branch: "landrace/{item}" }
       - { type: pull.open, branch: "landrace/{item}" }
       - { type: tracker.status, value: publish }
-      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
   - id: code-review
     step: steps/code-review.md
@@ -298,7 +313,7 @@ stages:
     requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
       - name: the pull request is open
-        when: { "run.stage": publish, "rel.implements.in.total": { $gt: 0 } }
+        when: { "run.stage": publish, "run.lastOutputValid": null, "rel.implements.in.total": { $gt: 0 } }
       # Every fix is reviewed, within fix-review's own twenty rounds — not
       # code-review's five, which would strand a person's thread fixed after
       # the fifth review with nothing to look at it.
@@ -336,6 +351,7 @@ stages:
       - name: you commented on the pull request
         when:
           "run.stage": pr-human-review
+          "run.lastOutputValid": null
           "rel.implements.in.sum.awaitingFix": { $gt: 0 }
       # #34: work asked for on the pull request that changes no requirement —
       # resolve the conflicts, get the checks green. A spec round for it
@@ -430,6 +446,7 @@ stages:
       - name: merged
         when:
           "run.stage": pr-human-review
+          "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
     on_enter:
@@ -461,6 +478,10 @@ stages:
   # halt there, and no goto is taken from a stage whose precondition does
   # not hold.
   #
+  # And publish, which runs no step but whose way in the forge can refuse:
+  # Retry pushes and opens again, three times in all — its rounds are only
+  # the refused ones.
+  #
   # Each target takes lr:blocked and lr:screened off as it is entered, bar
   # triage, whose answers come back here or go on to spec or build. Written
   # once, here, and repeated on `screened`.
@@ -468,6 +489,7 @@ stages:
     goto: &halt
       - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
+      - { stage: publish, when: { "run.counters.publish": { $lt: 3 } } }
       - stage: code-review
         when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: fix-review
@@ -509,7 +531,10 @@ stages:
         when: { "run.stage": triage, "run.lastOutputValid": null, "run.previousStage": blocked }
     on_enter:
       - { type: tracker.status, value: blocked }
-      - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }
+      # lr:screened off too: a Retry from `screened` the forge refused comes
+      # here, a broken way on and no security stop, before the target it was
+      # sent to took the label off.
+      - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting", "lr:screened"] }
 
   # A step a security check stopped: screened out before it ran, or caught
   # afterwards doing what its step never declared. Still a halt, and still
