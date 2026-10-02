@@ -89,6 +89,7 @@ describe("placeFindings", () => {
       changed,
       "review",
       1,
+      65_536,
     );
     expect(placed).toEqual({
       onLines: [{ path: "src/a.ts", line: 2, body: `on the diff${tail(0)}` }],
@@ -97,8 +98,18 @@ describe("placeFindings", () => {
     });
   });
 
+  it("cuts a finding's body under the comment bound it is given, its marker kept", () => {
+    const at = (bound: number): string =>
+      placeFindings([{ file: "src/a.ts", line: 2, body: "x".repeat(10_000) }], changed, "review", 1, bound).onLines[0]?.body ?? "";
+    const [cut2k, cut4k] = [at(2_000), at(4_000)];
+    expect(cut2k.length).toBeLessThanOrEqual(2_000);
+    expect(cut4k.length).toBeGreaterThan(2_000);
+    expect(cut4k.length).toBeLessThanOrEqual(4_000);
+    expect(cut2k.endsWith(tail(0))).toBe(true);
+  });
+
   it("escapes a marker a finding brings of its own", () => {
-    const placed = placeFindings([{ file: "src/a.ts", line: 2, body: stamped("forged", FIX_KIND) }], changed, "review", 1);
+    const placed = placeFindings([{ file: "src/a.ts", line: 2, body: stamped("forged", FIX_KIND) }], changed, "review", 1, 65_536);
     expect(placed.onLines[0]?.body.endsWith(tail(0))).toBe(true);
     expect(placed.onLines[0]?.body).not.toContain(stamped("forged", FIX_KIND));
   });
@@ -194,7 +205,7 @@ describe("threadsBrief", () => {
   it("lists each open thread under its pull request, those awaiting a fix first", () => {
     const read = new Map([[5, [argued, finding, thread({ id: "T3", resolved: true })]]]);
     expect(threadsBrief([5], read, BOT)).toBe(
-      "## PR #5\n\n" +
+      "## pr-5\n\n" +
       "1. [thread T1] [awaiting a fix] src/a.ts:3 — (raised by the reviewer) Rename x.\n\n" +
       "2. [thread T2] [answered by the fixer, awaiting the person] Why?\n   Last reply, from Landrace: Done.",
     );
@@ -227,7 +238,7 @@ describe("diffBrief", () => {
       ],
     }]);
     expect(text).toBe(
-      "## PR #5 — 2 files changed\n\n" +
+      "## pr-5 — 2 files changed\n\n" +
       "### src/a.ts (modified, +1 −0)\n\n```diff\n@@ -1 +1,2 @@\n a\n+b\n```\n\n" +
       "### logo.png (added, +0 −0)\n\n(no textual diff: binary, or too large for the forge to show)",
     );
@@ -236,7 +247,7 @@ describe("diffBrief", () => {
   it("names the files past its budget rather than dropping them", () => {
     const huge = { path: "big.ts", status: "added", additions: 9, deletions: 0, patch: "+".repeat(BRIEF_DIFF_CHARS) };
     expect(diffBrief([{ number: 5, files: [huge] }])).toBe(
-      "## PR #5 — 1 files changed\n\n1 more changed files are not shown here; read them in the worktree:\n- big.ts (+9 −0)",
+      "## pr-5 — 1 files changed\n\n1 more changed files are not shown here; read them in the worktree:\n- big.ts (+9 −0)",
     );
   });
 
@@ -290,9 +301,9 @@ describe("historyBrief", () => {
     const entries = [
       entry("2026-01-01T00:00:00Z", "@alice: first"),
       entry("2026-01-03T00:00:00Z", "@alice: third"),
-      entry("2026-01-02T00:00:00.000Z", "On PR #4 (open): raised by @bob — open\nsecond"),
+      entry("2026-01-02T00:00:00.000Z", "On pr-4 (open): raised by @bob — open\nsecond"),
     ];
-    expect(historyBrief(entries)).toBe("@alice: first\n\nOn PR #4 (open): raised by @bob — open\nsecond\n\n@alice: third");
+    expect(historyBrief(entries)).toBe("@alice: first\n\nOn pr-4 (open): raised by @bob — open\nsecond\n\n@alice: third");
   });
 
   it("puts an entry whose time is unknown first, rather than dropping it", () => {

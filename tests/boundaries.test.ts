@@ -54,9 +54,35 @@ const linesMatching = (pattern: RegExp): string[] =>
  * review-cleanliness.md` carries the same list where the next person will
  * find it.
  */
+/**
+ * Every integration landrace ships, by its folder's name: a new one is
+ * guarded the day it lands, with nothing here to remember to edit.
+ */
+const VENDORS = readdirSync("integrations", { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+
+/**
+ * Files that may name a vendor, and which — each for a reason that is not an
+ * integration: the board's links into the person's own apps, a label on a
+ * deep link as systems.ts is a label on a URL. systems.ts is left out of
+ * every sweep by `linesMatching` itself.
+ */
+const AGENT_DISPLAY = [join("src", "ui", "chat.ts"), join("src", "ui", "page.ts")];
+const DISPLAY_FOR: Record<string, string[]> = { claude: AGENT_DISPLAY, codex: AGENT_DISPLAY };
+
 describe("no tracker is named inside the engine", () => {
-  it("has no mention of a vendor tracker's name anywhere under src", () => {
-    expect(linesMatching(/github/i)).toEqual([]);
+  it("knows the integrations it guards from integrations/ itself", () => {
+    expect(VENDORS).toEqual(expect.arrayContaining(["claude", "codex", "github", "gitlab", "jira", "notion", "slack"]));
+  });
+
+  /*
+   * As a word, in code and comments alike, whatever the case — "a Jira hook
+   * would" in a comment is how the next special case starts. CLAUDE.md, the
+   * instructions file comments cite, is not the agent.
+   */
+  it.each(VENDORS)("has no mention of %s anywhere under src, bar its display-only files", (vendor) => {
+    const word = new RegExp(`\\b${vendor}\\b${vendor === "claude" ? "(?!\\.md)" : ""}`, "i");
+    const allowed = DISPLAY_FOR[vendor] ?? [];
+    expect(linesMatching(word).filter((line) => !allowed.some((file) => line.startsWith(`${file}:`)))).toEqual([]);
   });
 
   /*
@@ -94,32 +120,6 @@ describe("every kind the loader classifies has a way to be registered", () => {
 
     expect(stamped.filter(([, kind]) => kind === null)).toEqual([]);
     expect([...new Set(stamped.map(([, kind]) => kind))].sort()).toEqual([...HOOK_KINDS].sort());
-  });
-});
-
-/**
- * The same rule for coding agents, since the executor became a hook: the
- * engine hands a prompt, a directory, capabilities, a model and a limit to
- * whichever executor the configuration names, and knows no agent by name.
- *
- * Two deliberate exceptions, each for a reason that is not an integration:
- * the board's links into the person's own apps (a label on a deep link, like
- * systems.ts), and the project instructions file CLAUDE.md, which comments
- * cite by name.
- */
-const AGENT_DISPLAY = [join("src", "ui", "chat.ts"), join("src", "ui", "page.ts")];
-
-describe("no coding agent is named inside the engine", () => {
-  it("has no mention of claude anywhere under src, bar the board's links and CLAUDE.md", () => {
-    const named = linesMatching(/claude(?!\.md)/i).filter((line) => !AGENT_DISPLAY.some((file) => line.startsWith(`${file}:`)));
-    expect(named).toEqual([]);
-  });
-
-  // The kit is under src/ and every integration builds on it, so the one
-  // agent it could most easily start knowing is the second one it serves.
-  it("has no mention of codex anywhere under src, bar the board's links", () => {
-    const named = linesMatching(/codex/i).filter((line) => !AGENT_DISPLAY.some((file) => line.startsWith(`${file}:`)));
-    expect(named).toEqual([]);
   });
 });
 

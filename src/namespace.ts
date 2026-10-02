@@ -1009,7 +1009,7 @@ export interface ReviewThread {
 /**
  * An item as a tracker integration reads it: `itemNode`'s fields, and the
  * item it is a child of. `priority` is set by a tracker with a priority
- * field of its own (Jira's, the in-memory one's), and then wins over any
+ * field of its own (the in-memory one's, say), and then wins over any
  * `P0`..`P9` label; absent, the labels say.
  */
 export interface ItemRecord {

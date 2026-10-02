@@ -51,20 +51,6 @@ export const ITEM_PAGE = 50;
 export const DONE_WINDOW_MS = 30 * 86_400_000;
 
 /**
- * The most a comment body may carry: 65,536 characters, the bound of the
- * tracker this repository's own hook drives. A tracker whose bound is lower
- * (a Jira hook's is 32,767) refuses past its own instead.
- *
- * The engine's own bound is `recordBodyProblem` in src/conventions.ts, which
- * is lower and tracker-agnostic, and which rejects at the step boundary where
- * the refusal is *recorded* on the item. This is the backstop under it — for
- * the bodies the engine does not compose, an operator's own `landrace_reply`
- * among them — and it reports the size rather than letting the API answer 422
- * to a request that should never have gone out.
- */
-export const MAX_COMMENT_CHARS = 65_536;
-
-/**
  * How much of an item's own text a prompt is handed: the whole brief of a
  * step with no spec to work from. Beside the forge's `ci` briefing, which a
  * build that fixes a red pull request names too, the two stay inside the

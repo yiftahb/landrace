@@ -17,7 +17,7 @@ import {
   PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, pullsFrom, RELATIONS, renderMarker, sameLogin, stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
-import { createdAtOf, MAX_COMMENT_CHARS, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
+import { createdAtOf, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
 import type {
   BranchHeads, BriefTable, ChangedFile, ChangedFiles, CheckCounts, CheckState, Effect, EffectTable, FailedCheck, Finding, Graph, HistoryItem,
   HookContext, MergeAnswer, Node, PullRecord, RelationDecl, Relationship, Reply, ReviewThread, RuntimeContext, Snapshot,
@@ -96,10 +96,13 @@ export function commentableLines(patch: string | undefined): Set<number> {
  * than failing the step — the engine checks an output's fields, not what is
  * inside them.
  *
+ * `commentChars` is the forge's own bound on one comment: each body is cut
+ * a thousand under it, room for its marker.
+ *
  * Each threaded body ends in its own finding marker, `finding:{stage}:{round}:{i}`,
  * which is how a reviewer later tells its own threads from a person's.
  */
-export function placeFindings(findings: unknown[], changed: ChangedFile[], stage: string, round: number): {
+export function placeFindings(findings: unknown[], changed: ChangedFile[], stage: string, round: number, commentChars: number): {
   onLines: Array<{ path: string; line: number; body: string }>;
   onFiles: Array<{ path: string; body: string }>;
   unplaced: string[];
@@ -114,7 +117,7 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
       return;
     }
     const tail = renderMarker({ stage, kind: FINDING_KIND, round, marker: `${FINDING_KIND}:${stage}:${round}:${i}` });
-    const text = neutraliseMarkers(cut(f.body.trim(), MAX_COMMENT_CHARS - 1_000));
+    const text = neutraliseMarkers(cut(f.body.trim(), commentChars - 1_000));
     const shown = lines.get(f.file);
     if (shown?.has(f.line)) onLines.push({ path: f.file, line: f.line, body: text + tail });
     else if (shown) onFiles.push({ path: f.file, body: `line ${f.line}: ${text}${tail}` });
@@ -256,7 +259,8 @@ export function newest<T>(
 /**
  * The open review threads across every open pull request on the item —
  * `open` is their numbers, `read` every thread on each — rendered for a
- * prompt under one `## PR #N` heading each: whose turn each is, and its last
+ * prompt under one `## pr-N` heading each — the node id, whatever the forge
+ * calls a pull request — whose turn each is, and its last
  * reply when it has one. The ones awaiting a fix come first, so the cut falls
  * on threads already answered.
  */
@@ -275,7 +279,7 @@ export function threadsBrief(open: number[], read: Map<number, ReviewThread[]>, 
 
   const sections = open.flatMap((pull) => {
     const here = shown.filter((s) => s.pull === pull);
-    return here.length === 0 ? [] : [`## PR #${pull}\n\n${here.map(({ thread, waiting }, i) => {
+    return here.length === 0 ? [] : [`## pr-${pull}\n\n${here.map(({ thread, waiting }, i) => {
       const opening = thread.first?.body ?? "";
       // The id is what a reviewer lists to resolve a thread, and only its
       // own may be: ours by the finding marker pull.review stamped.
@@ -311,8 +315,8 @@ export function diffBrief(open: Array<{ number: number; files: ChangedFile[]; co
   for (const pull of open) {
     // Said, so a list the forge cut short does not read as the whole change.
     parts.push(pull.complete === false
-      ? `## PR #${pull.number} — more files changed than the forge lists; these are the ${pull.files.length} it does, and the rest are in the worktree`
-      : `## PR #${pull.number} — ${pull.files.length} files changed`);
+      ? `## pr-${pull.number} — more files changed than the forge lists; these are the ${pull.files.length} it does, and the rest are in the worktree`
+      : `## pr-${pull.number} — ${pull.files.length} files changed`);
     for (const f of pull.files) {
       const text = `### ${f.path} (${f.status}, +${f.additions} −${f.deletions})\n\n` +
         (f.patch === undefined ? "(no textual diff: binary, or too large for the forge to show)" : fenced(f.patch, "diff"));
@@ -526,6 +530,13 @@ const reviewedHead = (snapshot: Snapshot, stage: string): string | undefined => 
  * `super.effects()`, a briefing by spreading `super.briefs()`.
  */
 export abstract class BaseForge {
+  /**
+   * The most one comment body may carry on this forge — its vendor's bound,
+   * which only the integration knows. The base cuts every review, finding
+   * and reply it composes a thousand under it, room for the marker, rather
+   * than letting the forge refuse a request that should never have gone out.
+   */
+  abstract readonly commentChars: number;
   /** The login we post as here: whose turn a review thread is, by its last word. */
   abstract login(ctx: RuntimeContext): Promise<string>;
   /** Every open pull request, and any closed one the board should still show. */
@@ -556,7 +567,8 @@ export abstract class BaseForge {
   /** Each check that failed on its head, with its log's tail — or null for a log the forge would not give, never a refusal. */
   abstract failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]>;
   /**
-   * Merge it with a merge commit, only while its head is still `headSha`:
+   * Merge it, by whatever method the forge or its project uses, only while
+   * its head is still `headSha`:
    * `merged` when it is merged, now or already, `moved` when the forge
    * refused because the head is another commit. Any other refusal throws a
    * sentence naming the pull request and `ctx.item`, the item it merges for.
@@ -903,7 +915,7 @@ export abstract class BaseForge {
     for (const pull of await this.pullsNaming(ctx.item, ctx)) {
       const state = pull.merged ? "merged" : pull.closed ? "closed" : "open";
       for (const thread of await this.threads(pull.number, ctx)) {
-        entries.push({ at: thread.at ?? "", text: `On PR #${pull.number} (${state}): ${threadLine(thread, bot)}` });
+        entries.push({ at: thread.at ?? "", text: `On pr-${pull.number} (${state}): ${threadLine(thread, bot)}` });
       }
     }
     return entries;
@@ -969,16 +981,16 @@ export abstract class BaseForge {
       if (typeof last?.author === "string" && sameLogin(last.author, bot) && parseMarker(last.body)?.marker === said) continue;
       await this.reply(
         thread.id,
-        neutraliseMarkers(cut(reply.body.trim(), MAX_COMMENT_CHARS - 1_000)) + renderMarker({ stage, kind, round, marker: said }),
+        neutraliseMarkers(cut(reply.body.trim(), this.commentChars - 1_000)) + renderMarker({ stage, kind, round, marker: said }),
         ctx,
       );
     }
 
     const posted = (await this.reviews(number, ctx)).some((body) => parseMarker(body)?.marker === marker);
     if (!posted) {
-      const { onLines, onFiles, unplaced } = placeFindings(findings, (await this.changedFiles(number, ctx)).files, stage, round);
+      const { onLines, onFiles, unplaced } = placeFindings(findings, (await this.changedFiles(number, ctx)).files, stage, round, this.commentChars);
       const listed = unplaced.length === 0 ? "" : `\n\nFindings that cannot be placed on this pull request's diff:\n\n${unplaced.join("\n")}`;
-      const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, MAX_COMMENT_CHARS - 1_000) +
+      const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, this.commentChars - 1_000) +
         renderMarker({ stage, kind, round, marker });
       const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
       await this.postReview(number, { body, lines: onLines, files: onFiles, head }, ctx);

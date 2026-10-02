@@ -1,8 +1,8 @@
 /**
  * Shared vocabulary: the labels the workflow uses to record position, the
  * marker we stamp on everything we write, and how a tracker's records read
- * back as the engine's. None of it belongs to a tracker — a Jira hook would
- * use the same names — so none of it lives in a hook.
+ * back as the engine's. None of it belongs to a tracker — any tracker's hook
+ * uses the same names — so none of it lives in a hook.
  */
 import type { Effect, Entry, Graph, HandoffArg, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
 
@@ -317,8 +317,8 @@ export const GOTO_TRIGGER = "goto";
 /**
  * The effect type that leaves a durable record on the tracker.
  *
- * Tracker-agnostic in the same way the marker format is — a Jira hook handles
- * the same type — and named here because the engine itself plans one in two
+ * Tracker-agnostic in the same way the marker format is — every tracker's
+ * hook handles the same type — and named here because the engine itself plans one in two
  * places a workflow does not reach: a step whose route sends its content off
  * the tracker still records that it ran, and a rejected output records why.
  */
@@ -361,7 +361,7 @@ export function isEffectRefused(e: unknown): boolean {
 
 /**
  * The other two writes a tracker owns, named for the same reason and at the
- * same level: a Jira hook handles `tracker.status` too, and a workflow carried
+ * same level: every tracker's hook handles `tracker.status` too, and a workflow carried
  * from one tracker to another should not rewrite every `on_enter` in the file.
  *
  * Unlike RECORD_EFFECT the engine never plans one of these — a workflow does —
@@ -628,7 +628,7 @@ const TAIL_WINDOW = MARKER_MAX_PAYLOAD + 256;
  * of those comes from the workflow file or from the engine, so the envelope
  * is bounded by something a contributor writes rather than by something an
  * agent chose; a workflow whose ids are long enough to overrun a kilobyte of
- * slack is a defect, and renderMarker throwing is how it is reported.
+ * headroom is a defect, and renderMarker throwing is how it is reported.
  */
 const MARKER_ENVELOPE_RESERVE = 1024;
 

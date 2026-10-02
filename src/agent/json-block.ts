@@ -129,7 +129,7 @@ function trailingFence(text: string): { start: number; end: number; content: str
 
   if (!last) return null;
   // Trailing: nothing but whitespace after the last complete fence found.
-  // `trim()`'s notion of whitespace also swallows NBSP, BOM, U+2028/U+2029
+  // What `trim()` counts as whitespace also takes NBSP, BOM, U+2028/U+2029
   // and U+3000 — none of those carry a payload, so tolerating them here
   // costs nothing; actual visible text after the fence still refuses.
   if (text.slice(last.end).trim() !== "") return null;

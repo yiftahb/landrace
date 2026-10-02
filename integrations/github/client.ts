@@ -6,7 +6,17 @@
  * goes out until this token's own login is known.
  */
 import type { RuntimeContext } from "landrace/hooks";
-import { EffectRefused, MAX_COMMENT_CHARS } from "landrace/kit";
+import { EffectRefused } from "landrace/kit";
+
+/**
+ * The most a GitHub comment body may carry: 65,536 characters, for an issue
+ * comment, a review and a review comment alike. The engine's own bound,
+ * `recordBodyProblem`, is lower and rejects at the step boundary; this is the
+ * backstop under it, for the bodies the engine does not compose — an
+ * operator's own `landrace_reply` among them — and what the forge cuts a
+ * review to.
+ */
+export const MAX_COMMENT_CHARS = 65_536;
 
 export interface GitHubOptions {
   repo: string;

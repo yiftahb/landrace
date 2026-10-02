@@ -254,6 +254,8 @@ export interface GitLabOptions {
 }
 
 export class GitLab extends BaseForge {
+  /** GitLab's bound on a note, a discussion's included: a million characters. */
+  readonly commentChars = 1_000_000;
   private readonly project: string;
   private readonly git: Git;
   private readonly fetchImpl: typeof fetch | undefined;

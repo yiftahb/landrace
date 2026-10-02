@@ -499,7 +499,7 @@ describe("the shipped steps are handed the approved spec as text", () => {
     const { steps } = await loadShipped();
     const rendered = renderPrompt(steps.get(`steps/${id}.md`)?.prompt ?? "", snapshot, {
       spec: { content: "# Export CSV\n\nOne file, comma separated." },
-      project: { threads: "1. src/x.ts:12 — this leaks a file handle", diff: "## PR #5 — 1 files changed" },
+      project: { threads: "1. src/x.ts:12 — this leaks a file handle", diff: "## pr-5 — 1 files changed" },
     });
 
     expect(rendered).toContain("One file, comma separated.");

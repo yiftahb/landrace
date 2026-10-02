@@ -626,10 +626,10 @@ describe("the open threads reach the prompt, and only the prompt", () => {
     gh.openPull({ number: 52, head: "landrace/1", threads: [{ isResolved: false, body: "a second one" }] });
     gh.openPull({ number: 53, head: "feature/y", closes: [1], threads: [{ isResolved: false, body: "closing it" }] });
     const text = (await briefOf(gh, "1")).threads ?? "";
-    expect(text).toMatch(/## PR #51[\s\S]*on the branch/);
-    expect(text).toMatch(/## PR #52[\s\S]*a second one/);
+    expect(text).toMatch(/## pr-51[\s\S]*on the branch/);
+    expect(text).toMatch(/## pr-52[\s\S]*a second one/);
     expect(text).not.toContain("old news");
-    expect(text).not.toContain("PR #50");
+    expect(text).not.toContain("pr-50");
     expect(text).not.toContain("closing it");
   });
 
@@ -724,7 +724,7 @@ describe("the open threads reach the prompt, and only the prompt", () => {
     ] });
     // The id is what a step names to reply on a thread, or to resolve its own.
     expect((await briefOf(gh, "1")).threads).toBe(
-      "## PR #51\n\n1. [thread thread-51-1] [awaiting a fix] src/x.ts:12 — this leaks a file handle\n   Last reply, from @a-person: no",
+      "## pr-51\n\n1. [thread thread-51-1] [awaiting a fix] src/x.ts:12 — this leaks a file handle\n   Last reply, from @a-person: no",
     );
   });
 });
@@ -755,10 +755,10 @@ describe("the item's history reaches the prompt, labelled by who said it", () =>
     expect(text).toContain("Landrace [enter:spec:1]: Writing the spec, round 1.");
     expect(text).not.toContain("<!--");
     expect(text).toContain(
-      "On PR #50 (merged): src/x.ts:12 — raised by Landrace's reviewer — resolved\nthis leaks a file handle\nLast reply, from Landrace: fixed, resolving",
+      "On pr-50 (merged): src/x.ts:12 — raised by Landrace's reviewer — resolved\nthis leaks a file handle\nLast reply, from Landrace: fixed, resolving",
     );
     expect(text).not.toContain("not sure");
-    expect(text).toContain("On PR #50 (merged): src/y.ts:3 — raised by @a-person — open\nrename this");
+    expect(text).toContain("On pr-50 (merged): src/y.ts:3 — raised by @a-person — open\nrename this");
     // One comment in the thread is no reply at all, and is not shown twice.
     expect(text).not.toMatch(/rename this\nLast reply/);
     // One timeline, oldest first: comments and threads interleave by when each was said.
@@ -771,8 +771,8 @@ describe("the item's history reaches the prompt, labelled by who said it", () =>
     gh.openPull({ number: 50, head: "landrace/1", state: "CLOSED", threads: [{ isResolved: false, body: "abandoned one" }] });
     gh.openPull({ number: 51, head: "landrace/1", threads: [{ isResolved: false, body: "open one" }] });
     const text = (await briefOf(gh, "1")).history ?? "";
-    expect(text).toMatch(/On PR #50 \(closed\): [^\n]*\nabandoned one/);
-    expect(text).toMatch(/On PR #51 \(open\): [^\n]*\nopen one/);
+    expect(text).toMatch(/On pr-50 \(closed\): [^\n]*\nabandoned one/);
+    expect(text).toMatch(/On pr-51 \(open\): [^\n]*\nopen one/);
   });
 
   it("keeps the newest entries past its cap, cuts long bodies, and says how many it left out", async () => {

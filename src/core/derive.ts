@@ -183,7 +183,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * This is computed for every stage the entries mention, not only the
    * `stage` argument: assess() places a stage independently via locate()'s
    * identity predicates, which can diverge from `stage` (the tracker's own
-   * notion of "current stage") when a workflow uses a custom identity. A
+   * idea of "current stage") when a workflow uses a custom identity. A
    * validity keyed only to `stage` would then answer assess()'s question
    * about a *different* stage — leaking one stage's rejection into another's
    * subState. failedStages is the per-stage answer; lastOutputValid keeps

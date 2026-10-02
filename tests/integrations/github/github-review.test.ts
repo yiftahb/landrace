@@ -65,6 +65,16 @@ const pull = (gh: FakeTracker) => {
 };
 
 describe("pull.review", () => {
+  // GitHub's own bound (separation review M4): the integration says it, and the review is cut to fit, its marker kept.
+  it("cuts a review body to fit GitHub's 65,536 characters, keeping its marker", async () => {
+    const gh = withPull();
+    await apply(gh, { ...review({ kind: "reviewed", findings: [], resolved: [] }), body: "y".repeat(70_000) });
+    const posted = pull(gh).reviews?.[0]?.body ?? "";
+    expect(posted.length).toBeLessThanOrEqual(65_536);
+    expect(posted.length).toBeGreaterThan(60_000);
+    expect(parseMarker(posted)?.marker).toBe("review:1");
+  });
+
   it("posts one review with the reviewer's prose, and a line thread per finding on a line the diff shows", async () => {
     const gh = withPull();
     await apply(gh, review({ kind: "reviewed", findings: [{ file: "src/a.ts", line: 2, body: "this breaks on empty input" }], resolved: [] }));
@@ -277,7 +287,7 @@ describe("the reviewer's briefing", () => {
     const gh = withPull();
     const { diff = "" } = await brief(gh);
 
-    expect(diff).toContain("PR #20");
+    expect(diff).toContain("pr-20");
     expect(diff).toContain("src/a.ts");
     expect(diff).toContain("+line two, added");
   });

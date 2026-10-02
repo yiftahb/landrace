@@ -1591,7 +1591,7 @@ function mergeActivity(held, page, after) {
 }
 
 // An Ask's progress: what the agent said since it was asked, with a second's
-// slack for the page's clock reading a moment ahead of the agent's.
+// leeway for the page's clock reading a moment ahead of the agent's.
 function progressLines(lines, since) {
   return lines.filter((l) => l.at >= since - 1000);
 }

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createClient, GitLab } from "landrace/integrations/gitlab";
 import { branchHeads, compose, gitIn } from "landrace/kit";
-import { PULL_REQUEST_KIND } from "#conventions.js";
+import { parseMarker, PULL_REQUEST_KIND } from "#conventions.js";
 import type { Effect, Git, Graph, HookContext, Snapshot } from "#namespace.js";
 import { MemoryTracker } from "#testing/external-state.js";
 import { BASE, createFakeGitLab, type FakeGitLab, PROJECT, TOKEN } from "#tests/integrations/gitlab/fake-gitlab.js";
@@ -554,6 +554,20 @@ describe("GitLab composed as a project's forge", () => {
     const brief = await hooks.source.brief?.({ ...ctx, item: "7", snapshot: {} } as HookContext);
     expect(Object.keys(brief ?? {})).toEqual(expect.arrayContaining(["threads", "diff", "ci", "history"]));
     expect(JSON.stringify(brief)).not.toContain("OUTSIDER");
+  });
+
+  /*
+   * The bound a review is cut to is the forge's own (separation review M4):
+   * GitLab takes a note of a million characters, so a review longer than
+   * GitHub's 65,536 is posted whole here, marker and all.
+   */
+  it("posts a review body past GitHub's bound whole, under GitLab's own", async () => {
+    const { gl, apply } = project();
+    await apply({ type: "pull.open", branch: "landrace/7" });
+    await apply({ ...round("review:1", { findings: [], resolved: [] }), body: "y".repeat(70_000) });
+    const notes = gl.mrs.get(1)?.discussions.flatMap((d) => d.notes) ?? [];
+    const review = notes.find((n) => parseMarker(n.body ?? "")?.marker === "review:1");
+    expect(review?.body?.startsWith("y".repeat(70_000))).toBe(true);
   });
 
   it("opens the item's merge request, once", async () => {

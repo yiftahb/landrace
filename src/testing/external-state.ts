@@ -291,6 +291,8 @@ const countsOnly = (): Error => new Error("the in-memory forge keeps review thre
  * `headSha` — which is what a merge guarded by the old one is refused on.
  */
 export class MemoryForge extends BaseForge {
+  /** No vendor's own: 65,536, a bound real forges keep to, so a cut here reads as one there would. */
+  readonly commentChars = 65_536;
   /** Every pull request, by node id: live, so a test merges, closes or comments on one the way a person would. */
   readonly rows = new Map<string, ExternalPull>();
   private readonly pushed: string[] = [];

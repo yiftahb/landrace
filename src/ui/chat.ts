@@ -18,7 +18,7 @@ export function chatFor(item: string, workspace: string): Chat {
   // a worse failure than refusing up front.
   const problem = itemIdProblem(item);
   if (problem) throw new Error(`chatFor: ${problem}`);
-  const prompt = `I want to chat about issue #${item} using the landrace MCP, pull it now and show me the latest status and what requires my attention`;
+  const prompt = `I want to chat about item #${item} using the landrace MCP, pull it now and show me the latest status and what requires my attention`;
   const q = encodeURIComponent(prompt);
   const cwd = encodeURIComponent(workspace);
   return {

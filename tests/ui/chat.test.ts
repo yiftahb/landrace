@@ -3,7 +3,7 @@ import { chatFor } from "#ui/chat.js";
 describe("chatFor", () => {
   it("builds the exact prompt from the item number, nothing else", () => {
     expect(chatFor("41", "/repo/landrace").prompt).toBe(
-      "I want to chat about issue #41 using the landrace MCP, pull it now and show me the latest status and what requires my attention",
+      "I want to chat about item #41 using the landrace MCP, pull it now and show me the latest status and what requires my attention",
     );
   });
 

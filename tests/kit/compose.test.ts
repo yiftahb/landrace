@@ -333,7 +333,7 @@ describe("the briefing", () => {
     const brief = await hooks.source.brief?.(on("1", await snapshotOf(hooks, "1")));
     expect(brief?.history).toBe(
       "@a-person: first\n\n@a-person: second\n\n" +
-      "On PR #1 (merged): src/a.ts:3 — raised by @a-reviewer — open\nRename this.\n\n@a-person: last",
+      "On pr-1 (merged): src/a.ts:3 — raised by @a-reviewer — open\nRename this.\n\n@a-person: last",
     );
     expect(Object.keys(brief ?? {}).sort()).toEqual(["body", "ci", "diff", "history", "threads"]);
   });

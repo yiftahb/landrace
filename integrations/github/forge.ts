@@ -15,7 +15,7 @@ import {
   type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
-import { type Client, clientFor, issueNumber, tokenRejected, unseen } from "./client.js";
+import { type Client, clientFor, issueNumber, MAX_COMMENT_CHARS, tokenRejected, unseen } from "./client.js";
 
 /**
  * What a pull request is asked for, wherever it is found: enough to know
@@ -425,6 +425,7 @@ function constructedIn(): string | null {
  * reached the prompts and the routing of an item merged with no person.
  */
 export class GitHubForge extends BaseForge {
+  readonly commentChars = MAX_COMMENT_CHARS;
   private readonly client: Client | undefined;
   private readonly git: Git;
   private readonly closingRefs: boolean;
