@@ -346,4 +346,23 @@ describe("an item placed by a custom identity alone", () => {
     expect(await sendTo(deps, "9", "spec")).toEqual({ refused: expect.stringMatching(/"parked".*custom identity.*"elsewhere"/s) });
     expect(tracker.comments.get(9)?.length ?? 0).toBe(before);
   });
+
+  /*
+   * A stage that places only an item nothing has been written to cannot be
+   * left by a write: the goto record would be one. Refused, as before — but
+   * it said the item's own stage label read no stage, of an item with none.
+   */
+  it("is refused at a stage whose identity requires that nothing was written, saying so, and nothing is written", async () => {
+    const unwritten: Workflow = { ...placed, stages: [
+      { id: "parked", identity: { "run.stage": null, "node.priority": 5 }, goto: ["spec"] },
+      ...placed.stages.slice(1),
+    ] };
+    const { deps, tracker } = at([]);
+    const before = tracker.comments.get(9)?.length ?? 0;
+    expect(await sendTo({ ...deps, workflow: unwritten }, "9", "spec")).toEqual({
+      refused: '#9 cannot be moved from "parked": its identity places only an item nothing has been written to ' +
+        '("run.stage": null), and moving it would write',
+    });
+    expect(tracker.comments.get(9)?.length ?? 0).toBe(before);
+  });
 });

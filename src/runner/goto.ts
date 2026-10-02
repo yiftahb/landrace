@@ -91,6 +91,17 @@ export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, item: string)
   // item is located at is a contradiction, and a goto written against the
   // located stage would be a write nothing ever reads.
   const readAs = snapshot.run?.stage ?? null;
+  // A stage whose identity requires that nothing was written — `"run.stage":
+  // null` — has its run read as no stage's (`locatedRun`: read as its own, it
+  // would no longer place the item there), so a goto recorded against it is
+  // never read back either. Refused like any other, in a sentence that says
+  // why: there is no label here to blame.
+  if (from.id !== readAs && readAs === null && from.identity?.["run.stage"] === null) {
+    return {
+      refused: `#${item} cannot be moved from "${from.id}": its identity places only an item nothing has been written to ` +
+        '("run.stage": null), and moving it would write',
+    };
+  }
   if (from.id !== readAs) {
     return {
       refused: `#${item} is at "${from.id}" only by a custom identity; its own stage label reads ` +
