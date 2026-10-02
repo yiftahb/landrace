@@ -1,4 +1,5 @@
-import { readdir, readFile } from "node:fs/promises";
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gotoTargetsOf } from "#core/goto.js";
 import { compile, gotoDeclined, gotoNotListed, missingPaths } from "#core/index.js";
@@ -186,13 +187,13 @@ const ADDED: Record<string, RegExp[]> = {
   // A lesson commit changes agent instructions, not the item: judged for what it loosens.
   "code-review": [/^Commits titled `retro: lessons from #\{node\.id\}` change agent instructions/],
   "fix-review": [],
-  // Nobody reads the retro's commit before fastlane merges it.
-  retro: [/^Here no person reads what you change before it merges/],
+  // Every file a lesson goes in is protected (re-review N1): a retro's commit is a person's to merge.
+  retro: [/^Here the code reviewer checks what you change, and then a person merges it/],
 };
 
-/** main's retro promises a person reads the commit before the merge; fastlane's says who does. */
+/** main's retro promises a person reads the commit before the merge; fastlane's says the reviewer reads it first. */
 const RETRO_PROMISE = "and a person\nreads it beside the commit before they merge.";
-const RETRO_NOBODY = "but no person\nreads it, or the commit, before the merge: the commit is reviewed by the code\nreviewer and merged automatically.";
+const RETRO_REVIEWED = "and if you\ncommit, the code reviewer checks the commit, then a person reads both before\nthey merge.";
 
 describe("fastlane's steps", () => {
   it("builds on main's build, from the item's own text and its checks rather than a spec", () => {
@@ -248,7 +249,7 @@ describe("fastlane's steps", () => {
 
     const own = splitSections(prompt).sections;
     const theirs = splitSections(base).sections.map((s) => (id === "retro" && s.heading === "Procedure"
-      ? { ...s, text: s.text.replace(RETRO_PROMISE, RETRO_NOBODY) }
+      ? { ...s, text: s.text.replace(RETRO_PROMISE, RETRO_REVIEWED) }
       : s));
     if (id === "retro") expect(sectionOf(base, "Procedure")).toContain(RETRO_PROMISE);
     expect(own).toEqual(theirs);
@@ -324,7 +325,7 @@ describe("fastlane's stages", () => {
   it("leaves to a person every merge that changes the engine's hooks, configuration or workflows, CI, dependencies or agent instructions", () => {
     const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
     expect(merge?.refuse).toEqual([
-      ".landrace/hooks/**", ".landrace/landrace.yaml", ".landrace/workflows/*/workflow.yaml", ".github/**",
+      ".landrace/**", ".github/**",
       "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs",
       ".agsync/**", ".agents/**", ".claude/**", ".codex/**", ".cursor/**", ".mcp.json",
       "**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md",
@@ -335,9 +336,13 @@ describe("fastlane's stages", () => {
    * Re-review N5: what the list says it protects, by its equivalents too —
    * the operator's own agents' settings and hooks, the skills every agent
    * links to, instructions in any directory, and the code an install runs —
-   * judged with the kit's own matcher, root and nested.
+   * judged with the kit's own matcher, root and nested. And N1: the whole of
+   * `.landrace/`, a step file's front matter as much as a workflow — its
+   * routes, effects and capabilities are configuration.
    */
   it.each([
+    ".landrace/hooks/github.ts", ".landrace/landrace.yaml", ".landrace/workflows/fastlane/workflow.yaml",
+    ".landrace/workflows/main/steps/code-review.md", ".landrace/workflows/fastlane/steps/build.md", ".landrace/.env.example",
     ".claude/settings.json", ".claude/commands/x.md", ".agents/skills/agsync/SKILL.md", ".codex/config.toml", ".cursor/mcp.json",
     "CLAUDE.md", "docs/CLAUDE.md", "CLAUDE.local.md", "src/CLAUDE.local.md", "AGENTS.md", "packages/x/AGENTS.md",
     ".npmrc", ".pnpmfile.cjs", "pnpm-workspace.yaml",
@@ -644,5 +649,43 @@ describe("every exit from a fastlane stage is exclusive", () => {
       : n(f.total, 1) > 0 && n(f.notMerged, 1) === 0 ? ["done"] : [];
     expect(facts.map((f) => [label(f), exitsFrom(flow("fastlane").workflow, f).map(destinationOf)]))
       .toEqual(facts.map((f) => [label(f), halt(f)]));
+  });
+});
+
+/*
+ * Re-review N1, its probe as a test: one line of main's code-review front
+ * matter — the route's effect made a merge — and a fastlane item whose pull
+ * request rewrote the hooks was merged on the reviewer's say-so, with no
+ * guard, while `validate` reported nothing. Both workflows run that step:
+ * fastlane's extends main's front matter whole.
+ */
+describe("a step route that merges, as the re-review planted it", () => {
+  const ROUTE = '      effect: { type: pull.review, branch: "landrace/{item}", marker: "review:{round}" }';
+
+  const probed = async (edit: (text: string) => string): Promise<Workspace> => {
+    const copy = await mkdtemp(join(tmpdir(), "lr-probe-"));
+    try {
+      await cp(join(".landrace", "workflows"), join(copy, "workflows"), { recursive: true });
+      const step = join(copy, "workflows", "main", "steps", "code-review.md");
+      await writeFile(step, edit(await readFile(step, "utf8")));
+      return await loadWorkspace(copy);
+    } finally {
+      await rm(copy, { recursive: true, force: true });
+    }
+  };
+  const placement = (ws: Workspace) =>
+    ws.workflows.map(({ id, workflow, steps }) => [id, validate(workflow, steps).filter((p) => p.rule === "merge-placement").length]);
+
+  it("is refused by validate, in main and in fastlane", async () => {
+    expect((await readFile(".landrace/workflows/main/steps/code-review.md", "utf8")).split("\n")).toContain(ROUTE);
+    const merging = await probed((text) => text.replace(ROUTE, '      effect: { type: pull.merge, branch: "landrace/{item}" }'));
+    expect(placement(merging)).toEqual([["fastlane", 1], ["main", 1]]);
+    // The copy as it was is clean on the rule: what it refuses is the line.
+    expect(placement(await probed((text) => text))).toEqual([["fastlane", 0], ["main", 0]]);
+  });
+
+  it("is in a pull request fastlane leaves to a person, as every change under .landrace/ is", () => {
+    const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
+    expect((merge?.refuse as string[]).some((glob) => globMatches(glob, ".landrace/workflows/main/steps/code-review.md"))).toBe(true);
   });
 });

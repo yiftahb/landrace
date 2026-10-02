@@ -465,6 +465,55 @@ describe("fastlane, end to end", () => {
   });
 
   /*
+   * Re-review N1: a step file's front matter is configuration — the probe
+   * made code review's route a merge with one line — so a pull request
+   * changing a step file is a person's to merge, as one changing a workflow is.
+   */
+  it("13b. halts a build that changed a step file, merging nothing", async () => {
+    const step = ".landrace/workflows/main/steps/code-review.md";
+    const { state, run, pr } = road({
+      seed: (s) => {
+        s.openPull("1", { files: [
+          { path: "src/export.ts", status: "added", additions: 40, deletions: 0 },
+          { path: step, status: "modified", additions: 1, deletions: 1 },
+        ] });
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "merge", "ci", "blocked"]);
+    expect(r.result.settled).toBe("wait");
+    expect(pr()).toMatchObject({ merged: false, closed: null });
+    expect(state.comments("1").at(-1)).toContain(`it changes ${step}, which this workflow protects, so a person must merge it`);
+  });
+
+  /*
+   * And the retro's own lessons: every file one goes in — a step prompt,
+   * `.agsync/`, the instructions it regenerates — is protected, so an item
+   * whose retro committed a lesson waits for a person to merge it.
+   */
+  it("15b. leaves an item whose retro committed a lesson for a person to merge", async () => {
+    const { state, run, pr } = road({
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) Object.assign(pull(), { awaitingFix: 1, openThreads: 1 });
+        if (stage === "fix-review") Object.assign(pull(), { awaitingFix: 0, openThreads: 0, headSha: "sha-fixed" });
+        if (stage === "retro") {
+          Object.assign(pull(), { headSha: "sha-lessons" });
+          pull().files = [{ path: ".landrace/workflows/main/steps/build.md", status: "modified", additions: 1, deletions: 1 }];
+        }
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual([
+      "build", "publish", "code-review", "fix-review", "code-review", "ci", "retro", "code-review", "ci", "merge", "ci", "blocked",
+    ]);
+    expect(r.result.settled).toBe("wait");
+    expect(pr()).toMatchObject({ merged: false, closed: null, headSha: "sha-lessons" });
+    expect(state.comments("1").at(-1)).toContain("it changes .landrace/workflows/main/steps/build.md, which this workflow protects");
+  });
+
+  /*
    * Security audit H1, probe P3: a push lands after the review read the pull
    * request and before the merge. CI goes green on it, and nobody reviewed
    * it. The merge is held to the head the review's round started at, so it

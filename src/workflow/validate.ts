@@ -319,8 +319,43 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   problems.push(...haltLabelProblems(w));
   problems.push(...entryFirstProblems(w));
   problems.push(...itemBranchProblems(w, steps));
+  problems.push(...mergePlacementProblems(w, steps));
 
   return dedupe(problems);
+}
+
+/**
+ * `merge-placement`: a `pull.merge` is planned by a stage's own `on_enter`
+ * and by nothing else. A step's front matter is configuration — its routes
+ * and the effects they carry — in a file a retro is asked to keep lessons
+ * beside, and one line there (re-review N1) made a review's approval merge,
+ * past every trigger the workflow holds its merge to and with none of its
+ * guards. A route's goto into a stage that merges as it is entered is the
+ * same merge one step on, chosen by an agent's answer rather than by the
+ * workflow's triggers.
+ */
+function mergePlacementProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+  const merging = new Set(w.stages.filter((s) => (s.on_enter ?? []).some((e) => e.type === PULL_MERGE_EFFECT)).map((s) => s.id));
+  const problems: Problem[] = [];
+  for (const stage of w.stages) {
+    const step = stage.step ? steps.get(stage.step) : undefined;
+    for (const route of step?.output?.routes ?? []) {
+      const which = `step ${stage.step}'s route for ${JSON.stringify(route.when)}`;
+      if (route.effect.type === PULL_MERGE_EFFECT) {
+        problems.push({
+          rule: "merge-placement",
+          message: `${which} merges a pull request; a merge belongs in a stage's on_enter, entered by the workflow's triggers, never in what a step answers`,
+        });
+      }
+      if (route.goto !== undefined && merging.has(route.goto)) {
+        problems.push({
+          rule: "merge-placement",
+          message: `${which} sends items to "${route.goto}", which merges a pull request as it is entered; a merge is reached by the workflow's triggers, never by what a step answers`,
+        });
+      }
+    }
+  }
+  return problems;
 }
 
 /** The effects that name the branch they publish, review, merge or close. */

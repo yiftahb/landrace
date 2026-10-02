@@ -535,6 +535,40 @@ describe("a merge's guards", () => {
   });
 });
 
+/*
+ * Re-review N1: a step file's front matter is configuration — routes, and the
+ * effects they carry — and one line there made a review's approval merge,
+ * past every trigger and guard the workflow holds its merge to. A merge is
+ * a stage's to plan as it is entered, never a step's answer's: not as a
+ * route's effect, and not as a route's goto into a stage that merges.
+ */
+describe("a merge's place", () => {
+  const review = (route: Record<string, unknown>): Map<string, Step> => new Map([["review.md", {
+    prompt: "x", output: { discriminator: "kind", shapes: { approved: {} }, routes: [{ when: { kind: "approved" }, ...route }] },
+  } as unknown as Step]]);
+  const flow = wf([
+    { id: "r", entry: true, step: "review.md", branch: "landrace/{item}", goto: ["m"], triggers: [{ when: { "run.stage": null } }] },
+    { id: "m", triggers: [{ when: { "run.stage": "r" } }], on_enter: [{ type: "pull.merge", branch: "landrace/{item}" }] },
+    { id: "z", terminal: true, triggers: [{ when: { "run.stage": "m" } }] },
+  ]);
+  const said = (steps: Map<string, Step>) => validateStructure(flow, steps).filter((p) => p.rule === "merge-placement").map((p) => p.message);
+  const comment = { type: "tracker.comment", marker: "review:{round}" };
+
+  it("accepts a merge in a stage's on_enter, reached by its triggers", () => {
+    expect(said(review({ effect: comment }))).toEqual([]);
+  });
+
+  it("refuses a merge as a step route's effect, naming the step", () => {
+    expect(said(review({ effect: { type: "pull.merge", branch: "landrace/{item}" } })))
+      .toEqual([expect.stringMatching(/step review\.md's route for \{"kind":"approved"\} merges a pull request.*on_enter/)]);
+  });
+
+  it("refuses a route's goto into a stage that merges as it is entered", () => {
+    expect(said(review({ effect: comment, goto: "m" })))
+      .toEqual([expect.stringMatching(/step review\.md's route for \{"kind":"approved"\} sends items to "m", which merges/)]);
+  });
+});
+
 /* `head` is the engine's to stamp on a step's record, as `goto` and `from` are. */
 describe("the head a record carries", () => {
   it("is refused in an effect the workflow writes", () => {

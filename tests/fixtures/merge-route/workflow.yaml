@@ -4,6 +4,9 @@ description: test
 
 # A review whose approval merges, as a route effect: applied with the
 # snapshot read before the step ran, which can be minutes old by then.
+# `validate` refuses this shape (merge-placement); the kit's guards are
+# tested on it all the same, since they are what holds a merge however it
+# was planned.
 stages:
   - id: review
     entry: true

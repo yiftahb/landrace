@@ -10,9 +10,10 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 # is held by the engine, not by a prompt, to three guards (security audit
 # C1, H1): the checks are green on the head it merges; that head is the one
 # code review's latest valid answer started at (`reviewedBy`); and the pull
-# request changes none of the paths in `refuse` — the engine's hooks, configuration
-# and workflows, CI, the dependencies an install runs, the agents' own
-# instructions — which are a person's to merge. Only the item's own
+# request changes none of the paths in `refuse` — all of `.landrace/`, the
+# engine's hooks, configuration, workflows and their steps; CI; the
+# dependencies an install runs; the agents' own instructions, settings and
+# skills — which are a person's to merge. Only the item's own
 # `landrace/{item}` pull request in this repository is its work: one that
 # merely says it closes the item, from a fork or not, is nobody's (H2).
 # Before the first lr:fast item, see "Before your first lr:fast item" in the
@@ -29,6 +30,11 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 #   nobody reviewed.
 # - The retro goes back to code review: its commits land in the pull request
 #   before the merge, so they are reviewed and checked like any other.
+# - A retro's lessons go in a step prompt, `.agsync/` or the instructions it
+#   regenerates, and every one of them is protected (re-review N1): an item
+#   whose retro committed a lesson is refused at the merge and waits at
+#   `blocked` for a person to merge it. Only a retro that learned nothing
+#   merges with no person.
 # - Friction — what sends a green pull request to the retro first — is a
 #   second build (a CI fix or a rework), any fix round, or any reply a person
 #   had to write. The retro runs at most once.
@@ -292,7 +298,9 @@ stages:
       #
       # And the paths only a person merges, whatever the review said: the
       # engine's own hooks, imported with this project's secrets, its
-      # configuration and workflows, CI, the dependencies an install runs and
+      # configuration, and its workflows with their steps — a step's front
+      # matter carries routes, effects and capabilities, as much the routing
+      # as workflow.yaml — CI, the dependencies an install runs and
       # the code it runs doing so, and the agents' own instructions, settings
       # and skills — in every directory an agent reads them from. The kit
       # reads the pull request's changed files — a rename's old name too — and
@@ -303,9 +311,7 @@ stages:
         branch: "landrace/{item}"
         reviewedBy: code-review
         refuse:
-          - .landrace/hooks/**
-          - .landrace/landrace.yaml
-          - .landrace/workflows/*/workflow.yaml
+          - .landrace/**
           - .github/**
           - package.json
           - pnpm-lock.yaml

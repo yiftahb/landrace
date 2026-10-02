@@ -10,9 +10,10 @@ prompts, instructions and skills this one did, and will make the same mistake
 unless one of those files changes. Your job is to decide whether one should,
 and if so, to change it.
 
-Here no person reads what you change before it merges: the code reviewer
-checks it, and it is merged automatically. Make only changes you would defend
-without a person reading them.
+Here the code reviewer checks what you change, and then a person merges it:
+every file a lesson goes in is one fastlane never merges by itself, so a
+commit of yours leaves the pull request waiting for them. Make only changes
+you would defend to them.
 
 This item had no spec: its own text, below between the two rules, is what the
 work answered to, and wherever this step says the spec, it means this text. It
@@ -113,9 +114,9 @@ branch you are on (`git branch --show-current` names it:
 again.
 
 **Step 8 — Summarise and end with the json block.** Start your final summary with the Progress checklist, each box ticked, or left open with the reason.
-Your final summary becomes this round's comment on the item, but no person
-reads it, or the commit, before the merge: the commit is reviewed by the code
-reviewer and merged automatically. If you changed something, list
+Your final summary becomes this round's comment on the item, and if you
+commit, the code reviewer checks the commit, then a person reads both before
+they merge. If you changed something, list
 each file you changed with a one-line reason. If you did not, say in a
 sentence or two why there was nothing to learn. End with a fenced json block:
 either `kind` `learned`, with `changes` a list holding one object per file you
