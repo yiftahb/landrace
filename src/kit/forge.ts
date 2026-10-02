@@ -215,6 +215,18 @@ export const BRIEF_DIFF_CHARS = 24_000;
 
 export const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text);
 
+/**
+ * `text` in a code fence one backtick longer than its longest run of them,
+ * and never shorter than three: a log or a patch carrying a fence of its own
+ * would otherwise close ours early, and the rest of it read as prompt prose.
+ */
+export function fenced(text: string, info = ""): string {
+  let longest = 0;
+  for (const run of text.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}${info}\n${text}\n${fence}`;
+}
+
 /** "src/x.ts:12", "src/x.ts", or nothing at all — a forge cannot always place a thread. */
 export const where = (thread: Pick<ReviewThread, "path" | "line">): string =>
   thread.path === null ? "" : `${thread.path}${thread.line === null ? "" : `:${thread.line}`} — `;
@@ -302,7 +314,7 @@ export function diffBrief(open: Array<{ number: number; files: ChangedFile[] }>)
     parts.push(`## PR #${pull.number} — ${pull.files.length} files changed`);
     for (const f of pull.files) {
       const text = `### ${f.path} (${f.status}, +${f.additions} −${f.deletions})\n\n` +
-        (f.patch === undefined ? "(no textual diff: binary, or too large for the forge to show)" : "```diff\n" + f.patch + "\n```");
+        (f.patch === undefined ? "(no textual diff: binary, or too large for the forge to show)" : fenced(f.patch, "diff"));
       if (spent + text.length > BRIEF_DIFF_CHARS) {
         unshown.push(`- ${f.path} (+${f.additions} −${f.deletions})`);
         continue;
@@ -333,7 +345,7 @@ export function ciBrief(open: Array<{ number: number; checks: CheckState; failed
     // Said, so a red build with nothing under it does not read as nothing wrong.
     if (pull.failed.length === 0) return `${head}\n\n(the forge named no failed check)`;
     return [head, ...pull.failed.map((check) =>
-      `#### ${check.name}\n\n${check.log === null ? "(log unavailable)" : "```\n" + logTail(check.log) + "\n```"}`)].join("\n\n");
+      `#### ${check.name}\n\n${check.log === null ? "(log unavailable)" : fenced(logTail(check.log))}`)].join("\n\n");
   });
   return cut(sections.join("\n\n"), BRIEF_CI_CHARS);
 }
