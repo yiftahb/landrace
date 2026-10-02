@@ -458,6 +458,37 @@ const proposed = (pr: Node): boolean => pr.closed === null && pr.state.merged !=
 const folded = (name: string): string => name.normalize("NFKC").toUpperCase().toLowerCase();
 
 /**
+ * Whether one path segment matches a glob segment whose only wildcard is
+ * `*`. Greedy, backing up only to the latest `*`: what an earlier `*` took
+ * never needs taking back once a later one has matched, so a segment costs
+ * at most its length times the pattern's. A regular expression of one
+ * `[^/]*` per `*` backtracked through every split instead — `*a*a*a*a*b`
+ * against 240 a's took a minute (re-review N6).
+ */
+function segmentMatches(pattern: string, name: string): boolean {
+  let p = 0;
+  let n = 0;
+  let star = -1;
+  let resume = 0;
+  while (n < name.length) {
+    if (pattern[p] === "*") {
+      star = p++;
+      resume = n;
+    } else if (p < pattern.length && pattern[p] === name[n]) {
+      p++;
+      n++;
+    } else if (star >= 0) {
+      p = star + 1;
+      n = ++resume;
+    } else {
+      return false;
+    }
+  }
+  while (pattern[p] === "*") p++;
+  return p === pattern.length;
+}
+
+/**
  * Whether a repository path matches a glob, segment by segment: `**` is any
  * number of whole segments, none included — so `.landrace/hooks/**` is the
  * directory itself too, which a link put in its place would be — `*` is any
@@ -471,23 +502,21 @@ const folded = (name: string): string => name.normalize("NFKC").toUpperCase().to
  * Matching more only refuses more.
  *
  * Every (segment, segment) pair is tried at most once, so a path built to be
- * long against a glob with several `**` costs their product, never more.
+ * long against a glob with several `**` costs their product, never more, and
+ * each try is `segmentMatches`, never a backtracking expression.
  */
 export function globMatches(glob: string, path: string): boolean {
   const want = folded(glob).split("/");
   const have = folded(path).split("/");
-  const segment = want.map((part) => part === "**"
-    ? null
-    : new RegExp(`^${part.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`));
   const failed = new Set<number>();
   const from = (i: number, j: number): boolean => {
-    const re = segment[i];
-    if (re === undefined) return j === have.length;
+    const part = want[i];
+    if (part === undefined) return j === have.length;
     const key = i * (have.length + 1) + j;
     if (failed.has(key)) return false;
-    const matched = re === null
+    const matched = part === "**"
       ? from(i + 1, j) || (j < have.length && from(i, j + 1))
-      : j < have.length && re.test(have[j] as string) && from(i + 1, j + 1);
+      : j < have.length && segmentMatches(part, have[j] as string) && from(i + 1, j + 1);
     if (!matched) failed.add(key);
     return matched;
   };

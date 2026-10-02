@@ -97,6 +97,33 @@ describe("globMatches", () => {
     expect(globMatches("**/a/**/a/**/a/**/c", path)).toBe(false);
     expect(Date.now() - started).toBeLessThan(1_000);
   });
+
+  // Re-review N6: several `*` in one segment, against a long segment that
+  // almost matches, took a backtracking regex about 20 s.
+  it("answers a long segment against several * in one segment quickly", () => {
+    const segment = "a".repeat(240);
+    const started = Date.now();
+    expect(globMatches("*a*a*a*a*b", segment)).toBe(false);
+    expect(globMatches("x/*a*a*a*a*b/**", `x/${segment}/y`)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(250);
+  });
+
+  it.each([
+    ["*a*a*a*a*b", `${"a".repeat(240)}b`, true],
+    ["*a*b*", "xxaxxbxx", true],
+    ["*a*b*", "xxbxxaxx", false],
+    ["a*", "a", true],
+    ["*a", "ba", true],
+    ["*a", "ab", false],
+    ["*", "", true],
+    ["a**b", "axxb", true],
+    ["a*c", "abcbc", true],
+    ["a*c", "abcb", false],
+    ["src/*.*", "src/a.ts", true],
+    ["src/*.*", "src/ats", false],
+  ] as const)("within a segment, %s against %s: %s", (glob, path, expected) => {
+    expect(globMatches(glob, path)).toBe(expected);
+  });
 });
 
 describe("pull.merge's protected paths", () => {
