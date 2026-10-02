@@ -7,13 +7,14 @@ import { promisify } from "node:util";
 
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
 import { labelsOf } from "#conventions.js";
+import { fetchBranch, gitIn } from "#kit/git.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
 import type { Effect, Executor, HookContext, Node, Step, StepResult, Workflow } from "#namespace.js";
 import { converge } from "#runner/converge.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { runStep } from "#runner/step.js";
-import { gitRepo as repo, plainDir, removeRepos, worktreesOf as sandboxes } from "#tests/support/repo.js";
+import { commitOn, gitRepo as repo, gitRepoWithOrigin, plainDir, pushedElsewhere, removeRepos, worktreesOf as sandboxes } from "#tests/support/repo.js";
 
 /*
  * Every test here starts real processes — git worktree operations, child
@@ -663,6 +664,79 @@ describe("converge and a stage's branch", () => {
     const record = applied.find((e) => e.marker === "spec:1");
     expect(record).toBeDefined();
     expect(record).not.toHaveProperty("head");
+  });
+
+  /*
+   * Re-review N2: the head a step starts at is origin's, fetched first. A
+   * person's push — or the forge's "Update branch" — never reached this
+   * checkout before, so a review recorded the commit it was not shown, and
+   * the merge held to that review answered "unreviewed" until the item was
+   * stuck. Real git: another clone pushes to landrace/1, and the next step's
+   * worktree, and the head its record carries, is that push.
+   */
+  it("starts a step on a branch at the commit another clone pushed, fetched from origin first", async () => {
+    const { root, origin } = await gitRepoWithOrigin();
+    const built = await commitOn(root, "landrace/1", "built.ts");
+    await git(root, "push", "-q", "origin", "landrace/1");
+    const theirs = await pushedElsewhere(origin, "landrace/1");
+    const w = world();
+    const fetched: string[] = [];
+    const source = defineSource({
+      ...w.source,
+      remoteHead: async (branch, c) => {
+        fetched.push(branch);
+        return fetchBranch(gitIn(root), `file://${origin}`, branch, c.signal, []);
+      },
+    });
+    const applied: Array<Record<string, unknown>> = [];
+    const watching = { ...w.post, apply: async (e: Effect, c: HookContext) => { applied.push(e); return w.post.apply(e, c); } };
+    const sawHead: string[] = [];
+    const looking: Executor = {
+      id: "looking",
+      run: async (_p, { cwd }) => {
+        if (cwd === undefined) throw new Error("no cwd");
+        sawHead.push(await git(cwd, "rev-parse", "HEAD"));
+        return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
+      },
+    };
+
+    const r = await converge("1", deps(w, {
+      workflow: branched("landrace/{item}"), source, executor: looking, dispatcher: createDispatcher([watching]), sandbox: { root },
+    }));
+
+    expect(r.settled).toBe("terminal");
+    expect(theirs).not.toBe(built);
+    expect(sawHead).toEqual([theirs]);
+    expect(applied.filter((e) => e.marker === "spec:1")).toEqual([expect.objectContaining({ kind: "output", head: theirs })]);
+    expect(fetched).toEqual(["landrace/1"]);
+    // Caught up, forward: the local branch is the pushed commit now.
+    expect(await tip(root, "landrace/1")).toBe(theirs);
+  });
+
+  /* A fetch that fails is an outage: said, unrecorded, and the step waits for the next tick. */
+  it("runs no step, and records nothing, when origin's branch cannot be fetched", async () => {
+    const root = await repo();
+    await git(root, "branch", "landrace/1", "main");
+    const w = world();
+    const source = defineSource({ ...w.source, remoteHead: async () => { throw new Error("could not fetch landrace/1 from origin: 502"); } });
+    let invoked = false;
+    const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
+
+    const r = await converge("1", deps(w, { workflow: branched("landrace/{item}"), source, executor: spy, sandbox: { root } }));
+
+    expect(r).toMatchObject({ settled: "halt", why: expect.stringContaining("could not fetch landrace/1 from origin: 502") });
+    expect(invoked).toBe(false);
+    expect(w.entries).toEqual([]);
+    expect(await sandboxes(root)).toEqual([]);
+  });
+
+  it("asks origin for nothing for a stage on no branch", async () => {
+    const root = await repo();
+    const w = world();
+    const fetched: string[] = [];
+    const source = defineSource({ ...w.source, remoteHead: async (branch) => { fetched.push(branch); return null; } });
+    await converge("1", deps(w, { source, sandbox: { root } }));
+    expect(fetched).toEqual([]);
   });
 
   /*

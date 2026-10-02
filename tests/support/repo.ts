@@ -66,6 +66,26 @@ export async function commitOn(root: string, branch: string, file: string): Prom
   }
 }
 
+/**
+ * A commit on origin's `branch` made from another clone — a person's push,
+ * or the forge's "Update branch" — that the operator's checkout has not
+ * heard of. Returns the commit.
+ */
+export async function pushedElsewhere(origin: string, branch: string, file = "theirs.ts"): Promise<string> {
+  const other = await mkdtemp(join(tmpdir(), "lr-other-"));
+  made.push(other);
+  const git = async (...args: string[]): Promise<string> => (await exec("git", args, { cwd: other })).stdout.trim();
+  await git("clone", "-q", `file://${origin}`, ".");
+  await git("config", "user.email", "o@example.com");
+  await git("config", "user.name", "o");
+  await git("checkout", "-q", branch);
+  await writeFile(join(other, file), `export const theirs = ${JSON.stringify(file)};\n`);
+  await git("add", "-A");
+  await git("commit", "-qm", `add ${file}`);
+  await git("push", "-q", "origin", branch);
+  return git("rev-parse", "HEAD");
+}
+
 /** The commit `ref` names in the repository at `cwd`, or null. */
 export const commitAt = (cwd: string, ref: string): Promise<string | null> =>
   exec("git", ["rev-parse", "--verify", "-q", ref], { cwd }).then((r) => r.stdout.trim(), () => null);

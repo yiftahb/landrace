@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
-  branchHeads, gitIn, headIn, headsOf, nothingCommitted, originPushUrl, ownGit, pushBranch, repositoryOf,
+  branchHeads, fetchBranch, gitIn, headIn, headsOf, nothingCommitted, originPushUrl, ownGit, pushBranch, repositoryOf,
 } from "#kit/git.js";
 import type { Git, Snapshot } from "#namespace.js";
-import { commitAt, commitOn, gitRepo, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
+import { commitAt, commitOn, gitRepo, gitRepoWithOrigin, pushedElsewhere, removeRepos } from "#tests/support/repo.js";
 
 /* Real git, real processes: see tests/agent/worktree.test.ts for why a minute. */
 jest.setTimeout(60_000);
@@ -34,6 +34,12 @@ const recording = (root: string): { git: Git; calls: Call[] } => {
 };
 
 const snapshotWith = (fields: Partial<Snapshot>): Snapshot => fields as Snapshot;
+
+/** The configuration a call handed git through its environment, in order, past any the operator had set. */
+const configOf = (env: Record<string, string>): Array<[string, string]> =>
+  Object.keys(env).filter((k) => k.startsWith("GIT_CONFIG_KEY_"))
+    .sort((a, b) => Number(a.slice(15)) - Number(b.slice(15)))
+    .map((k) => [env[k] ?? "", env[k.replace("KEY", "VALUE")] ?? ""] as [string, string]);
 
 describe("repositoryOf", () => {
   it("is the repository a file is in, from a path or a file: URL", async () => {
@@ -176,5 +182,51 @@ describe("pushBranch", () => {
       "landrace does not force-push; bring the branch up to date by hand and the item carries on: " +
       "git push in /x: ! [rejected] landrace/3 (non-fast-forward)",
     );
+  });
+});
+
+/*
+ * Re-review N2: a push made elsewhere — a person's, the forge's "Update
+ * branch" — reached no step's worktree, since nothing here fetched; a review
+ * recorded the stale head, and the merge it guards looped until stuck.
+ */
+describe("fetchBranch", () => {
+  it("brings origin's branch into its remote-tracking ref alone, and answers its commit", async () => {
+    const { root, origin } = await gitRepoWithOrigin();
+    const built = await commitOn(root, "landrace/1", "a.ts");
+    await pushBranch(gitIn(root), "landrace/1", "1", signal, []);
+    const theirs = await pushedElsewhere(origin, "landrace/1");
+    expect(await commitAt(root, "refs/remotes/origin/landrace/1")).toBe(built);
+    const { git, calls } = recording(root);
+
+    expect(await fetchBranch(git, `file://${origin}`, "landrace/1", signal, [["credential.helper", ""]])).toBe(theirs);
+
+    expect(await commitAt(root, "refs/remotes/origin/landrace/1")).toBe(theirs);
+    // The local branch is the worktree's to move forward, never the fetch's.
+    expect(await commitAt(root, "refs/heads/landrace/1")).toBe(built);
+    expect(await commitAt(root, "FETCH_HEAD")).toBeNull();
+    const fetch = calls.find((c) => c.args[0] === "fetch");
+    expect(fetch?.args).toEqual([
+      "fetch", "--no-tags", "--no-write-fetch-head", `file://${origin}`, "+refs/heads/landrace/1:refs/remotes/origin/landrace/1",
+    ]);
+    for (const call of calls) {
+      expect(configOf(call.env)).toEqual([
+        ["core.hooksPath", "/dev/null"], ["fetch.recurseSubmodules", "false"], ["credential.helper", ""],
+      ]);
+    }
+  });
+
+  it("answers null, and fetches nothing, when origin has no such branch", async () => {
+    const { root, origin } = await gitRepoWithOrigin();
+    const { git, calls } = recording(root);
+    expect(await fetchBranch(git, `file://${origin}`, "landrace/9", signal, [])).toBeNull();
+    expect(calls.map((c) => c.args[0])).toEqual(["ls-remote"]);
+    expect(await commitAt(root, "refs/remotes/origin/landrace/9")).toBeNull();
+  });
+
+  it("says which branch it could not fetch, in git's words", async () => {
+    const { root } = await gitRepoWithOrigin();
+    await expect(fetchBranch(gitIn(root), "file:///nowhere/at/all", "landrace/1", signal, []))
+      .rejects.toThrow(/could not fetch landrace\/1 from origin: git ls-remote/);
   });
 });

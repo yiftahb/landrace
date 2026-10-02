@@ -10,7 +10,7 @@
  */
 import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
-  BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
+  BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
   ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
   type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
@@ -257,12 +257,13 @@ const looksLikeGithub = (url: string): boolean => /github\.com/i.test(url);
 const shown = (url: string): string => url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, "$1");
 
 /**
- * Publish one branch to origin, fast-forward only — `pushBranch`, to the one
- * push URL `originPushUrl` allows, once it has been checked here.
+ * origin's one push URL, as `originPushUrl` allows it, checked here — the one
+ * destination landrace publishes an item's branch to and fetches it back
+ * from — and what git is handed with it.
  *
- * The token goes into the push's environment only when that one URL is an
+ * The token goes into git's environment only when that one URL is an
  * https URL on github.com naming this very repository. An ssh origin, one
- * whose URL carries its own credentials, or one on another host is pushed
+ * whose URL carries its own credentials, or one on another host is reached
  * with the operator's own credentials and no token at all; a GitHub origin
  * naming some other repository is refused, since its branch could never be
  * the head of a pull request here.
@@ -272,18 +273,20 @@ const shown = (url: string): string => url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/
  * github.com, so no other destination that slipped in would be handed it;
  * an empty value first clears a header some other tool left configured (a CI
  * checkout does), and credential helpers and askpass are cleared so nothing
- * git would start to ask for credentials sees the token either. Whatever git
- * says back is scrubbed of both spellings of the token before it becomes an
- * error, a log line or a comment.
+ * git would start to ask for credentials sees the token either. `scrub` takes
+ * both spellings of the token out of whatever git says back, before it
+ * becomes an error, a log line or a comment.
  */
-async function push(git: Git, { token, repo }: Client, branch: string, item: string, signal: AbortSignal): Promise<void> {
+async function origin(
+  git: Git, { token, repo }: Client, branch: string, signal: AbortSignal, verb: "push" | "fetch",
+): Promise<{ url: string; auth: Array<[string, string]>; scrub: (text: string) => string }> {
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
-  const url = await originPushUrl(git, branch, signal);
+  const url = await originPushUrl(git, branch, signal, verb);
   const remote = githubRemote(url);
   if (remote === null && looksLikeGithub(url)) {
     throw new Error(
-      `refusing to push ${branch}: origin's push URL ${shown(url)} mentions github.com but is not in a form ` +
+      `refusing to ${verb} ${branch}: origin's push URL ${shown(url)} mentions github.com but is not in a form ` +
       "landrace can verify — https://github.com/<owner>/<repo>(.git), git@github.com:<owner>/<repo>.git or " +
       "ssh://git@github.com/<owner>/<repo>.git. A URL git could read differently from how it reads here is " +
       "not one to push to, or hand a token to; set it in one of those forms and the item carries on",
@@ -291,7 +294,7 @@ async function push(git: Git, { token, repo }: Client, branch: string, item: str
   }
   if (remote && remote.repo !== repo.toLowerCase()) {
     throw new Error(
-      `refusing to push ${branch}: origin pushes to ${shown(url)}, which is not ${repo}, the repository ` +
+      `refusing to ${verb} ${branch}: origin pushes to ${shown(url)}, which is not ${repo}, the repository ` +
       "this workflow's tracker is — a pull request here could never be opened from it",
     );
   }
@@ -299,9 +302,24 @@ async function push(git: Git, { token, repo }: Client, branch: string, item: str
   const auth: Array<[string, string]> = remote?.https === true
     ? [[header, ""], [header, `AUTHORIZATION: basic ${basic}`], ["credential.helper", ""], ["core.askPass", ""]]
     : [];
+  return { url, auth, scrub };
+}
 
+/** Publish one branch to origin, fast-forward only — `pushBranch`, to the URL `origin` checked, with what it hands git. */
+async function push(git: Git, client: Client, branch: string, item: string, signal: AbortSignal): Promise<void> {
+  const { auth, scrub } = await origin(git, client, branch, signal, "push");
   try {
     await pushBranch(git, branch, item, signal, auth);
+  } catch (e) {
+    throw new Error(scrub(e instanceof Error ? e.message : String(e)));
+  }
+}
+
+/** Origin's head of one branch, fetched into this checkout — `fetchBranch`, from the URL `origin` checked, with what it hands git. */
+async function fetchHead(git: Git, client: Client, branch: string, signal: AbortSignal): Promise<string | null> {
+  const { url, auth, scrub } = await origin(git, client, branch, signal, "fetch");
+  try {
+    return await fetchBranch(git, url, branch, signal, auth);
   } catch (e) {
     throw new Error(scrub(e instanceof Error ? e.message : String(e)));
   }
@@ -732,6 +750,10 @@ export class GitHubForge extends BaseForge {
 
   async push(branch: string, item: string, ctx: HookContext): Promise<void> {
     await push(this.git, this.gh(ctx), branch, item, ctx.signal);
+  }
+
+  async remoteHead(branch: string, ctx: RuntimeContext): Promise<string | null> {
+    return fetchHead(this.git, this.gh(ctx), branch, ctx.signal);
   }
 
   /**

@@ -23,7 +23,7 @@ import { type BaseDocs, SPEC } from "#kit/docs.js";
 import { historyBrief } from "#kit/forge.js";
 import type {
   ArtifactHook, BriefTable, ComposedHooks, Effect, EffectHandler, EffectTable, Graph, HookContext, Roles,
-  Snapshot,
+  RuntimeContext, Snapshot,
 } from "#namespace.js";
 
 /** The one id every item-side hook a composition makes is filed under: `{brief.project.<key>}`. */
@@ -196,6 +196,8 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
         ]);
       },
       brief: (ctx, keys) => briefAll(briefs, ctx, keys),
+      // The checkout's remote is the forge's: with none, nothing is fetched.
+      ...(forge ? { remoteHead: (branch: string, ctx: RuntimeContext) => forge.remoteHead(branch, ctx) } : {}),
     }),
 
     operator: defineOperator({

@@ -1,7 +1,8 @@
 /*
  * git, as every tracker and forge integration runs it: in the operator's own
  * checkout, never the network, except for the one push that publishes a
- * branch. Published as part of `landrace/kit`.
+ * branch and the one fetch that brings it back before a step runs on it.
+ * Published as part of `landrace/kit`.
  *
  * What stays with the integration is whatever is its forge's: which push URLs
  * it will act on, and the credential it hands git — passed in here as plain
@@ -134,26 +135,85 @@ export const nothingCommitted = (branch: string, item: string): Error =>
 
 /**
  * origin's one push URL, for the integration to check before anything is
- * pushed to it.
+ * pushed to it, or fetched from it.
  *
  * Exactly one. `git push origin` pushes to every push URL origin has, and a
  * step that may write shares this repository's config, so one more pushurl is
  * one line away. An origin with anything but one push URL — `git remote
  * get-url --push --all`, after every rewrite a config could apply — is
- * refused before anything else is built.
+ * refused before anything else is built. The fetch is from the same URL,
+ * never origin's fetch URL, which a config could point anywhere: the one
+ * destination checked is the one a credential is handed to either way.
  */
-export async function originPushUrl(git: Git, branch: string, signal: AbortSignal): Promise<string> {
+export async function originPushUrl(git: Git, branch: string, signal: AbortSignal, verb: "push" | "fetch" = "push"): Promise<string> {
   const urls = (await git(["remote", "get-url", "--push", "--all", "origin"], {}, { signal }))
     .split("\n").map((u) => u.trim()).filter(Boolean);
   const [url] = urls;
   if (urls.length !== 1 || url === undefined) {
     throw new Error(
-      `refusing to push ${branch}: origin has ${urls.length} push URLs, and landrace pushes an item's branch ` +
-      "to exactly one destination — the one it can check. Leave origin a single push URL " +
+      `refusing to ${verb} ${branch}: origin has ${urls.length} push URLs, and landrace pushes an item's branch ` +
+      "to exactly one destination — the one it can check — and fetches it from there. Leave origin a single push URL " +
       "(git remote set-url --push origin <url>) and the item carries on",
     );
   }
   return url;
+}
+
+/**
+ * `config` as git's environment takes it — `GIT_CONFIG_*`, appended after
+ * any the operator already set — so nothing rides on git's command line:
+ * argv is readable by every process on the machine.
+ */
+function configEnv(config: Array<[string, string]>): Record<string, string> {
+  const at = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10) || 0;
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(at + config.length) };
+  for (const [i, [key, value]] of config.entries()) {
+    env[`GIT_CONFIG_KEY_${at + i}`] = key;
+    env[`GIT_CONFIG_VALUE_${at + i}`] = value;
+  }
+  return env;
+}
+
+/**
+ * Origin's `branch`, brought into this checkout: its commit, fetched into
+ * `refs/remotes/origin/<branch>`, or null — with nothing fetched — when
+ * origin has no such branch, as before an item's first publish. A step's
+ * worktree catches its branch up to that ref, so a step starts from what
+ * origin has, not from what this checkout last heard: a person's push, the
+ * forge's "Update branch".
+ *
+ * From `url`, origin's one push URL as `originPushUrl` read it and the
+ * integration checked, with `config` — its credential, if it hands one —
+ * added to git's own, as `pushBranch` takes it. That one ref and nothing
+ * else: no tags, no FETCH_HEAD, no submodules, and none of the checkout's
+ * hooks, which a step that may write could have configured. Forced, as a
+ * remote-tracking ref always is: it says what origin has, and the catch-up
+ * that reads it only ever moves a branch forward.
+ *
+ * What git says back is in the error as git said it: a caller that handed a
+ * credential scrubs it out before the error goes anywhere.
+ */
+export async function fetchBranch(
+  git: Git,
+  url: string,
+  branch: string,
+  signal: AbortSignal,
+  config: Array<[string, string]>,
+): Promise<string | null> {
+  const env = configEnv([["core.hooksPath", "/dev/null"], ["fetch.recurseSubmodules", "false"], ...config]);
+  const ref = `refs/heads/${branch}`;
+  try {
+    const listed = await git(["ls-remote", url, ref], env, { signal, timeoutMs: PUSH_TIMEOUT_MS });
+    const head = listed.split("\n").map((line) => line.split("\t")).find(([, name]) => name?.trim() === ref)?.[0]?.trim();
+    if (head === undefined || head === "") return null;
+    await git(
+      ["fetch", "--no-tags", "--no-write-fetch-head", url, `+${ref}:refs/remotes/origin/${branch}`],
+      env, { signal, timeoutMs: PUSH_TIMEOUT_MS },
+    );
+    return head;
+  } catch (e) {
+    throw new Error(`could not fetch ${branch} from origin: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /**
@@ -205,15 +265,9 @@ export async function pushBranch(
     if (ahead === "0") throw nothingCommitted(branch, item);
   }
 
-  const all: Array<[string, string]> = [
+  const env = configEnv([
     ["core.hooksPath", "/dev/null"], ["push.followTags", "false"], ["push.recurseSubmodules", "no"], ...config,
-  ];
-  const at = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10) || 0;
-  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(at + all.length) };
-  for (const [i, [key, value]] of all.entries()) {
-    env[`GIT_CONFIG_KEY_${at + i}`] = key;
-    env[`GIT_CONFIG_VALUE_${at + i}`] = value;
-  }
+  ]);
 
   try {
     await git(["push", "origin", `refs/heads/${branch}:refs/heads/${branch}`], env, { signal, timeoutMs: PUSH_TIMEOUT_MS });

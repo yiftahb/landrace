@@ -413,6 +413,11 @@ export class MemoryForge extends BaseForge {
     this.pushed.push(branch);
   }
 
+  /** Origin's head of `branch`, as this forge knows it: its newest pull request's from the branch. No checkout to fetch into. */
+  async remoteHead(branch: string): Promise<string | null> {
+    return [...this.rows.values()].filter((p) => p.branch === branch).at(-1)?.headSha ?? null;
+  }
+
   /** No branch heads: there is no checkout behind this forge. */
   override provides(): string[] {
     return [];

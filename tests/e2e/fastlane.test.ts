@@ -8,6 +8,7 @@ import { sendTo } from "#runner/goto.js";
 import { BLOCKED_NOTE, laneOf, statusRows } from "#runner/status.js";
 import { tickWorkspace } from "#runner/tick.js";
 import { compose } from "#kit/compose.js";
+import { defineSource } from "#hooks/contracts.js";
 import { createExternalState, createHarness, MemoryForge, MemoryTracker } from "#testing/index.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { loadWorkspace } from "#workflow/workspace.js";
@@ -537,6 +538,50 @@ describe("fastlane, end to end", () => {
     const reviews = state.entriesOf("1").filter((e) => e.kind === "output" && e.stage === "code-review");
     expect(reviews.map((e) => e.head)).toEqual(["sha-1", "sha-unreviewed"]);
     expect(state.item("1").closed).toBe("done");
+  });
+
+  /*
+   * Re-review N2, its loop simulation: the push is someone else's — a
+   * person's, or the forge's "Update branch" — so this checkout never made
+   * the commit, and a step's worktree starts from what the checkout has
+   * heard of origin's branch. Unfetched, every review recorded the old head,
+   * the merge answered "unreviewed" each time, and four paid reviews later
+   * the item was stuck. Fetched before each step, the second review reads
+   * the push, and the merge takes it.
+   */
+  it("14b. reviews a push someone else made once, fetched before the step, and merges it — never stuck", async () => {
+    const { workflow, steps } = flow("fastlane");
+    const state = createExternalState({
+      items: [{ id: "1", title: "Export the table as CSV", body: "Add an Export button.", labels: ["lr:fast"] }],
+    });
+    /** This checkout's own branch: what its build committed, and what a fetch of origin's brought it. */
+    const checkout = new Map<string, string>();
+    const source = defineSource({
+      ...state.source,
+      remoteHead: async (branch: string, c: RuntimeContext) => {
+        const head = (await state.source.remoteHead?.(branch, c)) ?? null;
+        if (head !== null) checkout.set(branch, head);
+        return head;
+      },
+    });
+    const run = createHarness({
+      workflow, steps, source, pre: [state.pre], post: [state.post], answers: ANSWERS,
+      startedAt: (branch) => checkout.get(branch) ?? null,
+      during: ({ stage, round }) => {
+        // The build's commit is this checkout's own; publish opens pr-1 at it.
+        if (stage === "build") checkout.set("landrace/1", "sha-1");
+        // Pushed elsewhere while the first review ran.
+        if (stage === "code-review" && round === 1) state.pull("pr-1").headSha = "sha-theirs";
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "merge", "code-review", "ci", "merge", "done"]);
+    expect(r.result.settled).toBe("terminal");
+    expect(run.counts()).toEqual({ build: 1, "code-review": 2 });
+    const reviews = state.entriesOf("1").filter((e) => e.kind === "output" && e.stage === "code-review");
+    expect(reviews.map((e) => e.head)).toEqual(["sha-1", "sha-theirs"]);
+    expect(state.pull("pr-1")).toMatchObject({ merged: true, headSha: "sha-theirs" });
   });
 
   /*

@@ -10,7 +10,7 @@ import { parseMarker, PULL_REQUEST_KIND } from "#conventions.js";
 import type { Effect, Git, Graph, HookContext, Snapshot } from "#namespace.js";
 import { MemoryTracker } from "#testing/external-state.js";
 import { BASE, createFakeGitLab, type FakeGitLab, PROJECT, TOKEN } from "#tests/integrations/gitlab/fake-gitlab.js";
-import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
+import { commitAt, commitOn, gitRepoWithOrigin, pushedElsewhere, removeRepos } from "#tests/support/repo.js";
 
 /* Real git in the push tests: see tests/agent/worktree.test.ts for why a minute. */
 jest.setTimeout(60_000);
@@ -488,6 +488,67 @@ describe("push", () => {
     expect(await header(`${url}/info/refs`)).toBe(`AUTHORIZATION: basic ${BASIC}`);
     expect(await header(`${BASE}/${PROJECT}-evil.git`)).toBeNull();
     expect(await header(`${BASE}/other/app.git`)).toBeNull();
+  });
+
+  /*
+   * Re-review N2: the remote branch's head, fetched before a step on the
+   * branch — from the URL the push goes to, with the token as the push has it.
+   */
+  const fetched = (git: Git, branch = "landrace/1"): Promise<string | null> => {
+    const gl = createFakeGitLab();
+    return new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git }).remoteHead(branch, gl.ctx());
+  };
+  const remote = (url: string, fetch: () => Promise<string> = async () => ""): { git: Git; calls: Call[] } => {
+    const calls: Call[] = [];
+    const git: Git = async (args, env = {}) => {
+      calls.push({ args, env });
+      if (args[0] === "remote") return `${url}\n`;
+      if (args[0] === "ls-remote") return `${"b".repeat(40)}\trefs/heads/landrace/1\n`;
+      if (args[0] === "fetch") return fetch();
+      throw new Error(`the script has no answer for git ${args.join(" ")}`);
+    };
+    return { git, calls };
+  };
+  const configIn = (env: Record<string, string>): Array<[string, string]> =>
+    Object.keys(env).filter((k) => k.startsWith("GIT_CONFIG_KEY_"))
+      .map((k) => [env[k] ?? "", env[k.replace("KEY", "VALUE")] ?? ""] as [string, string]);
+
+  it("fetches the remote branch's head with the token for the project's own URL, in git's environment alone", async () => {
+    const url = `${BASE}/${PROJECT}.git`;
+    const { git, calls } = remote(url);
+    expect(await fetched(git)).toBe("b".repeat(40));
+    const asked = calls.filter((c) => c.args[0] === "ls-remote" || c.args[0] === "fetch");
+    expect(asked.map((c) => c.args[0])).toEqual(["ls-remote", "fetch"]);
+    for (const call of asked) {
+      expect(call.args).toContain(url);
+      expect(configIn(call.env)).toContainEqual([`http.${url}.extraheader`, `AUTHORIZATION: basic ${BASIC}`]);
+    }
+    for (const call of calls) for (const secret of [TOKEN, BASIC]) expect(call.args.join(" ")).not.toContain(secret);
+  });
+
+  it("fetches with no token from any other URL", async () => {
+    const { git, calls } = remote("https://gitlab.com/group/app.git");
+    await fetched(git);
+    expect(JSON.stringify(calls)).not.toContain(BASIC);
+  });
+
+  it("keeps the token out of a fetch's error", async () => {
+    const { git } = remote(`${BASE}/${PROJECT}.git`, async () => {
+      throw new Error(`fatal: unable to access: header AUTHORIZATION: basic ${BASIC} (token ${TOKEN})`);
+    });
+    const failure = await fetched(git).then(() => "", (e: unknown) => String(e));
+    expect(failure).toMatch(/could not fetch landrace\/1 from origin/);
+    expect(failure).not.toContain(TOKEN);
+    expect(failure).not.toContain(BASIC);
+  });
+
+  it("fetches the commit another clone pushed, and answers it", async () => {
+    const { root, origin } = await gitRepoWithOrigin();
+    await commitOn(root, "landrace/1", "built.ts");
+    await pushed(gitIn(root));
+    const theirs = await pushedElsewhere(origin, "landrace/1");
+    expect(await fetched(gitIn(root))).toBe(theirs);
+    expect(await commitAt(root, "refs/remotes/origin/landrace/1")).toBe(theirs);
   });
 
   it("publishes the branch to origin, fast-forward, and reads back as landed", async () => {

@@ -328,6 +328,15 @@ async function converging(
       // worktree has caught the branch up to origin's: stamped on the record
       // that settles the round, as engine data no answer can reach. A merge
       // guarded by `reviewedBy` merges only a head that record names.
+      //
+      // Origin's copy of the branch is asked for first, through the source:
+      // the worktree catches up only to what this checkout has heard, and
+      // without a fetch a person's push or the forge's "Update branch" never
+      // reached it — a review recorded the commit it was not shown, and the
+      // merge held to it answered "unreviewed" until the item was stuck
+      // (re-review N2). A fetch that fails is an outage, said here like a
+      // worktree that could not be made: nothing is recorded, and the step
+      // waits for the next tick.
       let sandbox: { path: string } | null = null;
       let head: string | undefined;
       if (enterSandbox || (deps.startedAt && stage.branch !== undefined)) {
@@ -337,6 +346,7 @@ async function converging(
           return { passes: pass, settled: "halt", why: branch.reason };
         }
         try {
+          if (branch.branch !== null) await deps.source.remoteHead?.(branch.branch, deps.ctx);
           if (enterSandbox) {
             const path = await enterSandbox(
               branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) },

@@ -1205,6 +1205,16 @@ export interface Source {
    * when absent.
    */
   brief?(ctx: HookContext, keys?: ReadonlySet<string>): Promise<Record<string, string>> | Record<string, string>;
+  /**
+   * The remote branch's head: origin's commit on `branch`, brought into this
+   * checkout first — its remote-tracking ref — or null when origin has no
+   * such branch. Asked before every step on a branch, so the step's worktree
+   * starts from what origin has — a person's push, the forge's "Update
+   * branch" — and the head its record carries is the one it was shown. A
+   * throw is an outage: said, and the step waits for the next tick. Absent,
+   * on a source with no remote behind it, nothing is asked.
+   */
+  remoteHead?(branch: string, ctx: RuntimeContext): Promise<string | null>;
 }
 
 /* `| undefined` throughout, because exactOptionalPropertyTypes is on and these

@@ -605,6 +605,13 @@ export abstract class BaseForge {
   abstract heads(ctx: RuntimeContext): Promise<BranchHeads>;
   /** Publish a branch to origin, with whatever credential the forge trusts it with — `pushBranch`, usually. */
   abstract push(branch: string, item: string, ctx: HookContext): Promise<void>;
+  /**
+   * Origin's head of `branch`, fetched into this checkout first, from where
+   * and with whatever credential `push` publishes it — `fetchBranch`,
+   * usually; null when origin has no such branch. The source answers the
+   * engine's `remoteHead` with it, before every step on a branch.
+   */
+  abstract remoteHead(branch: string, ctx: RuntimeContext): Promise<string | null>;
 
   /** Run once at startup, before anything is paid for. */
   check?(ctx: RuntimeContext): Promise<void>;

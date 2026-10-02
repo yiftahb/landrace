@@ -9,7 +9,7 @@ import { createClient, GitHubForge } from "landrace/integrations/github";
 import { branchHeads, gitIn } from "landrace/kit";
 import type { Effect, Git, HookContext, Snapshot } from "#namespace.js";
 import { createFakeTracker, noBranches, type FakeTracker } from "#tests/support/fake-tracker.js";
-import { commitAt, commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
+import { commitAt, commitOn, gitRepoWithOrigin, pushedElsewhere, removeRepos } from "#tests/support/repo.js";
 
 /*
  * Real git, real processes: see tests/agent/worktree.test.ts for why a minute.
@@ -634,6 +634,86 @@ describe("pull.open", () => {
     await expect(post(gh).apply(open, contextOf(gh, await snapshotOf(gh))))
       .rejects.toThrow(/landrace\/1[\s\S]*no such branch/);
     expect(gh.requests.filter((r) => r.path === "/pulls")).toEqual([]);
+  });
+});
+
+/*
+ * Re-review N2: before a step on a branch, the engine asks the source for
+ * the remote branch's head, and GitHub's forge fetches it — from the one URL
+ * it pushes to, with the token handled exactly as the push handles it.
+ */
+describe("the remote branch's head", () => {
+  const head = (gh: FakeTracker, branch = "landrace/1"): Promise<string | null> => {
+    const ask = gh.registry.source?.remoteHead;
+    if (!ask) throw new Error("the composed source asks origin for nothing");
+    return ask(branch, gh.ctx);
+  };
+
+  /** No network: origin's URL, a branch origin has at `sha`, and a fetch that does what it is told. */
+  const remote = (url: string, sha = "b".repeat(40), fetch: () => Promise<string> = async () => ""): { git: Git; calls: Call[] } => {
+    const calls: Call[] = [];
+    const git: Git = async (args, env = {}) => {
+      calls.push({ args, env });
+      if (args[0] === "remote") return `${url}\n`;
+      if (args[0] === "ls-remote") return `${sha}\trefs/heads/landrace/1\n`;
+      if (args[0] === "fetch") return fetch();
+      throw new Error(`the script has no answer for git ${args.join(" ")}`);
+    };
+    return { git, calls };
+  };
+
+  it("fetches the commit another clone pushed into origin's ref here, and answers it", async () => {
+    const { root, origin } = await checkout();
+    const built = await build(root, "landrace/1");
+    await run(root, "push", "-q", "origin", "landrace/1");
+    const theirs = await pushedElsewhere(origin, "landrace/1");
+    const gh = createFakeTracker([{ number: 1 }], { git: gitIn(root) });
+
+    expect(await head(gh)).toBe(theirs);
+    expect(await commitAt(root, "refs/remotes/origin/landrace/1")).toBe(theirs);
+    // The local branch is the worktree's to move forward, never the fetch's.
+    expect(await commitAt(root, "refs/heads/landrace/1")).toBe(built);
+  });
+
+  it("answers null for a branch origin does not have", async () => {
+    const { root } = await checkout();
+    expect(await head(createFakeTracker([{ number: 1 }], { git: gitIn(root) }), "landrace/9")).toBeNull();
+  });
+
+  it("carries the token for this repository's GitHub origin in git's environment, scoped to that URL, never on its command line", async () => {
+    const { git, calls } = remote(ORIGIN);
+    expect(await head(createFakeTracker([{ number: 1 }], { git }))).toBe("b".repeat(40));
+
+    const asked = calls.filter((c) => c.args[0] === "ls-remote" || c.args[0] === "fetch");
+    expect(asked.map((c) => c.args[0])).toEqual(["ls-remote", "fetch"]);
+    for (const call of asked) {
+      expect(call.args).toContain(ORIGIN);
+      expect(configOf(call.env)).toContainEqual([`http.${ORIGIN}.extraheader`, `AUTHORIZATION: basic ${BASIC}`]);
+      expect(configOf(call.env).map(([key]) => key)).not.toContain("http.https://github.com/.extraheader");
+    }
+    for (const call of calls) for (const secret of [TOKEN, BASIC]) expect(call.args.join(" ")).not.toContain(secret);
+  });
+
+  it("hands no token to an origin that is not this repository on GitHub", async () => {
+    const { git, calls } = remote("git@github.com:acme/widgets.git");
+    await head(createFakeTracker([{ number: 1 }], { git }));
+    expect(JSON.stringify(calls)).not.toContain(BASIC);
+  });
+
+  it("refuses a GitHub origin naming another repository, fetching nothing", async () => {
+    const { git, calls } = remote("https://github.com/attacker/evil.git");
+    await expect(head(createFakeTracker([{ number: 1 }], { git }))).rejects.toThrow(/refusing to fetch landrace\/1: origin pushes to .*not acme\/widgets/);
+    expect(calls.filter((c) => c.args[0] === "ls-remote" || c.args[0] === "fetch")).toEqual([]);
+  });
+
+  it("keeps the token out of the error when git's own output quotes it", async () => {
+    const { git } = remote(ORIGIN, "b".repeat(40), async () => {
+      throw new Error(`fatal: unable to access: header AUTHORIZATION: basic ${BASIC} (token ${TOKEN})`);
+    });
+    const failure = await head(createFakeTracker([{ number: 1 }], { git })).then(() => "", (e: unknown) => String(e));
+    expect(failure).toMatch(/could not fetch landrace\/1 from origin/);
+    expect(failure).not.toContain(TOKEN);
+    expect(failure).not.toContain(BASIC);
   });
 });
 

@@ -6,7 +6,7 @@
  */
 import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "landrace/hooks";
 import {
-  BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
+  BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
   repositoryOf, ITEM_PAGE,
   type BranchHeads, type ChangedFile, type ChangedFiles, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
@@ -188,31 +188,50 @@ function oldLineOf(diff: string, line: number): number | null {
 }
 
 /**
- * Publish one branch to origin, fast-forward only — `pushBranch`, to the one
- * push URL `originPushUrl` allows.
+ * origin's one push URL, as `originPushUrl` allows it — the one destination
+ * landrace publishes an item's branch to and fetches it back from — and what
+ * git is handed with it.
  *
  * The token rides only to the project's own URL on `gitlabBaseUrl`, matched
  * as the very string git will use — `{gitlabBaseUrl}/{project}`, with or
  * without `.git` — never a parsed reading of it, which a second parser could
- * read another way. Any other origin is pushed with the operator's own
+ * read another way. Any other origin is reached with the operator's own
  * credentials and no token at all.
  *
  * With the token, it rides in git's environment as an `oauth2:` basic header
  * scoped to that exact URL, never on the command line; an empty value first
  * clears one some other tool configured, and credential helpers and askpass
- * are cleared so nothing git starts sees it. Whatever git says back is
- * scrubbed of the token and its base64 before it becomes an error.
+ * are cleared so nothing git starts sees it. `scrub` takes the token and its
+ * base64 out of whatever git says back, before it becomes an error.
  */
-async function push(git: Git, { token, baseUrl, project }: Client, branch: string, item: string, signal: AbortSignal): Promise<void> {
+async function origin(
+  git: Git, { token, baseUrl, project }: Client, branch: string, signal: AbortSignal, verb: "push" | "fetch",
+): Promise<{ url: string; auth: Array<[string, string]>; scrub: (text: string) => string }> {
   const basic = Buffer.from(`oauth2:${token}`).toString("base64");
   const scrub = (text: string): string => text.replaceAll(token, "[redacted]").replaceAll(basic, "[redacted]");
-  const url = await originPushUrl(git, branch, signal);
+  const url = await originPushUrl(git, branch, signal, verb);
   const header = `http.${url}.extraheader`;
   const auth: Array<[string, string]> = url === `${baseUrl}/${project}` || url === `${baseUrl}/${project}.git`
     ? [[header, ""], [header, `AUTHORIZATION: basic ${basic}`], ["credential.helper", ""], ["core.askPass", ""]]
     : [];
+  return { url, auth, scrub };
+}
+
+/** Publish one branch to origin, fast-forward only — `pushBranch`, to the URL `origin` read, with what it hands git. */
+async function push(git: Git, client: Client, branch: string, item: string, signal: AbortSignal): Promise<void> {
+  const { auth, scrub } = await origin(git, client, branch, signal, "push");
   try {
     await pushBranch(git, branch, item, signal, auth);
+  } catch (e) {
+    throw new Error(scrub(e instanceof Error ? e.message : String(e)));
+  }
+}
+
+/** Origin's head of one branch, fetched into this checkout — `fetchBranch`, from the URL `origin` read, with what it hands git. */
+async function fetchHead(git: Git, client: Client, branch: string, signal: AbortSignal): Promise<string | null> {
+  const { url, auth, scrub } = await origin(git, client, branch, signal, "fetch");
+  try {
+    return await fetchBranch(git, url, branch, signal, auth);
   } catch (e) {
     throw new Error(scrub(e instanceof Error ? e.message : String(e)));
   }
@@ -562,6 +581,10 @@ export class GitLab extends BaseForge {
 
   async push(branch: string, item: string, ctx: HookContext): Promise<void> {
     await push(this.git, this.gl(ctx), branch, item, ctx.signal);
+  }
+
+  async remoteHead(branch: string, ctx: RuntimeContext): Promise<string | null> {
+    return fetchHead(this.git, this.gl(ctx), branch, ctx.signal);
   }
 
   /**
