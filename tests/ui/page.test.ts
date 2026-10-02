@@ -1328,11 +1328,12 @@ describe("the page", () => {
     // Ask the step, Resolve, and the window's hashchange. And pairing's: the
     // row menu's Pairing…, the panel header's ⋯ and its Pairing… item, and
     // one for every button of its Pairing section (defined once, in
-    // pairingSectionOf). And the bell's: its own click, its note's ✕, and a
+    // pairingSectionOf). And the bell's: its own click, its note's ✕, the
+    // browser's permission change (defined once, in followPermission), and a
     // notification's (defined once, in notifyOf). And the message box's
     // Ctrl/⌘+Enter.
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(29);
+    expect(listeners).toHaveLength(30);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -2513,6 +2514,41 @@ describe("the notify bell", () => {
       expect(PAGE_HTML.slice(PAGE_HTML.indexOf("</button>", PAGE_HTML.indexOf('<button id="notify-toggle"')) + "</button>".length, note?.index).trim()).toBe("");
       expect(APP_JS).toContain('const bellNoteText = document.getElementById("notify-note");');
       expect(APP_JS).toContain('getElementById("notify-note-close").addEventListener("click", () => { bellNoteText.textContent = ""; });');
+    });
+  });
+
+  // Allowed in the site settings, as the note says: the bell updates by
+  // itself, and the note that told them how goes with the old permission.
+  describe("following the browser's permission", () => {
+    const followed = async (navigator: unknown) => {
+      let synced = 0;
+      const note = { textContent: "Notifications are blocked for this site" };
+      await runInNewContext(`${fnSource("followPermission")} followPermission()`, { navigator, bellNoteText: note, syncBell: () => { synced++; } });
+      return { note, synced: () => synced };
+    };
+
+    it("redraws the bell and drops its note when the permission changes, without a reload", async () => {
+      let change: (() => void) | undefined;
+      let queried: unknown;
+      const status = { addEventListener: (type: string, f: () => void) => { if (type === "change") change = f; } };
+      const { note, synced } = await followed({ permissions: { query: async (q: unknown) => { queried = q; return status; } } });
+      expect(queried).toEqual({ name: "notifications" });
+      expect(synced()).toBe(0);
+      change?.();
+      expect([synced(), note.textContent]).toEqual([1, ""]);
+    });
+
+    it.each([
+      ["has no permissions API", {}],
+      ["has no query", { permissions: {} }],
+      ["refuses to query notifications", { permissions: { query: async () => { throw new TypeError("notifications"); } } }],
+    ])("still works in a browser that %s", async (_, navigator) => {
+      await expect(followed(navigator)).resolves.toBeDefined();
+    });
+
+    it("is followed from load, and never asks", () => {
+      expect(APP_JS).toContain("\nfollowPermission();\n");
+      expect(fnSource("followPermission")).not.toContain("requestPermission");
     });
   });
 });

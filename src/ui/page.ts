@@ -2326,9 +2326,21 @@ async function onBellClick() {
   syncBell();
 }
 
+// Allowed or blocked in the site settings, the bell follows without a
+// reload, and a note about the old permission goes with it. Caught: a
+// browser without the Permissions API, or that will not query
+// notifications, keeps the bell as it was.
+async function followPermission() {
+  try {
+    const status = await navigator.permissions.query({ name: "notifications" });
+    status.addEventListener("change", () => { bellNoteText.textContent = ""; syncBell(); });
+  } catch (e) {}
+}
+
 bell.addEventListener("click", onBellClick);
 document.getElementById("notify-note-close").addEventListener("click", () => { bellNoteText.textContent = ""; });
 syncBell();
+followPermission();
 
 pollOnce().then(() => schedulePoll(POLL_MS));
 
