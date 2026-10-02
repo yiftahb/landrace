@@ -60,7 +60,7 @@ const RED = { name: "test", log: "FAIL src/export.test.ts\n  export > writes a h
 type During = (at: { stage: string; round: number }, pr: () => ExternalPull) => void | Promise<void>;
 
 /**
- * One item labelled lr:fast — or whatever `labels` says — over the in-memory
+ * One item labelled lr:auto and lr:fast — fastlane's, by the label model — over the in-memory
  * world, with the forge's pull request reachable once publish opened it.
  * `refuse` wraps the composed post hook, to cut in at an effect; every merge
  * asked of it is counted.
@@ -73,7 +73,7 @@ function road(opts: {
 } = {}) {
   const { workflow, steps } = flow("fastlane");
   const state = createExternalState({
-    items: [{ id: "1", title: "Export the table as CSV", body: "Add an Export button that downloads the table as one CSV file.", labels: ["lr:fast"] }],
+    items: [{ id: "1", title: "Export the table as CSV", body: "Add an Export button that downloads the table as one CSV file.", labels: ["lr:auto", "lr:fast"] }],
   });
   opts.seed?.(state);
   const pr = (): ExternalPull => state.pull("pr-1");
@@ -184,7 +184,8 @@ describe("fastlane, end to end", () => {
     ]);
     expect(state.item("1").closed).toBe("done");
     expect(state.item("1").labels).toContain("lr:stage:done");
-    expect(state.item("1").labels).not.toEqual(expect.arrayContaining(["lr:fast"]));
+    // Finished, it keeps what admitted it: the board files it under fastlane's Done.
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:fast"]));
     expect(state.item("1").labels).not.toContain("lr:working");
   });
 
@@ -197,7 +198,7 @@ describe("fastlane, end to end", () => {
     expect(run.counts()).toEqual({ build: 1, "code-review": 1 });
     expect(pr()).toMatchObject({ checks: "none", merged: true });
     expect(state.item("1").closed).toBe("done");
-    expect(state.item("1").labels).not.toContain("lr:fast");
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:fast"]));
   });
 
   /*
@@ -228,7 +229,7 @@ describe("fastlane, end to end", () => {
     expect(pr()).toMatchObject({ merged: true, headSha: "sha-new" });
     expect(state.item("1").closed).toBe("done");
     expect(state.item("1").labels).toContain("lr:stage:done");
-    expect(state.item("1").labels).not.toContain("lr:fast");
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:fast"]));
     // Each visit to merge is a round of its own, with its own record.
     expect(state.comments("1").filter((c) => c.startsWith("Merging the pull request"))).toEqual([
       expect.stringContaining("round 1."), expect.stringContaining("round 2."),
@@ -279,7 +280,7 @@ describe("fastlane, end to end", () => {
         return super.merge(pull, headSha);
       }
     }
-    const tracker = new MemoryTracker({ items: [{ id: "1", title: "Export", body: "Export as CSV.", labels: ["lr:fast"] }] });
+    const tracker = new MemoryTracker({ items: [{ id: "1", title: "Export", body: "Export as CSV.", labels: ["lr:auto", "lr:fast"] }] });
     const forge = new RacingForge();
     const hooks = compose({ tracker, forge });
     const { workflow, steps } = flow("fastlane");
@@ -326,7 +327,7 @@ describe("fastlane, end to end", () => {
     expect(r.result.settled).toBe("terminal");
     expect(pr()).toMatchObject({ merged: false, closed: "dropped" });
     expect(state.item("1").closed).toBe("dropped");
-    expect(state.item("1").labels).not.toContain("lr:fast");
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:fast"]));
     expect(state.item("1").labels).not.toContain("lr:awaiting");
 
     const writes = state.writes().length;
@@ -461,7 +462,7 @@ describe("fastlane, end to end", () => {
     expect(merged.calls).toEqual([]);
     expect(state.item("1").closed).toBe("done");
     expect(state.item("1").labels).toContain("lr:stage:done");
-    expect(state.item("1").labels).not.toEqual(expect.arrayContaining(["lr:fast"]));
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:fast"]));
     expect(state.item("1").labels).not.toContain("lr:blocked");
   });
 
@@ -552,7 +553,7 @@ describe("fastlane, end to end", () => {
   it("14b. reviews a push someone else made once, fetched before the step, and merges it — never stuck", async () => {
     const { workflow, steps } = flow("fastlane");
     const state = createExternalState({
-      items: [{ id: "1", title: "Export the table as CSV", body: "Add an Export button.", labels: ["lr:fast"] }],
+      items: [{ id: "1", title: "Export the table as CSV", body: "Add an Export button.", labels: ["lr:auto", "lr:fast"] }],
     });
     /** This checkout's own branch: what its build committed, and what a fetch of origin's brought it. */
     const checkout = new Map<string, string>();
@@ -765,9 +766,9 @@ describe("fastlane, end to end", () => {
 
   /*
    * The item is closed before its position and labels say it is done: an
-   * outage on the close leaves it at merge, still labelled lr:fast, and the
-   * next tick closes it. Closed after them, it was left open, done and no
-   * longer admitted, which nothing works again.
+   * outage on the close leaves it at merge, and the next tick closes it.
+   * Closed after them, it was left open and done, with nothing left to do
+   * that would close it.
    */
   it("12. closes the item on the next tick when the close met an outage at done", async () => {
     let down = true;
@@ -788,7 +789,7 @@ describe("fastlane, end to end", () => {
     expect(next.result.settled).toBe("terminal");
     expect(state.item("1").closed).toBe("done");
     expect(state.item("1").labels).toContain("lr:stage:done");
-    expect(state.item("1").labels).not.toContain("lr:fast");
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:fast"]));
   });
 
   /*
@@ -819,7 +820,7 @@ describe("fastlane, end to end", () => {
   });
 
   it("8c. leaves GitHub's 502 on the merge unrecorded, and merges on the next tick", async () => {
-    const gh = createFakeTracker([{ number: 1, labels: ["lr:fast", "lr:stage:ci"] }]);
+    const gh = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:fast", "lr:stage:ci"] }]);
     const opened = gh.openPull({ head: "landrace/1", number: 8, headSha: "abc1234", closes: [1], checks: "SUCCESS" });
     // The review that passed it, at the head it read.
     gh.sayAs("yiftahb", 1, `Reviewed.${renderMarker(recordMarker({
@@ -845,13 +846,16 @@ describe("fastlane, end to end", () => {
   });
 
   /*
-   * main starts lr:auto and fastlane lr:fast; an item carrying both is
-   * claimed by both, which halts it, naming both, before either writes.
+   * The label model: lr:auto is "Landrace manages this item", and lr:fast
+   * routes it to fastlane instead of main. One tick of the whole workspace
+   * over one item: carrying both, it is fastlane's alone and starts at build;
+   * lr:auto alone, main's, at spec; lr:fast alone, nobody's, and nothing is
+   * written.
    */
-  it("9. halts an item labelled lr:auto and lr:fast as claimed by both workflows, writing nothing", async () => {
-    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto", "lr:fast"] }] });
+  const tickOne = async (labels: string[]) => {
+    const state = createExternalState({ items: [{ id: "1", title: "Export", body: "Export as CSV.", labels }] });
     const ran: string[] = [];
-    const executor: Executor = { id: "agent", run: async () => { ran.push("ran"); throw new Error("no step may run"); } };
+    const executor: Executor = { id: "agent", run: async () => { ran.push("ran"); throw new Error("the agent is not here"); } };
     const stop = new AbortController();
     const runtimeCtx: RuntimeContext = { ...ctx, signal: stop.signal };
     const log = createLogger({ sink: () => {} });
@@ -867,11 +871,29 @@ describe("fastlane, end to end", () => {
       dir: root, workflows: listed, preflights: [], intervalMs: 60_000, concurrency: 2, stop,
       running: new Map(), seen: new Map(), log, ctx: runtimeCtx,
     };
+    const rows = await tickWorkspace({ runtime, lock: { root } });
+    return { state, rows, ran };
+  };
 
-    expect(await tickWorkspace({ runtime, lock: { root } })).toEqual([{ item: "1", outcome: "claimed by fastlane and full-cycle" }]);
+  it("9. gives an item labelled lr:auto and lr:fast to fastlane alone, which starts it at build", async () => {
+    const { state, rows, ran } = await tickOne(["lr:auto", "lr:fast"]);
+    expect(rows).toEqual([expect.objectContaining({ item: "1", workflow: "fastlane" })]);
+    expect(ran).toEqual(["ran"]);
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:fast", "lr:stage:build"]));
+  });
+
+  it("9b. admits an item labelled lr:fast alone to neither workflow, fastlane saying it has no lr:auto, writing nothing", async () => {
+    const { state, rows, ran } = await tickOne(["lr:fast"]);
+    expect(rows).toEqual([{ item: "1", outcome: "skipped: no lr:auto label" }]);
     expect(ran).toEqual([]);
     expect(state.writes()).toEqual([]);
-    expect(state.item("1").labels).toEqual(["lr:auto", "lr:fast"]);
-    expect(state.comments("1")).toEqual([]);
+    expect(state.item("1").labels).toEqual(["lr:fast"]);
+  });
+
+  it("9c. gives an item labelled lr:auto alone to main, which starts it at spec", async () => {
+    const { state, rows } = await tickOne(["lr:auto"]);
+    expect(rows).toEqual([expect.objectContaining({ item: "1", workflow: "main" })]);
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:stage:spec"]));
+    expect(state.item("1").labels).not.toContain("lr:fast");
   });
 });

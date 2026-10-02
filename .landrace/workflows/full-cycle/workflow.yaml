@@ -20,9 +20,13 @@ hooks:
   - ../../hooks/claude.ts
   - ../../hooks/slack.ts
 
+# lr:auto is "Landrace manages this item", and lr:fast sends it to fastlane
+# instead: an item carrying both is fastlane's, never claimed twice.
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
+  - when: { "node.state.labels": { $nin: ["lr:fast"] } }
+    else: "a fastlane item (lr:fast)"
 
 # One key, because one key is read. The spec and review caps are the `$lt`
 # comparisons in the triggers below and in each `goto` entry's `when`, where
@@ -467,9 +471,11 @@ stages:
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
+    # lr:auto stays: a finished item is filed under the workflow that worked
+    # it, by its own eligible rule — claims judge open items only.
     on_enter:
       - { type: tracker.status, value: done }
-      - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
+      - { type: tracker.label, remove: ["lr:awaiting", "lr:working"] }
 
   # The halts list every step, where the stages waiting on a person list two.
   # Retry is a goto to the step whose failure put the item here, and any

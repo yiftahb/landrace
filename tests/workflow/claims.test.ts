@@ -24,6 +24,32 @@ describe("claimProblems: two workflows over one source", () => {
     }]);
   });
 
+  /*
+   * The shipped label model: main admits lr:auto and turns lr:fast away
+   * (`$nin`); fastlane admits and needs both. Every rule is labels alone, so
+   * the check judges each direction rather than abstaining — and says so
+   * when a rule turning a label away is all that stands between two claims.
+   */
+  const notFast = { when: { "node.state.labels": { $nin: ["lr:fast"] } }, else: "a fastlane item (lr:fast)" };
+  const main = (admit = ["lr:auto"]) => flow("main", admit, [rule(["lr:auto"], "no lr:auto label"), notFast]);
+  const fast = (admit = ["lr:auto", "lr:fast"]) => flow("fast", admit, [rule(["lr:auto"], "no lr:auto label"), rule(["lr:fast"], "no lr:fast label")]);
+
+  it("is clean for main turning lr:fast away and fastlane needing both", () => {
+    expect(claimProblems(space(main(), fast()), oneSource)).toEqual([]);
+  });
+
+  it("judges a rule that turns a label away, rather than abstaining on it", () => {
+    // Fastlane admitting lr:auto alone starts an item main's rules accept, $nin and all.
+    expect(claimProblems(space(main(), fast(["lr:auto"])), oneSource).map((p: { message: string }) => p.message)).toEqual([
+      "workflows fast and main both claim an item started in fast (admit [lr:auto] satisfies main's eligible)",
+    ]);
+    // Without its $nin, main would claim what fastlane starts.
+    const greedy = flow("main", ["lr:auto"], [rule(["lr:auto"], "no lr:auto label")]);
+    expect(claimProblems(space(greedy, fast()), oneSource).map((p: { message: string }) => p.message)).toEqual([
+      "workflows fast and main both claim an item started in fast (admit [lr:auto, lr:fast] satisfies main's eligible)",
+    ]);
+  });
+
   it("abstains when the other's eligible reads anything but labels", () => {
     const reads = [{ when: { "node.state.assignees": { $in: ["ann"] } }, else: "no" }];
     expect(claimProblems(space(flow("main", ["lr:auto"], [rule(["lr:auto"], "no")]), flow("fast", ["lr:fast"], reads)), oneSource)).toEqual([]);

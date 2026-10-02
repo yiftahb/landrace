@@ -3,6 +3,7 @@ import type { Entry, Graph, Held, Node, Relationship, Running, Stage, Workflow }
 import { chatFor } from "#ui/chat.js";
 import { boardView, conversationOf, createBoard } from "#ui/board.js";
 import { laneOf } from "#runner/status.js";
+import { loadWorkspace } from "#workflow/workspace.js";
 
 const workflow: Workflow = {
   version: 1, name: "t", description: "test",
@@ -1143,5 +1144,34 @@ describe("the pages a branch is drawn on", () => {
     const v = view(graph([item("1")]));
     expect(v.rows[0]?.tag).toBeNull();
     expect(v.workflows).toEqual([{ id: "t", name: "t", needsYou: 0 }]);
+  });
+});
+
+/*
+ * The board (the user's): a finished item keeps the labels that admitted it,
+ * so it is filed by its own workflow's `eligible` — claims judge open items
+ * only — and never falls back onto every page. With this repository's own
+ * workflows, over one tracker as their one hook module makes it.
+ */
+describe("a finished item, on the shipped workflows' pages", () => {
+  let shipped: Array<{ id: string; workflow: Workflow }>;
+  beforeAll(async () => {
+    shipped = (await loadWorkspace(".landrace")).workflows.map(({ id, workflow }) => ({ id, workflow }));
+  });
+  const pagesOf = (labels: string[], closed: "done" | "dropped") => {
+    const g = graph([item("1", { closed }, [...labels, `lr:stage:${closed === "done" ? "done" : "closed"}`])]);
+    const listing = {
+      graphs: [g], sourceOf: new Map(shipped.map((w) => [w.id, 0])),
+      claims: claimItems(shipped.map((w) => ({ ...w, source: 0 })), [g]),
+    };
+    return view(g, { workflows: shipped, listing }).rows.map((r) => [r.id, r.pages]);
+  };
+
+  it.each(["done", "dropped"] as const)("files a closed lr:auto and lr:fast item (%s) on fastlane's page alone", (closed) => {
+    expect(pagesOf(["lr:auto", "lr:fast"], closed)).toEqual([["1", ["fastlane"]]]);
+  });
+
+  it("files a closed lr:auto item on main's page alone", () => {
+    expect(pagesOf(["lr:auto"], "done")).toEqual([["1", ["main"]]]);
   });
 });

@@ -2,7 +2,7 @@ version: 1
 name: Fastlane
 description: "Small changes from the item's own text: build, review, CI, merged automatically. A person only when it is stuck."
 
-# An item labelled lr:fast is built from its own text — there is no spec —
+# An item labelled lr:auto and lr:fast is built from its own text — there is no spec —
 # reviewed, put through CI, and merged by Landrace; then the item is closed.
 # A person is needed only at a halt, or when a cap leaves the item `stuck`.
 #
@@ -56,7 +56,7 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 #   again. So is a pull request the forge will not open or close. A pull
 #   request a person merged by hand finishes the item from `blocked`, as from
 #   `stuck`.
-admit: [lr:fast]
+admit: [lr:auto, lr:fast]
 
 # The same three integrations full-cycle loads, by the same paths: one project.
 hooks:
@@ -64,8 +64,13 @@ hooks:
   - ../../hooks/claude.ts
   - ../../hooks/slack.ts
 
-# Never lr:auto: an item both workflows accepted would be claimed twice and halt.
+# lr:auto is "Landrace manages this item", and lr:fast sends it here rather
+# than to main, whose eligible turns lr:fast away: an item carrying both is
+# this workflow's alone. Taking lr:auto off stops it; taking lr:fast off sends
+# it to main.
 eligible:
+  - when: { "node.state.labels": { $in: ["lr:auto"] } }
+    else: "no lr:auto label"
   - when: { "node.state.labels": { $in: ["lr:fast"] } }
     else: "no lr:fast label"
 
@@ -369,12 +374,14 @@ stages:
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
     # The close first, as merge merges first: an outage on it leaves the item
-    # where it was, still lr:fast, and the next tick closes it. After the
-    # labels, it left an item done, no longer admitted, and open for good.
+    # where it was, and the next tick closes it. After the status, it left an
+    # item at done and open, with nothing left to do that would close it.
+    # lr:auto and lr:fast stay: a finished item is filed under this
+    # workflow by its own eligible rule — claims judge open items only.
     on_enter:
       - { type: tracker.close }
       - { type: tracker.status, value: done }
-      - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
+      - { type: tracker.label, remove: ["lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
 
   # A person asked to drop it: its pull request is closed unmerged, then the
   # item, as dropped. Both before the position moves, as merge merges first,
@@ -396,7 +403,7 @@ stages:
       - { type: pull.close, branch: "landrace/{item}" }
       - { type: tracker.close, how: dropped }
       - { type: tracker.status, value: closed }
-      - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
+      - { type: tracker.label, remove: ["lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
 
   # ── a person's turn ──────────────────────────────────────────────────────
   #

@@ -2,7 +2,7 @@ import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gotoTargetsOf } from "#core/goto.js";
-import { compile, gotoDeclined, gotoNotListed, missingPaths } from "#core/index.js";
+import { compile, decide, eligibilityOfNode, gotoDeclined, gotoNotListed, missingPaths } from "#core/index.js";
 import { globMatches } from "#kit/forge.js";
 import type { Condition, LoadedWorkflow, Run, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { splitSections } from "#workflow/extend.js";
@@ -80,12 +80,19 @@ async function filesUnder(dir: string): Promise<string[]> {
 }
 
 describe("the .landrace workspace", () => {
-  it("holds fastlane beside main, each started by a label of its own", () => {
+  /*
+   * The label model (the user's, 2026-10-02): `lr:auto` is "Landrace manages
+   * this item", and `lr:fast` routes it to fastlane instead of full-cycle.
+   * full-cycle admits lr:auto and turns lr:fast away; fastlane admits, and
+   * needs, both.
+   */
+  it("holds fastlane beside full-cycle: lr:auto starts either, and lr:fast says which", () => {
     expect(workspace.workflows.map((w) => w.id)).toEqual(["fastlane", "full-cycle"]);
     const { workflow } = flow("fastlane");
     expect(workflow.name).toBe("Fastlane");
     expect(workflow.description.trim()).not.toBe("");
-    expect(workflow.admit).toEqual(["lr:fast"]);
+    expect(workflow.admit).toEqual(["lr:auto", "lr:fast"]);
+    expect(flow("main").workflow.admit).toEqual(["lr:auto"]);
   });
 
   it("validates both workflows clean, and neither claims an item the other starts", () => {
@@ -94,11 +101,65 @@ describe("the .landrace workspace", () => {
     }
     // One source, as the shipped hooks are one module both workflows load.
     expect(claimProblems(workspace, () => "the project's source")).toEqual([]);
-    // And not by abstaining: both rules are labels alone, and each refuses the other's label.
-    expect(accepts(flow("fastlane").workflow, ["lr:fast"])).toBe(true);
+    // And not by abstaining: both rules are labels alone, and each turns the other's start away.
+    expect(accepts(flow("fastlane").workflow, ["lr:auto", "lr:fast"])).toBe(true);
     expect(accepts(flow("fastlane").workflow, ["lr:auto"])).toBe(false);
+    expect(accepts(flow("fastlane").workflow, ["lr:fast"])).toBe(false);
     expect(accepts(flow("full-cycle").workflow, ["lr:auto"])).toBe(true);
+    expect(accepts(flow("full-cycle").workflow, ["lr:auto", "lr:fast"])).toBe(false);
     expect(accepts(flow("full-cycle").workflow, ["lr:fast"])).toBe(false);
+  });
+
+  it.each([
+    ["fastlane", ["lr:fast"], "no lr:auto label"],
+    ["fastlane", ["lr:auto"], "no lr:fast label"],
+    ["main", ["lr:fast"], "no lr:auto label"],
+    ["main", ["lr:auto", "lr:fast"], "a fastlane item (lr:fast)"],
+  ])("turns %s's item labelled %j away, saying %s", (id, labels, reason) => {
+    const node = { id: "1", kind: "item", title: "t", link: "", closed: null, priority: null, origin: null, state: { labels, assignees: [] } };
+    expect(eligibilityOfNode(flow(id).workflow, node)).toEqual({ eligible: false, reason });
+  });
+
+  /*
+   * A finished item keeps what admitted it, so the board files it under the
+   * workflow that worked it rather than on every page: no stage of either
+   * workflow takes an admit label off — `done` and `closed` remove only
+   * the engine's own working, waiting and halt labels.
+   */
+  it.each(["main", "fastlane"])("never takes %s's admit labels off, finishing or not", (id) => {
+    const { workflow } = flow(id);
+    const admit = new Set(workflow.admit ?? []);
+    const removed = workflow.stages.flatMap((stage) => (stage.on_enter ?? [])
+      .filter((e) => e.type === "tracker.label")
+      .flatMap((e) => ((e.remove as string[] | undefined) ?? []).filter((l) => admit.has(l)).map((l) => `${stage.id}: ${l}`)));
+    expect(removed).toEqual([]);
+  });
+
+  it.each([
+    ["main", "done", ["lr:awaiting", "lr:working"]],
+    ["fastlane", "done", ["lr:awaiting", "lr:working", "lr:blocked", "lr:screened"]],
+    ["fastlane", "closed", ["lr:awaiting", "lr:working", "lr:blocked", "lr:screened"]],
+  ])("finishes %s's item at %s taking off only %j", (id, stage, labels) => {
+    const found = flow(id).workflow.stages.find((s) => s.id === stage);
+    const label = (found?.on_enter ?? []).filter((e) => e.type === "tracker.label");
+    expect(label).toEqual([{ type: "tracker.label", remove: labels }]);
+  });
+
+  /*
+   * Adding lr:fast to an item main is working moves it to fastlane, at the
+   * same stage where fastlane has one; at a stage fastlane lacks — main's
+   * spec stages — it is placed nowhere, and halts for a person rather than
+   * starting over at build.
+   */
+  it("halts, unplaced, an item main had at a spec stage, and carries on one at code review", () => {
+    const fastlane = flow("fastlane").workflow;
+    const relabelled = (stage: string): Snapshot => ({
+      ...snapshotOf({ stage, counters: { [stage]: 1 } }),
+      node: { id: "1", kind: "item", state: { labels: ["lr:auto", "lr:fast", `lr:stage:${stage}`], assignees: [] } },
+    });
+    expect(decide(fastlane, relabelled("spec")))
+      .toMatchObject({ action: "halt", why: expect.stringMatching(/already run spec but has no position/) });
+    expect(decide(fastlane, relabelled("code-review"))).toMatchObject({ stage: { id: "code-review" } });
   });
 
   it("leaves lr:fast to the workflow: the engine names it nowhere", async () => {
@@ -378,7 +439,7 @@ describe("fastlane's stages", () => {
     expect(types).not.toContain("nodes.close");
   });
 
-  it.each([["done", undefined], ["closed", "dropped"]])("closes the item at %s (how: %s) and takes its labels off", (id, how) => {
+  it.each([["done", undefined], ["closed", "dropped"]])("closes the item at %s (how: %s) and takes its working labels off", (id, how) => {
     const effects = stageOf(id).on_enter ?? [];
     expect(stageOf(id).terminal).toBe(true);
     expect(effects.filter((e) => e.type === "tracker.close")).toEqual([how === undefined ? { type: "tracker.close" } : { type: "tracker.close", how }]);
@@ -387,7 +448,10 @@ describe("fastlane's stages", () => {
     expect(types.indexOf("tracker.close")).toBeLessThan(types.indexOf("tracker.status"));
     expect(types.indexOf("tracker.close")).toBeLessThan(types.indexOf("tracker.label"));
     const removed = effects.flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
-    expect(removed).toEqual(expect.arrayContaining(["lr:fast", "lr:working", "lr:awaiting"]));
+    expect(removed).toEqual(expect.arrayContaining(["lr:working", "lr:awaiting"]));
+    // Never what admitted it: the board files a finished item by its own eligible rule.
+    expect(removed).not.toEqual(expect.arrayContaining(["lr:fast"]));
+    expect(removed).not.toEqual(expect.arrayContaining(["lr:auto"]));
   });
 
   it("lets a halt send the item back to every step it has and every way in the forge can refuse, and stuck to build and review", () => {

@@ -511,9 +511,9 @@ describe("an item goes all the way round §10", () => {
       { stage: "code-review", round: 2 },
       { stage: "retro", round: 1 },
     ]);
-    // Terminal: the engine's own labels are gone, so the next tick does not
-    // pick the item up again.
-    expect(done.labels).toEqual(["lr:stage:done"]);
+    // Terminal: the engine's own working labels are gone, and what admitted
+    // it stays, so the board files the finished item under main.
+    expect(done.labels).toEqual(["lr:auto", "lr:stage:done"]);
     expect(done.result.settled).not.toBe("cap");
   });
 
