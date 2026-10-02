@@ -123,6 +123,7 @@ export const PAGE_HTML = `<!doctype html>
 </div>
 <p id="no-match" role="status" aria-live="polite" class="mb-4 px-1 text-sm italic text-neutral-400 empty:hidden dark:text-neutral-500"></p>
 ${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
+<p id="listing" hidden role="status" class="px-1 py-8 text-sm italic text-neutral-400 dark:text-neutral-500">Listing…</p>
 <div id="all-set" hidden class="flex flex-col items-center gap-2 py-16 text-center text-neutral-400 dark:text-neutral-600">
 <svg role="img" aria-label="A person in a beach chair under a palm tree" viewBox="0 0 240 160" class="h-40 w-60" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 <circle cx="204" cy="28" r="9" fill="currentColor" fill-opacity=".2"></circle>
@@ -1185,14 +1186,20 @@ function laneHidden(drawn, search, done) {
 }
 
 // The all-set block is hidden whenever it is not all set.
-function allSetHidden(page, roots, search) {
-  return !allSet(page, roots, search);
+function allSetHidden(page, roots, search, listed) {
+  return !allSet(page, roots, search, listed);
+}
+
+// Home, before the first listing: no rows then means nothing was read, not
+// that nothing needs the person, so it says so instead of the beach.
+function listingShown(page, listed) {
+  return page === null && listed !== true;
 }
 
 // Only on Needs You, with nothing on it and no query: a search that matched
 // nothing says so ("Nothing matches."), it is not good news.
-function allSet(page, roots, search) {
-  return page === null && search === null && roots.length === 0;
+function allSet(page, roots, search, listed) {
+  return listed === true && page === null && search === null && roots.length === 0;
 }
 
 function titleOf(n) {
@@ -1282,8 +1289,10 @@ function render(view) {
   // One seen-set for the whole page: a node is drawn once, in one lane.
   const seen = new Set();
   let matched = 0;
-  const done = allSet(page, rootsOn(view.rows, page), search);
-  document.getElementById("all-set").hidden = allSetHidden(page, rootsOn(view.rows, page), search);
+  const done = allSet(page, rootsOn(view.rows, page), search, view.listed);
+  const listing = listingShown(page, view.listed);
+  document.getElementById("all-set").hidden = allSetHidden(page, rootsOn(view.rows, page), search, view.listed);
+  document.getElementById("listing").hidden = !listing;
   for (const lane of document.querySelectorAll("[data-lane]")) {
     // Whole branches, filed by their root's lane — the server's cascade — and
     // counted as branches, so a lane's number is how many things to look at.
@@ -1297,7 +1306,7 @@ function render(view) {
     lane.querySelector(".lane-count").textContent = String(roots.length);
     // Without a query every lane stays, saying "None" when empty — a lane that
     // vanished would read as a fault. With one, a lane nothing matched is noise.
-    lane.hidden = laneHidden(drawn, search, done);
+    lane.hidden = laneHidden(drawn, search, done || listing);
     // A match inside a closed Not admitted / Done lane would show only as a count.
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
@@ -1518,6 +1527,21 @@ function currentRow() {
   if (panelId === null || !lastView) return null;
   const row = findRow(lastView.rows, panelId);
   return row && row.kind === "item" && row.panel ? row : null;
+}
+
+// An item the board lists but offers no panel for — a clash, or reads the
+// server refuses. A notification or ?item= can still open it, and the news
+// is its note: it is on the board, and says why there is nothing to read.
+function bareRow() {
+  if (panelId === null || !lastView) return null;
+  const row = findRow(lastView.rows, panelId);
+  return row && row.kind === "item" && !row.panel ? row : null;
+}
+
+// "Not on the board" is only for an id the view does not have.
+function panelTitleOf(row, id, loaded) {
+  if (!row) return loaded ? "#" + id + " is not on the board" : "Loading…";
+  return row.panel ? row.title : "#" + row.id + " " + row.title;
 }
 
 // Which bottom half an item gets: live lines while its agent runs, the
@@ -1750,8 +1774,9 @@ function renderPanel() {
     if (panelMore.hidden && openMenuKey === "panel") closeMenu();
     pairingItem.textContent = pairing.shown ? "Hide pairing" : "Pairing…";
     if (!row) {
-      panelTitle.textContent = lastView ? "#" + panelId + " is not on the board" : "Loading…";
-      panelTop.replaceChildren();
+      const bare = bareRow();
+      panelTitle.textContent = panelTitleOf(bare, panelId, !!lastView);
+      panelTop.replaceChildren(...(bare ? [el("p", "text-sm text-neutral-600 dark:text-neutral-300", bare.note)] : []));
       panelBottom.replaceChildren();
       composer.hidden = true;
       return;
@@ -2110,7 +2135,10 @@ function openPanel(id) {
 // ✕ and Escape: the hash goes, as Back would take it, with no history entry
 // of its own for Forward to reopen.
 function closePanel() {
-  history.replaceState(null, "", location.pathname + location.search + hashOf({ workflow: pageNow(), item: null }));
+  // Before the first view there is nothing to judge the workflow against, and
+  // the hash's own part must survive an Escape, not be rewritten to home.
+  const workflow = lastView ? pageNow() : routeOf(location.hash).workflow;
+  history.replaceState(null, "", location.pathname + location.search + hashOf({ workflow, item: null }));
   showPanel(null);
 }
 

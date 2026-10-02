@@ -2590,10 +2590,35 @@ describe("the render rules of the sidebar pages", () => {
       expect(b.replaced).toEqual(["/#/"]);
     });
 
-    it("closes to Needs You before the first view has landed", () => {
+    it("keeps the hash's own workflow before the first view has landed", () => {
       const { c, replaced } = setup("#/w/main?item=12", null);
       run(c, "closePanel()");
-      expect(replaced).toEqual(["/#/"]);
+      expect(replaced).toEqual(["/#/w/main"]);
+    });
+  });
+
+  describe("the panel of a row with no panel", () => {
+    const title = (...args: unknown[]): string => {
+      const c: Record<string, unknown> = { args };
+      runInNewContext(fnSource("panelTitleOf"), c);
+      return runInNewContext("panelTitleOf(...args)", c) as string;
+    };
+    const clash = { id: "17", kind: "item", title: "Two trackers", panel: null, note: "reported by the sources of a and b" };
+
+    it("is titled by the row's own number and title, not 'not on the board'", () => {
+      expect(title(clash, "17", true)).toBe("#17 Two trackers");
+    });
+    it("keeps 'not on the board' for an id the view lacks, and Loading… before a view", () => {
+      expect(title(null, "17", true)).toBe("#17 is not on the board");
+      expect(title(null, "17", false)).toBe("Loading…");
+    });
+    it("titles a row with a panel by its title alone", () => {
+      expect(title({ ...clash, panel: {} }, "17", true)).toBe("Two trackers");
+    });
+    it("is found by a lookup that offers no reads or writes", () => {
+      const src = fnSource("renderPanel");
+      expect(src).toContain("panelTitleOf(");
+      expect(src).toContain("bareRow()");
     });
   });
 });
@@ -2627,10 +2652,29 @@ describe("the empty Needs You", () => {
   };
 
   it("is all set only on Needs You, with nothing there and no search", () => {
-    expect(allSet(null, [], null)).toBe(true);
-    expect(allSet(null, [{ id: "1" }], null)).toBe(false);
-    expect(allSet("main", [], null)).toBe(false);
-    expect(allSet(null, [], { self: new Set(), below: new Set() })).toBe(false);
+    expect(allSet(null, [], null, true)).toBe(true);
+    expect(allSet(null, [{ id: "1" }], null, true)).toBe(false);
+    expect(allSet("main", [], null, true)).toBe(false);
+    expect(allSet(null, [], { self: new Set(), below: new Set() }, true)).toBe(false);
+  });
+
+  it("is not all set before anything has been listed: no data is not an all-clear", () => {
+    expect(allSet(null, [], null, false)).toBe(false);
+  });
+
+  it("says Listing… on the home page until the first listing, and nowhere else", () => {
+    const run = (args: unknown[]): boolean => {
+      const c: Record<string, unknown> = { args };
+      runInNewContext(fnSource("listingShown"), c);
+      return runInNewContext("listingShown(...args)", c) as boolean;
+    };
+    expect(run([null, false])).toBe(true);
+    expect(run([null, true])).toBe(false);
+    expect(run(["main", false])).toBe(false);
+    const block = /<p id="listing"[^>]*>[^<]*<\/p>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(block).toContain("Listing…");
+    expect(block).toContain("hidden");
+    expect(block).not.toContain("rose");
   });
 
   it("draws the beach in greyscale, from the page's own colour", () => {
@@ -2652,13 +2696,17 @@ describe("the empty Needs You", () => {
       runInNewContext(fnSource("allSet") + fnSource("allSetHidden") + fnSource("laneHidden"), c);
       return runInNewContext(expr, c) as boolean;
     };
-    expect(run("allSetHidden(...args)", [null, [], null])).toBe(false);
-    expect(run("allSetHidden(...args)", [null, [{}], null])).toBe(true);
+    expect(run("allSetHidden(...args)", [null, [], null, true])).toBe(false);
+    expect(run("allSetHidden(...args)", [null, [], null, false])).toBe(true);
+    expect(run("allSetHidden(...args)", [null, [{}], null, true])).toBe(true);
     expect(run("laneHidden(...args)", [[], null, true])).toBe(true);
     expect(run("laneHidden(...args)", [[], null, false])).toBe(false);
     const render = fnSource("render");
-    expect(render).toContain("allSet(page, rootsOn(view.rows, page), search)");
-    expect(render).toContain("hidden = allSetHidden(page, rootsOn(view.rows, page), search)");
-    expect(render).toContain("laneHidden(drawn, search, done)");
+    expect(render).toContain("allSet(page, rootsOn(view.rows, page), search, view.listed)");
+    expect(render).toContain("hidden = allSetHidden(page, rootsOn(view.rows, page), search, view.listed)");
+    expect(render).toContain("hidden = !listing");
+    // The unlisted home replaces the empty lane too, as the beach does.
+    expect(render).toContain("const listing = listingShown(page, view.listed)");
+    expect(render).toContain("laneHidden(drawn, search, done || listing)");
   });
 });
