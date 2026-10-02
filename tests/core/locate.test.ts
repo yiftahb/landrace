@@ -156,6 +156,9 @@ describe("writesNothing", () => {
   it("is false for a trigger", () => {
     expect(writesNothing(wf({ id: "a", ...placed, triggers: [{ when: { "run.stage": "a" } }] }))).toBe(false);
   });
+  it("is false with an entry stage, since entering an unplaced item is a write", () => {
+    expect(writesNothing(wf({ id: "a", waits: "person", entry: true, ...placed }, { id: "done", terminal: true }))).toBe(false);
+  });
   it("is false for an on_enter", () => {
     expect(writesNothing(wf({ id: "a", ...placed, on_enter: [{ type: "nodes.close" } as never] }))).toBe(false);
   });
