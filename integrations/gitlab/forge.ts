@@ -34,6 +34,32 @@ interface MergeRequest {
   updated_at?: string | null;
 }
 
+/** A pipeline as REST lists one: the commit it ran on, and where it stands. */
+interface Pipeline {
+  id: number;
+  sha: string;
+  status: string;
+}
+
+const PIPELINE_STATES: Record<string, CheckState> = {
+  success: "success", failed: "failure", canceled: "failure",
+  created: "pending", waiting_for_resource: "pending", preparing: "pending", pending: "pending", running: "pending", scheduled: "pending", manual: "pending",
+  skipped: "none",
+};
+
+/** What GitLab said, out of the JSON body of a refusal: its `message`, or the body as it came. */
+function refusalMessage(e: unknown): string {
+  const body = (e as { body?: unknown } | null)?.body;
+  if (typeof body !== "string") return e instanceof Error ? e.message : String(e);
+  try {
+    const parsed = JSON.parse(body) as { message?: unknown; error?: unknown };
+    const said = parsed.message ?? parsed.error;
+    return typeof said === "string" ? said : Array.isArray(said) ? said.join("; ") : body;
+  } catch {
+    return body;
+  }
+}
+
 /** One note of a discussion. `system` is GitLab's own ("added 1 commit"), never anybody's word. */
 interface Note {
   body: string | null;
@@ -331,20 +357,78 @@ export class GitLab extends BaseForge {
     await this.gl(ctx).put(`/merge_requests/${pull}`, { state_event: "close" });
   }
 
-  // PLACEHOLDER — replaced in P6 Task 3. Only so the build holds while the
-  // kit's abstract CI and merge land first: nothing is read, and nothing merges.
-  async checks(): Promise<CheckState> {
-    return "none";
+  /**
+   * The merge request's newest pipeline, on its head. A pipeline of an older
+   * commit says nothing of this head — the head's has not started — so that
+   * reads `pending`, never the old verdict. No pipeline at all is nothing
+   * configured to check it, or nothing registered yet: `none`. A status this
+   * does not know is not read, and so is not green.
+   */
+  async checks(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState> {
+    const newest = await this.newestPipeline(pull, ctx);
+    if (newest === null) return "none";
+    if (newest.sha !== pull.headSha) return "pending";
+    const known = PIPELINE_STATES[newest.status];
+    if (known === undefined) throw new Error(`GitLab answered a pipeline status "${newest.status}" for !${pull.number}, which landrace does not know how to read`);
+    return known;
   }
 
-  // PLACEHOLDER — replaced in P6 Task 3.
-  async failedChecks(): Promise<FailedCheck[]> {
-    return [];
+  /**
+   * The head's pipeline's failed jobs, each with its trace: a trace that
+   * cannot be had is `null` — the job is still named. A head whose pipeline
+   * has not started has no failures to name.
+   *
+   * ponytail: one page of 100 failed jobs; more than that is not worth paging for.
+   */
+  async failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]> {
+    const gl = this.gl(ctx);
+    const newest = await this.newestPipeline(pull, ctx);
+    if (newest === null || newest.sha !== pull.headSha) return [];
+    let jobs: Array<{ id: number; name: string }>;
+    try {
+      jobs = await gl.get(`/pipelines/${newest.id}/jobs?scope[]=failed&per_page=${PER_PAGE}`);
+    } catch (e) {
+      throw this.pipelineReadFailure(e);
+    }
+    const failed: FailedCheck[] = [];
+    for (const job of jobs) failed.push({ name: job.name, log: await gl.text(`/jobs/${job.id}/trace`).catch(() => null) });
+    return failed;
   }
 
-  // PLACEHOLDER — replaced in P6 Task 3.
-  async merge(): Promise<MergeAnswer> {
-    throw new Error("merging is not implemented for this forge yet");
+  private async newestPipeline(pull: PullRecord, ctx: RuntimeContext): Promise<Pipeline | null> {
+    if (pull.headSha === "") throw new Error(`!${pull.number} has no head commit to read checks on`);
+    try {
+      return (await this.gl(ctx).get<Pipeline[]>(`/merge_requests/${pull.number}/pipelines?per_page=1`))[0] ?? null;
+    } catch (e) {
+      throw this.pipelineReadFailure(e);
+    }
+  }
+
+  /** A refused read names the scope and role; any other failure is passed as it came — never an answer. */
+  private pipelineReadFailure(e: unknown): unknown {
+    return tokenRejected(e) ?? (statusOf(e) === 403 ? new Error(`token needs the "api" scope and Developer access on ${this.project} (GitLab answered: ${refusalMessage(e)})`) : e);
+  }
+
+  /**
+   * GitLab's project merge method, guarded by the head the caller read: 409
+   * is a head that is no longer that, which is `moved` and not an error. A
+   * 405, 406 or 422 is "cannot be merged" — or already merged, which a crash
+   * after the merge and before the next read makes ordinary — so the merge
+   * request is asked.
+   */
+  async merge(pull: number, headSha: string, ctx: RuntimeContext): Promise<MergeAnswer> {
+    const gl = this.gl(ctx);
+    try {
+      await gl.put(`/merge_requests/${pull}/merge`, { sha: headSha });
+      return "merged";
+    } catch (e) {
+      const status = statusOf(e);
+      if (status === 409) return "moved";
+      if (status === 401 || status === 403) throw this.pipelineReadFailure(e);
+      if (status !== 405 && status !== 406 && status !== 422) throw e;
+      if ((await gl.get<{ state?: unknown }>(`/merge_requests/${pull}`)).state === "merged") return "merged";
+      throw new Error(`!${pull} cannot be merged: ${refusalMessage(e)}`);
+    }
   }
 
   /**
@@ -461,7 +545,7 @@ export class GitLab extends BaseForge {
     let level: unknown;
     try {
       const me = await gl.user();
-      if (me.admin) return;
+      if (me.admin) return this.pipelinesReadable(gl);
       level = (await gl.get<{ access_level?: unknown } | null>(`/members/all/${me.id}`))?.access_level;
     } catch (e) {
       if (statusOf(e) === 404) throw new Error(`token's user is not a member of ${this.project}; it needs Developer access`);
@@ -469,6 +553,25 @@ export class GitLab extends BaseForge {
     }
     if (typeof level !== "number" || level < DEVELOPER) {
       throw new Error(`token needs Developer access on ${this.project}; it has ${typeof level === "number" ? LEVELS[level] ?? `level ${level}` : "none GitLab names"}`);
+    }
+    return this.pipelinesReadable(gl);
+  }
+
+  /**
+   * Every read of an open merge request asks for its pipeline, so a token
+   * that cannot read them would fail every read and every briefing. An empty
+   * project answers an empty list, which is a pass; a 404 is nothing to read.
+   */
+  private async pipelinesReadable(gl: Client): Promise<void> {
+    try {
+      await gl.get(`/pipelines?per_page=1`);
+    } catch (e) {
+      if (statusOf(e) === 404) return;
+      throw tokenRejected(e) ?? new Error(
+        statusOf(e) === 403
+          ? `token cannot read pipelines on ${this.project}; it needs the "api" scope and Developer access`
+          : `the pipeline check on ${this.project} failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 }

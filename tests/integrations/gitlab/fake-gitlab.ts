@@ -69,6 +69,14 @@ export interface FakeMr {
   updated_at: string;
   diffs: FakeDiff[];
   discussions: FakeDiscussion[];
+  /** Its pipelines, in the order they were run; the API answers newest first. */
+  pipelines?: Array<{ id: number; sha: string; status: string }>;
+  /** The failed jobs of a pipeline, by its id. */
+  failedJobs?: Map<number, Array<{ id: number; name: string }>>;
+  /** A job's trace, by its id; a job with none answers 404. */
+  traces?: Map<number, string>;
+  /** False: GitLab refuses the merge with a 405 and its own words. */
+  mergeable?: boolean;
 }
 
 export interface FakeSettings {
@@ -107,9 +115,8 @@ export interface FakeGitLab {
 
 /** A merge request as the API shows one: its diff and discussions are endpoints of their own. */
 const shown = (mr: FakeMr): Omit<FakeMr, "diffs" | "discussions"> => {
-  const { diffs, discussions, ...rest } = mr;
-  void diffs;
-  void discussions;
+  const { diffs, discussions, pipelines, failedJobs, traces, mergeable, ...rest } = mr;
+  void [diffs, discussions, pipelines, failedJobs, traces, mergeable];
   return rest;
 };
 
@@ -171,6 +178,10 @@ export function createFakeGitLab(): FakeGitLab {
       updated_at: mr.updated_at ?? at,
       diffs: mr.diffs ?? branchDiffs.get(mr.source_branch) ?? [],
       discussions: mr.discussions ?? [],
+      ...(mr.pipelines ? { pipelines: mr.pipelines } : {}),
+      ...(mr.failedJobs ? { failedJobs: mr.failedJobs } : {}),
+      ...(mr.traces ? { traces: mr.traces } : {}),
+      ...(mr.mergeable === undefined ? {} : { mergeable: mr.mergeable }),
     };
     mrs.set(iid, created);
     return created;
@@ -260,6 +271,21 @@ export function createFakeGitLab(): FakeGitLab {
         : json({ id: 7, username: BOT, access_level: settings.access });
     }
 
+    // Pipelines newest first, as GitLab lists them: the highest id is the latest.
+    const newest = (all: FakeMr[]) => all.flatMap((m) => m.pipelines ?? []).sort((a, b) => b.id - a.id);
+    if (rest === "/pipelines" && method === "GET") return page(newest([...mrs.values()]), url.searchParams);
+    const jobs = /^\/pipelines\/(\d+)\/jobs$/.exec(rest);
+    if (jobs && method === "GET") {
+      const owner = [...mrs.values()].find((m) => m.pipelines?.some((p) => p.id === Number(jobs[1])));
+      const failed = url.searchParams.get("scope[]") === "failed" ? owner?.failedJobs?.get(Number(jobs[1])) ?? [] : [];
+      return page(failed.map((j) => ({ ...j, status: "failed" })), url.searchParams);
+    }
+    const trace = /^\/jobs\/(\d+)\/trace$/.exec(rest);
+    if (trace && method === "GET") {
+      const text = [...mrs.values()].map((m) => m.traces?.get(Number(trace[1]))).find((t) => t !== undefined);
+      return text === undefined ? json({ message: "404 Not found" }, 404) : new Response(text, { status: 200, headers: { "Content-Type": "text/plain" } });
+    }
+
     if (rest === "/merge_requests" && method === "GET") {
       const q = url.searchParams;
       const state = q.get("state") ?? "all";
@@ -291,6 +317,14 @@ export function createFakeGitLab(): FakeGitLab {
     }
     if (sub === "" && method === "PUT") {
       if (body.state_event === "close") mr.state = "closed";
+      mr.updated_at = now();
+      return json(shown(mr));
+    }
+    if (sub === "/pipelines" && method === "GET") return page([...(mr.pipelines ?? [])].sort((a, b) => b.id - a.id), url.searchParams);
+    if (sub === "/merge" && method === "PUT") {
+      if (body.sha !== mr.sha) return json({ message: "SHA does not match HEAD of source branch" }, 409);
+      if (mr.state !== "opened" || mr.mergeable === false) return json({ message: "405 Method Not Allowed" }, 405);
+      mr.state = "merged";
       mr.updated_at = now();
       return json(shown(mr));
     }

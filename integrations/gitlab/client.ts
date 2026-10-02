@@ -49,22 +49,29 @@ export function createClient(opts: GitLabClientOptions) {
   // The status rides on the error, so a caller asks "is this a 404?" of a
   // number rather than of text that may quote a path. The message names the
   // path below the API and GitLab's answer, never a header.
-  async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async function request<T>(method: string, path: string, body?: unknown, as: "json" | "text" = "json"): Promise<T> {
     const res = await doFetch(`${baseUrl}/api/v4${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${token}`,
-        Accept: "application/json",
+        Accept: as === "text" ? "text/plain" : "application/json",
         "User-Agent": "landrace",
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    if (!res.ok) throw Object.assign(new Error(`${method} ${path} → ${res.status} ${await res.text()}`), { status: res.status });
+    if (!res.ok) {
+      const text = await res.text();
+      // The body rides too, for a caller that wants GitLab's own `message`.
+      throw Object.assign(new Error(`${method} ${path} → ${res.status} ${text}`), { status: res.status, body: text });
+    }
+    if (as === "text") return (await res.text()) as T;
     return res.status === 204 ? (null as T) : ((await res.json()) as T);
   }
 
   const get = <T>(path: string): Promise<T> => request<T>("GET", `${here}${path}`);
+
+  const text = (path: string): Promise<string> => request<string>("GET", `${here}${path}`, undefined, "text");
 
   // Which account we post as is what tells our markers from a stranger's, so
   // it is asked once and kept: it cannot change under a fixed token.
@@ -97,6 +104,8 @@ export function createClient(opts: GitLabClientOptions) {
 
     /** Below the project: `get("/merge_requests/3")`. */
     get,
+    /** A read whose answer is text, not JSON: a job's trace. */
+    text,
     post: <T>(path: string, body: unknown): Promise<T> => request<T>("POST", `${here}${path}`, body),
     put: <T>(path: string, body: unknown): Promise<T> => request<T>("PUT", `${here}${path}`, body),
 
