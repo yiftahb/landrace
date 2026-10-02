@@ -2316,6 +2316,12 @@ export interface BoardView {
   workflows: BoardWorkflow[];
   /** Root rows whose lane is "needs-you", across every workflow — the home page's count, the tab title's. */
   needsYou: number;
+  /**
+   * Whether a listing has been taken yet. Before it, `rows` is empty because
+   * nothing was read, not because nothing needs anyone: the page must not say
+   * "all set" on no data.
+   */
+  listed: boolean;
 }
 
 /** Which workflow an item belongs to, or the sentence refusing to act on it. */

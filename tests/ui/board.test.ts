@@ -34,7 +34,7 @@ const listingOf = (g: Graph) => ({ graphs: [g], sourceOf: new Map([["t", 0]]), c
 const view = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
   boardView({
     workflows: ONLY, listing: listingOf(g), nest: NEST, now: 100, pid: 1, nextTickAt: null,
-    running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
+    running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", listed: true, ...over,
   });
 
 type Rows = ReturnType<typeof view>["rows"];
@@ -75,7 +75,7 @@ describe("boardView: an item whose stage identity the allowlist refuses", () => 
     const g = graph([item("1"), item("2", {}, [])]);
     const rows = boardView({
       workflows: [{ id: "t", workflow: refused }], listing: { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: refused, source: 0 }], [g]) },
-      nest: NEST, now: 100, pid: 1, nextTickAt: null, running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace",
+      nest: NEST, now: 100, pid: 1, nextTickAt: null, running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", listed: true,
     }).rows;
     expect(rows.map((r) => [r.id, r.stage, r.note])).toEqual([
       ["1", null, "error: operator $where is not allowed in a predicate"],
@@ -594,6 +594,13 @@ describe("boardView: rows", () => {
 });
 
 describe("createBoard", () => {
+  it("reports that nothing has been listed until the first list", async () => {
+    const b = createBoard({ workflows: ONLY, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    expect((await b.view()).listed).toBe(false);
+    b.list(listingOf(graph([])));
+    expect((await b.view()).listed).toBe(true);
+  });
+
   const shell = (now: () => number, held: (t: string) => Promise<Held | null> = async () => null) =>
     createBoard({ workflows: ONLY, held, now, pid: 1, folder: "landrace", workspace: "/repo/landrace", nest: [...NEST] });
 
@@ -706,7 +713,7 @@ describe("createBoard", () => {
   it("reports no rows before the first tick lands", async () => {
     expect(await shell(() => 5).view()).toEqual({
       generatedAt: 5, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
-      workflows: [{ id: "t", name: "t", needsYou: 0 }], needsYou: 0,
+      workflows: [{ id: "t", name: "t", needsYou: 0 }], needsYou: 0, listed: false,
     });
   });
 
@@ -768,7 +775,7 @@ describe("the board over several workflows", () => {
   const several = (first: Graph, second?: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
     boardView({
       workflows: WORKFLOWS, listing: across(first, second), nest: NEST, now: 100, pid: 1, nextTickAt: null,
-      running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", ...over,
+      running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace", listed: true, ...over,
     });
   /** What an item no one workflow owns may still do in its panel: read. */
   const reads = (id: string) => ({
@@ -974,6 +981,53 @@ describe("the pages a branch is drawn on", () => {
     expect(clash?.lane).toBe("needs-you");
     expect(clash?.panel).toBeNull();
     expect(clash?.pages).toEqual(["a", "b"]);
+  });
+
+  it("withholds the panel of every id two sources list and no workflow owns, closed or not", () => {
+    const sources = (g1: Graph, g2: Graph) => ({
+      workflows: TWO,
+      listing: {
+        graphs: [g1, g2], sourceOf: new Map([["a", 0], ["b", 1]]),
+        claims: claimItems([{ id: "a", workflow: A, source: 0 }, { id: "b", workflow: B, source: 1 }], [g1, g2]),
+      },
+    });
+    // Closed in both: no clash in the claims, but readRoute refuses it.
+    const closedBoth = view(graph([]), sources(graph([item("40", { closed: "done" }, ["a"])]), graph([item("40", { closed: "done" }, ["b"])])));
+    expect(closedBoth.rows[0]?.id).toBe("40");
+    expect(closedBoth.rows[0]?.panel).toBeNull();
+    // Open and unclaimed in one, closed in the other.
+    const half = view(graph([]), sources(graph([item("41", {}, ["neither"])]), graph([item("41", { closed: "done" }, ["b"])])));
+    expect(half.rows.map((r) => [r.id, r.panel])).toEqual([["41", null]]);
+    // An owned item, listed once, keeps everything.
+    const owned = two(graph([item("42", {}, ["a"])])).rows[0];
+    expect(owned?.panel?.activity).toBe("/items/42/activity");
+  });
+
+  it("counts a workflow's sidebar needs from rows of its own, not from a branch it only shares a root with", () => {
+    // An epic no one claims, listed through the source both share, with a
+    // sub-issue only Beta owns, waiting on a person.
+    const g = graph(
+      [item("1", {}, ["epic"]), item("2", {}, ["b", "lr:stage:spec-human-review"])],
+      [edge("2", "1")],
+    );
+    const v = two(g);
+    expect(v.rows[0]?.id).toBe("1");
+    expect(v.rows[0]?.lane).toBe("needs-you");
+    // Drawing is the branch's union; counting is each row's own.
+    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
+    expect(v.workflows).toEqual([{ id: "a", name: "Alpha", needsYou: 0 }, { id: "b", name: "beta", needsYou: 1 }]);
+    expect(v.needsYou).toBe(1);
+  });
+
+  it("counts a branch whose needing row sits under another workflow's root for the needing row's workflow only", () => {
+    const g = graph(
+      [item("1", {}, ["a", "lr:stage:spec"]), item("2", {}, ["b", "lr:stage:spec-human-review"])],
+      [edge("2", "1")],
+    );
+    const v = two(g);
+    expect(v.rows[0]?.lane).toBe("needs-you");
+    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
+    expect(v.workflows).toEqual([{ id: "a", name: "Alpha", needsYou: 0 }, { id: "b", name: "beta", needsYou: 1 }]);
   });
 
   it("draws an unclaimed item on every page whose source lists it", () => {

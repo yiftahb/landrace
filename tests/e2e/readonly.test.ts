@@ -101,7 +101,7 @@ function workspace(
     board: async (item: string) => {
       const view = boardView({
         workflows: [{ id, workflow }], listing: await listWorkspace(runtime), nest: new Set(), running: new Map(),
-        elsewhere: new Map(), now: 0, pid: 1, nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
+        elsewhere: new Map(), now: 0, pid: 1, nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", listed: true,
       });
       const row = view.rows.find((r) => r.id === item);
       return row && { stage: row.stage, badge: row.badge };

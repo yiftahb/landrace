@@ -172,6 +172,8 @@ export function boardView(input: {
   nextTickAt: number | null;
   folder: string;
   workspace: string;
+  /** Whether a listing has been taken: before one, no rows is no data, not no work. */
+  listed: boolean;
   /**
    * Which stage a goto last sent each item to, per the tick's own events —
    * the same source `running` is read from, never re-derived from labels.
@@ -224,13 +226,18 @@ export function boardView(input: {
     };
     if (node.kind !== ITEM_KIND) return base;
 
+    // The page offers no read the server would refuse, so the same judge
+    // decides both: an id two sources list and no workflow owns — open and
+    // clashing, or closed — has no panel, while a conflict has one source
+    // and keeps its read panel.
     // Built from the item id and the workspace path alone — never title or
     // note — so nothing a tracker comment injected can ride along into a
     // link the browser is about to open.
     // An id chatFor refuses costs that row its Chat menu, not the page: one
     // throw here blanked every row of the board.
+    const readable = !("refused" in (readRoute(input.listing, node.id) ?? {}));
     const item: BoardRow = {
-      ...base, stage: stageFromLabels(labelsOf(node)).stage, panel: panelPaths(node.id, false), stale: input.stale?.has(node.id) ?? false,
+      ...base, stage: stageFromLabels(labelsOf(node)).stage, panel: readable ? panelPaths(node.id, false) : null, stale: input.stale?.has(node.id) ?? false,
       chat: isItemId(node.id) ? chatFor(node.id, input.workspace) : null,
     };
     // A closed item is out of the loop whatever its labels still say or a
@@ -243,9 +250,7 @@ export function boardView(input: {
     // news, said over whatever it is doing: the tick stops a run for exactly
     // this, and a pairing under one of the two is no longer that one's alone.
     const halt = haltOf(claims, node.id);
-    // A clash's reads answer 409 (`readRoute` cannot tell which source to
-    // ask), so its panel is withheld; a conflict has one source and keeps it.
-    if (halt) return { ...item, badge: "needs-you", stage: null, note: oneLine(halt), panel: claims.clashes.has(node.id) ? null : item.panel };
+    if (halt) return { ...item, badge: "needs-you", stage: null, note: oneLine(halt) };
 
     // Placed by the stages of the one workflow that owns it. An item no
     // workflow owns is placed by none: its note says why, and its row offers
@@ -335,6 +340,7 @@ export function boardView(input: {
     return { ...row, children: kids };
   };
 
+  const needs = new Set<string>();
   const rows: BoardRow[] = [];
   // Roots first; then whatever a cycle left unreached — every member of a
   // cycle has a parent, so none of them was a root — at the top level rather
@@ -350,7 +356,13 @@ export function boardView(input: {
     const lane = below.get(row.id) ?? (row.closed === null ? "waiting" : "discharged");
     const pages = new Set<string>();
     const gather = (r: BoardRow): void => {
-      for (const p of pagesOf.get(r.id) ?? []) pages.add(p);
+      for (const p of pagesOf.get(r.id) ?? []) {
+        pages.add(p);
+        // `pages` is where the branch is drawn: the union of its rows'. What
+        // the sidebar counts is only a workflow's own rows that need the
+        // person, or a shared epic would light every sibling's dot.
+        if (r.badge === "needs-you") needs.add(`${row.id}\0${p}`);
+      }
       r.children.forEach(gather);
     };
     gather(row);
@@ -360,14 +372,14 @@ export function boardView(input: {
 
   const needing = rows.filter((r) => r.lane === "needs-you");
   const sidebar = input.workflows
-    .map((w) => ({ id: w.id, name: w.workflow.name, needsYou: needing.filter((r) => r.pages.includes(w.id)).length }))
+    .map((w) => ({ id: w.id, name: w.workflow.name, needsYou: needing.filter((r) => needs.has(`${r.id}\0${w.id}`)).length }))
     .sort((a, b) => {
       const x = a.name.toLowerCase(), y = b.name.toLowerCase();
       return x < y ? -1 : x > y ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
   return {
     generatedAt: input.now, rows, nextTickAt: input.nextTickAt,
-    folder: input.folder, workspace: input.workspace, workflows: sidebar, needsYou: needing.length,
+    folder: input.folder, workspace: input.workspace, workflows: sidebar, needsYou: needing.length, listed: input.listed,
   };
 }
 
@@ -479,7 +491,7 @@ export function createBoard(opts: {
       }));
       return boardView({
         workflows: opts.workflows, listing: listing ?? { graphs: [], claims: claimItems([], []), sourceOf: new Map() }, nest, running, elsewhere, now: now(), pid, sent, paired,
-        stale: new Set(stepped.keys()), nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
+        stale: new Set(stepped.keys()), nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace, listed: listing !== null,
       });
     },
   };

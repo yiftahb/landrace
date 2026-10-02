@@ -10,7 +10,7 @@ import { serveBoard } from "#ui/server.js";
 import { describeLoopback } from "#tests/support/loopback.js";
 
 const empty: BoardView = {
-  generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", workflows: [], needsYou: 0,
+  generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", workflows: [], needsYou: 0, listed: true,
 };
 
 /**

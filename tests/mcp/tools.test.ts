@@ -172,7 +172,7 @@ describe("mcp tools", () => {
     const listing = await listWorkspace({ workflows: [{ id: "main", source, deps: { workflow: turns } }], ctx: tracker.ctx, log: () => {} });
     const board = boardView({
       workflows: [{ id: "main", workflow: turns }], listing, nest: new Set(), running: new Map(), elsewhere: new Map(),
-      now: 0, pid: 1, nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
+      now: 0, pid: 1, nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", listed: true,
     });
     const needsYou = board.rows.filter((row) => row.badge === "needs-you").map((row) => row.id);
     expect(waiting.map((w) => w.item)).toEqual([...needsYou].sort(compareIds));
