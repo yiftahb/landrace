@@ -156,6 +156,20 @@ describe("pull.merge", () => {
     expect(forge.pull(pr)).toMatchObject({ merged: false, closed: "dropped" });
   });
 
+  it("refuses one the forge will not merge, as a real forge does, saying so", async () => {
+    const s = state();
+    const pr = s.openPull("7", { branch: "landrace/7", checks: "success", headSha: "abc", mergeable: false });
+    await expect(apply(s, merge, await read(s))).rejects.toThrow("pr-1 for #7 cannot be merged: the forge finds it not mergeable");
+    expect(s.pull(pr)).toMatchObject({ merged: false, closed: null });
+  });
+
+  it("answers moved, not a refusal, for an unmergeable one whose head moved", async () => {
+    const forge = new MemoryForge();
+    const pr = forge.add("7", { branch: "landrace/7", headSha: "new", mergeable: false });
+    expect(await forge.merge(1, "old")).toBe("moved");
+    expect(forge.pull(pr)).toMatchObject({ merged: false, closed: null });
+  });
+
   it.each(["pending", "failure"] as const)("refuses when its checks turned %s on the same head after the read", async (checks) => {
     const { hooks, forge, answers } = world();
     const pr = forge.add("7", { branch: "landrace/7", checks: "success", headSha: "abc" });

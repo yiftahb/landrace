@@ -1690,11 +1690,13 @@ export interface ExternalPull {
   checks: CheckState;
   /** The checks that failed, with their logs: what `failedChecks` answers. */
   failed: FailedCheck[];
+  /** False: the forge will not merge it — a conflict, or a rule of its own — and `merge` refuses, as a real one does. */
+  mergeable?: false;
 }
 
 /** What a test may set on a pull request it opens in memory; everything else is defaulted. */
 export type ExternalPullSeed = Partial<Pick<
-  ExternalPull, "merged" | "openThreads" | "awaitingFix" | "closed" | "branch" | "headSha" | "checks" | "failed"
+  ExternalPull, "merged" | "openThreads" | "awaitingFix" | "closed" | "branch" | "headSha" | "checks" | "failed" | "mergeable"
 >>;
 
 /**
