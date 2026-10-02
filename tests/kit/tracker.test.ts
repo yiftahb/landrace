@@ -6,7 +6,7 @@ import {
   nodesCloseSatisfied, priorityFromLabels, statusSatisfied, itemNode, updatedAtOf, wroteIt,
 } from "#kit/tracker.js";
 import { createExternalState, MemoryDocs, MemoryForge, MemoryTracker } from "#testing/index.js";
-import type { Effect, ExternalItem, Graph, HookContext, ItemRecord, Node, RuntimeContext, Snapshot } from "#namespace.js";
+import type { Effect, ExternalItem, Graph, HookContext, ItemRecord, Node, OpenRelations, RuntimeContext, Snapshot } from "#namespace.js";
 
 const BOT = "landrace-bot";
 
@@ -541,6 +541,46 @@ describe("relationships on the tracker base", () => {
       const tracker = new Disowning({ items: [{ id: "1", related: [{ type: B, to: "2" }] }, { id: "2", related: [{ type: B, to: "1" }] }] });
       expect(nodeOf(await tracker.list(ctx), "1")?.state).toEqual({ labels: [], assignees: [] });
       expect(nodeOf(await tracker.read("1", ctx), "1")?.state).toEqual({ labels: [], assignees: [] });
+    });
+
+    /*
+     * A read's walk asks `openRelations`, which an integration may answer
+     * more cheaply than listing every open item in full; the listing judges
+     * from what it already holds. Whichever answers, an open item it could
+     * not read all the relationships of is one the walk cannot see past.
+     */
+    describe("over openRelations, an integration's own answer", () => {
+      class Answering extends MemoryTracker {
+        answer: OpenRelations = { open: [], edges: [], partial: [] };
+        override async items(): Promise<ItemRecord[]> {
+          throw new Error("a read's walk asked for every item in full");
+        }
+        protected override async openRelations(type: string): Promise<OpenRelations> {
+          expect(type).toBe(B);
+          return this.answer;
+        }
+      }
+
+      it("judges a read's cycle by what it answers, and lists no item in full", async () => {
+        // Its own rows say nothing of #2's or #3's blockers: only the answer does.
+        const tracker = new Answering({ items: [...chain("1", "2"), { id: "3" }] });
+        tracker.answer = { open: ["1", "2", "3"], edges: [{ from: "2", to: "3" }, { from: "3", to: "1" }], partial: [] };
+        expect(nodeOf(await tracker.read("1", ctx), "1")?.state).toMatchObject({ dependencyCycle: true });
+      });
+
+      it("stops where it holds a blocker no longer open, and says nothing", async () => {
+        const tracker = new Answering({ items: chain("1", "2") });
+        tracker.answer = { open: ["1"], edges: [{ from: "2", to: "1" }], partial: [] };
+        expect(nodeOf(await tracker.read("1", ctx), "1")?.state).toEqual({ labels: [], assignees: [] });
+      });
+
+      it("says relatedUnreadable when the walk passes an item whose relationships it could not read all of, and only then", async () => {
+        const tracker = new Answering({ items: chain("1", "2") });
+        tracker.answer = { open: ["1", "2", "9"], edges: [], partial: ["2"] };
+        expect(nodeOf(await tracker.read("1", ctx), "1")?.state).toEqual({ labels: [], assignees: [], relatedUnreadable: true });
+        tracker.answer = { open: ["1", "2", "9"], edges: [], partial: ["9"] };
+        expect(nodeOf(await tracker.read("1", ctx), "1")?.state).toEqual({ labels: [], assignees: [] });
+      });
     });
 
     it("stops at a blocker its open items say is closed, whatever the relationship said of it", async () => {

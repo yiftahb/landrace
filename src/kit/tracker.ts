@@ -17,7 +17,7 @@ import {
 } from "#conventions.js";
 import { commentLine } from "#kit/forge.js";
 import type {
-  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, RelatedRecord, RelationDecl, Relationship,
+  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, OpenRelations, RelatedRecord, RelationDecl, Relationship,
   RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
 } from "#namespace.js";
 
@@ -276,45 +276,75 @@ export function relatedOf(item: ItemRecord): { related: RelatedRecord[]; whole: 
 }
 
 /**
+ * The open items' relationships of `type`, as a full list of items holds
+ * them: what `BaseTracker.openRelations` answers unless an integration asks
+ * more cheaply, and what `list` judges from — so a list and a read agree by
+ * construction whenever the two answers hold the same items.
+ */
+export function openRelationsOf(items: ReadonlyArray<ItemRecord>, type: string): OpenRelations {
+  const open = items.filter((t) => t.closed === null);
+  return {
+    open: open.map((t) => t.id),
+    edges: open.flatMap((t) => (t.related ?? []).filter((r) => r.type === type && r.closed === null).map((r) => ({ from: t.id, to: r.to }))),
+    partial: open.filter((t) => t.relatedComplete === false).map((t) => t.id),
+  };
+}
+
+/** Nothing open: the walk of an item with no open blocker of the tracker's own. */
+const NO_RELATIONS: OpenRelations = { open: [], edges: [], partial: [] };
+
+/** An answer indexed for walking, once: a listing walks it once per item. */
+const indexes = new WeakMap<OpenRelations, { open: Set<string>; partial: Set<string>; out: Map<string, string[]> }>();
+function indexOf(relations: OpenRelations): { open: Set<string>; partial: Set<string>; out: Map<string, string[]> } {
+  const known = indexes.get(relations);
+  if (known !== undefined) return known;
+  const out = new Map<string, string[]>();
+  for (const { from, to } of relations.edges) out.set(from, [...(out.get(from) ?? []), to]);
+  const index = { open: new Set(relations.open), partial: new Set(relations.partial), out };
+  indexes.set(relations, index);
+  return index;
+}
+
+/**
  * Whether `root` waits on itself: its open blockers walked transitively over
- * `open` — the tracker's open items, as its one listing has them, so a walk
- * costs no read per blocker — stopping at closed ones. The one judge of it
+ * `relations` — the tracker's open items and their open blockers, as one
+ * answer has them, so a walk costs no read per blocker. The one judge of it
  * for `list` and `read` alike, so the two agree by construction.
  *
  * Only through the tracker's own items: a blocker it does not `own` (another
  * tracker's, another repository's) holds the item back by the state its
  * relationship reports, and a cycle through it goes unseen. One it owns that
- * `open` does not hold open is closed since, or gone: the walk stops there,
- * and nothing about it is unreadable.
+ * the answer does not hold open is closed since, or gone: the walk stops
+ * there, and nothing about it is unreadable.
  *
- * `whole` is false when a blocker the walk met had relationships it could not
- * read all of, so a cycle through them cannot be ruled out — the root's own
- * are `relatedOf`'s to judge. A walk past MAX_SUBGRAPH_NODES items is
- * refused, as a read that large is. A closed item waits on nothing.
+ * `whole` is false when a blocker the walk met had relationships the answer
+ * could not read all of, so a cycle through them cannot be ruled out — the
+ * root's own are `relatedOf`'s to judge. A walk past MAX_SUBGRAPH_NODES
+ * items is refused, as a read that large is. A closed item waits on nothing.
  */
 export function blockerCycle(
-  root: ItemRecord, open: ReadonlyMap<string, ItemRecord>, owns: (id: string) => boolean,
+  root: ItemRecord, relations: OpenRelations, owns: (id: string) => boolean,
 ): { cycle: boolean; whole: boolean } {
   if (root.closed !== null) return { cycle: false, whole: true };
+  const { open, partial, out } = indexOf(relations);
   const seen = new Set([root.id]);
-  const queue = [root];
+  const queue: string[] = [];
   let cycle = false;
   let whole = true;
-  for (let i = 0; i < queue.length; i++) {
-    const at = queue[i] as ItemRecord;
-    if (at !== root && at.relatedComplete === false) whole = false;
-    for (const r of at.related ?? []) {
-      if (r.type !== RELATIONS.blockedBy || r.closed !== null) continue;
-      if (r.to === root.id) cycle = true;
-      else if (itemIdProblem(r.to) !== null) whole = false;
-      else if (!seen.has(r.to) && owns(r.to)) {
-        const next = open.get(r.to);
-        if (next === undefined || next.closed !== null) continue;
-        seen.add(r.to);
-        if (seen.size > MAX_SUBGRAPH_NODES) throw tooLarge(root.id);
-        queue.push(next);
-      }
+  const follow = (to: string): void => {
+    if (to === root.id) cycle = true;
+    else if (itemIdProblem(to) !== null) whole = false;
+    else if (!seen.has(to) && owns(to) && open.has(to)) {
+      seen.add(to);
+      if (seen.size > MAX_SUBGRAPH_NODES) throw tooLarge(root.id);
+      queue.push(to);
     }
+  };
+  for (const r of root.related ?? []) if (r.type === RELATIONS.blockedBy && r.closed === null) follow(r.to);
+  for (let i = 0; i < queue.length; i++) {
+    const at = queue[i] as string;
+    if (partial.has(at)) whole = false;
+    for (const to of out.get(at) ?? []) follow(to);
   }
   return { cycle, whole };
 }
@@ -420,6 +450,17 @@ export abstract class BaseTracker {
   /** Relate `item` to `other` as `type`, one of `writableRelations()`; the base has checked the type. */
   protected abstract addRelation(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
   protected abstract removeRelation(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
+
+  /**
+   * Every open item's relationships of `type`, for a read's blocker walk:
+   * from `items()`, unless an integration has a cheaper way to ask for them
+   * alone. An override answers every open item or refuses, as `items()`
+   * does, and names in `partial` each one whose relationships it could not
+   * read all of — never a shorter answer read as no relationship.
+   */
+  protected async openRelations(type: string, ctx: RuntimeContext): Promise<OpenRelations> {
+    return openRelationsOf(await this.items(ctx), type);
+  }
 
   /** The relationship types this tracker writes: none, until an integration says which. */
   protected writableRelations(): string[] {
@@ -572,6 +613,7 @@ export abstract class BaseTracker {
     const bot = await this.login(ctx);
     const items = await this.items(ctx);
     const listed = new Map(items.map((t) => [t.id, t]));
+    const relations = openRelationsOf(items, RELATIONS.blockedBy);
     const owns = (id: string): boolean => this.ownsId(id);
     const nodes: Node[] = [];
     const edges = new Map<string, Relationship>();
@@ -584,7 +626,7 @@ export abstract class BaseTracker {
       drawRelated(t.id, related, (id) => listed.has(id), edges, placeholders);
       let walk: { cycle: boolean; whole: boolean };
       try {
-        walk = blockerCycle(t, listed, owns);
+        walk = blockerCycle(t, relations, owns);
       } catch {
         walk = { cycle: false, whole: false };
       }
@@ -605,9 +647,9 @@ export abstract class BaseTracker {
    * from the relationship for a related item outside the neighbourhood, never
    * a read of it. Its blockers are walked further, through the tracker's own
    * open items, only to say whether it is on a cycle of them — over one
-   * listing of them, read only when it has an open blocker of the tracker's
-   * own, and refused with that listing when it cannot be had. Nothing the
-   * walk meets becomes a node.
+   * `openRelations` answer, asked only when it has an open blocker of the
+   * tracker's own, and refused with that answer when it cannot be had.
+   * Nothing the walk meets becomes a node.
    */
   async read(id: string, ctx: RuntimeContext): Promise<Graph> {
     const bot = await this.login(ctx);
@@ -642,8 +684,8 @@ export abstract class BaseTracker {
     drawRelated(id, related, (other) => seen.has(other), edges, placeholders);
     if (read.length + placeholders.size > MAX_SUBGRAPH_NODES) throw tooLarge(id);
     const owns = (other: string): boolean => this.ownsId(other);
-    const open = waitsOnOwn(root, owns) ? new Map((await this.items(ctx)).map((t) => [t.id, t])) : new Map<string, ItemRecord>();
-    const walk = blockerCycle(root, open, owns);
+    const relations = waitsOnOwn(root, owns) ? await this.openRelations(RELATIONS.blockedBy, ctx) : NO_RELATIONS;
+    const walk = blockerCycle(root, relations, owns);
     return {
       nodes: [
         withFacts(itemNode(root, bot), { unreadable: !whole || !walk.whole, cycle: walk.cycle }),

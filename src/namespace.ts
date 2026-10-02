@@ -1041,6 +1041,21 @@ export interface ReviewThread {
 export interface RelatedRecord { type: string; to: string; title: string; link: string; closed: Closed }
 
 /**
+ * Every open item's relationships of one type, as the blocker walk reads
+ * them: which items are open, each one's edges to items it relates to that
+ * are still open by its own record, and the open items whose relationships
+ * could not all be read. A tracker answers it from its full list unless it
+ * has a cheaper way to ask; one it could not finish is a refusal, never a
+ * shorter answer.
+ */
+export interface OpenRelations {
+  open: string[];
+  edges: Array<{ from: string; to: string }>;
+  /** Open items whose relationships of the type were cut short or held one that could not be read. */
+  partial: string[];
+}
+
+/**
  * An item as a tracker integration reads it: `itemNode`'s fields, and the
  * item it is a child of. `priority` is set by a tracker with a priority
  * field of its own (the in-memory one's, say), and then wins over any

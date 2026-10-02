@@ -1375,6 +1375,52 @@ describe("an issue's blockers are read as blocked-by", () => {
     expect(nodeOf(await sourceOf(gh).read("3", ctx(gh)), "3")?.state.dependencyCycle).toBeUndefined();
   });
 
+  /*
+   * Every waiting item is read every tick, and a read whose item waits on an
+   * issue here walks every open issue's blockers. Asked through the issue
+   * list, that is labels, bodies and sub-issues for every open issue, per
+   * waiting item: the walk asks for the blockers alone.
+   */
+  describe("a read walks the open issues' blockers alone", () => {
+    it("asks for the blockers of every open issue, never the full list, and finds the cycle the list does", async () => {
+      const gh = createFakeTracker([{ number: 1, blockedBy: [2] }, { number: 2, blockedBy: [3] }, { number: 3, blockedBy: [1] }]);
+      expect(nodeOf(await sourceOf(gh).read("1", ctx(gh)), "1")?.state.dependencyCycle).toBe(true);
+      expect(operations(gh, "LandraceIssues")).toEqual([]);
+      const walk = operations(gh, "LandraceOpenBlockers");
+      expect(walk).toHaveLength(1);
+      expect(walk[0]?.query).not.toMatch(/labels|assignees|body|subIssues|title/);
+    });
+
+    it("pages them to the end, and refuses past the issues one list may carry, as the list does", async () => {
+      const many = (n: number) => createFakeTracker([
+        { number: 1, blockedBy: [2] }, ...Array.from({ length: n - 1 }, (_, i) => ({ number: i + 2 })),
+      ]);
+      const full = many(150);
+      full.issues.get(150)!.blockedBy = [1];
+      full.issues.get(2)!.blockedBy = [150];
+      expect(nodeOf(await sourceOf(full).read("1", ctx(full)), "1")?.state.dependencyCycle).toBe(true);
+      expect(operations(full, "LandraceOpenBlockers")).toHaveLength(2);
+      const past = many(1001);
+      await expect(sourceOf(past).read("1", ctx(past))).rejects.toThrow(/more than 1000 open issues/);
+    });
+
+    it.each([
+      ["cut short", (gh: FakeTracker) => gh.cutBlockers(1), [3, 4]],
+      ["one the token may not see", () => {}, [3, { repo: "secret/vault", number: 1, state: "open", refused: true } as const]],
+      ["one closed for a reason it does not map", () => {}, [3, { repo: "o/r", number: 1, state: "closed", stateReason: "SOMETHING_NEW" as never }]],
+    ] as const)("says relatedUnreadable, in a read as in the list, of an issue whose walk meets blockers %s", async (_why, cut, hop) => {
+      const gh = createFakeTracker([{ number: 1, blockedBy: [2] }, { number: 2, blockedBy: [...hop] }, { number: 3 }, { number: 4 }, { number: 5, blockedBy: [3] }]);
+      cut(gh);
+      const listed = await sourceOf(gh).list(ctx(gh));
+      const read = await sourceOf(gh).read("1", ctx(gh));
+      expect(nodeOf(read, "1")?.state.relatedUnreadable).toBe(true);
+      expect(nodeOf(listed, "1")?.state.relatedUnreadable).toBe(true);
+      // Nothing it walks past is short: the walk is whole.
+      expect(nodeOf(await sourceOf(gh).read("5", ctx(gh)), "5")?.state.relatedUnreadable).toBeUndefined();
+      expect(nodeOf(listed, "5")?.state.relatedUnreadable).toBeUndefined();
+    });
+  });
+
   it("walks no blocker in another repository, which holds an issue back by its state alone", async () => {
     const gh = createFakeTracker([{ number: 1, blockedBy: [{ repo: "o/r", number: 1, state: "open" }] }]);
     await sourceOf(gh).read("1", ctx(gh));

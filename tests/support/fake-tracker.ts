@@ -637,6 +637,22 @@ export function createFakeTracker(
         });
       }
 
+      // Every open issue's blockers and nothing else, paged as LandraceIssues pages the full reading.
+      if (operation === "LandraceOpenBlockers") {
+        const open = [...issues.values()].filter((i) => i.state === "open").sort((a, b) => a.number - b.number);
+        const from = typeof variables.cursor === "string" && variables.cursor ? Number(variables.cursor) : 0;
+        const page = open.slice(from, from + ISSUE_PAGE);
+        const end = from + page.length;
+        return answer({
+          repository: {
+            issues: {
+              pageInfo: { hasNextPage: end < open.length, endCursor: String(end) },
+              nodes: page.map((i, n) => ({ number: i.number, ...blockedByAt(i, query, ["repository", "issues", "nodes", n], errors) })),
+            },
+          },
+        });
+      }
+
       // Closed issues, most recently updated first, as `orderBy: UPDATED_AT DESC` pages them.
       if (operation === "LandraceClosed") {
         const closed = [...issues.values()].filter((i) => i.state === "closed")

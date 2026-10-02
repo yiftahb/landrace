@@ -8,7 +8,7 @@ import {
 } from "landrace/hooks";
 import {
   BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
-  type ItemRecord, type RelatedRecord, type TrackerComment,
+  type ItemRecord, type OpenRelations, type TrackerComment,
 } from "landrace/kit";
 import { type Client, type GraphQLPath, clientFor, isIssueNumber, issueNumber, unseen } from "./client.js";
 
@@ -19,15 +19,25 @@ import { type Client, type GraphQLPath, clientFor, isIssueNumber, issueNumber, u
  */
 const BLOCKERS_PAGE = 50;
 
-/** A blocker as the `blockedBy` connection answers it: enough to name it and say whether it is done. */
-interface BlockerNode {
+/** A blocker as the walk reads it: which issue, where, and whether it is done — no title, no link. */
+interface WalkBlocker {
   number: number;
-  title: string;
-  url: string;
   state: string;
   stateReason: string | null;
   repository: { name: string; owner: { login: string } };
 }
+
+/** A blocker as an issue's own reading answers it: the walk's fields, and enough to name it. */
+interface BlockerNode extends WalkBlocker {
+  title: string;
+  url: string;
+}
+
+/** A connection of blockers: the first page of them, and how many there are. */
+interface Blockers<N> { totalCount: number; nodes: Array<N | null> }
+
+/** The blocker fields the walk reads, spelled once for both readings so the two map a blocker alike. */
+const WALK_BLOCKER_FIELDS = "number state stateReason repository { name owner { login } }";
 
 /** The repository the tracker reads, as configured. */
 interface Here { owner: string; name: string }
@@ -60,7 +70,7 @@ interface IssueNode {
   /** ISO 8601, when it last changed: the board's lane order. Optional likewise; null where GitHub answers none. */
   updatedAt?: string | null;
   /** Its blockers, the first page of them: a null node is one the token may not see. */
-  blockedBy: { totalCount: number; nodes: Array<BlockerNode | null> };
+  blockedBy: Blockers<BlockerNode>;
 }
 
 /** The lighter reading a sub-issue in the issue list gets: no blockers. */
@@ -80,7 +90,7 @@ const ISSUE_FIELDS = `
   labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
   body author { login } editor { login }
-  blockedBy(first: ${BLOCKERS_PAGE}) { totalCount nodes { number title url state stateReason repository { name owner { login } } } }`;
+  blockedBy(first: ${BLOCKERS_PAGE}) { totalCount nodes { title url ${WALK_BLOCKER_FIELDS} } }`;
 
 /**
  * The same reading, lighter, for a sub-issue in the issue list. GitHub prices
@@ -142,8 +152,28 @@ query LandraceClosed($owner: String!, $name: String!, $cursor: String) {
   }
 }`;
 
+/**
+ * Every open issue's blockers and nothing else, for a read's cycle walk:
+ * each waiting item is read every tick, and the issue list would cost every
+ * open issue's labels, body and sub-issues per read for the blockers alone.
+ * Ordered and paged as the issue list is, so the two hold the same issues.
+ */
+const OPEN_BLOCKERS_QUERY = `
+query LandraceOpenBlockers($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(states: OPEN, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: CREATED_AT, direction: ASC }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number blockedBy(first: ${BLOCKERS_PAGE}) { totalCount nodes { ${WALK_BLOCKER_FIELDS} } } }
+    }
+  }
+}`;
+
 /** Every GraphQL document the tracker sends, so a test can cost each against GitHub's node limit. */
-export const ISSUE_QUERIES = { ISSUE_QUERY, SUB_ISSUES_QUERY, ISSUES_QUERY, CLOSED_QUERY };
+export const ISSUE_QUERIES = { ISSUE_QUERY, SUB_ISSUES_QUERY, ISSUES_QUERY, CLOSED_QUERY, OPEN_BLOCKERS_QUERY };
+
+/** The refusal of a list of open issues past the pages one list may carry, the same whichever list it is. */
+const tooMany = (repo: string): Error =>
+  new Error(`${repo} has more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} open issues, more than one list may carry`);
 
 type Listed = IssueNode & { parent: { number: number } | null; subIssues: { nodes: SubIssueNode[] } };
 type ClosedIssue = IssueNode & { closedAt: string | null; updatedAt: string | null; parent: { number: number } | null };
@@ -174,7 +204,7 @@ function closedOf(issue: Pick<IssueNode, "number" | "state" | "stateReason">): C
  * id per issue, never all digits, never another role's `pr-<n>` or
  * `spec-<id>`. Null for one that cannot be named so within an id's length.
  */
-function blockerId({ number, repository: { owner: { login: owner }, name } }: BlockerNode, here: Here): string | null {
+function blockerId({ number, repository: { owner: { login: owner }, name } }: WalkBlocker, here: Here): string | null {
   if (owner.toLowerCase() === here.owner.toLowerCase() && name.toLowerCase() === here.name.toLowerCase()) return String(number);
   if (!/^[A-Za-z0-9-]+$/.test(owner)) return null;
   const id = `x.${owner}.${name}.${number}`;
@@ -182,15 +212,18 @@ function blockerId({ number, repository: { owner: { login: owner }, name } }: Bl
 }
 
 /**
- * An issue's blockers, as the kit reads relationships. One that cannot be
- * read — null where the token may not see it, closed for a reason this does
- * not map, in a repository it cannot name — is left out and the rest said
- * not to be whole, as is a connection holding fewer than it counts: not
- * found is not missing.
+ * The blockers an answer could read, each by id and state, and whether that
+ * was all of them. One that cannot be read — null where the token may not
+ * see it, closed for a reason this does not map, in a repository it cannot
+ * name — is left out and the rest said not to be whole, as is a connection
+ * holding fewer than it counts: not found is not missing. Both readings of
+ * an issue's blockers go through this, so the walk and the list agree.
  */
-function blockersOf(blockedBy: IssueNode["blockedBy"] | undefined, here: Here): Pick<ItemRecord, "related" | "relatedComplete"> {
-  if (!Array.isArray(blockedBy?.nodes)) return { related: [], relatedComplete: false };
-  const related: RelatedRecord[] = [];
+function readBlockers<N extends WalkBlocker>(
+  blockedBy: Blockers<N> | undefined, here: Here,
+): { read: Array<{ node: N; to: string; closed: Closed }>; whole: boolean } {
+  if (!Array.isArray(blockedBy?.nodes)) return { read: [], whole: false };
+  const read: Array<{ node: N; to: string; closed: Closed }> = [];
   for (const node of blockedBy.nodes) {
     if (node === null) continue;
     let closed: Closed;
@@ -200,9 +233,18 @@ function blockersOf(blockedBy: IssueNode["blockedBy"] | undefined, here: Here): 
       continue;
     }
     const to = blockerId(node, here);
-    if (to !== null) related.push({ type: RELATIONS.blockedBy, to, title: node.title, link: node.url, closed });
+    if (to !== null) read.push({ node, to, closed });
   }
-  return { related, relatedComplete: related.length === blockedBy.nodes.length && blockedBy.totalCount <= blockedBy.nodes.length };
+  return { read, whole: read.length === blockedBy.nodes.length && blockedBy.totalCount <= blockedBy.nodes.length };
+}
+
+/** An issue's blockers, as the kit reads relationships. */
+function blockersOf(blockedBy: Blockers<BlockerNode> | undefined, here: Here): Pick<ItemRecord, "related" | "relatedComplete"> {
+  const { read, whole } = readBlockers(blockedBy, here);
+  return {
+    related: read.map(({ node, to, closed }) => ({ type: RELATIONS.blockedBy, to, title: node.title, link: node.url, closed })),
+    relatedComplete: whole,
+  };
 }
 
 /**
@@ -281,9 +323,7 @@ export class GitHubIssues extends BaseTracker {
 
     let cursor: string | null = null;
     for (let page = 0; ; page++) {
-      if (page === MAX_ISSUE_PAGES) {
-        throw new Error(`${gh.repo} has more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} open issues, more than one list may carry`);
-      }
+      if (page === MAX_ISSUE_PAGES) throw tooMany(gh.repo);
       const data: { repository: { issues: Page<Listed> } | null } = await gh.graphql(ISSUES_QUERY, { owner, name, cursor }, blockerAt);
       if (!data.repository) throw unseen(gh.repo);
       const { issues } = data.repository;
@@ -343,6 +383,36 @@ export class GitHubIssues extends BaseTracker {
     const issue = data.repository.issue;
     if (!issue) throw new Error(`#${number} is not an issue in ${gh.repo}`);
     return recordOf(issue, issue.parent ? String(issue.parent.number) : null, gh);
+  }
+
+  /**
+   * The walk's own list: every open issue's blockers and nothing else,
+   * bounded and refused as `items()` is. An issue whose blockers it could not
+   * read all of is `partial`, as its full reading would say it is not whole.
+   */
+  protected override async openRelations(type: string, ctx: RuntimeContext): Promise<OpenRelations> {
+    if (type !== RELATIONS.blockedBy) return super.openRelations(type, ctx);
+    const gh = this.gh(ctx);
+    const { owner, name } = gh;
+    const answer: OpenRelations = { open: [], edges: [], partial: [] };
+    let cursor: string | null = null;
+    for (let page = 0; ; page++) {
+      if (page === MAX_ISSUE_PAGES) throw tooMany(gh.repo);
+      const data: { repository: { issues: Page<{ number: number; blockedBy: Blockers<WalkBlocker> }> } | null } =
+        await gh.graphql(OPEN_BLOCKERS_QUERY, { owner, name, cursor }, blockerAt);
+      if (!data.repository) throw unseen(gh.repo);
+      const { issues } = data.repository;
+      for (const issue of issues.nodes) {
+        const id = String(issue.number);
+        const { read, whole } = readBlockers(issue.blockedBy, gh);
+        answer.open.push(id);
+        if (!whole) answer.partial.push(id);
+        for (const { to, closed } of read) if (closed === null) answer.edges.push({ from: id, to });
+      }
+      if (!issues.pageInfo.hasNextPage) break;
+      cursor = issues.pageInfo.endCursor;
+    }
+    return answer;
   }
 
   /** A count over the first page is a number known to be short: past the page, the item halts saying so. */
