@@ -565,16 +565,16 @@ describe("pull.open", () => {
   });
 
   /*
-   * One item, two branches: a pull request from one says nothing about the
-   * other, so each is opened — and each is satisfied — on its own.
+   * A pull request from another branch that says it closes the item is not
+   * the item's — anybody can write that — so it stands in for nothing.
    */
-  it("is satisfied per branch, not by the item having some pull request", async () => {
+  it("is not satisfied by a pull request from another branch that says it closes the item", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "api/1", closes: [1] });
     const snapshot = await snapshotOf(gh);
 
-    expect(post(gh).satisfied(snapshot, { type: "pull.open", branch: "api/1" })).toBe(true);
-    expect(post(gh).satisfied(snapshot, { type: "pull.open", branch: "ui/1" })).toBe(false);
+    expect(post(gh).satisfied(snapshot, open)).toBe(false);
+    expect(post(gh).satisfied(snapshot, { type: "pull.open", branch: "api/1" })).toBe(false);
   });
 
   it("counts a merged pull request as opened, and an abandoned one as not", async () => {
@@ -686,9 +686,8 @@ describe("the checkout the forge works in", () => {
 
 /*
  * A forge beside another vendor's tracker: `Closes #7` in a pull request's
- * body closes GitHub's issue #7 on merge — some unrelated issue — and a
- * closing reference read back would tie the pull request to it. Off, the
- * forge writes none and reads none, and a head is the only tie.
+ * body closes GitHub's issue #7 on merge — some unrelated issue. Off, the
+ * forge writes none. On or off it reads none: a head is the only tie.
  */
 describe("a forge with closing references off", () => {
   const forgeOver = (gh: FakeTracker): GitHubForge =>

@@ -265,9 +265,11 @@ describe("publishing a build, over the in-memory tracker", () => {
 });
 
 /*
- * Two stages, two branches, one item: the engine assumes no branch of its
- * own, so a workflow that names two gets two — and a pull request from one
- * does not stand in for the other's.
+ * Two stages, two branches, one item. A stage's worktree may be on any
+ * branch the workflow names, but a pull request is an item's only from the
+ * item's own `landrace/{item}` head — what a pull request from anywhere else
+ * says about the item is anybody's to write — so one opened from `api/{item}`
+ * is nobody's, and the item waits for one that never comes.
  */
 describe("an item whose workflow names two branches", () => {
   const DIR = "tests/fixtures/two-branches";
@@ -278,7 +280,7 @@ describe("an item whose workflow names two branches", () => {
     expect(validate(workflow, steps, snapshotProvides([state.pre], state.source) ?? undefined)).toEqual([]);
   });
 
-  it("opens one pull request per branch, and finishes only once both are open", async () => {
+  it("opens a pull request from a branch that is not landrace/{item}, which ties to nothing, and waits", async () => {
     const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }] });
     const { workflow, steps } = await loadWorkflow(DIR);
     const done = '```json\n{"kind":"done"}\n```';
@@ -288,10 +290,10 @@ describe("an item whose workflow names two branches", () => {
 
     const r = await run.converge();
 
-    expect(run.trail()).toEqual(["api", "publish-api", "ui", "publish-ui", "done"]);
-    expect(r.result.settled).toBe("terminal");
-    expect([state.pull("pr-1").branch, state.pull("pr-2").branch]).toEqual(["api/1", "ui/1"]);
-    expect(state.pushes()).toEqual(["api/1", "ui/1"]);
+    expect(run.trail()).toEqual(["api", "publish-api"]);
+    expect(r.result.settled).toBe("wait");
+    expect(state.pull("pr-1").branch).toBe("api/1");
+    expect((await state.source.read("1", {} as never)).relationships.filter((rel) => rel.type === "implements")).toEqual([]);
   });
 });
 

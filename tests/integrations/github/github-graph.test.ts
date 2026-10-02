@@ -102,19 +102,47 @@ describe("the GitHub source", () => {
     expect(g.relationships).toEqual([{ from: "2", to: "1", type: "child-of" }]);
   });
 
-  it("reports every pull request on the item's branch and every one that closes it, once each", async () => {
+  it("reports every pull request on the item's branch, and none that only says it closes the item", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
     gh.openPull({ number: 20, head: "landrace/7", headSha: "a", merged: true, threads: [] });
-    // On the item's branch *and* closing it: found both ways, reported once.
     gh.openPull({ number: 21, head: "landrace/7", headSha: "b", merged: false, threads: [{ isResolved: false, body: "x" }], closes: [7] });
     gh.openPull({ number: 22, head: "feature/other", headSha: "c", merged: false, threads: [], closes: [7] });
     const g = await sourceOf(gh).read("7", ctx(gh));
     const prs = g.nodes.filter((n) => n.kind === "pull-request");
-    expect(prs.map((n) => n.id).sort()).toEqual(["pr-20", "pr-21", "pr-22"]);
+    expect(prs.map((n) => n.id).sort()).toEqual(["pr-20", "pr-21"]);
     expect(prs.find((n) => n.id === "pr-20")).toMatchObject({ closed: "done", state: { merged: true } });
     expect(prs.find((n) => n.id === "pr-21")?.state).toMatchObject({ merged: false, openThreads: 1, headSha: "b" });
-    expect(g.relationships.filter((r) => r.type === "implements")).toHaveLength(3);
+    expect(g.relationships.filter((r) => r.type === "implements")).toHaveLength(2);
     expect(JSON.stringify(g)).not.toContain("\"x\""); // no thread body in the graph
+  });
+
+  /*
+   * The audit's probe P2. Anyone can open a pull request — from a fork, on a
+   * public repository — whose text says `Closes #7`. Tied to #7 by that, its
+   * diff, its failed checks' logs and its threads were briefed to the
+   * build, the reviewer and the fixer of an item fastlane merges with no
+   * person, and its open, red state drove the item's routing. Only the
+   * item's own `landrace/{item}` head in this repository is its work.
+   */
+  it("ties nothing to an item by what an outsider's pull request says it closes: not in the graph, not in a briefing", async () => {
+    const gh = createFakeTracker([{ number: 7 }, { number: 8 }]);
+    const outsider = {
+      crossRepository: true, checks: "FAILURE" as const,
+      threads: [{ isResolved: false, body: "OUTSIDER_THREAD" }],
+      files: [{ filename: "src/a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+OUTSIDER_DIFF" }],
+      checkRuns: [{ id: 1, name: "OUTSIDER_CHECK", conclusion: "failure", app: "other-ci", output: { text: "OUTSIDER_LOG" } }],
+    };
+    gh.openPull({ number: 40, head: "patch-1", headSha: "f1", closes: [7], ...outsider });
+    // Named after ours in the fork's own repository, and closing two items.
+    gh.openPull({ number: 41, head: "landrace/7", headSha: "f2", closes: [7, 8], ...outsider });
+
+    for (const g of [await sourceOf(gh).read("7", ctx(gh)), await sourceOf(gh).read("8", ctx(gh)), await sourceOf(gh).list(ctx(gh))]) {
+      expect(g.nodes.filter((n) => n.kind === "pull-request")).toEqual([]);
+      expect(g.relationships.filter((r) => r.type === "implements")).toEqual([]);
+    }
+    const brief = await briefOf(gh, "7");
+    expect(Object.keys(brief)).toEqual(expect.arrayContaining(["threads", "diff", "ci", "history"]));
+    expect(JSON.stringify(brief)).not.toContain("OUTSIDER");
   });
 
   it("stamps an issue and a pull request with when GitHub says each was opened, in every query that reads one", async () => {
@@ -214,39 +242,31 @@ describe("the GitHub source", () => {
     expect(g.nodes.find((n) => n.id === "7")).not.toHaveProperty("updatedAt");
   });
 
-  /*
-   * An item can have a pull request per branch its workflow names, and
-   * `pull.open` is satisfied per branch — so every pull request says which
-   * branch it is from, whichever read found it.
-   */
-  it("says which branch each pull request is from, in list and in read alike", async () => {
+  /* `pull.open` is satisfied by the branch, so the pull request says which it is from, whichever read found it. */
+  it("says which branch the item's pull request is from, in list and in read alike", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
-    gh.openPull({ number: 30, head: "api/7", closes: [7] });
-    gh.openPull({ number: 31, head: "ui/7", closes: [7] });
+    gh.openPull({ number: 30, head: "landrace/7" });
     const branches = (g: { nodes: Array<{ id: string; state: Record<string, unknown> }> }) =>
       Object.fromEntries(g.nodes.filter((n) => n.id.startsWith("pr-")).map((n) => [n.id, n.state.branch]));
 
-    expect(branches(await sourceOf(gh).list(ctx(gh)))).toEqual({ "pr-30": "api/7", "pr-31": "ui/7" });
-    expect(branches(await sourceOf(gh).read("7", ctx(gh)))).toEqual({ "pr-30": "api/7", "pr-31": "ui/7" });
+    expect(branches(await sourceOf(gh).list(ctx(gh)))).toEqual({ "pr-30": "landrace/7" });
+    expect(branches(await sourceOf(gh).read("7", ctx(gh)))).toEqual({ "pr-30": "landrace/7" });
   });
 
   /*
    * A fork names its head branch in its own repository, and can name it
    * anything — ours included. Tied to an item by that name, anybody's fork
    * could stand in for the pull request `pull.open` is waiting to open, or
-   * pull an item into review. A fork's pull request still counts when it
-   * says it closes the item, and then carries no branch for `pull.open` to
-   * match on.
+   * pull an item into review; and by what it says it closes, likewise.
    */
-  it("ties a fork's pull request to an item only by what it closes, and reports no branch for it", async () => {
+  it("never ties a fork's pull request to an item, by its head's name or by what it closes", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
     gh.openPull({ number: 40, head: "landrace/7", crossRepository: true });
     gh.openPull({ number: 41, head: "landrace/7", crossRepository: true, closes: [7] });
 
     for (const g of [await sourceOf(gh).read("7", ctx(gh)), await sourceOf(gh).list(ctx(gh))]) {
       expect(g.nodes.map((n) => n.id)).not.toContain("pr-40");
-      expect(g.relationships).toContainEqual({ from: "pr-41", to: "7", type: "implements" });
-      expect(g.nodes.find((n) => n.id === "pr-41")?.state).not.toHaveProperty("branch");
+      expect(g.nodes.map((n) => n.id)).not.toContain("pr-41");
       expect(hasPullFrom(g, "7", "landrace/7")).toBe(false);
     }
   });
@@ -280,7 +300,7 @@ describe("the GitHub source", () => {
     const gh = createFakeTracker([{ number: 7 }]);
     gh.openPull({ number: 20, head: "landrace/7", merged: true, threads: [{ isResolved: false, body: "left over" }] });
     gh.openPull({ number: 21, head: "landrace/7", threads: [] });
-    gh.openPull({ number: 22, head: "feature/z", state: "CLOSED", closes: [7], threads: [{ isResolved: false, body: "abandoned" }] });
+    gh.openPull({ number: 22, head: "landrace/7", state: "CLOSED", threads: [{ isResolved: false, body: "abandoned" }] });
     const g = await sourceOf(gh).read("7", ctx(gh));
     expect(g.nodes.find((n) => n.id === "pr-20")?.state).toMatchObject({ openThreads: 0 });
     expect(g.nodes.find((n) => n.id === "pr-22")?.state).toMatchObject({ openThreads: 0 });
@@ -311,13 +331,14 @@ describe("the GitHub source", () => {
     expect(g.nodes[0]?.priority).toBeNull();
   });
 
-  it("halts on a pull request tied to two items, and lists it tied to neither", async () => {
+  // What its text says it closes ties nothing, so its head is the one item it can be tied to.
+  it("ties a pull request on #7's branch to #7 alone, whatever else it says it closes", async () => {
     const gh = createFakeTracker([{ number: 7 }, { number: 8 }]);
     gh.openPull({ number: 40, head: "landrace/7", threads: [], closes: [8] });
-    await expect(sourceOf(gh).read("7", ctx(gh))).rejects.toThrow(/#40 is tied to #7 and #8|#40 is tied to #8 and #7/);
-    await expect(sourceOf(gh).read("8", ctx(gh))).rejects.toThrow(/#40 is tied to/);
-    const g = await sourceOf(gh).list(ctx(gh));
-    expect(g.relationships.filter((r) => r.type === "implements")).toEqual([]);
+    const implements_ = (g: Graph) => g.relationships.filter((r) => r.type === "implements");
+    expect(implements_(await sourceOf(gh).read("7", ctx(gh)))).toEqual([{ from: "pr-40", to: "7", type: "implements" }]);
+    expect(implements_(await sourceOf(gh).read("8", ctx(gh)))).toEqual([]);
+    expect(implements_(await sourceOf(gh).list(ctx(gh)))).toEqual([{ from: "pr-40", to: "7", type: "implements" }]);
   });
 
   it("briefs the open threads of every open pull request on the item", async () => {
@@ -343,16 +364,15 @@ describe("the list a tick schedules from", () => {
     expect(g.relationships).toEqual([]);
   });
 
-  it("ties an open pull request to its item by branch or by closing reference, and lists no merged one", async () => {
+  it("ties an open pull request to its item by its branch alone, and lists no merged one", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2 }]);
     gh.openPull({ number: 10, head: "landrace/1", threads: [] });
     gh.openPull({ number: 11, head: "feature/x", closes: [2], threads: [] });
     gh.openPull({ number: 12, head: "landrace/2", merged: true, threads: [] });
     const g = await sourceOf(gh).list(ctx(gh));
-    expect(g.nodes.filter((n) => n.kind === "pull-request").map((n) => n.id).sort()).toEqual(["pr-10", "pr-11"]);
+    expect(g.nodes.filter((n) => n.kind === "pull-request").map((n) => n.id).sort()).toEqual(["pr-10"]);
     expect(g.relationships).toEqual(expect.arrayContaining([
       { from: "pr-10", to: "1", type: "implements" },
-      { from: "pr-11", to: "2", type: "implements" },
     ]));
   });
 
@@ -400,9 +420,8 @@ describe("a pull request's reference is derived from the item, never stored", ()
   it("asks about the item's own branch, in the configured repository", async () => {
     const gh = createFakeTracker([{ number: 77 }]);
     await sourceOf(gh).read("77", ctx(gh));
-    expect(operations(gh, "LandraceItem")[0]?.variables).toMatchObject({
-      owner: "acme", name: "widgets", number: 77, head: "landrace/77",
-    });
+    // By its head alone: what an issue's closing references name ties nothing.
+    expect(operations(gh, "LandraceItem")[0]?.variables).toEqual({ owner: "acme", name: "widgets", head: "landrace/77" });
   });
 
   /* Review focus: no pull request yet must read as none, not as a zero a trigger might match. */
@@ -604,12 +623,14 @@ describe("the open threads reach the prompt, and only the prompt", () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ number: 50, head: "landrace/1", merged: true, threads: [{ isResolved: false, body: "old news" }] });
     gh.openPull({ number: 51, head: "landrace/1", threads: [{ isResolved: false, body: "on the branch" }] });
-    gh.openPull({ number: 52, head: "feature/y", closes: [1], threads: [{ isResolved: false, body: "closing it" }] });
+    gh.openPull({ number: 52, head: "landrace/1", threads: [{ isResolved: false, body: "a second one" }] });
+    gh.openPull({ number: 53, head: "feature/y", closes: [1], threads: [{ isResolved: false, body: "closing it" }] });
     const text = (await briefOf(gh, "1")).threads ?? "";
     expect(text).toMatch(/## PR #51[\s\S]*on the branch/);
-    expect(text).toMatch(/## PR #52[\s\S]*closing it/);
+    expect(text).toMatch(/## PR #52[\s\S]*a second one/);
     expect(text).not.toContain("old news");
     expect(text).not.toContain("PR #50");
+    expect(text).not.toContain("closing it");
   });
 
   /* A resolved thread is a finding the reviewer already accepted as answered. */
@@ -748,7 +769,7 @@ describe("the item's history reaches the prompt, labelled by who said it", () =>
   it("names the pull request each thread is on, with its state", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ number: 50, head: "landrace/1", state: "CLOSED", threads: [{ isResolved: false, body: "abandoned one" }] });
-    gh.openPull({ number: 51, head: "feature/y", closes: [1], threads: [{ isResolved: false, body: "open one" }] });
+    gh.openPull({ number: 51, head: "landrace/1", threads: [{ isResolved: false, body: "open one" }] });
     const text = (await briefOf(gh, "1")).history ?? "";
     expect(text).toMatch(/On PR #50 \(closed\): [^\n]*\nabandoned one/);
     expect(text).toMatch(/On PR #51 \(open\): [^\n]*\nopen one/);
@@ -824,7 +845,7 @@ describe("a read carries the item's whole subtree", () => {
   it("reads grandchildren and every descendant's pull requests, with their edges", async () => {
     const gh = createFakeTracker([{ number: 1 }, { number: 2, parent: 1 }, { number: 3, parent: 2 }]);
     gh.openPull({ head: "landrace/2", number: 20, threads: threads([false, true]) });
-    gh.openPull({ head: "feature", number: 30, merged: true, closes: [3], threads: threads([false]) });
+    gh.openPull({ head: "landrace/3", number: 30, merged: true, threads: threads([false]) });
 
     const g = await sourceOf(gh).read("1", ctx(gh));
 

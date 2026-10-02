@@ -213,8 +213,8 @@ describe("the graph compose reads", () => {
   it("halts a read on a pull request tied to two items, and lists it with no edge", async () => {
     const tracker = new MemoryTracker({ items: [{ id: "7" }, { id: "8", parent: "7" }] });
     const forge = new MemoryForge();
-    // Opened against #7, from #8's branch: it names both, and a read of either sees both.
-    const pr = forge.add("7", { branch: "landrace/8" });
+    // From #8's branch, and naming #7 as a forge that ties by text would: a read of either sees both.
+    const pr = forge.add("7", { branch: "landrace/8", items: ["7"] });
     const hooks = compose({ tracker, forge });
 
     await expect(hooks.source.read("7", ctx)).rejects.toThrow("pull request #1 is tied to #7 and #8");
@@ -226,14 +226,20 @@ describe("the graph compose reads", () => {
   it("halts a read on a pull request from an unrelated item's landrace/ head naming this one", async () => {
     const tracker = new MemoryTracker({ items: [{ id: "8" }, { id: "12" }] });
     const forge = new MemoryForge();
-    // #12's branch, its text closing #8: #12 is outside #8's neighbourhood, and still an item.
-    forge.add("8", { branch: "landrace/12" });
+    // #12's branch, naming #8: #12 is outside #8's neighbourhood, and still an item.
+    forge.add("8", { branch: "landrace/12", items: ["8"] });
     const hooks = compose({ tracker, forge });
 
     await expect(hooks.source.read("8", ctx)).rejects.toThrow("pull request #1 is tied to #8 and #12");
     await expect(hooks.source.read("12", ctx)).rejects.toThrow("pull request #1 is tied to #8 and #12");
   });
 
+  /*
+   * As the shipped forges do since anyone could write `Closes #1` from a
+   * fork: the in-memory forge ties a pull request opened for #1 from any
+   * other branch to nothing, and names an item beside the head only where a
+   * test seeds it, for a forge that ties by text.
+   */
   it("ties a pull request to its item by a landrace/{item} head or by the items it names, and nothing else", async () => {
     class Forked extends MemoryForge {
       override async pullsNaming(item: string): Promise<PullRecord[]> {
@@ -245,20 +251,22 @@ describe("the graph compose reads", () => {
     }
     const forge = new Forked();
     forge.add("1", { branch: "landrace/1" });
-    forge.add("1", { branch: "api/1" });
+    forge.add("1", { branch: "api/1" }); // opened for #1, from a branch that is not its own: nobody's
     forge.add("1", { branch: "landrace/1" }); // a fork's: no branch of ours, naming nothing
+    forge.add("1", { branch: "feature/x", items: ["1"] }); // naming #1, as a test seeds it
+    forge.add("1"); // the item's own branch unless the test says
     const hooks = compose({ tracker: seeded(), forge });
 
     const edges = (g: Graph) => g.relationships.filter((r) => r.type === "implements").map((r) => r.from).sort();
-    expect(edges(await hooks.source.read("1", ctx))).toEqual(["pr-1", "pr-2"]);
-    expect(edges(await hooks.source.list(ctx))).toEqual(["pr-1", "pr-2"]);
+    expect(edges(await hooks.source.read("1", ctx))).toEqual(["pr-1", "pr-4", "pr-5"]);
+    expect(edges(await hooks.source.list(ctx))).toEqual(["pr-1", "pr-4", "pr-5"]);
   });
 
-  // A workflow with two branches per item names the second landrace/{item}-api:
-  // that head names no item there is, so the pull request is the one its text names.
+  // A landrace/{item}-api head names no item there is, so the pull request is
+  // only the one a forge that ties by text says it names — seeded here.
   it("reads a landrace/ head that is no item's as naming nothing", async () => {
     const state = createExternalState({ items: [{ id: "1" }] });
-    const pr = state.openPull("1", { branch: "landrace/1-api" });
+    const pr = state.openPull("1", { branch: "landrace/1-api", items: ["1"] });
     const tied = { from: pr, to: "1", type: "implements" };
     expect((await state.source.read("1", ctx)).relationships).toContainEqual(tied);
     expect((await state.source.list(ctx)).relationships).toContainEqual(tied);

@@ -1000,8 +1000,10 @@ export interface ItemRecord {
 
 /**
  * A pull request as a forge integration reads it: `pullNode`'s fields, and
- * the items it names in its own text — `Closes #n` — beside the one its
- * `landrace/{item}` head is for. `branch` is undefined for a fork's.
+ * the items it is tied to beside the one its `landrace/{item}` head is for —
+ * none, for the forges landrace ships: what a pull request's own text says it
+ * closes ties nothing, since anybody can write that, from a fork too.
+ * `branch` is undefined for a fork's.
  */
 export interface PullRecord {
   number: number;
@@ -1685,8 +1687,18 @@ export interface ExternalPull {
   /** Of `openThreads`, how many await a fix: every one whose last word is not the fixer's answer. */
   awaitingFix: number;
   closed: Closed;
-  /** The branch it was opened from, when it says: what `pull.open` looks a pull request up by. */
+  /**
+   * The branch it was opened from: what `pull.open` looks a pull request up
+   * by, and — as `landrace/{item}` — what ties it to an item. `landrace/{item}`
+   * of the item it was added for, unless the test says.
+   */
   branch?: string;
+  /**
+   * The items it names beside its head, as a forge that tied by text would
+   * report them. A test's seed only: the shipped forges name none, since
+   * anyone can write `Closes #7` — from a fork too.
+   */
+  items?: string[];
   /** Of `openThreads`, how many a review step raised: the only ones its `resolved` may close. */
   raised?: number;
   /** The markers of the reviews `pull.review` posted, so a round is posted once. */
@@ -1703,7 +1715,7 @@ export interface ExternalPull {
 
 /** What a test may set on a pull request it opens in memory; everything else is defaulted. */
 export type ExternalPullSeed = Partial<Pick<
-  ExternalPull, "merged" | "openThreads" | "awaitingFix" | "closed" | "branch" | "headSha" | "checks" | "failed" | "mergeable"
+  ExternalPull, "merged" | "openThreads" | "awaitingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable"
 >>;
 
 /**
@@ -1721,9 +1733,9 @@ export interface ExternalState extends ComposedHooks {
   /** The in-memory docs role's spec page: published, read back and briefed like any docs integration's. */
   spec: ArtifactHook;
   /**
-   * Open a pull request implementing `item`; returns its node id, `pr-<n>`, numbered from 1 in creation order.
-   * `awaitingFix` defaults to `openThreads`: a thread nobody has answered awaits a fix.
-   * Its head is `sha-<n>` and its checks `none`, unless the test says.
+   * Open a pull request for `item`, from its `landrace/{item}` branch unless the test names another; returns
+   * its node id, `pr-<n>`, numbered from 1 in creation order. `awaitingFix` defaults to `openThreads`: a
+   * thread nobody has answered awaits a fix. Its head is `sha-<n>` and its checks `none`, unless the test says.
    */
   openPull(item: string, pr?: ExternalPullSeed): string;
   /** Every branch a `branch.push` was applied for, in order: there is no repository here to push to. */

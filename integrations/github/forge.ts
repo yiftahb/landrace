@@ -19,25 +19,25 @@ import { type Client, clientFor, issueNumber, tokenRejected, unseen } from "./cl
 
 /**
  * What a pull request is asked for, wherever it is found: enough to know
- * whether it is open, merged or abandoned, the head a fix round moves, and —
- * with closing references on — the issues it closes. No thread in it and no
- * body.
+ * whether it is open, merged or abandoned, the head a fix round moves, and
+ * whether it is from a fork. No thread in it and no body, and not the issues
+ * it closes: anyone can write `Closes #7`, from a fork too, so what a pull
+ * request says it closes ties it to nothing.
  */
-const pullFields = (refs: boolean): string => `
-  number title url state merged headRefName headRefOid isCrossRepository createdAt updatedAt${refs ? `
-  closingIssuesReferences(first: 20) { nodes { number } }` : ""}`;
+const PULL_FIELDS = `
+  number title url state merged headRefName headRefOid isCrossRepository createdAt updatedAt`;
 
 /**
  * Every open pull request, paged on its own cursor. Merged ones are not
  * listed here: the board shows what is live, and routing reads `read`, which
  * does include them.
  */
-const pullsQuery = (refs: boolean): string => `
+const PULLS_QUERY = `
 query LandracePulls($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { ${pullFields(refs)} }
+      nodes { ${PULL_FIELDS} }
     }
   }
 }`;
@@ -48,41 +48,24 @@ query LandracePulls($owner: String!, $name: String!, $cursor: String) {
  * have been updated inside the window either. A Done item's merged pull
  * request never answers the open-only query above.
  */
-const closedPullsQuery = (refs: boolean): string => `
+const CLOSED_PULLS_QUERY = `
 query LandraceClosedPulls($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: [MERGED, CLOSED], first: ${ISSUE_PAGE}, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { ${pullFields(refs)} }
+      nodes { ${PULL_FIELDS} }
     }
   }
 }`;
 
-/**
- * Every pull request tied to one item: the ones on its `landrace/{item}`
- * head, and — with closing references on — the ones that close its issue.
- */
-const itemQuery = (refs: boolean): string => refs
-  ? `
-query LandraceItem($owner: String!, $name: String!, $number: Int!, $head: String!) {
-  repository(owner: $owner, name: $name) {
-    issue(number: $number) {
-      closedByPullRequestsReferences(first: ${ITEM_PAGE}, includeClosedPrs: true) { totalCount nodes { ${pullFields(true)} } }
-    }
-    pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${ITEM_PAGE},
-                 orderBy: { field: CREATED_AT, direction: DESC }) {
-      totalCount
-      nodes { ${pullFields(true)} }
-    }
-  }
-}`
-  : `
+/** Every pull request on one item's `landrace/{item}` head, a fork's among them until `pullsNaming` leaves it out. */
+const ITEM_QUERY = `
 query LandraceItem($owner: String!, $name: String!, $head: String!) {
   repository(owner: $owner, name: $name) {
     pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${ITEM_PAGE},
                  orderBy: { field: CREATED_AT, direction: DESC }) {
       totalCount
-      nodes { ${pullFields(false)} }
+      nodes { ${PULL_FIELDS} }
     }
   }
 }`;
@@ -151,15 +134,11 @@ query LandraceChecks($owner: String!, $name: String!, $oid: GitObjectID!) {
   }
 }`;
 
-/**
- * Every GraphQL document the forge sends, so a test can cost each against
- * GitHub's node limit. With closing references off, each pull request query
- * asks for a subset of these, so costing these costs those.
- */
+/** Every GraphQL document the forge sends, so a test can cost each against GitHub's node limit. */
 export const FORGE_QUERIES = {
-  PULLS_QUERY: pullsQuery(true),
-  CLOSED_PULLS_QUERY: closedPullsQuery(true),
-  ITEM_QUERY: itemQuery(true),
+  PULLS_QUERY,
+  CLOSED_PULLS_QUERY,
+  ITEM_QUERY,
   THREADS_QUERY,
   PREFLIGHT_PR_QUERY,
   CHECKS_QUERY,
@@ -177,8 +156,6 @@ interface PullNode {
   headRefOid: string;
   /** From a fork, whose head branch is named in somebody else's repository — and so could be named anything. */
   isCrossRepository: boolean;
-  /** Absent when closing references are off. */
-  closingIssuesReferences?: { nodes: Array<{ number: number }> };
   /** ISO 8601. Optional because a reading without it draws no age, never NaN. */
   createdAt?: string;
   /** ISO 8601, when it last changed: the board's lane order. Optional likewise; null where GitHub answers none. */
@@ -205,10 +182,10 @@ interface ThreadNode {
 
 /**
  * A pull request as GraphQL answers it, as the kit reads one: a fork's head
- * branch is not named, and with closing references off it names no item
- * whatever the answer carried.
+ * branch is not named, so it is no item's, and no item is named beside the
+ * head — the issues its text closes tie it to nothing.
  */
-const recordOf = (pull: PullNode, refs: boolean): PullRecord => ({
+const recordOf = (pull: PullNode): PullRecord => ({
   number: pull.number,
   title: pull.title,
   link: pull.url,
@@ -218,7 +195,7 @@ const recordOf = (pull: PullNode, refs: boolean): PullRecord => ({
   branch: pull.isCrossRepository ? undefined : pull.headRefName,
   createdAt: pull.createdAt,
   updatedAt: pull.updatedAt ?? undefined,
-  items: refs ? (pull.closingIssuesReferences?.nodes ?? []).map((i) => String(i.number)) : [],
+  items: [],
 });
 
 /** A thread comment as GraphQL answers it, as the kit reads one: a deleted account is no author at all. */
@@ -439,10 +416,13 @@ function constructedIn(): string | null {
  * directory the process was started from.
  *
  * `closingRefs` is whether the tracker beside it is GitHub's own issues. On,
- * a pull request it opens says `Closes #n` and one that closes an item's
- * issue is tied to it; off, it writes none and reads none — beside another
- * vendor's tracker, `#7` is GitHub's issue 7, which is somebody else's, and a
- * merge would close it.
+ * a pull request it opens says `Closes #n`, so the merge closes the issue;
+ * off, it writes none — beside another vendor's tracker, `#7` is GitHub's
+ * issue 7, which is somebody else's, and a merge would close it. Either way
+ * it reads none: a pull request is an item's only from that item's own
+ * `landrace/{item}` head in this repository, since anybody — a fork on a
+ * public repository — can write `Closes #7`, and what it was tied to by that
+ * reached the prompts and the routing of an item merged with no person.
  */
 export class GitHubForge extends BaseForge {
   private readonly client: Client | undefined;
@@ -485,7 +465,7 @@ export class GitHubForge extends BaseForge {
         throw new Error(`${gh.repo} has more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} open pull requests, more than one list may carry`);
       }
       const data: { repository: { pullRequests: Page<PullNode> } | null } =
-        await gh.graphql(pullsQuery(this.closingRefs), { owner, name, cursor });
+        await gh.graphql(PULLS_QUERY, { owner, name, cursor });
       if (!data.repository) throw unseen(gh.repo);
       const { pullRequests } = data.repository;
       pulls.push(...pullRequests.nodes);
@@ -499,7 +479,7 @@ export class GitHubForge extends BaseForge {
     cursor = null;
     closed: for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
       const data: { repository: { pullRequests: Page<PullNode & { updatedAt: string | null }> } | null } =
-        await gh.graphql(closedPullsQuery(this.closingRefs), { owner, name, cursor });
+        await gh.graphql(CLOSED_PULLS_QUERY, { owner, name, cursor });
       if (!data.repository) throw unseen(gh.repo);
       const { pullRequests } = data.repository;
       for (const pull of pullRequests.nodes) {
@@ -513,41 +493,28 @@ export class GitHubForge extends BaseForge {
       cursor = pullRequests.pageInfo.endCursor;
     }
 
-    return pulls.map((pull) => recordOf(pull, this.closingRefs));
+    return pulls.map(recordOf);
   }
 
   /**
-   * One item's pull requests, found either way — by its branch, and by
-   * closing reference — once each. A fork's found by its head name alone is
-   * not this item's: the name is in somebody else's repository. By closing
-   * reference, it is.
+   * One item's pull requests: every one on its `landrace/{item}` head in
+   * this repository. A fork's on a head of that name is not this item's —
+   * the name is in somebody else's repository — and nor is one that only
+   * says it closes the item.
    */
   async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
     const gh = this.gh(ctx);
-    type Connection = { totalCount: number; nodes: PullNode[] };
-    const data = await gh.graphql<{
-      repository: { issue?: { closedByPullRequestsReferences: Connection } | null; pullRequests: Connection } | null;
-    }>(itemQuery(this.closingRefs), {
-      owner: gh.owner, name: gh.name, head: prBranch(item), ...(this.closingRefs ? { number: issueNumber(item) } : {}),
-    });
+    const data = await gh.graphql<{ repository: { pullRequests: { totalCount: number; nodes: PullNode[] } } | null }>(
+      ITEM_QUERY, { owner: gh.owner, name: gh.name, head: prBranch(item) },
+    );
     if (!data.repository) throw unseen(gh.repo);
-    const { issue, pullRequests } = data.repository;
-    if (this.closingRefs && !issue) throw new Error(`#${item} is not an issue in ${gh.repo}`);
-    const closing = issue?.closedByPullRequestsReferences;
-
-    // A count over the first page is a number known to be short, and every
-    // one of these is counted: past the page, the item halts saying so.
-    for (const [what, connection] of [["pull requests on its branch", pullRequests], ["pull requests closing it", closing]] as const) {
-      if (connection && connection.totalCount > connection.nodes.length) {
-        throw new Error(`#${item} has ${connection.totalCount} ${what}, more than the ${ITEM_PAGE} one read carries`);
-      }
+    const { pullRequests } = data.repository;
+    // A count over the first page is a number known to be short: past the
+    // page, the item halts saying so.
+    if (pullRequests.totalCount > pullRequests.nodes.length) {
+      throw new Error(`#${item} has ${pullRequests.totalCount} pull requests on its branch, more than the ${ITEM_PAGE} one read carries`);
     }
-
-    const byNumber = new Map<number, PullNode>();
-    for (const pull of [...pullRequests.nodes.filter((p) => !p.isCrossRepository), ...(closing?.nodes ?? [])]) {
-      if (!byNumber.has(pull.number)) byNumber.set(pull.number, pull);
-    }
-    return [...byNumber.values()].map((pull) => recordOf(pull, this.closingRefs));
+    return pullRequests.nodes.filter((p) => !p.isCrossRepository).map(recordOf);
   }
 
   /**
@@ -594,8 +561,7 @@ export class GitHubForge extends BaseForge {
         head: branch,
         base: await gh.defaultBranch(),
         title,
-        // The closing reference is the second way a pull request is tied to
-        // its item, and the one that survives a branch named any way at all.
+        // So the merge closes the issue. It ties nothing: see the class.
         ...(this.closingRefs ? { body: `Closes #${issueNumber(item)}` } : {}),
       });
     } catch (e) {

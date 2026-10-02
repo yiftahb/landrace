@@ -641,7 +641,7 @@ describe("children on GitHub", () => {
       { number: 2, title: "a", body: "", labels: [], parent: 1 },
     ]);
     gh.openPull({ head: "landrace/2", number: 7, headSha: "s", threads: [] });
-    gh.openPull({ head: "landrace/2-b", number: 8, headSha: "t", threads: [], merged: true, closes: [2] });
+    gh.openPull({ head: "landrace/2", number: 8, headSha: "t", threads: [], merged: true });
     const snapshot = { graph: await gh.registry.source!.read("1", gh.ctx) };
 
     await dispatch(gh, { type: "nodes.close", ids: ["pr-7", "pr-8", "2"] }, snapshot);

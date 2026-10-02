@@ -136,8 +136,7 @@ export const itemOfBranch = (head: string): string | null => /^landrace\/([1-9][
  * The one mapping from a pull request, as an integration reads its forge's,
  * to a pull request node. Merged is done; closed without merging is dropped.
  *
- * `branch` is the head branch, so `pull.open` can tell one branch's pull
- * request from another's: an item has as many as its workflow's stages name.
+ * `branch` is the head branch, which `pull.open` looks a pull request up by.
  * An integration leaves it undefined for a fork's, whose branch is in another
  * repository and could carry any name — ours included — and so stand in for
  * the one we would open.
@@ -414,13 +413,16 @@ const headOf = (pull: Pick<PullRecord, "branch">): string | undefined => {
 };
 
 /**
- * Every item a pull request names: the ones its own text does (`Closes #n`)
- * and the one a `landrace/{item}` head is for, when that is one of the
- * `known` items. A branch named any other way — `api/{item}`, a fork's —
- * names nothing: anybody can call a branch after any item, and only our own
- * head convention is ours. Nor does a `landrace/` head that is no item's —
- * `landrace/7-api`, a workflow's second branch for #7 — which a tracker whose
- * ids may carry a "-" could not otherwise tell from an item called "7-api".
+ * Every item a pull request is tied to: the one a `landrace/{item}` head is
+ * for, when that is one of the `known` items, and any an integration ties it
+ * to itself — none, for the forges landrace ships. Not what its own text
+ * says it closes: anybody can write `Closes #7`, from a fork on a public
+ * repository too, and what that tied to an item was briefed to the agents of
+ * a workflow that merges with no person. A branch named any other way —
+ * `api/{item}`, a fork's — names nothing: anybody can call a branch after any
+ * item, and only our own head convention is ours. Nor does a `landrace/` head
+ * that is no item's — `landrace/7-api` — which a tracker whose ids may carry
+ * a "-" could not otherwise tell from an item called "7-api".
  */
 export function itemsNamedBy(pull: Pick<PullRecord, "branch" | "items">, known: ReadonlySet<string>): Set<string> {
   const named = new Set(pull.items);
@@ -481,7 +483,11 @@ export abstract class BaseForge {
   abstract login(ctx: RuntimeContext): Promise<string>;
   /** Every open pull request, and any closed one the board should still show. */
   abstract pulls(ctx: RuntimeContext): Promise<PullRecord[]>;
-  /** Every pull request tied to an item — from its `landrace/{item}` head, or naming it — merged and closed ones too. */
+  /**
+   * Every pull request on the item's `landrace/{item}` head in this
+   * repository, merged and closed ones too — never a fork's, and never one
+   * that only says it closes the item.
+   */
   abstract pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]>;
   /** Every review thread on a pull request, resolved or not, every page — or a refusal, never a short list. */
   abstract threads(pull: number, ctx: RuntimeContext): Promise<ReviewThread[]>;
@@ -571,8 +577,8 @@ export abstract class BaseForge {
    * included — "every pull request is merged" is a count over all of them.
    * One tied to two items halts: which it implements is not a guess. A
    * `landrace/` head counts for an item in this read, and for one outside
-   * it when `isItem` — the tracker — says it is one: #12's branch closing
-   * #8 is tied to both, whichever is read.
+   * it when `isItem` — the tracker — says it is one: #12's branch an
+   * integration also ties to #8 is tied to both, whichever is read.
    *
    * Only an open one's threads are counted. A thread left on a merged or
    * abandoned one is nothing a fix round can act on, and counting it would

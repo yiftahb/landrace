@@ -1,6 +1,6 @@
 import { renderOrigin } from "#conventions.js";
 import { createExternalState } from "#testing/index.js";
-import type { HookContext, RuntimeContext, Snapshot } from "#namespace.js";
+import type { Graph, HookContext, RuntimeContext, Snapshot } from "#namespace.js";
 
 describe("the in-memory tracker's graph", () => {
   const ctx = { config: {} as never, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
@@ -180,15 +180,19 @@ describe("publishing in the in-memory tracker", () => {
   });
 
   /*
-   * One item, two branches, two pull requests: a pull request from one
-   * branch says nothing about whether the other has one.
+   * Only the item's own `landrace/{item}` head ties a pull request to it, as
+   * the shipped forges tie one: opened from another branch, it is nobody's,
+   * and stands in for nothing.
    */
-  it("keeps two branches' pull requests apart", async () => {
+  it("ties a pull request opened from another branch to nothing", async () => {
     const state = createExternalState({ items: [{ id: "1" }] });
     await apply(state, { type: "pull.open", branch: "api/1" });
+    const snapshot = await read(state);
 
-    expect(state.post.satisfied(await read(state), { type: "pull.open", branch: "api/1" })).toBe(true);
-    expect(state.post.satisfied(await read(state), { type: "pull.open", branch: "ui/1" })).toBe(false);
+    expect(state.pull("pr-1").branch).toBe("api/1");
+    expect(state.post.satisfied(snapshot, { type: "pull.open", branch: "api/1" })).toBe(false);
+    expect(state.post.satisfied(snapshot, { type: "pull.open", branch: "landrace/1" })).toBe(false);
+    expect((snapshot.graph as Graph).relationships.filter((r) => r.type === "implements")).toEqual([]);
   });
 
   it("counts a merged pull request as opened, and an abandoned one as not", async () => {

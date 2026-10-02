@@ -457,6 +457,26 @@ describe("GitLab composed as a project's forge", () => {
     return { type: "pull.review", branch: "landrace/7", marker, stage: kind === "fix" ? "fix-review" : "code-review", round: Number(n), body: `Round ${marker}.`, output };
   };
 
+  /*
+   * GitHub's audit probe P2, on GitLab: a fork can call its branch anything,
+   * ours included. Only the item's own `landrace/{item}` branch in this
+   * project is its work, so nothing a fork wrote reaches a prompt or a count.
+   */
+  it("ties no fork's merge request to the item, whatever its branch is called: not in the graph, not in a briefing", async () => {
+    const { gl, hooks } = project();
+    gl.diffsFor("landrace/7", [{ new_path: "src/a.ts", diff: "@@ -1 +1 @@\n+OUTSIDER_DIFF\n" }]);
+    const fork = gl.open({ source_branch: "landrace/7", source_project_id: 99, sha: "f0", pipelines: [{ id: 5, sha: "f0", status: "failed" }] });
+    gl.discuss(fork.iid, { body: "OUTSIDER_THREAD", author: "outsider" });
+    const ctx = gl.ctx();
+
+    for (const g of [await hooks.source.read("7", ctx), await hooks.source.list(ctx)]) {
+      expect(g.nodes.filter((n) => n.kind === PULL_REQUEST_KIND)).toEqual([]);
+    }
+    const brief = await hooks.source.brief?.({ ...ctx, item: "7", snapshot: {} } as HookContext);
+    expect(Object.keys(brief ?? {})).toEqual(expect.arrayContaining(["threads", "diff", "ci", "history"]));
+    expect(JSON.stringify(brief)).not.toContain("OUTSIDER");
+  });
+
   it("opens the item's merge request, once", async () => {
     const { gl, hooks, snapshot, apply } = project();
     const open: Effect = { type: "pull.open", branch: "landrace/7" };

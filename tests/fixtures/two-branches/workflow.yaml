@@ -3,9 +3,10 @@ name: two-branches
 description: test
 
 # One item, two branches: the API and the UI are built, pushed and proposed
-# separately, each on the branch its own stage names. Nothing in the engine
-# says an item has one branch — `branch` is per stage, and `branch.push` and
-# `pull.open` each say which one they mean.
+# separately, each on the branch its own stage names. A step's worktree may be
+# on any branch, but a pull request is the item's only from its own
+# `landrace/{item}` head, so the one opened from api/<item> ties to nothing
+# and the item waits at publish-api (tests/e2e/scenarios.test.ts).
 stages:
   - id: api
     entry: true
@@ -37,10 +38,6 @@ stages:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Building the UI, round {round}." }
       - { type: tracker.status, value: ui }
 
-  # A pull request from api/<item> is already on the item by now. If
-  # `pull.open` were satisfied by "the item has one", this one would be
-  # dropped as done and the item would wait here for a second that never
-  # comes.
   - id: publish-ui
     triggers:
       - name: the UI is built

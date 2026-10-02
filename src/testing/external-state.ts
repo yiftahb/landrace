@@ -258,7 +258,11 @@ export class MemoryTracker extends BaseTracker {
   }
 }
 
-/** A pull request as the forge reads it out: memory's names the one item it was opened for, whatever its branch. */
+/**
+ * A pull request as the forge reads it out: tied to an item by its
+ * `landrace/{item}` head, as the shipped forges tie one, or by the items a
+ * test seeded — never by the item it was added for alone.
+ */
 const pullRecordOf = (p: ExternalPull): PullRecord => ({
   number: p.number,
   title: `PR #${p.number}`,
@@ -268,7 +272,7 @@ const pullRecordOf = (p: ExternalPull): PullRecord => ({
   headSha: p.headSha,
   branch: p.branch,
   createdAt: undefined,
-  items: [p.item],
+  items: [...(p.items ?? [])],
 });
 
 /** The forge's review calls, which the in-memory forge does not make: its threads are counts, and its `pull.review` moves them. */
@@ -294,17 +298,19 @@ export class MemoryForge extends BaseForge {
   checkCalls = 0;
 
   /**
-   * Open a pull request implementing `item`, numbered from 1 in creation
-   * order. Merged means closed as done unless `closed` says otherwise, and
-   * `awaitingFix` defaults to `openThreads`: a thread nobody answered awaits a fix.
-   * Its head is `sha-<number>` and nothing checks it, unless the test says.
+   * Open a pull request for `item`, numbered from 1 in creation order, from
+   * the item's own `landrace/{item}` branch unless the test names another —
+   * which ties it to nothing, unless `items` says. Merged means closed as
+   * done unless `closed` says otherwise, and `awaitingFix` defaults to
+   * `openThreads`: a thread nobody answered awaits a fix. Its head is
+   * `sha-<number>` and nothing checks it, unless the test says.
    */
   add(item: string, pr: ExternalPullSeed = {}): string {
     const number = this.rows.size + 1;
     const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
     const pull: ExternalPull = {
       id: `pr-${number}`, number, item, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0,
-      headSha: `sha-${number}`, checks: "none", failed: [], ...pr, closed,
+      headSha: `sha-${number}`, checks: "none", failed: [], branch: prBranch(item), ...pr, closed,
     };
     this.rows.set(pull.id, pull);
     return pull.id;
@@ -330,7 +336,7 @@ export class MemoryForge extends BaseForge {
   }
 
   async pullsNaming(item: string): Promise<PullRecord[]> {
-    return [...this.rows.values()].filter((p) => p.item === item || p.branch === prBranch(item)).map(pullRecordOf);
+    return [...this.rows.values()].filter((p) => p.branch === prBranch(item) || (p.items ?? []).includes(item)).map(pullRecordOf);
   }
 
   // ponytail: counts, not threads — briefed as none open, whatever the count says; hold thread text here if a test ever briefs it.
