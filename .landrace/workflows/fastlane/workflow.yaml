@@ -3,9 +3,20 @@ name: Fastlane
 description: "Small changes from the item's own text: build, review, CI, merged automatically. A person only when it is stuck."
 
 # An item labelled lr:fast is built from its own text — there is no spec —
-# reviewed, put through CI, and merged by Landrace once its checks are green,
-# guarded by the head the checks ran on; then the item is closed. A person is
-# needed only at a halt, or when a cap leaves the item `stuck`.
+# reviewed, put through CI, and merged by Landrace; then the item is closed.
+# A person is needed only at a halt, or when a cap leaves the item `stuck`.
+#
+# Nobody reads the change before it reaches the default branch, so the merge
+# is held by the engine, not by a prompt, to three guards (security audit
+# C1, H1): the checks are green on the head it merges; that head is the one
+# code review's latest round started at (`reviewedBy`); and the pull request
+# changes none of the paths in `refuse` — the engine's hooks, configuration
+# and workflows, CI, the dependencies an install runs, the agents' own
+# instructions — which are a person's to merge. Only the item's own
+# `landrace/{item}` pull request in this repository is its work: one that
+# merely says it closes the item, from a fork or not, is nobody's (H2).
+# Before the first lr:fast item, see "Before your first lr:fast item" in the
+# README: branch protection, a contents-scoped token, code owners.
 #
 # Rulings this file keeps:
 #
@@ -28,10 +39,17 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 #   waits on a person, never on a step; and a thread opened while the checks
 #   ran goes back to review first, like any other finding.
 # - `done` closes the item itself, so it closes where the forge links nothing.
-# - A merge the forge refuses — conflicts, branch protection, checks gone red
-#   since the read — is merge's rejected round: the item halts at `blocked`,
-#   on the board, with the forge's sentence, and a person's Retry merges again.
-#   So is a pull request the forge will not open or close.
+# - A head the last review did not read — pushed after it, while CI ran, or
+#   while the item was halted — answers as a moved head does, and goes back
+#   to code review. A fix's and the retro's commits each pass through a
+#   review round of their own, which records the head they made.
+# - A merge refused — by the forge: conflicts, branch protection, checks gone
+#   red since the read; or by the kit: a protected path, or changed files it
+#   could not read to the end — is merge's rejected round: the item halts at
+#   `blocked`, on the board, with the sentence, and a person's Retry merges
+#   again. So is a pull request the forge will not open or close. A pull
+#   request a person merged by hand finishes the item from `blocked`, as from
+#   `stuck`.
 admit: [lr:fast]
 
 # The same three integrations full-cycle loads, by the same paths: one project.
