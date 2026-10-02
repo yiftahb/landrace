@@ -235,3 +235,81 @@ describe("publishing in the in-memory tracker", () => {
     expect(state.pushes()).toEqual(["landrace/1", "landrace/1"]);
   });
 });
+
+/*
+ * A tracker a workflow may read and never write — the shape of a company's
+ * "merge requests waiting for my review" source. A write reaching it is a
+ * workflow or an operator doing what a read-only workflow must never do, so
+ * it fails, naming what was asked: a write that silently did nothing would
+ * read back as one that was never planned, which is the leak this exists to
+ * catch.
+ */
+describe("a read-only in-memory tracker", () => {
+  const ctx = { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+  const seeded = () => createExternalState({
+    items: [{ id: "1", labels: ["review-requested"] }, { id: "2", labels: ["review-requested"], parent: "1" }],
+    readOnly: true,
+  });
+  const read = async (state: ReturnType<typeof createExternalState>): Promise<Snapshot> => {
+    const graph = await state.source.read("1", ctx);
+    return { graph, node: graph.nodes.find((n) => n.id === "1") };
+  };
+  const apply = async (state: ReturnType<typeof createExternalState>, effect: { type: string; [k: string]: unknown }) =>
+    state.post.apply(effect, { ...ctx, item: "1", snapshot: await read(state) } as HookContext);
+
+  it("reads as any tracker does: the list, an item's neighbourhood and its snapshot fragment", async () => {
+    const state = seeded();
+    state.say("1", "please look");
+    expect((await state.source.list(ctx)).nodes.map((n) => [n.id, n.state])).toEqual([
+      ["1", { labels: ["review-requested"], assignees: [] }],
+      ["2", { labels: ["review-requested"], assignees: [] }],
+    ]);
+    expect((await state.source.read("2", ctx)).relationships).toEqual([{ from: "2", to: "1", type: "child-of" }]);
+    const fragment = await state.pre.run({ ...ctx, item: "1" } as HookContext);
+    expect(fragment).toMatchObject({ item: { comments: [expect.objectContaining({ body: "please look" })] } });
+    expect(state.writes()).toEqual([]);
+  });
+
+  it.each([
+    ["tracker.comment", { type: "tracker.comment", kind: "enter", marker: "enter:x:1", body: "hi" }, "comment was asked of #1"],
+    ["tracker.label", { type: "tracker.label", add: ["lr:working"] }, "addLabels was asked of #1"],
+    ["tracker.label removing", { type: "tracker.label", remove: ["review-requested"] }, "removeLabel was asked of #1"],
+    ["tracker.status", { type: "tracker.status", value: "reviewing" }, "addLabels was asked of #1"],
+    ["tracker.close", { type: "tracker.close" }, "close was asked of #1"],
+    ["nodes.close", { type: "nodes.close", ids: ["2"] }, "close was asked of #2"],
+  ])("refuses %s, saying what was asked of which item, and changes nothing", async (_name, effect, asked) => {
+    const state = seeded();
+    const before = structuredClone([state.item("1"), state.item("2")]);
+    await expect(apply(state, effect)).rejects.toThrow(`this tracker is read-only: ${asked}`);
+    expect([state.item("1"), state.item("2")]).toEqual(before);
+    expect(state.writes()).toEqual([asked.replace(" was asked of ", " ")]);
+  });
+
+  it("refuses the operator's create and update", async () => {
+    const state = seeded();
+    await expect(state.operator.createItem({ title: "x", parent: "1" }, ctx))
+      .rejects.toThrow("this tracker is read-only: create was asked of a new item under #1");
+    await expect(state.operator.createItem({ title: "x" }, ctx))
+      .rejects.toThrow("this tracker is read-only: create was asked of a new item");
+    await expect(state.operator.updateItem("1", { title: "renamed" }, ctx))
+      .rejects.toThrow("this tracker is read-only: update was asked of #1");
+    expect(state.item("1").title).toBe("item 1");
+    expect(state.children("1").map((r) => r.id)).toEqual(["2"]);
+  });
+
+  it("still lets a person move an item: that is the world changing, not landrace writing", async () => {
+    const state = seeded();
+    state.label("1", "approved");
+    state.unlabel("1", "review-requested");
+    state.say("1", "lgtm");
+    expect(state.item("1")).toMatchObject({ labels: ["approved"], comments: [expect.objectContaining({ body: "lgtm" })] });
+    expect(state.writes()).toEqual([]);
+  });
+
+  it("is writable unless asked to be read-only, and logs what it was asked to write either way", async () => {
+    const state = createExternalState({ items: [{ id: "1" }] });
+    await state.post.apply({ type: "tracker.status", value: "spec" }, { ...ctx, item: "1", snapshot: await read(state) } as HookContext);
+    expect(state.item("1").labels).toEqual(["lr:stage:spec"]);
+    expect(state.writes()).toEqual(["addLabels #1"]);
+  });
+});

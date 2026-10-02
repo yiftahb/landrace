@@ -1679,6 +1679,12 @@ export interface ExternalState extends ComposedHooks {
   unlabel(id: string, label: string): void;
   /** A person says something, under their own name, so it reads as a human turn. */
   say(id: string, text: string): void;
+  /**
+   * Every write the tracker was asked for, in order, as `<operation> #<id>` —
+   * refused ones too, when it is read-only. A person's moves through the
+   * helpers above are the world changing, and are not in it.
+   */
+  writes(): string[];
 }
 
 /* ----------------------------------------------------------------- agent -- */

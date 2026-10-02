@@ -1,0 +1,19 @@
+version: 1
+name: review
+description: merge requests waiting for my review, placed by their own labels and never written to
+
+# Read-only: no stage runs a step, records an entry or moves a label. Each of
+# an item's states has exactly one stage whose identity places it there, so
+# no item is ever "new" and entered — entering is a write — and it comes into
+# Needs you and leaves it by its own labels alone. No `admit`: this workflow
+# files nothing.
+eligible:
+  - when: { "node.state.labels": { $in: ["review-requested"] } }
+    else: "no review was requested"
+stages:
+  - id: reviewing
+    waits: person
+    identity: { "node.state.labels": { $nin: ["approved"] } }
+  - id: approved
+    terminal: true
+    identity: { "node.state.labels": { $in: ["approved"] } }

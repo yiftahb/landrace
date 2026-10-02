@@ -104,16 +104,39 @@ const recordOf = (row: ExternalItem): ItemRecord => ({
  * It overrides only what a tracker with no network behind it cannot do the
  * base's way: it knows its own login without asking, so its pre hook records
  * none, and its comment check asks its own login rather than the snapshot's.
+ *
+ * `readOnly` makes it a tracker a workflow may read and never write — a
+ * company's list of the reviews waiting on a person, say. Every write it is
+ * asked for then throws, saying what was asked of which item.
  */
 export class MemoryTracker extends BaseTracker {
   /** Every item, live: a test moves one the way a person on the tracker would. */
   readonly rows = new Map<string, ExternalItem>();
   private readonly at = clock();
   private nextComment = 1000;
+  private readonly readOnly: boolean;
+  private readonly asked: string[] = [];
 
-  constructor(seed: { items?: Array<Partial<ExternalItem>> } = {}) {
+  constructor(seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean } = {}) {
     super();
+    this.readOnly = seed.readOnly ?? false;
     for (const [i, s] of (seed.items ?? []).entries()) this.add(s, s.id ?? String(i + 1));
+  }
+
+  /** Every write this tracker was asked for, in order, as `<operation> #<id>`: refused ones too. */
+  writes(): string[] {
+    return [...this.asked];
+  }
+
+  /*
+   * Asked before every write. A read-only tracker refuses out loud rather than
+   * doing nothing: a write that silently did not land reads back as one that
+   * was never planned, which is exactly the leak a read-only workflow is
+   * tested for — and a reconcile would plan it again on every tick.
+   */
+  private write(operation: string, of: string): void {
+    this.asked.push(`${operation} ${of}`);
+    if (this.readOnly) throw new Error(`this tracker is read-only: ${operation} was asked of ${of}`);
   }
 
   /** The live row behind an item. */
@@ -167,24 +190,29 @@ export class MemoryTracker extends BaseTracker {
   }
 
   async comment(id: string, body: string): Promise<void> {
+    this.write("comment", `#${id}`);
     this.post(id, BOT, body);
   }
 
   async addLabels(id: string, labels: string[]): Promise<void> {
+    this.write("addLabels", `#${id}`);
     const row = this.row(id);
     for (const label of labels) if (!row.labels.includes(label)) row.labels.push(label);
   }
 
   async removeLabel(id: string, label: string): Promise<void> {
+    this.write("removeLabel", `#${id}`);
     const row = this.row(id);
     row.labels = row.labels.filter((l) => l !== label);
   }
 
   async close(id: string, how: "done" | "dropped"): Promise<void> {
+    this.write("close", `#${id}`);
     this.row(id).closed = how;
   }
 
   async create(item: { title: string; body: string; parent: string | undefined; priority: number | undefined }): Promise<string> {
+    this.write("create", item.parent === undefined ? "a new item" : `a new item under #${item.parent}`);
     if (item.parent !== undefined) this.row(item.parent); // throws "no such item #<parent>" when it is not one
     let n = this.rows.size + 1;
     while (this.rows.has(String(n))) n++;
@@ -192,6 +220,7 @@ export class MemoryTracker extends BaseTracker {
   }
 
   async update(id: string, fields: Pick<ItemPatch, "title" | "body" | "state">): Promise<void> {
+    this.write("update", `#${id}`);
     const row = this.row(id);
     if (fields.title !== undefined) row.title = fields.title;
     if (fields.body !== undefined) row.body = fields.body;
@@ -475,8 +504,9 @@ export class MemoryDocs extends BaseDocs {
  * Its hooks are `compose`'s over `MemoryTracker`, `MemoryForge` and
  * `MemoryDocs`, the same kit bases every integration is built on, so every
  * effect name and every `satisfied()` is the kit's own rather than a copy.
+ * `readOnly` makes the tracker refuse every write (see `MemoryTracker`).
  */
-export function createExternalState(seed: { items?: Array<Partial<ExternalItem>> } = {}): ExternalState {
+export function createExternalState(seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean } = {}): ExternalState {
   const tracker = new MemoryTracker(seed);
   const forge = new MemoryForge();
   const docs = new MemoryDocs();
@@ -503,5 +533,6 @@ export function createExternalState(seed: { items?: Array<Partial<ExternalItem>>
       row.labels = row.labels.filter((l) => l !== label);
     },
     say: (n, text) => tracker.post(n, PERSON, text),
+    writes: () => tracker.writes(),
   };
 }
