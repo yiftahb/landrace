@@ -246,7 +246,7 @@ How agents run and where items live. Portable workflows keep none of this.
 
 #### `notify:` — being told an item needs you
 
-Every stop waits on a person, and until something tells them, the only sign is the Needs you lane. With a `notify:` block, an item that comes to rest in Needs you — the board's own rule, so the two never disagree — is announced once through each notifier `via` names: `#29 needs you in <workflow> — <title> · <why>`, where workflow is the `name` of the workflow that owns the item and why is the board's note (`waiting on you`, `blocked by a security check`, …). An item that stays there is not announced again; one that leaves and comes back is. An item that arrives at a `waits: person` stage placed by state is announced once too, by the tick, after its converge, and only when it settled waiting or its lock was held elsewhere — a stage placed by a label is announced on its transition, as before. The engine keeps nothing, so after a restart each item already waiting at a stage placed by state is announced once more. An item passing through `triage` on its way back is never announced: `triage` runs its step at once. Sending is fire-and-forget — a notifier that fails is a `notify.failed` line in the log and nothing more, it never stops an item, and nothing is kept about what was sent.
+Every stop waits on a person, and until something tells them, the only sign is the Needs you lane. With a `notify:` block, an item that comes to rest in Needs you — the board's own rule, so the two never disagree — is announced once through each notifier `via` names: `#29 needs you in <workflow> — <title> · <why>`, where workflow is the `name` of the workflow that owns the item and why is the board's note (`waiting on you`, `blocked by a security check`, …). An item that stays there is not announced again; one that leaves and comes back is. An item that arrives at a `waits: person` stage placed by state is announced once too, by the tick, after its converge, and only when it settled waiting on its first pass of the converge (nothing moved it on first) or its lock was held elsewhere — a stage placed by a label is announced on its transition, as before. The engine keeps nothing, so after a restart each item already waiting at a stage placed by state is announced once more. An item passing through `triage` on its way back is never announced: `triage` runs its step at once. Sending is fire-and-forget — a notifier that fails is a `notify.failed` line in the log and nothing more, it never stops an item, and nothing is kept about what was sent.
 
 ```yaml
 notify:
@@ -417,7 +417,7 @@ A stage may say `waits: person` — it is a person's turn, and `validate` refuse
 
 ### Read-only workflows
 
-A stage is *placed by state* when its `identity` reads only what the tracker holds — `node.*` and `rel.*`, optionally with `"run.stage": null` — and not a counter or an output a step wrote. Such a stage needs no entry stage and no trigger: an item is at it because its fields say so, and leaves it when they stop saying so. A workflow whose every open stage is placed this way writes nothing — no transitions, no entry records — so it runs over a tracker it may only read. An item no identity places halts, saying that no stage places it, and nothing is written. `validate`'s `identity` rule reports two such identities only for an item it can construct that both place and the engine's own compiler confirms; where it cannot tell, it abstains.
+A stage is *placed by state* when its `identity` reads only what the tracker holds — `node.*` and `rel.*`, optionally with `"run.stage": null` — and not a counter or an output a step wrote. Such a stage needs no trigger to be reachable: an item is at it because its fields say so, and leaves it when they stop saying so. A workflow whose every open (non-terminal) stage is placed this way needs no entry stage, and writes nothing — no transitions, no entry records — so it runs over a tracker it may only read; one stage placed any other way brings back the need for an entry stage. In such a workflow, with no entry stage, an item no identity places halts, saying that no stage places it, and nothing is written; with an entry stage, an unplaced item is entered. `validate`'s `identity` rule reports two such identities only for an item it can construct that both place and the engine's own compiler confirms; where it cannot tell, it abstains.
 
 [`tests/fixtures/review`](tests/fixtures/review/workflow.yaml) is the shape of a "merge requests waiting for my review" workflow: `eligible` admits the items labelled `review-requested`, `reviewing` (`waits: person`) places those not yet `approved`, and the terminal `approved` places the rest, so an item comes into Needs you and leaves it by its own labels alone. A company's definition would read the same way over its own source.
 
@@ -835,7 +835,7 @@ A workspace holds one workflow or several, and one `landrace start` runs all of 
 
 | Rule | Catches |
 |---|---|
-| schema, ids, entry | Malformed definitions, duplicate stages, no entry point, an entry stage (of several) with no `"run.stage": null` trigger |
+| schema, ids, entry | Malformed definitions, duplicate stages, no entry point (unless every open stage is placed by the item's own state), an entry stage (of several) with no `"run.stage": null` trigger |
 | reachability, `unknown-stage` | A stage nothing leads to; a trigger naming a stage that does not exist |
 | `dead-end`, `self-loop` | A non-terminal stage with no way out; a stage triggering on itself |
 | `cycle-bound` | A loop with no counter bound — an agent that could run forever. An edge whose trigger waits for a person's own message (`run.lastEvent.actor: human`, exactly) bounds it too: every lap needs someone to write |
@@ -985,7 +985,7 @@ pnpm lint
 pnpm build
 ```
 
-A workflow of your own is tested against `createExternalState` from `landrace/testing`. With `readOnly: true` every write throws `this tracker is read-only: <operation> was asked of #<id>`, and the state's `writes()` lists every write attempted, refused ones included — which is how a read-only workflow is shown to write nothing.
+A workflow of your own is tested against `createExternalState` from `landrace/testing`. With `readOnly: true` every write throws `this tracker is read-only: <operation> was asked of <what>`, where <what> is `#<id>`, or `a new item` (`a new item under #<n>`) for a create, and the state's `writes()` lists every write attempted, refused ones included — which is how a read-only workflow is shown to write nothing.
 
 Agent instructions and MCP config are managed by [agsync](https://github.com/yiftahb/agsync). Edit `.agsync/instructions.md` or `.agsync/mcp/*.yaml` and run `agsync sync` — never edit `AGENTS.md`, `CLAUDE.md` or `.mcp.json` directly, they are generated.
 
