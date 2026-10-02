@@ -153,7 +153,11 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
   }
 
   const relations = [...tracker.relations(), ...(forge?.relations() ?? []), ...(docs?.relations() ?? [])];
-  const itemsIn = (graph: Graph): string[] => graph.nodes.filter((n) => n.kind === ITEM_KIND).map((n) => n.id);
+  // The tracker's own items, never a placeholder: a related item it holds
+  // only as an edge's far end has no neighbourhood here, so no other role is
+  // asked about it — and none can then report its id beside the tracker.
+  const itemsIn = (graph: Graph): string[] =>
+    graph.nodes.filter((n) => n.kind === ITEM_KIND && n.placeholder !== true).map((n) => n.id);
   const none: Graph = { nodes: [], relationships: [] };
 
   const hooks: ComposedHooks = {
@@ -204,6 +208,9 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
       id: PROJECT,
       createItem: (input, ctx) => tracker.createItem(input, ctx),
       updateItem: (id, patch, ctx) => tracker.updateItem(id, patch, ctx),
+      relates: () => tracker.relates(),
+      relate: (item, type, other, ctx) => tracker.relate(item, type, other, ctx),
+      unrelate: (item, type, other, ctx) => tracker.unrelate(item, type, other, ctx),
     }),
 
     pre: definePreHook({

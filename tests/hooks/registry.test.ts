@@ -24,6 +24,9 @@ const operator = (id: string) =>
     id,
     createItem: async () => candidate,
     updateItem: async () => candidate,
+    relates: () => [],
+    relate: async () => {},
+    unrelate: async () => {},
   });
 
 const executor = (id: string) => defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) });

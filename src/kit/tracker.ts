@@ -11,13 +11,13 @@
  * mapping what they answer into the plain fields `itemNode` takes.
  */
 import {
-  allClosed, CLOSE_EFFECT, entriesFromComments, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES, neutraliseMarkers,
-  NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATIONS, renderMarker, renderOrigin, sameLogin,
-  STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND,
+  allClosed, CLOSE_EFFECT, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES,
+  neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATIONS, renderMarker,
+  renderOrigin, sameLogin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND,
 } from "#conventions.js";
 import { commentLine } from "#kit/forge.js";
 import type {
-  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, RelationDecl, Relationship,
+  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, RelatedRecord, RelationDecl, Relationship,
   RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
 } from "#namespace.js";
 
@@ -238,6 +238,111 @@ export function itemNode(item: Omit<ItemRecord, "parent">, bot: string): Node {
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 
+const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Past this, a read is refused rather than decided from: the words every bound on one read uses. */
+const tooLarge = (id: string): Error =>
+  new Error(`#${id} has more than the ${MAX_SUBGRAPH_NODES} nodes one read may carry; a graph known to be short is not one to decide from`);
+
+/**
+ * A related item the tracker reports nothing else of — closed long ago,
+ * kept in another repository, or outside the neighbourhood read — as the far
+ * end of its edge, from what the relationship said of it. Its labels are not
+ * known, so they are empty: it is placed at no stage and claimed by nobody.
+ */
+export function placeholderNode(related: RelatedRecord): Node {
+  return {
+    id: related.to,
+    kind: ITEM_KIND,
+    title: related.title,
+    link: related.link,
+    closed: related.closed,
+    priority: null,
+    origin: null,
+    state: { labels: [], assignees: [] },
+    placeholder: true,
+  };
+}
+
+/**
+ * The relationships of an item a graph can carry, and whether it reported
+ * any it cannot: one to an id no node may have is an item nobody can name,
+ * and is read as one that could not be read — never as no relationship.
+ */
+export function relatedOf(item: ItemRecord): { related: RelatedRecord[]; whole: boolean } {
+  const all = item.related ?? [];
+  const related = all.filter((r) => itemIdProblem(r.to) === null);
+  return { related, whole: item.relatedComplete !== false && related.length === all.length };
+}
+
+/**
+ * Whether `root` waits on itself: its open blockers walked transitively, one
+ * `hop` per item, stopping at closed ones. `whole` is false when a blocker
+ * the walk met had relationships it could not read all of, so a cycle through
+ * them cannot be ruled out — the root's own are `relatedOf`'s to judge. A
+ * walk past MAX_SUBGRAPH_NODES items is refused, and a hop that cannot be
+ * read refuses it too: either way, what it would have found is not known. A
+ * closed item waits on nothing.
+ */
+export async function blockerCycle(
+  root: ItemRecord, hop: (id: string) => Promise<ItemRecord>,
+): Promise<{ cycle: boolean; whole: boolean }> {
+  if (root.closed !== null) return { cycle: false, whole: true };
+  const seen = new Set([root.id]);
+  const queue = [root];
+  let cycle = false;
+  let whole = true;
+  for (let i = 0; i < queue.length; i++) {
+    const at = queue[i] as ItemRecord;
+    if (at !== root) {
+      if (at.closed !== null) continue;
+      if (at.relatedComplete === false) whole = false;
+    }
+    for (const r of at.related ?? []) {
+      if (r.type !== RELATIONS.blockedBy || r.closed !== null) continue;
+      if (r.to === root.id) cycle = true;
+      else if (itemIdProblem(r.to) !== null) whole = false;
+      else if (!seen.has(r.to)) {
+        seen.add(r.to);
+        if (seen.size > MAX_SUBGRAPH_NODES) throw tooLarge(root.id);
+        queue.push(await hop(r.to));
+      }
+    }
+  }
+  return { cycle, whole };
+}
+
+/**
+ * What the base reports of an item's relationships, on its own node and only
+ * when true: a field present only when it holds keeps every other item's
+ * state exactly what its tracker said. Facts, for a workflow to route on —
+ * the base never decides anything from them.
+ */
+function withFacts(node: Node, { unreadable, cycle }: { unreadable: boolean; cycle: boolean }): Node {
+  if (!unreadable && !cycle) return node;
+  return {
+    ...node,
+    state: { ...node.state, ...(unreadable ? { relatedUnreadable: true } : {}), ...(cycle ? { dependencyCycle: true } : {}) },
+  };
+}
+
+/** One edge per relationship, a repeat dropped; and a placeholder for an id `known` does not hold, an open one over a closed. */
+function drawRelated(
+  from: string, related: RelatedRecord[], known: (id: string) => boolean,
+  edges: Map<string, Relationship>, placeholders: Map<string, Node>,
+): void {
+  for (const r of related) {
+    edges.set(JSON.stringify([from, r.to, r.type]), { from, to: r.to, type: r.type });
+    if (known(r.to)) continue;
+    const had = placeholders.get(r.to);
+    if (had === undefined || (had.closed !== null && r.closed === null)) placeholders.set(r.to, placeholderNode(r));
+  }
+}
+
+/** The types a tracker writes, as a refusal names them. */
+const writtenTypes = (types: string[]): string =>
+  types.length === 0 ? "no relationship" : `only ${types.map((t) => `"${t}"`).join(", ")}`;
+
 /**
  * The ids a `nodes.close` names that the snapshot's graph does not already
  * show closed. Already closed is left alone: a merged pull request cannot be
@@ -295,8 +400,41 @@ export abstract class BaseTracker {
   /** Run once at startup, before anything is paid for: a permission the workflow needs and the token lacks, say. */
   check?(ctx: RuntimeContext): Promise<void>;
 
+  /** Relate `item` to `other` as `type`, one of `writableRelations()`; the base has checked the type. */
+  protected abstract addRelation(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
+  protected abstract removeRelation(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
+
+  /** The relationship types this tracker writes: none, until an integration says which. */
+  protected writableRelations(): string[] {
+    return [];
+  }
+
+  /**
+   * An item's parent, and whatever else it relates to — `blocked-by` first.
+   * Not singular: an item may wait on many.
+   */
   relations(): RelationDecl[] {
-    return [{ type: RELATIONS.childOf, singular: true }];
+    return [{ type: RELATIONS.childOf, singular: true }, { type: RELATIONS.blockedBy, singular: false }];
+  }
+
+  /** The operator's: the types `relate` and `unrelate` take. */
+  relates(): string[] {
+    return [...this.writableRelations()];
+  }
+
+  async relate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void> {
+    this.writable(type, `relate #${item} to #${other}`);
+    await this.addRelation(item, type, other, ctx);
+  }
+
+  async unrelate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void> {
+    this.writable(type, `unrelate #${item} from #${other}`);
+    await this.removeRelation(item, type, other, ctx);
+  }
+
+  private writable(type: string, what: string): void {
+    const types = this.writableRelations();
+    if (!types.includes(type)) throw new Error(`cannot ${what} as "${type}": this tracker writes ${writtenTypes(types)}`);
   }
 
   /**
@@ -390,16 +528,45 @@ export abstract class BaseTracker {
     return (await this.comments(ctx.item, ctx)).map((c) => ({ at: c.created_at, text: commentLine(c, bot) }));
   }
 
-  /** Every item the tracker lists, and each child's edge to a parent the list carries: none dangles. */
+  /**
+   * Every item the tracker lists, and each child's edge to a parent the list
+   * carries: none dangles. Each item's relationships are edges too, to a
+   * placeholder for an item the list does not carry, so the board can name
+   * every one. Whether an item is on a cycle of blockers is walked here as
+   * `read` walks it, so the two agree — but where `read` refuses a walk it
+   * cannot finish, the listing says the item's relationships cannot be read:
+   * one item's walk does not fail every item's listing.
+   */
   async list(ctx: RuntimeContext): Promise<Graph> {
     const bot = await this.login(ctx);
     const items = await this.items(ctx);
-    const listed = new Set(items.map((t) => t.id));
-    return {
-      nodes: items.map((t) => itemNode(t, bot)),
-      relationships: items.flatMap((t) =>
-        t.parent !== null && listed.has(t.parent) ? [{ from: t.id, to: t.parent, type: RELATIONS.childOf }] : []),
+    const listed = new Map(items.map((t) => [t.id, t]));
+    // One read of each item the list does not carry, however many walks reach it.
+    const fetched = new Map<string, Promise<ItemRecord>>();
+    const hop = (id: string): Promise<ItemRecord> => {
+      const known = listed.get(id);
+      if (known) return Promise.resolve(known);
+      let read = fetched.get(id);
+      if (read === undefined) {
+        read = this.item(id, ctx);
+        read.catch(() => {}); // awaited by each walk that reaches it; one failing is that walk's to report
+        fetched.set(id, read);
+      }
+      return read;
     };
+    const nodes: Node[] = [];
+    const edges = new Map<string, Relationship>();
+    const placeholders = new Map<string, Node>();
+    for (const t of items) {
+      if (t.parent !== null && listed.has(t.parent)) {
+        edges.set(JSON.stringify([t.id, t.parent, RELATIONS.childOf]), { from: t.id, to: t.parent, type: RELATIONS.childOf });
+      }
+      const { related, whole } = relatedOf(t);
+      drawRelated(t.id, related, (id) => listed.has(id), edges, placeholders);
+      const walk = await blockerCycle(t, hop).catch(() => ({ cycle: false, whole: false }));
+      nodes.push(withFacts(itemNode(t, bot), { unreadable: !whole || !walk.whole, cycle: walk.cycle }));
+    }
+    return { nodes: [...nodes, ...placeholders.values()], relationships: [...edges.values()] };
   }
 
   /**
@@ -409,6 +576,11 @@ export abstract class BaseTracker {
    * parent's other children are its business, not this item's. The read
    * stops past MAX_SUBGRAPH_NODES rather than paying for a graph the engine
    * would refuse.
+   *
+   * And the item's own relationships, each an edge — to a placeholder built
+   * from the relationship for a related item outside the neighbourhood, never
+   * a read of it. Its blockers are walked further only to say whether it is
+   * on a cycle of them; nothing the walk meets becomes a node.
    */
   async read(id: string, ctx: RuntimeContext): Promise<Graph> {
     const bot = await this.login(ctx);
@@ -434,14 +606,25 @@ export abstract class BaseTracker {
         read.push(child);
         queue.push(child);
         relationships.push({ from: child.id, to: at.id, type: RELATIONS.childOf });
-        if (read.length > MAX_SUBGRAPH_NODES) {
-          throw new Error(
-            `#${id} has more than the ${MAX_SUBGRAPH_NODES} nodes one read may carry; a graph known to be short is not one to decide from`,
-          );
-        }
+        if (read.length > MAX_SUBGRAPH_NODES) throw tooLarge(id);
       }
     }
-    return { nodes: read.map((t) => itemNode(t, bot)), relationships };
+    const edges = new Map<string, Relationship>();
+    const placeholders = new Map<string, Node>();
+    const { related, whole } = relatedOf(root);
+    drawRelated(id, related, (other) => seen.has(other), edges, placeholders);
+    if (read.length + placeholders.size > MAX_SUBGRAPH_NODES) throw tooLarge(id);
+    const walk = await blockerCycle(root, (hop) => this.item(hop, ctx).catch((e: unknown) => {
+      throw new Error(`#${id}'s blockers lead to #${hop}, which could not be read, so whether #${id} waits on itself cannot be told: ${messageOf(e)}`);
+    }));
+    return {
+      nodes: [
+        withFacts(itemNode(root, bot), { unreadable: !whole || !walk.whole, cycle: walk.cycle }),
+        ...read.slice(1).map((t) => itemNode(t, bot)),
+        ...placeholders.values(),
+      ],
+      relationships: [...relationships, ...edges.values()],
+    };
   }
 
   /**
@@ -449,9 +632,28 @@ export abstract class BaseTracker {
    * under our own login, so the origin reads back as ours and only ours; the
    * body is escaped first, so an agent cannot bring a marker of its own.
    */
-  async createItem({ title, body, labels, parent, origin, priority }: NewItem, ctx: RuntimeContext): Promise<Node> {
+  async createItem({ title, body, labels, parent, origin, priority, relate: relations }: NewItem, ctx: RuntimeContext): Promise<Node> {
+    // Every type checked before anything is written: a refusal leaves nothing behind.
+    for (const { type, item } of relations ?? []) this.writable(type, `relate a new item to #${item}`);
     const stamped = neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : "");
     const id = await this.create({ title, body: stamped, parent, priority }, ctx);
+    // Related before it is labelled: the label is what lets a tick work it,
+    // and one worked before its blockers are on it is one that does not wait.
+    const failed: string[] = [];
+    for (const { type, item } of relations ?? []) {
+      try {
+        await this.addRelation(id, type, item, ctx);
+      } catch (e) {
+        failed.push(`${type} #${item}: ${messageOf(e)}`);
+      }
+    }
+    if (failed.length > 0) {
+      // Never by deleting it: an item a person can see is one they can mend.
+      const unlabelled = (labels ?? []).length > 0
+        ? ` It was left without ${(labels ?? []).join(", ")}, so nothing works it before it is related.`
+        : "";
+      throw new Error(`#${id} was created, but relating it failed: ${failed.join("; ")}.${unlabelled}`);
+    }
     if ((labels ?? []).length > 0) await this.addLabels(id, labels ?? [], ctx);
     return itemNode(await this.item(id, ctx), await this.login(ctx));
   }

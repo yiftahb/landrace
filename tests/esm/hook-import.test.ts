@@ -61,7 +61,7 @@ describe("hook modules are imported from disk and classified by their brand", ()
     );
     expect(registry.post.flatMap((h) => h.handles)).toContain("artifact.publish");
     expect(registry.source?.id).toBe("project");
-    expect(registry.source?.relations.map((r) => r.type)).toEqual(["child-of", "implements", "documents"]);
+    expect(registry.source?.relations.map((r) => r.type)).toEqual(["child-of", "blocked-by", "implements", "documents"]);
     expect(registry.operator?.id).toBe("project");
   });
 });

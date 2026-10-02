@@ -70,6 +70,45 @@ describe("the in-memory tracker's graph", () => {
   });
 });
 
+describe("relationships in the in-memory tracker", () => {
+  const ctx = { config: {} as never, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
+  const B = "blocked-by";
+
+  it("reads a related item's title, link and state off its own row, live, and the seed's for one it does not hold", async () => {
+    const s = createExternalState({
+      items: [
+        { id: "10", title: "Blocker" },
+        { id: "12", related: [{ type: B, to: "10", title: "ignored", closed: "dropped" }, { type: B, to: "x-elsewhere-3", title: "Elsewhere", link: "https://elsewhere/3", closed: "done" }, { type: B, to: "4" }] },
+      ],
+    });
+    const related = async () => (await s.source.list(ctx)).nodes.filter((n) => n.id !== "12").map((n) => [n.id, n.title, n.link, n.closed]);
+    expect(await related()).toEqual([
+      ["10", "Blocker", "memory://items/10", null],
+      ["x-elsewhere-3", "Elsewhere", "https://elsewhere/3", "done"],
+      ["4", "item 4", "memory://items/4", null],
+    ]);
+    s.item("10").closed = "done";
+    expect((await s.source.read("12", ctx).catch(() => null))).toBeNull(); // #4 is open and nowhere: its walk cannot be read
+    s.item("12").related = s.item("12").related.filter((r) => r.to !== "4");
+    expect((await s.source.read("12", ctx)).nodes.find((n) => n.id === "10")).toMatchObject({ title: "Blocker", link: "memory://items/10", closed: "done", placeholder: true });
+  });
+
+  it("seeds an item whose relationships read as cut short", async () => {
+    const s = createExternalState({ items: [{ id: "12", relatedComplete: false }] });
+    expect((await s.source.read("12", ctx)).nodes[0]?.state).toMatchObject({ relatedUnreadable: true });
+    expect(s.item("12")).toMatchObject({ related: [], relatedComplete: false });
+  });
+
+  it("relates an item only to one it holds, and relating twice is one relationship", async () => {
+    const s = createExternalState({ items: [{ id: "10" }, { id: "12" }] });
+    await expect(s.operator.relate("12", B, "99", ctx)).rejects.toThrow("no such item #99");
+    await expect(s.operator.relate("99", B, "10", ctx)).rejects.toThrow("no such item #99");
+    await s.operator.relate("12", B, "10", ctx);
+    await s.operator.relate("12", B, "10", ctx);
+    expect(s.item("12").related).toEqual([{ type: B, to: "10" }]);
+  });
+});
+
 describe("children in the in-memory tracker", () => {
   const ctx = { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
 
@@ -298,6 +337,16 @@ describe("a read-only in-memory tracker", () => {
     await expect(apply(state, effect)).rejects.toThrow(`this tracker is read-only: ${asked}`);
     expect([state.item("1"), state.item("2")]).toEqual(before);
     expect(state.writes()).toEqual([asked.replace(" was asked of ", " ")]);
+  });
+
+  it("refuses the operator's relate and unrelate, saying what was asked", async () => {
+    const state = seeded();
+    await expect(state.operator.relate("2", "blocked-by", "1", ctx))
+      .rejects.toThrow("this tracker is read-only: relate was asked of #2 blocked-by #1");
+    await expect(state.operator.unrelate("2", "blocked-by", "1", ctx))
+      .rejects.toThrow("this tracker is read-only: unrelate was asked of #2 blocked-by #1");
+    expect(state.item("2").related).toEqual([]);
+    expect(state.writes()).toEqual(["relate #2 blocked-by #1", "unrelate #2 blocked-by #1"]);
   });
 
   it("refuses the operator's create and update", async () => {

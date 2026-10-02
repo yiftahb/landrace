@@ -465,6 +465,16 @@ export class Jira extends BaseTracker {
     await this.transition(jira, key, reopen);
   }
 
+  // Jira's issue links are not mapped: no relationship type is writable, so
+  // the base refuses every relate and unrelate before either is reached.
+  protected async addRelation(item: string, type: string, other: string): Promise<void> {
+    throw new Error(`cannot relate ${item} to ${other} as "${type}": this Jira integration writes no relationship`);
+  }
+
+  protected async removeRelation(item: string, type: string, other: string): Promise<void> {
+    throw new Error(`cannot unrelate ${item} from ${other} as "${type}": this Jira integration writes no relationship`);
+  }
+
   /**
    * Startup, before anything is paid for: each permission the account lacks
    * on the project, each issue type it does not have, and each type without a

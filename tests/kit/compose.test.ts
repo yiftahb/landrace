@@ -1,6 +1,7 @@
 import { renderMarker } from "#conventions.js";
 import { compose } from "#kit/compose.js";
 import { hashOf } from "#kit/docs.js";
+import { graphProblem } from "#runner/graph.js";
 import { runPreflights } from "#runner/preflight.js";
 import { createExternalState, MemoryDocs, MemoryForge, MemoryTracker } from "#testing/index.js";
 import type {
@@ -277,7 +278,7 @@ describe("the graph compose reads", () => {
     const hooks = compose({ tracker: seeded(), forge: new MemoryForge(), docs });
     await docs.publish("2", "# Spec");
 
-    expect(hooks.source.relations.map((r) => r.type)).toEqual(["child-of", "implements", "documents"]);
+    expect(hooks.source.relations.map((r) => r.type)).toEqual(["child-of", "blocked-by", "implements", "documents"]);
     expect((await hooks.source.read("2", ctx)).relationships).toContainEqual({ from: "spec-2", to: "2", type: "documents" });
     expect((await hooks.source.read("1", ctx)).nodes.map((n) => n.id)).not.toContain("spec-2");
     expect((await hooks.source.list(ctx)).relationships).toContainEqual({ from: "spec-2", to: "2", type: "documents" });
@@ -309,6 +310,76 @@ describe("the graph compose reads", () => {
     const listed = await compose({ tracker: seeded(), docs }).source.list(ctx);
     expect(listed.nodes.map((n) => n.id)).toEqual(["1", "2"]);
     expect(logged).toEqual([expect.objectContaining({ event: "docs.skipped", data: expect.objectContaining({ reason: expect.stringMatching(/timed out/) }) })]);
+  });
+});
+
+/*
+ * A related item outside the listing, or outside an item's neighbourhood, is
+ * a placeholder the tracker builds from the relationship. It is the far end
+ * of an edge and nothing more: the forge and the docs are never asked about
+ * it, and no role ever reports its id beside the tracker.
+ */
+describe("placeholders in the graph compose reads", () => {
+  const B = "blocked-by";
+  const world = () => {
+    const tracker = new MemoryTracker({
+      items: [
+        { id: "1" }, { id: "12", parent: "1", related: [{ type: B, to: "10" }, { type: B, to: "3", title: "Old", closed: "done" }] },
+        { id: "10" }, { id: "13", parent: "12" },
+      ],
+    });
+    const forge = new MemoryForge();
+    const docs = new MemoryDocs();
+    return { tracker, forge, docs, hooks: compose({ tracker, forge, docs }) };
+  };
+
+  it("asks the forge and the docs for the item's own neighbourhood only, never a placeholder's", async () => {
+    const { forge, docs, hooks } = world();
+    const blockers = forge.add("10");
+    forge.add("12");
+    await docs.publish("10", "# Its spec");
+    const naming = jest.spyOn(forge, "pullsNaming");
+    const listing = jest.spyOn(forge, "list");
+    const paging = jest.spyOn(docs, "list");
+
+    const read = await hooks.source.read("12", ctx);
+    expect(naming.mock.calls.map(([item]) => item).sort()).toEqual(["1", "12", "13"]);
+    expect(read.nodes.find((n) => n.id === "10")).toMatchObject({ placeholder: true });
+    expect(read.nodes.map((n) => n.id)).not.toContain(blockers);
+    expect(read.nodes.map((n) => n.id)).not.toContain("spec-10");
+
+    await hooks.source.list(ctx);
+    expect([...(listing.mock.calls[0]?.[0] ?? [])].sort()).toEqual(["1", "10", "12", "13"]);
+    expect([...(paging.mock.calls[0]?.[0] ?? [])].sort()).toEqual(["1", "10", "12", "13"]);
+  });
+
+  it("reads and lists with every node reported once, by one role, however the items relate", async () => {
+    const { forge, docs, hooks } = world();
+    forge.add("12");
+    forge.add("10");
+    await docs.publish("12", "# Spec");
+    for (const g of [await hooks.source.list(ctx), await hooks.source.read("12", ctx)]) {
+      const ids = g.nodes.map((n) => n.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids.filter((id) => id === "3")).toHaveLength(1);
+    }
+    // And a graph the engine decides from: every edge declared and whole.
+    expect(graphProblem(await hooks.source.read("12", ctx), hooks.source.relations, "12")).toBeNull();
+    expect(graphProblem(await hooks.source.list(ctx), hooks.source.relations)).toBeNull();
+    // #10 is listed, so the listing has its own node, not a placeholder beside it.
+    expect((await hooks.source.list(ctx)).nodes.filter((n) => n.id === "10")).toEqual([expect.not.objectContaining({ placeholder: true })]);
+  });
+
+  it("passes the operator's relationship writes to the tracker", async () => {
+    const { tracker, hooks } = world();
+    const relate = jest.spyOn(tracker, "relate");
+    const unrelate = jest.spyOn(tracker, "unrelate");
+    expect(hooks.operator.relates()).toEqual([B]);
+    await hooks.operator.relate("13", B, "10", ctx);
+    await hooks.operator.unrelate("13", B, "10", ctx);
+    expect(relate).toHaveBeenCalledWith("13", B, "10", ctx);
+    expect(unrelate).toHaveBeenCalledWith("13", B, "10", ctx);
+    expect(tracker.row("13").related).toEqual([]);
   });
 });
 

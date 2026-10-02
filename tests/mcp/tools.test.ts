@@ -751,7 +751,7 @@ describe("over a workspace of two workflows", () => {
       mainRegistry: (r) => {
         const shared = r.operator;
         if (!shared) throw new Error("the fake tracker has an operator");
-        return { ...r, operator: { id: "own", createItem: (i, c) => shared.createItem(i, c), updateItem: (n, i, c) => shared.updateItem(n, i, c) } };
+        return { ...r, operator: { ...shared, id: "own" } };
       },
     });
     for (const id of ["3", "4"]) {

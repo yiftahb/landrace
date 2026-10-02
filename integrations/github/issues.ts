@@ -342,6 +342,16 @@ export class GitHubIssues extends BaseTracker {
     await this.gh(ctx).updateIssue(issueNumber(id), fields);
   }
 
+  // No relationship type is writable yet, so the base refuses every relate
+  // and unrelate before either is reached.
+  protected async addRelation(item: string, type: string, other: string): Promise<void> {
+    throw new Error(`cannot relate #${item} to #${other} as "${type}": GitHub relationships are not written yet`);
+  }
+
+  protected async removeRelation(item: string, type: string, other: string): Promise<void> {
+    throw new Error(`cannot unrelate #${item} from #${other} as "${type}": GitHub relationships are not written yet`);
+  }
+
   /**
    * A classic token carries its scopes on every response; a fine-grained one
    * carries none, so the header's presence is what tells the two apart — an

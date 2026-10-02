@@ -25,6 +25,9 @@ describe("a define* helper brands what it returns", () => {
       updateItem: async (item) => ({
         id: item, kind: "item", title: "t", link: "u", closed: null, priority: null, origin: null, state: {},
       }),
+      relates: () => [],
+      relate: async () => {},
+      unrelate: async () => {},
     }),
     executor: defineExecutor({ id: "f", run: async () => ({ text: "", sessionId: null }) }),
     preflight: definePreflight({ id: "g", check: async () => {} }),

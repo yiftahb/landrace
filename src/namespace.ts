@@ -58,6 +58,13 @@ export interface Node {
    * `createdAt` is: the board orders its lanes by it, and no workflow may.
    */
   updatedAt?: number;
+  /**
+   * True on a node its source holds only as the far end of a relationship —
+   * an item it does not list, closed long ago or kept elsewhere — built from
+   * what that relationship said of it. It has no neighbourhood of its own:
+   * nothing else is read for it. Absent on every node a source reads whole.
+   */
+  placeholder?: true;
 }
 
 export interface Relationship { from: string; to: string; type: string }
@@ -1022,6 +1029,15 @@ export interface ReviewThread {
 }
 
 /**
+ * One relationship of an item, as its tracker reports it: of `type`, to the
+ * item `to`, with that item's own title, link and state as the same answer
+ * gave them — so naming every blocker costs no read per blocker. `to` is an
+ * item id the integration chooses for an item elsewhere (another
+ * repository): a usable one, never all digits, one per item.
+ */
+export interface RelatedRecord { type: string; to: string; title: string; link: string; closed: Closed }
+
+/**
  * An item as a tracker integration reads it: `itemNode`'s fields, and the
  * item it is a child of. `priority` is set by a tracker with a priority
  * field of its own (the in-memory one's, say), and then wins over any
@@ -1043,6 +1059,13 @@ export interface ItemRecord {
   updatedAt?: string | undefined;
   parent: string | null;
   priority?: number | null | undefined;
+  /** Its outgoing relationships, beside the parent: absent from a tracker that reads none. */
+  related?: RelatedRecord[] | undefined;
+  /**
+   * False when `related` is not the whole of them: the tracker's list stopped
+   * before its end, or held one it could not read. Absent is whole.
+   */
+  relatedComplete?: boolean | undefined;
 }
 
 /**
@@ -1247,6 +1270,8 @@ export interface NewItem {
    */
   origin?: Origin | undefined;
   priority?: number | undefined;
+  /** Relationships to make from it once it exists: `{ type: "blocked-by", item: "10" }`. */
+  relate?: Array<{ type: string; item: string }> | undefined;
 }
 
 /**
@@ -1308,6 +1333,11 @@ export interface Operator {
   id: string;
   createItem(input: NewItem, ctx: RuntimeContext): Promise<Node>;
   updateItem(item: string, input: ItemPatch, ctx: RuntimeContext): Promise<Node>;
+  /** The relationship types it can write: what `relate` and `unrelate` take. */
+  relates(): string[];
+  /** Relate `item` to `other` as `type` — `#12` blocked by `#10` is `relate("12", "blocked-by", "10")`. */
+  relate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
+  unrelate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
 }
 
 /**
@@ -1769,7 +1799,18 @@ export interface ExternalItem {
   closed: Closed;
   /** Who opened it, as a login. */
   author: string;
+  /**
+   * What it relates to, by id. The related item's title, link and state are
+   * read from its own row when there is one, so closing it shows; otherwise
+   * from here — an item this tracker does not hold.
+   */
+  related: ExternalRelation[];
+  /** False to read its relationships as cut short, the way a tracker's paged list can stop. */
+  relatedComplete: boolean;
 }
+
+/** One relationship an in-memory item has, as a test seeds it. */
+export interface ExternalRelation { type: string; to: string; title?: string; link?: string; closed?: Closed }
 
 /** A pull request as the in-memory tracker holds it: live and mutable, so a test moves it the way a person on the tracker would. */
 export interface ExternalPull {

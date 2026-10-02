@@ -87,8 +87,13 @@ function clock(): (existing: TrackerComment[]) => string {
   };
 }
 
-/** A row as the tracker reads it out: copies of its lists, so a node never aliases the live row a test goes on to move. */
-const recordOf = (row: ExternalItem): ItemRecord => ({
+/**
+ * A row as the tracker reads it out: copies of its lists, so a node never
+ * aliases the live row a test goes on to move. A related item's title, link
+ * and state are its own row's when there is one, read now, as a tracker's
+ * one answer gives them; the seed's for one this tracker does not hold.
+ */
+const recordOf = (row: ExternalItem, rows: ReadonlyMap<string, ExternalItem>): ItemRecord => ({
   id: row.id,
   title: row.title,
   link: `memory://items/${row.id}`,
@@ -101,6 +106,17 @@ const recordOf = (row: ExternalItem): ItemRecord => ({
   createdAt: undefined,
   parent: row.parent,
   priority: row.priority ?? null,
+  related: row.related.map((r) => {
+    const other = rows.get(r.to);
+    return {
+      type: r.type,
+      to: r.to,
+      title: other?.title ?? r.title ?? `item ${r.to}`,
+      link: (other ? undefined : r.link) ?? `memory://items/${r.to}`,
+      closed: other ? other.closed : r.closed ?? null,
+    };
+  }),
+  relatedComplete: row.relatedComplete,
 });
 
 /**
@@ -170,6 +186,8 @@ export class MemoryTracker extends BaseTracker {
       parent: s.parent ?? null,
       closed: s.closed ?? null,
       author: s.author ?? PERSON,
+      related: (s.related ?? []).map((r) => ({ ...r })),
+      relatedComplete: s.relatedComplete ?? true,
     };
     this.rows.set(id, row);
     return row;
@@ -180,15 +198,15 @@ export class MemoryTracker extends BaseTracker {
   }
 
   async items(): Promise<ItemRecord[]> {
-    return [...this.rows.values()].map(recordOf);
+    return [...this.rows.values()].map((row) => recordOf(row, this.rows));
   }
 
   async item(id: string): Promise<ItemRecord> {
-    return recordOf(this.row(id));
+    return recordOf(this.row(id), this.rows);
   }
 
   async children(id: string): Promise<ItemRecord[]> {
-    return [...this.rows.values()].filter((r) => r.parent === id).map(recordOf);
+    return [...this.rows.values()].filter((r) => r.parent === id).map((row) => recordOf(row, this.rows));
   }
 
   async comments(id: string): Promise<TrackerComment[]> {
@@ -223,6 +241,25 @@ export class MemoryTracker extends BaseTracker {
     let n = this.rows.size + 1;
     while (this.rows.has(String(n))) n++;
     return this.add({ ...item, author: BOT, parent: item.parent ?? null, priority: item.priority ?? null }, String(n)).id;
+  }
+
+  /** It writes `blocked-by`: any other type is refused before it gets here. */
+  protected override writableRelations(): string[] {
+    return [RELATIONS.blockedBy];
+  }
+
+  /** Both ends must be items it holds, as a tracker refuses to relate one it does not have; once is once. */
+  protected async addRelation(item: string, type: string, other: string): Promise<void> {
+    this.write("relate", `#${item} ${type} #${other}`);
+    const row = this.row(item);
+    this.row(other);
+    if (!row.related.some((r) => r.type === type && r.to === other)) row.related.push({ type, to: other });
+  }
+
+  protected async removeRelation(item: string, type: string, other: string): Promise<void> {
+    this.write("unrelate", `#${item} ${type} #${other}`);
+    const row = this.row(item);
+    row.related = row.related.filter((r) => r.type !== type || r.to !== other);
   }
 
   async update(id: string, fields: Pick<ItemPatch, "title" | "body" | "state">): Promise<void> {
