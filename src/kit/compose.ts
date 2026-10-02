@@ -15,7 +15,7 @@
  * share is `nodes.close`, whose ids are split by kind between the role that
  * closes items and the one that closes pull requests.
  */
-import { NODES_CLOSE_EFFECT, PULL_REQUEST_KIND, ITEM_KIND } from "#conventions.js";
+import { isItemNode, NODES_CLOSE_EFFECT, PULL_REQUEST_KIND, ITEM_KIND } from "#conventions.js";
 import {
   defineArtifactHook, defineOperator, definePostHook, definePreflight, definePreHook, defineSource,
 } from "#hooks/contracts.js";
@@ -157,7 +157,7 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
   // only as an edge's far end has no neighbourhood here, so no other role is
   // asked about it — and none can then report its id beside the tracker.
   const itemsIn = (graph: Graph): string[] =>
-    graph.nodes.filter((n) => n.kind === ITEM_KIND && n.placeholder !== true).map((n) => n.id);
+    graph.nodes.filter(isItemNode).map((n) => n.id);
   const none: Graph = { nodes: [], relationships: [] };
 
   const hooks: ComposedHooks = {

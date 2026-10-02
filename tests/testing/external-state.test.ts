@@ -88,9 +88,11 @@ describe("relationships in the in-memory tracker", () => {
       ["4", "item 4", "memory://items/4", null],
     ]);
     s.item("10").closed = "done";
-    expect((await s.source.read("12", ctx).catch(() => null))).toBeNull(); // #4 is open and nowhere: its walk cannot be read
-    s.item("12").related = s.item("12").related.filter((r) => r.to !== "4");
-    expect((await s.source.read("12", ctx)).nodes.find((n) => n.id === "10")).toMatchObject({ title: "Blocker", link: "memory://items/10", closed: "done", placeholder: true });
+    const read = await s.source.read("12", ctx);
+    expect(read.nodes.find((n) => n.id === "10")).toMatchObject({ title: "Blocker", link: "memory://items/10", closed: "done", placeholder: true });
+    // #4 is no row of this tracker's: never walked, it holds #12 back by what its relationship says.
+    expect(read.nodes.find((n) => n.id === "4")).toMatchObject({ closed: null, placeholder: true });
+    expect(read.nodes.find((n) => n.id === "12")?.state).toEqual({ labels: [], assignees: [] });
   });
 
   it("seeds an item whose relationships read as cut short", async () => {

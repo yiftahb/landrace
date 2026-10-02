@@ -7,7 +7,7 @@ import {
   recordBodyProblem,
   stageFromLabels,
   isOpenItem,
-  ITEM_KIND,
+  isItemNode,
 } from "#conventions.js";
 import { cannotPlace, checkEligible, locateNode } from "#core/index.js";
 import type { Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, Workflow, WorkspaceListing } from "#namespace.js";
@@ -188,7 +188,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
     } catch (e) {
       throw new Error(`source "${only.id}" could not read "${item}": ${messageOf(e)}`);
     }
-    const graphs: Graph[] = [{ nodes: read.nodes.filter((n) => n.id === item && n.kind === ITEM_KIND), relationships: [] }];
+    const graphs: Graph[] = [{ nodes: read.nodes.filter((n) => n.id === item && isItemNode(n)), relationships: [] }];
     const sourceOf = new Map(listedAs.map((w) => [w.id, 0]));
     return { graphs, sourceOf, claims: claimsOf(listedAs, sourceOf, graphs), failed: new Map() };
   };

@@ -147,12 +147,18 @@ export const labelsOf = (node: Node | undefined): string[] => strings(node?.stat
 export const assigneesOf = (node: Node | undefined): string[] => strings(node?.state.assignees);
 
 /**
+ * Whether a node is an item its source reports as its own: never a
+ * placeholder, which is only the other end of a relationship.
+ */
+export const isItemNode = (node: Node): boolean => node.kind === ITEM_KIND && node.placeholder !== true;
+
+/**
  * Whether a listed node is work: an item, and an open one. A closed item
  * is in a graph so a parent can count it, and it keeps whatever labels it had
  * — the ones its workflow admitted it with included — so reading its labels
  * alone would pay for steps on an item somebody already finished.
  */
-export const isOpenItem = (node: Node): boolean => node.kind === ITEM_KIND && node.closed === null;
+export const isOpenItem = (node: Node): boolean => isItemNode(node) && node.closed === null;
 
 /**
  * The order the tick hands work out in. Lower priority first; unprioritised

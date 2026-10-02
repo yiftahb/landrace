@@ -179,6 +179,17 @@ describe("deriveRel", () => {
     expect(r.ok && r.rel["implements"]?.in.open).toEqual([]);
   });
 
+  // A placeholder is a node like any other to the counts: what it relates
+  // to waits on it, or has it done, all the same.
+  it("counts a placeholder and lists it open", () => {
+    const g: Graph = {
+      nodes: [n("1"), n("x-far-5", { placeholder: true }), n("3", { placeholder: true, closed: "dropped" })],
+      relationships: [{ from: "1", to: "x-far-5", type: "x" }, { from: "1", to: "3", type: "x" }],
+    };
+    const r = deriveRel(g, "1", ["x"]);
+    expect(r.ok && r.rel["x"]?.out).toMatchObject({ total: 1, dropped: 1, open: ["x-far-5"], not: { closed: 1 } });
+  });
+
   // Edges out of order, both ways, and ids whose text order is not their
   // number order: "10" sorts before "9" as text, after it as an id.
   it("orders the open ids by id, not by the order the edges came in, either way", () => {

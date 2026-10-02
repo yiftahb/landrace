@@ -1,6 +1,6 @@
 import { claimItems } from "#core/index.js";
 import type { Graph, ListedWorkflow, Node, Source, Workflow, WorkspaceListing } from "#namespace.js";
-import { displayOf, writeOwnerOf, writeRoute } from "#runner/route.js";
+import { displayOf, editRoute, readRoute, writeOwnerOf, writeRoute } from "#runner/route.js";
 
 const flow = (label: string): Workflow => ({
   version: 1, name: label, description: "test",
@@ -67,6 +67,22 @@ describe("writeOwnerOf: whose an item is for a write from the page", () => {
     expect(writeOwnerOf(fresh, "3")).toEqual({
       refused: "#3 is not written to until every source lists again: could not list the source of gl: tracker down",
     });
+  });
+});
+
+// A placeholder is only the other end of a relationship: no source lists
+// the item by it, so it routes nothing, and beside a source's own item it is
+// no second source reporting the id.
+describe("a placeholder routes nothing", () => {
+  const far = (id: string, closed: Node["closed"] = "done"): Node => ({ ...item(id, ["lr:auto"]), closed, placeholder: true });
+
+  it("is no item a source lists, for a write or a read", () => {
+    const fresh = listing([graph(far("5")), graph(item("5", ["lr:lab"]), far("6"))]);
+    expect(readRoute(fresh, "5")).toEqual({ workflow: "gl" });
+    expect(writeRoute(fresh, "6")).toBeNull();
+    const closed = listing([graph(far("7")), graph({ ...item("7", []), closed: "done" })]);
+    expect(readRoute(closed, "7")).toEqual({ source: 1 });
+    expect(editRoute(closed, "7", () => "one")).toEqual({ workflows: ["gl"] });
   });
 });
 

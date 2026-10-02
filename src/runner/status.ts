@@ -143,7 +143,8 @@ function stageNote(stage: Stage | null, node: Node, graph: Graph | undefined): s
 export function statusRows(workflow: Workflow, items: Node[], graph?: Graph): StatusRow[] {
   // In id order, as the tick's own rows are: the same repository in the same
   // state prints the same table, whatever order the source listed it in.
-  return [...items].sort((a, b) => compareIds(a.id, b.id)).map((node) => {
+  // A placeholder is the other end of a relationship, never a row of its own.
+  return items.filter((n) => n.placeholder !== true).sort((a, b) => compareIds(a.id, b.id)).map((node) => {
     const eligibility = eligibilityOf(workflow, node);
     const labels = labelsOf(node);
     const { stage: labelled, ambiguous, found } = stageFromLabels(labels);

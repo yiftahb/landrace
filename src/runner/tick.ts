@@ -17,7 +17,7 @@ import type {
   WorkspaceRuntime,
   WorkspaceTickOptions,
 } from "#namespace.js";
-import { compareIds, compareWork, isOpenItem, ITEM_KIND, itemIdProblem } from "#conventions.js";
+import { compareIds, compareWork, isItemNode, isOpenItem, itemIdProblem } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
 import { withLock } from "#runner/lock.js";
@@ -149,7 +149,7 @@ function unworked(claims: Claims, item: string): { reason: string; outcome: stri
  * item comes back.
  */
 function whyStop(listing: WorkspaceListing, item: string, workflow: string, index: number): string | null {
-  const node = listing.graphs[index]?.nodes.find((n) => n.id === item && n.kind === ITEM_KIND);
+  const node = listing.graphs[index]?.nodes.find((n) => n.id === item && isItemNode(n));
   if (!node) return null;
   if (node.closed !== null) return "the item was closed";
   const owner = listing.claims.owner.get(item);

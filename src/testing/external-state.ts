@@ -248,6 +248,11 @@ export class MemoryTracker extends BaseTracker {
     return [RELATIONS.blockedBy];
   }
 
+  /** Its own items are its rows: a related id it holds no row for is somebody else's, and never walked. */
+  protected override ownsId(id: string): boolean {
+    return this.rows.has(id);
+  }
+
   /** Both ends must be items it holds, as a tracker refuses to relate one it does not have; once is once. */
   protected async addRelation(item: string, type: string, other: string): Promise<void> {
     this.write("relate", `#${item} ${type} #${other}`);

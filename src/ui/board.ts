@@ -12,19 +12,24 @@ import type {
 
 /**
  * Every listed graph as one, for the one page: each node once by id, each
- * edge once. An id one source has open and another closed is drawn from the
- * open node: claims are for open items, so that is the node its owner was
- * judged by — the closed one said "closed" over an agent running on it. An
- * id two sources both have open is a clash nobody works; which of its two
- * nodes is drawn is display only, and its row says it is a clash.
+ * edge once. A source's own node is drawn over another's placeholder of its
+ * id: the placeholder is only what a relationship said of it, and claims
+ * judged the item by its own. An id one source has open and another closed is
+ * drawn from the open node: claims are for open items, so that is the node
+ * its owner was judged by — the closed one said "closed" over an agent
+ * running on it. An id two sources both have open is a clash nobody works;
+ * which of its two nodes is drawn is display only, and its row says it is a
+ * clash.
  */
 function unionOf(graphs: readonly Graph[]): Graph {
   const nodes = new Map<string, Node>();
   const edges = new Map<string, Relationship>();
+  const over = (drawn: Node, node: Node): boolean =>
+    drawn.placeholder === node.placeholder ? drawn.closed !== null && node.closed === null : drawn.placeholder === true;
   for (const graph of graphs) {
     for (const node of graph.nodes) {
       const drawn = nodes.get(node.id);
-      if (!drawn || (drawn.closed !== null && node.closed === null)) nodes.set(node.id, node);
+      if (!drawn || over(drawn, node)) nodes.set(node.id, node);
     }
     for (const edge of graph.relationships) edges.set(JSON.stringify([edge.from, edge.to, edge.type]), edge);
   }
@@ -205,7 +210,8 @@ export function boardView(input: {
 
   const { claims, graphs, sourceOf } = input.listing;
   const listedBy = (id: string): string[] =>
-    input.workflows.filter((w) => graphs[sourceOf.get(w.id) ?? -1]?.nodes.some((n) => n.id === id) ?? false).map((w) => w.id);
+    input.workflows.filter((w) => graphs[sourceOf.get(w.id) ?? -1]?.nodes.some((n) => n.id === id && n.placeholder !== true) ?? false)
+      .map((w) => w.id);
   // An artifact — a pull request, a spec page — belongs to no workflow of its
   // own: it is drawn where its item is. Given every page its source lists it
   // on, it carried each finished item onto every workflow's Done.
@@ -341,10 +347,13 @@ export function boardView(input: {
     return { ...placed, badge: laneOf(s, workflow), retry, goto };
   };
 
-  const parent = parentsOf(graph, nodes, input.nest);
+  // Every node but a placeholder is a row: a placeholder is only the other
+  // end of a relationship, named on the panel of the item it relates to.
+  const drawn = new Map([...nodes].filter(([, node]) => node.placeholder !== true));
+  const parent = parentsOf(graph, drawn, input.nest);
   const children = new Map<string, Node[]>();
   const roots: Node[] = [];
-  for (const node of nodes.values()) {
+  for (const node of drawn.values()) {
     const up = parent.get(node.id);
     if (up === undefined) roots.push(node);
     else children.set(up, [...(children.get(up) ?? []), node]);
@@ -377,7 +386,7 @@ export function boardView(input: {
   // than lost. Both walked in work order, so the same graph always nests the
   // same; what the page reads is the lane's order, applied once each branch
   // knows its lane.
-  for (const node of [...roots.sort(compareWork), ...[...nodes.values()].sort(compareWork)]) {
+  for (const node of [...roots.sort(compareWork), ...[...drawn.values()].sort(compareWork)]) {
     const row = build(node);
     // A branch with no item — a pull request whose item is not listed —
     // is still drawn rather than lost, and nothing in it is anyone's to act

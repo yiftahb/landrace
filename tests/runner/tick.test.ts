@@ -120,6 +120,14 @@ describe("tick", () => {
     ]);
   });
 
+  // Eligible by its labels, and still nobody's work: it is a relationship's
+  // far end, not an item the source lists.
+  it("gives a placeholder no row and works nothing for it", async () => {
+    const far: Node = { ...itemNode("x-far-5"), placeholder: true };
+    const out = await tick({ source: source([itemNode("1"), far]), deps: deps(), lock: { root } });
+    expect(out.map((r) => r.item)).toEqual(["1"]);
+  });
+
   it("orders rows 9 before 10, as it did when ids were numbers", async () => {
     // Ineligible (no lr:auto label), so nothing converges and no lock is taken.
     const out = await tick({ source: source([itemNode("10", []), itemNode("9", [])]), deps: deps(), lock: { root } });
@@ -522,6 +530,8 @@ describe("an item stopped while its step runs", () => {
 
     await w.once();
     await w.once(source([]));
+    // Only another item's relationship naming it, closed: that is not the item.
+    await w.once(source([{ ...itemNode("1"), closed: "done", placeholder: true }]));
     expect(w.aborted()).toEqual([]);
     w.finish.open();
     expect((await first)[0]?.outcome).toMatch(/^terminal/);

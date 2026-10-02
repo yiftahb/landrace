@@ -245,6 +245,18 @@ describe("statusRows, at a stage with a note", () => {
     }
   });
 
+  // A blocker the source holds only as a relationship's far end is named by
+  // the note, and is no row of its own, in either table.
+  it("names a placeholder in the note, and gives it no row", () => {
+    const item = candidate(["go", "lr:stage:waiting"], [], "12");
+    const far: Node = { ...candidate(["go"], [], "x-far-5"), placeholder: true };
+    const g: Graph = { nodes: [item, far], relationships: [{ from: "12", to: "x-far-5", type: "x" }] };
+    expect(statusRows(noted, [item, far], g).map((r) => [r.item, r.note])).toEqual([["12", "blocked by #x-far-5"]]);
+    const workflows = [{ id: "t", source: staticSource(g, [{ type: "x", singular: false }]), deps: { workflow: noted } }];
+    const listing = { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: noted, source: 0 }], [g]) };
+    expect(workspaceStatusRows(workflows, listing).map((r) => [r.item, r.note])).toEqual([["12", "blocked by #x-far-5"]]);
+  });
+
   // What `landrace status` prints: each item's note rendered from its own source's listing.
   it("renders it in the workspace's rows from the listing of the item's own source", () => {
     const g = around(candidate(["go", "lr:stage:waiting"], [], "12"));

@@ -457,30 +457,61 @@ describe("relationships on the tracker base", () => {
     });
 
     /*
-     * Another repository's item, which the tracker can read but does not
-     * list: the listing's walk reads it as the item's read does, so the two
-     * say the same — and reads it once however many walks reach it.
+     * Another repository's item, which the tracker does not own: the walk
+     * never reads it, and it holds the item back by the state its
+     * relationship reports. A cycle through it goes unseen.
      */
-    it("walks through an item the list does not carry, as a read does, reading it once", async () => {
-      class Elsewhere extends MemoryTracker {
-        readonly far = new Map<string, ItemRecord>();
-        override async item(id: string): Promise<ItemRecord> {
-          return this.far.get(id) ?? super.item(id);
+    it("does not walk to an item it does not own, which gates by its relationship alone", async () => {
+      const tracker = new MemoryTracker({ items: [{ id: "12", related: [{ type: B, to: "x-far-5", title: "Far" }] }] });
+      const asked = jest.spyOn(tracker, "item");
+      const read = await tracker.read("12", ctx);
+      expect(asked.mock.calls.map(([id]) => id)).toEqual(["12"]);
+      expect(nodeOf(read, "12")?.state).toEqual({ labels: [], assignees: [] });
+      expect(nodeOf(read, "x-far-5")).toMatchObject({ placeholder: true, closed: null, title: "Far" });
+      const listed = await tracker.list(ctx);
+      expect(asked.mock.calls.map(([id]) => id)).toEqual(["12"]);
+      expect(nodeOf(listed, "12")?.state).toEqual({ labels: [], assignees: [] });
+    });
+
+    /*
+     * An item it owns but does not list — closed long ago, say, and reopened —
+     * is walked through, by the listing as by a read, so the two say the
+     * same; and the listing reads it once however many walks reach it.
+     */
+    it("walks through an item it owns and does not list, as a read does, reading it once", async () => {
+      class Unlisted extends MemoryTracker {
+        override async items(): Promise<ItemRecord[]> {
+          return (await super.items()).filter((t) => t.id !== "2");
         }
       }
-      const far = { type: B, to: "x-far-2", title: "Far" };
-      const tracker = new Elsewhere({ items: [{ id: "1", related: [far] }, { id: "3", related: [far] }] });
-      tracker.far.set("x-far-2", {
-        id: "x-far-2", title: "Far", link: "https://far/2", closed: null, labels: [], assignees: [], body: "", author: undefined,
-        editor: undefined, createdAt: undefined, parent: null, related: [{ type: B, to: "1", title: "item 1", link: "memory://items/1", closed: null }],
-      });
+      const tracker = new Unlisted({ items: [{ id: "1", related: [{ type: B, to: "2" }] }, { id: "3", related: [{ type: B, to: "2" }] }, { id: "2", related: [{ type: B, to: "1" }] }] });
       const asked = jest.spyOn(tracker, "item");
       const listed = await tracker.list(ctx);
-      expect(asked.mock.calls.map(([id]) => id)).toEqual(["x-far-2"]);
+      expect(asked.mock.calls.map(([id]) => id)).toEqual(["2"]);
       expect(nodeOf(listed, "1")?.state).toEqual({ labels: [], assignees: [], dependencyCycle: true });
       expect(nodeOf(listed, "3")?.state).toEqual({ labels: [], assignees: [] });
       expect(nodeOf(await tracker.read("1", ctx), "1")?.state).toEqual({ labels: [], assignees: [], dependencyCycle: true });
       expect(nodeOf(await tracker.read("3", ctx), "3")?.state).toEqual({ labels: [], assignees: [] });
+    });
+
+    it("says relatedUnreadable of an item whose walk meets a blocker it owns and cannot read, and still reads it", async () => {
+      class Unreadable extends MemoryTracker {
+        override async items(): Promise<ItemRecord[]> {
+          return (await super.items()).filter((t) => t.id !== "3");
+        }
+        override async item(id: string): Promise<ItemRecord> {
+          if (id === "3") throw new Error("the tracker answered 502");
+          return super.item(id);
+        }
+      }
+      // #1 waits on #2, #2 on #3, and #3 — which cannot be read — on #1: the
+      // cycle cannot be seen, and that is what the item says.
+      const tracker = new Unreadable({
+        items: [{ id: "1", related: [{ type: B, to: "2" }] }, { id: "2", related: [{ type: B, to: "3" }] }, { id: "3", related: [{ type: B, to: "1" }] }],
+      });
+      for (const g of [await tracker.read("1", ctx), await tracker.list(ctx)]) {
+        expect(nodeOf(g, "1")?.state).toEqual({ labels: [], assignees: [], relatedUnreadable: true });
+      }
     });
 
     it("stops at a blocker its own read says is closed, whatever the relationship said of it", async () => {
@@ -492,14 +523,6 @@ describe("relationships on the tracker base", () => {
       }
       const tracker = new Lagging({ items: [{ id: "1", related: [{ type: B, to: "2" }] }, { id: "2", related: [{ type: B, to: "1" }] }] });
       expect(nodeOf(await tracker.read("1", ctx), "1")?.state).not.toHaveProperty("dependencyCycle");
-    });
-
-    it("refuses a read whose walk meets a blocker it cannot read, naming it, and lists that item as unreadable", async () => {
-      const tracker = new MemoryTracker({ items: [{ id: "12", related: [{ type: B, to: "x-elsewhere-5", title: "Elsewhere" }] }] });
-      await expect(tracker.read("12", ctx)).rejects.toThrow(/#12's blockers lead to #x-elsewhere-5, which could not be read.*no such item #x-elsewhere-5/);
-      const listed = await tracker.list(ctx);
-      expect(nodeOf(listed, "12")?.state).toMatchObject({ relatedUnreadable: true });
-      expect(nodeOf(listed, "x-elsewhere-5")).toMatchObject({ placeholder: true, closed: null, title: "Elsewhere" });
     });
   });
 

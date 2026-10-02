@@ -34,6 +34,26 @@ describe("claimItems", () => {
     expect(c.owner.has("pr-12")).toBe(false);
     expect(c.conflicts.has("pr-12")).toBe(false);
   });
+  // A node reported only as the other end of a relationship is no source's
+  // item: nobody claims it, turns it away, or clashes over it.
+  it("claims no placeholder, eligible or not, and two sources reporting one is no clash", () => {
+    const far = (labels: string[]): Node => node("x-far-5", labels, { placeholder: true });
+    const c = claimItems(
+      [{ id: "a", workflow: wf("a", "lr:auto"), source: 0 }, { id: "b", workflow: wf("b", "lr:auto"), source: 1 }],
+      [graph(far(["lr:auto"]), node("x-far-6", [], { placeholder: true })), graph(far(["lr:auto"]))],
+    );
+    expect([...c.owner, ...c.conflicts, ...c.clashes, ...c.unclaimed]).toEqual([]);
+  });
+
+  it("judges a source's own item by itself where another source has only a placeholder of its id", () => {
+    const c = claimItems(
+      [{ id: "a", workflow: wf("a", "lr:auto"), source: 0 }, { id: "b", workflow: wf("b", "lr:auto"), source: 1 }],
+      [graph(node("10", ["lr:auto"], { placeholder: true })), graph(item("10", ["lr:auto"]))],
+    );
+    expect([...c.owner]).toEqual([["10", "b"]]);
+    expect(c.clashes.has("10")).toBe(false);
+  });
+
   it("keeps each workflow's reason for an item nobody claims", () => {
     const c = claimItems([{ id: "main", workflow: wf("main", "lr:auto"), source: 0 }], [graph(item("4", []))]);
     expect(c.unclaimed.get("4")).toEqual(["no lr:auto"]);

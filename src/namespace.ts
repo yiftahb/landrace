@@ -59,10 +59,11 @@ export interface Node {
    */
   updatedAt?: number;
   /**
-   * True on a node its source holds only as the far end of a relationship —
-   * an item it does not list, closed long ago or kept elsewhere — built from
-   * what that relationship said of it. It has no neighbourhood of its own:
-   * nothing else is read for it. Absent on every node a source reads whole.
+   * True on a node reported only as the other end of a relationship, built
+   * from what the relationship said of it. It is never an item of the source
+   * that reports it: no workflow claims it, no row shows it, and two sources
+   * reporting one are no clash. It counts in `rel` and is named on the
+   * panel, as the other end of an edge. Absent on every other node.
    */
   placeholder?: true;
 }

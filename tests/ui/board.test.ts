@@ -186,6 +186,41 @@ describe("boardView: every relationship of an item", () => {
     expect(view(graph([item("12")])).rows[0]?.related).toEqual([]);
   });
 
+  /*
+   * A node reported only as the other end of a relationship is named on the
+   * panel of the item it relates to, and is no row: not a root, not under
+   * Not admitted, not Done.
+   */
+  it("names a placeholder among an item's relationships and draws no row for it", () => {
+    const g = graph(
+      [item("12"), item("x-far-5", { placeholder: true }), item("3", { placeholder: true, closed: "done" })],
+      [edge("12", "x-far-5", "blocked-by"), edge("12", "3", "blocked-by")],
+    );
+    const rows = flatten(view(g).rows);
+    expect(rows.map((r) => r.id)).toEqual(["12"]);
+    expect(rows[0]?.related.map((r) => [r.id, r.state])).toEqual([["3", "done"], ["x-far-5", "open"]]);
+  });
+
+  it("draws a source's own item, not another source's placeholder of its id", () => {
+    const mine = graph([item("10", {}, ["go"]), item("11", { closed: "done" }, ["go"])]);
+    const theirs = graph(
+      [item("12", {}, ["go"]), item("10", { placeholder: true, title: "stale" }), item("11", { placeholder: true, closed: "done" })],
+      [edge("12", "10", "blocked-by"), edge("12", "11", "blocked-by")],
+    );
+    const both = view(mine, {
+      workflows: [{ id: "t", workflow }, { id: "u", workflow }],
+      listing: {
+        graphs: [theirs, mine], sourceOf: new Map([["u", 0], ["t", 1]]),
+        claims: claimItems([{ id: "u", workflow, source: 0 }, { id: "t", workflow, source: 1 }], [theirs, mine]),
+      },
+    });
+    const ten = flatten(both.rows).find((r) => r.id === "10");
+    expect(ten).toMatchObject({ title: "t10", workflow: "t", pages: ["t"] });
+    expect(flatten(both.rows).filter((r) => r.id === "10")).toHaveLength(1);
+    // Closed, it is drawn where its own source's workflows are, not where another's relationship names it.
+    expect(flatten(both.rows).find((r) => r.id === "11")?.pages).toEqual(["t"]);
+  });
+
   // The panel keys each entry by type, direction and id, so an edge a source
   // reported twice, or two sources both reported, is one entry, not two.
   it("lists an edge reported twice once", () => {

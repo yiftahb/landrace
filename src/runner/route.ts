@@ -1,4 +1,4 @@
-import { compareIds, ITEM_KIND } from "#conventions.js";
+import { compareIds, isItemNode } from "#conventions.js";
 import type { Claims, EditRoute, Graph, ListedWorkflow, Ownership, PreHook, ReadRoute, WorkspaceListing } from "#namespace.js";
 import { andList, claimedBy, claimsOf, listingFailures, reportedBy, turnedAway } from "#runner/tick.js";
 
@@ -48,7 +48,7 @@ function ownership(claims: Claims, item: string): Ownership | null {
 
 /** The sources, by index, that list `item` as an item: closed in each, when no listing showed it open. */
 const listedIn = (graphs: readonly Graph[], item: string): number[] =>
-  [...graphs.entries()].filter(([, g]) => g.nodes.some((n) => n.id === item && n.kind === ITEM_KIND)).map(([index]) => index);
+  [...graphs.entries()].filter(([, g]) => g.nodes.some((n) => n.id === item && isItemNode(n))).map(([index]) => index);
 
 /** The workflows reading the sources at `indices`, in id order. */
 const readingAny = (sourceOf: ReadonlyMap<string, number>, indices: readonly number[]): string[] =>
