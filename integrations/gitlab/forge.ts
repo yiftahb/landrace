@@ -413,10 +413,12 @@ export class GitLab extends BaseForge {
 
   /**
    * GitLab's project merge method, guarded by the head the caller read: 409
-   * is a head that is no longer that, which is `moved` and not an error. A
-   * 405, 406 or 422 is "cannot be merged" — or already merged, which a crash
-   * after the merge and before the next read makes ordinary — so the merge
-   * request is asked.
+   * is a head that is no longer that, which is `moved` and not an error. But
+   * GitLab asks the sha last, after mergeability: a push while "pipelines
+   * must succeed" answers 405 for the new head's running pipeline first. So a
+   * 405, 406 or 422 — "cannot be merged", or already merged, which a crash
+   * after the merge and before the next read makes ordinary — asks the merge
+   * request: another head is `moved`.
    */
   async merge(pull: number, headSha: string, ctx: HookContext): Promise<MergeAnswer> {
     const gl = this.gl(ctx);
@@ -429,7 +431,10 @@ export class GitLab extends BaseForge {
       if (status === 409) return "moved";
       if (status === 401 || status === 403) throw this.tokenRefusal(e, false);
       if (status === 405 || status === 406 || status === 422) {
-        if ((await gl.get<{ state?: unknown }>(`/merge_requests/${pull}`)).state === "merged") return "merged";
+        const now = await gl.get<{ state?: unknown; sha?: unknown }>(`/merge_requests/${pull}`);
+        // Unread is not moved: only a head GitLab names, and names as another, is.
+        if (typeof now.sha === "string" && now.sha !== headSha) return "moved";
+        if (now.state === "merged") return "merged";
         throw new Error(`${which} cannot be merged: ${refusalMessage(e)}`);
       }
       throw new Error(`${which} could not be merged: ${typeof status === "number" ? `GitLab answered ${status}: ` : ""}${refusalMessage(e)}`);

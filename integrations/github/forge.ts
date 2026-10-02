@@ -679,8 +679,10 @@ export class GitHubForge extends BaseForge {
   /**
    * A merge commit, guarded by the head the caller read: GitHub answers 409
    * when the head is no longer that, which is `moved` and not an error. A 405
-   * is "not mergeable" — or already merged, which a crash after the merge
-   * and before the next read makes ordinary — so the pull request is asked.
+   * is "not mergeable" — which branch protection can answer before it looks
+   * at the head, for a push whose required checks have not run, or already
+   * merged, which a crash after the merge and before the next read makes
+   * ordinary — so the pull request is asked: another head is `moved`.
    */
   async merge(pull: number, headSha: string, ctx: HookContext): Promise<MergeAnswer> {
     const gh = this.gh(ctx);
@@ -692,7 +694,10 @@ export class GitHubForge extends BaseForge {
       const status = (e as { status?: unknown } | null)?.status;
       if (status === 409) return "moved";
       if (status === 405) {
-        if ((await gh.pull(pull)).merged === true) return "merged";
+        const now = await gh.pull(pull);
+        // Unread is not moved: only a head GitHub names, and names as another, is.
+        if (typeof now.head?.sha === "string" && now.head.sha !== headSha) return "moved";
+        if (now.merged === true) return "merged";
         throw new Error(`${which} cannot be merged: ${refusalMessage(e)}`);
       }
       // A refused permission is already a sentence naming it; anything else is GitHub's own words, said whose merge it was.

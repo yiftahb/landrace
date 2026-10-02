@@ -961,13 +961,17 @@ export function createFakeTracker(
     const onPullRead = /^\/pulls\/(\d+)(\/merge)?$/.exec(path);
     if (onPullRead && onPullRead[2] === undefined && method === "GET") {
       const pull = pulls.get(Number(onPullRead[1])) ?? null;
-      return pull === null ? json({ message: "Not Found" }, 404) : json({ number: pull.number, state: pullState(pull).toLowerCase(), merged: pull.merged });
+      return pull === null
+        ? json({ message: "Not Found" }, 404)
+        : json({ number: pull.number, state: pullState(pull).toLowerCase(), merged: pull.merged, head: { ref: pull.head, sha: pull.headSha } });
     }
     if (onPullRead && onPullRead[2] !== undefined && method === "PUT") {
       const pull = pulls.get(Number(onPullRead[1])) ?? null;
       if (pull === null) return json({ message: "Not Found" }, 404);
-      if (body.sha !== pull.headSha) return json({ message: "Head branch was modified. Review and try the merge again." }, 409);
+      // Mergeability before the head, as branch protection's required checks
+      // can answer: a push whose checks have not run is "not mergeable" first.
       if (pull.merged || pull.mergeable === false) return json({ message: "Pull Request is not mergeable" }, 405);
+      if (body.sha !== pull.headSha) return json({ message: "Head branch was modified. Review and try the merge again." }, 409);
       pull.merged = true;
       return json({ sha: "merge-sha", merged: true, message: "Pull Request successfully merged" });
     }

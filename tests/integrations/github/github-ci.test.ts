@@ -192,6 +192,15 @@ describe("merging a pull request at its head", () => {
     expect(pull.merged).toBe(false);
   });
 
+  it("answers moved for a head that moved on a pull request GitHub finds unmergeable first", async () => {
+    // A push whose required checks have not run: GitHub may say "not mergeable" before it looks at the head.
+    const gh = createFakeTracker([{ number: 1 }]);
+    const pull = gh.openPull({ head: "landrace/1", number: 8, headSha: "new", mergeable: false });
+    expect(await forgeOf(gh).merge(8, "old", forItem(gh))).toBe("moved");
+    expect(gh.requests.map((r) => `${r.method} ${r.path}`)).toEqual(expect.arrayContaining(["PUT /pulls/8/merge", "GET /pulls/8"]));
+    expect(pull.merged).toBe(false);
+  });
+
   it("answers merged for a pull request that already is, and does not throw", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", number: 8, headSha: "abc", merged: true });

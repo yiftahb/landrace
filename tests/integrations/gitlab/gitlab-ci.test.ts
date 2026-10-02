@@ -187,6 +187,27 @@ describe("merging a merge request at its head", () => {
     expect(mr.state).toBe("opened");
   });
 
+  it.each([
+    ["not mergeable while the new head's pipeline runs", { mergeable: false }],
+    ["a branch GitLab cannot merge (406)", { branchRefusal: 406 }],
+    ["a branch GitLab cannot merge (422)", { branchRefusal: 422 }],
+  ] as const)("answers moved for a head that moved, though GitLab first refuses it as %s", async (_why, seed) => {
+    // GitLab asks mergeability — "pipelines must succeed" among it — before the sha.
+    const gl = createFakeGitLab();
+    const mr = gl.open({ source_branch: "landrace/1", iid: 8, sha: "new", ...seed });
+    expect(await forgeOver(gl).merge(8, "old", forItem(gl))).toBe("moved");
+    expect(gl.requests.map((r) => `${r.method} ${r.path.split("/").slice(3).join("/")}`)).toEqual(
+      expect.arrayContaining(["PUT merge_requests/8/merge", "GET merge_requests/8"]),
+    );
+    expect(mr.state).toBe("opened");
+  });
+
+  it("refuses an unmergeable one at the head it was asked at, in GitLab's words", async () => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", branchRefusal: 422 });
+    await expect(forgeOver(gl).merge(8, "abc", forItem(gl))).rejects.toThrow("!8 for #1 cannot be merged: Branch cannot be merged");
+  });
+
   it("answers merged for one that already is, and asks for it before saying so", async () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", state: "merged" });

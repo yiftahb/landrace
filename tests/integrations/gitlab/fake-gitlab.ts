@@ -77,6 +77,10 @@ export interface FakeMr {
   traces?: Map<number, string>;
   /** False: GitLab refuses the merge with a 405 and its own words. */
   mergeable?: boolean;
+  /** False: the token's user may not merge it — GitLab's `can_be_merged_by` — which is answered 401 before anything else. */
+  mayMerge?: boolean;
+  /** "Branch cannot be merged": 406 on an older GitLab, 422 on a newer one, answered after mergeability and before the head. */
+  branchRefusal?: 406 | 422;
 }
 
 export interface FakeSettings {
@@ -115,8 +119,8 @@ export interface FakeGitLab {
 
 /** A merge request as the API shows one: its diff and discussions are endpoints of their own. */
 const shown = (mr: FakeMr): Omit<FakeMr, "diffs" | "discussions"> => {
-  const { diffs, discussions, pipelines, failedJobs, traces, mergeable, ...rest } = mr;
-  void [diffs, discussions, pipelines, failedJobs, traces, mergeable];
+  const { diffs, discussions, pipelines, failedJobs, traces, mergeable, mayMerge, branchRefusal, ...rest } = mr;
+  void [diffs, discussions, pipelines, failedJobs, traces, mergeable, mayMerge, branchRefusal];
   return rest;
 };
 
@@ -182,6 +186,8 @@ export function createFakeGitLab(): FakeGitLab {
       ...(mr.failedJobs ? { failedJobs: mr.failedJobs } : {}),
       ...(mr.traces ? { traces: mr.traces } : {}),
       ...(mr.mergeable === undefined ? {} : { mergeable: mr.mergeable }),
+      ...(mr.mayMerge === undefined ? {} : { mayMerge: mr.mayMerge }),
+      ...(mr.branchRefusal === undefined ? {} : { branchRefusal: mr.branchRefusal }),
     };
     mrs.set(iid, created);
     return created;
@@ -322,8 +328,12 @@ export function createFakeGitLab(): FakeGitLab {
     }
     if (sub === "/pipelines" && method === "GET") return page([...(mr.pipelines ?? [])].sort((a, b) => b.id - a.id), url.searchParams);
     if (sub === "/merge" && method === "PUT") {
-      if (body.sha !== mr.sha) return json({ message: "SHA does not match HEAD of source branch" }, 409);
+      // GitLab's own order: who may merge, then mergeability — "pipelines
+      // must succeed" included — then the branch, and the head only last.
+      if (mr.mayMerge === false) return json({ message: "401 Unauthorized" }, 401);
       if (mr.state !== "opened" || mr.mergeable === false) return json({ message: "405 Method Not Allowed" }, 405);
+      if (mr.branchRefusal !== undefined) return json({ message: "Branch cannot be merged" }, mr.branchRefusal);
+      if (body.sha !== mr.sha) return json({ message: "SHA does not match HEAD of source branch" }, 409);
       mr.state = "merged";
       mr.updated_at = now();
       return json(shown(mr));
