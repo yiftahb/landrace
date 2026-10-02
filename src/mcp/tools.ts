@@ -1,6 +1,5 @@
 import {
   isEngineLabel,
-  LABEL_NAMESPACE,
   LABELS,
   labelsOf,
   neutraliseMarkers,
@@ -24,18 +23,19 @@ import { laneOf, statusRows, workspaceStatusRows } from "#runner/status.js";
 import { claimsOf, listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
 
 /**
- * Position is a label, so an `lr:` label from the editor is not a label at
- * all — it is a write to workflow state. `lr:stage:done` skipped every stage
- * and `lr:approved` forged a human decision. The engine writes these through
- * effects, which have a satisfied() and can be reconciled; nothing reaches
- * them through here.
+ * Position is a label, so an engine label from the editor is not a label at
+ * all — it is a write to workflow state. `lr:stage:done` skipped every stage.
+ * The workflow writes these through effects, which have a satisfied() and
+ * can be reconciled; nothing reaches them through here. A workflow's own
+ * admit labels are not among them: taking one off is how an operator stops
+ * an item.
  */
 function refuseEngineLabels(labels: string[], what: string): void {
   const offending = labels.filter(isEngineLabel);
   if (offending.length) {
     throw new Error(
       `cannot ${what} ${offending.map((l) => `"${l}"`).join(", ")}: ` +
-      `"${LABEL_NAMESPACE}" labels are the workflow's own state, written by the engine`,
+      "the engine's labels and positions are the workflow's own state, written only by its effects",
     );
   }
 }

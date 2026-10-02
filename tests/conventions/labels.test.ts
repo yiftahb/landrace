@@ -1,4 +1,5 @@
-import { stageFromLabels } from "#conventions.js";
+import { isEngineLabel, stageFromLabels } from "#conventions.js";
+import { admitProblems } from "#workflow/validate.js";
 
 /**
  * Position is a label, and two of them is an item that cannot be placed.
@@ -29,5 +30,31 @@ describe("stageFromLabels", () => {
     expect(stageFromLabels(["lr:stage:done", "lr:stage:build"])).toEqual({
       stage: null, ambiguous: true, found: ["done", "build"],
     });
+  });
+});
+
+/*
+ * One definition of the engine's own labels, shared by the operator's tools
+ * and validate's admit rule (separation review I2): the labels the engine's
+ * vocabulary names, and every position. A workflow's own `lr:` label — the
+ * ones its `admit` starts items with — is the project's.
+ */
+describe("isEngineLabel", () => {
+  const ENGINE = ["lr:working", "lr:awaiting", "lr:blocked", "lr:screened", "lr:stage:build", " LR:Stage:Done ", "LR:BLOCKED"];
+  const PROJECT = ["lr:fast", "lr:auto", "lr:stagehand", "needs-design", "blocked"];
+
+  it("is every label the engine names, and any position, whatever the case", () => {
+    expect(ENGINE.filter((l) => !isEngineLabel(l))).toEqual([]);
+  });
+
+  it("is never a workflow's own lr: label, nor anyone else's", () => {
+    expect(PROJECT.filter(isEngineLabel)).toEqual([]);
+  });
+
+  it("is exactly what validate refuses a workflow to admit", () => {
+    const stages = [{ id: "s", entry: true, terminal: true }];
+    const refused = (label: string): boolean =>
+      admitProblems("w", { version: 1, name: "w", description: "d", admit: [label], stages }).some((p) => p.message.includes("the engine writes itself"));
+    expect([...ENGINE, ...PROJECT].filter(refused)).toEqual(ENGINE);
   });
 });

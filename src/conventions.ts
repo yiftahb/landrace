@@ -24,15 +24,26 @@ export const LABELS = {
   stage: (id: string) => `lr:stage:${id}`,
 } as const;
 
-/** The engine's own label namespace. Anything under it is workflow state we write. */
-export const LABEL_NAMESPACE = "lr:";
-
-/** Trackers compare label names case-insensitively, so this does too. */
-export const isEngineLabel = (label: string): boolean =>
-  label.trim().toLowerCase().startsWith(LABEL_NAMESPACE);
-
 const STAGE_RE = /^lr:stage:(.+)$/;
 export const STAGE_LABEL_PREFIX = "lr:stage:";
+
+/** Every label `LABELS` names, as a tracker compares them. */
+const ENGINE_LABELS: ReadonlySet<string> = new Set(
+  Object.values(LABELS).filter((l): l is Exclude<typeof l, (id: string) => string> => typeof l === "string"),
+);
+
+/**
+ * Whether a label is the engine's own: one `LABELS` names, or a position.
+ * The one definition — the operator's tools refuse to write one, and
+ * `validate` refuses a workflow to admit one. Not every `lr:` label: a
+ * workflow's `admit` labels share the prefix and are the project's, which an
+ * operator adds and takes off. Trackers compare label names
+ * case-insensitively, so this does too.
+ */
+export const isEngineLabel = (label: string): boolean => {
+  const name = label.trim().toLowerCase();
+  return ENGINE_LABELS.has(name) || name.startsWith(STAGE_LABEL_PREFIX);
+};
 
 /**
  * Position is a label, so two of them means we cannot place the item.

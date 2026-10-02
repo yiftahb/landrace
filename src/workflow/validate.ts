@@ -12,7 +12,7 @@ import {
   retiredPlaceholder,
   unknownCapabilities,
 } from "#conventions.js";
-import { LABELS, STAGE_LABEL_PREFIX } from "#conventions.js";
+import { isEngineLabel } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
 import { fillTemplate, pathsNoNodeCarries } from "#core/index.js";
 import { identityOf, placedByState } from "#core/locate.js";
@@ -1268,7 +1268,7 @@ export function admitProblems(id: string, w: Workflow): Problem[] {
   const admit = w.admit ?? [];
   if (admit.length === 0) return [];
   const reserved: Problem[] = admit
-    .filter((l) => l.startsWith(STAGE_LABEL_PREFIX) || (Object.values(LABELS) as unknown[]).includes(l))
+    .filter(isEngineLabel)
     .map((l) => ({ rule: "admit", message: `workflow "${id}" admits "${l}", a label the engine writes itself` }));
   const rules = labelRules(w);
   let refused: typeof rules;
