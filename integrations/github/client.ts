@@ -40,6 +40,23 @@ export interface PullFile {
   patch?: string;
 }
 
+/** One check run on a commit, as `GET /commits/{sha}/check-runs` answers it. */
+export interface CheckRun {
+  id: number;
+  name: string;
+  /** Null until the run completes. */
+  conclusion: string | null;
+  app?: { slug?: string } | null;
+  output?: { text?: string | null; summary?: string | null } | null;
+}
+
+/** One commit status, as `GET /commits/{sha}/status` answers it. */
+export interface CommitStatus {
+  context: string;
+  state: string;
+  description?: string | null;
+}
+
 /** A line comment inside a review — the only place GitHub takes several findings in one request. */
 export interface ReviewComment {
   path: string;
@@ -121,7 +138,8 @@ export function createClient(opts: GitHubOptions) {
     // numbered 404 — `/contents/specs/404/index.md` — and a caller that reads
     // a broken repository as an absent file republishes it on every tick.
     if (!res.ok) {
-      throw Object.assign(new Error(`${method} ${url} → ${res.status} ${await res.text()}`), { status: res.status });
+      const text = await res.text();
+      throw Object.assign(new Error(`${method} ${url} → ${res.status} ${text}`), { status: res.status, body: text });
     }
     return res.status === 204 ? (null as T) : ((await res.json()) as T);
   }
@@ -338,6 +356,31 @@ export function createClient(opts: GitHubOptions) {
         throw e;
       }
     },
+    /** One page of a commit's check runs; see the forge for why one is all that is read. */
+    checkRuns: (sha: string, perPage: number) =>
+      call<{ check_runs?: CheckRun[] }>("GET", `/commits/${encodeURIComponent(sha)}/check-runs?per_page=${perPage}`),
+    /** A commit's statuses, the older way a service reports on a commit. */
+    commitStatus: (sha: string) => call<{ statuses?: CommitStatus[] }>("GET", `/commits/${encodeURIComponent(sha)}/status`),
+    /**
+     * An Actions job's log as text. GitHub answers with a redirect to where
+     * the text lives, which fetch follows — and drops the Authorization header
+     * on the way out of api.github.com, so the token goes nowhere but here.
+     */
+    jobLog: async (id: number): Promise<string> => {
+      await botLogin();
+      const res = await doFetch(`https://api.github.com/repos/${repo}/actions/jobs/${id}/logs`, {
+        headers: { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "landrace" },
+        redirect: "follow",
+      });
+      if (!res.ok) throw Object.assign(new Error(`GET /actions/jobs/${id}/logs → ${res.status}`), { status: res.status });
+      return res.text();
+    },
+    pull: (n: number) => call<{ merged?: boolean }>("GET", `/pulls/${n}`),
+    /** Merge with a merge commit, only if the head is still `sha`: GitHub answers 409 when it is not. */
+    mergePull: (n: number, sha: string) =>
+      named(call("PUT", `/pulls/${n}/merge`, { sha, merge_method: "merge" }),
+        `"Pull requests: Read and write" and "Contents: Read and write" on ${repo}`),
+
     /** The pull request's diff, a file at a time; GitHub stops at 3,000 files, a hundred a page. */
     pullFiles: async (n: number): Promise<PullFile[]> => {
       const all: PullFile[] = [];

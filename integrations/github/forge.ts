@@ -139,6 +139,19 @@ query($owner: String!, $name: String!) {
 }`;
 
 /**
+ * A commit's rollup: GitHub's own fold of its check runs and its statuses
+ * into one state, so a pull request's CI is one small read rather than two
+ * lists. It is its own query and not a field of the pull request ones, which
+ * would widen every list.
+ */
+const CHECKS_QUERY = `
+query LandraceChecks($owner: String!, $name: String!, $oid: GitObjectID!) {
+  repository(owner: $owner, name: $name) {
+    object(oid: $oid) { ... on Commit { statusCheckRollup { state } } }
+  }
+}`;
+
+/**
  * Every GraphQL document the forge sends, so a test can cost each against
  * GitHub's node limit. With closing references off, each pull request query
  * asks for a subset of these, so costing these costs those.
@@ -149,6 +162,7 @@ export const FORGE_QUERIES = {
   ITEM_QUERY: itemQuery(true),
   THREADS_QUERY,
   PREFLIGHT_PR_QUERY,
+  CHECKS_QUERY,
   RESOLVE_THREAD,
   REPLY_THREAD,
 };
@@ -342,6 +356,46 @@ function prReadFailure(e: unknown, repo: string): Error {
   return forbiddenType || notAccessible || deniedByStatus
     ? new Error(`token needs "Pull requests: Read" on ${repo}`)
     : new Error(`pull request check failed: ${message}`);
+}
+
+const CHECK_STATES: Record<string, CheckState> = {
+  SUCCESS: "success", FAILURE: "failure", ERROR: "failure", PENDING: "pending", EXPECTED: "pending",
+};
+
+/** A run that ended in any of these is a failed check; one still running, skipped, neutral or green is not. */
+const FAILED_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure"]);
+
+/** Whether GitHub said this token may not read it: a 403, or GraphQL's FORBIDDEN or "not accessible". */
+function refusedRead(e: unknown): boolean {
+  const errors = (e as { errors?: unknown } | null)?.errors;
+  return (e as { status?: unknown } | null)?.status === 403 ||
+    /not accessible/i.test(e instanceof Error ? e.message : String(e)) ||
+    (Array.isArray(errors) && errors.some((err) => (err as { type?: unknown } | null)?.type === "FORBIDDEN"));
+}
+
+/**
+ * A CI read that failed: the permission by name when GitHub refused it, with
+ * GitHub's own words kept, else the failure as it came. Never an answer — a
+ * check that could not be read is not a check that passed.
+ */
+function ciReadFailure(e: unknown, permission: string, repo: string): unknown {
+  const rejected = tokenRejected(e);
+  if (rejected) return rejected;
+  return refusedRead(e)
+    ? new Error(`token needs "${permission}" on ${repo} (GitHub answered: ${e instanceof Error ? e.message : String(e)})`)
+    : e;
+}
+
+/** What GitHub said, out of the JSON body of a refusal: its `message`, or the body as it came. */
+function refusalMessage(e: unknown): string {
+  const body = (e as { body?: unknown } | null)?.body;
+  if (typeof body !== "string") return e instanceof Error ? e.message : String(e);
+  try {
+    const message = (JSON.parse(body) as { message?: unknown }).message;
+    return typeof message === "string" ? message : body;
+  } catch {
+    return body;
+  }
 }
 
 /**
@@ -552,20 +606,87 @@ export class GitHubForge extends BaseForge {
     await this.gh(ctx).closePull(pull);
   }
 
-  // PLACEHOLDER — replaced in P6 Task 2. Only so the build holds while the
-  // kit's abstract CI and merge land first: nothing is read, and nothing merges.
-  async checks(): Promise<CheckState> {
-    return "none";
+  /**
+   * The rollup on the pull request's head commit. A commit with no rollup has
+   * nothing configured to check it — or nothing registered yet — and reads
+   * `none`. A commit GitHub does not know, or a state this does not know, is
+   * not read at all, and so is not green.
+   */
+  async checks(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState> {
+    const gh = this.gh(ctx);
+    let data: { repository: { object: { statusCheckRollup?: { state?: string } | null } | null } | null };
+    try {
+      data = await gh.graphql(CHECKS_QUERY, { owner: gh.owner, name: gh.name, oid: pull.headSha });
+    } catch (e) {
+      throw ciReadFailure(e, "Checks: Read", gh.repo);
+    }
+    if (!data.repository) throw unseen(gh.repo);
+    if (data.repository.object === null) throw new Error(`${gh.repo} has no commit ${pull.headSha}, so the checks on pr-${pull.number} cannot be read`);
+    const state = data.repository.object.statusCheckRollup?.state;
+    if (state === undefined) return "none";
+    const known = CHECK_STATES[state];
+    if (known === undefined) throw new Error(`GitHub answered a check state "${state}" for ${pull.headSha}, which landrace does not know how to read`);
+    return known;
   }
 
-  // PLACEHOLDER — replaced in P6 Task 2.
-  async failedChecks(): Promise<FailedCheck[]> {
-    return [];
+  /**
+   * Each failed check run and each failed status on the head, with the log
+   * GitHub will give: an Actions job's own log, or the text another app wrote
+   * on its run. A log that cannot be had is `null` — the check is still named.
+   *
+   * ponytail: one page of 100 check runs; a pull request with more failed
+   * checks than that is not a case worth paging for.
+   */
+  async failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]> {
+    const gh = this.gh(ctx);
+    let runs: Awaited<ReturnType<Client["checkRuns"]>>;
+    let statuses: Awaited<ReturnType<Client["commitStatus"]>>;
+    try {
+      runs = await gh.checkRuns(pull.headSha, 100);
+    } catch (e) {
+      throw ciReadFailure(e, "Checks: Read", gh.repo);
+    }
+    try {
+      statuses = await gh.commitStatus(pull.headSha);
+    } catch (e) {
+      throw ciReadFailure(e, "Commit statuses: Read", gh.repo);
+    }
+
+    const failed: FailedCheck[] = [];
+    for (const run of (runs.check_runs ?? []).filter((r) => r.conclusion !== null && FAILED_CONCLUSIONS.has(r.conclusion))) {
+      let log: string | null;
+      if (run.app?.slug === "github-actions") {
+        // The log is optional: a 403 (no "Actions: Read"), a 404 or a 410 (expired) leaves the check named without it.
+        log = await gh.jobLog(run.id).catch(() => null);
+      } else {
+        log = run.output?.text ?? run.output?.summary ?? null;
+      }
+      failed.push({ name: run.name, log });
+    }
+    for (const status of (statuses.statuses ?? []).filter((s) => s.state === "failure" || s.state === "error")) {
+      failed.push({ name: status.context, log: status.description ?? null });
+    }
+    return failed;
   }
 
-  // PLACEHOLDER — replaced in P6 Task 2.
-  async merge(): Promise<MergeAnswer> {
-    throw new Error("merging is not implemented for this forge yet");
+  /**
+   * A merge commit, guarded by the head the caller read: GitHub answers 409
+   * when the head is no longer that, which is `moved` and not an error. A 405
+   * is "not mergeable" — or already merged, which a crash after the merge
+   * and before the next read makes ordinary — so the pull request is asked.
+   */
+  async merge(pull: number, headSha: string, ctx: RuntimeContext): Promise<MergeAnswer> {
+    const gh = this.gh(ctx);
+    try {
+      await gh.mergePull(pull, headSha);
+      return "merged";
+    } catch (e) {
+      const status = (e as { status?: unknown } | null)?.status;
+      if (status === 409) return "moved";
+      if (status !== 405) throw e;
+      if ((await gh.pull(pull)).merged === true) return "merged";
+      throw new Error(`pr-${pull} cannot be merged: ${refusalMessage(e)}`);
+    }
   }
 
   /** File threads first, the review last: its marker is what says the round is on GitHub. */
@@ -609,7 +730,9 @@ export class GitHubForge extends BaseForge {
    * "Pull requests: Read", probed with one minimal query. Its write half has
    * no harmless form to try — opening an item's pull request and closing a
    * dropped child's both need it — so a fine-grained token without it is
-   * named by the write itself.
+   * named by the write itself. Then "Checks: Read" and "Commit statuses:
+   * Read", because every read of an open pull request asks for its checks: a
+   * token without them would fail every read and every briefing, not one step.
    */
   async check(ctx: RuntimeContext): Promise<void> {
     const gh = this.gh(ctx);
@@ -623,6 +746,22 @@ export class GitHubForge extends BaseForge {
     // "this token cannot see it": the read this probe exists to prove never happened.
     if (data.repository === null) {
       throw new Error(`pull request check failed: the repository "${gh.repo}" answered with nothing at all; check the token's access to it`);
+    }
+
+    // The default branch's tip is a commit that always exists. An empty
+    // repository has none (404, 422): nothing to read yet, so nothing to refuse.
+    const ref = await gh.defaultBranch();
+    for (const [read, permission] of [
+      [() => gh.checkRuns(ref, 1), "Checks: Read"],
+      [() => gh.commitStatus(ref), "Commit statuses: Read"],
+    ] as const) {
+      try {
+        await read();
+      } catch (e) {
+        const status = (e as { status?: unknown } | null)?.status;
+        if (status === 404 || status === 422) continue;
+        throw ciReadFailure(e, permission, gh.repo);
+      }
     }
   }
 }

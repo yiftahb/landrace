@@ -102,6 +102,16 @@ export interface FakePull {
   files?: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>;
   /** Every review posted on it, as `POST /pulls/{n}/reviews` took them. */
   reviews?: Array<{ body: string; event: string }>;
+  /** The head commit's `statusCheckRollup.state`; absent or null is a commit with no rollup at all. */
+  checks?: "SUCCESS" | "FAILURE" | "ERROR" | "PENDING" | "EXPECTED" | null;
+  /** What `GET /commits/{sha}/check-runs` answers. `app` is the app's slug, "github-actions" unless said. */
+  checkRuns?: Array<{ id: number; name: string; conclusion: string | null; app?: string; output?: { text?: string | null; summary?: string | null } }>;
+  /** What `GET /commits/{sha}/status` answers. */
+  statuses?: Array<{ context: string; state: string; description?: string | null }>;
+  /** What `GET /actions/jobs/{id}/logs` answers, by job id; a job not here is a 404. */
+  jobLogs?: Map<number, string>;
+  /** Whether `PUT /pulls/{n}/merge` can merge it. Absent means it can. */
+  mergeable?: boolean;
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -653,6 +663,17 @@ export function createFakeTracker(
         });
       }
 
+      if (operation === "LandraceChecks") {
+        const pull = [...pulls.values()].find((p) => p.headSha === variables.oid);
+        return json({
+          data: {
+            repository: {
+              object: pull === undefined ? null : { statusCheckRollup: pull.checks ? { state: pull.checks } : null },
+            },
+          },
+        });
+      }
+
       // Anything else is the preflight's probe, which asks only that the
       // repository answers at all.
       return json({ data: { repository: { pullRequests: { totalCount: pulls.size } } } });
@@ -905,6 +926,40 @@ export function createFakeTracker(
       return json({ ref: `refs/heads/${ref}`, object: { sha: body.sha } });
     }
 
+    const onChecks = /^\/commits\/([^/]+)\/(check-runs|status)$/.exec(path);
+    if (onChecks && method === "GET") {
+      const pull = [...pulls.values()].find((p) => p.headSha === onChecks[1]);
+      if (onChecks[2] === "status") return json({ state: "failure", statuses: pull?.statuses ?? [] });
+      const runs = (pull?.checkRuns ?? []).map((r) => ({
+        id: r.id, name: r.name, status: "completed", conclusion: r.conclusion,
+        app: { slug: r.app ?? "github-actions" }, output: { text: r.output?.text ?? null, summary: r.output?.summary ?? null },
+      }));
+      return json({ total_count: runs.length, check_runs: runs });
+    }
+
+    const onJobLog = /^\/actions\/jobs\/(\d+)\/logs$/.exec(path);
+    if (onJobLog && method === "GET") {
+      for (const p of pulls.values()) {
+        const log = p.jobLogs?.get(Number(onJobLog[1]));
+        if (log !== undefined) return new Response(log, { status: 200, headers: { "Content-Type": "text/plain" } });
+      }
+      return json({ message: "Not Found" }, 404);
+    }
+
+    const onPullRead = /^\/pulls\/(\d+)(\/merge)?$/.exec(path);
+    if (onPullRead && onPullRead[2] === undefined && method === "GET") {
+      const pull = pulls.get(Number(onPullRead[1])) ?? null;
+      return pull === null ? json({ message: "Not Found" }, 404) : json({ number: pull.number, state: pullState(pull).toLowerCase(), merged: pull.merged });
+    }
+    if (onPullRead && onPullRead[2] !== undefined && method === "PUT") {
+      const pull = pulls.get(Number(onPullRead[1])) ?? null;
+      if (pull === null) return json({ message: "Not Found" }, 404);
+      if (body.sha !== pull.headSha) return json({ message: "Head branch was modified. Review and try the merge again." }, 409);
+      if (pull.merged || pull.mergeable === false) return json({ message: "Pull Request is not mergeable" }, 405);
+      pull.merged = true;
+      return json({ sha: "merge-sha", merged: true, message: "Pull Request successfully merged" });
+    }
+
     return new Response(`no route for ${method} ${url.pathname}`, { status: 404 });
   }) as unknown as typeof fetch;
 
@@ -941,6 +996,11 @@ export function createFakeTracker(
         ...(pull.createdAt === undefined ? {} : { createdAt: pull.createdAt }),
         ...(pull.updatedAt === undefined ? {} : { updatedAt: pull.updatedAt }),
         ...(pull.files === undefined ? {} : { files: pull.files }),
+        ...(pull.checks === undefined ? {} : { checks: pull.checks }),
+        ...(pull.checkRuns === undefined ? {} : { checkRuns: pull.checkRuns }),
+        ...(pull.statuses === undefined ? {} : { statuses: pull.statuses }),
+        ...(pull.jobLogs === undefined ? {} : { jobLogs: pull.jobLogs }),
+        ...(pull.mergeable === undefined ? {} : { mergeable: pull.mergeable }),
       };
       pulls.set(number, created);
       nextPull = Math.max(nextPull, number + 1);

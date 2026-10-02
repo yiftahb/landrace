@@ -426,10 +426,10 @@ describe("a pull request's reference is derived from the item, never stored", ()
 describe("the review loop's gate is a count of unresolved threads", () => {
   it("counts the threads nobody has resolved, and only those", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
-    gh.openPull({ head: "landrace/1", number: 42, headSha: "abc123", threads: threads([false, true, false]) });
+    gh.openPull({ head: "landrace/1", number: 42, headSha: "abc123", threads: threads([false, true, false]), checks: "PENDING" });
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({
-      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2, checks: "none", ciPending: 0, ciFailed: 0,
+      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2, checks: "pending", ciPending: 1, ciFailed: 0,
     });
   });
 

@@ -330,13 +330,16 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 
 | Permission | Level | Used for |
 |---|---|---|
-| Contents | Read and write | reading the spec from gh-pages, and publishing it; pushing an item's branch to an `https://github.com` origin |
+| Contents | Read and write | reading the spec from gh-pages, and publishing it; pushing an item's branch to an `https://github.com` origin; merging a pull request |
 | Workflows | Read and write | only when a build changes anything under `.github/workflows/` — GitHub refuses a push that does without it |
 | Issues | Read and write | items, comments, labels |
-| Pull requests | Read and write | opening an item's pull request; review threads; closing a dropped child's pull request when a workflow that splits work re-runs its breakdown |
+| Pull requests | Read and write | opening an item's pull request; review threads; merging it; closing a dropped child's pull request when a workflow that splits work re-runs its breakdown |
+| Checks | Read-only | a pull request's CI state on its head commit, and its failed check runs — read on every open pull request |
+| Commit statuses | Read-only | the same, for services that report as a status and not a check run |
+| Actions | Read-only | the log of a failed GitHub Actions job, for the `{brief.project.ci}` briefing; without it the check is still named, with `(log unavailable)` |
 | Metadata | Read-only | granted automatically |
 
-`landrace start` and `landrace mcp` both check these before doing anything else — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions the way a classic token's scopes can. A token missing something refuses to start, naming what is missing, rather than running until the first step that needs it fails midway through a paid agent run. `landrace status` never checks or writes anything — it only reads.
+`landrace start` and `landrace mcp` both check these before doing anything else — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions the way a classic token's scopes can. `landrace start` also reads one commit's check runs and statuses, since every read of an open pull request asks for its checks and a token without Checks or Commit statuses would fail them all; Actions is the one thing not checked, because a log is optional. A token missing something refuses to start, naming what is missing, rather than running until the first step that needs it fails midway through a paid agent run. `landrace status` never checks or writes anything — it only reads.
 
 ### `.landrace/.env` — secrets
 

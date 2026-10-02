@@ -633,8 +633,12 @@ describe("an item goes all the way round §10", () => {
     // existed on, and per briefing one page for the open threads and one for
     // the history.
     expect(queriesOf(gh, "LandraceThreads")).toBeLessThanOrEqual(reads + 2 * briefed);
+    // Checks are read like threads: one per read the open pull request existed
+    // on, and one per briefing's `ci` key.
+    expect(queriesOf(gh, "LandraceChecks")).toBeGreaterThan(0);
+    expect(queriesOf(gh, "LandraceChecks")).toBeLessThanOrEqual(reads + briefed);
     expect(gh.graphql.length).toBe(
-      ["LandraceIssue", "LandraceSubIssues", "LandraceItem", "LandraceThreads"].reduce((n, q) => n + queriesOf(gh, q), 0),
+      ["LandraceIssue", "LandraceSubIssues", "LandraceItem", "LandraceThreads", "LandraceChecks"].reduce((n, q) => n + queriesOf(gh, q), 0),
     );
     // And nothing else: the build, the spec and the judge ask for no briefing.
     expect(briefed).toBeLessThan(r.invocations.length);
