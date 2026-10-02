@@ -1,4 +1,5 @@
 import { createClient, GitHubForge } from "landrace/integrations/github";
+import { buildBriefing } from "#runner/artifacts.js";
 import { createFakeTracker, githubHooks, noBranches, type FakePull, type FakeTracker } from "#tests/support/fake-tracker.js";
 import type { Effect, Graph, HookContext, PullRecord, Snapshot } from "#namespace.js";
 
@@ -166,6 +167,53 @@ describe("a pull request's failed checks", () => {
     expect(ci).toContain("THE END");
     expect(ci).not.toContain("x".repeat(4500));
     expect(ci).toMatch(/#### e2e\n\n\(log unavailable\)/);
+  });
+});
+
+/*
+ * A prompt is briefed only the keys it names, and only those are read: a
+ * review that names threads and a diff never pays for a red build's checks
+ * and logs, nor fails when they cannot be read.
+ */
+describe("briefing only the keys a prompt names", () => {
+  const redPull = (gh: FakeTracker): void => {
+    gh.openPull({
+      head: "landrace/1", number: 8, headSha: "abc1234", closes: [1], checks: "FAILURE",
+      checkRuns: [run(1, "unit", "failure"), run(2, "e2e", "failure")],
+      jobLogs: new Map([[1, "boom"], [2, "bang"]]),
+    });
+  };
+  const ciRequests = (gh: FakeTracker): string[] => [
+    ...checksQueries(gh).map(() => "LandraceChecks"),
+    ...gh.requests.map((r) => r.path).filter((p) => p.includes("/check-runs") || p.endsWith("/status") || p.startsWith("/actions/jobs/")),
+  ];
+  const brief = (gh: FakeTracker, prompt: string) =>
+    buildBriefing([gh.registry.source as NonNullable<FakeTracker["registry"]["source"]>], { ...gh.ctx, item: "1", snapshot: {} } as HookContext, prompt);
+
+  it("makes no checks or log request for a prompt that names only the threads", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    redPull(gh);
+    const briefed = await brief(gh, "Fix what is open.\n\n{brief.project.threads}");
+    expect(Object.keys(briefed.project ?? {})).toEqual(["threads"]);
+    expect(ciRequests(gh)).toEqual([]);
+  });
+
+  it("is not failed by a checks read that would fail, when the prompt does not name ci", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    redPull(gh);
+    gh.breakOn(({ path }) => path.endsWith("/check-runs"), 502);
+    await expect(brief(gh, "{brief.project.threads} {brief.project.diff}")).resolves.toMatchObject({ project: { threads: expect.any(String), diff: expect.any(String) } });
+  });
+
+  it("still briefs ci to a prompt that names it", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    redPull(gh);
+    const briefed = await brief(gh, "Make it green.\n\n{brief.project.ci}");
+    expect(Object.keys(briefed.project ?? {})).toEqual(["ci"]);
+    expect(briefed.project?.ci).toContain("### pr-8: checks failure");
+    expect(briefed.project?.ci).toContain("#### unit");
+    expect(briefed.project?.ci).toContain("boom");
+    expect(ciRequests(gh)).toEqual(expect.arrayContaining(["LandraceChecks", "/actions/jobs/1/logs"]));
   });
 });
 

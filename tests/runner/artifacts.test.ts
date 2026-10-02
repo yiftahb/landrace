@@ -344,4 +344,15 @@ describe("a briefing is built for the step that asks for it, by name", () => {
 
     expect(asked).toEqual(["spec"]);
   });
+
+  it("tells the hook which of its keys the prompt names, so it reads no other", async () => {
+    const told: Array<string[] | undefined> = [];
+    const hook = briefing("pr", (_ctx, keys) => {
+      told.push(keys === undefined ? undefined : [...keys].sort());
+      return { threads: "t", diff: "d" };
+    });
+    await buildBriefing([hook], ctx(), "{brief.pr.threads} and again {brief.pr.threads}, then {brief.pr.diff}; {brief.spec.text}");
+
+    expect(told).toEqual([["diff", "threads"]]);
+  });
 });

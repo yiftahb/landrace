@@ -42,10 +42,15 @@ function claim(claims: Map<string, string>, what: string, key: string, role: str
   claims.set(key, role);
 }
 
-/** Every key of a briefing table, read one after another: a step's prompt text. */
-async function briefAll(table: BriefTable, ctx: HookContext): Promise<Record<string, string>> {
+/**
+ * The keys of a briefing table a prompt names — every key when it names none
+ * in particular — read one after another: a step's prompt text. A key it does
+ * not name is never read, so a review that names threads never pays for, or
+ * fails on, a red build's logs.
+ */
+async function briefAll(table: BriefTable, ctx: HookContext, keys?: ReadonlySet<string>): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
-  for (const [key, read] of Object.entries(table)) out[key] = await read(ctx);
+  for (const [key, read] of Object.entries(table)) if (keys === undefined || keys.has(key)) out[key] = await read(ctx);
   return out;
 }
 
@@ -190,9 +195,7 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
           [DOCS, docs ? await docs.read(id, ctx) : none],
         ]);
       },
-      // ponytail: every key is read whenever a prompt names any — a briefing
-      // is one call with no key list; a per-key call if a forge's reads cost.
-      brief: (ctx) => briefAll(briefs, ctx),
+      brief: (ctx, keys) => briefAll(briefs, ctx, keys),
     }),
 
     operator: defineOperator({
@@ -229,7 +232,7 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
       id: SPEC,
       handles: Object.keys(documented),
       read: (ctx) => docs.observe(ctx),
-      brief: (ctx) => briefAll(docBriefs, ctx),
+      brief: (ctx, keys) => briefAll(docBriefs, ctx, keys),
       satisfied: (snapshot, effect) => handlerIn(documented, effect).satisfied(snapshot, effect),
       apply: (effect, ctx) => handlerIn(documented, effect).apply(effect, ctx),
     }),

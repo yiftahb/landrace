@@ -626,17 +626,19 @@ describe("an item goes all the way round §10", () => {
     const reads = r.result.passes + r.invocations.length;
     // Each read walks the item's subtree, which is the item alone.
     expect(queriesOf(gh, "LandraceSubIssues")).toBe(reads);
-    // A briefing's four keys — threads, diff, ci, history — each find the
-    // item's pull requests the same way `read` does.
-    expect(queriesOf(gh, "LandraceItem")).toBe(reads + 4 * briefed);
+    // Only the keys a prompt names are read, and each finds the item's pull
+    // requests the same way `read` does: code-review's threads and diff,
+    // fix-review's threads — never ci or history, which neither names.
+    const keys = r.invocations.reduce((n, i) => n + (i.stage === "code-review" ? 2 : i.stage === "fix-review" ? 1 : 0), 0);
+    expect(keys).toBeGreaterThan(briefed);
+    expect(queriesOf(gh, "LandraceItem")).toBe(reads + keys);
     // One pull request, well under a page of threads: one count per read it
-    // existed on, and per briefing one page for the open threads and one for
-    // the history.
-    expect(queriesOf(gh, "LandraceThreads")).toBeLessThanOrEqual(reads + 2 * briefed);
-    // Checks are read like threads: one per read the open pull request existed
-    // on, and one per briefing's `ci` key.
+    // existed on, and per briefing one page for the open threads.
+    expect(queriesOf(gh, "LandraceThreads")).toBeLessThanOrEqual(reads + briefed);
+    // Checks are read like threads, one per read the open pull request existed
+    // on — and never for a briefing, since no step here names `ci`.
     expect(queriesOf(gh, "LandraceChecks")).toBeGreaterThan(0);
-    expect(queriesOf(gh, "LandraceChecks")).toBeLessThanOrEqual(reads + briefed);
+    expect(queriesOf(gh, "LandraceChecks")).toBeLessThanOrEqual(reads);
     expect(gh.graphql.length).toBe(
       ["LandraceIssue", "LandraceSubIssues", "LandraceItem", "LandraceThreads", "LandraceChecks"].reduce((n, q) => n + queriesOf(gh, q), 0),
     );

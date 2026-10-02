@@ -555,8 +555,12 @@ export interface ArtifactHook extends PostHook {
    * the way in, and merged into no snapshot at all. What a briefing carries is
    * the most attacker-reachable text in the system; what it cannot do is
    * decide anything.
+   *
+   * `keys` are the ones the prompt names, and a hook reads no other: a key
+   * read and then dropped is a remote read paid for, and one that can fail
+   * the step. Absent, every key is read.
    */
-  brief?(ctx: HookContext): Promise<Record<string, string>> | Record<string, string>;
+  brief?(ctx: HookContext, keys?: ReadonlySet<string>): Promise<Record<string, string>> | Record<string, string>;
 }
 
 /**
@@ -1135,8 +1139,12 @@ export interface Source {
   list(ctx: RuntimeContext): Promise<Graph>;
   /** One item's neighbourhood — itself, its ancestors, its descendants and every related node — on every converge pass. */
   read(id: string, ctx: RuntimeContext): Promise<Graph>;
-  /** Prompt text about this item, asked for only when a step's prompt names `{brief.<source id>.<key>}`. */
-  brief?(ctx: HookContext): Promise<Record<string, string>> | Record<string, string>;
+  /**
+   * Prompt text about this item, asked for only when a step's prompt names
+   * `{brief.<source id>.<key>}` — and only the `keys` it names, or every key
+   * when absent.
+   */
+  brief?(ctx: HookContext, keys?: ReadonlySet<string>): Promise<Record<string, string>> | Record<string, string>;
 }
 
 /* `| undefined` throughout, because exactOptionalPropertyTypes is on and these

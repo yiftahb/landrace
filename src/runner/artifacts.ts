@@ -154,11 +154,10 @@ const briefingsNamedIn = (prompt: string): Set<string> =>
   new Set([...prompt.matchAll(/\{brief\.([a-zA-Z0-9_]+)\./g)].map((m) => m[1] as string));
 
 /**
- * And which of a hook's keys it asks for. A hook briefs everything it has in
- * one call — a source reads threads, history and a diff together —
- * and a key the prompt never names would still spend the hook's budget: a
- * retro's history used all of it ahead of a reviewer's diff, which then
- * arrived empty.
+ * And which of a hook's keys it asks for. A key the prompt never names is not
+ * read, and if a hook hands one back anyway it is dropped: it would still
+ * spend the hook's budget, as a retro's history once used all of it ahead of
+ * a reviewer's diff, which then arrived empty.
  */
 const keysNamedIn = (prompt: string, id: string): Set<string> =>
   new Set([...prompt.matchAll(/\{brief\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)/g)].filter((m) => m[1] === id).map((m) => m[2] as string));
@@ -178,7 +177,7 @@ const keysNamedIn = (prompt: string, id: string): Set<string> =>
  * is later spliced into something.
  */
 export async function buildBriefing(
-  briefers: Array<{ id: string; brief?(ctx: HookContext): Promise<Record<string, string>> | Record<string, string> }>,
+  briefers: Array<Pick<ArtifactHook, "id" | "brief">>,
   ctx: HookContext,
   prompt: string,
 ): Promise<Record<string, Record<string, string>>> {
@@ -188,10 +187,13 @@ export async function buildBriefing(
   for (const hook of briefers) {
     if (!hook.brief || !asked.has(hook.id)) continue;
     let left = BRIEF_MAX_CHARS;
+    // Told to the hook, so it reads only these: a key read and dropped is a
+    // remote read paid for, and one whose failure fails a step that never asked.
+    const named = keysNamedIn(prompt, hook.id);
 
     let fragment: Record<string, string>;
     try {
-      fragment = await hook.brief(ctx);
+      fragment = await hook.brief(ctx, named);
     } catch (e) {
       throw new Error(`the briefing for hook "${hook.id}" failed: ${messageOf(e)}`);
     }
@@ -203,7 +205,6 @@ export async function buildBriefing(
     }
 
     const kept: Record<string, string> = {};
-    const named = keysNamedIn(prompt, hook.id);
     for (const [key, value] of Object.entries(fragment)) {
       // Same boundary the state above draws, for the same reason: a reserved
       // id is not a field name but a reachable key on a plain object, and the

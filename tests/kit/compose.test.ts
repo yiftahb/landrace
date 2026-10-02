@@ -330,6 +330,25 @@ describe("the briefing", () => {
     expect(Object.keys(brief ?? {}).sort()).toEqual(["ci", "diff", "history", "threads"]);
   });
 
+  it("reads only the keys it is asked for, and every key when it is not told", async () => {
+    const forge = new MemoryForge();
+    forge.add("1", { branch: "landrace/1", checks: "failure", failed: [{ name: "unit", log: "boom" }] });
+    const checks = jest.spyOn(forge, "checks");
+    const history = jest.spyOn(forge, "history");
+    const hooks = compose({ tracker: seeded(), forge });
+
+    const threads = await hooks.source.brief?.(on("1"), new Set(["threads"]));
+    expect(Object.keys(threads ?? {})).toEqual(["threads"]);
+    expect(checks).not.toHaveBeenCalled();
+    expect(history).not.toHaveBeenCalled();
+
+    const ci = await hooks.source.brief?.(on("1"), new Set(["ci", "nothing-by-this-name"]));
+    expect(Object.keys(ci ?? {})).toEqual(["ci"]);
+    expect(ci?.ci).toContain("boom");
+
+    expect(Object.keys((await hooks.source.brief?.(on("1"))) ?? {}).sort()).toEqual(["ci", "diff", "history", "threads"]);
+  });
+
   it("hands a step the spec page's text under the docs role's own artifact", async () => {
     const docs = new MemoryDocs();
     const hooks = compose({ tracker: seeded(), docs });
