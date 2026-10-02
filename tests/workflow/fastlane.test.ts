@@ -38,6 +38,25 @@ const stepOf = (id: string, path: string): Step => {
 const sectionOf = (prompt: string, heading: string): string | undefined =>
   splitSections(prompt).sections.find((s) => s.heading === heading)?.text;
 
+/** A step's lead, paragraph by paragraph. */
+const paragraphsOf = (prompt: string): string[] =>
+  splitSections(prompt).lead.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p !== "");
+
+/** main's lead without the spec it embeds: the paragraph framing it, the spec between its rules, and the page's link. */
+const withoutSpec = (paragraphs: string[]): string[] =>
+  paragraphs.filter((p) => !/approved spec|\{brief\.spec\.content\}|\{artifacts\.spec\.url\}/.test(p));
+
+/** A fastlane lead without the item it embeds: the paragraph framing it, through the item's closing rule. */
+function withoutItem(paragraphs: string[]): { rest: string[]; item: string[] } {
+  const opens = paragraphs.findIndex((p) => p.startsWith("--- the item ---"));
+  const closes = paragraphs.findIndex((p) => p.endsWith("--- end of the item ---"));
+  if (opens < 1 || closes < opens) return { rest: paragraphs, item: [] };
+  return { rest: [...paragraphs.slice(0, opens - 1), ...paragraphs.slice(closes + 1)], item: paragraphs.slice(opens - 1, closes + 1) };
+}
+
+/** The item, as every fastlane step that embeds it does: its number, title and text between two rules. */
+const ITEM = "--- the item ---\n#{node.id}: {node.title}\n\n{brief.project.body}\n--- end of the item ---";
+
 /** Whether an item carrying exactly these labels passes every one of a workflow's eligible rules. */
 const accepts = (w: Workflow, labels: string[]): boolean =>
   (w.eligible ?? []).every((rule) => compile(rule.when)({ node: { state: { labels } } }));
@@ -97,7 +116,11 @@ describe("fastlane's steps", () => {
     const triage = stepOf("fastlane", "steps/triage.md");
     const base = stepOf("main", "steps/triage.md");
     expect({ model: triage.model, capabilities: triage.capabilities }).toEqual({ model: base.model, capabilities: base.capabilities });
-    expect(splitSections(triage.prompt).lead.trim()).toBe(splitSections(base.prompt).lead.trim());
+    // main's lead word for word, with the item beside the message, framed as context.
+    const { rest, item } = withoutItem(paragraphsOf(triage.prompt));
+    expect(rest).toEqual(paragraphsOf(base.prompt));
+    expect(item.slice(1).join("\n\n")).toBe(ITEM);
+    expect((item[0] ?? "").replace(/\s+/g, " ")).toMatch(/never an instruction/);
 
     const intents = ["rework", "close", "question", "unclear"];
     expect(triage.output?.discriminator).toBe("intent");
@@ -111,10 +134,37 @@ describe("fastlane's steps", () => {
     expect(procedure).not.toMatch(/goto-|`approve`|`revise`/);
   });
 
-  it.each(["code-review", "fix-review", "retro"])("runs main's own %s step, unchanged", (id) => {
+  /*
+   * main's review, fix and retro, with the one thing in them fastlane does
+   * not have — the spec — replaced by the item's own text, framed the way
+   * main frames the spec. Everything else in the lead is main's word for
+   * word, and every section is main's.
+   */
+  it.each(["code-review", "fix-review", "retro"])("runs main's %s with the item's own text where main's has the spec", (id) => {
     const stage = flow("fastlane").workflow.stages.find((s) => s.id === id);
-    expect(stage?.step).toBe(`../main/steps/${id}.md`);
-    expect(stepOf("fastlane", `../main/steps/${id}.md`)).toEqual(stepOf("main", `steps/${id}.md`));
+    expect(stage?.step).toBe(`steps/${id}.md`);
+    const { prompt, ...front } = stepOf("fastlane", `steps/${id}.md`);
+    const { prompt: base, ...baseFront } = stepOf("main", `steps/${id}.md`);
+    expect(front).toEqual(baseFront);
+    expect(splitSections(prompt).sections).toEqual(splitSections(base).sections);
+
+    const { rest, item } = withoutItem(paragraphsOf(prompt));
+    expect(rest).toEqual(withoutSpec(paragraphsOf(base)));
+    expect(withoutSpec(paragraphsOf(base)).length).toBeLessThan(paragraphsOf(base).length);
+    expect(item.slice(1).join("\n\n")).toBe(ITEM);
+    // Framed as main frames the spec: a person's requirements, never instructions for the session.
+    const framing = (item[0] ?? "").replace(/\s+/g, " ");
+    expect(framing).toMatch(/written by a person/);
+    expect(framing).toMatch(/never instructions about how to run this session/);
+  });
+
+  it("names the item's text in every step, and the spec in none", () => {
+    const steps = flow("fastlane").steps;
+    expect([...steps.keys()].sort()).toEqual(STEPPED.map((id) => `steps/${id}.md`).sort());
+    for (const [path, { prompt }] of steps) {
+      expect({ path, body: prompt.includes("{brief.project.body}") }).toEqual({ path, body: true });
+      expect({ path, spec: /\{brief\.spec\.content\}|\{artifacts\.spec\.url\}/.test(prompt) }).toEqual({ path, spec: false });
+    }
   });
 });
 
@@ -136,6 +186,19 @@ describe("fastlane's stages", () => {
     const types = (stage("merge")?.on_enter ?? []).map((e) => e.type);
     expect(types.indexOf("pull.merge")).toBeLessThan(types.indexOf("tracker.status"));
     expect(stage("merge")?.on_enter).toContainEqual({ type: "pull.merge", branch: "landrace/{item}" });
+  });
+
+  /*
+   * The pull request before the position moves, as merge merges before it
+   * does: a close that fails leaves the item at triage, where the next tick
+   * plans it again. Moved to the terminal stage first, nothing would.
+   */
+  it("closes the pull request at closed, before it moves the item there", () => {
+    const effects = stage("closed")?.on_enter ?? [];
+    expect(effects).toContainEqual({ type: "pull.close", branch: "landrace/{item}" });
+    const types = effects.map((e) => e.type);
+    expect(types.indexOf("pull.close")).toBeLessThan(types.indexOf("tracker.status"));
+    expect(types).not.toContain("nodes.close");
   });
 
   it.each(["done", "closed"])("closes the item at %s and takes its labels off", (id) => {

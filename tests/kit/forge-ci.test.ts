@@ -406,3 +406,79 @@ describe("a tick over a head that moved", () => {
     expect(s.stage("7")).toBe("merge");
   });
 });
+
+/*
+ * pull.close: what a workflow that drops an item does to the pull request it
+ * opened — every open one from the branch closed without merging, and never
+ * one that is merged, by the read or since it.
+ */
+describe("pull.close", () => {
+  const close = { type: "pull.close", branch: "landrace/7" };
+
+  it("closes the open pull request from the branch, and is satisfied after", async () => {
+    const { hooks, forge } = world();
+    const pr = forge.add("7", { branch: "landrace/7" });
+    const snapshot = await read(hooks);
+    expect(hooks.post.satisfied(snapshot, close)).toBe(false);
+
+    await apply(hooks, close, snapshot);
+
+    expect(forge.pull(pr)).toMatchObject({ merged: false, closed: "dropped" });
+    expect(hooks.post.satisfied(await read(hooks), close)).toBe(true);
+  });
+
+  it("closes every open one from the branch", async () => {
+    const { hooks, forge } = world();
+    const first = forge.add("7", { branch: "landrace/7" });
+    const second = forge.add("7", { branch: "landrace/7" });
+    await apply(hooks, close, await read(hooks));
+    expect([forge.pull(first).closed, forge.pull(second).closed]).toEqual(["dropped", "dropped"]);
+  });
+
+  it("leaves a merged pull request, and an open one from another branch, as they are", async () => {
+    const { hooks, forge } = world();
+    const merged = forge.add("7", { branch: "landrace/7", merged: true });
+    const other = forge.add("7", { branch: "landrace/7-docs" });
+    const closes = jest.spyOn(forge, "closePull");
+    const snapshot = await read(hooks);
+    expect(hooks.post.satisfied(snapshot, close)).toBe(true);
+
+    await apply(hooks, close, snapshot);
+
+    expect(closes).not.toHaveBeenCalled();
+    expect(forge.pull(merged)).toMatchObject({ merged: true, closed: "done" });
+    expect(forge.pull(other)).toMatchObject({ merged: false, closed: null });
+  });
+
+  it("never closes one merged since the read", async () => {
+    const { hooks, forge } = world();
+    const pr = forge.add("7", { branch: "landrace/7" });
+    const snapshot = await read(hooks);
+    Object.assign(forge.pull(pr), { merged: true, closed: "done" });
+    const closes = jest.spyOn(forge, "closePull");
+
+    await apply(hooks, close, snapshot);
+
+    expect(closes).not.toHaveBeenCalled();
+    expect(forge.pull(pr)).toMatchObject({ merged: true, closed: "done" });
+  });
+
+  it("is idempotent: applied again, on the old read or a new one, it closes nothing more", async () => {
+    const { hooks, forge } = world();
+    forge.add("7", { branch: "landrace/7" });
+    const snapshot = await read(hooks);
+    const closes = jest.spyOn(forge, "closePull");
+
+    await apply(hooks, close, snapshot);
+    await apply(hooks, close, snapshot);
+    await apply(hooks, close, await read(hooks));
+
+    expect(closes).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an effect that names no branch", async () => {
+    const { hooks, forge } = world();
+    forge.add("7", { branch: "landrace/7" });
+    expect(() => hooks.post.satisfied({ graph: { nodes: [], relationships: [] } }, { type: "pull.close" })).toThrow(/branch/);
+  });
+});

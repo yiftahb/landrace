@@ -364,6 +364,12 @@ export const PULL_REVIEW_EFFECT = "pull.review";
  * engine read it at and only while its checks are green, or none run.
  */
 export const PULL_MERGE_EFFECT = "pull.merge";
+/**
+ * Close, without merging, every open pull request from the effect's `branch`:
+ * what a workflow that drops an item does to the work it proposed. A merged
+ * one is never touched.
+ */
+export const PULL_CLOSE_EFFECT = "pull.close";
 
 /**
  * The branch a publishing effect names. Which branch is the workflow's to
@@ -404,8 +410,8 @@ export function hasPullFrom(graph: Graph | undefined, item: string | undefined, 
 /**
  * The pull requests from this branch implementing this item, open or merged,
  * in the graph the engine read — what `pull.open` asks whether there is one
- * of, and `pull.merge` merges the open one of. `type` is the effect asking,
- * named when there is no graph to ask.
+ * of, `pull.merge` merges the open one of, and `pull.close` closes the open
+ * ones of. `type` is the effect asking, named when there is no graph to ask.
  */
 export function pullsFrom(graph: Graph | undefined, item: string | undefined, branch: string, type: string): Node[] {
   if (!graph) throw new Error(`a ${type} effect cannot be checked: the snapshot has no graph`);

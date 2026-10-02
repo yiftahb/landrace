@@ -99,12 +99,13 @@ stages:
 
   # ── review ───────────────────────────────────────────────────────────────
   #
-  # main's reviewer and fixer, run as they are. Every build is reviewed
+  # main's reviewer and fixer, shown the item's own text where main's are
+  # shown the spec, and otherwise as they are. Every build is reviewed
   # through publish, uncapped; every fix within fix review's eight; the
   # retro's commit once; and a head that moved under the merge within code
   # review's own four, since that is a loop of merges with no step to count.
   - id: code-review
-    step: ../main/steps/code-review.md
+    step: steps/code-review.md
     branch: "landrace/{item}"
     requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
@@ -131,7 +132,7 @@ stages:
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
   - id: fix-review
-    step: ../main/steps/fix-review.md
+    step: steps/fix-review.md
     branch: "landrace/{item}"
     triggers:
       - name: the reviewer left threads awaiting a fix
@@ -171,7 +172,7 @@ stages:
   # once the pull request merged — a person can merge it by hand — since
   # lessons committed then land on a branch nothing will merge again.
   - id: retro
-    step: ../main/steps/retro.md
+    step: steps/retro.md
     branch: "landrace/{item}"
     requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
@@ -240,10 +241,11 @@ stages:
       - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working"] }
       - { type: tracker.close }
 
-  # A person asked to drop it. The item is closed; nodes.close cannot close
-  # its pull request here — it drops only what this item's own steps created,
-  # and validate refuses it on a stage whose step does not create items — so
-  # the pull request is left open.
+  # A person asked to drop it: its pull request is closed unmerged, then the
+  # item. The pull request first, before the position moves, as merge merges
+  # first: a close that fails leaves the item at triage, where the next tick
+  # plans it again, and a terminal stage would plan nothing. Not nodes.close,
+  # which drops only what this item's own steps created.
   - id: closed
     terminal: true
     triggers:
@@ -253,6 +255,7 @@ stages:
           "run.lastOutputValid": null
           "run.outputs.triage.intent": close
     on_enter:
+      - { type: pull.close, branch: "landrace/{item}" }
       - { type: tracker.status, value: closed }
       - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
       - { type: tracker.close }

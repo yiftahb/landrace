@@ -12,7 +12,7 @@
  * forge's own name.
  */
 import {
-  BRANCH_PUSH_EFFECT, effectBranch, hasPullFrom, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_MERGE_EFFECT,
+  BRANCH_PUSH_EFFECT, effectBranch, hasPullFrom, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT, PULL_MERGE_EFFECT,
   PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, pullsFrom, RELATIONS, renderMarker, sameLogin, stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
@@ -635,6 +635,14 @@ export abstract class BaseForge {
         },
         apply: (effect, ctx) => this.mergeOpen(effect, ctx),
       },
+      [PULL_CLOSE_EFFECT]: {
+        // Done when nothing from the branch is still proposed. A merged one
+        // never counts against it: merged is not open, and is not closed here.
+        satisfied: (snapshot, effect) => !pullsFrom(
+          snapshot.graph as Graph | undefined, (snapshot.node as Node | undefined)?.id, effectBranch(effect), PULL_CLOSE_EFFECT,
+        ).some(proposed),
+        apply: (effect, ctx) => this.closeOpen(effect, ctx),
+      },
       [NODES_CLOSE_EFFECT]: {
         satisfied: nodesCloseSatisfied,
         apply: async (effect, ctx) => {
@@ -691,6 +699,24 @@ export abstract class BaseForge {
     if (!green(checks)) throw refused(checks);
 
     if ((await this.merge(number, head, ctx)) === "moved") moved();
+  }
+
+  /**
+   * `pull.close`: every pull request from the branch the snapshot read as
+   * open, asked of the forge again first. One merged since the read is left
+   * as it is — closing a merged pull request is a refusal on every forge, and
+   * undoing nothing — and one closed since has nothing left to do, so a
+   * second apply on the same old read closes nothing more.
+   */
+  protected async closeOpen(effect: Effect, ctx: HookContext): Promise<void> {
+    const branch = effectBranch(effect);
+    const open = pullsFrom(ctx.snapshot.graph as Graph | undefined, ctx.item, branch, PULL_CLOSE_EFFECT).filter(proposed);
+    if (open.length === 0) return;
+    const fresh = await this.pullsNaming(ctx.item, ctx);
+    for (const pr of open) {
+      const number = pullNumber(pr.id);
+      if (fresh.some((p) => p.number === number && isOpen(p))) await this.closePull(number, ctx);
+    }
   }
 
   /**
