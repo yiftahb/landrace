@@ -73,20 +73,39 @@ const VENDORS = readdirSync("integrations", { withFileTypes: true }).filter((d) 
 const AGENT_DISPLAY = [join("src", "ui", "chat.ts"), join("src", "ui", "page.ts")];
 const DISPLAY_FOR: Record<string, string[]> = { claude: AGENT_DISPLAY, codex: AGENT_DISPLAY };
 
+/** A vendor's name as a substring, whatever its case — but `CLAUDE.md`, the instructions file comments cite. */
+const mentionOf = (vendor: string): RegExp => new RegExp(`${vendor}${vendor === "claude" ? "(?!\\.md)" : ""}`, "i");
+
 describe("no tracker is named inside the engine", () => {
   it("knows the integrations it guards from integrations/ itself", () => {
     expect(VENDORS).toEqual(expect.arrayContaining(["claude", "codex", "github", "gitlab", "jira", "notion", "slack"]));
   });
 
   /*
-   * As a word, in code and comments alike, whatever the case — "a Jira hook
-   * would" in a comment is how the next special case starts. CLAUDE.md, the
+   * Anywhere in a line, in code and comments alike, whatever the case — "a
+   * Jira hook would" in a comment is how the next special case starts, and
+   * `githubToken` is how the one after that does. Inside a word too: a word
+   * boundary let every camelCase name through (`githubToken`, `claudeArgs`,
+   * `codexHome`), which the sweep before it caught. CLAUDE.md, the
    * instructions file comments cite, is not the agent.
    */
   it.each(VENDORS)("has no mention of %s anywhere under src, bar its display-only files", (vendor) => {
-    const word = new RegExp(`\\b${vendor}\\b${vendor === "claude" ? "(?!\\.md)" : ""}`, "i");
     const allowed = DISPLAY_FOR[vendor] ?? [];
-    expect(linesMatching(word).filter((line) => !allowed.some((file) => line.startsWith(`${file}:`)))).toEqual([]);
+    expect(linesMatching(mentionOf(vendor)).filter((line) => !allowed.some((file) => line.startsWith(`${file}:`)))).toEqual([]);
+  });
+
+  it.each([
+    ["github", "const githubToken = ctx.secrets.get(x);", true],
+    ["github", "interface GitHubForgeLike {}", true],
+    ["claude", "const claudeArgs = [];", true],
+    ["codex", "export const CODEX_HOME = '';", true],
+    ["gitlab", "a gitlabUrl", true],
+    ["notion", "notionPage", true],
+    ["slack", "slackWebhook", true],
+    // The instructions file is cited, not the agent.
+    ["claude", "see CLAUDE.md, the instructions file", false],
+  ] as const)("finds %s in %j: %s", (vendor, line, found) => {
+    expect(mentionOf(vendor).test(line)).toBe(found);
   });
 
   /*
