@@ -12,22 +12,28 @@ export const identityOf = (stage: Stage) => stage.identity ?? { "run.stage": sta
 
 /**
  * Whether an item's own state places it at this stage: a custom identity
- * reading only what the tracker holds — the item's fields (`node.*`) and its
- * relations (`rel.*`). An item is there because its labels say so, not
- * because a transition took it there, and it leaves when they stop saying so.
+ * reading only the item's own fields (`node.*`). An item is there because its
+ * labels say so, not because a transition took it there, and it leaves when
+ * they stop saying so.
  *
  * Anything the engine writes disqualifies it: a counter or an output is there
  * only once a step ran, and a `run.stage` naming a stage is a position only a
  * transition writes. Read as placement by state, each let a stage nothing can
  * reach or leave validate clean. The one position allowed is
  * `"run.stage": null` at the top — an item nothing has been written to.
+ *
+ * Its relations (`rel.*`) are the tracker's too, and still do not count: the
+ * board, a notification and the MCP place an item from the listed node alone
+ * (`locateNode`), which carries no relations, so a stage only they placed an
+ * item at showed it nowhere — queued, at no stage, never told — while the
+ * engine waited on it there. Such a stage needs an entry stage beside it.
  */
 export function placedByState(stage: Stage): boolean {
   const identity = stage.identity;
   if (identity === undefined) return false;
   const paths = pathsIn(identity);
-  const tracked = (path: string): boolean => path.startsWith("node.") || path.startsWith("rel.");
-  return paths.some(tracked) && paths.every((path) => tracked(path) || (path === "run.stage" && identity["run.stage"] === null));
+  const own = (path: string): boolean => path.startsWith("node.");
+  return paths.some(own) && paths.every((path) => own(path) || (path === "run.stage" && identity["run.stage"] === null));
 }
 
 /**

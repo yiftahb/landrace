@@ -439,6 +439,20 @@ describe("structural validation, of a workflow placed by the item's own state", 
     expect(rules(w)).toContain("entry");
   });
 
+  /*
+   * A relation is not on the listed node: Needs you, a notification and the
+   * MCP place an item from the node alone, so a stage only its relations put
+   * it at showed it nowhere — queued, at no stage, never told — while the
+   * engine waited on it there.
+   */
+  it("still asks for one of a workflow whose open stage its relations place", () => {
+    const w = wf([
+      { id: "reviewing", waits: "person", identity: { "rel.implements.in.not.merged": { $gt: 0 } } },
+      { id: "idle", terminal: true, identity: { "rel.implements.in.not.merged": 0 } },
+    ]);
+    expect(validateStructure(w)).toContainEqual({ rule: "entry", message: "no stage has entry: true, so no item can start" });
+  });
+
   it("still asks for one of a workflow whose every stage is terminal", () => {
     expect(rules(wf([{ id: "done", terminal: true, identity: mine("done") }]))).toContain("entry");
   });
