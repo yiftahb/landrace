@@ -334,6 +334,59 @@ describe("telling you an item placed by its own state waits on you", () => {
     expect(await w.sent()).toEqual([]);
   });
 
+  /*
+   * A tick that could not see the item settle — its snapshot failed — did
+   * not tell anyone. Noted as seen there all the same, it was never told of
+   * until it left and came back.
+   */
+  it("tells you on the next clean tick of an item whose first tick failed to read it", async () => {
+    const state = requested();
+    let failing = true;
+    const flaky: Source = {
+      ...state.source,
+      read: (item, ctx) => (failing ? Promise.reject(new Error("GET /issues/1 → 502")) : state.source.read(item, ctx)),
+    };
+    const w = workspace(state, review, "review", { source: flaky });
+
+    expect((await w.tick()).find((r) => r.item === "1")?.outcome).toMatch(/^halt after 1 pass\(es\): .*502/);
+    expect(await w.sent()).toEqual([]);
+
+    failing = false;
+    await w.tick();
+    await w.tick();
+    expect(await w.sent()).toEqual([["1", "reviewing"]]);
+  });
+
+  /*
+   * Ticks overlap. One that lists while another is still working the item
+   * finds it not yet told of, and its converge waits on the other's lock:
+   * whichever tells first is the one tell.
+   */
+  it("tells you once of an item two overlapping ticks both find arriving", async () => {
+    const state = requested();
+    let hold: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => { hold = resolve; });
+    let reads = 0;
+    const slow: Source = {
+      ...state.source,
+      read: async (item, ctx) => {
+        if (item === "1" && reads++ === 0) await held;
+        return state.source.read(item, ctx);
+      },
+    };
+    const w = workspace(state, review, "review", { source: slow });
+
+    const first = w.tick();
+    // The first tick holds the item's lock while its read waits.
+    while (reads === 0) await new Promise((resolve) => setImmediate(resolve));
+    expect((await w.tick()).find((r) => r.item === "1")?.outcome).toMatch(/lock/);
+    (hold as unknown as () => void)();
+    await first;
+    await w.tick();
+
+    expect(await w.sent()).toEqual([["1", "reviewing"]]);
+  });
+
   // Held by something else — a goto, a person pairing — the item is not
   // converged this tick, and where it was listed is all that is known.
   it("tells you of an item that arrives while something else holds its lock", async () => {

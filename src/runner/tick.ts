@@ -198,7 +198,7 @@ const sameStage = (a: SeenAt | undefined, b: SeenAt): boolean => a?.workflow ===
 
 /**
  * Note where every item this tick works is, and hand back the ones that have
- * just come to wait on a person by their own state.
+ * just come to wait on a person by their own state, with where.
  *
  * Converge tells of an item that comes to rest at a person's turn after a
  * transition; an item placed by its own state makes none — it is at
@@ -207,6 +207,11 @@ const sameStage = (a: SeenAt | undefined, b: SeenAt): boolean => a?.workflow ===
  * that the last tick did not see there has arrived. Only such a stage: one a
  * label alone places an item at is reached by a transition, and converge
  * tells of it. The tell itself waits for the item's converge (see `tellIf`).
+ *
+ * An arrival is not noted here, only once it is told: a tick whose converge
+ * halts, fails or moves the item on tells no one, and noted all the same, the
+ * item was never told of until it left and came back. Left out, the next
+ * tick that finds it there finds it arriving again.
  *
  * `runtime.seen` is the last tick's listing, in this process only. A restart
  * starts it empty, so every item already waiting is told of once more on the
@@ -217,21 +222,20 @@ const sameStage = (a: SeenAt | undefined, b: SeenAt): boolean => a?.workflow ===
  */
 function noteArrivals(
   runtime: WorkspaceRuntime, listing: WorkspaceListing, work: ReadonlyArray<{ node: Node; workflow: WorkflowRuntime }>, unjudged: boolean,
-): Set<string> {
+): Map<string, SeenAt> {
   const before = new Map(runtime.seen);
   runtime.seen.clear();
   for (const [item, at] of before) {
     const index = listing.sourceOf.get(at.workflow);
     if (unjudged || (index !== undefined && listing.failed.has(index))) runtime.seen.set(item, at);
   }
-  const arrived = new Set<string>();
+  const arrived = new Map<string, SeenAt>();
   for (const { node, workflow } of work) {
     const at = seenAt(workflow, node);
     if (at === null) continue;
-    runtime.seen.set(node.id, at);
-    if (sameStage(before.get(node.id), at)) continue;
     const stage = workflow.deps.workflow.stages.find((s) => s.id === at.stage);
-    if (stage?.waits === "person" && placedByState(stage)) arrived.add(node.id);
+    if (!sameStage(before.get(node.id), at) && stage?.waits === "person" && placedByState(stage)) arrived.set(node.id, at);
+    else runtime.seen.set(node.id, at);
   }
   return arrived;
 }
@@ -242,10 +246,18 @@ function noteArrivals(
  * pass, so no transition took it on and nothing ran — or not converged at
  * all, its lock held elsewhere. One a trigger moved on in the same tick never
  * waited on anyone. Through the workflow's notify, so by the board's rule for
- * who is waiting.
+ * who is waiting, and noted where it was told of, so no tick tells it again.
+ *
+ * Unless a tick overlapping this one has already told of it there: one that
+ * listed before this one told finds it arriving too, and the first to tell is
+ * the one tell.
  */
-function tellIf(runtime: WorkspaceRuntime, workflow: WorkflowRuntime, node: Node, result: ConvergeResult | "locked"): void {
+function tellIf(
+  runtime: WorkspaceRuntime, workflow: WorkflowRuntime, node: Node, at: SeenAt, result: ConvergeResult | "locked",
+): void {
   if (result !== "locked" && (result.settled !== "wait" || result.passes !== 1)) return;
+  if (sameStage(runtime.seen.get(node.id), at)) return;
+  runtime.seen.set(node.id, at);
   try {
     workflow.deps.notify?.({ node });
   } catch (e) {
@@ -421,12 +433,14 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
         opts.lock,
       );
       rows.push({ item, workflow: w.id, outcome: outcomeOf(result) });
-      if (arrived.has(item)) tellIf(runtime, w, node, result);
+      const at = arrived.get(item);
+      if (at) tellIf(runtime, w, node, at, result);
     } catch (e) {
       if (isLocked(e)) {
         log("lock.denied", { item, kind: "tick" });
         rows.push({ item, workflow: w.id, outcome: oneLine(messageOf(e)) });
-        if (arrived.has(item)) tellIf(runtime, w, node, "locked");
+        const at = arrived.get(item);
+        if (at) tellIf(runtime, w, node, at, "locked");
         return;
       }
       // One item's failure is one item's row. `messageOf`, not
