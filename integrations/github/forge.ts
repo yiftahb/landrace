@@ -386,6 +386,11 @@ function ciReadFailure(e: unknown, permission: string, repo: string): unknown {
     : e;
 }
 
+/** Nothing can be read on a commit that is not named, and an empty name is a refused read, not a green one. */
+function noHead(pull: PullRecord): void {
+  if (!pull.headSha) throw new Error(`pr-${pull.number} has no head commit to read checks on`);
+}
+
 /** What GitHub said, out of the JSON body of a refusal: its `message`, or the body as it came. */
 function refusalMessage(e: unknown): string {
   const body = (e as { body?: unknown } | null)?.body;
@@ -613,6 +618,7 @@ export class GitHubForge extends BaseForge {
    * not read at all, and so is not green.
    */
   async checks(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState> {
+    noHead(pull);
     const gh = this.gh(ctx);
     let data: { repository: { object: { statusCheckRollup?: { state?: string } | null } | null } | null };
     try {
@@ -638,6 +644,7 @@ export class GitHubForge extends BaseForge {
    * checks than that is not a case worth paging for.
    */
   async failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]> {
+    noHead(pull);
     const gh = this.gh(ctx);
     let runs: Awaited<ReturnType<Client["checkRuns"]>>;
     let statuses: Awaited<ReturnType<Client["commitStatus"]>>;

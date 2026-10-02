@@ -77,6 +77,25 @@ describe("a pull request's failed checks", () => {
     expect(gh.requests.filter((r) => r.path.startsWith("/commits/")).map((r) => r.path)).toEqual(
       ["/commits/abc1234/check-runs", "/commits/abc1234/status"],
     );
+    expect(gh.hops.map((h) => h.url)).toContain("https://api.github.com/repos/acme/widgets/commits/abc1234/check-runs?per_page=100");
+  });
+
+  it("reads a log through GitHub's redirect to another origin, which is sent no Authorization", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const pull = gh.openPull({ head: "landrace/1", checkRuns: [run(2, "unit", "failure")], jobLogs: new Map([[2, "the log text"]]) });
+    expect(await forgeOf(gh).failedChecks(recordOf(pull), gh.ctx)).toEqual([{ name: "unit", log: "the log text" }]);
+    const hops = gh.hops.filter((h) => h.url.includes("/logs") || h.url.includes("blob.example"));
+    expect(hops.map((h) => new URL(h.url).host)).toEqual(["api.github.com", "blob.example"]);
+    expect(hops[0]?.authorization).toBe("Bearer test-token");
+    expect(hops[1]?.authorization).toBeNull();
+  });
+
+  it.each(["checks", "failedChecks"] as const)("%s refuses an empty head with a sentence naming the pull request", async (method) => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const pull = gh.openPull({ head: "landrace/1", number: 4, checks: "SUCCESS" });
+    await expect(forgeOf(gh)[method]({ ...recordOf(pull), headSha: "" }, gh.ctx)).rejects.toThrow("pr-4 has no head commit to read checks on");
+    expect(gh.requests.filter((r) => r.path.startsWith("/commits/"))).toEqual([]);
+    expect(checksQueries(gh)).toEqual([]);
   });
 
   it("gives an Actions run its job log, another app's run its output, and a status its description", async () => {
@@ -205,6 +224,31 @@ describe("the preflight reads CI too", () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.breakOn(({ path }) => path.endsWith(`/${tail}`), 403);
     await expect(forgeOf(gh).check(gh.ctx)).rejects.toThrow(`token needs "${permission}" on acme/widgets`);
+  });
+
+  it("probes the default branch's tip, whatever it is called", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const seen = gh.fetchImpl;
+    const develop = (async (url: string, init?: RequestInit) => {
+      const res = await seen(url, init);
+      return String(url).endsWith("/repos/acme/widgets") ? new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 }) : res;
+    }) as typeof fetch;
+    const forge = new GitHubForge({ client: createClient({ repo: "acme/widgets", token: "t", fetchImpl: develop }) });
+    await forge.check(gh.ctx);
+    expect(gh.requests.map((r) => r.path)).toEqual(expect.arrayContaining(["/commits/trunk/check-runs", "/commits/trunk/status"]));
+    expect(gh.requests.map((r) => r.path)).not.toContain("/commits/main/check-runs");
+  });
+
+  it.each([404, 422])("starts on an empty repository, where the default branch has no commit to read (%i)", async (status) => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.breakOn(({ path }) => path.startsWith("/commits/"), status);
+    await expect(forgeOf(gh).check(gh.ctx)).resolves.toBeUndefined();
+  });
+
+  it("still refuses a 403 on the same probe, naming the permission", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.breakOn(({ path }) => path.startsWith("/commits/"), 403);
+    await expect(forgeOf(gh).check(gh.ctx)).rejects.toThrow('token needs "Checks: Read" on acme/widgets');
   });
 
   it("does not take a rejected token for a missing permission", async () => {

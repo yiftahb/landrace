@@ -132,6 +132,8 @@ export interface FakeTracker {
   comments: Map<number, FakeComment[]>;
   /** Every request that reached the boundary, so a test can count what an "idempotent" publish actually cost. */
   requests: FakeRequest[];
+  /** Every URL the fake was fetched at, a redirect's hops each, with the Authorization header that hop carried. */
+  hops: Array<{ url: string; authorization: string | null }>;
   /**
    * Answer matching requests with a failure instead, for the failures a hook has to tell apart from "not there" —
    * with GitHub's own JSON body when one is given, since some failures are told apart by what that says.
@@ -192,6 +194,8 @@ export interface FakeTracker {
   /** The boundary itself, so a test can point a second, differently configured client at the same in-memory GitHub. */
   fetchImpl: typeof fetch;
 }
+
+const LOG_HOST = "blob.example";
 
 export interface FakeRequest {
   method: string;
@@ -375,6 +379,7 @@ export function createFakeTracker(
   let nextPull = 100;
 
   const requests: FakeRequest[] = [];
+  const hops: Array<{ url: string; authorization: string | null }> = [];
   const graphql: Array<{ query: string; variables: Record<string, unknown> }> = [];
   let broken: { match: (r: FakeRequest) => boolean; status: number; body?: unknown } | null = null;
   let graphqlFailure: { message: string; type: string } | null = null;
@@ -457,10 +462,15 @@ export function createFakeTracker(
   });
 
   /** Only the endpoints the hooks actually call, answering the way GitHub does. */
-  const fetchImpl = (async (input: string | URL, init?: RequestInit): Promise<Response> => {
+  const serve = async (input: string | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     const body = init?.body === undefined ? {} : (JSON.parse(String(init.body)) as Record<string, unknown>);
+
+    if (url.host === LOG_HOST) {
+      const log = [...pulls.values()].map((p) => p.jobLogs?.get(Number(/^\/log\/(\d+)$/.exec(url.pathname)?.[1]))).find((l) => l !== undefined);
+      return log === undefined ? new Response("gone", { status: 404 }) : new Response(log, { status: 200, headers: { "Content-Type": "text/plain" } });
+    }
 
     const prefix = `/repos/${REPO}`;
     const path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : url.pathname;
@@ -939,9 +949,11 @@ export function createFakeTracker(
 
     const onJobLog = /^\/actions\/jobs\/(\d+)\/logs$/.exec(path);
     if (onJobLog && method === "GET") {
+      // GitHub answers with a redirect to where the text lives, on another origin.
       for (const p of pulls.values()) {
-        const log = p.jobLogs?.get(Number(onJobLog[1]));
-        if (log !== undefined) return new Response(log, { status: 200, headers: { "Content-Type": "text/plain" } });
+        if (p.jobLogs?.has(Number(onJobLog[1]))) {
+          return new Response(null, { status: 302, headers: { Location: `https://${LOG_HOST}/log/${onJobLog[1]}` } });
+        }
       }
       return json({ message: "Not Found" }, 404);
     }
@@ -961,6 +973,28 @@ export function createFakeTracker(
     }
 
     return new Response(`no route for ${method} ${url.pathname}`, { status: 404 });
+  };
+
+  /**
+   * Follows a redirect the way a browser's fetch does, so a test can see what
+   * the client's own request headers do on the next hop: Authorization is
+   * dropped when the origin changes. Done here and not left to Node, so the
+   * strip is the fake's own and an assertion on it means something.
+   */
+  const fetchImpl = (async (input: string | URL, init?: RequestInit): Promise<Response> => {
+    let url = new URL(String(input));
+    let headers = { ...((init?.headers ?? {}) as Record<string, string>) };
+    for (let hop = 0; hop < 5; hop++) {
+      hops.push({ url: url.href, authorization: headers.Authorization ?? null });
+      const res = await serve(url, { ...init, headers });
+      const location = res.headers.get("location");
+      if (res.status < 300 || res.status >= 400 || location === null || init?.redirect === "manual") return res;
+      const next = new URL(location, url);
+      if (next.origin !== url.origin) delete headers.Authorization;
+      url = next;
+      headers = { ...headers };
+    }
+    throw new Error("too many redirects");
   }) as unknown as typeof fetch;
 
   const hooks = githubHooks({ repo: REPO, token: "test-token", fetchImpl, git: opts.git ?? noBranches });
@@ -978,6 +1012,7 @@ export function createFakeTracker(
     issues,
     comments,
     requests,
+    hops,
     graphql,
     fetchImpl,
     pulls,
