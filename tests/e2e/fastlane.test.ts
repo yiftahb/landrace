@@ -524,6 +524,34 @@ describe("fastlane, end to end", () => {
   });
 
   /*
+   * The item is closed before its position and labels say it is done: an
+   * outage on the close leaves it at merge, still labelled lr:fast, and the
+   * next tick closes it. Closed after them, it was left open, done and no
+   * longer admitted, which nothing works again.
+   */
+  it("12. closes the item on the next tick when the close met an outage at done", async () => {
+    let down = true;
+    const { state, run, pr } = road({
+      before: (effect) => {
+        if (effect.type === "tracker.close" && down) {
+          down = false;
+          throw new Error("502 Bad Gateway");
+        }
+      },
+    });
+    const first = await run.converge();
+    expect(first.result).toMatchObject({ settled: "halt", why: expect.stringContaining("502") });
+    expect(pr().merged).toBe(true);
+    expect(state.item("1").closed).toBeNull();
+
+    const next = await run.converge();
+    expect(next.result.settled).toBe("terminal");
+    expect(state.item("1").closed).toBe("done");
+    expect(state.item("1").labels).toContain("lr:stage:done");
+    expect(state.item("1").labels).not.toContain("lr:fast");
+  });
+
+  /*
    * A merge that failed on the way — a 502, a dropped connection — is not a
    * refusal: nothing is recorded, the item stays at ci for this tick, and the
    * next tick merges. Over the in-memory forge, and over the fake GitHub,

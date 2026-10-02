@@ -313,6 +313,10 @@ describe("fastlane's stages", () => {
     const effects = stageOf(id).on_enter ?? [];
     expect(stageOf(id).terminal).toBe(true);
     expect(effects.filter((e) => e.type === "tracker.close")).toEqual([how === undefined ? { type: "tracker.close" } : { type: "tracker.close", how }]);
+    // Closed before the position and labels say so: an outage on the close leaves the item where it was, admitted.
+    const types = effects.map((e) => e.type);
+    expect(types.indexOf("tracker.close")).toBeLessThan(types.indexOf("tracker.status"));
+    expect(types.indexOf("tracker.close")).toBeLessThan(types.indexOf("tracker.label"));
     const removed = effects.flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
     expect(removed).toEqual(expect.arrayContaining(["lr:fast", "lr:working", "lr:awaiting"]));
   });

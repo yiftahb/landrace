@@ -286,18 +286,21 @@ stages:
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
+    # The close first, as merge merges first: an outage on it leaves the item
+    # where it was, still lr:fast, and the next tick closes it. After the
+    # labels, it left an item done, no longer admitted, and open for good.
     on_enter:
+      - { type: tracker.close }
       - { type: tracker.status, value: done }
       - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working"] }
-      - { type: tracker.close }
 
   # A person asked to drop it: its pull request is closed unmerged, then the
-  # item, as dropped. The pull request first, before the position moves, as
-  # merge merges first, and after the `enter` record: a close the forge
-  # refuses is this stage's rejected round, read at triage, and goes to
-  # `blocked` for a person's Retry; one that failed on the way leaves the item
-  # at triage for the next tick. A terminal stage would plan nothing again.
-  # Not nodes.close, which drops only what this item's own steps created.
+  # item, as dropped. Both before the position moves, as merge merges first,
+  # and after the `enter` record: a close the forge refuses is this stage's
+  # rejected round, read at triage, and goes to `blocked` for a person's
+  # Retry; one that failed on the way leaves the item at triage for the next
+  # tick. A terminal stage would plan nothing again. Not nodes.close, which
+  # drops only what this item's own steps created.
   - id: closed
     terminal: true
     triggers:
@@ -309,9 +312,9 @@ stages:
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Closing the pull request and the item, round {round}." }
       - { type: pull.close, branch: "landrace/{item}" }
+      - { type: tracker.close, how: dropped }
       - { type: tracker.status, value: closed }
       - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
-      - { type: tracker.close, how: dropped }
 
   # ── a person's turn ──────────────────────────────────────────────────────
   #
