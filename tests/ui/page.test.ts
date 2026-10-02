@@ -989,8 +989,11 @@ describe("an item row's workflow", () => {
   });
   const build = (r: ReturnType<typeof row>, showTags = true): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
-    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
-    itemRowFor(ROW, 0, 0, false)`, { ROW: r, document: fakeDocument, showTags }) as FakeElement;
+    ${["routeOf", "pageOf", "pageNow", "tagsOn", "el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
+    itemRowFor(ROW, 0, 0, false)`, {
+      ROW: r, document: fakeDocument,
+      lastView: { workflows: [{ id: "fast", name: "Fastlane", needsYou: 0 }] }, location: { hash: showTags ? "#/" : "#/w/fast" },
+    }) as FakeElement;
   const tagOf = (li: FakeElement): FakeElement | undefined => descendants(li).find((d) => d.className.split(" ").includes("workflow"));
 
   it("is named, by its name, in a small tag right after the title", () => {
@@ -1205,7 +1208,7 @@ describe("the page", () => {
     // (same one <main> uses) laid out with `justify-between` — branding on
     // the left, schedule + theme toggle on the right — see the CSS assertion
     // below. The <header> tag itself stays full-width for its border/background.
-    expect(header).toMatch(/<header[^>]*>\s*<div class="[^"]*max-w-5xl[^"]*justify-between/);
+    expect(header).toMatch(/<header[^>]*>\s*<div class="[^"]*max-w-6xl[^"]*justify-between/);
   });
 
   it("attaches the tick button's listener in script, never as an inline handler", () => {
@@ -1565,7 +1568,6 @@ describe("the item panel's address", () => {
   });
 
   it("opens on a row click by pushing the hash, so Back closes it", () => {
-    expect(fnSource("openPanel")).toContain("location.hash = hashOf(");
     expect(APP_JS).toContain('window.addEventListener("hashchange", onHashChange);');
     expect(fnSource("onHashChange")).toContain("showPanel(routeOf(location.hash).item)");
   });
@@ -2423,5 +2425,174 @@ describe("routing and the sidebar", () => {
   it("lays the sidebar out as a column from sm up and a row of chips below it", () => {
     expect(PAGE_HTML).toMatch(/<nav id="sidebar"[^>]*>/);
     expect(PAGE_HTML).toMatch(/id="nav" class="[^"]*\bflex-wrap\b[^"]*\bsm:flex-col\b/);
+  });
+});
+
+describe("the render rules of the sidebar pages", () => {
+  const load = (names: string[], extra: Record<string, unknown> = {}): Record<string, unknown> => {
+    const c: Record<string, unknown> = { document: fakeDocument, ...extra };
+    for (const f of names) runInNewContext(fnSource(f), c);
+    return c;
+  };
+  const run = <T>(c: Record<string, unknown>, code: string): T => runInNewContext(code, c) as T;
+  const ROWS = [
+    { id: "1", lane: "needs-you", pages: ["a"] },
+    { id: "2", lane: "running", pages: ["a"] },
+    { id: "3", lane: "needs-you", pages: ["b"] },
+  ];
+
+  it("draws only the needs-you lane on Needs You, and every lane on a workflow page", () => {
+    const c = load(["laneRoots", "rootsOn"]);
+    c.ROWS = ROWS;
+    const ids = (page: string | null, lane: string): string[] | null => {
+      c.PAGE = page; c.LANE = lane;
+      const r = run<{ id: string }[] | null>(c, "laneRoots(ROWS, PAGE, LANE, () => true)");
+      return r === null ? null : r.map((x) => x.id);
+    };
+    expect(ids(null, "needs-you")).toEqual(["1", "3"]);
+    expect(ids(null, "running")).toBeNull();
+    expect(ids("a", "running")).toEqual(["2"]);
+    expect(ids("a", "needs-you")).toEqual(["1"]);
+    expect(ids("a", "waiting")).toEqual([]);
+  });
+
+  it("applies the search inside the page's roots", () => {
+    const c = load(["laneRoots", "rootsOn"]);
+    c.ROWS = ROWS;
+    expect(run<{ id: string }[]>(c, `laneRoots(ROWS, null, "needs-you", (r) => r.id === "3")`).map((r) => r.id)).toEqual(["3"]);
+  });
+
+  it("draws the workflow tag on Needs You only, read from the hash and the last view", () => {
+    const c = load(["routeOf", "pageOf", "pageNow", "tagsOn"]);
+    c.lastView = { workflows: [{ id: "a", name: "a", needsYou: 0 }] };
+    c.location = { hash: "#/" };
+    expect(run(c, "tagsOn(pageNow())")).toBe(true);
+    c.location = { hash: "#/w/a" };
+    expect(run(c, "tagsOn(pageNow())")).toBe(false);
+    c.location = { hash: "#/w/gone" };
+    expect(run(c, "tagsOn(pageNow())")).toBe(true);
+  });
+
+  it("hides an item row's tag on a workflow page, through itemRowFor itself", () => {
+    const names = ["routeOf", "pageOf", "pageNow", "tagsOn", "el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"];
+    const row = { id: "12", kind: "item", title: "t", link: "", closed: null, badge: null, stage: null, priority: null, note: "", since: null, round: null, model: null, chat: null, screened: false, children: [], workflow: "a", tag: "A", panel: null };
+    const build = (hash: string): FakeElement => runInNewContext(`
+      ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
+      ${names.map(fnSource).join("")}
+      itemRowFor(ROW, 0, 0, false)`, { ROW: row, document: fakeDocument, lastView: { workflows: [{ id: "a", name: "a", needsYou: 0 }] }, location: { hash } }) as FakeElement;
+    const tagged = (li: FakeElement): boolean => descendants(li).some((d) => d.className.split(" ").includes("workflow"));
+    expect(tagged(build("#/"))).toBe(true);
+    expect(tagged(build("#/w/a"))).toBe(false);
+  });
+
+  describe("the sidebar's rebuild", () => {
+    const setup = () => {
+      const writes: FakeElement[][] = [];
+      const ul = { replaceChildren: (...n: FakeElement[]) => { writes.push(n); } };
+      const c = load(["el", "hashOf", "navItem", "renderNav"], { navKey: null });
+      c.document = { createElement: fakeDocument.createElement, getElementById: () => ul };
+      return { c, writes };
+    };
+    const view = (n: number, workflows = [{ id: "a", name: "a", needsYou: 0 }]) => ({ needsYou: n, workflows });
+
+    it("is left alone when nothing it shows changed, and redone when a count, the page or a name does", () => {
+      const { c, writes } = setup();
+      const go = (v: unknown, page: string | null): void => { c.V = v; c.P = page; run(c, "renderNav(V, P)"); };
+      go(view(1), null);
+      go(view(1), null);
+      expect(writes).toHaveLength(1);
+      go(view(2), null);
+      expect(writes).toHaveLength(2);
+      go(view(2), "a");
+      expect(writes).toHaveLength(3);
+      go(view(2, [{ id: "a", name: "renamed", needsYou: 0 }]), "a");
+      expect(writes).toHaveLength(4);
+    });
+
+    it("puts Needs You first, then a divider only when there are workflows", () => {
+      const { c, writes } = setup();
+      c.V = view(0); c.P = null;
+      run(c, "renderNav(V, P)");
+      expect(writes[0]?.map((n) => n.getAttribute("role") ?? n.tag)).toEqual(["li", "separator", "li"]);
+      const none = setup();
+      none.c.V = view(0, []); none.c.P = null;
+      run(none.c, "renderNav(V, P)");
+      expect(none.writes[0]).toHaveLength(1);
+    });
+  });
+
+  it("keys each nav link, so render's restore-by-key keeps a link's focus across a rebuild", () => {
+    const c = load(["el", "hashOf", "navItem"]);
+    c.E = { id: "a", name: "a", needsYou: 0 };
+    expect(run<FakeElement>(c, "navItem(E, false)").getAttribute("data-key")).toBe("nav:#/w/a");
+  });
+
+  it("writes the tab title only when it changed", () => {
+    let writes = 0;
+    let title = "Landrace";
+    const doc = { get title() { return title; }, set title(v: string) { writes++; title = v; } };
+    const c = load(["titleOf", "setTitle"], { document: doc });
+    for (const n of [0, 0, 3, 3, 0]) { c.N = n; run(c, "setTitle(N)"); }
+    expect(writes).toBe(2);
+    expect(title).toBe("Landrace");
+  });
+
+  describe("opening and closing the panel", () => {
+    const setup = (hash: string, view: unknown = { workflows: [{ id: "main", name: "main", needsYou: 0 }] }) => {
+      const replaced: string[] = [];
+      const location = { hash, pathname: "/", search: "" };
+      const c = load(["routeOf", "hashOf", "pageOf", "pageNow", "openPanel", "closePanel"], {
+        location, lastView: view,
+        history: { replaceState: (_a: unknown, _b: string, url: string) => { replaced.push(url); } },
+        showPanel: () => {},
+      });
+      return { c, location, replaced };
+    };
+
+    it("opens an item on the current workflow's page", () => {
+      const { c, location } = setup("#/w/main");
+      run(c, 'openPanel("12")');
+      expect(location.hash).toBe("#/w/main?item=12");
+    });
+
+    it("closes by replacing the URL with the page alone", () => {
+      const { c, replaced } = setup("#/w/main?item=12");
+      run(c, "closePanel()");
+      expect(replaced).toEqual(["/#/w/main"]);
+    });
+
+    it("falls back to Needs You on a workflow the view lacks, for both", () => {
+      const a = setup("#/w/gone");
+      run(a.c, 'openPanel("12")');
+      expect(a.location.hash).toBe("#/?item=12");
+      const b = setup("#/w/gone?item=12");
+      run(b.c, "closePanel()");
+      expect(b.replaced).toEqual(["/#/"]);
+    });
+
+    it("closes to Needs You before the first view has landed", () => {
+      const { c, replaced } = setup("#/w/main?item=12", null);
+      run(c, "closePanel()");
+      expect(replaced).toEqual(["/#/"]);
+    });
+  });
+});
+
+// Found in a 400px browser: a long unbroken title pushed the page sideways, and
+// a row's menu, right-aligned to a button at the left edge, hung off-screen.
+describe("a narrow screen", () => {
+  it("lets a title and a note break anywhere, so no word widens the page", () => {
+    const src = fnSource("itemRowFor");
+    expect(src).toContain("title min-w-0 wrap-anywhere");
+    expect(src).toContain("note min-w-0 wrap-anywhere");
+    expect(APP_CSS).toContain(".wrap-anywhere{");
+  });
+
+  it("opens a row's menu from the left edge below sm, where its button sits, and from the right above", () => {
+    expect(fnSource("buildRowMenu")).toContain("absolute left-0 z-10 mt-1 w-44 sm:left-auto sm:right-0");
+  });
+
+  it("gives the header the sidebar's width, so the logo lines up", () => {
+    expect(PAGE_HTML).toMatch(/<header[^>]*>\s*<div class="[^"]*max-w-6xl/);
   });
 });

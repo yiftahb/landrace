@@ -55,7 +55,7 @@ const PANEL = `
 <h2 id="panel-title" class="min-w-0 flex-1 break-words text-sm font-semibold"></h2>
 <div class="relative shrink-0">
 <button id="panel-more" type="button" aria-label="Item actions" aria-haspopup="menu" aria-expanded="false" title="Item actions" data-key="panel:trigger" class="${ICON_BUTTON}">⋯</button>
-<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute left-0 z-10 mt-1 w-44 sm:left-auto sm:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
 <button id="panel-pairing-item" type="button" role="menuitem" class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800">Pairing…</button>
 </div>
 </div>
@@ -89,7 +89,7 @@ export const PAGE_HTML = `<!doctype html>
 </head>
 <body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
 <header class="border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-<div class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+<div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
 <div class="flex min-w-0 flex-wrap items-center gap-2">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="h-5 w-5 shrink-0" aria-hidden="true"><line x1="4" y1="4" x2="4" y2="20"></line><line x1="9" y1="7" x2="20" y2="7"></line><line x1="9" y1="12" x2="20" y2="12"></line><line x1="9" y1="17" x2="16" y2="17"></line></svg>
 <h1 class="text-sm font-semibold">Landrace</h1>
@@ -531,7 +531,7 @@ function writesOf(row) {
 // any, then a divider, then the Chat caption and its targets — the same menu
 // regardless of which row's ⋯ opens it (see actionFor).
 function buildRowMenu(row) {
-  const menu = el("div", "absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
+  const menu = el("div", "absolute left-0 z-10 mt-1 w-44 sm:left-auto sm:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const writes = writesOf(row);
@@ -968,8 +968,8 @@ function itemRowFor(row, depth, now, open) {
   // button, instead of next to the title it names.
   // An item's title opens its panel — a button, so a keyboard reaches it too.
   const title = row.panel
-    ? el("button", "title min-w-0 cursor-pointer text-left font-medium text-neutral-900 hover:underline dark:text-neutral-100", row.title)
-    : el("span", "title min-w-0 font-medium text-neutral-900 dark:text-neutral-100", row.title);
+    ? el("button", "title min-w-0 wrap-anywhere cursor-pointer text-left font-medium text-neutral-900 hover:underline dark:text-neutral-100", row.title)
+    : el("span", "title min-w-0 wrap-anywhere font-medium text-neutral-900 dark:text-neutral-100", row.title);
   if (row.panel) {
     title.type = "button";
     title.setAttribute("data-key", row.id + ":open");
@@ -979,7 +979,7 @@ function itemRowFor(row, depth, now, open) {
   // The workflow that owns the item, by name, small, right after its title.
   // The server leaves it off where it would say nothing — a workspace of one
   // workflow — and on an item no one workflow owns, whose note says why.
-  if (row.tag && showTags) {
+  if (row.tag && tagsOn(pageNow())) {
     const workflow = el("span", "workflow shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300", row.tag);
     workflow.title = "Workflow " + row.workflow;
     top.append(workflow);
@@ -1006,7 +1006,7 @@ function itemRowFor(row, depth, now, open) {
   }
 
   const bottom = el("div", "mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-neutral-500 dark:text-neutral-400");
-  bottom.append(el("span", "note", row.closed === "dropped" ? "dropped" : row.note));
+  bottom.append(el("span", "note min-w-0 wrap-anywhere", row.closed === "dropped" ? "dropped" : row.note));
   if (row.model) {
     bottom.append(el("span", "model rounded border border-neutral-200 px-1 font-mono dark:border-neutral-700", row.model));
   }
@@ -1102,9 +1102,6 @@ function renderNext() {
 
 // What the last poll drew, so a toggle can redraw without waiting on the next.
 let lastView = null;
-// A workflow's own page would repeat its name on every row, so only the Needs
-// You page draws the tag. Set by render() before any row is built.
-let showTags = true;
 // The sidebar's last key, so a poll that changed nothing leaves it (and a
 // focused link in it) alone.
 let navKey = null;
@@ -1137,15 +1134,44 @@ function rootsOn(rows, page) {
   return rows.filter((r) => (page === null ? r.lane === "needs-you" : r.pages.includes(page)));
 }
 
+// The page the hash names, judged against the view last drawn: the one place a
+// row builder, openPanel and render all ask, so none can disagree.
+function pageNow() {
+  return lastView ? pageOf(lastView, routeOf(location.hash)) : null;
+}
+
+// A workflow's own page would repeat its name on every row, so only Needs You
+// draws the tag.
+function tagsOn(page) {
+  return page === null;
+}
+
+// null where this page does not draw the lane at all (Needs You shows only its
+// own lane), else the roots it draws there. \`keep\` is the search.
+function laneRoots(rows, page, lane, keep) {
+  if (page === null && lane !== "needs-you") return null;
+  return rootsOn(rows, page).filter((r) => r.lane === lane && keep(r));
+}
+
 function titleOf(n) {
   return n > 0 ? "(" + n + ") Landrace" : "Landrace";
+}
+
+// Only on a change: a write the same text could still make a tab flicker.
+function setTitle(n) {
+  const title = titleOf(n);
+  if (document.title !== title) document.title = title;
 }
 
 // One sidebar link. The Needs You entry has id null: it carries the count, a
 // workflow only a dot while something in it needs you.
 function navItem(entry, selected) {
-  const a = el("a", "flex items-center justify-between gap-2 rounded-md px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800" + (selected ? " bg-neutral-100 font-medium dark:bg-neutral-800" : ""));
-  a.href = hashOf({ workflow: entry.id, item: null });
+  const a = el("a", "flex min-w-0 items-center justify-between gap-2 rounded-md px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800" + (selected ? " bg-neutral-100 font-medium dark:bg-neutral-800" : ""));
+  const href = hashOf({ workflow: entry.id, item: null });
+  a.href = href;
+  // render() restores focus by key after it rebuilds, which a keyboard user
+  // following this very link needs: the selected page is part of the nav key.
+  a.setAttribute("data-key", "nav:" + href);
   if (selected) a.setAttribute("aria-current", "page");
   a.append(el("span", "truncate", entry.name));
   if (entry.id === null) {
@@ -1170,7 +1196,8 @@ function renderNav(view, page) {
   });
   const rule = el("li", "my-1 hidden border-t border-neutral-200 dark:border-neutral-800 sm:block");
   rule.setAttribute("role", "separator");
-  document.getElementById("nav").replaceChildren(items[0], rule, ...items.slice(1));
+  // A divider with nothing under it would only be a stray line.
+  document.getElementById("nav").replaceChildren(...(items.length > 1 ? [items[0], rule, ...items.slice(1)] : items));
 }
 
 // The box sits outside every lane, so no render ever replaces it: its text,
@@ -1190,11 +1217,7 @@ for (const lane of document.querySelectorAll("details[data-lane]")) {
 
 function render(view) {
   lastView = view;
-  const page = pageOf(view, routeOf(location.hash));
-  showTags = page === null;
-  renderNav(view, page);
-  const title = titleOf(view.needsYou);
-  if (document.title !== title) document.title = title;
+  const page = pageNow();
   const now = Date.now();
   // Every row's DOM (and any menu/focus it held) is about to be replaced
   // below — a fresh set of elements for the same nodes. Note what was
@@ -1204,6 +1227,9 @@ function render(view) {
     ? document.activeElement.getAttribute("data-key")
     : null;
   const wasOpen = openMenuKey;
+  // After the focus is noted: a rebuilt nav link is found again by its key below.
+  renderNav(view, page);
+  setTitle(view.needsYou);
 
   forgetGone(view.rows);
   const search = searchOf(view.rows, searchBox.value);
@@ -1213,13 +1239,13 @@ function render(view) {
   // One seen-set for the whole page: a node is drawn once, in one lane.
   const seen = new Set();
   let matched = 0;
-  const onPage = rootsOn(view.rows, page);
   for (const lane of document.querySelectorAll("[data-lane]")) {
     // Whole branches, filed by their root's lane — the server's cascade — and
     // counted as branches, so a lane's number is how many things to look at.
     // Needs You draws only its own lane; a workflow page draws every lane of its own roots.
-    const offPage = page === null && lane.dataset.lane !== "needs-you";
-    const roots = offPage ? [] : onPage.filter((r) => r.lane === lane.dataset.lane && shows(r, search));
+    const drawn = laneRoots(view.rows, page, lane.dataset.lane, (r) => shows(r, search));
+    const offPage = drawn === null;
+    const roots = drawn === null ? [] : drawn;
     const items = treeRows(roots, 0, seen, now, [], search, false);
     lane.querySelector("ul").replaceChildren(
       ...(items.length ? items : [el("li", "px-4 py-6 text-sm italic text-neutral-400 dark:text-neutral-600", "None")]),
@@ -2034,13 +2060,13 @@ function markSelected() {
 // A row click: pushed onto the hash, so Back closes the panel and a reload
 // reopens it.
 function openPanel(id) {
-  location.hash = hashOf({ workflow: pageOf(lastView, routeOf(location.hash)), item: id });
+  location.hash = hashOf({ workflow: pageNow(), item: id });
 }
 
 // ✕ and Escape: the hash goes, as Back would take it, with no history entry
 // of its own for Forward to reopen.
 function closePanel() {
-  history.replaceState(null, "", location.pathname + location.search + hashOf({ workflow: lastView ? pageOf(lastView, routeOf(location.hash)) : null, item: null }));
+  history.replaceState(null, "", location.pathname + location.search + hashOf({ workflow: pageNow(), item: null }));
   showPanel(null);
 }
 
