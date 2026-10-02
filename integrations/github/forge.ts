@@ -359,8 +359,20 @@ function ciReadFailure(e: unknown, permission: string, repo: string): unknown {
   const rejected = tokenRejected(e);
   if (rejected) return rejected;
   return refusedRead(e)
-    ? new Error(`token needs "${permission}" on ${repo} (GitHub answered: ${e instanceof Error ? e.message : String(e)})`)
+    ? new Error(`token needs "${permission}" on ${repo} (GitHub answered: ${e instanceof Error ? e.message : String(e)})${grantedHow([permission])}`)
     : e;
+}
+
+/**
+ * GitHub offers no Checks permission on a fine-grained token — only a
+ * classic token's `repo` scope or a GitHub App can read check runs. A user
+ * told only "needs Checks: Read" went looking for a setting that does not
+ * exist, so the sentence says where it does.
+ */
+function grantedHow(permissions: readonly string[]): string {
+  return permissions.includes("Checks: Read")
+    ? ". GitHub grants \"Checks: Read\" only to a classic token with the repo scope or to a GitHub App, never to a fine-grained token"
+    : "";
 }
 
 /** Nothing can be read on a commit that is not named, and an empty name is a refused read, not a green one. */
@@ -767,7 +779,7 @@ export class GitHubForge extends BaseForge {
     if (missing.length > 0) {
       throw new Error(
         `token needs ${missing.map((m) => `"${m.permission}"`).join(" and ")} on ${gh.repo} ` +
-        `(GitHub answered: ${missing.map((m) => m.said).join("; ")})`,
+        `(GitHub answered: ${missing.map((m) => m.said).join("; ")})${grantedHow(missing.map((m) => m.permission))}`,
       );
     }
   }

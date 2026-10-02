@@ -333,7 +333,7 @@ What it does not do:
 
 ### Token permissions
 
-What `githubToken` needs, on a fine-grained token — a classic token needs the `repo` scope instead:
+Use a **classic** token with the `repo` scope (and `workflow` if a build may change `.github/workflows/`). A fine-grained token cannot work: every read of an open pull request asks for its check runs, and GitHub grants "Checks" only to classic tokens and GitHub Apps — a fine-grained token has no such setting, and `landrace start` refuses it saying so. What each part of the access is used for:
 
 | Permission | Level | Used for |
 |---|---|---|
@@ -341,7 +341,7 @@ What `githubToken` needs, on a fine-grained token — a classic token needs the 
 | Workflows | Read and write | only when a build changes anything under `.github/workflows/` — GitHub refuses a push that does without it |
 | Issues | Read and write | items, comments, labels |
 | Pull requests | Read and write | opening an item's pull request; review threads; merging it; closing a dropped child's pull request when a workflow that splits work re-runs its breakdown, and an item's when a workflow drops it (`pull.close`) |
-| Checks | Read-only | a pull request's CI state on its head commit, and its failed check runs — read on every open pull request |
+| Checks | Read-only | a pull request's CI state on its head commit, and its failed check runs — read on every open pull request (classic `repo` scope or a GitHub App only) |
 | Commit statuses | Read-only | the same, for services that report as a status and not a check run |
 | Actions | Read-only | the log of a failed GitHub Actions job, for the `{brief.project.ci}` briefing; without it the check is still named, with `(log unavailable)` |
 | Metadata | Read-only | granted automatically |
@@ -898,7 +898,7 @@ Once code review has run four times, a review that still asks for fixes, a threa
 **Before your first `lr:fast` item:**
 
 - [ ] **Branch protection on the default branch**, with required status checks — the checks your CI runs — so the forge holds every merge to them, and `none` (nothing registered yet) can never merge past them.
-- [ ] **A contents-scoped token**: a fine-grained token on this one repository with the [permissions](#token-permissions) fastlane needs and nothing wider — Contents and Pull requests read and write, Checks, Commit statuses and Actions read.
+- [ ] **The narrowest token that works**: a classic token with the `repo` scope (a fine-grained token cannot read check runs — see [Token permissions](#token-permissions)), belonging to an account with access to nothing it does not need.
 - [ ] **Code owners on `.landrace/**`** (and `src/**` here), with code-owner review required, so a change to the workflows and hooks needs a person on the forge too — beside the kit's own `refuse`, not instead of it.
 
 An item labelled both `lr:auto` and `lr:fast` is claimed by both workflows and halts, naming them. The merge needs the [token permissions](#token-permissions) for it: Contents and Pull requests, read and write, to merge; Checks and Commit statuses, read, to see the checks; and Actions, read, for a failed job's log in `{brief.project.ci}`.

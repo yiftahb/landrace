@@ -377,3 +377,24 @@ describe("pull.merge through compose", () => {
     expect(next?.state.headSha).toBe("def5678");
   });
 });
+
+// A user told only "needs Checks: Read" looked for a fine-grained setting that does not exist.
+describe("a token refused Checks", () => {
+  const where = /only to a classic token with the repo scope or to a GitHub App, never to a fine-grained token/;
+
+  it("says where Checks: Read is granted, at start and on a read", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.breakOn(({ path }) => path.endsWith("/check-runs"), 403, { message: "Resource not accessible by personal access token" });
+    await expect(forgeOf(gh).check(gh.ctx)).rejects.toThrow(where);
+    const pull = gh.openPull({ head: "landrace/1", number: 8, headSha: "abc1234", checks: "FAILURE" });
+    await expect(forgeOf(gh).failedChecks(recordOf(pull), gh.ctx)).rejects.toThrow(where);
+  });
+
+  it("says nothing of it when only Commit statuses is refused", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.breakOn(({ path }) => path.endsWith("/status"), 403);
+    const said = await forgeOf(gh).check(gh.ctx).then(() => "", (e: unknown) => (e as Error).message);
+    expect(said).toContain('token needs "Commit statuses: Read"');
+    expect(said).not.toMatch(where);
+  });
+});
