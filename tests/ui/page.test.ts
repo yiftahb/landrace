@@ -1493,7 +1493,11 @@ describe("the item panel's markup", () => {
     expect(menu).toContain('data-key="panel:menu"');
     expect(menu).toContain('role="menu"');
     expect(menu).toMatch(/\shidden[\s>]/);
-    expect(menu).toMatch(/\babsolute\b.*\bright-0\b/);
+    // Its trigger is at the panel's right edge: right-aligned at every width.
+    const tokens = menu.split(/\s+/);
+    expect(tokens).toContain("right-0");
+    expect(tokens).not.toContain("left-0");
+    expect(tokens).not.toContain("sm:left-auto");
     expect(header).toMatch(/<button id="panel-pairing-item" type="button" role="menuitem"[^>]*>Pairing…<\/button>/);
     expect(header.indexOf('id="panel-more"')).toBeLessThan(header.indexOf('id="panel-wide"'));
   });
@@ -2462,6 +2466,15 @@ describe("the render rules of the sidebar pages", () => {
     expect(run<{ id: string }[]>(c, `laneRoots(ROWS, null, "needs-you", (r) => r.id === "3")`).map((r) => r.id)).toEqual(["3"]);
   });
 
+  it("hides a lane the page does not draw, and one a search emptied", () => {
+    const c = load(["laneHidden"]);
+    const h = (drawn: unknown[] | null, search: unknown): boolean => { c.D = drawn; c.S = search; return run(c, "laneHidden(D, S)"); };
+    expect(h(null, null)).toBe(true);
+    expect(h([], null)).toBe(false);
+    expect(h([], {})).toBe(true);
+    expect(h([{}], {})).toBe(false);
+  });
+
   it("draws the workflow tag on Needs You only, read from the hash and the last view", () => {
     const c = load(["routeOf", "pageOf", "pageNow", "tagsOn"]);
     c.lastView = { workflows: [{ id: "a", name: "a", needsYou: 0 }] };
@@ -2589,7 +2602,9 @@ describe("a narrow screen", () => {
   });
 
   it("opens a row's menu from the left edge below sm, where its button sits, and from the right above", () => {
-    expect(fnSource("buildRowMenu")).toContain("absolute left-0 z-10 mt-1 w-44 sm:left-auto sm:right-0");
+    const tokens = fnSource("buildRowMenu").match(/el\("div", "(absolute [^"]*)"/)?.[1]?.split(" ") ?? [];
+    expect(tokens).toEqual(expect.arrayContaining(["left-0", "sm:left-auto", "sm:right-0"]));
+    expect(tokens).not.toContain("right-0");
   });
 
   it("gives the header the sidebar's width, so the logo lines up", () => {

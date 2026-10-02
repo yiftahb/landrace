@@ -55,7 +55,7 @@ const PANEL = `
 <h2 id="panel-title" class="min-w-0 flex-1 break-words text-sm font-semibold"></h2>
 <div class="relative shrink-0">
 <button id="panel-more" type="button" aria-label="Item actions" aria-haspopup="menu" aria-expanded="false" title="Item actions" data-key="panel:trigger" class="${ICON_BUTTON}">⋯</button>
-<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute left-0 z-10 mt-1 w-44 sm:left-auto sm:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
 <button id="panel-pairing-item" type="button" role="menuitem" class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800">Pairing…</button>
 </div>
 </div>
@@ -1153,6 +1153,12 @@ function laneRoots(rows, page, lane, keep) {
   return rootsOn(rows, page).filter((r) => r.lane === lane && keep(r));
 }
 
+// A lane this page does not draw is hidden; so is one a search left empty,
+// since "None" beside a query is noise.
+function laneHidden(drawn, search) {
+  return drawn === null || (search !== null && drawn.length === 0);
+}
+
 function titleOf(n) {
   return n > 0 ? "(" + n + ") Landrace" : "Landrace";
 }
@@ -1244,7 +1250,6 @@ function render(view) {
     // counted as branches, so a lane's number is how many things to look at.
     // Needs You draws only its own lane; a workflow page draws every lane of its own roots.
     const drawn = laneRoots(view.rows, page, lane.dataset.lane, (r) => shows(r, search));
-    const offPage = drawn === null;
     const roots = drawn === null ? [] : drawn;
     const items = treeRows(roots, 0, seen, now, [], search, false);
     lane.querySelector("ul").replaceChildren(
@@ -1253,7 +1258,7 @@ function render(view) {
     lane.querySelector(".lane-count").textContent = String(roots.length);
     // Without a query every lane stays, saying "None" when empty — a lane that
     // vanished would read as a fault. With one, a lane nothing matched is noise.
-    lane.hidden = offPage || (search !== null && roots.length === 0);
+    lane.hidden = laneHidden(drawn, search);
     // A match inside a closed Not admitted / Done lane would show only as a count.
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
