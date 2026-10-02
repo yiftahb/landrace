@@ -468,9 +468,10 @@ export abstract class BaseForge {
   /**
    * Merge it with a merge commit, only while its head is still `headSha`:
    * `merged` when it is merged, now or already, `moved` when the forge
-   * refused because the head is another commit. Any other refusal throws.
+   * refused because the head is another commit. Any other refusal throws a
+   * sentence naming the pull request and `ctx.item`, the item it merges for.
    */
-  abstract merge(pull: number, headSha: string, ctx: RuntimeContext): Promise<MergeAnswer>;
+  abstract merge(pull: number, headSha: string, ctx: HookContext): Promise<MergeAnswer>;
   /**
    * Post one review round: `files` as threads on their files, `lines` as
    * line threads inside the review, then the review itself with `body` —

@@ -418,8 +418,9 @@ export class GitLab extends BaseForge {
    * after the merge and before the next read makes ordinary — so the merge
    * request is asked.
    */
-  async merge(pull: number, headSha: string, ctx: RuntimeContext): Promise<MergeAnswer> {
+  async merge(pull: number, headSha: string, ctx: HookContext): Promise<MergeAnswer> {
     const gl = this.gl(ctx);
+    const which = `!${pull} for #${ctx.item}`;
     try {
       await gl.put(`/merge_requests/${pull}/merge`, { sha: headSha });
       return "merged";
@@ -427,9 +428,11 @@ export class GitLab extends BaseForge {
       const status = statusOf(e);
       if (status === 409) return "moved";
       if (status === 401 || status === 403) throw this.tokenRefusal(e, false);
-      if (status !== 405 && status !== 406 && status !== 422) throw e;
-      if ((await gl.get<{ state?: unknown }>(`/merge_requests/${pull}`)).state === "merged") return "merged";
-      throw new Error(`!${pull} cannot be merged: ${refusalMessage(e)}`);
+      if (status === 405 || status === 406 || status === 422) {
+        if ((await gl.get<{ state?: unknown }>(`/merge_requests/${pull}`)).state === "merged") return "merged";
+        throw new Error(`${which} cannot be merged: ${refusalMessage(e)}`);
+      }
+      throw new Error(`${which} could not be merged: ${typeof status === "number" ? `GitLab answered ${status}: ` : ""}${refusalMessage(e)}`);
     }
   }
 

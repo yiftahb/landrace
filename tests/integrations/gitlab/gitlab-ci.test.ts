@@ -15,6 +15,9 @@ const forgeOver = (gl: FakeGitLab): GitLab => new GitLab({ project: PROJECT, fet
 const recordOf = (mr: FakeMr): PullRecord =>
   ({ number: mr.iid, title: "t", link: "", merged: mr.state === "merged", closed: mr.state === "closed", headSha: mr.sha, branch: mr.source_branch, createdAt: undefined, items: [] });
 
+/** The context a merge is asked in: for #1, the item whose refusal it names. */
+const forItem = (gl: FakeGitLab): HookContext => ({ ...gl.ctx(), item: "1", snapshot: {} });
+
 const pipelineRequests = (gl: FakeGitLab) => gl.requests.filter((r) => r.path.includes("/pipelines") || r.path.includes("/jobs/"));
 
 describe("a merge request's checks", () => {
@@ -172,7 +175,7 @@ describe("merging a merge request at its head", () => {
   it("merges guarded by the head it was asked at", async () => {
     const gl = createFakeGitLab();
     const mr = gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc1234" });
-    expect(await forgeOver(gl).merge(8, "abc1234", gl.ctx())).toBe("merged");
+    expect(await forgeOver(gl).merge(8, "abc1234", forItem(gl))).toBe("merged");
     expect(gl.requests.find((r) => r.method === "PUT" && r.path.endsWith("/merge_requests/8/merge"))?.body).toEqual({ sha: "abc1234" });
     expect(mr.state).toBe("merged");
   });
@@ -180,14 +183,14 @@ describe("merging a merge request at its head", () => {
   it("answers moved, and merges nothing, when the head is not the one asked for", async () => {
     const gl = createFakeGitLab();
     const mr = gl.open({ source_branch: "landrace/1", iid: 8, sha: "new" });
-    expect(await forgeOver(gl).merge(8, "old", gl.ctx())).toBe("moved");
+    expect(await forgeOver(gl).merge(8, "old", forItem(gl))).toBe("moved");
     expect(mr.state).toBe("opened");
   });
 
   it("answers merged for one that already is, and asks for it before saying so", async () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", state: "merged" });
-    expect(await forgeOver(gl).merge(8, "abc", gl.ctx())).toBe("merged");
+    expect(await forgeOver(gl).merge(8, "abc", forItem(gl))).toBe("merged");
     expect(gl.requests.map((r) => `${r.method} ${r.path.split("/").slice(3).join("/")}`)).toEqual(
       expect.arrayContaining(["PUT merge_requests/8/merge", "GET merge_requests/8"]),
     );
@@ -197,20 +200,27 @@ describe("merging a merge request at its head", () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", mergeable: false });
     gl.breakNext(({ method, path }) => method === "PUT" && path.endsWith("/merge"), status);
-    await expect(forgeOver(gl).merge(8, "abc", gl.ctx())).rejects.toThrow(new RegExp(`^!8 cannot be merged: ${status} the fake broke here`));
+    await expect(forgeOver(gl).merge(8, "abc", forItem(gl))).rejects.toThrow(new RegExp(`^!8 for #1 cannot be merged: ${status} the fake broke here`));
   });
 
   it("refuses an unmergeable one in GitLab's own message", async () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", mergeable: false });
-    await expect(forgeOver(gl).merge(8, "abc", gl.ctx())).rejects.toThrow("!8 cannot be merged: 405 Method Not Allowed");
+    await expect(forgeOver(gl).merge(8, "abc", forItem(gl))).rejects.toThrow("!8 for #1 cannot be merged: 405 Method Not Allowed");
+  });
+
+  it("wraps any other refusal in a sentence naming the merge request and the item", async () => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc" });
+    gl.breakNext(({ method }) => method === "PUT", 500);
+    await expect(forgeOver(gl).merge(8, "abc", forItem(gl))).rejects.toThrow(/^!8 for #1 could not be merged: GitLab answered 500: 500 the fake broke here$/);
   });
 
   it.each([401, 403])("names the token's scope and role, not the merge request, on a %i", async (status) => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc" });
     gl.breakNext(({ method }) => method === "PUT", status);
-    const rejected = forgeOver(gl).merge(8, "abc", gl.ctx());
+    const rejected = forgeOver(gl).merge(8, "abc", forItem(gl));
     await expect(rejected).rejects.toThrow(status === 401 ? /rejected by GitLab \(401\)/ : /token needs the "api" scope and Developer access on group\/app/);
   });
 });

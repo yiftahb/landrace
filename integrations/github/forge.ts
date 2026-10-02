@@ -682,17 +682,22 @@ export class GitHubForge extends BaseForge {
    * is "not mergeable" — or already merged, which a crash after the merge
    * and before the next read makes ordinary — so the pull request is asked.
    */
-  async merge(pull: number, headSha: string, ctx: RuntimeContext): Promise<MergeAnswer> {
+  async merge(pull: number, headSha: string, ctx: HookContext): Promise<MergeAnswer> {
     const gh = this.gh(ctx);
+    const which = `pr-${pull} for #${ctx.item}`;
     try {
       await gh.mergePull(pull, headSha);
       return "merged";
     } catch (e) {
       const status = (e as { status?: unknown } | null)?.status;
       if (status === 409) return "moved";
-      if (status !== 405) throw e;
-      if ((await gh.pull(pull)).merged === true) return "merged";
-      throw new Error(`pr-${pull} cannot be merged: ${refusalMessage(e)}`);
+      if (status === 405) {
+        if ((await gh.pull(pull)).merged === true) return "merged";
+        throw new Error(`${which} cannot be merged: ${refusalMessage(e)}`);
+      }
+      // A refused permission is already a sentence naming it; anything else is GitHub's own words, said whose merge it was.
+      const said = tokenRejected(e)?.message ?? (typeof status === "number" ? `GitHub answered ${status}: ${refusalMessage(e)}` : refusalMessage(e));
+      throw new Error(`${which} could not be merged: ${said}`);
     }
   }
 

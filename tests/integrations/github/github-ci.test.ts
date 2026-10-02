@@ -13,6 +13,9 @@ const forgeOf = (gh: FakeTracker): GitHubForge =>
 const recordOf = (pull: FakePull): PullRecord =>
   ({ number: pull.number, title: "t", link: "", merged: pull.merged, closed: false, headSha: pull.headSha, branch: pull.head, createdAt: undefined, items: [] });
 
+/** The context a merge is asked in: for #1, the item whose refusal it names. */
+const forItem = (gh: FakeTracker): HookContext => ({ ...gh.ctx, item: "1", snapshot: {} });
+
 const checksQueries = (gh: FakeTracker) => gh.graphql.filter((q) => q.query.includes("query LandraceChecks("));
 const run = (id: number, name: string, conclusion: string | null, extra: Partial<NonNullable<FakePull["checkRuns"]>[number]> = {}) =>
   ({ id, name, conclusion, ...extra });
@@ -177,7 +180,7 @@ describe("merging a pull request at its head", () => {
       return seen(url, init);
     }) as typeof fetch;
     const forge = new GitHubForge({ client: createClient({ repo: "acme/widgets", token: "t", fetchImpl: spy }) });
-    expect(await forge.merge(8, "abc1234", gh.ctx)).toBe("merged");
+    expect(await forge.merge(8, "abc1234", forItem(gh))).toBe("merged");
     expect(put).toHaveBeenCalledWith(expect.stringContaining("/pulls/8/merge"), { sha: "abc1234", merge_method: "merge" });
     expect(pull.merged).toBe(true);
   });
@@ -185,28 +188,35 @@ describe("merging a pull request at its head", () => {
   it("answers moved, and merges nothing, when the head is not the one asked for", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     const pull = gh.openPull({ head: "landrace/1", number: 8, headSha: "new" });
-    expect(await forgeOf(gh).merge(8, "old", gh.ctx)).toBe("moved");
+    expect(await forgeOf(gh).merge(8, "old", forItem(gh))).toBe("moved");
     expect(pull.merged).toBe(false);
   });
 
   it("answers merged for a pull request that already is, and does not throw", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", number: 8, headSha: "abc", merged: true });
-    expect(await forgeOf(gh).merge(8, "abc", gh.ctx)).toBe("merged");
+    expect(await forgeOf(gh).merge(8, "abc", forItem(gh))).toBe("merged");
     expect(gh.requests.map((r) => `${r.method} ${r.path}`)).toEqual(expect.arrayContaining(["PUT /pulls/8/merge", "GET /pulls/8"]));
   });
 
   it("refuses one GitHub will not merge, naming the pull request and GitHub's words", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", number: 8, headSha: "abc", mergeable: false });
-    await expect(forgeOf(gh).merge(8, "abc", gh.ctx)).rejects.toThrow("pr-8 cannot be merged: Pull Request is not mergeable");
+    await expect(forgeOf(gh).merge(8, "abc", forItem(gh))).rejects.toThrow("pr-8 for #1 cannot be merged: Pull Request is not mergeable");
+  });
+
+  it("wraps any other refusal in a sentence naming the pull request and the item", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 8, headSha: "abc" });
+    gh.breakOn(({ method }) => method === "PUT", 422, { message: "Validation Failed" });
+    await expect(forgeOf(gh).merge(8, "abc", forItem(gh))).rejects.toThrow(/^pr-8 for #1 could not be merged: GitHub answered 422: Validation Failed$/);
   });
 
   it("names the permissions a refused merge lacks", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", number: 8, headSha: "abc" });
     gh.breakOn(({ method }) => method === "PUT", 403);
-    await expect(forgeOf(gh).merge(8, "abc", gh.ctx)).rejects.toThrow('token needs "Pull requests: Read and write" and "Contents: Read and write" on acme/widgets');
+    await expect(forgeOf(gh).merge(8, "abc", forItem(gh))).rejects.toThrow('token needs "Pull requests: Read and write" and "Contents: Read and write" on acme/widgets');
   });
 });
 
