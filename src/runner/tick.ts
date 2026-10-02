@@ -1,4 +1,4 @@
-import { claimItems, eligibilityOfNode } from "#core/index.js";
+import { claimItems, eligibilityOfNode, locateNode, placedByState } from "#core/index.js";
 import type {
   Claims,
   ConvergeResult,
@@ -8,6 +8,8 @@ import type {
   Logger,
   Node,
   RuntimeContext,
+  SeenAt,
+  Snapshot,
   Source,
   TickRow,
   WorkflowRuntime,
@@ -177,6 +179,73 @@ function stopStopped(runtime: WorkspaceRuntime, listing: WorkspaceListing): Map<
   return moved;
 }
 
+/** Where `node` is under `workflow`, when it is at one stage. */
+function seenAt(workflow: WorkflowRuntime, node: Node): SeenAt | null {
+  const where = locateNode(workflow.deps.workflow, node);
+  return where.kind === "at" ? { workflow: workflow.id, stage: where.stage.id } : null;
+}
+
+const sameStage = (a: SeenAt | undefined, b: SeenAt): boolean => a?.workflow === b.workflow && a.stage === b.stage;
+
+/**
+ * Tell a person once that an item has come to wait on them by its own state,
+ * and note where every item this tick works is.
+ *
+ * Converge tells of an item that comes to rest at a person's turn after a
+ * transition; an item placed by its own state makes none — it is at
+ * `reviewing` because its labels say so, one tick and not the one before. So
+ * an item at a stage that waits on a person, placed there by its own state,
+ * that the last tick did not see there is told of here, through its
+ * workflow's notify and the board's rule for who is waiting. Only such a
+ * stage: one a label alone places an item at is reached by a transition, and
+ * converge has told of it already.
+ *
+ * `runtime.seen` is the last tick's listing, in this process only. A restart
+ * starts it empty, so every item already waiting is told of once more on the
+ * first tick — the price of storing nothing. What this tick cannot see is
+ * carried rather than forgotten: the items of a source that could not list,
+ * and every item while a failed source leaves claims unjudged, so a tracker
+ * coming back does not tell of everything again.
+ */
+function tellArrivals(
+  runtime: WorkspaceRuntime, listing: WorkspaceListing, work: ReadonlyArray<{ node: Node; workflow: WorkflowRuntime }>, unjudged: boolean,
+): void {
+  const before = new Map(runtime.seen);
+  runtime.seen.clear();
+  for (const [item, at] of before) {
+    const index = listing.sourceOf.get(at.workflow);
+    if (unjudged || (index !== undefined && listing.failed.has(index))) runtime.seen.set(item, at);
+  }
+  for (const { node, workflow } of work) {
+    const at = seenAt(workflow, node);
+    if (at === null) continue;
+    runtime.seen.set(node.id, at);
+    if (sameStage(before.get(node.id), at)) continue;
+    const stage = workflow.deps.workflow.stages.find((s) => s.id === at.stage);
+    if (stage?.waits !== "person" || !placedByState(stage)) continue;
+    try {
+      workflow.deps.notify?.({ node });
+    } catch (e) {
+      runtime.log("notify.failed", { item: node.id, reason: messageOf(e) });
+    }
+  }
+}
+
+/**
+ * The workflow's notify, noting where converge told a person the item came to
+ * rest: the next tick's listing finds it there and does not tell again.
+ */
+function noting(runtime: WorkspaceRuntime, workflow: WorkflowRuntime, item: string): ((snapshot: Snapshot) => void) | undefined {
+  const notify = workflow.deps.notify;
+  if (!notify) return undefined;
+  return (snapshot) => {
+    const at = seenAt(workflow, snapshot.node as Node);
+    if (at === null) runtime.seen.delete(item);
+    else runtime.seen.set(item, at);
+    notify(snapshot);
+  };
+}
+
 /** A lock held elsewhere is a skip, not a failure: the item will still be there next tick. */
 const isLocked = (e: unknown): boolean =>
   typeof e === "object" && e !== null && (e as { code?: unknown }).code === "ELOCKED";
@@ -286,6 +355,10 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   // the id tie-break keeps it total.
   work.sort((a, b) => compareWork(a.node, b.node));
 
+  // Before the pool, and in one synchronous step after the listing: a tick
+  // overlapping this one reads what this one noted, never the same old map.
+  tellArrivals(runtime, listing, work, unjudged);
+
   await pool(work, runtime.concurrency, async ({ node, workflow: w }) => {
     const item = node.id;
     // Moved here from another workflow this tick: its stopped run lets go of
@@ -310,11 +383,13 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
           runtime.running.set(item, { controller: own, workflow: w.id, done });
           // However the converge ends: the board waits on this before a list
           // may vouch for the labels a step it ran was about to change.
+          const notify = noting(runtime, w, item);
           try {
             return await converge(item, {
               ...w.deps,
               source: w.source,
               ctx: { ...w.deps.ctx, item, signal: AbortSignal.any([w.deps.ctx.signal, own.signal]) } satisfies Omit<HookContext, "snapshot">,
+              ...(notify ? { notify } : {}),
             });
           } finally {
             if (runtime.running.get(item)?.controller === own) runtime.running.delete(item);

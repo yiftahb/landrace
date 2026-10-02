@@ -122,7 +122,7 @@ function world(
         steps: minimal.steps, source, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor, ctx, log, scrub: (t) => t,
       },
     })),
-    preflights: [], intervalMs: 60_000, concurrency, stop, running: new Map(), log, ctx,
+    preflights: [], intervalMs: 60_000, concurrency, stop, running: new Map(), seen: new Map(), log, ctx,
   };
   return {
     runtime, events, listings,

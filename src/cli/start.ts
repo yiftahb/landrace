@@ -600,6 +600,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     concurrency: loaded.config.tick.concurrency,
     stop,
     running: new Map(),
+    seen: new Map(),
     log,
     ctx,
     ...(activity ? { activity } : {}),

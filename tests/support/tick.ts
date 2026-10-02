@@ -41,6 +41,7 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
       concurrency: opts.concurrency ?? 3,
       stop: new AbortController(),
       running: opts.running ?? new Map(),
+      seen: new Map(),
       log: Object.assign((...args: Parameters<typeof deps.log>) => deps.log(...args), { redact: () => {}, scrub: (text: string) => text }),
       ctx: deps.ctx,
     },

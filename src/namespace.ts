@@ -1484,6 +1484,12 @@ export interface RunningItem {
   done: Promise<void>;
 }
 
+/** Where the workspace tick last knew an item to be: under which workflow, at which stage. */
+export interface SeenAt {
+  workflow: string;
+  stage: string;
+}
+
 /** Every distinct source, listed once per tick, and who owns what it listed. */
 export interface WorkspaceListing {
   /** One per distinct source, by identity; a source whose `list` failed has an empty graph here and an entry in `failed`. */
@@ -1906,6 +1912,15 @@ export interface WorkspaceRuntime {
   stop: AbortController;
   /** One map for the life of the loop, so every tick sees every run, whichever workflow it is under. */
   running: Map<string, RunningItem>;
+  /**
+   * Where each item its workflow owns was when the last tick listed it, or
+   * where converge last told a person it came to rest: what tells that an
+   * item placed by its own state has just come to wait on someone, since it
+   * makes no transition to say so. In this process only, like `running` —
+   * nothing about it is stored, so a restart tells once more of every item
+   * already waiting (see `tellArrivals`).
+   */
+  seen: Map<string, SeenAt>;
   /** The one logger every workflow logs through; its `scrub` is the one redaction set. */
   log: RedactingLogger;
   ctx: RuntimeContext;

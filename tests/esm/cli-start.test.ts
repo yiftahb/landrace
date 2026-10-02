@@ -105,6 +105,16 @@ const notifierSource = (name: string, id: string): string => `
 export const ${name} = brand("notifier", { id: ${JSON.stringify(id)}, send: async (): Promise<void> => {} });
 `;
 
+/** A notifier `chat` that writes down, in the record file, each event it is asked to send. */
+const RECORDING_NOTIFIER = `
+export const chat = brand("notifier", {
+  id: "chat",
+  send: async (event: { item: string; workflow: string; stage: string | null; why: string }, ctx: Ctx): Promise<void> => {
+    await appendFile(ctx.config.tracker.record, JSON.stringify({ notified: event.item, workflow: event.workflow, stage: event.stage, why: event.why }) + "\\n");
+  },
+});
+`;
+
 /** A hook-registered executor, branded the way `landrace/hooks` brands one. */
 const EXECUTOR = `export const executor = brand("executor", {
   id: "fake",
@@ -170,6 +180,8 @@ async function fixture(
     listFails?: string;
     /** A file whose presence makes the source's `list` fail, for a test to switch the tracker off mid-run. */
     listFailsWhen?: string;
+    /** The whole of `workflows/main/workflow.yaml`, in place of the generated one. */
+    workflow?: string;
   } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-cli-"));
@@ -192,7 +204,7 @@ export const { claude } = await import(pathToFileURL(${JSON.stringify(join(proce
 `,
   );
   await mkdir(workflowIn(dir), { recursive: true });
-  await writeFile(join(workflowIn(dir), "workflow.yaml"), workflowReading(opts.reads, opts.budget));
+  await writeFile(join(workflowIn(dir), "workflow.yaml"), opts.workflow ?? workflowReading(opts.reads, opts.budget));
   await writeFile(
     join(dir, "landrace.yaml"),
     `version: 1
@@ -495,6 +507,30 @@ ${EXECUTOR}`);
     });
     expect(typeof (await buildMain(dir, {})).deps.notify).toBe("function");
     expect((await buildMain(dir, { readOnly: true })).deps.notify).toBeUndefined();
+  });
+
+  /*
+   * A workflow placed by the item's own labels, as `start` runs it: it
+   * validates though no stage is entered, nothing is applied however many
+   * ticks it runs, and the person it waits on is told once.
+   */
+  it("runs a workflow placed by the item's own state, and tells you once that an item waits on you", async () => {
+    const review = (await readFile("tests/fixtures/review/workflow.yaml", "utf8"))
+      .replace("eligible:", "hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]\neligible:");
+    const { dir, record } = await fixture({
+      workflow: review, items: [{ id: ITEM, labels: ["review-requested"] }],
+      hookExtra: RECORDING_NOTIFIER, configExtra: "notify: { on: [needs-you], via: [chat] }\n",
+    });
+    const rt = await buildWorkspaceRuntime(dir, {});
+
+    for (let tick = 0; tick < 2; tick++) {
+      expect(await tickWorkspace({ runtime: rt })).toEqual([
+        { item: ITEM, workflow: "main", outcome: "wait after 1 pass(es): no trigger matched" },
+      ]);
+    }
+
+    await until(async () => (await applied(record)).length > 0, "the notification");
+    expect(await applied(record)).toEqual([{ notified: ITEM, workflow: "main", stage: "reviewing", why: "waiting on you" }]);
   });
 
   /**
