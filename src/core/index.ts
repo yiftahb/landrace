@@ -4,7 +4,7 @@ export { compile, assertAllowedOperators, pathsIn, missingPaths, ALLOWED_OPERATO
 export { deriveRun, locatedRun } from "#core/derive.js";
 export { canonicalize, hashSnapshot } from "#core/normalize.js";
 export { checkEligible, eligibilityOfNode, pathsNoNodeCarries } from "#core/eligible.js";
-export { cannotPlace, locate, locateNode, placedByState } from "#core/locate.js";
+export { cannotPlace, locate, locateNode, placedByState, UNPLACED } from "#core/locate.js";
 export { assess } from "#core/assess.js";
 export { decide } from "#core/decide.js";
 export { expandEffectFields, fillTemplate, planEffects, stageBranch } from "#core/plan.js";

@@ -1,6 +1,6 @@
 import { labelsOf, stageFromLabels } from "#conventions.js";
 import { compile, missingPaths, pathsIn } from "#core/predicate.js";
-import type { Location, Node, Run, Snapshot, Stage, Workflow } from "#namespace.js";
+import type { Location, Node, NodeLocation, Run, Snapshot, Stage, Workflow } from "#namespace.js";
 
 /**
  * Default identity: you are here if the tracker says so.
@@ -43,6 +43,14 @@ export function placedByState(stage: Stage): boolean {
  */
 export const cannotPlace = (ids: readonly string[]): string => `cannot place the item: ${ids.join(", ")} all match`;
 
+/**
+ * Why an item no stage places cannot be worked by a workflow with no entry
+ * stage to start it at — decide's halt and a status row, in one wording, as
+ * `cannotPlace` is for the opposite case.
+ */
+export const UNPLACED =
+  "no stage of this workflow places the item: none of its identities match, and there is no entry stage to start it at";
+
 export function locate(w: Workflow, s: Snapshot): Location {
   const matches = w.stages.filter((stage) => compile(identityOf(stage))(s));
   if (matches.length > 1) return { kind: "ambiguous", ids: matches.map((m) => m.id) };
@@ -70,8 +78,11 @@ export function locate(w: Workflow, s: Snapshot): Location {
  * last moved the item. A label's stage whose own identity was judged and said
  * no is not fallen back to — that would be believing a label the stage itself
  * refuses.
+ *
+ * No stage is two answers: `none` when every identity was judged and said
+ * no, `abstained` when one could not be judged. Only the first is known.
  */
-export function locateNode(w: Workflow, node: Node): Location {
+export function locateNode(w: Workflow, node: Node): NodeLocation {
   const { stage, ambiguous, found } = stageFromLabels(labelsOf(node));
   // Two positions, which the engine halts on before it locates anything.
   if (ambiguous) return { kind: "ambiguous", ids: found };
@@ -91,5 +102,6 @@ export function locateNode(w: Workflow, node: Node): Location {
   const [only] = matched;
   if (only) return { kind: "at", stage: only };
   const labelled = abstained.find((candidate) => candidate.id === stage);
-  return labelled ? { kind: "at", stage: labelled } : { kind: "none" };
+  if (labelled) return { kind: "at", stage: labelled };
+  return abstained.length > 0 ? { kind: "abstained" } : { kind: "none" };
 }

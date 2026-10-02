@@ -322,6 +322,14 @@ export type Location =
   | { kind: "none" }
   | { kind: "ambiguous"; ids: string[] };
 
+/**
+ * Where a listed node is (`locateNode`). `none` there means every identity
+ * was judged and none matched — a fact a status row halts on, as decide
+ * does; `abstained` means none matched because one could not be judged from
+ * the node alone, which is not knowing, and is never halted on.
+ */
+export type NodeLocation = Location | { kind: "abstained" };
+
 /* ----------------------------------------------------------- conventions -- */
 
 export interface Marker {

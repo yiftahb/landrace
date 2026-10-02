@@ -1,5 +1,5 @@
 import { compareIds, isOpenItem, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
-import { cannotPlace, locateNode } from "#core/index.js";
+import { cannotPlace, locateNode, UNPLACED } from "#core/index.js";
 import type { Lane, ListedWorkflow, Node, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
 import { claimedBy, eligibilityOf, reportedBy, turnedAway } from "#runner/tick.js";
 
@@ -127,6 +127,12 @@ export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
     const where = locateNode(workflow, node);
     // In decide's own words, since it halts on the same fact.
     if (where.kind === "ambiguous") return { ...row, stage: null, note: `halted: ${cannotPlace(where.ids)}` };
+    // Every identity judged and none placing it, no label, and no entry stage
+    // to start it at: decide halts it on every tick. Read as queued, it sat
+    // under Waiting at no stage for good, and only the log said why.
+    if (where.kind === "none" && found.length === 0 && !workflow.stages.some((s) => s.entry)) {
+      return { ...row, stage: null, note: `halted: ${UNPLACED}` };
+    }
     const stage = where.kind === "at" ? where.stage : null;
 
     // Screened before blocked: a screened item wears both, and the more

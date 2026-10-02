@@ -1,3 +1,4 @@
+import { UNPLACED } from "#core/index.js";
 import { defineNotifier } from "#hooks/contracts.js";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { createNotify, notifyProblems } from "#runner/notify.js";
@@ -62,6 +63,26 @@ describe("createNotify", () => {
     harness([notifier]).fire({ node: node(["lr:stage:screened", "lr:blocked", "lr:screened"]) });
     await settle();
     expect(sent.map((e) => e.why)).toEqual(["blocked by a security check"]);
+  });
+
+  // The board's own rule, so a halt it files under Needs you is one a
+  // notification would tell: an item no identity places, in a workflow with
+  // no entry stage to start it at.
+  it("tells of an item no stage places where there is no entry stage, in decide's words", async () => {
+    const { sent, notifier } = recorder("chat");
+    const unplaced: Workflow = {
+      ...workflow, stages: [
+        { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["needs-review"] } } },
+        { id: "approved", terminal: true, identity: { "node.state.labels": { $in: ["approved"] } } },
+      ],
+    };
+    const fire = createNotify({
+      id: "fast", workflow: unplaced, notify: config({ on: ["needs-you"], via: ["chat"] }).notify,
+      notifiers: new Map([["chat", notifier]]), ctx, log: () => {}, board: () => null,
+    });
+    fire({ node: node([]) });
+    await settle();
+    expect(sent.map((e) => [e.stage, e.why])).toEqual([[null, `halted: ${UNPLACED}`]]);
   });
 
   it("says nothing about an item an agent is working on", async () => {

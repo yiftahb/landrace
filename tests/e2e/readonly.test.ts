@@ -1,6 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { UNPLACED } from "#core/index.js";
 import { defineNotifier } from "#hooks/contracts.js";
 import { createTools } from "#mcp/tools.js";
 import type {
@@ -194,6 +195,26 @@ describe("a workflow placed by state alone, over a read-only tracker", () => {
         "and there is no entry stage to start it at",
     });
     expect(state.writes()).toEqual([]);
+  });
+
+  // Each surface that says who is waiting on you says it: the halt is a
+  // person's to fix, and read as queued it sat under Waiting for good.
+  it("files that halted item under Needs you, on every surface that reads where an item is", async () => {
+    const gappy: Workflow = { ...review.workflow, stages: [
+      { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["mine"] } } },
+      { id: "approved", terminal: true, identity: { "node.state.labels": { $in: ["approved"] } } },
+    ] };
+    const state = requested();
+    const w = workspace(state, { workflow: gappy, steps: new Map() }, "review");
+    await w.tick();
+
+    const halted = `halted: ${UNPLACED}`;
+    expect(await w.row("1")).toEqual({ stage: null, note: halted, workflow: "review", lane: "needs-you" });
+    expect(await w.board("1")).toEqual({ stage: null, badge: "needs-you" });
+    expect(await w.tools.waiting()).toEqual([
+      { item: "1", title: "Fix the parser", url: "memory://items/1", workflow: "review" },
+    ]);
+    expect(await w.tools.status("1")).toMatchObject({ workflow: "review", stage: null, waitingOnYou: true });
   });
 
   /*

@@ -104,7 +104,19 @@ describe("locateNode", () => {
       { id: "spec", entry: true, identity: { "node.state.labels": { $in: ["drafting"] } } },
       { id: "review", identity: { "run.counters.review": { $lt: 3 } } },
     ];
-    expect(locateNode(wf(stages), node(["lr:stage:spec"]))).toEqual({ kind: "none" });
+    expect(locateNode(wf(stages), node(["lr:stage:spec"]))).toEqual({ kind: "abstained" });
+  });
+
+  /*
+   * No stage, judged, is a fact a row can halt on as decide does; no stage
+   * because an identity could not be judged here is not knowing. Two answers,
+   * or a row would halt an item a relation or an output in fact places.
+   */
+  it("says none only when every identity was judged and none matched", () => {
+    const judged: Stage[] = [{ id: "reviewing", identity: mine }, { id: "approved", identity: { "node.state.labels": { $in: ["approved"] } } }];
+    expect(locateNode(wf(judged), node(["other"]))).toEqual({ kind: "none" });
+    const unjudged: Stage[] = [...judged, { id: "escalated", identity: { "rel.implements.in.total": { $gt: 0 } } }];
+    expect(locateNode(wf(unjudged), node(["other"]))).toEqual({ kind: "abstained" });
   });
 });
 

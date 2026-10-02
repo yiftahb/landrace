@@ -2,7 +2,7 @@ import { GOTO_TRIGGER } from "#conventions.js";
 import { assess } from "#core/assess.js";
 import { checkEligible } from "#core/eligible.js";
 import { gotoDeclined, gotoNotListed } from "#core/goto.js";
-import { cannotPlace, locate } from "#core/locate.js";
+import { cannotPlace, locate, UNPLACED } from "#core/locate.js";
 import { compile } from "#core/predicate.js";
 import type { Decision, Run, Snapshot, Stage, Workflow } from "#namespace.js";
 
@@ -84,12 +84,7 @@ export function decide(w: Workflow, s: Snapshot): Decision {
     const entries = w.stages.filter((x) => x.entry);
     // What happened, not what the workflow lacks: one placed by the item's
     // own state has no entry stage by design, and validate lets it.
-    if (entries.length === 0) {
-      return {
-        action: "halt",
-        why: "no stage of this workflow places the item: none of its identities match, and there is no entry stage to start it at",
-      };
-    }
+    if (entries.length === 0) return { action: "halt", why: UNPLACED };
     /*
      * "No position" is the same thing as "a new item" only when the item
      * has no run behind it either. Position is one value written by a swap

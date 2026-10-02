@@ -1,3 +1,4 @@
+import { UNPLACED } from "#core/index.js";
 import type { Node, Workflow } from "#namespace.js";
 import { laneOf, statusRows } from "#runner/status.js";
 
@@ -140,5 +141,44 @@ describe("statusRows, read from where the item is", () => {
     const row = rowFor(["go", "lr:stage:spec", "needs-my-review"]);
     expect(row).toMatchObject({ stage: null, note: "halted: cannot place the item: spec, reviewing all match" });
     expect(laneFor(["go", "lr:stage:spec", "needs-my-review"])).toBe("needs-you");
+  });
+});
+
+/*
+ * In a workflow with no entry stage, an item none of its identities place is
+ * not a new item waiting to be entered: decide halts it, saying so, on every
+ * tick. The row read "queued" for it, so the board filed it under Waiting at
+ * no stage and nobody was ever told of a halt only the log could show.
+ */
+describe("statusRows, of an item no stage places", () => {
+  const gappy: Workflow = {
+    version: 1, name: "t", description: "test",
+    eligible: [{ when: { "node.state.labels": { $in: ["go"] } }, else: "no go label" }],
+    stages: [
+      { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["needs-review"] } } },
+      { id: "approved", terminal: true, identity: { "node.state.labels": { $in: ["approved"] } } },
+    ],
+  };
+
+  it("halts it in decide's own words, under Needs you, where there is no entry stage to start it at", () => {
+    const [row] = statusRows(gappy, [candidate(["go"])]);
+    expect(row).toMatchObject({ stage: null, note: `halted: ${UNPLACED}` });
+    expect(row && laneOf(row, gappy)).toBe("needs-you");
+  });
+
+  it("still says queued where an entry stage would start it", () => {
+    const entered: Workflow = {
+      ...gappy, stages: [{ id: "triage", entry: true, triggers: [{ when: { "run.stage": null } }] }, ...gappy.stages],
+    };
+    expect(statusRows(entered, [candidate(["go"])])[0]).toMatchObject({ stage: null, note: "queued" });
+  });
+
+  // An identity reading what the listed item does not carry might place it:
+  // nothing here can say it is unplaced, so nothing says it is halted.
+  it("still says queued where an identity it cannot judge from the item alone might place it", () => {
+    const unjudged: Workflow = {
+      ...gappy, stages: [...gappy.stages, { id: "escalated", identity: { "node.state.labels": { $in: ["go"] }, "run.outputs.triage.kind": "escalate" } }],
+    };
+    expect(statusRows(unjudged, [candidate(["go"])])[0]).toMatchObject({ stage: null, note: "queued" });
   });
 });
