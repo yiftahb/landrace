@@ -688,6 +688,46 @@ describe("the §10 cycle, including a fix that does not satisfy the reviewer", (
     expect(run.counts()["code-review"]).toBe(1);
   });
 
+  /*
+   * A Retry of the refused pull request that meets a 502 leaves publish's
+   * way in unfinished at the halt. Retry takes it again, at the same round:
+   * never "nothing has failed" for an item no trigger moves.
+   */
+  it("takes a Retry GitHub failed on the way again, and goes on once GitHub answers", async () => {
+    const { gh, root } = await world();
+    const { workflow, steps } = await loadShipped();
+    const during = async ({ stage }: { stage: string }) => {
+      if (stage === "build") await commitOn(root, "landrace/1", "build.ts");
+    };
+    const run = createHarness({ workflow, steps, ...hooksOf(gh), answers: ANSWERS, during });
+    const opened = () => gh.requests.filter((r) => r.method === "POST" && r.path === "/pulls").length;
+    const deps = async () => ({
+      ...hooksOf(gh), dispatcher: createDispatcher(gh.registry.post), ctx: gh.ctx, workflow,
+      lock: { root: await mkdtemp(join(tmpdir(), "lr-retry-")) },
+    });
+
+    await run.converge();
+    gh.sayAs("a-person", 1, "in-house, and CSV only", new Date(Date.UTC(2026, 1, 1)).toISOString());
+    await run.converge();
+    gh.sayAs("a-person", 1, "looks right, go ahead", new Date(Date.UTC(2026, 1, 2)).toISOString());
+    gh.breakOn((r) => r.method === "POST" && r.path === "/pulls", 403);
+    await run.converge();
+    expect(gh.labelsOf(1)).toContain("lr:stage:blocked");
+
+    gh.breakOn((r) => r.method === "POST" && r.path === "/pulls", 502);
+    expect(await sendTo(await deps(), "1", null)).toEqual({ to: "publish" });
+    expect((await run.converge()).result.settled).toBe("halt");
+    expect((await run.converge()).result.settled).toBe("wait");
+    expect(opened()).toBe(2);
+
+    gh.breakOn(() => false);
+    expect(await sendTo(await deps(), "1", null)).toEqual({ to: "publish" });
+    const retried = await run.converge();
+    expect(retried.trail.slice(0, 2)).toEqual(["publish", "code-review"]);
+    expect(opened()).toBe(3);
+    expect(gh.pulls.size).toBe(1);
+  });
+
   it("shows each fix round the findings it is meant to address", async () => {
     const { gh, during } = await world();
     const { workflow, steps } = await loadShipped();

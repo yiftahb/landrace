@@ -328,13 +328,22 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
    * visit to scope by, so every settled trip from it is walked past; one from
    * an earlier visit is reached only when the item came back with no other
    * stage's entry in between, since any such entry ends the walk first.
+   *
+   * And a way in from here that never finished: the latest entry of all,
+   * leaving this stage, at a round nothing settled. A Retry that met an
+   * outage on its way in — a 502, checks still running — consumed its goto
+   * with that entry and left the item at the halt, where no trigger moves
+   * it. Walked past as a settled trip, it left Retry answering "nothing has
+   * failed"; named, Retry takes it again at the same round.
    */
+  const settled = (e: Entry): boolean => settledRoundsByStage.get(e.stage)?.has(e.round) ?? false;
   const ownEntry = ordered.findLastIndex((e) => e.kind === ENTRY_KIND && e.stage === stage);
   const leftLast = ordered.findLast((e, i) =>
     e.kind === ENTRY_KIND &&
     e.stage !== stage &&
-    !(stage !== null && i > ownEntry && e.from === stage && !failedStages.includes(e.stage)));
-  const failedStage = leftLast !== undefined && failedStages.includes(leftLast.stage) ? leftLast.stage : null;
+    !(stage !== null && i > ownEntry && e.from === stage && settled(e) && !failedStages.includes(e.stage)));
+  const unfinished = leftLast !== undefined && leftLast === lastEntry && stage !== null && leftLast.from === stage && !settled(leftLast);
+  const failedStage = leftLast !== undefined && (failedStages.includes(leftLast.stage) || unfinished) ? leftLast.stage : null;
 
   /*
    * The pairing open now. Position in the ordered list, like a goto, because

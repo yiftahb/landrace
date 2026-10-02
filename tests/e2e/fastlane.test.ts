@@ -38,6 +38,9 @@ const flow = (id: string): LoadedWorkflow => {
 
 const ctx: RuntimeContext = { config: {} as RuntimeContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} };
 
+/** Set by a scenario to have the next merge fail on the way, as a 502 does. */
+let outage = false;
+
 const json = (value: object): string => `\`\`\`json\n${JSON.stringify(value)}\n\`\`\``;
 
 const ANSWERS: Record<string, ScriptedAnswer> = {
@@ -417,6 +420,47 @@ describe("fastlane, end to end", () => {
     await refused.run.converge();
     expect(refused.state.stage("1")).toBe("blocked");
     expect(await refused.goto("merge")).toEqual({ to: "merge" });
+  });
+
+  /*
+   * A Retry of the refused merge that meets something still settling —
+   * checks running on the head a person just pushed, or a 502 — leaves the
+   * item at the halt with the merge's way in unfinished. Retry takes it
+   * again, at the same round, and once the forge allows it the item merges:
+   * never stranded at a halt where Retry answers "nothing has failed".
+   */
+  it.each([
+    ["checks still running", (pull: ExternalPull) => { pull.checks = "pending"; }, (pull: ExternalPull) => { pull.checks = "success"; }],
+    ["a 502", () => { outage = true; }, () => { outage = false; }],
+  ] as const)("8e. takes a Retry of the merge that met %s again, and merges", async (_what, unsettle, settle) => {
+    outage = false;
+    const { state, run, pr, merges, retry, goto } = road({
+      seed: (s) => { s.openPull("1", { branch: "landrace/1", mergeable: false }); },
+      before: (effect) => {
+        if (effect.type === "pull.merge" && outage) throw new Error("502 Bad Gateway");
+      },
+    });
+    await run.converge();
+    expect(state.stage("1")).toBe("blocked");
+
+    delete pr().mergeable;
+    unsettle(pr());
+    expect(await retry()).toEqual({ to: "merge" });
+    const met = await run.converge();
+    expect(met.result.settled).toBe("halt");
+    expect(state.stage("1")).toBe("blocked");
+    expect(pr().merged).toBe(false);
+
+    settle(pr());
+    expect((await run.converge()).result.settled).toBe("wait");
+    expect(await goto("merge")).toEqual({ to: "merge" });
+    const done = await run.converge();
+
+    expect(done.trail).toEqual(["merge", "done"]);
+    expect(pr().merged).toBe(true);
+    expect(merges()).toBe(3);
+    expect(state.entriesOf("1").filter((e) => e.kind === "enter" && e.stage === "merge").map((e) => e.round)).toEqual([1, 2]);
+    expect(state.item("1").closed).toBe("done");
   });
 
   /*

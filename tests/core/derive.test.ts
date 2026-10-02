@@ -357,6 +357,26 @@ describe("a way into a stage refused while the item was leaving another", () => 
     expect(deriveRun(entries, "build").lastOutputValid).toBeNull();
   });
 
+  /*
+   * A Retry that met an outage on the way in — a 502, checks still running —
+   * consumed its goto with the stage's entry record and left that round
+   * unsettled, the item still at the halt. That way in never finished, and
+   * it is what Retry must take again: walked past as a settled round trip, it
+   * left Retry answering "nothing has failed" to an item no trigger moves.
+   */
+  it("names a way in from the halt that never finished, for Retry to take again", () => {
+    const entries = [...built, from("publish", 1, "build"), rejected("publish", 1, "build"), from("publish", 2, "blocked")];
+    const r = deriveRun(entries, "blocked");
+    expect(r.failedStage).toBe("publish");
+    expect(r.lastOutputValid).toBeNull();
+    expect(nextRound(r, "publish")).toBe(2);
+  });
+
+  it("still walks past a round trip from the halt that settled", () => {
+    const entries = [...built, from("publish", 1, "build"), rejected("publish", 1, "build"), human(), from("triage", 1, "blocked"), out("triage", 1, { intent: "question" })];
+    expect(deriveRun(entries, "blocked").failedStage).toBe("publish");
+  });
+
   it("is judged a refusal when the record says so", () => {
     const r = deriveRun([...built, from("publish", 1, "build"), { ...refused("publish", 1), from: "build" }], "build");
     expect(r.lastOutputValid).toBe(false);
