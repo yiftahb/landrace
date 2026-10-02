@@ -23,6 +23,7 @@ describe("a merge request's checks", () => {
     ["failed", "failure"],
     ["canceled", "failure"],
     ["created", "pending"],
+    ["canceling", "pending"],
     ["waiting_for_resource", "pending"],
     ["preparing", "pending"],
     ["pending", "pending"],
@@ -71,7 +72,7 @@ describe("a merge request's checks", () => {
     const gl = createFakeGitLab();
     const mr = gl.open({ source_branch: "landrace/1", sha: "a" });
     gl.breakNext(({ path }) => path.endsWith("/pipelines"), 403);
-    await expect(forgeOver(gl).checks(recordOf(mr), gl.ctx())).rejects.toThrow(/token needs the "api" scope.*group\/app/);
+    await expect(forgeOver(gl).checks(recordOf(mr), gl.ctx())).rejects.toThrow(/token needs the "api" scope and Developer access on group\/app, and CI\/CD enabled/);
   });
 
   it("puts the real state on an open merge request and costs a closed one no pipelines request", async () => {
@@ -226,7 +227,13 @@ describe("the preflight reads pipelines too", () => {
   it("refuses to start when GitLab refuses it, naming what is missing", async () => {
     const gl = createFakeGitLab();
     gl.breakNext(({ path }) => path.endsWith("/pipelines"), 403);
-    await expect(forgeOver(gl).check(gl.ctx())).rejects.toThrow(/token cannot read pipelines on group\/app.*api/);
+    await expect(forgeOver(gl).check(gl.ctx())).rejects.toThrow(/token cannot read pipelines on group\/app.*"api".*CI\/CD enabled/);
+  });
+
+  it("does not pass a probe that read nothing: a 404 refuses", async () => {
+    const gl = createFakeGitLab();
+    gl.breakNext(({ path }) => path.endsWith("/pipelines"), 404);
+    await expect(forgeOver(gl).check(gl.ctx())).rejects.toThrow(/pipeline check on group\/app failed.*404/);
   });
 
   it("does not take a rejected token for a missing permission", async () => {

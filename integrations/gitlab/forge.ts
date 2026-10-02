@@ -43,7 +43,7 @@ interface Pipeline {
 
 const PIPELINE_STATES: Record<string, CheckState> = {
   success: "success", failed: "failure", canceled: "failure",
-  created: "pending", waiting_for_resource: "pending", preparing: "pending", pending: "pending", running: "pending", scheduled: "pending", manual: "pending",
+  created: "pending", canceling: "pending", waiting_for_resource: "pending", preparing: "pending", pending: "pending", running: "pending", scheduled: "pending", manual: "pending",
   skipped: "none",
 };
 
@@ -388,7 +388,7 @@ export class GitLab extends BaseForge {
     try {
       jobs = await gl.get(`/pipelines/${newest.id}/jobs?scope[]=failed&per_page=${PER_PAGE}`);
     } catch (e) {
-      throw this.pipelineReadFailure(e);
+      throw this.tokenRefusal(e, true);
     }
     const failed: FailedCheck[] = [];
     for (const job of jobs) failed.push({ name: job.name, log: await gl.text(`/jobs/${job.id}/trace`).catch(() => null) });
@@ -400,13 +400,15 @@ export class GitLab extends BaseForge {
     try {
       return (await this.gl(ctx).get<Pipeline[]>(`/merge_requests/${pull.number}/pipelines?per_page=1`))[0] ?? null;
     } catch (e) {
-      throw this.pipelineReadFailure(e);
+      throw this.tokenRefusal(e, true);
     }
   }
 
   /** A refused read names the scope and role; any other failure is passed as it came — never an answer. */
-  private pipelineReadFailure(e: unknown): unknown {
-    return tokenRejected(e) ?? (statusOf(e) === 403 ? new Error(`token needs the "api" scope and Developer access on ${this.project} (GitLab answered: ${refusalMessage(e)})`) : e);
+  private tokenRefusal(e: unknown, ci: boolean): unknown {
+    return tokenRejected(e) ?? (statusOf(e) === 403
+      ? new Error(`token needs the "api" scope and Developer access on ${this.project}${ci ? ", and CI/CD enabled on the project" : ""} (GitLab answered: ${refusalMessage(e)})`)
+      : e);
   }
 
   /**
@@ -424,7 +426,7 @@ export class GitLab extends BaseForge {
     } catch (e) {
       const status = statusOf(e);
       if (status === 409) return "moved";
-      if (status === 401 || status === 403) throw this.pipelineReadFailure(e);
+      if (status === 401 || status === 403) throw this.tokenRefusal(e, false);
       if (status !== 405 && status !== 406 && status !== 422) throw e;
       if ((await gl.get<{ state?: unknown }>(`/merge_requests/${pull}`)).state === "merged") return "merged";
       throw new Error(`!${pull} cannot be merged: ${refusalMessage(e)}`);
@@ -560,16 +562,16 @@ export class GitLab extends BaseForge {
   /**
    * Every read of an open merge request asks for its pipeline, so a token
    * that cannot read them would fail every read and every briefing. An empty
-   * project answers an empty list, which is a pass; a 404 is nothing to read.
+   * project answers an empty list, which is a pass; a 404 is not: the project
+   * was just read, so a probe that read nothing is not a pass.
    */
   private async pipelinesReadable(gl: Client): Promise<void> {
     try {
       await gl.get(`/pipelines?per_page=1`);
     } catch (e) {
-      if (statusOf(e) === 404) return;
       throw tokenRejected(e) ?? new Error(
         statusOf(e) === 403
-          ? `token cannot read pipelines on ${this.project}; it needs the "api" scope and Developer access`
+          ? `token cannot read pipelines on ${this.project}; it needs the "api" scope and Developer access, and CI/CD enabled on the project`
           : `the pipeline check on ${this.project} failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
