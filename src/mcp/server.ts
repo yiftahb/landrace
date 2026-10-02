@@ -44,6 +44,10 @@ const item = z
 /** A workflow by its folder name, as `landrace_workflows` lists it; left out, every workflow. */
 const workflow = z.string().min(1).optional();
 
+/** An entry's shape only: which types exist, and whether the item is a usable id, the tool judges before it writes. */
+const relation = z.object({ type: z.string().min(1).max(64), item: z.string().min(1).max(64) });
+const relations = (what: string) => z.array(relation).max(50).optional().describe(what);
+
 export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   const server = new McpServer({ name: "landrace", version });
   // Bound to one workflow, every tool says so: an agent holding this server
@@ -106,6 +110,7 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
       body: z.string().optional(),
       labels: z.array(z.string()).optional(),
       start: z.boolean().optional(),
+      relate: relations('Relationships to make from the new item, e.g. [{ "type": "blocked-by", "item": "10" }]; the types are those its tracker writes. One refused entry files nothing.'),
     },
     guard((args) => tools.createItem(args)),
   );
@@ -124,6 +129,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
       state: z.enum(["open", "closed"]).optional(),
       addLabels: z.array(z.string()).optional(),
       removeLabels: z.array(z.string()).optional(),
+      relate: relations('Relationships to make from this item, e.g. [{ "type": "blocked-by", "item": "10" }]; applied after the label changes. One refused entry changes nothing.'),
+      unrelate: relations("Relationships to remove from this item, in the same shape."),
     },
     guard(({ item: n, ...rest }) => tools.updateItem(n, rest)),
   );
@@ -234,15 +241,23 @@ export function createChildMcpServer(tool: ChildTool, version = "0.0.0"): McpSer
   server.tool(
     CHILD_TOOL,
     "Create one sub-item of the item you are working on. Call once per sub-item. " +
-      "Each is worked through the workflow on its own, starting at implementation.",
+      "Each is worked through the workflow on its own, starting at implementation. " +
+      "To order sub-items, relate a later one to an earlier sibling you created, " +
+      "e.g. relate: [{ type: \"blocked-by\", item: \"<sibling id>\" }].",
     {
       title: z.string().min(1),
       body: z.string().optional(),
       priority: z.number().int().min(0).max(9).optional()
         .describe("0 (most urgent) to 9; leave it out when the sub-items are equally urgent"),
+      relate: relations('Relationships to make from this sub-item, e.g. [{ "type": "blocked-by", "item": "<sibling id>" }]'),
     },
-    guard(({ title, body, priority }) =>
-      tool.createChild({ title, ...(body === undefined ? {} : { body }), ...(priority === undefined ? {} : { priority }) })),
+    guard(({ title, body, priority, relate }) =>
+      tool.createChild({
+        title,
+        ...(body === undefined ? {} : { body }),
+        ...(priority === undefined ? {} : { priority }),
+        ...(relate === undefined ? {} : { relate }),
+      })),
   );
   return server;
 }

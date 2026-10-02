@@ -87,6 +87,19 @@ describe("mcp server over a real transport", () => {
     await client.close();
   });
 
+  it("shapes a relate entry, and refuses a type its tracker does not write before creating anything", async () => {
+    const workflow: Workflow = { version: 1, name: "t", description: "test", admit: ["lr:auto"], stages: [{ id: "spec", entry: true, terminal: true }] };
+    const { client, gh } = await connect([], (t) => createTools([hooked(t.registry, loaded(workflow))], t.ctx));
+    const call = (relate: unknown) => client.callTool({ name: "landrace_create_item", arguments: { title: "x", relate } });
+    const malformed = await call([{ type: "blocked-by" }]);
+    expect((malformed as { isError?: boolean }).isError).toBe(true);
+    const refused = await call([{ type: "blocked-by", item: "10" }]);
+    expect((refused as { isError?: boolean }).isError).toBe(true);
+    expect(textOf(refused)).toMatch(/cannot relate a new item to #10 as "blocked-by": .*writes no relationship/);
+    expect(gh.issues.size).toBe(0);
+    await client.close();
+  });
+
   it("returns an error result rather than throwing when an item is missing", async () => {
     const { client } = await connect();
     const r = await client.callTool({ name: "landrace_status", arguments: { item: 99 } });

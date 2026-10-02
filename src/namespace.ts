@@ -1274,7 +1274,7 @@ export interface NewItem {
   origin?: Origin | undefined;
   priority?: number | undefined;
   /** Relationships to make from it once it exists: `{ type: "blocked-by", item: "10" }`. */
-  relate?: Array<{ type: string; item: string }> | undefined;
+  relate?: ItemRelation[] | undefined;
 }
 
 /**
@@ -1309,6 +1309,14 @@ export interface NewChild {
   title: string;
   body?: string | undefined;
   priority?: number | undefined;
+  /** Sibling sub-items it waits on, say: `{ type: "blocked-by", item: "<sibling id>" }`. Shape-checked, then the hook's. */
+  relate?: ItemRelation[] | undefined;
+}
+
+/** One relationship asked for by hand: its type, and the item at the other end. */
+export interface ItemRelation {
+  type: string;
+  item: string;
 }
 
 export interface ItemPatch {
@@ -1980,6 +1988,8 @@ export interface Tools {
     body?: string | undefined;
     labels?: string[] | undefined;
     start?: boolean | undefined;
+    /** Relationships to make from it once it exists; all refused, and nothing written, when any is. */
+    relate?: ItemRelation[] | undefined;
   }): Promise<unknown>;
   updateItem(
     item: string,
@@ -1989,6 +1999,8 @@ export interface Tools {
       state?: "open" | "closed" | undefined;
       addLabels?: string[] | undefined;
       removeLabels?: string[] | undefined;
+      relate?: ItemRelation[] | undefined;
+      unrelate?: ItemRelation[] | undefined;
     },
   ): Promise<unknown>;
   reply(item: string, message: string): Promise<unknown>;

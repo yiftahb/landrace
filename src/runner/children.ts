@@ -1,4 +1,4 @@
-import { CHILD_SERVER_NAME, CHILD_TOOL, isItemId, neutraliseMarkers, recordBodyProblem, itemIdProblem } from "#conventions.js";
+import { CHILD_SERVER_NAME, CHILD_TOOL, isItemId, neutraliseMarkers, recordBodyProblem, itemIdProblem, relateProblem } from "#conventions.js";
 import type { ChildBinding, NewChild, Node, Operator, RunServer, RuntimeContext, ServerCommand } from "#namespace.js";
 
 /** Ten is already more urgency levels than any tracker we have met distinguishes. */
@@ -44,6 +44,14 @@ export async function createChild(
     throw new Error(`cannot create a child: priority must be an integer from 0 to ${MAX_PRIORITY}, got ${priority}`);
   }
 
+  // Before anything is written: a refused entry leaves no child behind.
+  const relate = input.relate ?? [];
+  const writes = relate.length === 0 ? [] : operator.relates();
+  for (const entry of relate) {
+    const problem = relateProblem(null, entry, writes);
+    if (problem) throw new Error(problem);
+  }
+
   return operator.createItem(
     {
       title,
@@ -53,6 +61,7 @@ export async function createChild(
       parent: binding.parent,
       origin: { parent: binding.parent, stage: binding.stage, round: binding.round },
       ...(priority === undefined ? {} : { priority }),
+      ...(relate.length === 0 ? {} : { relate }),
     },
     ctx,
   );

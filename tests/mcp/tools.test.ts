@@ -906,3 +906,70 @@ describe("over a workspace of two workflows", () => {
     });
   });
 });
+
+/*
+ * The engine never reads a relationship type: each entry is shaped, checked
+ * against what the routed operator writes, and handed to it. A refused entry
+ * refuses the whole call before anything is written.
+ */
+describe("relationships by hand", () => {
+  const relating = (writes: string[] = ["blocked-by"]) => {
+    const tracker = createFakeTracker([{ number: 4, labels: ["lr:auto"] }, { number: 10 }]);
+    const calls: string[] = [];
+    const real = tracker.registry.operator;
+    if (!real) throw new Error("the fake tracker has an operator");
+    const operator = {
+      ...real,
+      relates: () => writes,
+      createItem: async (...a: Parameters<typeof real.createItem>) => { calls.push(`create ${JSON.stringify(a[0].relate ?? null)}`); return real.createItem({ title: a[0].title, labels: a[0].labels, body: a[0].body }, a[1]); },
+      updateItem: async (...a: Parameters<typeof real.updateItem>) => { calls.push("update"); return real.updateItem(...a); },
+      relate: async (i: string, t: string, o: string) => { calls.push(`relate ${i} ${t} ${o}`); },
+      unrelate: async (i: string, t: string, o: string) => { calls.push(`unrelate ${i} ${t} ${o}`); },
+    };
+    const tools = createTools([hooked({ ...tracker.registry, operator }, loaded(admitting(["lr:auto"])))], tracker.ctx);
+    return { tracker, tools, calls };
+  };
+
+  it("hands a created item's relationships to the operator with the item", async () => {
+    const { tools, calls } = relating();
+    await tools.createItem({ title: "Later", relate: [{ type: "blocked-by", item: "10" }] });
+    expect(calls).toEqual(['create [{"type":"blocked-by","item":"10"}]']);
+  });
+
+  it("relates and unrelates after the label changes, and reports what it related", async () => {
+    const { tools, calls } = relating();
+    const r = await tools.updateItem("4", {
+      addLabels: ["bug"], relate: [{ type: "blocked-by", item: "10" }], unrelate: [{ type: "blocked-by", item: "9" }],
+    });
+    expect(calls).toEqual(["update", "relate 4 blocked-by 10", "unrelate 4 blocked-by 9"]);
+    expect(r).toMatchObject({
+      related: [{ type: "blocked-by", item: "10" }], unrelated: [{ type: "blocked-by", item: "9" }],
+    });
+  });
+
+  it("refuses a type its tracker does not write, naming the ones it does, and writes nothing", async () => {
+    const { tracker, tools, calls } = relating();
+    const before = tracker.issues.size;
+    await expect(tools.createItem({ title: "x", relate: [{ type: "x", item: "10" }] })).rejects.toThrow(
+      'cannot relate a new item to #10 as "x": this workflow\'s tracker writes only "blocked-by"',
+    );
+    await expect(tools.updateItem("4", { addLabels: ["bug"], relate: [{ type: "x", item: "10" }] })).rejects.toThrow(
+      'cannot relate #4 to #10 as "x": this workflow\'s tracker writes only "blocked-by"',
+    );
+    await expect(tools.updateItem("4", { unrelate: [{ type: "x", item: "10" }] })).rejects.toThrow(/writes only "blocked-by"/);
+    expect(calls).toEqual([]);
+    expect(tracker.issues.size).toBe(before);
+    expect(tracker.issues.get(4)?.labels).toEqual(["lr:auto"]);
+  });
+
+  it("refuses an entry that is a self-relation, or an unusable id, or any type from a tracker that writes none, writing nothing", async () => {
+    const { tools, calls } = relating();
+    await expect(tools.updateItem("4", { relate: [{ type: "blocked-by", item: "10" }, { type: "blocked-by", item: "4" }] }))
+      .rejects.toThrow('cannot relate #4 to itself as "blocked-by"');
+    await expect(tools.createItem({ title: "x", relate: [{ type: "blocked-by", item: "../1" }] })).rejects.toThrow(/not a usable item id/);
+    const none = relating([]);
+    await expect(none.tools.updateItem("4", { relate: [{ type: "blocked-by", item: "10" }] })).rejects.toThrow(/writes no relationship/);
+    expect(calls).toEqual([]);
+    expect(none.calls).toEqual([]);
+  });
+});

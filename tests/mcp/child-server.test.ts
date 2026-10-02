@@ -19,7 +19,8 @@ describe("the child MCP server", () => {
     const tools = (await client.listTools()).tools;
     expect(tools.map((t) => t.name)).toEqual(["landrace_create_child"]);
     const props = Object.keys((tools[0]?.inputSchema as { properties: object }).properties);
-    expect(props.sort()).toEqual(["body", "priority", "title"]);
+    expect(props.sort()).toEqual(["body", "priority", "relate", "title"]);
+    expect(tools[0]?.description).toContain('relate: [{ type: "blocked-by", item: "<sibling id>" }]');
     await client.close();
   });
 
@@ -28,6 +29,17 @@ describe("the child MCP server", () => {
     const client = await connect((i) => seen.push(i));
     await client.callTool({ name: "landrace_create_child", arguments: { title: "api", body: "b", priority: 2, parent: "99" } });
     expect(seen).toEqual([{ title: "api", body: "b", priority: 2 }]);
+    await client.close();
+  });
+
+  it("passes relate through, shape-checked", async () => {
+    const seen: NewChild[] = [];
+    const client = await connect((i) => seen.push(i));
+    await client.callTool({ name: "landrace_create_child", arguments: { title: "ui", relate: [{ type: "blocked-by", item: "2" }] } });
+    expect(seen).toEqual([{ title: "ui", relate: [{ type: "blocked-by", item: "2" }] }]);
+    const bad = await client.callTool({ name: "landrace_create_child", arguments: { title: "ui", relate: [{ type: "blocked-by" }] } });
+    expect(bad.isError).toBe(true);
+    expect(seen).toHaveLength(1);
     await client.close();
   });
 

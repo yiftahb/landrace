@@ -5,13 +5,14 @@ import {
   neutraliseMarkers,
   RECORD_EFFECT,
   recordBodyProblem,
+  relateProblem,
   stageFromLabels,
   isOpenItem,
   isItemNode,
 } from "#conventions.js";
 import { cannotPlace, checkEligible, locateNode } from "#core/index.js";
 import type { Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, Workflow, WorkspaceListing } from "#namespace.js";
-import type { Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
+import type { ItemRelation, Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf, Refusal } from "#runner/errors.js";
@@ -30,6 +31,15 @@ import { claimsOf, listingFailures, listWorkspace, sourcesOf } from "#runner/tic
  * admit labels are not among them: taking one off is how an operator stops
  * an item.
  */
+function refuseRelations(operator: Operator, from: string | null, entries: ItemRelation[]): void {
+  if (entries.length === 0) return;
+  const writes = operator.relates();
+  for (const entry of entries) {
+    const problem = relateProblem(from, entry, writes);
+    if (problem) throw new Error(problem);
+  }
+}
+
 function refuseEngineLabels(labels: string[], what: string): void {
   const offending = labels.filter(isEngineLabel);
   if (offending.length) {
@@ -436,10 +446,11 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       };
     },
 
-    async createItem({ workflow, title, body = "", labels = [], start = true }) {
+    async createItem({ workflow, title, body = "", labels = [], start = true, relate = [] }) {
       const { workflow: w } = creator(workflow);
       const operator = requireOperator(w.registry.operator, "create an item");
       refuseEngineLabels(labels, "set");
+      refuseRelations(operator, null, relate);
       // `start` is the one exception, and it is ours to set, not the caller's:
       // the labels the workflow admits with, which the engine names none of.
       // Refused before anything is written, never filed unstarted instead —
@@ -454,12 +465,12 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       }
       const wanted = [...new Set([...labels, ...(start ? admit : [])])];
       // A marker pasted into a body would read back as something we wrote.
-      const created = await operator.createItem({ title, body: neutraliseMarkers(body), labels: wanted }, ctx);
+      const created = await operator.createItem({ title, body: neutraliseMarkers(body), labels: wanted, ...(relate.length === 0 ? {} : { relate }) }, ctx);
       wakeLoop();
       return { ...summarise(created), workflow: w.id, started: admit.length > 0 && admit.every((l) => wanted.includes(l)) };
     },
 
-    async updateItem(item, { title, body, state, addLabels = [], removeLabels = [] }) {
+    async updateItem(item, { title, body, state, addLabels = [], removeLabels = [], relate = [], unrelate = [] }) {
       // Before any listing: with no operator anywhere, there is nothing to
       // find the item's for.
       if (!workflows.some((w) => w.registry.operator !== null)) requireOperator(null, "update an item");
@@ -469,6 +480,9 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       refuseEngineLabels(removeLabels, "remove");
       const edit = await editor(item);
       const operator = requireOperator(edit.operator, "update an item");
+      // Every entry of both lists, before the first write.
+      refuseRelations(operator, item, relate);
+      refuseRelations(operator, item, unrelate);
 
       const updated = await operator.updateItem(
         item,
@@ -481,9 +495,16 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
         },
         ctx,
       );
+      // After the labels, before the reply: relating is the last write.
+      for (const { type, item: other } of relate) await operator.relate(item, type, other, ctx);
+      for (const { type, item: other } of unrelate) await operator.unrelate(item, type, other, ctx);
       wakeLoop();
       // Null for an item no one workflow owns: its edit went through no workflow.
-      return { ...summarise(updated), workflow: edit.workflow };
+      return {
+        ...summarise(updated), workflow: edit.workflow,
+        ...(relate.length === 0 ? {} : { related: relate }),
+        ...(unrelate.length === 0 ? {} : { unrelated: unrelate }),
+      };
     },
 
     async reply(item, message) {

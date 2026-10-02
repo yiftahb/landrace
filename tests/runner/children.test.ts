@@ -74,3 +74,32 @@ describe("childServerFor", () => {
     expect(() => childServerFor(base, { parent: "1", stage: "s", round: 0 })).toThrow(/round/);
   });
 });
+
+describe("createChild, relating siblings", () => {
+  const spy = () => {
+    const state = createExternalState({ items: [{ id: "1", title: "big" }] });
+    const created: unknown[] = [];
+    const operator = {
+      ...state.operator,
+      relates: () => ["blocked-by"],
+      createItem: async (...a: Parameters<typeof state.operator.createItem>) => { created.push(a[0].relate ?? null); return state.operator.createItem(...a); },
+    };
+    return { state, operator, created };
+  };
+
+  it("passes relate to the operator's createItem", async () => {
+    const { operator, created } = spy();
+    await createChild(operator, binding, { title: "ui", relate: [{ type: "blocked-by", item: "2" }] }, ctx, []);
+    expect(created).toEqual([[{ type: "blocked-by", item: "2" }]]);
+  });
+
+  it("refuses a type the operator does not write, or an unusable id, and files nothing", async () => {
+    const { state, operator, created } = spy();
+    await expect(createChild(operator, binding, { title: "ui", relate: [{ type: "x", item: "2" }] }, ctx, []))
+      .rejects.toThrow('cannot relate a new item to #2 as "x": this workflow\'s tracker writes only "blocked-by"');
+    await expect(createChild(operator, binding, { title: "ui", relate: [{ type: "blocked-by", item: "../2" }] }, ctx, []))
+      .rejects.toThrow(/not a usable item id/);
+    expect(created).toEqual([]);
+    expect(state.children("1")).toEqual([]);
+  });
+});

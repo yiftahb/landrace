@@ -104,6 +104,24 @@ export function itemIdProblem(id: unknown): string | null {
   return null;
 }
 
+/**
+ * Why one relationship asked for by hand cannot be made, or null. Only its
+ * shape and the types the hook writes are judged here; what a type means is
+ * the hook's, and the engine never reads one. `from` is the item it starts
+ * at, or null for one not yet created, which can have no relation to itself.
+ */
+export function relateProblem(from: string | null, entry: { type: string; item: string }, writes: readonly string[]): string | null {
+  const subject = from === null ? "a new item" : `#${from}`;
+  const idProblem = itemIdProblem(entry.item);
+  if (idProblem) return `cannot relate ${subject}: ${idProblem}`;
+  if (from !== null && entry.item === from) return `cannot relate ${subject} to itself as ${JSON.stringify(entry.type)}`;
+  if (!writes.includes(entry.type)) {
+    const only = writes.length === 0 ? "writes no relationship" : `writes only ${writes.map((t) => JSON.stringify(t)).join(", ")}`;
+    return `cannot relate ${subject} to #${entry.item} as ${JSON.stringify(entry.type)}: this workflow's tracker ${only}`;
+  }
+  return null;
+}
+
 export const isItemId = (id: unknown): id is string => itemIdProblem(id) === null;
 
 /**
