@@ -12,7 +12,7 @@ const TYPES = ["child-of", "implements"];
 describe("deriveRel", () => {
   it("reports every declared type with zero counts when nothing relates", () => {
     const r = deriveRel({ nodes: [n("1")], relationships: [] }, "1", TYPES);
-    expect(r.ok && r.rel["implements"]?.in).toEqual({ total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {} });
+    expect(r.ok && r.rel["implements"]?.in).toEqual({ total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {}, open: [] });
     expect(r.ok && r.rel["child-of"]?.out.total).toBe(0);
   });
 
@@ -50,6 +50,7 @@ describe("deriveRel", () => {
       not: { merged: 1, closed: 1 },
       sum: { openThreads: 3 },
       stage: {},
+      open: ["pr-2"],
     });
   });
 
@@ -87,7 +88,7 @@ describe("deriveRel", () => {
     };
     const r = deriveRel(g, "1", TYPES);
     expect(r.ok && r.rel["implements"]?.in).toEqual({
-      total: 1, dropped: 1, is: { merged: 0, closed: 0 }, not: { merged: 1, closed: 1 }, sum: { openThreads: 1 }, stage: {},
+      total: 1, dropped: 1, is: { merged: 0, closed: 0 }, not: { merged: 1, closed: 1 }, sum: { openThreads: 1 }, stage: {}, open: ["pr-2"],
     });
     expect(r.ok && r.rel["implements"]?.out.dropped).toBe(0);
     expect(r.ok && r.rel["child-of"]?.out).toMatchObject({ total: 0, dropped: 1 });
@@ -152,6 +153,32 @@ describe("deriveRel", () => {
     expect(deriveRel(g, "1", TYPES)).toEqual({ ok: false, why: expect.stringMatching(/"pr-1".*closed/) });
   });
 
+  /*
+   * Which related nodes are still open, by id, beside the counts: a person
+   * reading "waiting on 2" has to go and find which two. Any type, either
+   * direction — `x` is a type nobody gave a meaning, and is listed the same.
+   */
+  it("lists the open related nodes of every type and direction, in id order, leaving closed and dropped ones out", () => {
+    const g: Graph = {
+      nodes: [n("1"), n("10"), n("9"), n("11", { closed: "done" }), n("12", { closed: "dropped" }), n("3"), n("4", { closed: "done" })],
+      relationships: [
+        { from: "1", to: "10", type: "x" },
+        { from: "1", to: "9", type: "x" },
+        { from: "1", to: "11", type: "x" },
+        { from: "1", to: "12", type: "x" },
+        { from: "3", to: "1", type: "child-of" },
+        { from: "4", to: "1", type: "child-of" },
+      ],
+    };
+    const r = deriveRel(g, "1", [...TYPES, "x"]);
+    expect(r.ok && r.rel["x"]?.out.open).toEqual(["9", "10"]);
+    expect(r.ok && r.rel["x"]?.in.open).toEqual([]);
+    expect(r.ok && r.rel["child-of"]?.in.open).toEqual(["3"]);
+    expect(r.ok && r.rel["child-of"]?.out.open).toEqual([]);
+    // Declared, with nothing related: an empty list, never an absent one.
+    expect(r.ok && r.rel["implements"]?.in.open).toEqual([]);
+  });
+
   it("zero-fills not.merged when every related node reports merged: true", () => {
     const g: Graph = {
       nodes: [n("1"), pr("pr-1", { merged: true }), pr("pr-2", { merged: true })],
@@ -187,7 +214,7 @@ describe("deriveRel, and children a later round superseded", () => {
       child("4", { origin: origin("1", 2) }),
     );
     const r = deriveRel(g, "1", TYPES, { breakdown: 2 });
-    expect(r.ok && r.rel["child-of"]?.in).toMatchObject({ total: 1, not: { closed: 1 }, is: { closed: 0 } });
+    expect(r.ok && r.rel["child-of"]?.in).toMatchObject({ total: 1, not: { closed: 1 }, is: { closed: 0 }, open: ["4"] });
   });
 
   it("leaves a child an earlier round made and its re-entry dropped out of the dropped count too", () => {

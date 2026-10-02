@@ -391,7 +391,9 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       // and that stage's `waits` — never a second reading of its labels free
       // to disagree with them. An item no one workflow owns is placed by none
       // of their stages: its label is all there is to show.
-      const owned = "hands" in route ? statusRows(route.hands.deps.workflow, [node])[0] : undefined;
+      // Over the graph this snapshot read, so a stage's own note names what
+      // the item waits on as the engine would decide from it.
+      const owned = "hands" in route ? statusRows(route.hands.deps.workflow, [node], snapshot.graph as Graph)[0] : undefined;
       const row: StatusRow = owned && "hands" in route
         ? { ...owned, workflow: route.hands.workflow.id }
         : { item, title: node.title, stage: labelled, note: "" };
@@ -408,6 +410,8 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
         closed: node.closed,
         labels,
         stage: row.stage,
+        // The board's note for it: what it is doing, or what its stage says it rests on.
+        ...(owned ? { note: row.note } : {}),
         // Which ones: taking one of them off is the fix, and the engine now
         // halts on this same fact rather than picking one and paying for it.
         ...(ambiguous

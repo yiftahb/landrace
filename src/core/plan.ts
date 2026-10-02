@@ -20,8 +20,12 @@ import type { Decision, Effect, Snapshot, Stage } from "#namespace.js";
  * anyway, so widening the pattern changes no output — it only stops
  * `{item.body}` meaning "a template" in one pass and "ordinary text" in
  * another.
+ *
+ * So is the hyphen, for the same reason: relationship types are spelled with
+ * one (`child-of`), so a path through `rel` has one, and a stage's note reads
+ * `{rel.blocked-by.out.open}`.
  */
-const TEMPLATE = /\{([a-zA-Z0-9_.]+)\}/g;
+const TEMPLATE = /\{([a-zA-Z0-9_.-]+)\}/g;
 
 export const fillTemplate = (value: string, lookup: (name: string) => string | undefined): string =>
   value.replace(TEMPLATE, (whole, name: string) => lookup(name) ?? whole);

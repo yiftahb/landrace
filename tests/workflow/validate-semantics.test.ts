@@ -1,5 +1,6 @@
 import { validate, validateSemantics } from "#workflow/validate.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { workflowSchema } from "#workflow/schema.js";
 import { loadShipped } from "#tests/support/shipped.js";
 import type { Effect, Problem, Step, Workflow } from "#namespace.js";
 import { fastest } from "#tests/support/timing.js";
@@ -942,5 +943,54 @@ describe("the graph rules, on stages the item's own state places it at", () => {
       ]);
       expect(reported(w)).toEqual([]);
     });
+  });
+});
+
+/*
+ * A stage's `note` is display text, rendered from the item's own id and its
+ * `rel` counts. A field nothing answers would sit on the board as literal
+ * braces for ever, so it is refused the way path coverage refuses a
+ * predicate reading nothing: against the types the source declares, and not
+ * at all when nobody says what is provided.
+ */
+describe("a stage's note", () => {
+  const PROVIDED = ["run.stage", "node.id", "rel.x", "rel.x.out.open", "rel.x.out.total", "rel.x.in.total", "rel.x.out.not.*", "rel.x.out.stage.*"];
+  const noted = (note: string): Workflow => ({ version: 1, name: "t", description: "test", stages: [
+    { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    { id: "waiting", note, triggers: [{ when: { "run.stage": "a" } }] },
+    { id: "done", terminal: true, triggers: [{ when: { "run.stage": "waiting" } }] },
+  ] });
+  // null for "nothing says what is provided": an `undefined` argument would take the default.
+  const notes = (note: string, provided: string[] | null = PROVIDED): string[] =>
+    validateSemantics(noted(note), noSteps, provided ?? undefined).filter((p) => p.rule === "note").map((p) => p.message);
+
+  it("is a field the schema takes on a stage", () => {
+    const parsed = workflowSchema.safeParse({ version: 1, name: "t", description: "test", stages: [
+      { id: "a", entry: true, note: "waiting on {rel.blocked-by.out.open}" },
+    ] });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("accepts the item's id, and an open list or a count of a declared type", () => {
+    expect(notes("blocked by {rel.x.out.open}: {rel.x.out.total} of them, {rel.x.out.not.closed} open, for #{node.id}")).toEqual([]);
+    expect(notes("{rel.x.in.total} wait on it; {rel.x.out.stage.build} building")).toEqual([]);
+  });
+
+  it("refuses a relationship type no hook provides, in path coverage's words", () => {
+    expect(notes("waiting on {rel.blocked-by.out.open}")).toEqual([
+      'stage "waiting" note reads {rel.blocked-by.out.open}, which no hook provides',
+    ]);
+  });
+
+  it("refuses a field a note cannot show, whatever is provided", () => {
+    const refused = (field: string) =>
+      `stage "waiting" note reads {${field}}, which a note cannot show: it shows {node.id} and {rel.<type>.<in|out>.<count|open>}`;
+    expect(notes("by {node.title}")).toEqual([refused("node.title")]);
+    expect(notes("{rel.x.out}")).toEqual([refused("rel.x.out")]);
+    expect(notes("{run.stage}", null)).toEqual([refused("run.stage")]);
+  });
+
+  it("checks no type when nothing says what is provided", () => {
+    expect(notes("waiting on {rel.blocked-by.out.open}", null)).toEqual([]);
   });
 });

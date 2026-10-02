@@ -81,6 +81,12 @@ export interface RelAgg {
   not: { [field: string]: number };
   sum: { [field: string]: number };
   stage: { [stage: string]: number };
+  /**
+   * The ids of the related nodes still open — counted in `total` and not
+   * closed — in id order: which ones a count is of, for a person reading
+   * "waiting on #10, #11". Empty, never absent, like every count here.
+   */
+  open: string[];
 }
 
 export type Rel = { [type: string]: { in: RelAgg; out: RelAgg } };
@@ -316,6 +322,15 @@ export interface Stage {
    * halts; one declined is left to the stage's triggers.
    */
   goto?: GotoEntry[] | undefined;
+  /**
+   * What the item's row says while it rests here, in place of "queued" —
+   * on the board, in `landrace status` and `landrace_status` — as a template
+   * over `{node.id}` and `{rel.<type>.<in|out>.<count|open>}`. Display only:
+   * any other note (working, waiting on you, a halt, an agent running) is
+   * said over it, and the lane is never read from it. `| undefined`: fed
+   * from Zod.
+   */
+  note?: string | undefined;
 }
 
 export interface EligibilityRule {
@@ -1577,6 +1592,13 @@ export interface StatusRow {
   title: string;
   stage: string | null;
   note: string;
+  /**
+   * The engine's own note, where `note` is the stage's `note` rendered over
+   * it: what the lane, a Retry and a shield are decided from. A workflow
+   * writes its note for a person to read, and "blocked by #10" begins as a
+   * halt's own note does.
+   */
+  engineNote?: string;
 }
 
 /**
@@ -2376,7 +2398,25 @@ export interface BoardRow {
    * checked id like `retry`. Null on an artifact: only an item opens a panel.
    */
   panel: PanelPaths | null;
+  /**
+   * Every relationship the node has, of any type and either way, as the
+   * listing's edges say — the panel lists them. Empty, never absent.
+   */
+  related: BoardRelated[];
   children: BoardRow[];
+}
+
+/** One relationship of a board row's node: the node at its other end, as the listing has it. */
+export interface BoardRelated {
+  type: string;
+  /** `out` where the row's node is the edge's `from`, `in` where it is its `to` — `rel`'s own two ways. */
+  dir: "in" | "out";
+  id: string;
+  /** One line. */
+  title: string;
+  /** http(s) only, else empty — it becomes an href. */
+  link: string;
+  state: "open" | "done" | "dropped";
 }
 
 /** The item panel's routes for one item. */

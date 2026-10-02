@@ -209,6 +209,30 @@ describe("mcp tools", () => {
   });
 
   /*
+   * The note of the stage the item rests at, rendered from its own
+   * relationships, as the board and `landrace status` show it — and, being
+   * display only, never what says whose turn it is: "blocked by …" is not a
+   * halt. Sub-issues stand in for any relationship; nothing reads the type.
+   */
+  it("says in landrace_status the note of the stage an item rests at, and that it does not wait on you", async () => {
+    const noted: Workflow = {
+      version: 1, name: "t", description: "test", admit: ["lr:auto"],
+      eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+      stages: [
+        { id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] },
+        { id: "waiting", note: "blocked by {rel.child-of.in.open}", triggers: [{ when: { "run.stage": "spec" } }] },
+      ],
+    };
+    const tracker = createFakeTracker([
+      { number: 1, labels: ["lr:auto", "lr:stage:waiting"] },
+      { number: 3, parent: 1 }, { number: 2, parent: 1 },
+      { number: 4, parent: 1, state: "closed", stateReason: "COMPLETED" },
+    ]);
+    const tools = createTools([hooked(tracker.registry, loaded(noted, spec.steps))], tracker.ctx, { lock: { root: lockRoot } });
+    expect(await tools.status("1")).toMatchObject({ stage: "waiting", note: "blocked by #2, #3", waitingOnYou: false });
+  });
+
+  /*
    * Closed between the read that routes it — open, so its workflow's — and
    * the read its snapshot is built from. The board files a closed item under
    * Done and `landrace_waiting` lists none, so nor does this say it waits.

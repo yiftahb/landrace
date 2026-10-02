@@ -130,7 +130,12 @@ export const PULL_REQUEST_KIND = "pull-request";
  * one item only.
  */
 export const DOCUMENT_KIND = "document";
-export const RELATIONS = { childOf: "child-of", implements: "implements", documents: "documents" } as const;
+/**
+ * `blockedBy` is a name and nothing more: the engine gives no type a meaning.
+ * One item waits on another only where a workflow routes on its
+ * `rel.blocked-by.*` counts, and says so in a stage's `note`.
+ */
+export const RELATIONS = { childOf: "child-of", implements: "implements", documents: "documents", blockedBy: "blocked-by" } as const;
 
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];

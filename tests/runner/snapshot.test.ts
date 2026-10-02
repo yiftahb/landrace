@@ -1,5 +1,5 @@
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
-import { decide, deriveRun } from "#core/index.js";
+import { decide, deriveRel, deriveRun } from "#core/index.js";
 import { GOTO_TRIGGER, stageFromLabels } from "#conventions.js";
 import { definePreHook } from "#hooks/contracts.js";
 import { createExternalState, staticSource } from "#testing/index.js";
@@ -337,5 +337,19 @@ describe("snapshotProvides", () => {
     const run = deriveRun([], null);
     for (const field of Object.keys(run)) expect({ field, covered: covered(`run.${field}`) }).toEqual({ field, covered: true });
     expect(covered("now")).toBe(true);
+  });
+
+  // The same guard for `rel`: REL_AGG is written by hand and RelAgg is not.
+  it("covers every field deriveRel counts, for a declared type, both ways", () => {
+    const provided = snapshotProvides([], staticSource({ nodes: [], relationships: [] }, [{ type: "x", singular: false }])) ?? [];
+    const covered = (path: string) =>
+      provided.includes(path) || provided.some((k) => k.endsWith("*") && path.startsWith(k.slice(0, -1)));
+    const derived = deriveRel({ nodes: [itemNode("1")], relationships: [] }, "1", ["x"]);
+    if (!derived.ok) throw new Error(derived.why);
+    for (const side of ["in", "out"] as const) {
+      for (const field of Object.keys(derived.rel["x"]?.[side] ?? {})) {
+        expect({ field, covered: covered(`rel.x.${side}.${field}`) }).toEqual({ field, covered: true });
+      }
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { isReservedId, labelsOf, stageFromLabels } from "#conventions.js";
+import { compareIds, isReservedId, labelsOf, stageFromLabels } from "#conventions.js";
 import type { Graph, Node, Rel, RelAgg } from "#namespace.js";
 
 const empty = (): RelAgg => ({
@@ -8,6 +8,7 @@ const empty = (): RelAgg => ({
   not: Object.create(null) as RelAgg["not"],
   sum: Object.create(null) as RelAgg["sum"],
   stage: Object.create(null) as RelAgg["stage"],
+  open: [],
 });
 
 /**
@@ -49,6 +50,9 @@ const superseded = (node: Node, id: string, entered: { readonly [stage: string]:
  * read as "every child is finished" — closing the parent with the rest of the
  * work never done. A node a person created (origin null) is never superseded.
  * A superseded node is not even `dropped`: the round that made it is over.
+ *
+ * Beside the counts, `open` names the related nodes `total` counts that are
+ * still open — which ones a "waiting on 2" is waiting on, for a note to say.
  *
  * Every declared type is present with zero counts even when nothing relates,
  * because a predicate reading an absent path matches nothing — `sum.x: 0`
@@ -97,6 +101,7 @@ export function deriveRel(
 
     const agg = slot(r.type)[direction];
     agg.total += 1;
+    if (other.closed === null) agg.open.push(other.id);
 
     for (const [field, value] of fieldsOf(other)) {
       if (isReservedId(field)) return { ok: false, why: `node "${other.id}" has a state field named "${field}", a reserved object key` };
@@ -130,5 +135,11 @@ export function deriveRel(
     }
   }
 
+  // In the order a person reads ids in, so the same graph lists the same way
+  // whatever order the source reported its edges in.
+  for (const { in: inward, out } of Object.values(rel)) {
+    inward.open.sort(compareIds);
+    out.open.sort(compareIds);
+  }
   return { ok: true, rel };
 }

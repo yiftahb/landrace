@@ -13,3 +13,4 @@ export { reconcile } from "#core/reconcile.js";
 export { deriveRel } from "#core/rel.js";
 export { gotoDeclined, gotoNotListed, gotoTargetsOf } from "#core/goto.js";
 export { claimItems } from "#core/claims.js";
+export { isNoteField, noteFields, renderNote } from "#core/note.js";

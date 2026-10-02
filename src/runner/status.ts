@@ -1,6 +1,6 @@
 import { compareIds, isOpenItem, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
-import { cannotPlace, locateNode, UNPLACED } from "#core/index.js";
-import type { Lane, ListedWorkflow, Node, NodeLocation, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
+import { cannotPlace, deriveRel, locateNode, noteFields, renderNote, UNPLACED } from "#core/index.js";
+import type { Graph, Lane, ListedWorkflow, Node, NodeLocation, Stage, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { claimedBy, eligibilityOf, reportedBy, turnedAway } from "#runner/tick.js";
 
@@ -34,6 +34,16 @@ export function oneLine(text: string): string {
 export const BLOCKED_NOTE = "blocked: needs a human";
 export const SCREENED_NOTE = "blocked by a security check";
 
+/** An item resting where nothing else is said of it — the one note a stage's own `note` is shown over. */
+const QUEUED_NOTE = "queued";
+
+/**
+ * The note a row's lane, Retry and shield are decided from: the engine's
+ * own, never a stage's rendered over it. A workflow writes "blocked by #10"
+ * for a person to read, and it begins as a halt's note does.
+ */
+export const engineNoteOf = (row: StatusRow): string => row.engineNote ?? row.note;
+
 /**
  * Where an item belongs, from what `landrace status` already says about it.
  * Reusing statusRows rather than re-reading labels here is deliberate: two
@@ -42,8 +52,9 @@ export const SCREENED_NOTE = "blocked by a security check";
  * runner's notify asks the same question, and must get the page's answer.
  */
 export function laneOf(row: StatusRow, workflow: Workflow): Lane {
-  if (row.note.startsWith("skipped:")) return "not-admitted";
-  if (row.note.startsWith("halted:") || row.note.startsWith("blocked") || row.note === "waiting on you") return "needs-you";
+  const note = engineNoteOf(row);
+  if (note.startsWith("skipped:")) return "not-admitted";
+  if (note.startsWith("halted:") || note.startsWith("blocked") || note === "waiting on you") return "needs-you";
   const terminal = workflow.stages.some((s) => s.id === row.stage && s.terminal === true);
   return terminal ? "discharged" : "waiting";
 }
@@ -82,6 +93,24 @@ export function statusLines(rows: StatusRow[], opts: { several?: boolean } = {})
 }
 
 /**
+ * The stage's `note` for `node`, rendered from the graph it was listed in, or
+ * null where there is none to show: no note, no graph, or counts the graph
+ * cannot give — which the item's own read halts on, and a row says "queued"
+ * over rather than a template's braces. Counted over the types the note
+ * names, which `validate` holds to the ones the source declares; with no run
+ * to read, no child a later round superseded is left out.
+ */
+function stageNote(stage: Stage | null, node: Node, graph: Graph | undefined): string | null {
+  if (stage?.note === undefined || graph === undefined) return null;
+  const types = noteFields(stage.note).flatMap((field) => {
+    const [root, type] = field.split(".");
+    return root === "rel" && type ? [type] : [];
+  });
+  const derived = deriveRel(graph, node.id, types);
+  return derived.ok ? renderNote(stage.note, derived.rel, node) : null;
+}
+
+/**
  * One row per item node, answered from what the source already carried back
  * — no snapshot per item, which would mean reading every issue in the
  * repository to print a table.
@@ -111,7 +140,7 @@ export function statusLines(rows: StatusRow[], opts: { several?: boolean } = {})
  * -> cli/status.ts -> cli/start.ts was a real cycle, latent only because
  * nothing used the other end at module top level.
  */
-export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
+export function statusRows(workflow: Workflow, items: Node[], graph?: Graph): StatusRow[] {
   // In id order, as the tick's own rows are: the same repository in the same
   // state prints the same table, whatever order the source listed it in.
   return [...items].sort((a, b) => compareIds(a.id, b.id)).map((node) => {
@@ -159,8 +188,13 @@ export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
           ? "waiting on you"
           : labels.includes(LABELS.working)
             ? "working"
-            : "queued";
-    return { ...row, stage: stage?.id ?? null, note };
+            : QUEUED_NOTE;
+    // Over "queued" alone: every other note says something the stage's own
+    // cannot, and the lane is read from the engine's, kept beside it.
+    const shown = note === QUEUED_NOTE ? stageNote(stage, node, graph) : null;
+    return shown === null
+      ? { ...row, stage: stage?.id ?? null, note }
+      : { ...row, stage: stage?.id ?? null, note: shown, engineNote: note };
   });
 }
 
@@ -170,7 +204,10 @@ export function statusRows(workflow: Workflow, items: Node[]): StatusRow[] {
  * workflows claim, or two sources report, halted and naming them; one every
  * workflow turned away skipped, with each reason once.
  */
-export function workspaceStatusRows(workflows: readonly ListedWorkflow[], listing: Pick<WorkspaceListing, "graphs" | "claims">): StatusRow[] {
+export function workspaceStatusRows(
+  workflows: readonly ListedWorkflow[],
+  listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">,
+): StatusRow[] {
   const listed = new Map<string, Node[]>();
   for (const node of listing.graphs.flatMap((g) => g.nodes)) {
     if (isOpenItem(node)) listed.set(node.id, [...(listed.get(node.id) ?? []), node]);
@@ -181,7 +218,11 @@ export function workspaceStatusRows(workflows: readonly ListedWorkflow[], listin
     if (!node) return [];
     const owner = claims.owner.get(item);
     const workflow = owner === undefined ? undefined : workflows.find((w) => w.id === owner);
-    if (owner !== undefined && workflow) return statusRows(workflow.deps.workflow, [node]).map((row) => ({ ...row, workflow: owner }));
+    if (owner !== undefined && workflow) {
+      // Its note from its owner's source's listing: the edges that source reported.
+      const graph = listing.graphs[listing.sourceOf.get(owner) ?? -1];
+      return statusRows(workflow.deps.workflow, [node], graph).map((row) => ({ ...row, workflow: owner }));
+    }
     // Two sources' nodes may be two different items: each title, once.
     const title = [...new Set(nodes.map((n) => n.title))].join(" | ");
     const clash = claims.clashes.get(item);

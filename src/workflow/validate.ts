@@ -22,7 +22,7 @@ import {
 } from "#conventions.js";
 import { isEngineLabel } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
-import { fillTemplate, pathsNoNodeCarries } from "#core/index.js";
+import { fillTemplate, isNoteField, noteFields, pathsNoNodeCarries } from "#core/index.js";
 import { identityOf, placedByState } from "#core/locate.js";
 import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
 import type { Condition, EligibilityRule, LoadedWorkflow, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
@@ -1326,10 +1326,12 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     }
   }
 
+  const known = new Set(provided ?? []);
+  const covered = (path: string) =>
+    known.has(path) || [...known].some((k) => k.endsWith("*") && path.startsWith(k.slice(0, -1)));
+  problems.push(...noteProblems(w, provided ? covered : null));
+
   if (provided) {
-    const known = new Set(provided);
-    const covered = (path: string) =>
-      known.has(path) || [...known].some((k) => k.endsWith("*") && path.startsWith(k.slice(0, -1)));
     const uncovered = (c: Condition | undefined, where: string): void => {
       for (const path of pathsIn(c ?? {})) {
         if (!covered(path)) {
@@ -1362,6 +1364,24 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   }
 
   return dedupe(problems);
+}
+
+/**
+ * A stage's `note` is display text, and a field in it nothing answers sits on
+ * the board as literal braces for good. So each field is one a note can show
+ * — `{node.id}`, `{rel.<type>.<in|out>.<count|open>}` — and, as path coverage
+ * holds a predicate, one a hook provides: a type the source does not declare
+ * would read nothing for ever. With no `covered` only the first is asked, as
+ * path coverage then asks nothing.
+ */
+function noteProblems(w: Workflow, covered: ((path: string) => boolean) | null): Problem[] {
+  return w.stages.flatMap((stage) => noteFields(stage.note ?? "").flatMap((field): Problem[] => {
+    const reads = `stage "${stage.id}" note reads {${field}}`;
+    if (!isNoteField(field)) {
+      return [{ rule: "note", message: `${reads}, which a note cannot show: it shows {node.id} and {rel.<type>.<in|out>.<count|open>}` }];
+    }
+    return covered === null || covered(field) ? [] : [{ rule: "note", message: `${reads}, which no hook provides` }];
+  }));
 }
 
 /**

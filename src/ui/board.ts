@@ -1,12 +1,12 @@
 import { compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, stageFromLabels } from "#conventions.js";
 import { claimItems, eligibilityOfNode, gotoTargetsOf, writesNothing } from "#core/index.js";
-import { BLOCKED_NOTE, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
+import { BLOCKED_NOTE, engineNoteOf, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { haltOf, readRoute, writeRoute } from "#runner/route.js";
 import { turnedAway } from "#runner/tick.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
-  Board, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
+  Board, BoardRelated, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
   PanelPaths, ReadRoute, Relationship, Running, Stage, StatusRow, Workflow, WorkspaceListing,
 } from "#namespace.js";
 
@@ -40,7 +40,11 @@ const safeUrl = (url: string): string => (/^https?:\/\//i.test(url) ? url : "");
  * re-reads the item and is the one authority on whether a given send is
  * actually taken.
  */
-const stopped = (row: StatusRow): boolean => row.note === BLOCKED_NOTE || row.note === SCREENED_NOTE;
+const stopped = (row: StatusRow): boolean => engineNoteOf(row) === BLOCKED_NOTE || engineNoteOf(row) === SCREENED_NOTE;
+
+/** By type, then the node's own edges before the ones pointing at it, then the other end's id. */
+const byRelation = (a: BoardRelated, b: BoardRelated): number =>
+  (a.type < b.type ? -1 : a.type > b.type ? 1 : 0) || (a.dir === b.dir ? 0 : a.dir === "out" ? -1 : 1) || compareIds(a.id, b.id);
 
 /** The path the page posts a Retry to — built here, from an id already checked, never by the page. */
 const retryPath = (id: string): string | null => (isItemId(id) ? `/items/${id}/retry` : null);
@@ -224,6 +228,20 @@ export function boardView(input: {
     return claims.conflicts.get(node.id) ?? claims.clashes.get(node.id) ?? listedBy(node.id);
   };
 
+  /**
+   * Every edge touching `id`, with the node at its other end as the listing
+   * has it: any type, either way, since the panel lists them all and no type
+   * is one the board knows. An edge whose other end the listing does not
+   * hold has nothing to show of it.
+   */
+  const relatedOf = (id: string): BoardRelated[] =>
+    graph.relationships.flatMap((r): BoardRelated[] => {
+      const dir = r.to === id ? "in" : r.from === id ? "out" : null;
+      const other = dir === null ? undefined : nodes.get(dir === "in" ? r.from : r.to);
+      if (dir === null || other === undefined) return [];
+      return [{ type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state: other.closed ?? "open" }];
+    }).sort(byRelation);
+
   const rowOf = (node: Node): BoardRow => {
     const link = safeUrl(node.link);
     const base: BoardRow = {
@@ -232,7 +250,8 @@ export function boardView(input: {
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, updatedAt: node.updatedAt ?? null,
       round: null, model: null, effort: null,
-      pages: [], chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null, children: [],
+      pages: [], chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null,
+      related: relatedOf(node.id), children: [],
     };
     if (node.kind !== ITEM_KIND) return base;
 
@@ -268,7 +287,8 @@ export function boardView(input: {
     // offer here would be a guess at whose stages its labels mean.
     const owner = claims.owner.get(node.id);
     const workflow = owner === undefined ? undefined : workflows.get(owner);
-    const [s] = workflow ? statusRows(workflow, [node]) : [];
+    // The listing's graph, so a stage's own note can name what it waits on.
+    const [s] = workflow ? statusRows(workflow, [node], graph) : [];
     const placed: BoardRow = s && workflow
       ? {
           ...item, workflow: owner ?? null, tag: workflows.size > 1 ? workflow.name : null,
@@ -313,7 +333,7 @@ export function boardView(input: {
     const goto = gotoPaths(node.id, workflow.stages.find((x) => x.id === s.stage));
     // The status row's own verdict, not the labels read a second time; the
     // note is the page's wording of the same fact.
-    if (s.note === SCREENED_NOTE) {
+    if (engineNoteOf(s) === SCREENED_NOTE) {
       return {
         ...placed, badge: laneOf(s, workflow), screened: true, note: SCREENED_NOTE, retry, clear: clearPath(node.id), goto,
       };

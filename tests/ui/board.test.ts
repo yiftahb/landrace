@@ -110,6 +110,84 @@ describe("boardView: an item a security check stopped", () => {
 });
 
 /*
+ * A stage's own note is what the row says while the item rests there —
+ * never what files it. "blocked by #10" begins as a halt's note does, and
+ * read as text it put an item that is only waiting under Needs you, with a
+ * Retry. `x` is a type nobody gave a meaning.
+ */
+describe("boardView: an item at a stage with a note", () => {
+  const noted: Workflow = {
+    ...workflow,
+    stages: [...workflow.stages, { id: "waiting", note: "blocked by {rel.x.out.open}", triggers: [{ when: { "run.stage": "spec" } }] }],
+  };
+  const g = graph(
+    [item("12", {}, ["go", "lr:stage:waiting"]), item("10", {}, []), item("9", { closed: "done" }, [])],
+    [edge("12", "10", "x"), edge("12", "9", "x")],
+  );
+  const rowOf = (over: Partial<Parameters<typeof boardView>[0]> = {}) =>
+    flatten(view(g, {
+      workflows: [{ id: "t", workflow: noted }],
+      listing: { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: noted, source: 0 }], [g]) },
+      ...over,
+    }).rows).find((r) => r.id === "12");
+
+  it("says the note, rendered, and draws the item in Waiting with no Retry", () => {
+    expect(rowOf()).toMatchObject({ stage: "waiting", note: "blocked by #10", badge: "waiting", lane: "waiting", retry: null });
+  });
+
+  // Word for word a halt's own note: still no shield, no Retry and no Clear.
+  it("offers nothing a halt is offered, whatever the note says", () => {
+    for (const note of ["blocked by a security check", "blocked: needs a human"]) {
+      const said: Workflow = { ...noted, stages: noted.stages.map((st) => (st.id === "waiting" ? { ...st, note } : st)) };
+      const row = rowOf({ workflows: [{ id: "t", workflow: said }], listing: { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: said, source: 0 }], [g]) } });
+      expect(row).toMatchObject({ note, badge: "waiting", screened: false, retry: null, clear: null });
+    }
+  });
+
+  it("says an agent is running over it, while one is", () => {
+    const running = new Map<string, Running>([["12", { stage: "waiting", round: 1, model: null, effort: null, since: 5 }]]);
+    expect(rowOf({ running })).toMatchObject({ note: "agent running", badge: "running" });
+  });
+});
+
+/*
+ * The panel lists every relationship an item has, read off the graph's
+ * edges: any type, either way, with the other end as the listing has it.
+ * No type is special — `x` is listed as `blocked-by` and `child-of` are.
+ */
+describe("boardView: every relationship of an item", () => {
+  it("lists each edge touching it, by type, its own first, with the other end's title, link and state", () => {
+    const g = graph(
+      [
+        item("12"), item("10"), item("9", { closed: "done" }), item("13"), item("1"),
+        item("8", { closed: "dropped", link: "javascript:alert(1)", title: "bad\nname" }), pr("pr-5"),
+      ],
+      [
+        edge("12", "10", "blocked-by"), edge("12", "9", "blocked-by"), edge("13", "12", "blocked-by"),
+        edge("12", "8", "x"), edge("pr-5", "12", "implements"), edge("12", "1", "child-of"),
+        // Touches neither end of 12: not its relationship.
+        edge("13", "10", "blocked-by"),
+      ],
+    );
+    const row = flatten(view(g).rows).find((r) => r.id === "12");
+    expect(row?.related).toEqual([
+      { type: "blocked-by", dir: "out", id: "9", title: "t9", link: "https://x/9", state: "done" },
+      { type: "blocked-by", dir: "out", id: "10", title: "t10", link: "https://x/10", state: "open" },
+      { type: "blocked-by", dir: "in", id: "13", title: "t13", link: "https://x/13", state: "open" },
+      { type: "child-of", dir: "out", id: "1", title: "t1", link: "https://x/1", state: "open" },
+      { type: "implements", dir: "in", id: "pr-5", title: "PR pr-5", link: "https://github.com/a/b/pull/pr-5", state: "open" },
+      // Only an http(s) link becomes an href, and a title is one line.
+      { type: "x", dir: "out", id: "8", title: "bad name", link: "", state: "dropped" },
+    ]);
+    expect(flatten(view(g).rows).find((r) => r.id === "13")?.related.map((r) => [r.dir, r.id])).toEqual([["out", "10"], ["out", "12"]]);
+  });
+
+  it("lists none for an item nothing relates to", () => {
+    expect(view(graph([item("12")])).rows[0]?.related).toEqual([]);
+  });
+});
+
+/*
  * Retry is offered on exactly the items a human turn would hand back: the
  * blocked and the screened. The path comes from the server, built from an id
  * it has checked, so the page never puts a URL together itself.
@@ -601,7 +679,7 @@ describe("boardView: rows", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
       "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "pages", "panel",
-      "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "tag", "title", "updatedAt", "workflow",
+      "priority", "related", "retry", "round", "screened", "since", "stage", "stale", "system", "tag", "title", "updatedAt", "workflow",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
   });

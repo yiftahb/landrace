@@ -1,6 +1,7 @@
-import { UNPLACED } from "#core/index.js";
-import type { Node, Workflow } from "#namespace.js";
-import { laneOf, statusRows } from "#runner/status.js";
+import { claimItems, UNPLACED } from "#core/index.js";
+import type { Graph, Node, Workflow } from "#namespace.js";
+import { BLOCKED_NOTE, laneOf, SCREENED_NOTE, statusRows, workspaceStatusRows } from "#runner/status.js";
+import { staticSource } from "#testing/index.js";
 
 const workflow: Workflow = {
   version: 1,
@@ -180,5 +181,77 @@ describe("statusRows, of an item no stage places", () => {
       ...gappy, stages: [...gappy.stages, { id: "escalated", identity: { "node.state.labels": { $in: ["go"] }, "run.outputs.triage.kind": "escalate" } }],
     };
     expect(statusRows(unjudged, [candidate(["go"])])[0]).toMatchObject({ stage: null, note: "queued" });
+  });
+});
+
+/*
+ * A stage's own note, rendered from the item's relationships, in place of
+ * "queued" while the item rests there. Display only: the lane is the one
+ * "queued" is filed under, whatever the workflow wrote — "blocked by #10"
+ * begins as a halt's own note does, and read as text it filed a waiting item
+ * under Needs you. `x` is a type nobody gave a meaning.
+ */
+describe("statusRows, at a stage with a note", () => {
+  const noted: Workflow = {
+    version: 1, name: "t", description: "test",
+    eligible: [{ when: { "node.state.labels": { $in: ["go"] } }, else: "no go label" }],
+    stages: [
+      { id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }] },
+      { id: "waiting", note: "blocked by {rel.x.out.open}", triggers: [{ when: { "run.stage": "spec" } }] },
+      { id: "asking", waits: "person", note: "asked of {rel.x.out.open}", triggers: [{ when: { "run.stage": "spec" } }] },
+      { id: "done", terminal: true, note: "{rel.x.out.total} related", triggers: [{ when: { "run.stage": "waiting" } }] },
+    ],
+  };
+  const related = (id: string, closed: Node["closed"] = null): Node => ({ ...candidate([], [], id), closed });
+  const around = (item: Node): Graph => ({
+    nodes: [item, related("10"), related("11"), related("9", "done"), related("8", "dropped"), related("13")],
+    relationships: [
+      { from: "12", to: "11", type: "x" }, { from: "12", to: "10", type: "x" },
+      { from: "12", to: "9", type: "x" }, { from: "12", to: "8", type: "x" },
+      // Pointing in: not one of the item's own `out`.
+      { from: "13", to: "12", type: "x" },
+    ],
+  });
+  const rowAt = (labels: string[], withGraph = true) => {
+    const item = candidate(["go", ...labels], [], "12");
+    return statusRows(noted, [item], withGraph ? around(item) : undefined)[0];
+  };
+
+  it("shows the stage's note, rendered from the graph, and keeps the item in Waiting", () => {
+    const row = rowAt(["lr:stage:waiting"]);
+    expect(row).toMatchObject({ stage: "waiting", note: "blocked by #10, #11" });
+    expect(row && laneOf(row, noted)).toBe("waiting");
+  });
+
+  it("still discharges an item at a terminal stage with a note", () => {
+    const row = rowAt(["lr:stage:done"]);
+    expect(row).toMatchObject({ stage: "done", note: "3 related" });
+    expect(row && laneOf(row, noted)).toBe("discharged");
+  });
+
+  it("says queued where it has no graph to render the note from", () => {
+    expect(rowAt(["lr:stage:waiting"], false)).toMatchObject({ stage: "waiting", note: "queued" });
+  });
+
+  it("keeps its own note while it works, waits on you, is blocked, screened or halted", () => {
+    expect(rowAt(["lr:stage:waiting", "lr:working"])?.note).toBe("working");
+    expect(rowAt(["lr:stage:asking"])?.note).toBe("waiting on you");
+    expect(rowAt(["lr:stage:waiting", "lr:blocked"])?.note).toBe(BLOCKED_NOTE);
+    expect(rowAt(["lr:stage:waiting", "lr:blocked", "lr:screened"])?.note).toBe(SCREENED_NOTE);
+    expect(rowAt(["lr:stage:waiting", "lr:stage:done"])?.note).toMatch(/^halted: /);
+    for (const labels of [["lr:stage:asking"], ["lr:stage:waiting", "lr:blocked"]]) {
+      const row = rowAt(labels);
+      expect(row && laneOf(row, noted)).toBe("needs-you");
+    }
+  });
+
+  // What `landrace status` prints: each item's note rendered from its own source's listing.
+  it("renders it in the workspace's rows from the listing of the item's own source", () => {
+    const g = around(candidate(["go", "lr:stage:waiting"], [], "12"));
+    const workflows = [{ id: "t", source: staticSource(g, [{ type: "x", singular: false }]), deps: { workflow: noted } }];
+    const listing = { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: noted, source: 0 }], [g]) };
+    const row = workspaceStatusRows(workflows, listing).find((r) => r.item === "12");
+    expect(row).toMatchObject({ workflow: "t", stage: "waiting", note: "blocked by #10, #11" });
+    expect(row && laneOf(row, noted)).toBe("waiting");
   });
 });

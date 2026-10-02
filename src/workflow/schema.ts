@@ -35,6 +35,7 @@ export const stageSchema = z.object({
       retry: z.unknown().optional(),
     }).strict(),
   ])).optional(),
+  note: z.string().min(1).optional(),
 }).strict();
 
 export const workflowSchema = z.object({

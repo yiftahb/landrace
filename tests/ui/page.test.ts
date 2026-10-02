@@ -1608,8 +1608,8 @@ describe("the Escape key and the panel", () => {
 
 describe("the item panel's facts", () => {
   const facts = (row: object): Record<string, string> => {
-    const [, dl] = runInNewContext(`${fnSource("el")}${fnSource("panelTopOf")} panelTopOf(ROW, null, 0)`, {
-      ROW: { id: "12", link: "", badge: null, screened: false, stage: "build", round: 2, createdAt: null, since: null, children: [], ...row },
+    const [, dl] = runInNewContext(`${["el", "relatedOf", "panelTopOf"].map(fnSource).join("")} panelTopOf(ROW, null, 0)`, {
+      ROW: { id: "12", link: "", badge: null, screened: false, stage: "build", round: 2, createdAt: null, since: null, children: [], related: [], ...row },
       document: fakeDocument,
     }) as FakeElement[];
     const cells = dl?.children ?? [];
@@ -1622,6 +1622,44 @@ describe("the item panel's facts", () => {
 
   it("draws a dash for a step that named no effort, as for no model", () => {
     expect(facts({ model: null, effort: null })).toMatchObject({ Model: "—", Effort: "—" });
+  });
+});
+
+/*
+ * Every relationship the item has, as the board row carries it: the other
+ * item's number and title — text, whoever wrote it — its link where the
+ * server gave one, and its state.
+ */
+describe("the item panel's relationships", () => {
+  const draw = (related: object[]): FakeElement[] =>
+    runInNewContext(`${["el", "panelLink", "relatedOf"].map(fnSource).join("")} relatedOf(RELATED)`, {
+      RELATED: related, document: fakeDocument,
+    }) as FakeElement[];
+
+  it("lists each related item under Related, by type and way, number, title and state", () => {
+    const [head, list] = draw([
+      { type: "blocked-by", dir: "out", id: "10", title: "Auth", link: "https://x/10", state: "open" },
+      { type: "x", dir: "in", id: "13", title: "<b>Later</b>", link: "", state: "dropped" },
+    ]);
+    expect(head?.text).toBe("Related");
+    expect(list?.children.map((li) => li.children.map((c) => c.textContent))).toEqual([
+      ["blocked-by →", "#10 Auth", "open"],
+      ["x ←", "#13 <b>Later</b>", "dropped"],
+    ]);
+    const anchors = descendants(list as FakeElement).filter((e) => e.tag === "a");
+    expect(anchors.map((a) => [a.href, a.target, a.textContent])).toEqual([["https://x/10", "_blank", "#10 Auth"]]);
+  });
+
+  it("draws text only, never markup", () => {
+    expect(fnSource("relatedOf")).not.toMatch(/innerHTML|insertAdjacentHTML/);
+  });
+
+  it("draws nothing for an item nothing relates to", () => {
+    expect(draw([])).toEqual([]);
+  });
+
+  it("is drawn in the panel's top half", () => {
+    expect(fnSource("panelTopOf")).toContain("relatedOf(row.related)");
   });
 });
 
