@@ -320,13 +320,24 @@ export class GitLab extends BaseForge {
     return [...open.items, ...done].map(recordOf);
   }
 
-  /** Every merge request from the item's `landrace/{item}` branch, merged and closed ones too, and never a fork's. */
+  /**
+   * Every merge request from the item's `landrace/{item}` branch, merged and
+   * closed ones too, and never a fork's — left out before anything is
+   * counted, since GitLab cannot be asked for one project's source branches
+   * alone, and counted first, anybody's forks on a branch of that name
+   * halted the item (re-review N9). A list the page bound cut may hide the
+   * item's own, so it halts the item too.
+   */
   async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
     const { items: requests, more } = await this.gl(ctx).pages<MergeRequest>(
-      `/merge_requests?state=all&order_by=created_at&sort=desc&source_branch=${encodeURIComponent(prBranch(item))}`, 1,
+      `/merge_requests?state=all&order_by=created_at&sort=desc&source_branch=${encodeURIComponent(prBranch(item))}`, MAX_ISSUE_PAGES,
     );
-    if (more || requests.length > ITEM_PAGE) throw tooMany(`#${item} has more than ${ITEM_PAGE} merge requests on its branch`);
-    return requests.filter((mr) => mr.source_project_id === mr.target_project_id).map(recordOf);
+    if (more) {
+      throw tooMany(`more than ${MAX_ISSUE_PAGES * PER_PAGE} merge requests are from a branch named ${prBranch(item)}, forks' among them`);
+    }
+    const own = requests.filter((mr) => mr.source_project_id === mr.target_project_id);
+    if (own.length > ITEM_PAGE) throw tooMany(`#${item} has more than ${ITEM_PAGE} merge requests on its branch`);
+    return own.map(recordOf);
   }
 
   /**

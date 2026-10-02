@@ -271,6 +271,52 @@ describe("the GitHub source", () => {
     }
   });
 
+  /*
+   * Re-review N9: forks are left out only after GitHub answers, and GitHub
+   * cannot be asked for this repository's heads alone — so 51 forks naming a
+   * branch `landrace/7` once made #7's read count "51 pull requests on its
+   * branch" and halt it. The count is of the item's own pull requests now.
+   */
+  describe("forks that name an item's branch", () => {
+    const flood = (gh: FakeTracker, forks: number): void => {
+      for (let i = 0; i < forks; i++) gh.openPull({ head: "landrace/7", crossRepository: true });
+    };
+
+    it("never halt the item: 51 forks, and its own pull request read past them", async () => {
+      const gh = createFakeTracker([{ number: 7 }]);
+      // Opened first, so newest-first it is last: on the second page, past every fork.
+      gh.openPull({ number: 1, head: "landrace/7", threads: [] });
+      flood(gh, 51);
+      const g = await sourceOf(gh).read("7", ctx(gh));
+      expect(g.nodes.filter((n) => n.kind === "pull-request").map((n) => n.id)).toEqual(["pr-1"]);
+      expect(hasPullFrom(g, "7", "landrace/7")).toBe(true);
+      expect(operations(gh, "LandraceItem").map((q) => q.variables.cursor)).toEqual([null, "50"]);
+    });
+
+    it("never halt it up to every page a read carries: 500 forks", async () => {
+      const gh = createFakeTracker([{ number: 7 }]);
+      gh.openPull({ number: 1, head: "landrace/7", threads: [] });
+      flood(gh, 499);
+      const g = await sourceOf(gh).read("7", ctx(gh));
+      expect(g.nodes.filter((n) => n.kind === "pull-request").map((n) => n.id)).toEqual(["pr-1"]);
+      expect(operations(gh, "LandraceItem")).toHaveLength(10);
+    });
+
+    it("halt it past every page a read carries, since a list cut short may hide the item's own", async () => {
+      const gh = createFakeTracker([{ number: 7 }]);
+      gh.openPull({ number: 1, head: "landrace/7", threads: [] });
+      flood(gh, 500);
+      await expect(sourceOf(gh).read("7", ctx(gh))).rejects.toThrow(/more than 500 pull requests .*landrace\/7.*forks/);
+      expect(operations(gh, "LandraceItem")).toHaveLength(10);
+    });
+
+    it("leave the item's own count as it was: more than one read carries halts it", async () => {
+      const gh = createFakeTracker([{ number: 7 }]);
+      for (let i = 0; i < 51; i++) gh.openPull({ head: "landrace/7", state: "CLOSED", merged: false, threads: [] });
+      await expect(sourceOf(gh).read("7", ctx(gh))).rejects.toThrow(/#7 has more than 50 pull requests on its branch/);
+    });
+  });
+
   it("reads a pull request closed without merging as dropped", async () => {
     const gh = createFakeTracker([{ number: 7 }]);
     gh.openPull({ number: 30, head: "landrace/7", state: "CLOSED", merged: false, threads: [] });
@@ -421,7 +467,7 @@ describe("a pull request's reference is derived from the item, never stored", ()
     const gh = createFakeTracker([{ number: 77 }]);
     await sourceOf(gh).read("77", ctx(gh));
     // By its head alone: what an issue's closing references name ties nothing.
-    expect(operations(gh, "LandraceItem")[0]?.variables).toEqual({ owner: "acme", name: "widgets", head: "landrace/77" });
+    expect(operations(gh, "LandraceItem")[0]?.variables).toEqual({ owner: "acme", name: "widgets", head: "landrace/77", cursor: null });
   });
 
   /* Review focus: no pull request yet must read as none, not as a zero a trigger might match. */

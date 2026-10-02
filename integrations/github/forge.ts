@@ -58,13 +58,17 @@ query LandraceClosedPulls($owner: String!, $name: String!, $cursor: String) {
   }
 }`;
 
-/** Every pull request on one item's `landrace/{item}` head, a fork's among them until `pullsNaming` leaves it out. */
+/**
+ * Every pull request on one item's `landrace/{item}` head, a page at a time
+ * on its own cursor — a fork's among them, since GitHub cannot be asked for
+ * one repository's heads alone, until `pullsNaming` leaves it out.
+ */
 const ITEM_QUERY = `
-query LandraceItem($owner: String!, $name: String!, $head: String!) {
+query LandraceItem($owner: String!, $name: String!, $head: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${ITEM_PAGE},
+    pullRequests(headRefName: $head, states: [OPEN, MERGED, CLOSED], first: ${ITEM_PAGE}, after: $cursor,
                  orderBy: { field: CREATED_AT, direction: DESC }) {
-      totalCount
+      pageInfo { hasNextPage endCursor }
       nodes { ${PULL_FIELDS} }
     }
   }
@@ -532,20 +536,36 @@ export class GitHubForge extends BaseForge {
    * this repository. A fork's on a head of that name is not this item's —
    * the name is in somebody else's repository — and nor is one that only
    * says it closes the item.
+   *
+   * Forks are left out page by page, before anything is counted: counted
+   * first, anybody's 51 forks on a branch named `landrace/7` halted #7
+   * (re-review N9). The item's own past one page is still a number known to
+   * be short, and so is a list the page bound cut — the item's own pull
+   * request may be past the cut — so either halts the item, saying so.
    */
   async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
     const gh = this.gh(ctx);
-    const data = await gh.graphql<{ repository: { pullRequests: { totalCount: number; nodes: PullNode[] } } | null }>(
-      ITEM_QUERY, { owner: gh.owner, name: gh.name, head: prBranch(item) },
-    );
-    if (!data.repository) throw unseen(gh.repo);
-    const { pullRequests } = data.repository;
-    // A count over the first page is a number known to be short: past the
-    // page, the item halts saying so.
-    if (pullRequests.totalCount > pullRequests.nodes.length) {
-      throw new Error(`#${item} has ${pullRequests.totalCount} pull requests on its branch, more than the ${ITEM_PAGE} one read carries`);
+    const head = prBranch(item);
+    const own: PullNode[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; ; page++) {
+      if (page === MAX_ISSUE_PAGES) {
+        throw new Error(
+          `more than ${MAX_ISSUE_PAGES * ITEM_PAGE} pull requests are on a branch named ${head}, forks' among them, ` +
+          `more than #${item}'s read carries — its own may be past them`,
+        );
+      }
+      const data: { repository: { pullRequests: Page<PullNode> } | null } =
+        await gh.graphql(ITEM_QUERY, { owner: gh.owner, name: gh.name, head, cursor });
+      if (!data.repository) throw unseen(gh.repo);
+      const { pullRequests } = data.repository;
+      own.push(...pullRequests.nodes.filter((p) => !p.isCrossRepository));
+      if (own.length > ITEM_PAGE) {
+        throw new Error(`#${item} has more than ${ITEM_PAGE} pull requests on its branch, more than one read carries`);
+      }
+      if (!pullRequests.pageInfo.hasNextPage) return own.map(recordOf);
+      cursor = pullRequests.pageInfo.endCursor;
     }
-    return pullRequests.nodes.filter((p) => !p.isCrossRepository).map(recordOf);
   }
 
   /**

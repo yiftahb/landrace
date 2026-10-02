@@ -441,6 +441,14 @@ export function createFakeTracker(
   /** A connection as GraphQL pages one: the first page of nodes, and how many there are in all. */
   const connection = <T>(all: T[]) => ({ totalCount: all.length, nodes: all.slice(0, CONNECTION_PAGE) });
 
+  /** One page of an item's pull requests, from the cursor a previous page ended at. */
+  const itemPullPage = <T>(all: T[], cursor: unknown) => {
+    const from = typeof cursor === "string" && cursor ? Number(cursor) : 0;
+    const nodes = all.slice(from, from + CONNECTION_PAGE);
+    const end = from + nodes.length;
+    return { totalCount: all.length, pageInfo: { hasNextPage: end < all.length, endCursor: String(end) }, nodes };
+  };
+
   const childrenOf = (n: number): FakeIssue[] =>
     [...issues.values()].filter((i) => i.parent === n).sort((a, b) => a.number - b.number);
 
@@ -631,9 +639,12 @@ export function createFakeTracker(
                   [...pulls.values()].filter((p) => (p.closes ?? []).includes(issue.number)).map(pullNode),
                 ),
               },
-              // Newest first, the way `orderBy: { field: CREATED_AT, direction: DESC }` orders them.
-              pullRequests: connection(
+              // Newest first, the way `orderBy: { field: CREATED_AT, direction: DESC }`
+              // orders them, a page at a time on its own cursor, and forks' among
+              // them: GitHub cannot be asked for one repository's heads alone.
+              pullRequests: itemPullPage(
                 [...pulls.values()].filter((p) => p.head === variables.head).sort((a, b) => b.number - a.number).map(pullNode),
+                variables.cursor,
               ),
             },
           },

@@ -154,6 +154,22 @@ describe("pullsNaming", () => {
     expect(pulls.map((p) => [p.number, p.branch, p.merged])).toEqual([[2, "landrace/7", false], [1, "landrace/7", true]]);
   });
 
+  // Re-review N9, as on GitHub: forks are left out before anything is counted.
+  it("leaves forks out before it counts: 150 forks' merge requests from a branch named landrace/7 do not halt #7", async () => {
+    const gl = createFakeGitLab();
+    // Opened first, so newest-first it is last: on the second page, past every fork.
+    gl.open({ source_branch: "landrace/7" });
+    for (let i = 0; i < 150; i++) gl.open({ source_branch: "landrace/7", source_project_id: 99 });
+    const pulls = await forgeOver(gl).pullsNaming("7", gl.ctx());
+    expect(pulls.map((p) => p.number)).toEqual([1]);
+  });
+
+  it("refuses a list it could not read to its end, forks' among them", async () => {
+    const gl = createFakeGitLab();
+    for (let i = 0; i < 1000; i++) gl.open({ source_branch: "landrace/7", source_project_id: 99 });
+    await expect(forgeOver(gl).pullsNaming("7", gl.ctx())).rejects.toThrow(/more than 1000 merge requests .*landrace\/7.*forks/);
+  });
+
   it("refuses more than one item read carries", async () => {
     const gl = createFakeGitLab();
     for (let i = 0; i < 51; i++) gl.open({ source_branch: "landrace/7", state: "closed" });
