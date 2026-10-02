@@ -8,7 +8,7 @@ import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "l
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
   repositoryOf, ITEM_PAGE,
-  type BranchHeads, type ChangedFile, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
+  type BranchHeads, type ChangedFile, type ChangedFiles, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, PER_PAGE, statusOf, tokenRejected } from "./client.js";
@@ -146,6 +146,7 @@ const fileOf = (d: Diff): ChangedFile => {
     additions: rows.filter((r) => r.startsWith("+")).length,
     deletions: rows.filter((r) => r.startsWith("-")).length,
     patch: rows.length === 0 ? undefined : rows.join("\n"),
+    ...(d.renamed_file && d.old_path !== d.new_path ? { previous: d.old_path } : {}),
   };
 };
 
@@ -320,8 +321,18 @@ export class GitLab extends BaseForge {
     return threads;
   }
 
-  async changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFile[]> {
-    return (await this.diffs(pull, ctx)).map(fileOf);
+  /**
+   * Every page of the diff, and whether that is the whole of it. GitLab cuts
+   * a diff at its own limits and says so only in the merge request's count
+   * of changes — "1000+" — so the list is whole only when the pages ran out
+   * and that count is a plain number naming exactly the files read.
+   */
+  async changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFiles> {
+    const gl = this.gl(ctx);
+    const { items, more } = await gl.pages<Diff>(`/merge_requests/${pull}/diffs`, MAX_ISSUE_PAGES);
+    const { changes_count: counted } = await gl.get<{ changes_count?: unknown }>(`/merge_requests/${pull}`);
+    const whole = !more && typeof counted === "string" && /^[0-9]+$/.test(counted) && Number(counted) === items.length;
+    return { files: items.map(fileOf), complete: whole };
   }
 
   /** Our own notes only, by login: anyone can paste a round's marker into theirs. */

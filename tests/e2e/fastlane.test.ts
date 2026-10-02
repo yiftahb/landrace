@@ -401,6 +401,48 @@ describe("fastlane, end to end", () => {
   });
 
   /*
+   * Security audit C1: a build that changed one of the engine's own hooks —
+   * TypeScript the engine imports with the project's secrets on its next
+   * start — reviewed clean and green, is not merged by Landrace. The kit
+   * reads the pull request's changed files before the merge and refuses: the
+   * item halts with the path named, and a person merges it or not. Merged by
+   * hand, the item is done.
+   */
+  it("13. halts a build that changed .landrace/hooks/github.ts, merging nothing, and finishes once a person merges it", async () => {
+    const { state, run, pr, row } = road({
+      seed: (s) => {
+        s.openPull("1", { files: [
+          { path: "src/export.ts", status: "added", additions: 40, deletions: 0 },
+          { path: ".landrace/hooks/github.ts", status: "modified", additions: 2, deletions: 0 },
+        ] });
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "merge", "ci", "blocked"]);
+    expect(r.result.settled).toBe("wait");
+    expect(pr()).toMatchObject({ merged: false, closed: null });
+    expect(state.item("1").closed).toBeNull();
+    expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:stage:blocked", "lr:blocked", "lr:fast"]));
+    expect(await row()).toMatchObject({ stage: "blocked", note: BLOCKED_NOTE, lane: "needs-you" });
+    const said = state.comments("1").at(-1) ?? "";
+    expect(said).toContain("will not merge pr-1 for #1: it changes .landrace/hooks/github.ts, which this workflow protects, so a person must merge it");
+    expect(said).not.toContain("src/export.ts");
+
+    // A person reads it, and merges it themselves.
+    Object.assign(pr(), { merged: true, closed: "done" });
+    const merged = await run.converge();
+    // From blocked, where the last converge left it: a trail starts with the stage it moved to.
+    expect(merged.trail).toEqual(["done"]);
+    expect(merged.result.settled).toBe("terminal");
+    expect(merged.calls).toEqual([]);
+    expect(state.item("1").closed).toBe("done");
+    expect(state.item("1").labels).toContain("lr:stage:done");
+    expect(state.item("1").labels).not.toEqual(expect.arrayContaining(["lr:fast"]));
+    expect(state.item("1").labels).not.toContain("lr:blocked");
+  });
+
+  /*
    * publish, merge and closed are Retry's alone: after any other failure a
    * person cannot send the item there — "Go to step… merge" after a broken
    * review would merge code no review passed — and after one of them was

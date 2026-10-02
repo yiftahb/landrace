@@ -6,6 +6,7 @@ import {
   mayCreateItems,
   NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
+  PULL_MERGE_EFFECT,
   RECORD_EFFECT,
   retiredCapabilityPointers,
   retiredPlaceholder,
@@ -289,10 +290,27 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
           });
         }
       }
+      if (effect.type === PULL_MERGE_EFFECT) problems.push(...mergeGuardProblems(stage, effect));
     }
   }
 
   return dedupe(problems);
+}
+
+/**
+ * What a `pull.merge` effect's guards would not do as written. `refuse` is
+ * the paths only a person may merge: one the kit cannot read as a list of
+ * globs would leave the gate on paper and off on the merge.
+ */
+function mergeGuardProblems(stage: Stage, effect: Record<string, unknown>): Problem[] {
+  if (!("refuse" in effect)) return [];
+  const { refuse } = effect;
+  const globs = Array.isArray(refuse) && refuse.length > 0 && refuse.every((g) => typeof g === "string" && g !== "");
+  return globs ? [] : [{
+    rule: "merge-guard",
+    message: `stage "${stage.id}" has a pull.merge whose refuse is ${JSON.stringify(refuse)}; it must be a list of path globs, ` +
+      "each a non-empty string, naming the paths only a person may merge",
+  }];
 }
 
 /**

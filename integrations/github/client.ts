@@ -38,7 +38,13 @@ export interface PullFile {
   additions: number;
   deletions: number;
   patch?: string;
+  /** A renamed file's old path. */
+  previous_filename?: string;
 }
+
+/** A hundred files a page, and GitHub lists no more than 3,000 of a pull request's however many it changes. */
+const FILES_PER_PAGE = 100;
+const FILE_PAGES = 30;
 
 /** One check run on a commit, as `GET /commits/{sha}/check-runs` answers it. */
 export interface CheckRun {
@@ -387,15 +393,19 @@ export function createClient(opts: GitHubOptions) {
       named(call("PUT", `/pulls/${n}/merge`, { sha, merge_method: "merge" }),
         `"Pull requests: Read and write" and "Contents: Read and write" on ${repo}`),
 
-    /** The pull request's diff, a file at a time; GitHub stops at 3,000 files, a hundred a page. */
-    pullFiles: async (n: number): Promise<PullFile[]> => {
-      const all: PullFile[] = [];
-      for (let page = 1; page <= 30; page++) {
-        const batch = await call<PullFile[]>("GET", `/pulls/${n}/files?per_page=100&page=${page}`);
-        all.push(...batch);
-        if (batch.length < 100) break;
+    /**
+     * The pull request's diff, a file at a time, and whether that is all of
+     * it: a page short of a hundred is the last, and thirty full ones are
+     * GitHub's cap, which says nothing of what lies past it.
+     */
+    pullFiles: async (n: number): Promise<{ files: PullFile[]; complete: boolean }> => {
+      const files: PullFile[] = [];
+      for (let page = 1; page <= FILE_PAGES; page++) {
+        const batch = await call<PullFile[]>("GET", `/pulls/${n}/files?per_page=${FILES_PER_PAGE}&page=${page}`);
+        files.push(...batch);
+        if (batch.length < FILES_PER_PAGE) return { files, complete: true };
       }
-      return all;
+      return { files, complete: false };
     },
     // ponytail: the first hundred reviews only; past that a round's marker could be missed and posted twice.
     listReviews: (n: number) => call<Array<{ body: string | null }>>("GET", `/pulls/${n}/reviews?per_page=100`),

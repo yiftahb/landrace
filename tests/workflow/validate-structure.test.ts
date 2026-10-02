@@ -479,3 +479,32 @@ describe("structural validation, of a workflow placed by the item's own state", 
     expect(problems).toEqual([{ rule: "reachability", message: 'nothing can reach stage "archived"' }]);
   });
 });
+
+/*
+ * `pull.merge`'s guards, as the workflow writes them. A `refuse` the kit
+ * would read as nothing protected is the gate quietly off, so a shape it
+ * cannot read is said at load, not met on an item merging.
+ */
+describe("a merge's guards", () => {
+  const merging = (merge: Record<string, unknown>): Workflow => wf([
+    { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    { id: "m", triggers: [{ when: { "run.stage": "a" } }], on_enter: [{ type: "pull.merge", branch: "landrace/{item}", ...merge }] },
+    { id: "z", terminal: true, triggers: [{ when: { "run.stage": "m" } }] },
+  ]);
+  const said = (w: Workflow) => validateStructure(w).filter((p) => p.rule === "merge-guard").map((p) => p.message);
+
+  it("accepts a merge with no guards, and one whose refuse is a list of globs", () => {
+    expect(said(merging({}))).toEqual([]);
+    expect(said(merging({ refuse: [".landrace/hooks/**", "package.json"] }))).toEqual([]);
+  });
+
+  it.each([
+    ["a string", "package.json"],
+    ["an empty list", []],
+    ["a list with an empty glob", ["package.json", ""]],
+    ["a list with a number", ["package.json", 7]],
+    ["nothing at all", null],
+  ])("refuses a refuse that is %s, naming the stage", (_what, refuse) => {
+    expect(said(merging({ refuse }))).toEqual([expect.stringMatching(/stage "m".*refuse/)]);
+  });
+});

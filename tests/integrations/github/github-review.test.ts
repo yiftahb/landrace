@@ -1,6 +1,7 @@
+import { createClient, GitHubForge } from "landrace/integrations/github";
 import { parseMarker, renderMarker } from "#conventions.js";
 import type { Effect, Graph, HookContext, Node, Snapshot } from "#namespace.js";
-import { createFakeTracker, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { createFakeTracker, noBranches, type FakeTracker } from "#tests/support/fake-tracker.js";
 
 /*
  * code-review ran on every item and never raised a thread: it had no way to.
@@ -285,5 +286,61 @@ describe("the reviewer's briefing", () => {
     const gh = createFakeTracker([{ number: 7 }]);
     const { diff = "" } = await brief(gh);
     expect(diff).toMatch(/no pull request is open/i);
+  });
+});
+
+/*
+ * What `pull.merge`'s protected paths are judged on: every page of the
+ * pull request's files, a rename's old name, and whether GitHub listed them
+ * all — it lists at most 3,000, however many a pull request changes.
+ */
+describe("the changed files, as GitHub pages them", () => {
+  const forgeOver = (gh: FakeTracker): GitHubForge =>
+    new GitHubForge({ client: createClient({ repo: "acme/widgets", token: "test-token", fetchImpl: gh.fetchImpl }), git: noBranches });
+  const files = (n: number) => Array.from({ length: n }, (_, i) => ({ filename: `src/f${i}.ts`, status: "modified", additions: 1, deletions: 0 }));
+  const pages = (gh: FakeTracker) => gh.requests.filter((r) => r.method === "GET" && /^\/pulls\/20\/files$/.test(r.path)).length;
+
+  it("reads every page, the last one short, and calls that whole", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "landrace/7", files: files(250) });
+    const read = await forgeOver(gh).changedFiles(20, gh.ctx);
+    expect(read.complete).toBe(true);
+    expect(read.files.map((f) => f.path)).toEqual(files(250).map((f) => f.filename));
+    expect(pages(gh)).toBe(3);
+  });
+
+  it("calls a list of exactly a hundred whole once the next page comes back empty", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "landrace/7", files: files(100) });
+    expect(await forgeOver(gh).changedFiles(20, gh.ctx)).toMatchObject({ complete: true, files: expect.any(Array) });
+    expect(pages(gh)).toBe(2);
+  });
+
+  it("calls GitHub's 3,000 not whole: thirty full pages say nothing of what lies past them", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "landrace/7", files: files(3_500) });
+    const read = await forgeOver(gh).changedFiles(20, gh.ctx);
+    expect(read.complete).toBe(false);
+    expect(read.files).toHaveLength(3_000);
+    expect(pages(gh)).toBe(30);
+  });
+
+  it("refuses rather than answer a list a page of which failed", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "landrace/7", files: files(250) });
+    let asked = 0;
+    gh.breakOn((r) => r.method === "GET" && r.path === "/pulls/20/files" && ++asked === 2, 502);
+    await expect(forgeOver(gh).changedFiles(20, gh.ctx)).rejects.toThrow(/502/);
+  });
+
+  it("says a renamed file's old path", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({
+      number: 20, head: "landrace/7",
+      files: [{ filename: "docs/notes.md", previous_filename: ".landrace/hooks/github.ts", status: "renamed", additions: 0, deletions: 0 }],
+    });
+    expect((await forgeOver(gh).changedFiles(20, gh.ctx)).files).toEqual([
+      { path: "docs/notes.md", previous: ".landrace/hooks/github.ts", status: "renamed", additions: 0, deletions: 0, patch: undefined },
+    ]);
   });
 });

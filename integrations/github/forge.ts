@@ -12,7 +12,7 @@ import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
   ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
-  type BranchHeads, type ChangedFile, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
+  type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, issueNumber, tokenRejected, unseen } from "./client.js";
@@ -544,10 +544,15 @@ export class GitHubForge extends BaseForge {
     );
   }
 
-  async changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFile[]> {
-    return (await this.gh(ctx).pullFiles(pull)).map((f) => ({
-      path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, patch: f.patch,
-    }));
+  async changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFiles> {
+    const { files, complete } = await this.gh(ctx).pullFiles(pull);
+    return {
+      complete,
+      files: files.map((f) => ({
+        path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, patch: f.patch,
+        ...(f.previous_filename === undefined ? {} : { previous: f.previous_filename }),
+      })),
+    };
   }
 
   async reviews(pull: number, ctx: RuntimeContext): Promise<string[]> {

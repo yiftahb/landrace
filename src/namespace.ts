@@ -1109,6 +1109,18 @@ export interface ChangedFile {
   additions: number;
   deletions: number;
   patch?: string | undefined;
+  /** The path it had before, for a rename: a protected path renamed away is a protected path changed. */
+  previous?: string | undefined;
+}
+
+/**
+ * What a pull request changes, and whether that is all of it: `complete` is
+ * false when the forge's list stopped before its end — its own cap, or a
+ * page bound — so a check over the list knows there was more it never saw.
+ */
+export interface ChangedFiles {
+  files: ChangedFile[];
+  complete: boolean;
 }
 
 /**
@@ -1711,11 +1723,16 @@ export interface ExternalPull {
   failed: FailedCheck[];
   /** False: the forge will not merge it — a conflict, or a rule of its own — and `merge` refuses, as a real one does. */
   mergeable?: false;
+  /** What it changes, file by file: none unless the test says. */
+  files?: ChangedFile[];
+  /** False: the forge's list of `files` stopped before its end, as a vendor's cap stops one. */
+  filesComplete?: false;
 }
 
 /** What a test may set on a pull request it opens in memory; everything else is defaulted. */
 export type ExternalPullSeed = Partial<Pick<
-  ExternalPull, "merged" | "openThreads" | "awaitingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable"
+  ExternalPull,
+  "merged" | "openThreads" | "awaitingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable" | "files" | "filesComplete"
 >>;
 
 /**

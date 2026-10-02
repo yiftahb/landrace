@@ -120,9 +120,16 @@ describe.each(["full-cycle", "fastlane"])("%s's ways the forge can refuse", (id)
   const workflowOf = (): Workflow => flow(id).workflow;
   const pullingIn = (w: Workflow): Stage[] => w.stages.filter((s) => !s.step && (s.on_enter ?? []).some((e) => PULL_EFFECTS.includes(e.type)));
 
-  it("reads `run.lastOutputValid: null` on every trigger leaving a stage with no step, but a person's own message", () => {
+  /*
+   * A halt is where a refusal is taken from, so a way out of one need not
+   * read it: after a Retry the forge refused again, `run.lastOutputValid` is
+   * false at the halt itself, and a pull request a person then merged by
+   * hand would leave the item there for good.
+   */
+  it("reads `run.lastOutputValid: null` on every trigger leaving a stage with no step, but a person's own message or a way out of a halt", () => {
     const workflow = workflowOf();
-    const stepless = new Set(workflow.stages.filter((s) => !s.step).map((s) => s.id));
+    const halts = new Set(workflow.stages.filter((s) => (s.triggers ?? []).some((t) => t.when["run.lastOutputValid"] === false)).map((s) => s.id));
+    const stepless = new Set(workflow.stages.filter((s) => !s.step && !halts.has(s.id)).map((s) => s.id));
     const unguarded = workflow.stages.flatMap((s) => (s.triggers ?? [])
       .filter((t) => {
         const from = t.when["run.stage"];
@@ -287,7 +294,22 @@ describe("fastlane's stages", () => {
     const types = (stageOf("merge").on_enter ?? []).map((e) => e.type);
     expect(types.indexOf("pull.merge")).toBeLessThan(types.indexOf("tracker.status"));
     expect(types.indexOf("tracker.comment")).toBeLessThan(types.indexOf("pull.merge"));
-    expect(stageOf("merge").on_enter).toContainEqual({ type: "pull.merge", branch: "landrace/{item}" });
+    expect(stageOf("merge").on_enter).toContainEqual(expect.objectContaining({ type: "pull.merge", branch: "landrace/{item}" }));
+  });
+
+  /*
+   * Security audit C1: what a prompt-injected build could merge to main with
+   * no person — the engine's own hooks, imported with the project's secrets;
+   * its configuration and workflows; CI with the repository's secrets; the
+   * dependencies the next install runs; the agents' own instructions — is a
+   * person's to merge, refused by the kit whatever the reviewer said.
+   */
+  it("leaves to a person every merge that changes the engine's hooks, configuration or workflows, CI, dependencies or agent instructions", () => {
+    const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
+    expect(merge?.refuse).toEqual([
+      ".landrace/hooks/**", ".landrace/landrace.yaml", ".landrace/workflows/*/workflow.yaml", ".github/**",
+      "package.json", "pnpm-lock.yaml", ".agsync/**", ".mcp.json", "CLAUDE.md", "AGENTS.md",
+    ]);
   });
 
   // The review's own push published the reviewed head; one here could publish one nobody reviewed.
@@ -494,8 +516,13 @@ const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => s
     if (n(f.total, 1) > 0 && n(f.notMerged, 1) === 0) return "done";
     return f.actor === "human" ? "triage" : null;
   }],
-  ...["blocked", "screened"].map((halt): [string, Record<string, readonly unknown[]>, (f: Facts) => string | null] =>
-    [halt, { actor: ["agent", "human"] }, (f) => (f.actor === "human" ? "triage" : null)]),
+  // At blocked, as at stuck, a pull request a person merged by hand finishes
+  // it: a merge the kit refused — a protected path — is theirs to make.
+  ["blocked", { actor: ["agent", "human"], total: [0, 1], notMerged: [0, 1] }, (f) => {
+    if (n(f.total, 1) > 0 && n(f.notMerged, 1) === 0) return "done";
+    return f.actor === "human" ? "triage" : null;
+  }],
+  ["screened", { actor: ["agent", "human"] }, (f) => (f.actor === "human" ? "triage" : null)],
 ];
 
 /** Each trigger's compiled `when`, compiled once: the sweep asks thousands of items. */
@@ -554,15 +581,18 @@ describe("every exit from a fastlane stage is exclusive", () => {
    * A way on the forge refused, read at the stage the item was leaving: the
    * record of it is the bot's and the latest word, so no person's message
    * is. Every boundary value of the stage's own exits, and only the halt
-   * matches — at `blocked` itself, nothing: the item waits there for a
-   * person. A Retry from `screened` the forge refused goes to `blocked`: the
-   * newest failure is the forge's, not a security check's.
+   * matches — at `blocked` itself, nothing, unless a person merged the pull
+   * request by hand after their Retry was refused again: the item waits
+   * there for them. A Retry from `screened` the forge refused goes to
+   * `blocked`: the newest failure is the forge's, not a security check's.
    */
   it.each(["publish", "ci", "merge", "stuck", "blocked", "screened"])("a refused way on from %s goes to blocked alone", (stage) => {
     const axes = Object.fromEntries(Object.entries(STAGES.find(([id]) => id === stage)?.[1] ?? {}).filter(([axis]) => axis !== "actor"));
     const facts = grid(stage, axes, { valid: false, refused: false, actor: "agent" });
-    const halt = stage === "blocked" ? [] : ["blocked"];
+    const halt = (f: Facts): string[] => stage !== "blocked"
+      ? ["blocked"]
+      : n(f.total, 1) > 0 && n(f.notMerged, 1) === 0 ? ["done"] : [];
     expect(facts.map((f) => [label(f), exitsFrom(flow("fastlane").workflow, f).map(destinationOf)]))
-      .toEqual(facts.map((f) => [label(f), halt]));
+      .toEqual(facts.map((f) => [label(f), halt(f)]));
   });
 });

@@ -255,7 +255,25 @@ stages:
             - { "rel.implements.in.not.merged": 0 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Merging the pull request, round {round}." }
-      - { type: pull.merge, branch: "landrace/{item}" }
+      # The paths only a person merges, whatever the review said: the engine's
+      # own hooks, imported with this project's secrets, its configuration and
+      # workflows, CI, the dependencies an install runs, and the agents' own
+      # instructions. The kit reads the pull request's changed files — a
+      # rename's old name too — and refuses one touching any of them, or one
+      # whose list it could not read to the end: `blocked`, for a person.
+      - type: pull.merge
+        branch: "landrace/{item}"
+        refuse:
+          - .landrace/hooks/**
+          - .landrace/landrace.yaml
+          - .landrace/workflows/*/workflow.yaml
+          - .github/**
+          - package.json
+          - pnpm-lock.yaml
+          - .agsync/**
+          - .mcp.json
+          - CLAUDE.md
+          - AGENTS.md
       - { type: tracker.status, value: merge }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
@@ -287,13 +305,23 @@ stages:
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
+      # And to a merge the kit refused: a protected path is a person's to
+      # merge, and once they have, nothing is left. Triage's trigger at
+      # blocked is this one's negation. No `run.lastOutputValid: null`: at the
+      # halt a refusal is already taken, and after a Retry the forge refused
+      # again it reads false here, which would hold a merged item for good.
+      - name: the pull request was merged while it was blocked
+        when:
+          "run.stage": blocked
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": 0
     # The close first, as merge merges first: an outage on it leaves the item
     # where it was, still lr:fast, and the next tick closes it. After the
     # labels, it left an item done, no longer admitted, and open for good.
     on_enter:
       - { type: tracker.close }
       - { type: tracker.status, value: done }
-      - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working"] }
+      - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
 
   # A person asked to drop it: its pull request is closed unmerged, then the
   # item, as dropped. Both before the position moves, as merge merges first,
@@ -408,8 +436,14 @@ stages:
           $or:
             - { "rel.implements.in.not.merged": { $gt: 0 } }
             - { "rel.implements.in.total": 0 }
+      # Not once its pull request merged: done takes that, as at stuck.
       - name: you replied to a halt
-        when: { "run.stage": blocked, "run.lastEvent.actor": human }
+        when:
+          "run.stage": blocked
+          "run.lastEvent.actor": human
+          $or:
+            - { "rel.implements.in.not.merged": { $gt: 0 } }
+            - { "rel.implements.in.total": 0 }
       - name: you replied to a security refusal
         when: { "run.stage": screened, "run.lastEvent.actor": human }
     on_enter:

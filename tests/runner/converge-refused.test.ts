@@ -138,6 +138,29 @@ describe("a merge the forge refuses on the way into the stage", () => {
       expect.objectContaining({ stage: "merge", round: 2, from: "blocked" }),
     ]);
   });
+
+  /*
+   * The protected-path gate (security audit C1): a pull request changing a
+   * path the workflow protects is the kit's refusal, not the forge's, and
+   * goes the same way — the stage's rejected round, the halt, a person.
+   */
+  it("is a pull request changing a protected path, which halts with the path named and merges nothing", async () => {
+    const state = at();
+    state.openPull("1", {
+      checks: "success", files: [{ path: ".landrace/hooks/github.ts", status: "modified", additions: 3, deletions: 1 }],
+    });
+    const { post } = counted(state);
+    const protectedMerge = [ENTER, { type: "pull.merge", branch: "landrace/{item}", refuse: [".landrace/hooks/**"] }, { type: "tracker.status", value: "merge" }];
+    const r = await harness(state, post, flow(protectedMerge)).converge();
+
+    expect(r.result.settled).toBe("wait");
+    expect(state.stage("1")).toBe("blocked");
+    expect(state.pull("pr-1")).toMatchObject({ merged: false, closed: null });
+    expect(rejections(state)).toEqual([expect.objectContaining({ stage: "merge", round: 1, from: "ready" })]);
+    expect(state.comments("1").find((c) => c.includes("which this workflow protects"))).toMatch(
+      /pr-1 for #1: it changes \.landrace\/hooks\/github\.ts, which this workflow protects, so a person must merge it/,
+    );
+  });
 });
 
 describe("a person's Retries, each refused", () => {

@@ -17,7 +17,7 @@ import { BaseForge, prBranch, refuseClosedByPerson } from "#kit/forge.js";
 import { BaseTracker, commentSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
-  ChangedFile,
+  ChangedFiles,
   CheckCounts,
   CheckState,
   Effect,
@@ -344,8 +344,10 @@ export class MemoryForge extends BaseForge {
     return [];
   }
 
-  async changedFiles(): Promise<ChangedFile[]> {
-    return [];
+  /** What a test said it changes — nothing unless it said — and listed whole unless it said not. */
+  async changedFiles(pull: number): Promise<ChangedFiles> {
+    const row = this.pull(`pr-${pull}`);
+    return { files: [...(row.files ?? [])], complete: row.filesComplete !== false };
   }
 
   async reviews(): Promise<string[]> {

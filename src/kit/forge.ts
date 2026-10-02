@@ -18,12 +18,12 @@ import {
 import { headIn, headsOf } from "#kit/git.js";
 import { createdAtOf, MAX_COMMENT_CHARS, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
 import type {
-  BranchHeads, BriefTable, ChangedFile, CheckCounts, CheckState, Effect, EffectTable, FailedCheck, Finding, Graph, HistoryItem,
+  BranchHeads, BriefTable, ChangedFile, ChangedFiles, CheckCounts, CheckState, Effect, EffectTable, FailedCheck, Finding, Graph, HistoryItem,
   HookContext, MergeAnswer, Node, PullRecord, RelationDecl, Relationship, Reply, ReviewThread, RuntimeContext, Snapshot,
   SnapshotComment, ThreadComment, ThreadCounts,
 } from "#namespace.js";
 
-export type { ChangedFile, Finding, Reply, ReviewThread, ThreadComment, ThreadCounts } from "#namespace.js";
+export type { ChangedFile, ChangedFiles, Finding, Reply, ReviewThread, ThreadComment, ThreadCounts } from "#namespace.js";
 
 /** The marker kind a finding's thread ends with: how a reviewer's own thread is told from a person's. */
 export const FINDING_KIND = "finding";
@@ -304,13 +304,16 @@ export function threadsBrief(open: number[], read: Map<number, ReviewThread[]>, 
  * that has no shell to run `git diff` with. Files past the budget are listed
  * by name rather than dropped silently.
  */
-export function diffBrief(open: Array<{ number: number; files: ChangedFile[] }>): string {
+export function diffBrief(open: Array<{ number: number; files: ChangedFile[]; complete?: boolean }>): string {
   if (open.length === 0) return "No pull request is open on this item, so there is no diff to review.";
   const parts: string[] = [];
   const unshown: string[] = [];
   let spent = 0;
   for (const pull of open) {
-    parts.push(`## PR #${pull.number} — ${pull.files.length} files changed`);
+    // Said, so a list the forge cut short does not read as the whole change.
+    parts.push(pull.complete === false
+      ? `## PR #${pull.number} — more files changed than the forge lists; these are the ${pull.files.length} it does, and the rest are in the worktree`
+      : `## PR #${pull.number} — ${pull.files.length} files changed`);
     for (const f of pull.files) {
       const text = `### ${f.path} (${f.status}, +${f.additions} −${f.deletions})\n\n` +
         (f.patch === undefined ? "(no textual diff: binary, or too large for the forge to show)" : fenced(f.patch, "diff"));
@@ -464,6 +467,59 @@ export function refuseClosedByPerson(snapshot: Snapshot, item: string, branch: s
 }
 
 /**
+ * Whether a repository path matches a glob, segment by segment: `**` is any
+ * number of whole segments, none included — so `.landrace/hooks/**` is the
+ * directory itself too, which a link put in its place would be — `*` is any
+ * run of characters within one segment, and everything else is literal.
+ *
+ * Ignoring case. A checkout on a case-insensitive file system — macOS,
+ * Windows — writes `.Landrace/hooks/x.ts` where `.landrace/hooks/x.ts` is,
+ * and an agent opening CLAUDE.md there reads a `claude.md`. Matching more
+ * only refuses more.
+ *
+ * Every (segment, segment) pair is tried at most once, so a path built to be
+ * long against a glob with several `**` costs their product, never more.
+ */
+export function globMatches(glob: string, path: string): boolean {
+  const want = glob.split("/");
+  const have = path.split("/");
+  const segment = want.map((part) => part === "**"
+    ? null
+    : new RegExp(`^${part.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`, "i"));
+  const failed = new Set<number>();
+  const from = (i: number, j: number): boolean => {
+    const re = segment[i];
+    if (re === undefined) return j === have.length;
+    const key = i * (have.length + 1) + j;
+    if (failed.has(key)) return false;
+    const matched = re === null
+      ? from(i + 1, j) || (j < have.length && from(i, j + 1))
+      : j < have.length && re.test(have[j] as string) && from(i + 1, j + 1);
+    if (!matched) failed.add(key);
+    return matched;
+  };
+  return from(0, 0);
+}
+
+/** How many matched paths a refusal names before it counts the rest. */
+const NAMED_PATHS = 5;
+
+/**
+ * `pull.merge`'s guards beyond the head and the checks, as the workflow
+ * wrote them: `refuse`, the paths only a person may merge. Read before
+ * anything is asked of the forge; one the workflow wrote wrong is the
+ * workflow's defect, said, never a guard quietly skipped.
+ */
+function mergeGuards(effect: Effect): { refuse: string[] } {
+  const { refuse } = effect;
+  if (refuse === undefined) return { refuse: [] };
+  if (!Array.isArray(refuse) || refuse.length === 0 || !refuse.every((g): g is string => typeof g === "string" && g !== "")) {
+    throw new Error(`a ${effect.type} effect's refuse must be a list of path globs, each a non-empty string; this one is ${JSON.stringify(refuse)}`);
+  }
+  return { refuse };
+}
+
+/**
  * A forge integration: its vendor's calls, and nothing else.
  *
  * An integration extends this and writes the abstract methods, answered in
@@ -491,8 +547,13 @@ export abstract class BaseForge {
   abstract pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]>;
   /** Every review thread on a pull request, resolved or not, every page — or a refusal, never a short list. */
   abstract threads(pull: number, ctx: RuntimeContext): Promise<ReviewThread[]>;
-  /** What a pull request changes, file by file. */
-  abstract changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFile[]>;
+  /**
+   * What a pull request changes, file by file — a rename's old path too —
+   * and whether the forge listed all of it: `complete` false when its list
+   * stopped short, at its own cap or a page bound, never a short list
+   * passed off as the whole.
+   */
+  abstract changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFiles>;
   /** The body of every review posted on a pull request: its marker is what says a round is already there. */
   abstract reviews(pull: number, ctx: RuntimeContext): Promise<string[]>;
   /** Propose `branch` for `item`, naming the item in the forge's own way. */
@@ -692,14 +753,25 @@ export abstract class BaseForge {
    * the moment after — is `moved`: nothing merges, nothing throws, and nothing
    * applies the merge again while the item stays in its stage.
    *
+   * And `refuse`, when the workflow names it: the paths only a person may
+   * merge — the engine's own hooks and workflows, CI, the dependencies an
+   * install runs. Last, once everything else would let the merge through,
+   * the pull request's changed files are read, a rename's old name too, and
+   * one matching any of them is not merged. Neither is a list the forge
+   * could not give whole, nor one it could not give at all: what was not
+   * read was not checked.
+   *
    * Every guard that will not pass is a refusal, marked so: asking again on
    * the next tick finds the same red checks or the same closed pull request,
    * so the stage being entered records it and a person is asked. Checks still
    * running are not one, nor is a forge read that failed on the way: both
-   * are left to the next tick.
+   * are left to the next tick. The changed files are the exception: one read
+   * that fails refuses, since a path gate that lets an outage through has
+   * checked nothing.
    */
   protected async mergeOpen(effect: Effect, ctx: HookContext): Promise<void> {
     const branch = effectBranch(effect);
+    const { refuse } = mergeGuards(effect);
     const open = pullsFrom(ctx.snapshot.graph as Graph | undefined, ctx.item, branch, PULL_MERGE_EFFECT).filter(proposed);
     const [pr, ...more] = open;
     if (pr === undefined) throw new EffectRefused(`cannot merge for #${ctx.item}: there is no open pull request from ${branch}`);
@@ -734,8 +806,34 @@ export abstract class BaseForge {
     if (fresh.headSha !== head) return moved();
     const checks = await this.checks(fresh, ctx);
     if (!green(checks)) throw refused(checks);
+    if (refuse.length > 0) await this.refuseProtected(pr.id, number, refuse, ctx);
 
     if ((await this.merge(number, head, ctx)) === "moved") moved();
+  }
+
+  /** `refuse`, judged on the pull request's changed files: a match, or a list not read to its end, refuses. */
+  private async refuseProtected(id: string, number: number, refuse: string[], ctx: HookContext): Promise<void> {
+    const which = `will not merge ${id} for #${ctx.item}`;
+    const unknown = "so whether it changes a path this workflow protects is not known, and a person must merge it";
+    let read: ChangedFiles;
+    try {
+      read = await this.changedFiles(number, ctx);
+    } catch (e) {
+      throw new EffectRefused(`${which}: its changed files could not be read (${e instanceof Error ? e.message : String(e)}), ${unknown}`);
+    }
+    if (!read.complete) {
+      throw new EffectRefused(`${which}: the forge listed ${read.files.length} of its changed files and stopped before the rest, ${unknown}`);
+    }
+    const hit = (path: string): boolean => refuse.some((glob) => globMatches(glob, path));
+    const touched = read.files.flatMap((f) => (hit(f.path)
+      ? [f.path]
+      : f.previous !== undefined && hit(f.previous) ? [`${f.path} (renamed from ${f.previous})`] : []));
+    if (touched.length === 0) return;
+    const named = touched.slice(0, NAMED_PATHS).join(", ");
+    const more = touched.length - NAMED_PATHS;
+    throw new EffectRefused(
+      `${which}: it changes ${named}${more > 0 ? ` and ${more} more` : ""}, which this workflow protects, so a person must merge it`,
+    );
   }
 
   /**
@@ -770,8 +868,8 @@ export abstract class BaseForge {
         return threadsBrief(pulls.map((p) => p.number), read, await this.login(ctx));
       },
       diff: async (ctx) => {
-        const changed: Array<{ number: number; files: ChangedFile[] }> = [];
-        for (const pull of await open(ctx)) changed.push({ number: pull.number, files: await this.changedFiles(pull.number, ctx) });
+        const changed: Array<{ number: number } & ChangedFiles> = [];
+        for (const pull of await open(ctx)) changed.push({ number: pull.number, ...(await this.changedFiles(pull.number, ctx)) });
         return diffBrief(changed);
       },
       ci: async (ctx) => {
@@ -865,7 +963,7 @@ export abstract class BaseForge {
 
     const posted = (await this.reviews(number, ctx)).some((body) => parseMarker(body)?.marker === marker);
     if (!posted) {
-      const { onLines, onFiles, unplaced } = placeFindings(findings, await this.changedFiles(number, ctx), stage, round);
+      const { onLines, onFiles, unplaced } = placeFindings(findings, (await this.changedFiles(number, ctx)).files, stage, round);
       const listed = unplaced.length === 0 ? "" : `\n\nFindings that cannot be placed on this pull request's diff:\n\n${unplaced.join("\n")}`;
       const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, MAX_COMMENT_CHARS - 1_000) +
         renderMarker({ stage, kind, round, marker });

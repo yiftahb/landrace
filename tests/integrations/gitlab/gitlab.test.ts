@@ -205,12 +205,69 @@ describe("changedFiles", () => {
       { old_path: "src/old.ts", new_path: "src/moved.ts", renamed_file: true, diff: "" },
     ]);
     const mr = gl.open({ source_branch: "landrace/7" });
-    expect(await forgeOver(gl).changedFiles(mr.iid, gl.ctx())).toEqual([
-      { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,2 +1,3 @@\n line one\n+line two\n line three" },
-      { path: "src/new.ts", status: "added", additions: 2, deletions: 0, patch: "@@ -0,0 +1,2 @@\n+a\n+b" },
-      { path: "src/gone.ts", status: "removed", additions: 0, deletions: 1, patch: "@@ -1 +0,0 @@\n-x" },
-      { path: "src/moved.ts", status: "renamed", additions: 0, deletions: 0, patch: undefined },
-    ]);
+    expect(await forgeOver(gl).changedFiles(mr.iid, gl.ctx())).toEqual({
+      complete: true,
+      files: [
+        { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,2 +1,3 @@\n line one\n+line two\n line three" },
+        { path: "src/new.ts", status: "added", additions: 2, deletions: 0, patch: "@@ -0,0 +1,2 @@\n+a\n+b" },
+        { path: "src/gone.ts", status: "removed", additions: 0, deletions: 1, patch: "@@ -1 +0,0 @@\n-x" },
+        // A rename's old path: a protected path renamed away is a protected path changed.
+        { path: "src/moved.ts", previous: "src/old.ts", status: "renamed", additions: 0, deletions: 0, patch: undefined },
+      ],
+    });
+  });
+
+  /*
+   * What `pull.merge`'s protected paths are judged on, and whether that was
+   * all of it: GitLab cuts a diff at its own limits and says so only in the
+   * merge request's count of changes, and a page bound stops the read.
+   */
+  const diffs = (n: number) => Array.from({ length: n }, (_, i) => ({ new_path: `src/f${i}.ts`, diff: "@@ -1 +1 @@\n+x\n" }));
+  const pages = (gl: FakeGitLab) => gl.requests.filter((r) => r.method === "GET" && /\/merge_requests\/\d+\/diffs$/.test(r.path)).length;
+
+  it("reads every page, the last one short, and calls a list GitLab counts the same whole", async () => {
+    const gl = createFakeGitLab();
+    gl.diffsFor("landrace/7", diffs(250));
+    const mr = gl.open({ source_branch: "landrace/7" });
+    const read = await forgeOver(gl).changedFiles(mr.iid, gl.ctx());
+    expect(read.complete).toBe(true);
+    expect(read.files).toHaveLength(250);
+    expect(pages(gl)).toBe(3);
+  });
+
+  it("calls a diff GitLab cut at its own limits not whole, though every page was read", async () => {
+    const gl = createFakeGitLab();
+    gl.diffsFor("landrace/7", diffs(20));
+    const mr = gl.open({ source_branch: "landrace/7", changes_count: "1000+" });
+    expect(await forgeOver(gl).changedFiles(mr.iid, gl.ctx())).toMatchObject({ complete: false, files: expect.any(Array) });
+  });
+
+  it("calls a list not whole when GitLab's count is missing, or names files the pages did not", async () => {
+    for (const changes_count of ["", "21"]) {
+      const gl = createFakeGitLab();
+      gl.diffsFor("landrace/7", diffs(20));
+      const mr = gl.open({ source_branch: "landrace/7", changes_count });
+      expect(await forgeOver(gl).changedFiles(mr.iid, gl.ctx())).toMatchObject({ complete: false });
+    }
+  });
+
+  it("calls a list stopped at the page bound not whole", async () => {
+    const gl = createFakeGitLab();
+    gl.diffsFor("landrace/7", diffs(1_000));
+    const mr = gl.open({ source_branch: "landrace/7" });
+    const read = await forgeOver(gl).changedFiles(mr.iid, gl.ctx());
+    expect(read).toMatchObject({ complete: false });
+    expect(read.files).toHaveLength(1_000);
+    expect(pages(gl)).toBe(10);
+  });
+
+  it("refuses rather than answer a list a page of which failed", async () => {
+    const gl = createFakeGitLab();
+    gl.diffsFor("landrace/7", diffs(250));
+    const mr = gl.open({ source_branch: "landrace/7" });
+    let asked = 0;
+    gl.breakNext((r) => r.method === "GET" && /\/diffs$/.test(r.path) && ++asked === 2, 502);
+    await expect(forgeOver(gl).changedFiles(mr.iid, gl.ctx())).rejects.toThrow(/502/);
   });
 });
 

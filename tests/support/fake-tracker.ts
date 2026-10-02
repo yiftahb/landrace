@@ -98,8 +98,8 @@ export interface FakePull {
   createdAt?: string;
   /** GraphQL's `updatedAt`. LandraceClosedPulls orders and windows by this, the way LandraceClosed does for issues. */
   updatedAt?: string;
-  /** What `GET /pulls/{n}/files` answers: the diff, a file at a time. */
-  files?: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>;
+  /** What `GET /pulls/{n}/files` answers: the diff, a file at a time, a renamed one with its old path. */
+  files?: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string; previous_filename?: string }>;
   /** Every review posted on it, as `POST /pulls/{n}/reviews` took them. */
   reviews?: Array<{ body: string; event: string }>;
   /** The head commit's `statusCheckRollup.state`; absent or null is a commit with no rollup at all. */
@@ -808,7 +808,10 @@ export function createFakeTracker(
     if (onFiles && method === "GET") {
       const pull = pulls.get(Number(onFiles[1]));
       if (!pull) return new Response("Not Found", { status: 404 });
-      return json(Number(url.searchParams.get("page") ?? "1") > 1 ? [] : (pull.files ?? []));
+      // GitHub's paging, and its cap: it lists at most 3,000 of a pull request's files.
+      const perPage = Number(url.searchParams.get("per_page") ?? "30");
+      const page = Number(url.searchParams.get("page") ?? "1");
+      return json((pull.files ?? []).slice(0, 3_000).slice((page - 1) * perPage, page * perPage));
     }
 
     const onPull = /^\/pulls\/(\d+)$/.exec(path);
