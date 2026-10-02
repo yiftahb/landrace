@@ -192,14 +192,65 @@ describe("the body briefing", () => {
       .toBe("Split out: the export.");
   });
 
-  it("keeps a body at its bound whole, and cuts one past it, saying so", async () => {
+  it("keeps a body at its bound whole, and cuts one past it, saying where and at what", async () => {
     const whole = "x".repeat(BRIEF_ITEM_CHARS);
+    expect(BRIEF_ITEM_CHARS).toBe(16_000);
     expect(await bodyOf(whole)).toBe(whole);
-    expect(await bodyOf(`${whole}y`)).toBe(`${whole}…`);
+    expect(await bodyOf(`${whole}y`)).toBe(`${whole}\n\n[the item's text is cut here at 16,000 characters]`);
   });
 
   it("is a key of the project's own, beside the forge's and the shared history, claimed by no other role", async () => {
     const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "7" }] }), forge: new MemoryForge(), docs: new MemoryDocs() });
     expect(Object.keys((await hooks.source.brief?.(on("7"))) ?? {}).sort()).toEqual(["body", "ci", "diff", "history", "threads"]);
+  });
+});
+
+/*
+ * `tracker.close`, done by default — a finished item — or dropped, which a
+ * workflow says when a person asked for the item to be dropped: a tracker
+ * that keeps a reason (GitHub's "not planned") then reports it as such.
+ * Satisfied either way, so a person's own close is never overruled.
+ */
+describe("tracker.close", () => {
+  const ctx: RuntimeContext = { config: {} as never, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
+  const world = () => {
+    const tracker = new MemoryTracker({ items: [{ id: "7" }] });
+    const hooks = compose({ tracker });
+    const snapshot = async (): Promise<Snapshot> => {
+      const graph = await hooks.source.read("7", ctx);
+      return { graph, node: graph.nodes.find((n) => n.id === "7") };
+    };
+    const close = async (effect: Effect): Promise<void> =>
+      hooks.post.apply(effect, { ...ctx, item: "7", snapshot: await snapshot() });
+    return { tracker, hooks, snapshot, close };
+  };
+
+  it("closes the item as done when it says nothing of how", async () => {
+    const { tracker, close } = world();
+    await close({ type: "tracker.close" });
+    expect(tracker.row("7").closed).toBe("done");
+  });
+
+  it("closes it as dropped when it says so, and is satisfied after", async () => {
+    const { tracker, hooks, snapshot, close } = world();
+    const effect = { type: "tracker.close", how: "dropped" };
+    expect(hooks.post.satisfied(await snapshot(), effect)).toBe(false);
+    await close(effect);
+    expect(tracker.row("7").closed).toBe("dropped");
+    expect(hooks.post.satisfied(await snapshot(), effect)).toBe(true);
+  });
+
+  it("leaves an item already closed as it is, whichever way it is asked to close it", async () => {
+    const { tracker, hooks, snapshot, close } = world();
+    tracker.row("7").closed = "done";
+    expect(hooks.post.satisfied(await snapshot(), { type: "tracker.close", how: "dropped" })).toBe(true);
+    await close({ type: "tracker.close", how: "dropped" });
+    expect(tracker.row("7").closed).toBe("done");
+  });
+
+  it("refuses a way of closing it does not know, rather than closing it as done", async () => {
+    const { tracker, close } = world();
+    await expect(close({ type: "tracker.close", how: "wontfix" })).rejects.toThrow(/"done" or "dropped", not "wontfix"/);
+    expect(tracker.row("7").closed).toBeNull();
   });
 });

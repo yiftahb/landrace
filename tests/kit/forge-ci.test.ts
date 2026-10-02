@@ -463,6 +463,20 @@ describe("pull.close", () => {
     expect(forge.pull(pr)).toMatchObject({ merged: true, closed: "done" });
   });
 
+  it("never closes one merged since the read, though another of the item's pull requests is open", async () => {
+    const { hooks, forge } = world();
+    const pr = forge.add("7", { branch: "landrace/7" });
+    const other = forge.add("7", { branch: "landrace/7-docs" });
+    const snapshot = await read(hooks);
+    Object.assign(forge.pull(pr), { merged: true, closed: "done" });
+    const closes = jest.spyOn(forge, "closePull");
+
+    await apply(hooks, close, snapshot);
+
+    expect(closes).not.toHaveBeenCalled();
+    expect(forge.pull(other)).toMatchObject({ merged: false, closed: null });
+  });
+
   it("is idempotent: applied again, on the old read or a new one, it closes nothing more", async () => {
     const { hooks, forge } = world();
     forge.add("7", { branch: "landrace/7" });

@@ -15,7 +15,7 @@ import {
   NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATIONS, renderMarker, renderOrigin, sameLogin,
   STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND,
 } from "#conventions.js";
-import { commentLine, cut } from "#kit/forge.js";
+import { commentLine } from "#kit/forge.js";
 import type {
   BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, RelationDecl, Relationship,
   RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
@@ -78,11 +78,15 @@ export const NO_ITEM_TEXT = "This item has no description beyond its title.";
 /**
  * `{brief.project.body}`: the item's text as the tracker holds it, without
  * the marker Landrace stamps on an item it created, and cut at a bound that
- * says so. Escaping it is the engine's, on the way into the prompt.
+ * says where and at what: these are requirements, and a cut a build or a
+ * review cannot see is a requirement missed by both. Escaping it is the
+ * engine's, on the way into the prompt.
  */
 export function bodyBrief(body: string): string {
   const text = stripMarker(body);
-  return text === "" ? NO_ITEM_TEXT : cut(text, BRIEF_ITEM_CHARS);
+  if (text === "") return NO_ITEM_TEXT;
+  if (text.length <= BRIEF_ITEM_CHARS) return text;
+  return `${text.slice(0, BRIEF_ITEM_CHARS)}\n\n[the item's text is cut here at ${BRIEF_ITEM_CHARS.toLocaleString("en-US")} characters]`;
 }
 
 /** The item's comments, as the pre hook put them in the snapshot. */
@@ -174,6 +178,18 @@ export function nodesCloseSatisfied(snapshot: Snapshot, effect: Effect): boolean
  * `tracker.close`. Closed either way counts: a person who closed it as not
  * planned decided that, and re-closing it as completed would overrule them.
  */
+/**
+ * How `tracker.close` closes the item: `done`, a finished item, unless the
+ * effect says `how: dropped` — a person asked for it to be dropped, which a
+ * tracker that keeps a reason reports as such. A value it does not know is
+ * refused, never read as done.
+ */
+export function closeHow(effect: Effect): "done" | "dropped" {
+  const how = effect.how ?? "done";
+  if (how === "done" || how === "dropped") return how;
+  throw new Error(`a tracker.close effect closes an item as "done" or "dropped", not ${JSON.stringify(how)}`);
+}
+
 export function closeSatisfied(snapshot: Snapshot): boolean {
   return ((snapshot.node as Node | undefined)?.closed ?? null) !== null;
 }
@@ -357,10 +373,12 @@ export abstract class BaseTracker {
       },
       [CLOSE_EFFECT]: {
         satisfied: (snapshot) => closeSatisfied(snapshot),
-        apply: async (_effect, ctx) => {
-          // A person who dropped it decided that; closing it as done would overrule them.
+        apply: async (effect, ctx) => {
+          const how = closeHow(effect);
+          // Closed either way is closed: a person who dropped it decided
+          // that, and closing it again as done would overrule them.
           if (ctx.snapshot !== undefined && closeSatisfied(ctx.snapshot)) return;
-          await this.close(ctx.item, "done", ctx);
+          await this.close(ctx.item, how, ctx);
         },
       },
       [NODES_CLOSE_EFFECT]: {

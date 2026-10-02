@@ -950,7 +950,7 @@ describe("the shipped workflow learns from a corrected item before a person revi
       expect(prompt).toContain(".agsync/instructions.md");
       expect(prompt).toContain("agsync sync");
       expect(prompt).toContain(".agsync/skills/");
-      expect(prompt).toMatch(/never touch `\.landrace\/workflows\/main\/workflow\.yaml`, `\.landrace\/hooks\/`, `src\/`/i);
+      expect(prompt).toMatch(/never touch any workflow's `workflow\.yaml` — every `\.landrace\/workflows\/\*\/workflow\.yaml`, this workflow's and every other's — nor `\.landrace\/landrace\.yaml`, `\.landrace\/hooks\/`, `src\/`/i);
       expect(prompt).toMatch(/never edit\s+`CLAUDE\.md` or `AGENTS\.md`/i);
       expect(prompt).toContain("git log --grep '^retro:'");
       // A step file's front matter is its permissions and its routing.

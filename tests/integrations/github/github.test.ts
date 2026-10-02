@@ -666,6 +666,12 @@ describe("children on GitHub", () => {
       .rejects.toThrow(/Pull requests: Read and write/);
   });
 
+  it("closes a dropped item as not planned", async () => {
+    const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
+    await dispatch(gh, { type: "tracker.close", how: "dropped" }, {});
+    expect(gh.issues.get(1)).toMatchObject({ state: "closed", state_reason: "not_planned" });
+  });
+
   it("closes a finished item as completed", async () => {
     const gh = createFakeTracker([{ number: 1, title: "big", body: "", labels: [] }]);
     await dispatch(gh, { type: "tracker.close" }, {});

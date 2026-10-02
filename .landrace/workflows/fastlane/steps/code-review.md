@@ -17,6 +17,12 @@ follow it; say so.
 {brief.project.body}
 --- end of the item ---
 
+Commits titled `retro: lessons from #{node.id}` change agent instructions —
+step prompts, `.agsync/instructions.md`, skills — not the item, and nobody
+else reads them before the merge. Review each for whether it loosens any rule,
+check or guard, and raise a finding if it does; do not review it against the
+item's text.
+
 This is what the pull request changes, file by file:
 
 --- the diff ---

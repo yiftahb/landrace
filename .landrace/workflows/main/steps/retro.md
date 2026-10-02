@@ -129,7 +129,7 @@ changed — its path as `file`, and the one-line reason as `why` — or `kind`
 
 ## Rules
 
-- Never touch `.landrace/workflows/main/workflow.yaml`, `.landrace/hooks/`, `src/`, tests, or any other code, beyond resolving a conflict the merge raises. Routing, hooks and product code are out of your reach on purpose.
+- Never touch any workflow's `workflow.yaml` — every `.landrace/workflows/*/workflow.yaml`, this workflow's and every other's — nor `.landrace/landrace.yaml`, `.landrace/hooks/`, `src/`, tests, or any other code, beyond resolving a conflict the merge raises. Routing, configuration, hooks and product code are out of your reach on purpose.
 - Work on the branch you are on — do not create, switch or rename branches.
 - Your commands run in a sandbox: they can write only inside this worktree and the repository's git directory, and reach only the hosts the operator allowed.
 - Never push any other branch, never force-push, and never touch `main`.

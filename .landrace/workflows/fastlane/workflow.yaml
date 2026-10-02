@@ -22,9 +22,10 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 #   had to write. The retro runs at most once.
 # - Caps: build 3, CI fixes included; code review 4; fix review 8. At a cap
 #   the item is `stuck`, and waits on a person.
-# - A review that leaves threads open with none awaiting a fix is `stuck`
-#   too: the merge needs every thread resolved, and a thread the fixer
-#   answered waits on a person, never on a step.
+# - The merge needs every thread resolved. A review that leaves threads open
+#   with none awaiting a fix is `stuck` too, since a thread the fixer answered
+#   waits on a person, never on a step; and a thread opened while the checks
+#   ran goes back to review first, like any other finding.
 # - `done` closes the item itself, so it closes where the forge links nothing.
 admit: [lr:fast]
 
@@ -72,6 +73,7 @@ stages:
       - name: the checks failed
         when:
           "run.stage": ci
+          "rel.implements.in.sum.openThreads": 0
           "rel.implements.in.sum.ciFailed": { $gt: 0 }
           "run.counters.build": { $lt: 3 }
       - name: you asked for work
@@ -102,8 +104,9 @@ stages:
   # main's reviewer and fixer, shown the item's own text where main's are
   # shown the spec, and otherwise as they are. Every build is reviewed
   # through publish, uncapped; every fix within fix review's eight; the
-  # retro's commit once; and a head that moved under the merge within code
-  # review's own four, since that is a loop of merges with no step to count.
+  # retro's commit once; and a head that moved under the merge, or a thread
+  # opened while the checks ran, within code review's own four — loops through
+  # stages with no step, which count nothing of their own.
   - id: code-review
     step: steps/code-review.md
     branch: "landrace/{item}"
@@ -122,6 +125,14 @@ stages:
         when:
           "run.stage": merge
           "rel.implements.in.not.merged": { $gt: 0 }
+          "run.counters.code-review": { $lt: 4 }
+      # A person's objection, in a flow with no person: before anything else
+      # at ci, whatever the checks say. A finding like any other, it goes to
+      # the fixer, and the person resolves their own thread.
+      - name: a thread was opened while the checks ran
+        when:
+          "run.stage": ci
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $lt: 4 }
     on_enter:
       # Pushed first: a fix round's or the retro's commits are on the pull
@@ -149,11 +160,14 @@ stages:
   # ── CI and the merge ─────────────────────────────────────────────────────
   #
   # A review that settled with every thread resolved waits here for the
-  # checks on the pull request's head. Red goes back to build while builds
-  # are left; green goes to the retro after friction, and to the merge
-  # otherwise. Checks still running match nothing, and the item waits.
+  # checks on the pull request's head. A thread opened meanwhile goes back to
+  # review first; then red goes back to build while builds are left, and
+  # green to the retro after friction, or to the merge. Checks still running
+  # match nothing, and the item waits. A pull request a person closed is
+  # stuck's, not a precondition's: a failed `requires` halts where no board
+  # shows it. Nothing is pushed here — the review's own push published the
+  # head it read, and a push now could publish one nobody reviewed.
   - id: ci
-    requires: { "rel.implements.in.total": { $gt: 0 } }
     triggers:
       - name: the review settled with every thread resolved
         when:
@@ -164,7 +178,6 @@ stages:
           "rel.implements.in.sum.awaitingFix": 0
           "rel.implements.in.sum.openThreads": 0
     on_enter:
-      - { type: branch.push, branch: "landrace/{item}" }
       - { type: tracker.status, value: ci }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 
@@ -179,6 +192,7 @@ stages:
       - name: the checks passed after corrections
         when:
           "run.stage": ci
+          "rel.implements.in.sum.openThreads": 0
           "rel.implements.in.sum.ciPending": 0
           "rel.implements.in.sum.ciFailed": 0
           "rel.implements.in.not.merged": { $gt: 0 }
@@ -195,14 +209,15 @@ stages:
   # The retro's trigger, negated: the two never match together. The merge
   # comes before the status, as publish's push does: a refusal — conflicts,
   # not mergeable, checks gone red since the read — leaves the item at ci,
-  # where the next tick plans the merge again and halts again with the forge's
-  # reason. A merge that answered moved lands here with the pull request open,
-  # and goes back to review.
+  # and every tick plans the merge again. Today the refusal shows only in the
+  # log and the tick's row, not on the board. A merge that answered moved
+  # lands here with the pull request open, and goes back to review.
   - id: merge
     triggers:
       - name: the checks passed
         when:
           "run.stage": ci
+          "rel.implements.in.sum.openThreads": 0
           "rel.implements.in.sum.ciPending": 0
           "rel.implements.in.sum.ciFailed": 0
           $or:
@@ -236,16 +251,23 @@ stages:
           "rel.implements.in.not.merged": 0
           "rel.implements.in.sum.awaitingFix": 0
           "rel.implements.in.sum.openThreads": 0
+      # The natural answer to stuck: a person merges it. Triage's trigger at
+      # stuck is this one's negation.
+      - name: the pull request was merged while it was stuck
+        when:
+          "run.stage": stuck
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": 0
     on_enter:
       - { type: tracker.status, value: done }
       - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working"] }
       - { type: tracker.close }
 
   # A person asked to drop it: its pull request is closed unmerged, then the
-  # item. The pull request first, before the position moves, as merge merges
-  # first: a close that fails leaves the item at triage, where the next tick
-  # plans it again, and a terminal stage would plan nothing. Not nodes.close,
-  # which drops only what this item's own steps created.
+  # item, as dropped. The pull request first, before the position moves, as
+  # merge merges first: a close that fails leaves the item at triage, where
+  # the next tick plans it again, and a terminal stage would plan nothing. Not
+  # nodes.close, which drops only what this item's own steps created.
   - id: closed
     terminal: true
     triggers:
@@ -258,7 +280,7 @@ stages:
       - { type: pull.close, branch: "landrace/{item}" }
       - { type: tracker.status, value: closed }
       - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
-      - { type: tracker.close }
+      - { type: tracker.close, how: dropped }
 
   # ── a person's turn ──────────────────────────────────────────────────────
   #
@@ -294,8 +316,20 @@ stages:
       - name: CI is still failing after three builds
         when:
           "run.stage": ci
+          "rel.implements.in.sum.openThreads": 0
           "rel.implements.in.sum.ciFailed": { $gt: 0 }
           "run.counters.build": { $gte: 3 }
+      - name: a thread was opened after the last review
+        when:
+          "run.stage": ci
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
+          "run.counters.code-review": { $gte: 4 }
+      # A person closed it unmerged — their way of saying stop. With no pull
+      # request the item has nothing to check or merge, and is theirs.
+      - name: the pull request was closed during CI
+        when: { "run.stage": ci, "rel.implements.in.total": 0 }
+      - name: the pull request was closed before the merge
+        when: { "run.stage": merge, "rel.implements.in.total": 0 }
       - name: the head kept moving
         when:
           "run.stage": merge
@@ -319,8 +353,14 @@ stages:
     step: steps/triage.md
     requires: { "run.lastHuman": { $ne: null } }
     triggers:
+      # Not once its pull request merged: done takes that, whoever wrote last.
       - name: you replied where it was stuck
-        when: { "run.stage": stuck, "run.lastEvent.actor": human }
+        when:
+          "run.stage": stuck
+          "run.lastEvent.actor": human
+          $or:
+            - { "rel.implements.in.not.merged": { $gt: 0 } }
+            - { "rel.implements.in.total": 0 }
       - name: you replied to a halt
         when: { "run.stage": blocked, "run.lastEvent.actor": human }
       - name: you replied to a security refusal

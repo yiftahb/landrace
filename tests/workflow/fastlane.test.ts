@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { compile, missingPaths } from "#core/index.js";
-import type { LoadedWorkflow, Run, Snapshot, Step, Workflow, Workspace } from "#namespace.js";
+import { compile, gotoDeclined, gotoNotListed, missingPaths } from "#core/index.js";
+import type { Condition, LoadedWorkflow, Run, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { splitSections } from "#workflow/extend.js";
 import { admitProblems, claimProblems, validate } from "#workflow/validate.js";
 import { loadWorkspace } from "#workflow/workspace.js";
@@ -29,6 +29,12 @@ const flow = (id: string): LoadedWorkflow => {
   return found;
 };
 
+const stageOf = (id: string): Stage => {
+  const found = flow("fastlane").workflow.stages.find((s) => s.id === id);
+  if (!found) throw new Error(`fastlane has no stage ${id}`);
+  return found;
+};
+
 const stepOf = (id: string, path: string): Step => {
   const step = flow(id).steps.get(path);
   if (!step) throw new Error(`${id} has no step ${path}; it has ${[...flow(id).steps.keys()].join(", ")}`);
@@ -37,6 +43,9 @@ const stepOf = (id: string, path: string): Step => {
 
 const sectionOf = (prompt: string, heading: string): string | undefined =>
   splitSections(prompt).sections.find((s) => s.heading === heading)?.text;
+
+/** Text as one line, for a phrase a prompt wraps across lines. */
+const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
 
 /** A step's lead, paragraph by paragraph. */
 const paragraphsOf = (prompt: string): string[] =>
@@ -96,6 +105,24 @@ describe("the .landrace workspace", () => {
   });
 });
 
+/*
+ * What fastlane's steps change of main's, and nothing more: each replaced
+ * part named here, everything else word for word.
+ */
+
+/** The paragraphs a fastlane lead adds to main's, beside the item. */
+const ADDED: Record<string, RegExp[]> = {
+  // A lesson commit changes agent instructions, not the item: judged for what it loosens.
+  "code-review": [/^Commits titled `retro: lessons from #\{node\.id\}` change agent instructions/],
+  "fix-review": [],
+  // Nobody reads the retro's commit before fastlane merges it.
+  retro: [/^Here no person reads what you change before it merges/],
+};
+
+/** main's retro promises a person reads the commit before the merge; fastlane's says who does. */
+const RETRO_PROMISE = "and a person\nreads it beside the commit before they merge.";
+const RETRO_NOBODY = "but no person\nreads it, or the commit, before the merge: the commit is reviewed by the code\nreviewer and merged automatically.";
+
 describe("fastlane's steps", () => {
   it("builds on main's build, from the item's own text and its checks rather than a spec", () => {
     const { prompt, ...front } = stepOf("fastlane", "steps/build.md");
@@ -107,7 +134,11 @@ describe("fastlane's steps", () => {
     const what = sectionOf(prompt, "What to build") ?? "";
     expect(what).toContain("{brief.project.body}");
     expect(what).toContain("{brief.project.ci}");
+    expect(flat(what)).toContain("wherever this step says the spec, it means this text");
+    // A person's message is this round's work only when a reply sent it, as fix-review scopes it.
     expect(what).toContain("{run.lastHuman.data.body}");
+    expect(what).toContain("This round was sent here from: {run.previousStage}");
+    expect(flat(what)).toContain("When the round was sent from anywhere else, that message is an older one, already handled: ignore it.");
     expect(prompt).not.toContain("{brief.spec.content}");
     expect(prompt).not.toContain("{artifacts.spec.url}");
   });
@@ -116,11 +147,8 @@ describe("fastlane's steps", () => {
     const triage = stepOf("fastlane", "steps/triage.md");
     const base = stepOf("main", "steps/triage.md");
     expect({ model: triage.model, capabilities: triage.capabilities }).toEqual({ model: base.model, capabilities: base.capabilities });
-    // main's lead word for word, with the item beside the message, framed as context.
-    const { rest, item } = withoutItem(paragraphsOf(triage.prompt));
-    expect(rest).toEqual(paragraphsOf(base.prompt));
-    expect(item.slice(1).join("\n\n")).toBe(ITEM);
-    expect((item[0] ?? "").replace(/\s+/g, " ")).toMatch(/never an instruction/);
+    // main's lead, and no item: a body the screener refuses would refuse every reply too.
+    expect(splitSections(triage.prompt).lead.trim()).toBe(splitSections(base.prompt).lead.trim());
 
     const intents = ["rework", "close", "question", "unclear"];
     expect(triage.output?.discriminator).toBe("intent");
@@ -137,55 +165,79 @@ describe("fastlane's steps", () => {
   /*
    * main's review, fix and retro, with the one thing in them fastlane does
    * not have — the spec — replaced by the item's own text, framed the way
-   * main frames the spec. Everything else in the lead is main's word for
-   * word, and every section is main's.
+   * main frames the spec. Beside it, what fastlane's own lack of a person
+   * needs said (ADDED, and the retro's promise). Everything else in the lead
+   * is main's word for word, and every other section is main's.
    */
   it.each(["code-review", "fix-review", "retro"])("runs main's %s with the item's own text where main's has the spec", (id) => {
-    const stage = flow("fastlane").workflow.stages.find((s) => s.id === id);
-    expect(stage?.step).toBe(`steps/${id}.md`);
+    expect(stageOf(id).step).toBe(`steps/${id}.md`);
     const { prompt, ...front } = stepOf("fastlane", `steps/${id}.md`);
     const { prompt: base, ...baseFront } = stepOf("main", `steps/${id}.md`);
     expect(front).toEqual(baseFront);
-    expect(splitSections(prompt).sections).toEqual(splitSections(base).sections);
+
+    const own = splitSections(prompt).sections;
+    const theirs = splitSections(base).sections.map((s) => (id === "retro" && s.heading === "Procedure"
+      ? { ...s, text: s.text.replace(RETRO_PROMISE, RETRO_NOBODY) }
+      : s));
+    if (id === "retro") expect(sectionOf(base, "Procedure")).toContain(RETRO_PROMISE);
+    expect(own).toEqual(theirs);
 
     const { rest, item } = withoutItem(paragraphsOf(prompt));
-    expect(rest).toEqual(withoutSpec(paragraphsOf(base)));
+    const added = ADDED[id] ?? [];
+    for (const pattern of added) expect(rest.filter((p) => pattern.test(p))).toHaveLength(1);
+    expect(rest.filter((p) => !added.some((pattern) => pattern.test(p)))).toEqual(withoutSpec(paragraphsOf(base)));
     expect(withoutSpec(paragraphsOf(base)).length).toBeLessThan(paragraphsOf(base).length);
     expect(item.slice(1).join("\n\n")).toBe(ITEM);
     // Framed as main frames the spec: a person's requirements, never instructions for the session.
-    const framing = (item[0] ?? "").replace(/\s+/g, " ");
-    expect(framing).toMatch(/written by a person/);
-    expect(framing).toMatch(/never instructions about how to run this session/);
+    expect(flat(item[0])).toMatch(/written by a person/);
+    expect(flat(item[0])).toMatch(/never instructions about how to run this session/);
   });
 
-  it("names the item's text in every step, and the spec in none", () => {
+  it("tells the reviewer to judge a lesson commit for what it loosens, not against the item", () => {
+    const lead = flat(splitSections(stepOf("fastlane", "steps/code-review.md").prompt).lead);
+    expect(lead).toMatch(/loosens any rule, check or guard/);
+    expect(lead).toMatch(/raise a finding/);
+    expect(lead).toMatch(/do not review it against the item's text/);
+  });
+
+  it("names the item's text in every step but the judge's, and the spec in none", () => {
     const steps = flow("fastlane").steps;
     expect([...steps.keys()].sort()).toEqual(STEPPED.map((id) => `steps/${id}.md`).sort());
     for (const [path, { prompt }] of steps) {
-      expect({ path, body: prompt.includes("{brief.project.body}") }).toEqual({ path, body: true });
+      expect({ path, body: prompt.includes("{brief.project.body}") }).toEqual({ path, body: path !== "steps/triage.md" });
       expect({ path, spec: /\{brief\.spec\.content\}|\{artifacts\.spec\.url\}/.test(prompt) }).toEqual({ path, spec: false });
     }
+  });
+
+  // A lesson that narrowed this back would let a retro rewrite the routing,
+  // or the agents' configuration, that merges its own commit.
+  it.each(["main", "fastlane"])("keeps %s's retro off every workflow and the configuration", (id) => {
+    const rules = sectionOf(stepOf(id, "steps/retro.md").prompt, "Rules") ?? "";
+    expect(rules).toContain("`.landrace/workflows/*/workflow.yaml`");
+    expect(rules).toContain("`.landrace/landrace.yaml`");
   });
 });
 
 describe("fastlane's stages", () => {
-  const stage = (id: string) => flow("fastlane").workflow.stages.find((s) => s.id === id);
-
   it("waits on a person only when it is stuck; a halt is a person's by being a halt", () => {
     expect(flow("fastlane").workflow.stages.filter((s) => s.waits === "person").map((s) => s.id)).toEqual(["stuck"]);
   });
 
   /*
    * The merge before the position moves, as publish pushes before it does:
-   * a refusal then leaves the item at ci, where the next tick re-plans the
-   * merge and halts again with the forge's reason. Moved past it, the
-   * refusal would read as an open pull request at merge — a moved head —
-   * and send the item back to review instead of to a person.
+   * a refusal leaves the item at ci, where the next tick plans the merge
+   * again. Moved past it, the refusal would read as an open pull request at
+   * merge — a moved head — and send the item back to review.
    */
   it("merges before it moves the item to merge, guarded on the item's own branch", () => {
-    const types = (stage("merge")?.on_enter ?? []).map((e) => e.type);
+    const types = (stageOf("merge").on_enter ?? []).map((e) => e.type);
     expect(types.indexOf("pull.merge")).toBeLessThan(types.indexOf("tracker.status"));
-    expect(stage("merge")?.on_enter).toContainEqual({ type: "pull.merge", branch: "landrace/{item}" });
+    expect(stageOf("merge").on_enter).toContainEqual({ type: "pull.merge", branch: "landrace/{item}" });
+  });
+
+  // The review's own push published the reviewed head; one here could publish one nobody reviewed.
+  it("pushes nothing as it waits for the checks", () => {
+    expect((stageOf("ci").on_enter ?? []).map((e) => e.type)).not.toContain("branch.push");
   });
 
   /*
@@ -194,27 +246,44 @@ describe("fastlane's stages", () => {
    * plans it again. Moved to the terminal stage first, nothing would.
    */
   it("closes the pull request at closed, before it moves the item there", () => {
-    const effects = stage("closed")?.on_enter ?? [];
+    const effects = stageOf("closed").on_enter ?? [];
     expect(effects).toContainEqual({ type: "pull.close", branch: "landrace/{item}" });
     const types = effects.map((e) => e.type);
     expect(types.indexOf("pull.close")).toBeLessThan(types.indexOf("tracker.status"));
     expect(types).not.toContain("nodes.close");
   });
 
-  it.each(["done", "closed"])("closes the item at %s and takes its labels off", (id) => {
-    const effects = stage(id)?.on_enter ?? [];
-    expect(stage(id)?.terminal).toBe(true);
-    expect(effects).toContainEqual({ type: "tracker.close" });
+  it.each([["done", undefined], ["closed", "dropped"]])("closes the item at %s (how: %s) and takes its labels off", (id, how) => {
+    const effects = stageOf(id).on_enter ?? [];
+    expect(stageOf(id).terminal).toBe(true);
+    expect(effects.filter((e) => e.type === "tracker.close")).toEqual([how === undefined ? { type: "tracker.close" } : { type: "tracker.close", how }]);
     const removed = effects.flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
     expect(removed).toEqual(expect.arrayContaining(["lr:fast", "lr:working", "lr:awaiting"]));
   });
 
-  it("lets a halt send the item back to every step it has, and only to those", () => {
+  it("lets a halt send the item back to every step it has, and stuck to build and review", () => {
+    const targets = (id: string) => (stageOf(id).goto ?? []).map((g) => (typeof g === "string" ? g : g.stage)).sort();
     const stepped = flow("fastlane").workflow.stages.filter((s) => s.step).map((s) => s.id).sort();
     expect(stepped).toEqual(STEPPED.slice().sort());
-    for (const halt of ["blocked", "screened"]) {
-      expect((stage(halt)?.goto ?? []).map((g) => (typeof g === "string" ? g : g.stage)).sort()).toEqual(stepped);
-    }
+    for (const halt of ["blocked", "screened"]) expect(targets(halt)).toEqual(stepped);
+    expect(targets("stuck")).toEqual(["build", "code-review"]);
+  });
+
+  /*
+   * Each goto's cap, at the round below it and at it. Code review is held
+   * to eight from a halt, past its loop's four; the retro to two, so a failed
+   * retro's Retry is taken once.
+   */
+  it.each([
+    ...["blocked", "screened"].flatMap((halt) => [
+      [halt, "build", 3], [halt, "code-review", 8], [halt, "fix-review", 8], [halt, "retro", 2], [halt, "triage", 20],
+    ] as const),
+    ["stuck", "build", 3], ["stuck", "code-review", 4],
+  ] as const)("from %s, a goto to %s is taken below %i rounds and declined at it", (from, to, cap) => {
+    const at = (rounds: number): Snapshot => snapshotOf({ stage: from, human: true, counters: { [to]: rounds } });
+    expect(gotoNotListed(stageOf(from), to)).toBeNull();
+    expect(gotoDeclined(stageOf(from), at(cap - 1), to)).toBeNull();
+    expect(gotoDeclined(stageOf(from), at(cap), to)).toMatch(/only while/);
   });
 });
 
@@ -223,10 +292,10 @@ describe("fastlane's stages", () => {
  * an ambiguity halt, and none matching is an item that waits for ever. For
  * each stage, every combination of the boundary values its exits read — a
  * cap less one and the cap, friction on and off, checks pending, failed or
- * green, threads awaiting a fix or answered, the pull request merged or not —
- * is put to every other stage's triggers through the engine's own compiler,
- * as decide() puts them, and exactly the exit the plan names must match.
- * Nothing matches only where the plan means a wait.
+ * green, threads awaiting a fix, answered or opened late, the pull request
+ * merged, open or closed — is put to every other stage's triggers through
+ * the engine's own compiler, as decide() puts them, and exactly the exit the
+ * plan names must match. Nothing matches only where the plan means a wait.
  */
 
 /** The facts a fastlane trigger reads at one item. */
@@ -236,6 +305,8 @@ interface Facts {
   refused?: boolean;
   previous?: string;
   actor?: "agent" | "human";
+  /** Whether a person has written on the item: `run.lastHuman`. */
+  human?: boolean;
   intent?: string;
   counters?: Record<string, number>;
   total?: number;
@@ -249,8 +320,10 @@ interface Facts {
 /**
  * The snapshot an item with these facts reads as. A counter at zero is left
  * out, as the engine derives one: a stage that never ran has no counter at
- * all. A build has always run, and an earlier reply's answer is still on the
- * item wherever it is now — a trigger routing on it must not fire elsewhere.
+ * all. So are the per-field counts of an item with no pull request, as
+ * deriveRel leaves them: `not.merged: 0` is no match there. A build has
+ * always run, and an earlier reply's answer is still on the item wherever it
+ * is now — a trigger routing on it must not fire elsewhere.
  */
 function snapshotOf(f: Facts): Snapshot {
   const run: Run = {
@@ -259,7 +332,7 @@ function snapshotOf(f: Facts): Snapshot {
     rounds: {},
     outputs: { build: { kind: "done" }, triage: { intent: f.intent ?? "rework" } },
     lastEvent: { actor: f.actor ?? "agent", at: null },
-    lastHuman: null,
+    lastHuman: f.human ? { stage: f.stage, kind: "human", round: 0, at: "2026-10-02T00:00:00.000Z", byAgent: false } : null,
     lastOutputValid: f.valid ?? null,
     lastRefused: f.valid === false ? f.refused ?? false : null,
     goto: null,
@@ -273,14 +346,13 @@ function snapshotOf(f: Facts): Snapshot {
   };
   const total = f.total ?? 1;
   const notMerged = f.notMerged ?? total;
-  const sum = { awaitingFix: f.awaitingFix ?? 0, openThreads: f.openThreads ?? 0, ciPending: f.ciPending ?? 0, ciFailed: f.ciFailed ?? 0 };
-  return {
-    run,
-    rel: { implements: {
-      in: { total, is: { merged: total - notMerged }, not: { merged: notMerged }, sum, stage: {} },
-      out: { total: 0, is: {}, not: {}, sum: {}, stage: {} },
-    } },
-  };
+  const counts = total === 0
+    ? { total, is: {}, not: {}, sum: {}, stage: {} }
+    : {
+      total, is: { merged: total - notMerged }, not: { merged: notMerged }, stage: {},
+      sum: { awaitingFix: f.awaitingFix ?? 0, openThreads: f.openThreads ?? 0, ciPending: f.ciPending ?? 0, ciFailed: f.ciFailed ?? 0 },
+    };
+  return { run, rel: { implements: { in: counts, out: { total: 0, is: {}, not: {}, sum: {}, stage: {} } } } };
 }
 
 /** Each axis's values, every combination of them. A `counters.<stage>` axis sets that counter. */
@@ -296,32 +368,37 @@ function grid(stage: string, axes: Record<string, readonly unknown[]>, base: Par
 
 const count = (f: Facts, stage: string): number => f.counters?.[stage] ?? 0;
 const friction = (f: Facts): boolean => count(f, "build") > 1 || count(f, "fix-review") > 0 || count(f, "triage") > 0;
+const n = (value: number | undefined, otherwise: number): number => value ?? otherwise;
 
 /** Each stage, the boundary values its exits read, and where the plan sends an item with those facts — null for a wait. */
 const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => string | null]> = [
   ["build", {}, () => "publish"],
   // No pull request at publish is no exit: pull.open lands before the position moves there.
-  ["publish", { total: [0, 1] }, (f) => ((f.total ?? 1) > 0 ? "code-review" : null)],
+  ["publish", { total: [0, 1] }, (f) => (n(f.total, 1) > 0 ? "code-review" : null)],
   ["code-review", {
     awaitingFix: [0, 1], openThreads: [0, 1], notMerged: [0, 1], "counters.code-review": [3, 4],
   }, (f) => {
-    if ((f.awaitingFix ?? 0) > 0) return count(f, "code-review") < 4 ? "fix-review" : "stuck";
-    if ((f.openThreads ?? 0) > 0) return "stuck";
-    return (f.notMerged ?? 1) > 0 ? "ci" : "done";
+    if (n(f.awaitingFix, 0) > 0) return count(f, "code-review") < 4 ? "fix-review" : "stuck";
+    if (n(f.openThreads, 0) > 0) return "stuck";
+    return n(f.notMerged, 1) > 0 ? "ci" : "done";
   }],
   ["fix-review", { "counters.fix-review": [7, 8] }, (f) => (count(f, "fix-review") < 8 ? "code-review" : "stuck")],
-  // Checks still running is the one wait here.
+  // Checks still running is the one wait here. A thread opened while they ran goes to review first.
   ["ci", {
-    ciPending: [0, 1], ciFailed: [0, 1], notMerged: [0, 1],
-    "counters.build": [1, 2, 3], "counters.fix-review": [0, 1], "counters.triage": [0, 1], "counters.retro": [0, 1],
+    total: [0, 1], openThreads: [0, 1], ciPending: [0, 1], ciFailed: [0, 1], notMerged: [0, 1],
+    "counters.code-review": [3, 4], "counters.build": [1, 2, 3], "counters.fix-review": [0, 1],
+    "counters.triage": [0, 1], "counters.retro": [0, 1],
   }, (f) => {
-    if ((f.ciFailed ?? 0) > 0) return count(f, "build") < 3 ? "build" : "stuck";
-    if ((f.ciPending ?? 0) > 0) return null;
-    return count(f, "retro") < 1 && friction(f) && (f.notMerged ?? 1) > 0 ? "retro" : "merge";
+    if (n(f.total, 1) === 0) return "stuck";
+    if (n(f.openThreads, 0) > 0) return count(f, "code-review") < 4 ? "code-review" : "stuck";
+    if (n(f.ciFailed, 0) > 0) return count(f, "build") < 3 ? "build" : "stuck";
+    if (n(f.ciPending, 0) > 0) return null;
+    return count(f, "retro") < 1 && friction(f) && n(f.notMerged, 1) > 0 ? "retro" : "merge";
   }],
   ["retro", {}, () => "code-review"],
-  ["merge", { notMerged: [0, 1], "counters.code-review": [3, 4] }, (f) => {
-    if ((f.notMerged ?? 1) === 0) return "done";
+  ["merge", { total: [0, 1], notMerged: [0, 1], "counters.code-review": [3, 4] }, (f) => {
+    if (n(f.total, 1) === 0) return "stuck";
+    if (n(f.notMerged, 1) === 0) return "done";
     return count(f, "code-review") < 4 ? "code-review" : "stuck";
   }],
   ["triage", { intent: ["rework", "close", "question", "unclear"], previous: ["stuck", "blocked", "screened"] }, (f) => {
@@ -329,10 +406,23 @@ const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => s
     if (f.intent === "close") return "closed";
     return f.previous ?? null;
   }],
-  // A person's turn: only their own message moves the item on.
-  ...["stuck", "blocked", "screened"].map((home): [string, Record<string, readonly unknown[]>, (f: Facts) => string | null] =>
-    [home, { actor: ["agent", "human"] }, (f) => (f.actor === "human" ? "triage" : null)]),
+  // A person's turn: their own message moves the item on — and at stuck, a
+  // pull request they merged by hand finishes it.
+  ["stuck", { actor: ["agent", "human"], total: [0, 1], notMerged: [0, 1] }, (f) => {
+    if (n(f.total, 1) > 0 && n(f.notMerged, 1) === 0) return "done";
+    return f.actor === "human" ? "triage" : null;
+  }],
+  ...["blocked", "screened"].map((halt): [string, Record<string, readonly unknown[]>, (f: Facts) => string | null] =>
+    [halt, { actor: ["agent", "human"] }, (f) => (f.actor === "human" ? "triage" : null)]),
 ];
+
+/** Each trigger's compiled `when`, compiled once: the sweep asks thousands of items. */
+const compiled = new WeakMap<Condition, (s: Snapshot) => boolean>();
+const matches = (when: Condition, s: Snapshot): boolean => {
+  let test = compiled.get(when);
+  if (!test) compiled.set(when, (test = compile(when)));
+  return test(s);
+};
 
 /** What decide() weighs once a stage has settled: every other stage's triggers, through the engine's compiler. */
 const exitsFrom = (w: Workflow, f: Facts): string[] => {
@@ -340,27 +430,28 @@ const exitsFrom = (w: Workflow, f: Facts): string[] => {
   return w.stages
     .filter((candidate) => candidate.id !== f.stage)
     .flatMap((candidate) => (candidate.triggers ?? [])
-      .filter((t) => compile(t.when)(s))
+      .filter((t) => matches(t.when, s))
       .map((t) => `${candidate.id}: ${t.name ?? ""}`));
 };
 
 const label = (f: Facts): string => JSON.stringify({ ...f, stage: undefined });
-const stageOf = (exit: string): string => exit.split(":")[0] ?? exit;
+const destinationOf = (exit: string): string => exit.split(":")[0] ?? exit;
 
 describe("every exit from a fastlane stage is exclusive", () => {
   it.each(STAGES)("from %s, exactly the exit the plan names matches, at every boundary", (stage, axes, to) => {
     const { workflow } = flow("fastlane");
     const facts = grid(stage, axes);
-    const got = facts.map((f) => [label(f), exitsFrom(workflow, f).map(stageOf)]);
+    const got = facts.map((f) => [label(f), exitsFrom(workflow, f).map(destinationOf)]);
     const want = facts.map((f) => [label(f), [to(f)].filter((x) => x !== null)]);
     expect(got).toEqual(want);
 
     // And for the right reason: each exit reads only paths these facts carry
-    // — a counter at zero is absent, as the engine leaves it — and the grid
-    // reaches every one of them.
+    // — a counter at zero is absent, as the engine leaves it, and so is every
+    // count of an item with no pull request — and the grid reaches every one.
     const anchored = workflow.stages.flatMap((s) => (s.triggers ?? []).filter((t) => t.when["run.stage"] === stage).map((t) => ({ to: s.id, t })));
     expect(anchored.length).toBeGreaterThan(0);
-    const missing = facts.flatMap((f) => anchored.flatMap(({ t }) => missingPaths(t.when, snapshotOf(f)).filter((p) => !p.startsWith("run.counters."))));
+    const missing = facts.filter((f) => n(f.total, 1) > 0).flatMap((f) => anchored.flatMap(({ t }) =>
+      missingPaths(t.when, snapshotOf(f)).filter((p) => !p.startsWith("run.counters."))));
     expect([...new Set(missing)]).toEqual([]);
     const reached = new Set(facts.flatMap((f) => exitsFrom(workflow, f)));
     expect(anchored.map(({ to: id, t }) => `${id}: ${t.name ?? ""}`).filter((exit) => !reached.has(exit))).toEqual([]);
@@ -372,7 +463,7 @@ describe("every exit from a fastlane stage is exclusive", () => {
       const axes = STAGES.find(([id]) => id === stage)?.[1] ?? {};
       const facts = grid(stage, axes, { valid: false, refused });
       const halt = refused ? "screened" : "blocked";
-      expect(facts.map((f) => [label(f), exitsFrom(flow("fastlane").workflow, f).map(stageOf)]))
+      expect(facts.map((f) => [label(f), exitsFrom(flow("fastlane").workflow, f).map(destinationOf)]))
         .toEqual(facts.map((f) => [label(f), [halt]]));
     },
   );
