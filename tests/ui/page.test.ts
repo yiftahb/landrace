@@ -2611,3 +2611,35 @@ describe("a narrow screen", () => {
     expect(PAGE_HTML).toMatch(/<header[^>]*>\s*<div class="[^"]*max-w-6xl/);
   });
 });
+
+describe("the empty Needs You", () => {
+  const allSet = (...args: unknown[]): boolean => {
+    const c: Record<string, unknown> = { args };
+    runInNewContext(fnSource("allSet"), c);
+    return runInNewContext("allSet(...args)", c) as boolean;
+  };
+
+  it("is all set only on Needs You, with nothing there and no search", () => {
+    expect(allSet(null, [], null)).toBe(true);
+    expect(allSet(null, [{ id: "1" }], null)).toBe(false);
+    expect(allSet("main", [], null)).toBe(false);
+    expect(allSet(null, [], { self: new Set(), below: new Set() })).toBe(false);
+  });
+
+  it("draws the beach in greyscale, from the page's own colour", () => {
+    const block = /<div id="all-set"[\s\S]*?<\/div>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(block).toContain("You're all set!");
+    expect(block).toContain("Nothing needs you. Landrace has it from here.");
+    const svg = /<svg[\s\S]*?<\/svg>/.exec(block)?.[0] ?? "";
+    expect(svg).toMatch(/role="img"/);
+    expect(svg).toMatch(/aria-label="[^"]*beach chair[^"]*palm tree[^"]*"/);
+    // No colour of its own: only currentColor and none, so the neutral token decides light and dark.
+    for (const [, value] of svg.matchAll(/(?:fill|stroke)="([^"]*)"/g)) expect(["currentColor", "none"]).toContain(value);
+    expect(svg).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|hsl\(/i);
+    expect(svg.length).toBeLessThan(3072);
+  });
+
+  it("is shown by render, and hides the lane it replaces", () => {
+    expect(fnSource("render")).toContain("allSet(page, rootsOn(view.rows, page), search)");
+  });
+});

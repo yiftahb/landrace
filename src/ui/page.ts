@@ -123,6 +123,30 @@ export const PAGE_HTML = `<!doctype html>
 </div>
 <p id="no-match" role="status" aria-live="polite" class="mb-4 px-1 text-sm italic text-neutral-400 empty:hidden dark:text-neutral-500"></p>
 ${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
+<div id="all-set" hidden class="flex flex-col items-center gap-2 py-16 text-center text-neutral-400 dark:text-neutral-600">
+<svg role="img" aria-label="A person in a beach chair under a palm tree" viewBox="0 0 240 160" class="h-40 w-60" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="204" cy="28" r="9" fill="currentColor" fill-opacity=".2"></circle>
+<path d="M204 10v4M204 42v4M186 28h4M218 28h4M191 15l3 3M214 38l3 3M217 15l-3 3M194 38l-3 3" stroke-opacity=".4"></path>
+<g transform="translate(26 0)">
+<path d="M62 142C70 112 70 80 58 44" stroke-width="4"></path>
+<path d="M58 44C44 36 30 40 20 56M58 44C50 28 36 24 24 28M58 44C66 28 82 24 96 32M58 44C72 40 90 48 98 64M58 44C58 34 60 26 64 18" stroke-opacity=".75"></path>
+<circle cx="55" cy="50" r="4" fill="currentColor" fill-opacity=".5"></circle>
+<circle cx="63" cy="52" r="4" fill="currentColor" fill-opacity=".5"></circle>
+</g>
+<g transform="translate(26 0)">
+<path d="M98 88l24 36h50M122 124l-8 18M172 124l8 18" stroke-width="3"></path>
+<path d="M104 118l16 22" stroke-opacity=".5"></path>
+<circle cx="116" cy="80" r="7" fill="currentColor" fill-opacity=".35"></circle>
+<path d="M120 90l12 28" stroke-width="4"></path>
+<path d="M127 98l-14-4-2-14" stroke-opacity=".8"></path>
+<path d="M132 118h26l18-10M136 122h28l16-8" stroke-width="3"></path>
+</g>
+<path d="M8 146h224"></path>
+<path d="M20 154h16M70 154h28M130 154h20M190 154h30" stroke-opacity=".35"></path>
+</svg>
+<p class="text-base font-semibold text-neutral-700 dark:text-neutral-200">You're all set!</p>
+<p class="text-sm text-neutral-500 dark:text-neutral-400">Nothing needs you. Landrace has it from here.</p>
+</div>
 ${lane("running", "Agent running", " border-l-4 border-l-emerald-500 [&_h2]:text-emerald-600 dark:[&_h2]:text-emerald-400 [&_.lane-count]:bg-emerald-100 [&_.lane-count]:text-emerald-700 dark:[&_.lane-count]:bg-emerald-950 dark:[&_.lane-count]:text-emerald-300", RUNNING_DOT)}
 ${lane("elsewhere", "Held elsewhere", " border-l-4 border-l-amber-500 [&_h2]:text-amber-600 dark:[&_h2]:text-amber-400 [&_.lane-count]:bg-amber-100 [&_.lane-count]:text-amber-700 dark:[&_.lane-count]:bg-amber-950 dark:[&_.lane-count]:text-amber-300")}
 ${lane("waiting", "Waiting", " border-l-4 border-l-neutral-300 dark:border-l-neutral-700 [&_h2]:text-neutral-500 dark:[&_h2]:text-neutral-400 [&_.lane-count]:bg-neutral-100 [&_.lane-count]:text-neutral-600 dark:[&_.lane-count]:bg-neutral-800 dark:[&_.lane-count]:text-neutral-300")}
@@ -1159,6 +1183,12 @@ function laneHidden(drawn, search) {
   return drawn === null || (search !== null && drawn.length === 0);
 }
 
+// Only on Needs You, with nothing on it and no query: a search that matched
+// nothing says so ("Nothing matches."), it is not good news.
+function allSet(page, roots, search) {
+  return page === null && search === null && roots.length === 0;
+}
+
 function titleOf(n) {
   return n > 0 ? "(" + n + ") Landrace" : "Landrace";
 }
@@ -1245,6 +1275,8 @@ function render(view) {
   // One seen-set for the whole page: a node is drawn once, in one lane.
   const seen = new Set();
   let matched = 0;
+  const done = allSet(page, rootsOn(view.rows, page), search);
+  document.getElementById("all-set").hidden = !done;
   for (const lane of document.querySelectorAll("[data-lane]")) {
     // Whole branches, filed by their root's lane — the server's cascade — and
     // counted as branches, so a lane's number is how many things to look at.
@@ -1258,7 +1290,7 @@ function render(view) {
     lane.querySelector(".lane-count").textContent = String(roots.length);
     // Without a query every lane stays, saying "None" when empty — a lane that
     // vanished would read as a fault. With one, a lane nothing matched is noise.
-    lane.hidden = laneHidden(drawn, search);
+    lane.hidden = laneHidden(drawn, search) || done;
     // A match inside a closed Not admitted / Done lane would show only as a count.
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
