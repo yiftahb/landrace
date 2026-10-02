@@ -131,9 +131,6 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
  */
 export const prBranch = (item: string): string => ITEM_BRANCH.replace("{item}", item);
 
-/** The item a head branch names, when it is one of ours. */
-export const itemOfBranch = (head: string): string | null => /^landrace\/([1-9][0-9]*)$/.exec(head)?.[1] ?? null;
-
 /**
  * The one mapping from a pull request, as an integration reads its forge's,
  * to a pull request node. Merged is done; closed without merging is dropped.

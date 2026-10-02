@@ -41,7 +41,8 @@ describe("stageFromLabels", () => {
  */
 describe("isEngineLabel", () => {
   const ENGINE = ["lr:working", "lr:awaiting", "lr:blocked", "lr:screened", "lr:stage:build", " LR:Stage:Done ", "LR:BLOCKED"];
-  const PROJECT = ["lr:fast", "lr:auto", "lr:stagehand", "needs-design", "blocked"];
+  // lr:approved too: nothing writes or reads it any more (separation review M5).
+  const PROJECT = ["lr:fast", "lr:auto", "lr:stagehand", "needs-design", "blocked", "lr:approved"];
 
   it("is every label the engine names, and any position, whatever the case", () => {
     expect(ENGINE.filter((l) => !isEngineLabel(l))).toEqual([]);

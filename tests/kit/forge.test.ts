@@ -2,7 +2,7 @@ import { renderMarker } from "#conventions.js";
 import {
   answered, BRIEF_DIFF_CHARS, BRIEF_HISTORY_ITEMS, BRIEF_THREADS, checkCounts, ciBrief, commentableLines, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
   isFinding, isReply, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
-  threadLine, itemOfBranch, where,
+  threadLine, where,
 } from "#kit/forge.js";
 import type { HistoryItem, ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
 
@@ -104,12 +104,10 @@ describe("placeFindings", () => {
   });
 });
 
-describe("prBranch and itemOfBranch", () => {
-  it("name an item's branch, and read the item back from one of ours only", () => {
+describe("prBranch", () => {
+  it("names an item's branch", () => {
     expect(prBranch("7")).toBe("landrace/7");
-    expect(itemOfBranch("landrace/7")).toBe("7");
-    expect(itemOfBranch("landrace/07")).toBeNull();
-    expect(itemOfBranch("feature/7")).toBeNull();
+    expect(prBranch("PROJ-7")).toBe("landrace/PROJ-7");
   });
 });
 

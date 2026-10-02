@@ -638,7 +638,7 @@ The functions the bases are made of stay exported, over the same plain shapes, f
 | From `landrace/kit` | What it is |
 |---|---|
 | Tracker | `commentsOf`, `wroteIt` and `botLoginOf` — our comments told from a stranger's; `labelSatisfied`, `statusSatisfied`, `commentSatisfied`, `closeSatisfied`, `nodesCloseSatisfied`, one per tracker effect; `itemNode`, `priorityFromLabels`, `createdAtOf`, `updatedAtOf`, `stillOpen`; the paging bounds and `MAX_COMMENT_CHARS` |
-| Forge | `answered` and `threadCounts` — whose turn a `ReviewThread` is; `placeFindings` for a review's findings on a diff of `ChangedFile`s; `pullNode`, `prBranch`, `itemOfBranch`, `itemsNamedBy`; the `threadsBrief` and `diffBrief` briefings, and `historyBrief` over `commentLine` and `threadLine` entries; `pushSatisfied` |
+| Forge | `answered` and `threadCounts` — whose turn a `ReviewThread` is; `placeFindings` for a review's findings on a diff of `ChangedFile`s; `pullNode`, `prBranch`, `itemsNamedBy`; the `threadsBrief` and `diffBrief` briefings, and `historyBrief` over `commentLine` and `threadLine` entries; `pushSatisfied` |
 | Docs | `SPEC`, `PUBLISH`, `hashOf`, `contentOf`, `mine`, `briefPage`, `publishSatisfied`, `specNode` |
 | Git | `gitIn`, `repositoryOf`, `ownGit`, `branchHeads`, `headsOf`, `headIn`; `originPushUrl` and `pushBranch`, fast-forward only with hooks off, the credential the hook's own |
 

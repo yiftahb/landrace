@@ -12,6 +12,11 @@ import type { Effect, Entry, Graph, HandoffArg, Marker, Node, Origin, TrackerCom
  */
 export const LABELS = {
   working: "lr:working",
+  /**
+   * Not read by the engine — a stage's `waits` says whose turn it is — but
+   * written by workflows for whoever reads the tracker, and so still one of
+   * the engine's own: nothing but a workflow's effects may write it.
+   */
   awaiting: "lr:awaiting",
   blocked: "lr:blocked",
   /**
@@ -20,7 +25,6 @@ export const LABELS = {
    * saying yes. This one only says why, so a person knows what to look at.
    */
   screened: "lr:screened",
-  approved: "lr:approved",
   stage: (id: string) => `lr:stage:${id}`,
 } as const;
 

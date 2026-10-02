@@ -28,7 +28,7 @@ describe("the operator tools cannot write the engine's own state", () => {
 
   it("refuses at creation time too, whatever the case", async () => {
     const gh = createFakeTracker();
-    await expect(createTools([hooked(gh.registry)], gh.ctx).createItem({ title: "x", labels: ["LR:approved"] })).rejects.toThrow(/LR:approved/);
+    await expect(createTools([hooked(gh.registry)], gh.ctx).createItem({ title: "x", labels: ["LR:Stage:Done"] })).rejects.toThrow(/LR:Stage:Done/);
     expect([...gh.issues.keys()]).toEqual([]);
   });
 
