@@ -16,6 +16,7 @@ import {
   PULL_OPEN_EFFECT,
   PULL_REVIEW_EFFECT,
   RECORD_EFFECT,
+  RELATED_FACTS,
   retiredCapabilityPointers,
   retiredPlaceholder,
   unknownCapabilities,
@@ -1326,6 +1327,8 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
     }
   }
 
+  problems.push(...factProblems(w));
+
   const known = new Set(provided ?? []);
   const covered = (path: string) =>
     known.has(path) || [...known].some((k) => k.endsWith("*") && path.startsWith(k.slice(0, -1)));
@@ -1364,6 +1367,39 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   }
 
   return dedupe(problems);
+}
+
+const FACT_THROUGH_REL = new RegExp(`^rel\\.[^.]+\\.(?:in|out)\\.(?:is|not)\\.(${Object.values(RELATED_FACTS).join("|")})$`);
+
+/**
+ * Whether an item's relationships could be read, and whether it waits on
+ * itself, are the item's own facts. Counted through `rel` they are a related
+ * node's, which carries them only as far as its source read it — a
+ * placeholder never does — so the same item reads them in its listing and
+ * not in its read, and a workflow routing on one routes on absent. Asked
+ * whatever is provided: a source that provides `rel.*` provides no such
+ * fact anyway.
+ */
+function factProblems(w: Workflow): Problem[] {
+  const problems: Problem[] = [];
+  const check = (path: string, where: string): void => {
+    const fact = FACT_THROUGH_REL.exec(path)?.[1];
+    if (fact === undefined) return;
+    problems.push({
+      rule: "item-fact",
+      message: `${where} reads ${path}, but ${fact} is an item's own fact, never counted across what it relates to: read node.state.${fact}`,
+    });
+  };
+  for (const stage of w.stages) {
+    const conditions = [
+      stage.identity, stage.requires, ...(stage.triggers ?? []).map((t) => t.when),
+      ...gotoTargetsOf(stage).map((g) => g.when ?? undefined),
+    ];
+    for (const c of conditions) for (const path of pathsIn(c ?? {})) check(path, `stage "${stage.id}"`);
+    for (const field of noteFields(stage.note ?? "")) check(field, `stage "${stage.id}" note`);
+  }
+  for (const rule of w.eligible ?? []) for (const path of pathsIn(rule.when)) check(path, "eligibility rule");
+  return problems;
 }
 
 /**

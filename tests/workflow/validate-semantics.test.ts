@@ -953,6 +953,40 @@ describe("the graph rules, on stages the item's own state places it at", () => {
  * predicate reading nothing: against the types the source declares, and not
  * at all when nobody says what is provided.
  */
+/*
+ * Whether an item's relationships could be read, and whether it waits on
+ * itself, are the item's own facts. A related node carries them only as far
+ * as its source read it — a placeholder never does — so counted through
+ * `rel` they read absent in one graph and present in another.
+ */
+describe("an item's relationship facts", () => {
+  const reading = (path: string): Workflow => ({ version: 1, name: "t", description: "test",
+    eligible: [{ when: { [path]: 0 }, else: "no" }],
+    stages: [
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "b", note: `{${path}}`, terminal: true, triggers: [{ when: { "run.stage": "a", [path]: { $gt: 0 } } }] },
+    ] });
+  const facts = (path: string, provided?: string[]): string[] =>
+    validateSemantics(reading(path), noSteps, provided).filter((p) => p.rule === "item-fact").map((p) => p.message);
+
+  it.each([
+    ["rel.x.out.is.dependencyCycle", "dependencyCycle"],
+    ["rel.x.in.not.relatedUnreadable", "relatedUnreadable"],
+  ])("refuses %s wherever it is read, pointing at node.state, whatever is provided", (path, fact) => {
+    const said = `reads ${path}, but ${fact} is an item's own fact, never counted across what it relates to: read node.state.${fact}`;
+    expect(facts(path)).toEqual([`stage "b" ${said}`, `stage "b" note ${said}`, `eligibility rule ${said}`]);
+    expect(facts(path, [path, "run.stage"])).toEqual(facts(path));
+  });
+
+  it("accepts the fact read off the item itself, and any other field counted through rel", () => {
+    expect(facts("rel.x.out.is.merged")).toEqual([]);
+    const own: Workflow = { version: 1, name: "t", description: "test", stages: [
+      { id: "a", entry: true, terminal: true, triggers: [{ when: { "node.state.dependencyCycle": true } }] },
+    ] };
+    expect(validateSemantics(own, noSteps).filter((p) => p.rule === "item-fact")).toEqual([]);
+  });
+});
+
 describe("a stage's note", () => {
   const PROVIDED = ["run.stage", "node.id", "rel.x", "rel.x.out.open", "rel.x.out.total", "rel.x.in.total", "rel.x.out.not.*", "rel.x.out.stage.*"];
   const noted = (note: string): Workflow => ({ version: 1, name: "t", description: "test", stages: [

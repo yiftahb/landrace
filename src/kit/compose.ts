@@ -15,7 +15,7 @@
  * share is `nodes.close`, whose ids are split by kind between the role that
  * closes items and the one that closes pull requests.
  */
-import { isItemNode, NODES_CLOSE_EFFECT, PULL_REQUEST_KIND, ITEM_KIND } from "#conventions.js";
+import { isItemNode, NODES_CLOSE_EFFECT, PULL_REQUEST_KIND } from "#conventions.js";
 import {
   defineArtifactHook, defineOperator, definePostHook, definePreflight, definePreHook, defineSource,
 } from "#hooks/contracts.js";
@@ -103,8 +103,9 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
   /*
    * nodes.close, split by what each id is in the snapshot's graph: an item
    * is the tracker's to close and a pull request the forge's. Anything else —
-   * an id the graph does not hold, a document — is a kind no role closes, and
-   * closing it some other way would be a guess.
+   * an id the graph does not hold, a document, a placeholder that is only the
+   * other end of a relationship — is a kind no role closes, and closing it
+   * some other way would be a guess.
    *
    * In the order planned, one run of consecutive ids per role: core orders a
    * close so a pull request is dropped before the item it implements, and
@@ -113,15 +114,17 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
   const split = (snapshot: Snapshot | undefined, effect: Effect): Array<[EffectHandler, Effect]> => {
     const graph = snapshot?.graph as Graph | undefined;
     if (!graph) throw new Error("a nodes.close effect cannot be checked: the snapshot has no graph");
-    const kinds = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    const nodes = new Map(graph.nodes.map((n) => [n.id, n]));
     const runs: Array<[EffectHandler, string[]]> = [];
     for (const id of (effect.ids as string[] | undefined) ?? []) {
-      const kind = kinds.get(id);
-      const handler = kind === ITEM_KIND ? tracked[NODES_CLOSE_EFFECT] : kind === PULL_REQUEST_KIND ? forged[NODES_CLOSE_EFFECT] : undefined;
+      const node = nodes.get(id);
+      const handler = node === undefined ? undefined
+        : isItemNode(node) ? tracked[NODES_CLOSE_EFFECT]
+          : node.kind === PULL_REQUEST_KIND ? forged[NODES_CLOSE_EFFECT] : undefined;
       if (!handler) {
-        throw new Error(
-          `nodes.close names "${id}", ${kind === undefined ? "which is not in the snapshot's graph" : `a ${kind}`}, and no role closes it`,
-        );
+        const what = node === undefined ? "which is not in the snapshot's graph"
+          : node.placeholder === true ? "the other end of a relationship" : `a ${node.kind}`;
+        throw new Error(`nodes.close names "${id}", ${what}, and no role closes it`);
       }
       const last = runs.at(-1);
       if (last?.[0] === handler) last[1].push(id);

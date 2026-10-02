@@ -370,6 +370,27 @@ describe("placeholders in the graph compose reads", () => {
     expect((await hooks.source.list(ctx)).nodes.filter((n) => n.id === "10")).toEqual([expect.not.objectContaining({ placeholder: true })]);
   });
 
+  /*
+   * An integration's id for an item elsewhere never takes another role's
+   * node-id form: one that does is two roles reporting one id, which halts
+   * the listing rather than guessing which node it is.
+   */
+  it("halts a listing where a related id takes the forge's node-id form", async () => {
+    const tracker = new MemoryTracker({ items: [{ id: "12", related: [{ type: B, to: "pr-1", closed: "done" }] }, { id: "13" }] });
+    const forge = new MemoryForge();
+    forge.add("13");
+    await expect(compose({ tracker, forge }).source.list(ctx)).rejects.toThrow('node "pr-1" is reported by both the tracker and the forge');
+  });
+
+  // Only the other end of a relationship: no role's to close.
+  it("refuses a nodes.close naming a placeholder", async () => {
+    const { hooks } = world();
+    const snapshot = await snapshotOf(hooks, "12");
+    const effect = { type: "nodes.close", ids: ["10"] };
+    expect(() => hooks.post.satisfied(snapshot, effect)).toThrow('nodes.close names "10", the other end of a relationship, and no role closes it');
+    await expect(hooks.post.apply(effect, on("12", snapshot))).rejects.toThrow(/"10".*no role closes it/);
+  });
+
   it("passes the operator's relationship writes to the tracker", async () => {
     const { tracker, hooks } = world();
     const relate = jest.spyOn(tracker, "relate");

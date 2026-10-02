@@ -12,7 +12,7 @@
  */
 import {
   allClosed, CLOSE_EFFECT, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES,
-  neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATIONS, renderMarker,
+  neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATED_FACTS, RELATIONS, renderMarker,
   renderOrigin, sameLogin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND,
 } from "#conventions.js";
 import { commentLine } from "#kit/forge.js";
@@ -276,22 +276,25 @@ export function relatedOf(item: ItemRecord): { related: RelatedRecord[]; whole: 
 }
 
 /**
- * Whether `root` waits on itself: its open blockers walked transitively, one
- * `hop` per item, stopping at closed ones — through the tracker's own items
- * only. A blocker it does not `own` (another tracker's, another
- * repository's) is never read: it holds the item back by the state its
- * relationship reports, and a cycle through it goes unseen.
+ * Whether `root` waits on itself: its open blockers walked transitively over
+ * `open` — the tracker's open items, as its one listing has them, so a walk
+ * costs no read per blocker — stopping at closed ones. The one judge of it
+ * for `list` and `read` alike, so the two agree by construction.
  *
- * `whole` is false when the walk could not see everything it should have: a
- * blocker it met had relationships it could not read all of, or one it owns
- * could not be read at all, which stops the walk there. Either way a cycle
- * cannot be ruled out — the root's own relationships are `relatedOf`'s to
- * judge. A walk past MAX_SUBGRAPH_NODES items is refused, as a read that
- * large is. A closed item waits on nothing.
+ * Only through the tracker's own items: a blocker it does not `own` (another
+ * tracker's, another repository's) holds the item back by the state its
+ * relationship reports, and a cycle through it goes unseen. One it owns that
+ * `open` does not hold open is closed since, or gone: the walk stops there,
+ * and nothing about it is unreadable.
+ *
+ * `whole` is false when a blocker the walk met had relationships it could not
+ * read all of, so a cycle through them cannot be ruled out — the root's own
+ * are `relatedOf`'s to judge. A walk past MAX_SUBGRAPH_NODES items is
+ * refused, as a read that large is. A closed item waits on nothing.
  */
-export async function blockerCycle(
-  root: ItemRecord, hop: (id: string) => Promise<ItemRecord>, owns: (id: string) => boolean,
-): Promise<{ cycle: boolean; whole: boolean }> {
+export function blockerCycle(
+  root: ItemRecord, open: ReadonlyMap<string, ItemRecord>, owns: (id: string) => boolean,
+): { cycle: boolean; whole: boolean } {
   if (root.closed !== null) return { cycle: false, whole: true };
   const seen = new Set([root.id]);
   const queue = [root];
@@ -299,26 +302,27 @@ export async function blockerCycle(
   let whole = true;
   for (let i = 0; i < queue.length; i++) {
     const at = queue[i] as ItemRecord;
-    if (at !== root) {
-      if (at.closed !== null) continue;
-      if (at.relatedComplete === false) whole = false;
-    }
+    if (at !== root && at.relatedComplete === false) whole = false;
     for (const r of at.related ?? []) {
       if (r.type !== RELATIONS.blockedBy || r.closed !== null) continue;
       if (r.to === root.id) cycle = true;
       else if (itemIdProblem(r.to) !== null) whole = false;
-      else if (owns(r.to) && !seen.has(r.to)) {
+      else if (!seen.has(r.to) && owns(r.to)) {
+        const next = open.get(r.to);
+        if (next === undefined || next.closed !== null) continue;
         seen.add(r.to);
         if (seen.size > MAX_SUBGRAPH_NODES) throw tooLarge(root.id);
-        try {
-          queue.push(await hop(r.to));
-        } catch {
-          return { cycle, whole: false };
-        }
+        queue.push(next);
       }
     }
   }
   return { cycle, whole };
+}
+
+/** Whether `blockerCycle` has anywhere to go from `root`: an open blocker of the tracker's own besides itself. */
+export function waitsOnOwn(root: ItemRecord, owns: (id: string) => boolean): boolean {
+  return root.closed === null && (root.related ?? []).some((r) =>
+    r.type === RELATIONS.blockedBy && r.closed === null && r.to !== root.id && itemIdProblem(r.to) === null && owns(r.to));
 }
 
 /**
@@ -331,7 +335,11 @@ function withFacts(node: Node, { unreadable, cycle }: { unreadable: boolean; cyc
   if (!unreadable && !cycle) return node;
   return {
     ...node,
-    state: { ...node.state, ...(unreadable ? { relatedUnreadable: true } : {}), ...(cycle ? { dependencyCycle: true } : {}) },
+    state: {
+      ...node.state,
+      ...(unreadable ? { [RELATED_FACTS.unreadable]: true } : {}),
+      ...(cycle ? { [RELATED_FACTS.cycle]: true } : {}),
+    },
   };
 }
 
@@ -444,6 +452,9 @@ export abstract class BaseTracker {
 
   async relate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void> {
     this.writable(type, `relate #${item} to #${other}`);
+    // A tracker's own UI may allow one, and a read of it still says the item
+    // waits on itself; landrace never writes one.
+    if (item === other) throw new Error(`cannot relate #${item} to itself as "${type}"`);
     await this.addRelation(item, type, other, ctx);
   }
 
@@ -552,28 +563,16 @@ export abstract class BaseTracker {
    * Every item the tracker lists, and each child's edge to a parent the list
    * carries: none dangles. Each item's relationships are edges too, to a
    * placeholder for an item the list does not carry, so the board can name
-   * every one. Whether an item is on a cycle of blockers is walked here as
-   * `read` walks it, so the two agree — but where `read` refuses a walk past
-   * its bound, the listing says the item's relationships cannot be read: one
-   * item's walk does not fail every item's listing.
+   * every one. Whether an item is on a cycle of blockers is judged over this
+   * same list, as `read` judges it, so the two agree — but where `read`
+   * refuses a walk past its bound, the listing says the item's relationships
+   * cannot be read: one item's walk does not fail every item's listing.
    */
   async list(ctx: RuntimeContext): Promise<Graph> {
     const bot = await this.login(ctx);
     const items = await this.items(ctx);
     const listed = new Map(items.map((t) => [t.id, t]));
-    // One read of each item the list does not carry, however many walks reach it.
-    const fetched = new Map<string, Promise<ItemRecord>>();
-    const hop = (id: string): Promise<ItemRecord> => {
-      const known = listed.get(id);
-      if (known) return Promise.resolve(known);
-      let read = fetched.get(id);
-      if (read === undefined) {
-        read = this.item(id, ctx);
-        read.catch(() => {}); // awaited by each walk that reaches it; one failing is that walk's to report
-        fetched.set(id, read);
-      }
-      return read;
-    };
+    const owns = (id: string): boolean => this.ownsId(id);
     const nodes: Node[] = [];
     const edges = new Map<string, Relationship>();
     const placeholders = new Map<string, Node>();
@@ -583,7 +582,12 @@ export abstract class BaseTracker {
       }
       const { related, whole } = relatedOf(t);
       drawRelated(t.id, related, (id) => listed.has(id), edges, placeholders);
-      const walk = await blockerCycle(t, hop, (id) => this.ownsId(id)).catch(() => ({ cycle: false, whole: false }));
+      let walk: { cycle: boolean; whole: boolean };
+      try {
+        walk = blockerCycle(t, listed, owns);
+      } catch {
+        walk = { cycle: false, whole: false };
+      }
       nodes.push(withFacts(itemNode(t, bot), { unreadable: !whole || !walk.whole, cycle: walk.cycle }));
     }
     return { nodes: [...nodes, ...placeholders.values()], relationships: [...edges.values()] };
@@ -600,9 +604,10 @@ export abstract class BaseTracker {
    * And the item's own relationships, each an edge — to a placeholder built
    * from the relationship for a related item outside the neighbourhood, never
    * a read of it. Its blockers are walked further, through the tracker's own
-   * items, only to say whether it is on a cycle of them; nothing the walk
-   * meets becomes a node, and one it cannot read makes the item's
-   * relationships unreadable rather than failing the read.
+   * open items, only to say whether it is on a cycle of them — over one
+   * listing of them, read only when it has an open blocker of the tracker's
+   * own, and refused with that listing when it cannot be had. Nothing the
+   * walk meets becomes a node.
    */
   async read(id: string, ctx: RuntimeContext): Promise<Graph> {
     const bot = await this.login(ctx);
@@ -636,7 +641,9 @@ export abstract class BaseTracker {
     const { related, whole } = relatedOf(root);
     drawRelated(id, related, (other) => seen.has(other), edges, placeholders);
     if (read.length + placeholders.size > MAX_SUBGRAPH_NODES) throw tooLarge(id);
-    const walk = await blockerCycle(root, (hop) => this.item(hop, ctx), (other) => this.ownsId(other));
+    const owns = (other: string): boolean => this.ownsId(other);
+    const open = waitsOnOwn(root, owns) ? new Map((await this.items(ctx)).map((t) => [t.id, t])) : new Map<string, ItemRecord>();
+    const walk = blockerCycle(root, open, owns);
     return {
       nodes: [
         withFacts(itemNode(root, bot), { unreadable: !whole || !walk.whole, cycle: walk.cycle }),
@@ -653,8 +660,17 @@ export abstract class BaseTracker {
    * body is escaped first, so an agent cannot bring a marker of its own.
    */
   async createItem({ title, body, labels, parent, origin, priority, relate: relations }: NewItem, ctx: RuntimeContext): Promise<Node> {
-    // Every type checked before anything is written: a refusal leaves nothing behind.
+    // Every type, and every item of its own it names, checked before anything
+    // is written: a refusal leaves nothing behind.
     for (const { type, item } of relations ?? []) this.writable(type, `relate a new item to #${item}`);
+    for (const { type, item } of relations ?? []) {
+      if (!this.ownsId(item)) continue;
+      try {
+        await this.item(item, ctx);
+      } catch (e) {
+        throw new Error(`cannot relate a new item to #${item} as "${type}": #${item} could not be read: ${messageOf(e)}`);
+      }
+    }
     const stamped = neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : "");
     const id = await this.create({ title, body: stamped, parent, priority }, ctx);
     // Related before it is labelled: the label is what lets a tick work it,
@@ -668,11 +684,17 @@ export abstract class BaseTracker {
       }
     }
     if (failed.length > 0) {
-      // Never by deleting it: an item a person can see is one they can mend.
-      const unlabelled = (labels ?? []).length > 0
-        ? ` It was left without ${(labels ?? []).join(", ")}, so nothing works it before it is related.`
-        : "";
-      throw new Error(`#${id} was created, but relating it failed: ${failed.join("; ")}.${unlabelled}`);
+      // Closed as dropped, as a sub-item that cannot be linked is: open and
+      // unlabelled, nothing would work it, and a parent waiting on every
+      // child closed would wait on it for ever. Dropped, it counts only in
+      // the parent's `dropped`. Never deleted: a person can still see it.
+      let closing = "it was closed as dropped, so it holds nothing up";
+      try {
+        await this.close(id, "dropped", ctx);
+      } catch (e) {
+        closing = `and closing it as dropped failed too: ${messageOf(e)}`;
+      }
+      throw new Error(`#${id} was created, but relating it failed: ${failed.join("; ")}; ${closing}`);
     }
     if ((labels ?? []).length > 0) await this.addLabels(id, labels ?? [], ctx);
     return itemNode(await this.item(id, ctx), await this.login(ctx));

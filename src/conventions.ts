@@ -137,6 +137,16 @@ export const DOCUMENT_KIND = "document";
  */
 export const RELATIONS = { childOf: "child-of", implements: "implements", documents: "documents", blockedBy: "blocked-by" } as const;
 
+/**
+ * What a tracker reports of an item's relationships on the item's own node,
+ * as `node.state.<fact>: true` and only when true: they could not all be
+ * read, or the item is on a cycle of `blocked-by`. The item's own — a related
+ * node carries them only as far as its source read it, and a placeholder
+ * never does — so a workflow reads them from `node.state`, never through
+ * `rel`, and `validate` refuses a `rel` path counting one.
+ */
+export const RELATED_FACTS = { unreadable: "relatedUnreadable", cycle: "dependencyCycle" } as const;
+
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 

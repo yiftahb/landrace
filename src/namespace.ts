@@ -1034,7 +1034,9 @@ export interface ReviewThread {
  * item `to`, with that item's own title, link and state as the same answer
  * gave them — so naming every blocker costs no read per blocker. `to` is an
  * item id the integration chooses for an item elsewhere (another
- * repository): a usable one, never all digits, one per item.
+ * repository): a usable one, never all digits, one per item, and never in
+ * another role's node-id form (`pr-<n>`, `spec-<id>`) — that is two roles
+ * reporting one id, which halts the whole listing.
  */
 export interface RelatedRecord { type: string; to: string; title: string; link: string; closed: Closed }
 
