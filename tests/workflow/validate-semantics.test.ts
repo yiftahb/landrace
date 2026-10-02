@@ -816,9 +816,39 @@ describe("the graph rules, on stages the item's own state places it at", () => {
 
     // Nothing proved is nothing reported: no value built from the operands
     // falls strictly between 1 and 2, though 1.5 would.
-    it("abstains on identities it cannot build a common item for", () => {
-      expect(identities({ "run.counters.a": { $gt: 1, $lt: 2 } }, undefined)).toEqual([]);
+    it("abstains on two custom identities it cannot build a common item for", () => {
+      expect(identities({ "run.counters.a": { $gt: 1, $lt: 2 }, "node.state.labels": "x" }, { "run.counters.a": { $gt: 1 } })).toEqual([]);
       expect(identities({ $or: [{ "node.state.labels": "x" }] }, { $or: [{ "node.state.labels": "y" }] })).toEqual([]);
+    });
+
+    /*
+     * A stage placed by its label beside one whose identity leaves the
+     * position alone: any item that identity holds, at the labelled stage,
+     * matches both — so only an identity nothing can satisfy escapes, and
+     * that is a defect too. Where the witness cannot build that item, the
+     * pair is reported as it was before the witness, not abstained on: each
+     * of these once validated clean and then halted every such item.
+     */
+    const asBefore = [{
+      rule: "identity",
+      message: 'stages "a" and "b" can both be the current position ' +
+        "(this check only compares literal scalars, so a genuine $lt/$gt range split can false-positive here)",
+    }];
+    it.each([
+      ["a $regex", { "node.title": { $regex: "^WIP" } }],
+      ["a field it must lack", { "node.priority": { $exists: false } }],
+      ["a top-level $or", { $or: [{ "node.state.labels": { $in: ["x"] } }, { "node.priority": 1 }] }],
+      ["a $size", { "node.state.labels": { $size: 2 } }],
+      ["a range no counter falls in", { "run.counters.a": { $gt: 1, $lt: 2 } }],
+    ])("reports a default identity beside one reading %s it cannot build an item for", (_, custom) => {
+      expect(identities(custom, undefined)).toEqual(asBefore);
+      expect(identities(undefined, custom)).toEqual(asBefore);
+    });
+
+    // Pinning the position is a position of its own, which a default
+    // identity's never equals: there is nothing to report.
+    it("does not report a default identity beside one that pins the position elsewhere", () => {
+      expect(identities({ "run.stage": null, "node.title": { $regex: "^WIP" } }, undefined)).toEqual([]);
     });
 
     it.each([

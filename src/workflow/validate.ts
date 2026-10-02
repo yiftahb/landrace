@@ -664,7 +664,8 @@ const waitsForAPerson = (c: Condition): boolean => c["run.lastEvent.actor"] === 
  * so it is for $or, $and or $not at the top, one path inside another, a
  * reserved key, or more labels than are worth enumerating. Disjoint and
  * unknown both report nothing, which is the direction this rule may be wrong
- * in.
+ * in — between two custom identities. Beside a default one, see
+ * `labelBesideFree`.
  */
 function itemBothPlace(a: Condition, b: Condition): Record<string, unknown> | null {
   const paths = [...new Set([...Object.keys(a), ...Object.keys(b)])];
@@ -684,6 +685,22 @@ function itemBothPlace(a: Condition, b: Condition): Record<string, unknown> | nu
     // An operator outside the allowlist: the structural rules report it.
     return null;
   }
+}
+
+/**
+ * Whether `placed` is placed by its label alone — the default identity,
+ * `"run.stage": <its id>` — and `other` reads no position at all. Then any
+ * item `other` holds, at `placed`'s stage, matches both, so the pair
+ * overlaps unless `other` can never hold, which is a defect too. The
+ * witness cannot build every such item — a `$regex`, a field that must be
+ * absent, a top-level `$or`, a `$size` — and abstaining on those let a
+ * workflow the rule before it refused validate clean and then halt every
+ * such item, while the board, giving way to the label, showed it queued.
+ */
+function labelBesideFree(placed: Stage, other: Stage): boolean {
+  const identity = identityOf(placed);
+  const byLabel = Object.keys(identity).length === 1 && identity["run.stage"] === placed.id;
+  return byLabel && other.identity !== undefined && !pathsIn(other.identity).includes("run.stage");
 }
 
 /** Past this many named labels, the sets to try outnumber what a validator should spend. */
@@ -1061,6 +1078,13 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
         problems.push({
           rule: "identity",
           message: `stages "${a.id}" and "${b.id}" can both be the current position: an item with ${JSON.stringify(item)} matches both`,
+        });
+      } else if (labelBesideFree(a, b) || labelBesideFree(b, a)) {
+        // In the words of the rule before the witness, which reported it.
+        problems.push({
+          rule: "identity",
+          message: `stages "${a.id}" and "${b.id}" can both be the current position ` +
+            "(this check only compares literal scalars, so a genuine $lt/$gt range split can false-positive here)",
         });
       }
     }
