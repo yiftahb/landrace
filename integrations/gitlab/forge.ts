@@ -6,7 +6,7 @@
  */
 import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "landrace/hooks";
 import {
-  BaseForge, branchHeads, DONE_WINDOW_MS, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
+  BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
   repositoryOf, ITEM_PAGE,
   type BranchHeads, type ChangedFile, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
@@ -354,7 +354,11 @@ export class GitLab extends BaseForge {
   }
 
   async closePull(pull: number, ctx: RuntimeContext): Promise<void> {
-    await this.gl(ctx).put(`/merge_requests/${pull}`, { state_event: "close" });
+    try {
+      await this.gl(ctx).put(`/merge_requests/${pull}`, { state_event: "close" });
+    } catch (e) {
+      throw this.tokenRefusal(e, false);
+    }
   }
 
   /**
@@ -404,10 +408,14 @@ export class GitLab extends BaseForge {
     }
   }
 
-  /** A refused read names the scope and role; any other failure is passed as it came — never an answer. */
+  /**
+   * A refused read or write names the scope and role, and is marked a
+   * refusal: the same token is refused again. Any other failure is passed as
+   * it came — never an answer.
+   */
   private tokenRefusal(e: unknown, ci: boolean): unknown {
     return tokenRejected(e) ?? (statusOf(e) === 403
-      ? new Error(`token needs the "api" scope and Developer access on ${this.project}${ci ? ", and CI/CD enabled on the project" : ""} (GitLab answered: ${refusalMessage(e)})`)
+      ? new EffectRefused(`token needs the "api" scope and Developer access on ${this.project}${ci ? ", and CI/CD enabled on the project" : ""} (GitLab answered: ${refusalMessage(e)})`)
       : e);
   }
 
@@ -433,7 +441,7 @@ export class GitLab extends BaseForge {
       // `can_be_merged_by` refuses — a Developer on a default protected
       // branch — and the read at apply has just proved the token good.
       if (status === 401) {
-        throw new Error(
+        throw new EffectRefused(
           `the token's user may not merge ${which} into its target branch: check the protected branch's "Allowed to merge", ` +
           `or give the user the Maintainer role (GitLab answered: ${refusalMessage(e)})`,
         );
@@ -444,7 +452,8 @@ export class GitLab extends BaseForge {
         // Unread is not moved: only a head GitLab names, and names as another, is.
         if (typeof now.sha === "string" && now.sha !== headSha) return "moved";
         if (now.state === "merged") return "merged";
-        throw new Error(`${which} cannot be merged: ${refusalMessage(e)}`);
+        // Not mergeable at the head asked for: conflicts, or the project's merge checks. A refusal.
+        throw new EffectRefused(`${which} cannot be merged: ${refusalMessage(e)}`);
       }
       throw new Error(`${which} could not be merged: ${typeof status === "number" ? `GitLab answered ${status}: ` : ""}${refusalMessage(e)}`);
     }

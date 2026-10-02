@@ -6,7 +6,7 @@
  * goes out until this token's own login is known.
  */
 import type { RuntimeContext } from "landrace/hooks";
-import { MAX_COMMENT_CHARS } from "landrace/kit";
+import { EffectRefused, MAX_COMMENT_CHARS } from "landrace/kit";
 
 export interface GitHubOptions {
   repo: string;
@@ -236,6 +236,10 @@ export function createClient(opts: GitHubOptions) {
    * A 403 on a write the preflight could not probe, reported as the permission
    * it lacks. Closing a pull request and linking a sub-issue have no harmless
    * form to try at startup, so this is where a token missing either is named.
+   *
+   * A refusal, marked so — asking again with the same token is refused again
+   * — unless it is a rate limit, which GitHub also answers 403 and which the
+   * next tick may well get past.
    */
   const named = async (write: Promise<unknown>, permission: string): Promise<void> => {
     try {
@@ -243,7 +247,9 @@ export function createClient(opts: GitHubOptions) {
     } catch (e) {
       // GitHub's own words kept: a secondary rate limit answers 403 too.
       if ((e as { status?: unknown } | null)?.status === 403) {
-        throw new Error(`token needs ${permission} (GitHub answered: ${e instanceof Error ? e.message : String(e)})`);
+        const said = `token needs ${permission} (GitHub answered: ${e instanceof Error ? e.message : String(e)})`;
+        const limited = /rate limit/i.test(String((e as { body?: unknown }).body));
+        throw limited ? new Error(said) : new EffectRefused(said);
       }
       throw e;
     }

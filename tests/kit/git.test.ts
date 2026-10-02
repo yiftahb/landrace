@@ -99,7 +99,7 @@ describe("nothingCommitted", () => {
   it("names the branch and the item, and says how it clears", () => {
     expect(nothingCommitted("landrace/7", "7").message).toBe(
       "nothing was committed on landrace/7 for #7: it is already part of origin's default branch, so there is " +
-      "nothing to push or propose. Commit to the branch and the next tick carries on",
+      "nothing to push or propose. Commit to the branch, then Retry",
     );
   });
 });

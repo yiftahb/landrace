@@ -1,5 +1,6 @@
 import {
   BRANCH_PUSH_EFFECT,
+  EffectRefused,
   effectBranch,
   entriesFromComments,
   PULL_OPEN_EFFECT,
@@ -380,14 +381,15 @@ export class MemoryForge extends BaseForge {
    * the one asked for is refused as moved. One a person closed is refused
    * outright, before its head is looked at: merging it would undo their close.
    * One seeded `mergeable: false` is refused at its own head, and moved at
-   * another, as the vendors' forges answer it.
+   * another, as the vendors' forges answer it. Both refusals are marked, as a
+   * vendor's are: neither changes by asking again.
    */
   async merge(pull: number, headSha: string): Promise<MergeAnswer> {
     const row = this.pull(`pr-${pull}`);
     if (row.merged) return "merged";
-    if (row.closed !== null) throw new Error(`${row.id} for #${row.item} was closed without being merged, so there is nothing to merge`);
+    if (row.closed !== null) throw new EffectRefused(`${row.id} for #${row.item} was closed without being merged, so there is nothing to merge`);
     if (headSha !== row.headSha) return "moved";
-    if (row.mergeable === false) throw new Error(`${row.id} for #${row.item} cannot be merged: the forge finds it not mergeable`);
+    if (row.mergeable === false) throw new EffectRefused(`${row.id} for #${row.item} cannot be merged: the forge finds it not mergeable`);
     row.merged = true;
     row.closed = "done";
     return "merged";

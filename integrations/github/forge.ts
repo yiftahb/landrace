@@ -10,7 +10,7 @@
  */
 import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
-  BaseForge, branchHeads, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
+  BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
   ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
   type BranchHeads, type ChangedFile, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
@@ -698,11 +698,13 @@ export class GitHubForge extends BaseForge {
         // Unread is not moved: only a head GitHub names, and names as another, is.
         if (typeof now.head?.sha === "string" && now.head.sha !== headSha) return "moved";
         if (now.merged === true) return "merged";
-        throw new Error(`${which} cannot be merged: ${refusalMessage(e)}`);
+        // Not mergeable at the head asked for: conflicts, or branch protection. A refusal.
+        throw new EffectRefused(`${which} cannot be merged: ${refusalMessage(e)}`);
       }
-      // A refused permission is already a sentence naming it; anything else is GitHub's own words, said whose merge it was.
+      // A refused permission is already a sentence naming it, and still a
+      // refusal; anything else is GitHub's own words, said whose merge it was.
       const said = tokenRejected(e)?.message ?? (typeof status === "number" ? `GitHub answered ${status}: ${refusalMessage(e)}` : refusalMessage(e));
-      throw new Error(`${which} could not be merged: ${said}`);
+      throw isEffectRefused(e) ? new EffectRefused(`${which} could not be merged: ${said}`) : new Error(`${which} could not be merged: ${said}`);
     }
   }
 

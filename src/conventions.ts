@@ -309,6 +309,41 @@ export const GOTO_TRIGGER = "goto";
  */
 export const RECORD_EFFECT = "tracker.comment";
 
+/*
+ * An effect the forge or the tracker refused on purpose: a pull request that
+ * cannot be merged, a guard the kit will not pass, a permission the token
+ * lacks, a branch nothing was committed to. Asking again changes nothing
+ * until a person does something, so the engine records it as the rejected
+ * round of the stage it was entering, and a person sees it. Anything else
+ * that fails — a network error, a 5xx, a rate limit — is left to the next
+ * tick, which may well succeed, as a step whose agent never ran is.
+ *
+ * A mark on the error rather than a class to test with `instanceof`: an
+ * integration's bundle imports `landrace/kit` by package self-reference
+ * beside the engine's own copy, and two copies of one class are two classes.
+ * A symbol from the global registry is the same symbol in both.
+ */
+const EFFECT_REFUSED = Symbol.for("landrace.effect.refused");
+
+/** A refusal an integration throws from an effect's `apply()`, in a sentence a person can act on. */
+export class EffectRefused extends Error {
+  override readonly name = "EffectRefused";
+
+  constructor(message: string) {
+    super(message);
+    Object.defineProperty(this, EFFECT_REFUSED, { value: true });
+  }
+}
+
+/** Whether an error is a marked refusal. Never throws: it is asked inside the catch that reports the error. */
+export function isEffectRefused(e: unknown): boolean {
+  try {
+    return typeof e === "object" && e !== null && (e as Record<symbol, unknown>)[EFFECT_REFUSED] === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The other two writes a tracker owns, named for the same reason and at the
  * same level: a Jira hook handles `tracker.status` too, and a workflow carried

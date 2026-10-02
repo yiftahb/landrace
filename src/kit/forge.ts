@@ -12,7 +12,7 @@
  * forge's own name.
  */
 import {
-  BRANCH_PUSH_EFFECT, effectBranch, hasPullFrom, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT, PULL_MERGE_EFFECT,
+  BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, hasPullFrom, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT, PULL_MERGE_EFFECT,
   PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, pullsFrom, RELATIONS, renderMarker, sameLogin, stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
@@ -604,7 +604,7 @@ export abstract class BaseForge {
           // item nor why.
           const { local, remote } = headsOf(ctx.snapshot);
           if (headIn(local, branch) === undefined && headIn(remote, branch) === undefined) {
-            throw new Error(
+            throw new EffectRefused(
               `cannot open a pull request for #${ctx.item} from ${branch}: this checkout has no such branch, ` +
               "so no step has committed anything to it",
             );
@@ -664,20 +664,25 @@ export abstract class BaseForge {
    * checked, so a head that moved — seen at apply, or by the forge itself in
    * the moment after — is `moved`: nothing merges, nothing throws, and nothing
    * applies the merge again while the item stays in its stage.
+   *
+   * Every guard that will not pass is a refusal, marked so: asking again on
+   * the next tick finds the same red checks or the same closed pull request,
+   * so the stage being entered records it and a person is asked. A forge read
+   * that failed on the way is not one, and is left to the next tick.
    */
   protected async mergeOpen(effect: Effect, ctx: HookContext): Promise<void> {
     const branch = effectBranch(effect);
     const open = pullsFrom(ctx.snapshot.graph as Graph | undefined, ctx.item, branch, PULL_MERGE_EFFECT).filter(proposed);
     const [pr, ...more] = open;
-    if (pr === undefined) throw new Error(`cannot merge for #${ctx.item}: there is no open pull request from ${branch}`);
+    if (pr === undefined) throw new EffectRefused(`cannot merge for #${ctx.item}: there is no open pull request from ${branch}`);
     if (more.length > 0) {
-      throw new Error(
+      throw new EffectRefused(
         `cannot merge for #${ctx.item}: ${open.map((p) => p.id).join(" and ")} are all open from ${branch}, and which to merge is not a guess`,
       );
     }
     const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
-    if (head === "") throw new Error(`will not merge ${pr.id} for #${ctx.item}: its head was not read, so nothing guards what would merge`);
-    const refused = (checks: unknown): Error => new Error(
+    if (head === "") throw new EffectRefused(`will not merge ${pr.id} for #${ctx.item}: its head was not read, so nothing guards what would merge`);
+    const refused = (checks: unknown): Error => new EffectRefused(
       `will not merge ${pr.id} for #${ctx.item}: its checks on ${head.slice(0, 7)} are ${typeof checks === "string" ? checks : "unread"}`,
     );
     const green = (checks: unknown): boolean => checks === "success" || checks === "none";
@@ -689,11 +694,11 @@ export abstract class BaseForge {
     const number = pullNumber(pr.id);
     const fresh = (await this.pullsNaming(ctx.item, ctx)).find((p) => p.number === number);
     if (fresh === undefined) {
-      throw new Error(`will not merge ${pr.id} for #${ctx.item}: the forge no longer names it among the item's pull requests`);
+      throw new EffectRefused(`will not merge ${pr.id} for #${ctx.item}: the forge no longer names it among the item's pull requests`);
     }
     // Merged since the read is the merge done, by whoever: applied again, the effect has nothing left to do.
     if (fresh.merged) return;
-    if (fresh.closed) throw new Error(`will not merge ${pr.id} for #${ctx.item}: it was closed without being merged after it was read`);
+    if (fresh.closed) throw new EffectRefused(`will not merge ${pr.id} for #${ctx.item}: it was closed without being merged after it was read`);
     if (fresh.headSha !== head) return moved();
     const checks = await this.checks(fresh, ctx);
     if (!green(checks)) throw refused(checks);

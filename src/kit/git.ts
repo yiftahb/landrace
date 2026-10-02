@@ -12,7 +12,7 @@ import { execFile } from "node:child_process";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { isReservedId } from "#conventions.js";
+import { EffectRefused, isReservedId } from "#conventions.js";
 import type { BranchHeads, Git, Snapshot } from "#namespace.js";
 
 export type { BranchHeads, Git } from "#namespace.js";
@@ -123,13 +123,13 @@ export const PUSH_TIMEOUT_MS = 5 * 60_000;
 /**
  * What a publishing effect says when there is nothing on the branch to
  * publish. The push checks for it and a forge answers it to `pull.open`, so
- * both say it in one sentence: a halt that clears itself once somebody
- * commits, because the next tick asks again.
+ * both say it in one sentence. A refusal: asking again finds the same empty
+ * branch, so the stage it was entering records it and a person is asked.
  */
 export const nothingCommitted = (branch: string, item: string): Error =>
-  new Error(
+  new EffectRefused(
     `nothing was committed on ${branch} for #${item}: it is already part of origin's default branch, so ` +
-    "there is nothing to push or propose. Commit to the branch and the next tick carries on",
+    "there is nothing to push or propose. Commit to the branch, then Retry",
   );
 
 /**

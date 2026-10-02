@@ -1,3 +1,4 @@
+import { EffectRefused, isEffectRefused } from "#conventions.js";
 import type { Dispatcher, PostHook } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 
@@ -50,7 +51,10 @@ export function createDispatcher(hooks: PostHook[]): Dispatcher {
       try {
         await hook.apply(e, ctx);
       } catch (err) {
-        throw new Error(`post hook "${hook.id}" failed applying "${e.type}": ${messageOf(err)}`);
+        // Attributed, and still a refusal if it was one: the mark is what
+        // tells converge to record it rather than try again next tick.
+        const said = `post hook "${hook.id}" failed applying "${e.type}": ${messageOf(err)}`;
+        throw isEffectRefused(err) ? new EffectRefused(said) : new Error(said);
       }
     },
   };

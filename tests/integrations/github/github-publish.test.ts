@@ -396,8 +396,9 @@ describe("branch.push", () => {
   /*
    * A build that committed nothing leaves the branch where origin's default
    * branch already is: pushing it proposes nothing, and GitHub would refuse
-   * the pull request anyway. Said here, naming the item and the way out,
-   * and asked again every tick — so it clears itself once somebody commits.
+   * the pull request anyway. Said here, naming the item and the way out, as
+   * a refusal the stage records; asked again once somebody has committed —
+   * a Retry — it pushes.
    */
   it("refuses a branch nothing was committed to, naming the item and the way out", async () => {
     const { root, origin } = await checkout();
