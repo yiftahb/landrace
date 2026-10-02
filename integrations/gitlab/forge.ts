@@ -14,7 +14,7 @@ import {
 import { type Client, clientFor, PER_PAGE, statusOf, tokenRejected } from "./client.js";
 
 /** The merge statuses GitLab answers while it is still working mergeability out: a refusal then clears by asking again. */
-const UNSETTLED = new Set(["checking", "unchecked", "ci_still_running"]);
+const UNSETTLED = new Set(["checking", "unchecked", "ci_still_running", "preparing", "approvals_syncing"]);
 
 /** Developer: what opening a merge request, commenting and resolving need. */
 const DEVELOPER = 30;

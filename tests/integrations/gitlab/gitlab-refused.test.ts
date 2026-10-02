@@ -38,6 +38,8 @@ describe("a merge GitLab refuses", () => {
     ["checking", { mergeable: false }],
     ["unchecked", { mergeable: false }],
     ["ci_still_running", { mergeable: false }],
+    ["preparing", { mergeable: false }],
+    ["approvals_syncing", { mergeable: false }],
     ["checking", { branchRefusal: 422 }],
   ] as const)("leaves a merge refused while its merge status is %s unmarked, for the next tick", async (status, seed) => {
     const gl = createFakeGitLab();
