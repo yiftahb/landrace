@@ -759,11 +759,12 @@ export class GitHubForge extends BaseForge {
   /**
    * "Pull requests: Read", probed with one minimal query. Its write half has
    * no harmless form to try — opening an item's pull request and closing a
-   * dropped child's both need it — so a fine-grained token without it is
-   * named by the write itself. Then "Checks: Read" and "Commit statuses:
-   * Read", because every read of an open pull request asks for its checks: a
-   * token without them would fail every read, not one step. Every one
-   * missing is named in one sentence.
+   * dropped child's both need it — so a token without it is named by the
+   * write itself. Then "Checks: Read", which only a classic token with the
+   * `repo` scope or a GitHub App is granted, and "Commit statuses: Read",
+   * because every read of an open pull request asks for its checks: a token
+   * without them would fail every read, not one step. Every one missing is
+   * named in one sentence.
    */
   async check(ctx: RuntimeContext): Promise<void> {
     const gh = this.gh(ctx);

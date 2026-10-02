@@ -1,10 +1,11 @@
 version: 1
 name: Fastlane
-description: "Small changes from the item's own text: build, review, CI, merged automatically. A person only when it is stuck."
+description: "Small changes from the item's own text: build, review, CI, then merged by Landrace unless a protected path changed. A person only at a halt or when it is stuck."
 
 # An item labelled lr:auto and lr:fast is built from its own text — there is no spec —
 # reviewed, put through CI, and merged by Landrace; then the item is closed.
-# A person is needed only at a halt, or when a cap leaves the item `stuck`.
+# A person is needed only at a halt — a change to a protected path, a retro's
+# lessons among them, is one — or when a cap leaves the item `stuck`.
 #
 # Nobody reads the change before it reaches the default branch, so the merge
 # is held by the engine, not by a prompt, to three guards (security audit
@@ -17,7 +18,7 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 # `landrace/{item}` pull request in this repository is its work: one that
 # merely says it closes the item, from a fork or not, is nobody's (H2).
 # Before the first lr:fast item, see "Before your first lr:fast item" in the
-# README: branch protection, a contents-scoped token, code owners.
+# README: branch protection, the narrowest token that works, code owners.
 #
 # Rulings this file keeps:
 #
