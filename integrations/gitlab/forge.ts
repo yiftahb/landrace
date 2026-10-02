@@ -156,8 +156,11 @@ const fileOf = (d: Diff): ChangedFile => {
  * post is an agent's text, which can quote the code under review. A
  * backslash before the slash renders as the slash alone.
  *
- * ponytail: inside a code fence too, where GitLab would not run it and the
- * backslash shows; skip fences if that ever reads badly.
+ * Inside a code fence too, where the backslash shows. Which lines a fence
+ * covers is GitLab's reading, not ours — an unclosed fence, a `~~~` one, one
+ * indented under a list item — and a line skipped because it looked fenced
+ * here is a command if GitLab reads it otherwise. A shown backslash is the
+ * price of never having to agree with it.
  */
 const inert = (body: string): string => body.replace(/^([ \t]*)\//gm, "$1\\/");
 

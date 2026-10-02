@@ -534,6 +534,28 @@ describe("GitLab composed as a project's forge", () => {
     expect(said).toContain("\\/close");
   });
 
+  /*
+   * Inside a code fence too. A fence is GitLab's to recognise, not ours: an
+   * unclosed one, a `~~~` one, one indented under a list item — a renderer
+   * and GitLab's quick-action reader need not agree on where any of them
+   * ends, so text left as it was because it "is in a fence" may be a command
+   * to GitLab. Every line-leading slash is escaped, fenced or not.
+   */
+  it("never lets a quick action through inside a code fence", async () => {
+    const { gl, apply } = project();
+    await apply({ type: "pull.open", branch: "landrace/7" });
+    const fenced = "Reproduce with:\n\n```sh\n/merge\n/close\n```\n\n~~~\n/approve\n~~~\n\n- step\n  ```\n  /close\n  ```\n\n```\n/close";
+    await apply({ ...round("review:1", { findings: [{ file: "src/a.ts", line: 2, body: fenced }], resolved: [] }), body: fenced });
+    const thread = gl.mrs.get(1)?.discussions[0]?.id ?? "";
+    await apply(round("fix:1", { replies: [{ thread, body: fenced }] }));
+
+    expect(gl.mrs.get(1)?.state).toBe("opened");
+    const lines = (gl.mrs.get(1)?.discussions.flatMap((d) => d.notes.map((n) => n.body)) ?? []).flatMap((b) => b.split("\n"));
+    expect(lines.filter((l) => /^[ \t]*\//.test(l))).toEqual([]);
+    for (const command of ["merge", "close", "approve"]) expect(lines).toContain(`\\/${command}`);
+    expect(lines).toContain("  \\/close");
+  });
+
   it("never posts one round twice", async () => {
     const { gl, apply } = project();
     await apply({ type: "pull.open", branch: "landrace/7" });
