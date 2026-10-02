@@ -831,8 +831,8 @@ describe("the graph rules, on stages the item's own state places it at", () => {
      */
     const asBefore = [{
       rule: "identity",
-      message: 'stages "a" and "b" can both be the current position ' +
-        "(this check only compares literal scalars, so a genuine $lt/$gt range split can false-positive here)",
+      message: 'stages "a" and "b" can both be the current position' +
+        ": one is placed by its stage label alone and the other's identity reads no position, so an item at the first that the second matches is at both",
     }];
     it.each([
       ["a $regex", { "node.title": { $regex: "^WIP" } }],

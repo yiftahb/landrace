@@ -1088,11 +1088,10 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
           message: `stages "${a.id}" and "${b.id}" can both be the current position: an item with ${JSON.stringify(item)} matches both`,
         });
       } else if (labelBesideFree(a, b) || labelBesideFree(b, a)) {
-        // In the words of the rule before the witness, which reported it.
         problems.push({
           rule: "identity",
-          message: `stages "${a.id}" and "${b.id}" can both be the current position ` +
-            "(this check only compares literal scalars, so a genuine $lt/$gt range split can false-positive here)",
+          message: `stages "${a.id}" and "${b.id}" can both be the current position` +
+            ": one is placed by its stage label alone and the other's identity reads no position, so an item at the first that the second matches is at both",
         });
       }
     }
