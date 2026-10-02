@@ -987,10 +987,10 @@ describe("an item row's workflow", () => {
     id: "12", kind: "item", title: "Add export", link: "", closed: null, badge: "waiting", stage: "build",
     priority: null, note: "queued", since: null, round: null, model: null, chat: null, screened: false, children: [], workflow, tag,
   });
-  const build = (r: ReturnType<typeof row>): FakeElement => runInNewContext(`
+  const build = (r: ReturnType<typeof row>, showTags = true): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
     ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
-    itemRowFor(ROW, 0, 0, false)`, { ROW: r, document: fakeDocument }) as FakeElement;
+    itemRowFor(ROW, 0, 0, false)`, { ROW: r, document: fakeDocument, showTags }) as FakeElement;
   const tagOf = (li: FakeElement): FakeElement | undefined => descendants(li).find((d) => d.className.split(" ").includes("workflow"));
 
   it("is named, by its name, in a small tag right after the title", () => {
@@ -1000,6 +1000,10 @@ describe("an item row's workflow", () => {
     const line = descendants(li).find((d) => d.children.includes(tag as FakeElement));
     const at = line?.children.findIndex((c) => c.className.split(" ").includes("title")) ?? -1;
     expect(line?.children[at + 1]).toBe(tag);
+  });
+
+  it("is hidden on a workflow's own page, where it would repeat the page's name", () => {
+    expect(tagOf(build(row("fast", "Fastlane"), false))).toBeUndefined();
   });
 
   it("is not drawn for an item no one workflow owns, nor in a workspace of one workflow", () => {
@@ -1538,11 +1542,12 @@ describe("the item panel's markup", () => {
 });
 
 describe("the item panel's address", () => {
-  const itemOfHash = (hash: string): unknown => runInNewContext(`${fnSource("itemOfHash")} itemOfHash(HASH)`, { HASH: hash });
+  const itemOfHash = (hash: string): unknown => (runInNewContext(`${fnSource("routeOf")} routeOf(HASH)`, { HASH: hash }) as { item: string | null }).item;
 
-  it("reads #item=<id>, so a reload reopens the panel it was on", () => {
+  it("keeps reading the legacy #item=<id>, so an old bookmark or notification still opens the panel", () => {
     expect(itemOfHash("#item=12")).toBe("12");
     expect(itemOfHash("#item=PROJ-7")).toBe("PROJ-7");
+    expect(itemOfHash("#/w/main?item=12")).toBe("12");
   });
 
   it("reads nothing from any other hash, or a malformed one", () => {
@@ -1560,8 +1565,9 @@ describe("the item panel's address", () => {
   });
 
   it("opens on a row click by pushing the hash, so Back closes it", () => {
-    expect(fnSource("openPanel")).toContain('location.hash = "item=" + encodeURIComponent(id)');
-    expect(APP_JS).toContain('window.addEventListener("hashchange", () => showPanel(itemOfHash(location.hash)));');
+    expect(fnSource("openPanel")).toContain("location.hash = hashOf(");
+    expect(APP_JS).toContain('window.addEventListener("hashchange", onHashChange);');
+    expect(fnSource("onHashChange")).toContain("showPanel(routeOf(location.hash).item)");
   });
 
   it("opens only from an item row with panel paths, and never from its links, toggle or menu", () => {
@@ -2340,5 +2346,82 @@ describe("the notify bell", () => {
     it("is toggled through clickedBell", () => {
       expect(APP_JS).toContain("notifyOn = clickedBell(notifyOn, permissionNow());");
     });
+  });
+});
+
+describe("routing and the sidebar", () => {
+  const ctx = (): Record<string, unknown> => {
+    const c: Record<string, unknown> = { document: fakeDocument };
+    for (const f of ["routeOf", "hashOf", "pageOf", "rootsOn", "titleOf", "el", "navItem"]) runInNewContext(fnSource(f), c);
+    return c;
+  };
+  const call = <T>(name: string, ...args: unknown[]): T => {
+    const c = ctx();
+    c.args = args;
+    return runInNewContext(`${name}(...args)`, c) as T;
+  };
+
+  it.each([
+    ["", { workflow: null, item: null }],
+    ["#", { workflow: null, item: null }],
+    ["#/", { workflow: null, item: null }],
+    ["#/w/main", { workflow: "main", item: null }],
+    ["#/w/fast%20lane", { workflow: "fast lane", item: null }],
+    ["#/w/main?item=12", { workflow: "main", item: "12" }],
+    ["#/?item=12", { workflow: null, item: "12" }],
+    ["#item=12", { workflow: null, item: "12" }],
+    ["#/w/%E0%A4%A", { workflow: null, item: null }],
+  ])("reads %j as %j", (hash, route) => {
+    expect(call("routeOf", hash)).toEqual(route);
+  });
+
+  it("writes back what it reads", () => {
+    for (const route of [{ workflow: null, item: null }, { workflow: "fast lane", item: "pr:7" }, { workflow: "main", item: null }]) {
+      expect(call("routeOf", call<string>("hashOf", route))).toEqual(route);
+    }
+  });
+
+  it("falls back to Needs You for a workflow the view does not have", () => {
+    const view = { workflows: [{ id: "main", name: "main", needsYou: 0 }] };
+    expect(call("pageOf", view, { workflow: "main", item: null })).toBe("main");
+    expect(call("pageOf", view, { workflow: "gone", item: null })).toBeNull();
+  });
+
+  it("draws Needs You from every workflow's needing roots, and a workflow page from its own", () => {
+    const rows = [
+      { id: "1", lane: "needs-you", pages: ["a"] },
+      { id: "2", lane: "running", pages: ["a"] },
+      { id: "3", lane: "needs-you", pages: ["b"] },
+      { id: "4", lane: "not-admitted", pages: ["a", "b"] },
+    ];
+    expect(call<{ id: string }[]>("rootsOn", rows, null).map((r) => r.id)).toEqual(["1", "3"]);
+    expect(call<{ id: string }[]>("rootsOn", rows, "a").map((r) => r.id)).toEqual(["1", "2", "4"]);
+  });
+
+  it("counts Needs You in the tab title", () => {
+    expect(call("titleOf", 0)).toBe("Landrace");
+    expect(call("titleOf", 3)).toBe("(3) Landrace");
+  });
+
+  it("marks a workflow with a dot only while something in it needs you, and the selected entry as current", () => {
+    const quiet = call<FakeElement>("navItem", { id: "main", name: "main", needsYou: 0 }, false);
+    const busy = call<FakeElement>("navItem", { id: "fast", name: "fastlane", needsYou: 2 }, true);
+    expect(quiet.href).toBe("#/w/main");
+    expect(descendants(quiet).some((e) => e.className.includes("dot"))).toBe(false);
+    expect(descendants(busy).some((e) => e.className.includes("dot"))).toBe(true);
+    expect(busy.getAttribute("aria-current")).toBe("page");
+    expect(quiet.getAttribute("aria-current")).toBeNull();
+    expect(busy.textContent).toContain("fastlane");
+  });
+
+  it("gives the Needs You entry its count and the home link", () => {
+    const home = call<FakeElement>("navItem", { id: null, name: "Needs You", needsYou: 4 }, true);
+    expect(home.href).toBe("#/");
+    expect(home.textContent).toContain("4");
+  });
+
+  it("lays the sidebar out as a column from sm up and a row of chips below it", () => {
+    expect(PAGE_HTML).toMatch(/<nav id="sidebar"[^>]*>/);
+    expect(PAGE_HTML).toMatch(/id="nav" class="[^"]*\bflex-wrap\b[^"]*\bsm:flex-col\b/);
   });
 });

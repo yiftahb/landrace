@@ -109,7 +109,9 @@ export const PAGE_HTML = `<!doctype html>
 </div>
 </div>
 </header>
-<main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+<div class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 sm:flex-row sm:px-6">
+<nav id="sidebar" aria-label="Pages" class="sm:w-48 sm:shrink-0"><ul id="nav" class="flex flex-wrap gap-2 sm:flex-col sm:gap-1"></ul></nav>
+<main class="min-w-0 flex-1">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
 <input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
 <div class="flex items-center gap-2">
@@ -127,6 +129,7 @@ ${lane("waiting", "Waiting", " border-l-4 border-l-neutral-300 dark:border-l-neu
 ${collapsedLane("not-admitted", "Not admitted")}
 ${collapsedLane("discharged", "Done")}
 </main>
+</div>
 ${PANEL}
 </body>
 </html>
@@ -976,7 +979,7 @@ function itemRowFor(row, depth, now, open) {
   // The workflow that owns the item, by name, small, right after its title.
   // The server leaves it off where it would say nothing — a workspace of one
   // workflow — and on an item no one workflow owns, whose note says why.
-  if (row.tag) {
+  if (row.tag && showTags) {
     const workflow = el("span", "workflow shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300", row.tag);
     workflow.title = "Workflow " + row.workflow;
     top.append(workflow);
@@ -1099,6 +1102,76 @@ function renderNext() {
 
 // What the last poll drew, so a toggle can redraw without waiting on the next.
 let lastView = null;
+// A workflow's own page would repeat its name on every row, so only the Needs
+// You page draws the tag. Set by render() before any row is built.
+let showTags = true;
+// The sidebar's last key, so a poll that changed nothing leaves it (and a
+// focused link in it) alone.
+let navKey = null;
+
+// "#/" is Needs You, "#/w/<id>" a workflow, either with "?item=<id>" for the
+// open panel; the old "#item=<id>" (a bookmark, a notification click) is Needs
+// You with that item. A part that will not decode is null, never a throw.
+function routeOf(hash) {
+  const h = hash || "";
+  const part = (v) => { try { return v ? decodeURIComponent(v) : null; } catch (e) { return null; } };
+  const legacy = /^#item=(.+)$/.exec(h);
+  if (legacy) return { workflow: null, item: part(legacy[1]) };
+  const q = h.indexOf("?");
+  const path = q < 0 ? h : h.slice(0, q);
+  const found = q < 0 ? null : /(?:^|&)item=([^&]*)/.exec(h.slice(q + 1));
+  return { workflow: path.startsWith("#/w/") ? part(path.slice(4)) : null, item: found ? part(found[1]) : null };
+}
+
+function hashOf(route) {
+  const base = route.workflow === null ? "#/" : "#/w/" + encodeURIComponent(route.workflow);
+  return route.item === null || route.item === undefined ? base : base + "?item=" + encodeURIComponent(route.item);
+}
+
+// A workflow the view no longer has (a stale bookmark) is Needs You, not a blank page.
+function pageOf(view, route) {
+  return route.workflow !== null && view.workflows.some((w) => w.id === route.workflow) ? route.workflow : null;
+}
+
+function rootsOn(rows, page) {
+  return rows.filter((r) => (page === null ? r.lane === "needs-you" : r.pages.includes(page)));
+}
+
+function titleOf(n) {
+  return n > 0 ? "(" + n + ") Landrace" : "Landrace";
+}
+
+// One sidebar link. The Needs You entry has id null: it carries the count, a
+// workflow only a dot while something in it needs you.
+function navItem(entry, selected) {
+  const a = el("a", "flex items-center justify-between gap-2 rounded-md px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800" + (selected ? " bg-neutral-100 font-medium dark:bg-neutral-800" : ""));
+  a.href = hashOf({ workflow: entry.id, item: null });
+  if (selected) a.setAttribute("aria-current", "page");
+  a.append(el("span", "truncate", entry.name));
+  if (entry.id === null) {
+    a.append(el("span", "rounded-full bg-rose-100 px-2 text-xs text-rose-700 dark:bg-rose-950 dark:text-rose-300", entry.needsYou));
+  } else if (entry.needsYou > 0) {
+    const dot = el("span", "dot h-2 w-2 rounded-full bg-rose-500");
+    dot.setAttribute("aria-label", "needs you");
+    a.append(dot);
+  }
+  return a;
+}
+
+function renderNav(view, page) {
+  const entries = [{ id: null, name: "Needs You", needsYou: view.needsYou }, ...view.workflows];
+  const key = JSON.stringify([page, entries]);
+  if (key === navKey) return;
+  navKey = key;
+  const items = entries.map((e) => {
+    const li = el("li");
+    li.append(navItem(e, e.id === page));
+    return li;
+  });
+  const rule = el("li", "my-1 hidden border-t border-neutral-200 dark:border-neutral-800 sm:block");
+  rule.setAttribute("role", "separator");
+  document.getElementById("nav").replaceChildren(items[0], rule, ...items.slice(1));
+}
 
 // The box sits outside every lane, so no render ever replaces it: its text,
 // focus and caret survive each poll untouched, and render() reads the query
@@ -1117,6 +1190,11 @@ for (const lane of document.querySelectorAll("details[data-lane]")) {
 
 function render(view) {
   lastView = view;
+  const page = pageOf(view, routeOf(location.hash));
+  showTags = page === null;
+  renderNav(view, page);
+  const title = titleOf(view.needsYou);
+  if (document.title !== title) document.title = title;
   const now = Date.now();
   // Every row's DOM (and any menu/focus it held) is about to be replaced
   // below — a fresh set of elements for the same nodes. Note what was
@@ -1135,10 +1213,13 @@ function render(view) {
   // One seen-set for the whole page: a node is drawn once, in one lane.
   const seen = new Set();
   let matched = 0;
+  const onPage = rootsOn(view.rows, page);
   for (const lane of document.querySelectorAll("[data-lane]")) {
     // Whole branches, filed by their root's lane — the server's cascade — and
     // counted as branches, so a lane's number is how many things to look at.
-    const roots = view.rows.filter((r) => r.lane === lane.dataset.lane && shows(r, search));
+    // Needs You draws only its own lane; a workflow page draws every lane of its own roots.
+    const offPage = page === null && lane.dataset.lane !== "needs-you";
+    const roots = offPage ? [] : onPage.filter((r) => r.lane === lane.dataset.lane && shows(r, search));
     const items = treeRows(roots, 0, seen, now, [], search, false);
     lane.querySelector("ul").replaceChildren(
       ...(items.length ? items : [el("li", "px-4 py-6 text-sm italic text-neutral-400 dark:text-neutral-600", "None")]),
@@ -1146,7 +1227,7 @@ function render(view) {
     lane.querySelector(".lane-count").textContent = String(roots.length);
     // Without a query every lane stays, saying "None" when empty — a lane that
     // vanished would read as a fault. With one, a lane nothing matched is noise.
-    lane.hidden = search !== null && roots.length === 0;
+    lane.hidden = offPage || (search !== null && roots.length === 0);
     // A match inside a closed Not admitted / Done lane would show only as a count.
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
@@ -1347,14 +1428,6 @@ const pairingItem = document.getElementById("panel-pairing-item");
 const replyButton = document.getElementById("panel-reply");
 const askButton = document.getElementById("panel-ask");
 const resolveButton = document.getElementById("panel-resolve");
-
-// "#item=12" names item 12; any other hash, or one that will not
-// decode, names none.
-function itemOfHash(hash) {
-  const m = /^#item=(.+)$/.exec(hash || "");
-  if (!m) return null;
-  try { return decodeURIComponent(m[1]); } catch (e) { return null; }
-}
 
 function findRow(rows, id) {
   const seen = new Set();
@@ -1961,13 +2034,13 @@ function markSelected() {
 // A row click: pushed onto the hash, so Back closes the panel and a reload
 // reopens it.
 function openPanel(id) {
-  location.hash = "item=" + encodeURIComponent(id);
+  location.hash = hashOf({ workflow: pageOf(lastView, routeOf(location.hash)), item: id });
 }
 
 // ✕ and Escape: the hash goes, as Back would take it, with no history entry
 // of its own for Forward to reopen.
 function closePanel() {
-  history.replaceState(null, "", location.pathname + location.search);
+  history.replaceState(null, "", location.pathname + location.search + hashOf({ workflow: lastView ? pageOf(lastView, routeOf(location.hash)) : null, item: null }));
   showPanel(null);
 }
 
@@ -1997,8 +2070,14 @@ function onMessageKey(e) {
 messageBox.addEventListener("keydown", onMessageKey);
 askButton.addEventListener("click", () => panelWrite("ask"));
 resolveButton.addEventListener("click", () => panelWrite("resolve"));
-window.addEventListener("hashchange", () => showPanel(itemOfHash(location.hash)));
-showPanel(itemOfHash(location.hash));
+// A new page redraws, so the lanes follow the hash; a bare item change redraws
+// too, which is harmless (same page, same rows).
+function onHashChange() {
+  showPanel(routeOf(location.hash).item);
+  if (lastView) render(lastView);
+}
+window.addEventListener("hashchange", onHashChange);
+onHashChange();
 
 // Every item the board badges needs-you, children included, by id — and
 // one that needed you at the last poll and is only held elsewhere now: a
