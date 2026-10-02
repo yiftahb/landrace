@@ -92,7 +92,7 @@ describe("the .landrace workspace", () => {
     expect(workflow.name).toBe("Fastlane");
     expect(workflow.description.trim()).not.toBe("");
     expect(workflow.admit).toEqual(["lr:auto", "lr:fast"]);
-    expect(flow("main").workflow.admit).toEqual(["lr:auto"]);
+    expect(flow("full-cycle").workflow.admit).toEqual(["lr:auto"]);
   });
 
   it("validates both workflows clean, and neither claims an item the other starts", () => {
@@ -113,8 +113,8 @@ describe("the .landrace workspace", () => {
   it.each([
     ["fastlane", ["lr:fast"], "no lr:auto label"],
     ["fastlane", ["lr:auto"], "no lr:fast label"],
-    ["main", ["lr:fast"], "no lr:auto label"],
-    ["main", ["lr:auto", "lr:fast"], "a fastlane item (lr:fast)"],
+    ["full-cycle", ["lr:fast"], "no lr:auto label"],
+    ["full-cycle", ["lr:auto", "lr:fast"], "a fastlane item (lr:fast)"],
   ])("turns %s's item labelled %j away, saying %s", (id, labels, reason) => {
     const node = { id: "1", kind: "item", title: "t", link: "", closed: null, priority: null, origin: null, state: { labels, assignees: [] } };
     expect(eligibilityOfNode(flow(id).workflow, node)).toEqual({ eligible: false, reason });
@@ -126,7 +126,7 @@ describe("the .landrace workspace", () => {
    * workflow takes an admit label off — `done` and `closed` remove only
    * the engine's own working, waiting and halt labels.
    */
-  it.each(["main", "fastlane"])("never takes %s's admit labels off, finishing or not", (id) => {
+  it.each(["full-cycle", "fastlane"])("never takes %s's admit labels off, finishing or not", (id) => {
     const { workflow } = flow(id);
     const admit = new Set(workflow.admit ?? []);
     const removed = workflow.stages.flatMap((stage) => (stage.on_enter ?? [])
@@ -136,7 +136,7 @@ describe("the .landrace workspace", () => {
   });
 
   it.each([
-    ["main", "done", ["lr:awaiting", "lr:working"]],
+    ["full-cycle", "done", ["lr:awaiting", "lr:working"]],
     ["fastlane", "done", ["lr:awaiting", "lr:working", "lr:blocked", "lr:screened"]],
     ["fastlane", "closed", ["lr:awaiting", "lr:working", "lr:blocked", "lr:screened"]],
   ])("finishes %s's item at %s taking off only %j", (id, stage, labels) => {
@@ -146,12 +146,12 @@ describe("the .landrace workspace", () => {
   });
 
   /*
-   * Adding lr:fast to an item main is working moves it to fastlane, at the
-   * same stage where fastlane has one; at a stage fastlane lacks — main's
-   * spec stages — it is placed nowhere, and halts for a person rather than
+   * Adding lr:fast to an item full-cycle is working moves it to fastlane, at
+   * the same stage where fastlane has one; at a stage fastlane lacks —
+   * full-cycle's spec stages — it is placed nowhere, and halts for a person rather than
    * starting over at build.
    */
-  it("halts, unplaced, an item main had at a spec stage, and carries on one at code review", () => {
+  it("halts, unplaced, an item full-cycle had at a spec stage, and carries on one at code review", () => {
     const fastlane = flow("fastlane").workflow;
     const relabelled = (stage: string): Snapshot => ({
       ...snapshotOf({ stage, counters: { [stage]: 1 } }),
@@ -252,7 +252,7 @@ const ADDED: Record<string, RegExp[]> = {
   retro: [/^Here the code reviewer checks what you change, and then a person merges it/],
 };
 
-/** main's retro promises a person reads the commit before the merge; fastlane's says the reviewer reads it first. */
+/** full-cycle's retro promises a person reads the commit before the merge; fastlane's says the reviewer reads it first. */
 const RETRO_PROMISE = "and a person\nreads it beside the commit before they merge.";
 const RETRO_REVIEWED = "and if you\ncommit, the code reviewer checks the commit, then a person reads both before\nthey merge.";
 
@@ -403,7 +403,7 @@ describe("fastlane's stages", () => {
    */
   it.each([
     ".landrace/hooks/github.ts", ".landrace/landrace.yaml", ".landrace/workflows/fastlane/workflow.yaml",
-    ".landrace/workflows/main/steps/code-review.md", ".landrace/workflows/fastlane/steps/build.md", ".landrace/.env.example",
+    ".landrace/workflows/full-cycle/steps/code-review.md", ".landrace/workflows/fastlane/steps/build.md", ".landrace/.env.example",
     ".claude/settings.json", ".claude/commands/x.md", ".agents/skills/agsync/SKILL.md", ".codex/config.toml", ".cursor/mcp.json",
     "CLAUDE.md", "docs/CLAUDE.md", "CLAUDE.local.md", "src/CLAUDE.local.md", "AGENTS.md", "packages/x/AGENTS.md",
     ".npmrc", ".pnpmfile.cjs", "pnpm-workspace.yaml",
@@ -717,11 +717,11 @@ describe("every exit from a fastlane stage is exclusive", () => {
 });
 
 /*
- * Re-review N1, its probe as a test: one line of main's code-review front
+ * Re-review N1, its probe as a test: one line of full-cycle's code-review front
  * matter — the route's effect made a merge — and a fastlane item whose pull
  * request rewrote the hooks was merged on the reviewer's say-so, with no
  * guard, while `validate` reported nothing. Both workflows run that step:
- * fastlane's extends main's front matter whole.
+ * fastlane's extends full-cycle's front matter whole.
  */
 describe("a step route that merges, as the re-review planted it", () => {
   const ROUTE = '      effect: { type: pull.review, branch: "landrace/{item}", marker: "review:{round}" }';
@@ -730,7 +730,7 @@ describe("a step route that merges, as the re-review planted it", () => {
     const copy = await mkdtemp(join(tmpdir(), "lr-probe-"));
     try {
       await cp(join(".landrace", "workflows"), join(copy, "workflows"), { recursive: true });
-      const step = join(copy, "workflows", "main", "steps", "code-review.md");
+      const step = join(copy, "workflows", "full-cycle", "steps", "code-review.md");
       await writeFile(step, edit(await readFile(step, "utf8")));
       return await loadWorkspace(copy);
     } finally {
@@ -740,16 +740,16 @@ describe("a step route that merges, as the re-review planted it", () => {
   const placement = (ws: Workspace) =>
     ws.workflows.map(({ id, workflow, steps }) => [id, validate(workflow, steps).filter((p) => p.rule === "merge-placement").length]);
 
-  it("is refused by validate, in main and in fastlane", async () => {
-    expect((await readFile(".landrace/workflows/main/steps/code-review.md", "utf8")).split("\n")).toContain(ROUTE);
+  it("is refused by validate, in full-cycle and in fastlane", async () => {
+    expect((await readFile(".landrace/workflows/full-cycle/steps/code-review.md", "utf8")).split("\n")).toContain(ROUTE);
     const merging = await probed((text) => text.replace(ROUTE, '      effect: { type: pull.merge, branch: "landrace/{item}" }'));
-    expect(placement(merging)).toEqual([["fastlane", 1], ["main", 1]]);
+    expect(placement(merging)).toEqual([["fastlane", 1], ["full-cycle", 1]]);
     // The copy as it was is clean on the rule: what it refuses is the line.
-    expect(placement(await probed((text) => text))).toEqual([["fastlane", 0], ["main", 0]]);
+    expect(placement(await probed((text) => text))).toEqual([["fastlane", 0], ["full-cycle", 0]]);
   });
 
   it("is in a pull request fastlane leaves to a person, as every change under .landrace/ is", () => {
     const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
-    expect((merge?.refuse as string[]).some((glob) => globMatches(glob, ".landrace/workflows/main/steps/code-review.md"))).toBe(true);
+    expect((merge?.refuse as string[]).some((glob) => globMatches(glob, ".landrace/workflows/full-cycle/steps/code-review.md"))).toBe(true);
   });
 });

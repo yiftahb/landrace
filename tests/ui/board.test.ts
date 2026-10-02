@@ -1171,7 +1171,7 @@ describe("a finished item, on the shipped workflows' pages", () => {
     expect(pagesOf(["lr:auto", "lr:fast"], closed)).toEqual([["1", ["fastlane"]]]);
   });
 
-  it("files a closed lr:auto item on main's page alone", () => {
-    expect(pagesOf(["lr:auto"], "done")).toEqual([["1", ["main"]]]);
+  it("files a closed lr:auto item on full-cycle's page alone", () => {
+    expect(pagesOf(["lr:auto"], "done")).toEqual([["1", ["full-cycle"]]]);
   });
 });

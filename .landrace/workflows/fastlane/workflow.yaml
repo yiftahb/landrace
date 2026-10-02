@@ -66,9 +66,9 @@ hooks:
   - ../../hooks/slack.ts
 
 # lr:auto is "Landrace manages this item", and lr:fast sends it here rather
-# than to main, whose eligible turns lr:fast away: an item carrying both is
-# this workflow's alone. Taking lr:auto off stops it; taking lr:fast off sends
-# it to main.
+# than to full-cycle, whose eligible turns lr:fast away: an item carrying both
+# is this workflow's alone. Taking lr:auto off stops it; taking lr:fast off
+# sends it to full-cycle.
 eligible:
   - when: { "node.state.labels": { $in: ["lr:auto"] } }
     else: "no lr:auto label"
@@ -196,7 +196,7 @@ stages:
           "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $lt: 4 }
     on_enter:
-      # The enter record first, as main's: a push the forge refuses is code
+      # The enter record first, as full-cycle's: a push the forge refuses is code
       # review's rejected round, a halt with the reason. Then the push, before
       # the status and so before the step: a fix round's or the retro's
       # commits are on the pull request before the reviewer reads it.

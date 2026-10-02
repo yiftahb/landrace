@@ -472,7 +472,7 @@ describe("fastlane, end to end", () => {
    * changing a step file is a person's to merge, as one changing a workflow is.
    */
   it("13b. halts a build that changed a step file, merging nothing", async () => {
-    const step = ".landrace/workflows/main/steps/code-review.md";
+    const step = ".landrace/workflows/full-cycle/steps/code-review.md";
     const { state, run, pr } = road({
       seed: (s) => {
         s.openPull("1", { files: [
@@ -501,7 +501,7 @@ describe("fastlane, end to end", () => {
         if (stage === "fix-review") Object.assign(pull(), { awaitingFix: 0, openThreads: 0, headSha: "sha-fixed" });
         if (stage === "retro") {
           Object.assign(pull(), { headSha: "sha-lessons" });
-          pull().files = [{ path: ".landrace/workflows/main/steps/build.md", status: "modified", additions: 1, deletions: 1 }];
+          pull().files = [{ path: ".landrace/workflows/full-cycle/steps/build.md", status: "modified", additions: 1, deletions: 1 }];
         }
       },
     });
@@ -512,7 +512,7 @@ describe("fastlane, end to end", () => {
     ]);
     expect(r.result.settled).toBe("wait");
     expect(pr()).toMatchObject({ merged: false, closed: null, headSha: "sha-lessons" });
-    expect(state.comments("1").at(-1)).toContain("it changes .landrace/workflows/main/steps/build.md, which this workflow protects");
+    expect(state.comments("1").at(-1)).toContain("it changes .landrace/workflows/full-cycle/steps/build.md, which this workflow protects");
   });
 
   /*
@@ -847,9 +847,9 @@ describe("fastlane, end to end", () => {
 
   /*
    * The label model: lr:auto is "Landrace manages this item", and lr:fast
-   * routes it to fastlane instead of main. One tick of the whole workspace
+   * routes it to fastlane instead of full-cycle. One tick of the whole workspace
    * over one item: carrying both, it is fastlane's alone and starts at build;
-   * lr:auto alone, main's, at spec; lr:fast alone, nobody's, and nothing is
+   * lr:auto alone, full-cycle's, at spec; lr:fast alone, nobody's, and nothing is
    * written.
    */
   const tickOne = async (labels: string[]) => {
@@ -890,9 +890,9 @@ describe("fastlane, end to end", () => {
     expect(state.item("1").labels).toEqual(["lr:fast"]);
   });
 
-  it("9c. gives an item labelled lr:auto alone to main, which starts it at spec", async () => {
+  it("9c. gives an item labelled lr:auto alone to full-cycle, which starts it at spec", async () => {
     const { state, rows } = await tickOne(["lr:auto"]);
-    expect(rows).toEqual([expect.objectContaining({ item: "1", workflow: "main" })]);
+    expect(rows).toEqual([expect.objectContaining({ item: "1", workflow: "full-cycle" })]);
     expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:stage:spec"]));
     expect(state.item("1").labels).not.toContain("lr:fast");
   });

@@ -512,7 +512,7 @@ describe("an item goes all the way round §10", () => {
       { stage: "retro", round: 1 },
     ]);
     // Terminal: the engine's own working labels are gone, and what admitted
-    // it stays, so the board files the finished item under main.
+    // it stays, so the board files the finished item under full-cycle.
     expect(done.labels).toEqual(["lr:auto", "lr:stage:done"]);
     expect(done.result.settled).not.toBe("cap");
   });

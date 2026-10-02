@@ -227,7 +227,7 @@ describe("an item in review whose only pull request merges", () => {
 });
 
 /*
- * main, after a build, over a pull request a person closed unmerged: with
+ * full-cycle, after a build, over a pull request a person closed unmerged: with
  * nothing open or merged beside it, their stop — the build goes to blocked
  * and no other is opened over it. With a replacement they opened from the
  * item's branch, them carrying on — publish and review go on.
