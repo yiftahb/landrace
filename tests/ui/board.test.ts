@@ -1132,12 +1132,26 @@ describe("the pages a branch is drawn on", () => {
     expect(v.needsYou).toBe(1);
   });
 
-  it("draws an artifact on the pages whose source lists it, and sorts a branch's pages", () => {
-    // Union built in reverse: the root is b's, its child a's, its artifact on both.
+  it("draws an artifact with no item on every page whose source lists it, and sorts a branch's pages", () => {
+    // Union built in reverse: the root is b's, its child a's.
     const v = two(graph([item("1", {}, ["b"]), item("2", {}, ["a"]), pr("pr-1")], [edge("2", "1"), edge("pr-1", "1", "implements")]));
     expect(v.rows[0]?.pages).toEqual(["a", "b"]);
     const only = view(graph([pr("pr-1")]), { workflows: TWO, listing: shared(graph([pr("pr-1")])) });
     expect(only.rows[0]?.pages).toEqual(["a", "b"]);
+  });
+
+  // An item's pull request and spec page belong to no workflow of their own;
+  // drawn on every page their source lists them, they carried every finished
+  // item onto every workflow's Done.
+  it("draws an item's artifacts where the item is drawn, and nowhere else", () => {
+    const done = { closed: "done" as const };
+    const v = two(graph(
+      [item("1", done, ["a"]), pr("pr-1", done), item("2", {}, ["b"]), pr("pr-2")],
+      [edge("pr-1", "1", "implements"), edge("pr-2", "2", "implements")],
+    ));
+    const pages = new Map(v.rows.map((r) => [r.id, r.pages]));
+    expect(pages.get("1")).toEqual(["a"]);
+    expect(pages.get("2")).toEqual(["b"]);
   });
 
   it("leaves the tag off in a workspace of one workflow", () => {

@@ -202,8 +202,11 @@ export function boardView(input: {
   const { claims, graphs, sourceOf } = input.listing;
   const listedBy = (id: string): string[] =>
     input.workflows.filter((w) => graphs[sourceOf.get(w.id) ?? -1]?.nodes.some((n) => n.id === id) ?? false).map((w) => w.id);
+  // An artifact — a pull request, a spec page — belongs to no workflow of its
+  // own: it is drawn where its item is. Given every page its source lists it
+  // on, it carried each finished item onto every workflow's Done.
   const pagesOfNode = (node: Node): string[] => {
-    if (node.kind !== ITEM_KIND) return listedBy(node.id);
+    if (node.kind !== ITEM_KIND) return [];
     if (node.closed !== null) {
       // Claims judge open items only, so a closed one is placed by eligibility.
       // An `eligible` rule a node cannot answer makes `eligibilityOfNode`
@@ -373,6 +376,9 @@ export function boardView(input: {
       r.children.forEach(gather);
     };
     gather(row);
+    // A branch with no item at all — an artifact whose item is not listed —
+    // is drawn on every page whose source lists it, rather than on none.
+    if (pages.size === 0) for (const p of listedBy(row.id)) pages.add(p);
     rows.push(inOrder({ ...row, lane, pages: [...pages].sort() }, laneOrder(lane)));
   }
   rows.sort((a, b) => rank(a) - rank(b) || laneOrder(a.lane)(a, b));
