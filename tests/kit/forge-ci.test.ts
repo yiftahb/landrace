@@ -140,12 +140,39 @@ describe("pull.merge", () => {
   });
 
   it("refuses a pull request a person closed after the read, and leaves it closed", async () => {
-    const s = state();
-    const pr = s.openPull("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
-    const snapshot = await read(s);
-    s.pull(pr).closed = "dropped";
-    await expect(apply(s, merge, snapshot)).rejects.toThrow(/pr-1 for #7 was closed without being merged/);
-    expect(s.pull(pr)).toMatchObject({ merged: false, closed: "dropped" });
+    const { hooks, forge, answers } = world();
+    const pr = forge.add("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
+    const snapshot = await read(hooks);
+    forge.pull(pr).closed = "dropped";
+    await expect(apply(hooks, merge, snapshot)).rejects.toThrow("will not merge pr-1 for #7: it was closed without being merged after it was read");
+    expect(answers).toEqual([]);
+    expect(forge.pull(pr)).toMatchObject({ merged: false, closed: "dropped" });
+  });
+
+  it("refuses, as the in-memory forge itself, to merge one a person closed", async () => {
+    const forge = new MemoryForge();
+    const pr = forge.add("7", { branch: "landrace/7", closed: "dropped", headSha: "abc" });
+    await expect(forge.merge(1, "abc")).rejects.toThrow("pr-1 for #7 was closed without being merged, so there is nothing to merge");
+    expect(forge.pull(pr)).toMatchObject({ merged: false, closed: "dropped" });
+  });
+
+  it.each(["pending", "failure"] as const)("refuses when its checks turned %s on the same head after the read", async (checks) => {
+    const { hooks, forge, answers } = world();
+    const pr = forge.add("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
+    const snapshot = await read(hooks);
+    forge.pull(pr).checks = checks; // CI registered on the same commit after the read
+    await expect(apply(hooks, merge, snapshot)).rejects.toThrow(`will not merge pr-1 for #7: its checks on abc are ${checks}`);
+    expect(answers).toEqual([]);
+    expect(forge.pull(pr)).toMatchObject({ merged: false, closed: null });
+  });
+
+  it("refuses one that is no longer among the item's pull requests", async () => {
+    const { hooks, forge, answers } = world();
+    const pr = forge.add("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
+    const snapshot = await read(hooks);
+    forge.rows.delete(pr);
+    await expect(apply(hooks, merge, snapshot)).rejects.toThrow("will not merge pr-1 for #7: the forge no longer names it among the item's pull requests");
+    expect(answers).toEqual([]);
   });
 
   it("counts a pull request that reads merged as merged, not open, whatever its closed field says", async () => {
@@ -170,11 +197,31 @@ describe("pull.merge", () => {
 
     await expect(apply(hooks, merge, snapshot, log)).resolves.toBeUndefined();
 
-    expect(answers).toEqual(["moved"]);
+    // Seen on the read at apply, so the forge is never asked to merge.
+    expect(answers).toEqual([]);
     expect(forge.pull(pr)).toMatchObject({ merged: false, closed: null });
     const after = await read(hooks);
     expect(hooks.post.satisfied(after, merge)).toBe(false);
     expect(after.graph.nodes.find((n) => n.id === pr)?.state).toMatchObject({ headSha: "def" });
+    expect(log).toHaveBeenCalledWith("forge.merge.moved", expect.objectContaining({ pull: pr, branch: "landrace/7", headSha: "abc" }));
+  });
+
+  it("leaves it unmerged when the head moves after the read at apply, by the forge's own guard", async () => {
+    const { hooks, forge, answers } = world();
+    const pr = forge.add("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
+    const snapshot = await read(hooks);
+    const naming = forge.pullsNaming.bind(forge);
+    jest.spyOn(forge, "pullsNaming").mockImplementation(async (item) => {
+      const pulls = await naming(item);
+      forge.pull(pr).headSha = "def"; // a push lands between the read at apply and the merge
+      return pulls;
+    });
+    const log = jest.fn();
+
+    await expect(apply(hooks, merge, snapshot, log)).resolves.toBeUndefined();
+
+    expect(answers).toEqual(["moved"]);
+    expect(forge.pull(pr)).toMatchObject({ merged: false, closed: null, headSha: "def" });
     expect(log).toHaveBeenCalledWith("forge.merge.moved", expect.objectContaining({ pull: pr, branch: "landrace/7", headSha: "abc" }));
   });
 
@@ -186,7 +233,8 @@ describe("pull.merge", () => {
     const snapshot = await read(hooks);
     await apply(hooks, merge, snapshot);
     await expect(apply(hooks, merge, snapshot)).resolves.toBeUndefined();
-    expect(answers).toEqual(["merged", "merged"]);
+    // The read at apply sees it merged: done, and the forge is not asked again.
+    expect(answers).toEqual(["merged"]);
     expect(forge.pull(pr)).toMatchObject({ merged: true, closed: "done" });
     expect(hooks.post.satisfied(await read(hooks), merge)).toBe(true);
   });
@@ -281,6 +329,34 @@ describe("the ci briefing", () => {
     const ci = await ciBrief(s);
     expect(ci).toContain("no open pull request");
     expect(ci).not.toContain("pr-1");
+  });
+});
+
+/*
+ * A route effect is applied with the snapshot read before its step ran,
+ * which can be minutes old: CI that registered and failed on the same commit
+ * while the step ran must still hold the merge back.
+ */
+describe("pull.merge as a route effect", () => {
+  it("refuses a head whose checks went red on the same commit while the step ran", async () => {
+    const s = createExternalState({ items: [{ id: "7", labels: ["lr:auto"] }] });
+    // Just pushed: nothing has registered on the head yet.
+    const pr = s.openPull("7", { branch: "landrace/7", checks: "none", headSha: "abc" });
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/merge-route");
+    const answer = 'Looks good.\n\n```json\n{"kind":"approved","note":"ok"}\n```';
+    const events: Array<[string, Record<string, unknown> | undefined]> = [];
+    const log: Logger = (name, data) => { events.push([name, data]); };
+    const run = createHarness({
+      workflow, steps, source: s.source, pre: [s.pre], post: [s.post], item: "7", answers: { review: answer }, log,
+      during: () => { s.pull(pr).checks = "failure"; },
+    });
+
+    await run.converge();
+
+    expect(s.pull(pr)).toMatchObject({ merged: false, closed: null, checks: "failure", headSha: "abc" });
+    expect(s.stage("7")).not.toBe("done");
+    const failed = events.find(([name]) => name === "effect.failed");
+    expect(JSON.stringify(failed?.[1])).toContain("will not merge pr-1 for #7: its checks on abc are failure");
   });
 });
 

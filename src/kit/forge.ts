@@ -633,11 +633,16 @@ export abstract class BaseForge {
 
   /**
    * `pull.merge`: the one open pull request from the branch, merged at the
-   * head the snapshot read it at, and only while the checks read on that head
-   * are green or none run. The head is the guard: a push after the read is a
-   * commit nobody has checked, and the forge refuses it as `moved` — which
-   * merges nothing, throws nothing, and leaves the effect unsatisfied, so the
-   * next read sees the new head and its checks starting over.
+   * head the snapshot read it at, and only while the checks on that head are
+   * green or none run — judged twice, on the snapshot and again on the forge
+   * just before the merge. The snapshot alone is not enough: a route effect is
+   * applied with the one read before its step ran, minutes earlier, and CI
+   * that registered and failed on the same commit since would merge red.
+   *
+   * The head is the guard: a push after the read is a commit nobody has
+   * checked, so a head that moved — seen at apply, or by the forge itself in
+   * the moment after — is `moved`: nothing merges, nothing throws, and nothing
+   * applies the merge again while the item stays in its stage.
    */
   protected async mergeOpen(effect: Effect, ctx: HookContext): Promise<void> {
     const branch = effectBranch(effect);
@@ -651,15 +656,28 @@ export abstract class BaseForge {
     }
     const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
     if (head === "") throw new Error(`will not merge ${pr.id} for #${ctx.item}: its head was not read, so nothing guards what would merge`);
-    const checks = pr.state.checks;
-    if (checks !== "success" && checks !== "none") {
-      throw new Error(
-        `will not merge ${pr.id} for #${ctx.item}: its checks on ${head.slice(0, 7)} are ${typeof checks === "string" ? checks : "unread"}`,
-      );
-    }
-    if ((await this.merge(pullNumber(pr.id), head, ctx)) === "moved") {
+    const refused = (checks: unknown): Error => new Error(
+      `will not merge ${pr.id} for #${ctx.item}: its checks on ${head.slice(0, 7)} are ${typeof checks === "string" ? checks : "unread"}`,
+    );
+    const green = (checks: unknown): boolean => checks === "success" || checks === "none";
+    if (!green(pr.state.checks)) throw refused(pr.state.checks);
+    const moved = (): void => {
       ctx.log("forge.merge.moved", { pull: pr.id, branch, headSha: head, why: "the head is no longer the commit its checks were read on" });
+    };
+
+    const number = pullNumber(pr.id);
+    const fresh = (await this.pullsNaming(ctx.item, ctx)).find((p) => p.number === number);
+    if (fresh === undefined) {
+      throw new Error(`will not merge ${pr.id} for #${ctx.item}: the forge no longer names it among the item's pull requests`);
     }
+    // Merged since the read is the merge done, by whoever: applied again, the effect has nothing left to do.
+    if (fresh.merged) return;
+    if (fresh.closed) throw new Error(`will not merge ${pr.id} for #${ctx.item}: it was closed without being merged after it was read`);
+    if (fresh.headSha !== head) return moved();
+    const checks = await this.checks(fresh, ctx);
+    if (!green(checks)) throw refused(checks);
+
+    if ((await this.merge(number, head, ctx)) === "moved") moved();
   }
 
   /**

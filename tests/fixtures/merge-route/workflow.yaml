@@ -1,0 +1,23 @@
+version: 1
+name: merge-route
+description: test
+
+# A review whose approval merges, as a route effect: applied with the
+# snapshot read before the step ran, which can be minutes old by then.
+stages:
+  - id: review
+    entry: true
+    step: steps/review.md
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.status, value: review }
+
+  - id: done
+    terminal: true
+    triggers:
+      - name: merged
+        when: { "run.stage": review, "rel.implements.in.total": { $gt: 0 }, "rel.implements.in.not.merged": 0 }
+    on_enter:
+      - { type: tracker.status, value: done }
