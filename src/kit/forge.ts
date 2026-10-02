@@ -12,7 +12,8 @@
  * forge's own name.
  */
 import {
-  BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, hasPullFrom, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT, PULL_MERGE_EFFECT,
+  BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, hasPullFrom, ITEM_BRANCH, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT,
+  PULL_MERGE_EFFECT,
   PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, pullsFrom, RELATIONS, renderMarker, sameLogin, stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
@@ -125,9 +126,10 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
 /**
  * Derived from the item, never stored — the same rule the spec's path
  * follows. There is no PR id to remember and nothing to repair: the branch
- * names the item, and every pull request with that head is its work.
+ * names the item, and every pull request with that head is its work. The
+ * template a workflow writes, `ITEM_BRANCH`, filled for one item.
  */
-export const prBranch = (item: string): string => `landrace/${item}`;
+export const prBranch = (item: string): string => ITEM_BRANCH.replace("{item}", item);
 
 /** The item a head branch names, when it is one of ours. */
 export const itemOfBranch = (head: string): string | null => /^landrace\/([1-9][0-9]*)$/.exec(head)?.[1] ?? null;

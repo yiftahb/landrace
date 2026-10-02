@@ -649,3 +649,47 @@ describe("an enter record before the stage's effects", () => {
     ]);
   });
 });
+
+/*
+ * The item's branch (separation review M3): a forge finds an item's pull
+ * requests only on its `landrace/{item}` head, so a stage or a publishing
+ * effect naming any other branch opens one nothing ties back to the item —
+ * `pull.open` never satisfied, `pull.merge` and `pull.close` blind to it.
+ * Refused at validate, where the in-memory forge would have hidden it.
+ */
+describe("the item's one branch", () => {
+  const publishing = (branch: string, effect = "pull.open"): Workflow => wf([
+    { id: "a", entry: true, step: "a.md", branch, triggers: [{ when: { "run.stage": null } }] },
+    { id: "p", triggers: [{ when: { "run.stage": "a" } }], on_enter: [{ type: effect, branch }] },
+    { id: "z", terminal: true, triggers: [{ when: { "run.stage": "p" } }] },
+  ]);
+  const said = (w: Workflow) => validateStructure(w).filter((p) => p.rule === "branch").map((p) => p.message);
+
+  it("accepts landrace/{item}, on a stage and on every publishing effect", () => {
+    for (const effect of ["branch.push", "pull.open", "pull.merge", "pull.close"]) expect(said(publishing("landrace/{item}", effect))).toEqual([]);
+  });
+
+  it.each(["api/{item}", "landrace/{item}-{stage}", "feature/{item}", "landrace/{round}"])("refuses %s on the stage and the effect, naming both", (branch) => {
+    expect(said(publishing(branch))).toEqual([
+      expect.stringMatching(new RegExp(`stage "a" works on branch "${branch.replace(/[{}]/g, "\\$&")}".*landrace/\\{item\\}`)),
+      expect.stringMatching(/stage "p" has a pull\.open on branch .*landrace\/\{item\}/),
+    ]);
+  });
+
+  it.each(["branch.push", "pull.merge", "pull.close"])("refuses another branch on %s", (effect) => {
+    expect(said(publishing("landrace/{item}", effect)).length).toBe(0);
+    const w = publishing("landrace/{item}", effect);
+    const p = w.stages[1];
+    if (p?.on_enter?.[0]) p.on_enter[0].branch = "other/{item}";
+    expect(said(w)).toEqual([expect.stringMatching(new RegExp(`stage "p" has a ${effect.replace(".", "\\.")} on branch "other/\\{item\\}"`))]);
+  });
+
+  it("refuses another branch on a step's pull.review route", () => {
+    const steps = new Map<string, Step>([["a.md", {
+      prompt: "x", output: { shapes: [{ kind: "reviewed" }], routes: [{ when: { kind: "reviewed" }, effect: { type: "pull.review", branch: "review/{item}" } }] },
+    } as unknown as Step]]);
+    const w = publishing("landrace/{item}");
+    expect(validateStructure(w, steps).filter((p) => p.rule === "branch").map((p) => p.message))
+      .toEqual([expect.stringMatching(/stage "a" has a pull\.review on branch "review\/\{item\}"/)]);
+  });
+});

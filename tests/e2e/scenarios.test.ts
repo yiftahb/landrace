@@ -265,19 +265,30 @@ describe("publishing a build, over the in-memory tracker", () => {
 });
 
 /*
- * Two stages, two branches, one item. A stage's worktree may be on any
- * branch the workflow names, but a pull request is an item's only from the
- * item's own `landrace/{item}` head — what a pull request from anywhere else
- * says about the item is anybody's to write — so one opened from `api/{item}`
- * is nobody's, and the item waits for one that never comes.
+ * Two stages, two branches, one item. A pull request is an item's only from
+ * the item's own `landrace/{item}` head — what a pull request from anywhere
+ * else says about the item is anybody's to write — so one opened from
+ * `api/{item}` is nobody's, and the item waits for one that never comes.
+ * Which is why `validate` refuses the workflow, every branch it names; run
+ * anyway, the in-memory forge ties the pull request to nothing, as a real
+ * forge does.
  */
 describe("an item whose workflow names two branches", () => {
   const DIR = "tests/fixtures/two-branches";
 
-  it("validates clean against the in-memory tracker", async () => {
+  it("is refused by validate, on every branch that is not the item's", async () => {
     const state = createExternalState({ items: [{ id: "1" }] });
     const { workflow, steps } = await loadWorkflow(DIR);
-    expect(validate(workflow, steps, snapshotProvides([state.pre], state.source) ?? undefined)).toEqual([]);
+    const problems = validate(workflow, steps, snapshotProvides([state.pre], state.source) ?? undefined);
+    expect(problems.map((p) => p.rule)).toEqual(Array(6).fill("branch"));
+    expect(problems.map((p) => p.message)).toEqual([
+      expect.stringMatching(/stage "api" works on branch "api\/\{item\}"/),
+      expect.stringMatching(/stage "publish-api" has a branch\.push on branch "api\/\{item\}"/),
+      expect.stringMatching(/stage "publish-api" has a pull\.open on branch "api\/\{item\}"/),
+      expect.stringMatching(/stage "ui" works on branch "ui\/\{item\}"/),
+      expect.stringMatching(/stage "publish-ui" has a branch\.push on branch "ui\/\{item\}"/),
+      expect.stringMatching(/stage "publish-ui" has a pull\.open on branch "ui\/\{item\}"/),
+    ]);
   });
 
   it("opens a pull request from a branch that is not landrace/{item}, which ties to nothing, and waits", async () => {

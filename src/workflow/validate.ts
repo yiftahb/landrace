@@ -1,15 +1,20 @@
 import {
+  BRANCH_PUSH_EFFECT,
   CAPABILITIES,
   ENTRY_KIND,
   GOTO_TRIGGER,
   isReservedId,
+  ITEM_BRANCH,
   LABEL_EFFECT,
   LABELS,
   STATUS_EFFECT,
   mayCreateItems,
   NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
+  PULL_CLOSE_EFFECT,
   PULL_MERGE_EFFECT,
+  PULL_OPEN_EFFECT,
+  PULL_REVIEW_EFFECT,
   RECORD_EFFECT,
   retiredCapabilityPointers,
   retiredPlaceholder,
@@ -313,8 +318,41 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
 
   problems.push(...haltLabelProblems(w));
   problems.push(...entryFirstProblems(w));
+  problems.push(...itemBranchProblems(w, steps));
 
   return dedupe(problems);
+}
+
+/** The effects that name the branch they publish, review, merge or close. */
+const BRANCHED_EFFECTS: ReadonlySet<string> = new Set([
+  BRANCH_PUSH_EFFECT, PULL_OPEN_EFFECT, PULL_REVIEW_EFFECT, PULL_MERGE_EFFECT, PULL_CLOSE_EFFECT,
+]);
+
+/**
+ * `branch`: every stage's `branch`, and the branch every publishing effect
+ * names, is the item's own, `landrace/{item}`. A forge finds an item's pull
+ * requests by that head alone, so one opened from another is nobody's:
+ * `pull.open` is never satisfied, and `pull.merge` and `pull.close` cannot
+ * see it. The in-memory forge relates by the same head, so a test would
+ * catch it too — but only once it ran.
+ */
+function itemBranchProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+  const problems: Problem[] = [];
+  const why = `a forge ties a pull request to an item only by its ${ITEM_BRANCH} head`;
+  for (const stage of w.stages) {
+    if (stage.branch !== undefined && stage.branch !== ITEM_BRANCH) {
+      problems.push({ rule: "branch", message: `stage "${stage.id}" works on branch "${stage.branch}"; it must be ${ITEM_BRANCH}: ${why}` });
+    }
+    const step = stage.step ? steps.get(stage.step) : undefined;
+    for (const effect of [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).map((r) => r.effect)]) {
+      if (!BRANCHED_EFFECTS.has(effect.type) || effect.branch === ITEM_BRANCH) continue;
+      problems.push({
+        rule: "branch",
+        message: `stage "${stage.id}" has a ${effect.type} on branch ${JSON.stringify(effect.branch)}; it must be ${ITEM_BRANCH}: ${why}`,
+      });
+    }
+  }
+  return problems;
 }
 
 /**

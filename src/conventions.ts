@@ -394,10 +394,18 @@ export const CLOSE_EFFECT = "tracker.close";
  * here for the reason the tracker writes are: the in-memory tracker handles
  * both, and a forge hook for somebody else's tracker has to spell them the
  * same way or a workflow does not carry over. Which branch is always the
- * effect's own `branch` field — the workflow says, never a convention — so an
- * item can have as many branches as its stages name.
+ * effect's own `branch` field, which the workflow writes — and `validate`
+ * holds it, and every stage's `branch`, to `ITEM_BRANCH`.
  */
 export const BRANCH_PUSH_EFFECT = "branch.push";
+
+/**
+ * The one branch an item's work is on, as a workflow writes it. A forge ties
+ * a pull request to an item by this head alone — a branch named any other
+ * way is anybody's to name after any item — so a stage or a publishing
+ * effect on another would open a pull request nothing ties back to the item.
+ */
+export const ITEM_BRANCH = "landrace/{item}";
 export const PULL_OPEN_EFFECT = "pull.open";
 /**
  * Put a review step's findings on the pull request from the effect's

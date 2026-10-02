@@ -244,8 +244,9 @@ stages:
   # `branch` is where its step's worktree is checked out — the branch itself
   # for a step that may write, a detached look at its commit for one that may
   # not — and what a step commits there is what outlives the worktree. The
-  # engine names no branch of its own; a workflow wanting two per item names
-  # two.
+  # engine names no branch of its own; this file names the item's, the one
+  # head a forge ties a pull request to the item by, and validate refuses
+  # any other.
   #
   # Reached from an approved spec, from a spec amended with a change asked for
   # at pr-human-review, and otherwise only by a person sending the item back

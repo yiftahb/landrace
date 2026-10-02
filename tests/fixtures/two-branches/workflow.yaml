@@ -3,10 +3,11 @@ name: two-branches
 description: test
 
 # One item, two branches: the API and the UI are built, pushed and proposed
-# separately, each on the branch its own stage names. A step's worktree may be
-# on any branch, but a pull request is the item's only from its own
-# `landrace/{item}` head, so the one opened from api/<item> ties to nothing
-# and the item waits at publish-api (tests/e2e/scenarios.test.ts).
+# separately, each on the branch its own stage names. A pull request is the
+# item's only from its own `landrace/{item}` head, so the one opened from
+# api/<item> ties to nothing and the item waits at publish-api — and
+# `validate` refuses every branch here for that reason
+# (tests/e2e/scenarios.test.ts).
 stages:
   - id: api
     entry: true
