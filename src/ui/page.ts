@@ -1364,9 +1364,9 @@ async function pollOnce() {
     render(withMoves(await res.json(), moves));
     // After the render, so a click on a notification opens a panel over the
     // board it was raised from — which render() just kept as lastView.
-    const now = needingYou(lastView.rows, new Map(), neededYou);
-    for (const row of arrived(neededYou, now)) notifyOf(row);
-    neededYou = now;
+    const step = bellStep(lastView, neededYou);
+    for (const row of step.arrived) notifyOf(row);
+    neededYou = step.now;
   } catch {
     document.getElementById("meta").textContent = "landrace is not responding";
   }
@@ -1775,7 +1775,7 @@ function renderPanel() {
     pairingItem.textContent = pairing.shown ? "Hide pairing" : "Pairing…";
     if (!row) {
       const bare = bareRow();
-      panelTitle.textContent = panelTitleOf(bare, panelId, !!lastView);
+      panelTitle.textContent = panelTitleOf(bare, panelId, viewListed(lastView));
       panelTop.replaceChildren(...(bare ? [el("p", "text-sm text-neutral-600 dark:text-neutral-300", bare.note)] : []));
       panelBottom.replaceChildren();
       composer.hidden = true;
@@ -2233,6 +2233,23 @@ function bellState(on, permission) {
   return on && permission === "granted"
     ? { icon: "🔔", pressed: "true", label: "Notifying you when an item needs you — click to stop" }
     : { icon: "🔔", pressed: "false", label: "Notify me when an item needs you" };
+}
+
+// Whether a view rests on a listing: before the first, the board serves no
+// rows, and an empty board read as data says nothing needs you, or that an
+// item is gone.
+function viewListed(view) {
+  return view !== null && view !== undefined && view.listed === true;
+}
+
+// One poll's announcements, and what the next poll compares against. A view
+// nothing has listed yet neither seeds nor announces: seeding from its empty
+// rows made the first real listing announce everything already waiting, on
+// every restart.
+function bellStep(view, before) {
+  if (!viewListed(view)) return { now: before, arrived: [] };
+  const now = needingYou(view.rows, new Map(), before);
+  return { now, arrived: arrived(before, now) };
 }
 
 // Toggled from what the bell shows, not what was stored: on with the prompt

@@ -2198,7 +2198,45 @@ describe("the notify bell", () => {
   });
 
   it("is asked after every poll that landed", () => {
-    expect(fnSource("pollOnce")).toMatch(/arrived\(neededYou, now\)/);
+    expect(fnSource("pollOnce")).toMatch(/bellStep\(lastView, neededYou\)/);
+  });
+
+  describe("the bell before the first listing", () => {
+    type Row = { id: string; badge: string | null; stale: boolean; children: Row[] };
+    const row = (id: string, badge: string | null): Row => ({ id, badge, stale: false, children: [] });
+    /** What each poll in turn announces, carried the way pollOnce carries it. */
+    const steps = (...views: Array<{ listed: boolean; rows: Row[] }>): string[][] =>
+      runInNewContext(
+        `${fnSource("viewListed")}${fnSource("needingYou")}${fnSource("arrived")}${fnSource("bellStep")}
+         let before = null;
+         const out = [];
+         for (const view of VIEWS) {
+           const step = bellStep(view, before);
+           out.push(step.arrived.map((r) => r.id));
+           before = step.now;
+         }
+         out`,
+        { VIEWS: views },
+      ) as string[][];
+    const unlisted = { listed: false, rows: [] };
+    const listed = (rows: Row[]) => ({ listed: true, rows });
+
+    it("does not seed from a view nothing has listed yet, so a restart announces nothing already waiting", () => {
+      expect(steps(unlisted, listed([row("1", "needs-you")]))).toEqual([[], []]);
+    });
+
+    it("announces what arrives after the first listing", () => {
+      expect(steps(unlisted, listed([]), listed([row("1", "needs-you")]))).toEqual([[], [], ["1"]]);
+    });
+
+    it("counts a view as listed only when it says so", () => {
+      const listedOf = (view: unknown): boolean => {
+        const c: Record<string, unknown> = { view };
+        runInNewContext(fnSource("viewListed"), c);
+        return runInNewContext("viewListed(view)", c) as boolean;
+      };
+      expect([listedOf(null), listedOf({ listed: false }), listedOf({ listed: true })]).toEqual([false, false, true]);
+    });
   });
 
   describe("which items have just come to need you", () => {
