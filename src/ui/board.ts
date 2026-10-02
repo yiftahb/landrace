@@ -1,5 +1,5 @@
 import { compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, stageFromLabels } from "#conventions.js";
-import { claimItems, gotoTargetsOf } from "#core/index.js";
+import { claimItems, eligibilityOfNode, gotoTargetsOf, writesNothing } from "#core/index.js";
 import { BLOCKED_NOTE, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { haltOf, readRoute, writeRoute } from "#runner/route.js";
 import { turnedAway } from "#runner/tick.js";
@@ -162,7 +162,7 @@ function parentsOf(graph: Graph, nodes: ReadonlyMap<string, Node>, nest: Readonl
 
 export function boardView(input: {
   workflows: ReadonlyArray<{ id: string; workflow: Workflow }>;
-  listing: Pick<WorkspaceListing, "graphs" | "claims">;
+  listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">;
   /** Relation types the source declares singular — the only edges that nest. */
   nest: ReadonlySet<string>;
   running: ReadonlyMap<string, Running>;
@@ -190,6 +190,25 @@ export function boardView(input: {
   for (const node of graph.nodes) if (!nodes.has(node.id)) nodes.set(node.id, node);
   const workflows = new Map(input.workflows.map((w) => [w.id, w.workflow]));
 
+  const { claims, graphs, sourceOf } = input.listing;
+  const listedBy = (id: string): string[] =>
+    input.workflows.filter((w) => graphs[sourceOf.get(w.id) ?? -1]?.nodes.some((n) => n.id === id) ?? false).map((w) => w.id);
+  const pagesOfNode = (node: Node): string[] => {
+    if (node.kind !== ITEM_KIND) return listedBy(node.id);
+    if (node.closed !== null) {
+      // Claims judge open items only, so a closed one is placed by eligibility.
+      const listing = listedBy(node.id);
+      const admits = listing.filter((id) => {
+        const w = workflows.get(id);
+        return w !== undefined && eligibilityOfNode(w, node).eligible;
+      });
+      return admits.length > 0 ? admits : listing;
+    }
+    const owner = claims.owner.get(node.id);
+    if (owner !== undefined) return [owner];
+    return claims.conflicts.get(node.id) ?? claims.clashes.get(node.id) ?? listedBy(node.id);
+  };
+
   const rowOf = (node: Node): BoardRow => {
     const link = safeUrl(node.link);
     const base: BoardRow = {
@@ -198,7 +217,7 @@ export function boardView(input: {
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, updatedAt: node.updatedAt ?? null,
       round: null, model: null, effort: null,
-      chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null, children: [],
+      pages: [], chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null, children: [],
     };
     if (node.kind !== ITEM_KIND) return base;
 
@@ -220,9 +239,10 @@ export function boardView(input: {
     // Two workflows claiming it, or two trackers reporting its id, is the
     // news, said over whatever it is doing: the tick stops a run for exactly
     // this, and a pairing under one of the two is no longer that one's alone.
-    const { claims } = input.listing;
     const halt = haltOf(claims, node.id);
-    if (halt) return { ...item, badge: "needs-you", stage: null, note: oneLine(halt) };
+    // A clash's reads answer 409 (`readRoute` cannot tell which source to
+    // ask), so its panel is withheld; a conflict has one source and keeps it.
+    if (halt) return { ...item, badge: "needs-you", stage: null, note: oneLine(halt), panel: claims.clashes.has(node.id) ? null : item.panel };
 
     // Placed by the stages of the one workflow that owns it. An item no
     // workflow owns is placed by none: its note says why, and its row offers
@@ -234,7 +254,7 @@ export function boardView(input: {
     const placed: BoardRow = s && workflow
       ? {
           ...item, workflow: owner ?? null, tag: workflows.size > 1 ? workflow.name : null,
-          stage: s.stage, note: oneLine(s.note), panel: panelPaths(node.id, true),
+          stage: s.stage, note: oneLine(s.note), panel: panelPaths(node.id, !writesNothing(workflow)),
         }
       : { ...item, badge: "not-admitted", note: oneLine(`skipped: ${turnedAway(claims.unclaimed.get(node.id) ?? [])}`) };
 
@@ -268,6 +288,9 @@ export function boardView(input: {
       return { ...placed, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
     }
     if (!s || !workflow) return placed;
+    // A workflow that writes nothing has a tracker that refuses every write
+    // a Retry, Clear or Go to would make, so the page must not offer one.
+    if (writesNothing(workflow)) return { ...placed, badge: laneOf(s, workflow), retry: null, clear: null, goto: [] };
     const retry = stopped(s) ? retryPath(node.id) : null;
     const goto = gotoPaths(node.id, workflow.stages.find((x) => x.id === s.stage));
     // The status row's own verdict, not the labels read a second time; the
@@ -297,12 +320,14 @@ export function boardView(input: {
   // `discharged` whatever its labels say, and an artifact has none, so neither
   // can raise a branch.
   const below = new Map<string, Lane | null>();
+  const pagesOf = new Map<string, string[]>();
   const build = (node: Node): BoardRow | null => {
     if (seen.has(node.id)) return null;
     seen.add(node.id);
     const kids = [...(children.get(node.id) ?? [])].sort(compareWork)
       .map(build).filter((r): r is BoardRow => r !== null);
     const row = rowOf(node);
+    pagesOf.set(node.id, pagesOfNode(node));
     below.set(node.id, kids.map((k) => below.get(k.id) ?? null).reduce(moreUrgent, row.badge));
     return { ...row, children: kids };
   };
@@ -320,13 +345,26 @@ export function boardView(input: {
     // on: it waits while open and is done once closed.
     if (!row) continue;
     const lane = below.get(row.id) ?? (row.closed === null ? "waiting" : "discharged");
-    rows.push(inOrder({ ...row, lane }, laneOrder(lane)));
+    const pages = new Set<string>();
+    const gather = (r: BoardRow): void => {
+      for (const p of pagesOf.get(r.id) ?? []) pages.add(p);
+      r.children.forEach(gather);
+    };
+    gather(row);
+    rows.push(inOrder({ ...row, lane, pages: [...pages].sort() }, laneOrder(lane)));
   }
   rows.sort((a, b) => rank(a) - rank(b) || laneOrder(a.lane)(a, b));
 
+  const needing = rows.filter((r) => r.lane === "needs-you");
+  const sidebar = input.workflows
+    .map((w) => ({ id: w.id, name: w.workflow.name, needsYou: needing.filter((r) => r.pages.includes(w.id)).length }))
+    .sort((a, b) => {
+      const x = a.name.toLowerCase(), y = b.name.toLowerCase();
+      return x < y ? -1 : x > y ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
   return {
     generatedAt: input.now, rows, nextTickAt: input.nextTickAt,
-    folder: input.folder, workspace: input.workspace,
+    folder: input.folder, workspace: input.workspace, workflows: sidebar, needsYou: needing.length,
   };
 }
 
@@ -437,7 +475,7 @@ export function createBoard(opts: {
         if (h) elsewhere.set(n.id, h);
       }));
       return boardView({
-        workflows: opts.workflows, listing: listing ?? { graphs: [], claims: claimItems([], []) }, nest, running, elsewhere, now: now(), pid, sent, paired,
+        workflows: opts.workflows, listing: listing ?? { graphs: [], claims: claimItems([], []), sourceOf: new Map() }, nest, running, elsewhere, now: now(), pid, sent, paired,
         stale: new Set(stepped.keys()), nextTickAt: nextTickAt(), folder: opts.folder, workspace: opts.workspace,
       });
     },

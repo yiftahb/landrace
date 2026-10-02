@@ -394,7 +394,7 @@ describe("boardSink", () => {
           list: () => {},
           ownerOf: (item) => ({ refused: `#${item} is not listed` }),
           readerOf: (item) => ({ refused: `#${item} is not listed` }),
-          view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
+          view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w", workflows: [], needsYou: 0 }),
         },
       };
       const sink = boardSink((e) => printed.push(e), board);
@@ -418,7 +418,7 @@ describe("boardSink", () => {
         list: () => {},
         ownerOf: (item) => ({ refused: `#${item} is not listed` }),
         readerOf: (item) => ({ refused: `#${item} is not listed` }),
-        view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w" }),
+        view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w", workflows: [], needsYou: 0 }),
       },
     };
     const event: LandraceEvent = { name: "step.finished", item: "1" };

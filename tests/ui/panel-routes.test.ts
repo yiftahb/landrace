@@ -9,7 +9,7 @@ import { boardListener } from "#ui/server.js";
  * no socket in between, so what is pinned here is what the page reaches.
  */
 const PORT = 4545;
-const empty: BoardView = { generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace" };
+const empty: BoardView = { generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", workflows: [], needsYou: 0 };
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 interface Answer { status: number; body: string; headers: Record<string, unknown> }

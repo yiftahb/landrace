@@ -2194,6 +2194,11 @@ export interface BoardRow {
   model: string | null;
   /** The running step's own `effort`, as `model` is its own `model`; null where it named none. */
   effort: string | null;
+  /**
+   * Root rows only: the workflow pages that draw this branch, sorted by id —
+   * every page any row in the branch belongs to. Empty on a nested row.
+   */
+  pages: string[];
   /** Items only. */
   chat: Chat | null;
   /** Stopped by a security check rather than for any other reason — the page draws a shield. */
@@ -2284,6 +2289,14 @@ export interface ItemPanel {
   release(item: string): Promise<{ stage: string; round: number }>;
 }
 
+/** One sidebar entry: a workflow and how many root branches on its page need the person. */
+export interface BoardWorkflow {
+  id: string;
+  name: string;
+  /** Root rows on this workflow's page whose lane is "needs-you" — the sidebar's dot when above zero. */
+  needsYou: number;
+}
+
 export interface BoardView {
   generatedAt: number;
   /**
@@ -2299,6 +2312,10 @@ export interface BoardView {
   folder: string;
   /** The absolute path of the repository checkout landrace is running in. */
   workspace: string;
+  /** The sidebar, by name case-folded, then id. */
+  workflows: BoardWorkflow[];
+  /** Root rows whose lane is "needs-you", across every workflow — the home page's count, the tab title's. */
+  needsYou: number;
 }
 
 /** Which workflow an item belongs to, or the sentence refusing to act on it. */

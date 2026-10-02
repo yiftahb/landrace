@@ -74,7 +74,7 @@ describe("boardView: an item whose stage identity the allowlist refuses", () => 
     const refused: Workflow = { ...workflow, stages: [{ id: "spec", entry: true, terminal: true, identity: { $where: "1" } }] };
     const g = graph([item("1"), item("2", {}, [])]);
     const rows = boardView({
-      workflows: [{ id: "t", workflow: refused }], listing: { graphs: [g], claims: claimItems([{ id: "t", workflow: refused, source: 0 }], [g]) },
+      workflows: [{ id: "t", workflow: refused }], listing: { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: refused, source: 0 }], [g]) },
       nest: NEST, now: 100, pid: 1, nextTickAt: null, running: new Map(), elsewhere: new Map(), folder: "landrace", workspace: "/repo/landrace",
     }).rows;
     expect(rows.map((r) => [r.id, r.stage, r.note])).toEqual([
@@ -560,7 +560,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "panel",
+      "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "pages", "panel",
       "priority", "retry", "round", "screened", "since", "stage", "stale", "system", "tag", "title", "updatedAt", "workflow",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
@@ -706,6 +706,7 @@ describe("createBoard", () => {
   it("reports no rows before the first tick lands", async () => {
     expect(await shell(() => 5).view()).toEqual({
       generatedAt: 5, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace",
+      workflows: [{ id: "t", name: "t", needsYou: 0 }], needsYou: 0,
     });
   });
 
@@ -842,7 +843,7 @@ describe("the board over several workflows", () => {
     const [row] = several(graph([item("5", {}, screened(["lr:auto"]))]), graph([item("5", {}, screened(["lr:auto"]))])).rows;
     expect(row).toMatchObject({
       id: "5", workflow: null, tag: null, badge: "needs-you", lane: "needs-you", note: "reported by the sources of fast, gl and main",
-      stage: null, retry: null, clear: null, goto: [], panel: reads("5"),
+      stage: null, retry: null, clear: null, goto: [], panel: null,
     });
   });
 
@@ -926,5 +927,112 @@ describe("the board over several workflows", () => {
       b.list(across(graph([item("1", {}, ["lr:fast"])])));
       expect(b.ownerOf("1")).toEqual({ workflow: "fast" });
     });
+  });
+});
+
+describe("the pages a branch is drawn on", () => {
+  const only = (label: string, name: string): Workflow => ({
+    ...workflow, name, eligible: [{ when: { "node.state.labels": { $in: [label] } }, else: `no ${label} label` }],
+  });
+  const A = only("a", "Alpha");
+  const B = only("b", "beta");
+  const TWO = [{ id: "a", workflow: A }, { id: "b", workflow: B }];
+  /** Both workflows on one source. */
+  const shared = (g: Graph) => ({
+    graphs: [g], sourceOf: new Map([["a", 0], ["b", 0]]),
+    claims: claimItems([{ id: "a", workflow: A, source: 0 }, { id: "b", workflow: B, source: 0 }], [g]),
+  });
+  const two = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
+    view(g, { workflows: TWO, listing: shared(g), ...over });
+
+  it("draws an owned item on its owner's page alone", () => {
+    const v = two(graph([item("1", {}, ["a"])]));
+    expect(v.rows.map((r) => [r.id, r.pages])).toEqual([["1", ["a"]]]);
+  });
+
+  it("draws a claim conflict on both claimants' pages, and counts it once in Needs You", () => {
+    const v = two(graph([item("1", {}, ["a", "b"])]));
+    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
+    expect(v.rows[0]?.lane).toBe("needs-you");
+    expect(v.needsYou).toBe(1);
+    expect(v.workflows).toEqual([{ id: "a", name: "Alpha", needsYou: 1 }, { id: "b", name: "beta", needsYou: 1 }]);
+  });
+
+  it("keeps a conflict's read panel but gives a clash none, since its reads are refused", () => {
+    const conflict = two(graph([item("1", {}, ["a", "b"])])).rows[0];
+    expect(conflict?.panel?.activity).toBe("/items/1/activity");
+    expect(conflict?.panel?.reply).toBeNull();
+    const g1 = graph([item("1", {}, ["a"])]);
+    const g2 = graph([item("1", {}, ["b"])]);
+    const clash = view(g1, {
+      workflows: TWO,
+      listing: {
+        graphs: [g1, g2], sourceOf: new Map([["a", 0], ["b", 1]]),
+        claims: claimItems([{ id: "a", workflow: A, source: 0 }, { id: "b", workflow: B, source: 1 }], [g1, g2]),
+      },
+    }).rows[0];
+    expect(clash?.lane).toBe("needs-you");
+    expect(clash?.panel).toBeNull();
+    expect(clash?.pages).toEqual(["a", "b"]);
+  });
+
+  it("draws an unclaimed item on every page whose source lists it", () => {
+    const v = two(graph([item("1", {}, ["neither"])]));
+    expect(v.rows[0]?.lane).toBe("not-admitted");
+    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
+  });
+
+  it("draws a closed item on the page whose eligibility admits it, else on every page that lists it", () => {
+    const v = two(graph([item("1", { closed: "done" }, ["b"]), item("2", { closed: "done" }, ["neither"])]));
+    const pages = new Map(v.rows.map((r) => [r.id, r.pages]));
+    expect(pages.get("1")).toEqual(["b"]);
+    expect(pages.get("2")).toEqual(["a", "b"]);
+  });
+
+  it("draws a branch on every page any row in it belongs to, and nested rows carry none", () => {
+    const v = two(graph([item("1", {}, ["a"]), item("2", {}, ["b"])], [edge("2", "1")]));
+    expect(v.rows.map((r) => [r.id, r.pages])).toEqual([["1", ["a", "b"]]]);
+    expect(v.rows[0]?.children[0]?.pages).toEqual([]);
+  });
+
+  it("counts a workflow with nothing needing the person as zero", () => {
+    const v = two(graph([item("1", {}, ["a"])]));
+    expect(v.workflows.find((w) => w.id === "b")?.needsYou).toBe(0);
+  });
+
+  it("orders the sidebar by name case-folded, not by code point", () => {
+    const named = (id: string, name: string) => ({ id, workflow: { ...workflow, name } });
+    const v = view(graph([]), {
+      workflows: [named("z", "Zeta"), named("b", "beta"), named("a", "alpha")],
+      listing: { graphs: [graph([])], sourceOf: new Map([["z", 0], ["b", 0], ["a", 0]]), claims: claimItems([], []) },
+    });
+    expect(v.workflows.map((w) => w.name)).toEqual(["alpha", "beta", "Zeta"]);
+  });
+
+  it("offers no writes on an item a read-only workflow owns", () => {
+    // tests/fixtures/review's shape: every open stage placed by its labels, no step, trigger or on_enter.
+    const review: Workflow = {
+      version: 1, name: "review", description: "merge requests waiting for my review",
+      eligible: [{ when: { "node.state.labels": { $in: ["review-requested"] } }, else: "not requested" }],
+      stages: [
+        { id: "reviewing", waits: "person", identity: { "node.state.labels": { $nin: ["approved"] } } },
+        { id: "approved", terminal: true, identity: { "node.state.labels": { $in: ["approved"] } } },
+      ],
+    };
+    const g = graph([item("9", {}, ["review-requested"])]);
+    const [row] = view(g, {
+      workflows: [{ id: "review", workflow: review }],
+      listing: { graphs: [g], sourceOf: new Map([["review", 0]]), claims: claimItems([{ id: "review", workflow: review, source: 0 }], [g]) },
+    }).rows;
+    expect(row?.lane).toBe("needs-you");
+    expect(row?.panel?.activity).toBe("/items/9/activity");
+    expect([row?.panel?.reply, row?.panel?.ask, row?.panel?.resolve, row?.panel?.pair]).toEqual([null, null, null, null]);
+    expect([row?.retry, row?.clear, row?.goto]).toEqual([null, null, []]);
+  });
+
+  it("leaves the tag off in a workspace of one workflow", () => {
+    const v = view(graph([item("1")]));
+    expect(v.rows[0]?.tag).toBeNull();
+    expect(v.workflows).toEqual([{ id: "t", name: "t", needsYou: 0 }]);
   });
 });

@@ -37,6 +37,19 @@ export function placedByState(stage: Stage): boolean {
 }
 
 /**
+ * Whether a workflow can never write to its tracker: every open stage is
+ * placed by the item's own state, and none runs a step, fires a trigger or
+ * applies an `on_enter`. Its tracker would refuse every write the board
+ * could offer on such an item, so the board offers none.
+ */
+export const writesNothing = (w: Workflow): boolean =>
+  w.stages.every(
+    (s) =>
+      (s.terminal === true || placedByState(s)) &&
+      s.step === undefined && (s.triggers ?? []).length === 0 && (s.on_enter ?? []).length === 0,
+  );
+
+/**
  * Why an item several stages match cannot be placed, in the words every
  * surface says it in: decide's halt, a status row, `landrace_status`. Two
  * wordings of one halt is how an operator comes to think they are two.
