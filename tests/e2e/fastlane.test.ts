@@ -527,7 +527,7 @@ describe("fastlane, end to end", () => {
     await broken.run.converge(); // and the next tick routes it to the halt
     expect(broken.state.stage("1")).toBe("blocked");
     for (const to of ["publish", "merge", "closed"]) {
-      expect(await broken.goto(to)).toEqual({ refused: expect.stringMatching(new RegExp(`"blocked" sends an item to "${to}" only while`)) });
+      expect(await broken.goto(to)).toEqual({ refused: expect.stringMatching(new RegExp(`"blocked" sends an item to "${to}" only as the Retry`)) });
     }
     expect(await broken.retry()).toEqual({ to: "code-review" });
 

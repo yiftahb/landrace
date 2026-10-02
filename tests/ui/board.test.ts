@@ -1,5 +1,5 @@
 import { claimItems } from "#core/index.js";
-import type { Entry, Graph, Held, Node, Relationship, Running, Workflow } from "#namespace.js";
+import type { Entry, Graph, Held, Node, Relationship, Running, Stage, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
 import { boardView, conversationOf, createBoard } from "#ui/board.js";
 import { laneOf } from "#runner/status.js";
@@ -196,30 +196,42 @@ describe("boardView: where a row may send its item back to", () => {
   });
 
   /*
-   * A target a halt sends to only as what failed — `"run.failedStage"`
-   * naming it — is Retry's alone: listed under "Go to step…", it would be
-   * offered on every halt, there to be refused. The row's Retry reaches it.
+   * A target a halt sends to only as what failed — declared `retry: only` on
+   * its goto entry — is Retry's alone: listed under "Go to step…", it would
+   * be offered on every halt, there to be refused. The row's Retry reaches
+   * it. Read off the declaration, never off how a `when` is spelled: an
+   * equivalent `$eq` there was offered on every halt.
    */
-  it("leaves a target only Retry may reach to Retry", () => {
+  const retryingRow = (merge: NonNullable<Stage["goto"]>[number]) => {
     const retrying: Workflow = {
       ...workflow,
       stages: [
         ...workflow.stages.filter((st) => st.id !== "blocked"),
-        {
-          id: "blocked",
-          goto: ["spec", { stage: "merge", when: { "run.failedStage": "merge", "run.counters.merge": { $lt: 3 } } }],
-          triggers: [{ when: { "run.lastOutputValid": false } }],
-        },
+        { id: "blocked", goto: ["spec", merge], triggers: [{ when: { "run.lastOutputValid": false } }] },
         { id: "merge", triggers: [{ when: { "run.stage": "spec", "x": 1 } }] },
       ],
     };
     const g = graph([item("7", {}, ["go", "lr:stage:blocked", "lr:blocked"])]);
-    const row = view(g, {
+    return view(g, {
       workflows: [{ id: "t", workflow: retrying }],
       listing: { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: retrying, source: 0 }], [g]) },
     }).rows[0];
+  };
+
+  it.each([
+    ["with a cap", { stage: "merge", retry: "only", when: { "run.counters.merge": { $lt: 3 } } }],
+    ["with no when", { stage: "merge", retry: "only" }],
+    ["beside a when naming what failed with $eq", { stage: "merge", retry: "only", when: { "run.failedStage": { $eq: "merge" } } }],
+  ] as const)("leaves a target declared Retry's alone to Retry — %s", (_what, merge) => {
+    const row = retryingRow(merge);
     expect(row?.goto).toEqual([{ stage: "spec", path: "/items/7/goto/spec" }]);
     expect(row?.retry).not.toBeNull();
+  });
+
+  it("offers a target not declared Retry's alone, whatever its when", () => {
+    expect(retryingRow({ stage: "merge", when: { "run.counters.merge": { $lt: 3 } } })?.goto).toEqual([
+      { stage: "spec", path: "/items/7/goto/spec" }, { stage: "merge", path: "/items/7/goto/merge" },
+    ]);
   });
 
   it("offers none on a row held elsewhere", () => {

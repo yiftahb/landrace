@@ -156,8 +156,8 @@ describe.each(["full-cycle", "fastlane"])("%s's ways the forge can refuse", (id)
       for (const stage of pulling) {
         const target = gotoTargetsOf(halt).find((g) => g.stage === stage.id);
         expect([halt.id, stage.id, target?.when?.[`run.counters.${stage.id}`]]).toEqual([halt.id, stage.id, { $lt: 3 }]);
-        // Retry's alone: only while it is what failed, so "Go to step…" never takes an item there past a review.
-        expect([halt.id, stage.id, target?.when?.["run.failedStage"]]).toEqual([halt.id, stage.id, stage.id]);
+        // Retry's alone, declared: only while it is what failed, so "Go to step…" never takes an item there past a review.
+        expect([halt.id, stage.id, target?.retryOnly, target?.when?.["run.failedStage"]]).toEqual([halt.id, stage.id, true, undefined]);
         const removed = (stage.on_enter ?? []).flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
         expect([stage.id, removed]).toEqual([stage.id, expect.arrayContaining(["lr:blocked", "lr:screened"])]);
       }
@@ -365,8 +365,8 @@ describe("fastlane's stages", () => {
   it.each(["blocked", "screened"].flatMap((halt) => ["publish", "merge", "closed"].map((to) => [halt, to] as const)))(
     "from %s, a goto to %s is declined unless it is what failed",
     (from, to) => {
-      expect(gotoDeclined(stageOf(from), snapshotOf({ stage: from, human: true, failedStage: "build" }), to)).toMatch(/only while/);
-      expect(gotoDeclined(stageOf(from), snapshotOf({ stage: from, human: true }), to)).toMatch(/only while/);
+      expect(gotoDeclined(stageOf(from), snapshotOf({ stage: from, human: true, failedStage: "build" }), to)).toMatch(/only as the Retry/);
+      expect(gotoDeclined(stageOf(from), snapshotOf({ stage: from, human: true }), to)).toMatch(/only as the Retry/);
       expect(gotoDeclined(stageOf(from), snapshotOf({ stage: from, human: true, failedStage: to }), to)).toBeNull();
     },
   );

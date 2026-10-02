@@ -60,6 +60,11 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
     expect(workflow).toMatchObject({ name: "Technical Support", description: "Support items assigned to me.", admit: ["lr:support"] });
   });
 
+  it("reads a goto entry declared Retry's alone", async () => {
+    const { workflow } = await loadWorkflow(wf({ description: "d", stages: [{ id: "a", entry: true, goto: [{ stage: "a", retry: "only" }] }] }));
+    expect(workflow.stages[0]?.goto).toEqual([{ stage: "a", retry: "only" }]);
+  });
+
   it("refuses an empty admit label", async () => {
     await expect(loadWorkflow(wf({ description: "d", admit: [""] }))).rejects.toThrow(/admit/);
   });

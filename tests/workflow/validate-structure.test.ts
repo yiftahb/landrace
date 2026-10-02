@@ -588,3 +588,24 @@ describe("a halt's labels", () => {
     expect(said(halting({ "run.stage": "a", "run.lastOutputValid": null }, []))).toEqual([]);
   });
 });
+
+/*
+ * `retry: only` (separation review M1) has one value: anything else would
+ * read as a target "Go to step…" may take, the opposite of what it says.
+ */
+describe("a goto entry declared Retry's alone", () => {
+  const halting = (retry: unknown): Workflow => wf([
+    { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }] },
+    { id: "h", goto: [{ stage: "a", retry } as never], triggers: [{ when: { "run.stage": "a" } }] },
+    { id: "z", terminal: true, triggers: [{ when: { "run.stage": "h" } }] },
+  ]);
+  const said = (w: Workflow) => validateStructure(w).filter((p) => p.rule === "goto").map((p) => p.message);
+
+  it("accepts retry: only", () => {
+    expect(said(halting("only"))).toEqual([]);
+  });
+
+  it.each([[true], ["always"], [""], [null]])("refuses retry: %p, saying its one value", (retry) => {
+    expect(said(halting(retry))).toEqual([expect.stringMatching(/stage "h" declares retry .* on its goto to "a"; retry takes one value, "only"/)]);
+  });
+});

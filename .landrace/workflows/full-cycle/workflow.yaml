@@ -489,8 +489,9 @@ stages:
   #
   # And publish, which runs no step but whose way in the forge can refuse:
   # Retry pushes and opens again, three times in all — its rounds are only
-  # the refused ones — and only as what failed: "Go to step… publish" after
-  # any other failure would publish past a build that broke its contract.
+  # the refused ones — and only as what failed, `retry: only`: "Go to step…
+  # publish" after any other failure would publish past a build that broke
+  # its contract, so the board offers it only as Retry.
   #
   # Each target takes lr:blocked and lr:screened off as it is entered, bar
   # triage, whose answers come back here or go on to spec or build. Written
@@ -499,7 +500,7 @@ stages:
     goto: &halt
       - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
-      - { stage: publish, when: { "run.failedStage": publish, "run.counters.publish": { $lt: 3 } } }
+      - { stage: publish, retry: only, when: { "run.counters.publish": { $lt: 3 } } }
       - stage: code-review
         when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: fix-review

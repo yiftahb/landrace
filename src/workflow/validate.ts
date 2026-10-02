@@ -169,6 +169,17 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   const stageById = new Map(w.stages.map((s) => [s.id, s]));
   for (const stage of w.stages) {
     const named = new Set<string>();
+    // `retry` has one value: anything else — `retry: true` — would read as
+    // a target any "Go to step…" may take, the opposite of what it says.
+    for (const g of stage.goto ?? []) {
+      if (typeof g === "object" && "retry" in g && g.retry !== "only") {
+        problems.push({
+          rule: "goto",
+          message: `stage "${stage.id}" declares retry ${JSON.stringify(g.retry)} on its goto to "${g.stage}"; ` +
+            'retry takes one value, "only": the target is taken only as the Retry of a failed one',
+        });
+      }
+    }
     for (const g of gotoTargetsOf(stage)) {
       if (named.has(g.stage)) problems.push({ rule: "goto", message: `stage "${stage.id}" names "${g.stage}" twice in goto` });
       named.add(g.stage);

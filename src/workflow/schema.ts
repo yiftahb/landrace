@@ -27,7 +27,13 @@ export const stageSchema = z.object({
   on_enter: z.array(effect).optional(),
   goto: z.array(z.union([
     z.string().min(1),
-    z.object({ stage: z.string().min(1), when: condition.optional() }).strict(),
+    z.object({
+      stage: z.string().min(1),
+      when: condition.optional(),
+      // Retry's alone. Any value is read here so validate's `goto` rule can
+      // say what it must be — a union's own error says only "Invalid input".
+      retry: z.unknown().optional(),
+    }).strict(),
   ])).optional(),
 }).strict();
 

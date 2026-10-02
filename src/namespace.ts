@@ -265,12 +265,18 @@ export interface Trigger {
 }
 
 /** An entry in a stage's `goto`: a stage it may always send an item to, or one it may while `when` holds. */
-export type GotoEntry = string | { stage: string; when?: Condition | undefined };
+/**
+ * `retry: only` declares a target Retry's alone: taken only while it is what
+ * failed, `run.failedStage`, and never offered under "Go to step…".
+ */
+export type GotoEntry = string | { stage: string; when?: Condition | undefined; retry?: "only" | undefined };
 
 /** A `goto` entry as the engine reads it. `when` null means always. */
 export interface GotoTarget {
   stage: string;
   when: Condition | null;
+  /** Declared `retry: only`: taken only as the Retry of a failed `stage`. */
+  retryOnly: boolean;
 }
 
 export interface Effect {
@@ -305,9 +311,9 @@ export interface Stage {
    * The stages a person may send an item at this stage back to — by a judge
    * step's route, the board's "Go to step…" or `landrace_goto`. A bare id
    * always; `{ stage, when }` only while `when` holds, which is where a
-   * loop's round cap goes, since a goto takes no trigger. A goto to a stage
-   * not listed here halts; one whose `when` does not hold is declined, and
-   * the stage's triggers decide.
+   * loop's round cap goes, since a goto takes no trigger; `retry: only` only
+   * while the target is what failed. A goto to a stage not listed here
+   * halts; one declined is left to the stage's triggers.
    */
   goto?: GotoEntry[] | undefined;
 }

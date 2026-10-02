@@ -336,7 +336,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const every = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
-      { stage: "publish", when: { "run.failedStage": "publish", "run.counters.publish": { $lt: 3 } } },
+      { stage: "publish", retry: "only", when: { "run.counters.publish": { $lt: 3 } } },
       { stage: "code-review", when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "fix-review", when: { "run.counters.fix-review": { $lt: 20 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "retro", when: {
@@ -370,7 +370,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const retried = (counters: object) => snapshotAt(halt, { goto: "publish", failedStage: "publish", counters: { build: 1, ...counters } });
     expect(await destination(retried({ publish: 2 }))).toBe("publish");
     expect(await destination(retried({ publish: 3 }))).toMatch(/^wait: .*only while.*run\.counters\.publish/);
-    expect(await destination(snapshotAt(halt, { goto: "publish", failedStage: "build", counters: { build: 1 } }))).toMatch(/^wait: .*only while.*run\.failedStage/);
+    expect(await destination(snapshotAt(halt, { goto: "publish", failedStage: "build", counters: { build: 1 } }))).toMatch(/^wait: .*only as the Retry of a failed "publish"/);
   });
 
   it.each(["blocked", "screened"])("from %s, declines a review with no pull request and the judge with no message", async (halt) => {

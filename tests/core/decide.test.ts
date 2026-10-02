@@ -297,6 +297,43 @@ describe("a pending goto", () => {
   });
 });
 
+/*
+ * `retry: only` on a goto entry (separation review M1): the target is taken
+ * only as the Retry of a failed one — while it is `run.failedStage` — the one
+ * source of truth for "Retry's alone", which the board reads too. Its `when`,
+ * a cap, is asked after.
+ */
+describe("a goto target declared Retry's alone", () => {
+  const halt: Stage = {
+    id: "blocked",
+    goto: ["spec", { stage: "merge", retry: "only", when: { "run.counters.merge": { $lt: 3 } } }],
+    triggers: [{ name: "rejected", when: { "run.lastOutputValid": false } }],
+  };
+  const w: Workflow = {
+    version: 1, name: "t", description: "test",
+    stages: [stages[0] as Stage, halt, { id: "merge", triggers: [{ name: "x", when: { "run.stage": "nowhere" } }] }],
+  };
+  const at = (o: object) => snap({ run: run({ stage: "blocked", goto: "merge", ...o }) });
+
+  it("is taken while it is what failed, within its when", () => {
+    expect(decide(w, at({ failedStage: "merge", counters: { merge: 2 } }))).toMatchObject({ action: "transition", to: { id: "merge" } });
+  });
+
+  it.each([["another stage failed", "spec"], ["nothing failed", null]])("is declined, saying so, when %s", (_what, failedStage) => {
+    const d = decide(w, at({ failedStage, counters: { merge: 1 } }));
+    expect(d).toMatchObject({ action: "wait" });
+    expect(d.why).toMatch(/"blocked" sends an item to "merge" only as the Retry of a failed "merge"/);
+  });
+
+  it("asks its when once it is what failed", () => {
+    expect(decide(w, at({ failedStage: "merge", counters: { merge: 3 } })).why).toMatch(/only while.*run\.counters\.merge/);
+  });
+
+  it("leaves every other target to its when alone", () => {
+    expect(decide(w, at({ goto: "spec", failedStage: null }))).toMatchObject({ action: "transition", to: { id: "spec" } });
+  });
+});
+
 describe("a stage a person is pairing on", () => {
   const pairing = { stage: "spec", round: 1, n: 1, at: "2026-01-01T00:00:00.000Z" };
 
