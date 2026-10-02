@@ -1,5 +1,5 @@
 import { checkEligible } from "#core/eligible.js";
-import { locate, locateNode } from "#core/locate.js";
+import { locate, locateNode, writesNothing } from "#core/locate.js";
 import { assess } from "#core/assess.js";
 import type { Node, Workflow, Snapshot, Stage } from "#namespace.js";
 
@@ -138,5 +138,25 @@ describe("assess", () => {
   it("is complete when the step's output for the current round exists", () => {
     const s = snap({ run: { counters: { spec: 1 }, outputs: { spec: { kind: "spec" } }, lastOutputValid: null, failedStages: [], rounds: { spec: { entered: 1, output: 1 } } } });
     expect(assess(s, stage)).toBe("complete");
+  });
+});
+
+describe("writesNothing", () => {
+  const placed = { identity: { "node.state.labels": { $in: ["x"] } } };
+  const wf = (...stages: Stage[]): Workflow => ({ version: 1, name: "w", description: "d", stages });
+  it("is true for stages all placed by state, with a terminal one", () => {
+    expect(writesNothing(wf({ id: "a", waits: "person", ...placed }, { id: "done", terminal: true }))).toBe(true);
+  });
+  it("is false for an open stage not placed by state", () => {
+    expect(writesNothing(wf({ id: "a", waits: "person", triggers: [] }))).toBe(false);
+  });
+  it("is false for a step", () => {
+    expect(writesNothing(wf({ id: "a", step: "steps/a.md", ...placed }))).toBe(false);
+  });
+  it("is false for a trigger", () => {
+    expect(writesNothing(wf({ id: "a", ...placed, triggers: [{ when: { "run.stage": "a" } }] }))).toBe(false);
+  });
+  it("is false for an on_enter", () => {
+    expect(writesNothing(wf({ id: "a", ...placed, on_enter: [{ type: "nodes.close" } as never] }))).toBe(false);
   });
 });

@@ -1015,7 +1015,7 @@ describe("the pages a branch is drawn on", () => {
       version: 1, name: "review", description: "merge requests waiting for my review",
       eligible: [{ when: { "node.state.labels": { $in: ["review-requested"] } }, else: "not requested" }],
       stages: [
-        { id: "reviewing", waits: "person", identity: { "node.state.labels": { $nin: ["approved"] } } },
+        { id: "reviewing", waits: "person", goto: ["approved"], identity: { "node.state.labels": { $nin: ["approved"] } } },
         { id: "approved", terminal: true, identity: { "node.state.labels": { $in: ["approved"] } } },
       ],
     };
@@ -1028,6 +1028,22 @@ describe("the pages a branch is drawn on", () => {
     expect(row?.panel?.activity).toBe("/items/9/activity");
     expect([row?.panel?.reply, row?.panel?.ask, row?.panel?.resolve, row?.panel?.pair]).toEqual([null, null, null, null]);
     expect([row?.retry, row?.clear, row?.goto]).toEqual([null, null, []]);
+  });
+
+  it("counts a needs-you item on its owner's page alone", () => {
+    const v = two(graph([item("1", {}, ["a", "lr:stage:spec-human-review"])]));
+    expect(v.rows[0]?.lane).toBe("needs-you");
+    expect(v.rows[0]?.pages).toEqual(["a"]);
+    expect(v.workflows.map((w) => [w.id, w.needsYou])).toEqual([["a", 1], ["b", 0]]);
+    expect(v.needsYou).toBe(1);
+  });
+
+  it("draws an artifact on the pages whose source lists it, and sorts a branch's pages", () => {
+    // Union built in reverse: the root is b's, its child a's, its artifact on both.
+    const v = two(graph([item("1", {}, ["b"]), item("2", {}, ["a"]), pr("pr-1")], [edge("2", "1"), edge("pr-1", "1", "implements")]));
+    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
+    const only = view(graph([pr("pr-1")]), { workflows: TWO, listing: shared(graph([pr("pr-1")])) });
+    expect(only.rows[0]?.pages).toEqual(["a", "b"]);
   });
 
   it("leaves the tag off in a workspace of one workflow", () => {

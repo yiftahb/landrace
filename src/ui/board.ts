@@ -197,6 +197,9 @@ export function boardView(input: {
     if (node.kind !== ITEM_KIND) return listedBy(node.id);
     if (node.closed !== null) {
       // Claims judge open items only, so a closed one is placed by eligibility.
+      // An `eligible` rule a node cannot answer makes `eligibilityOfNode`
+      // abstain (eligible), so such a workflow admits every closed item its
+      // source lists: that item lands on every page whose source lists it.
       const listing = listedBy(node.id);
       const admits = listing.filter((id) => {
         const w = workflows.get(id);
