@@ -312,10 +312,22 @@ describe("the preflight reads CI too", () => {
     await expect(forgeOf(gh).check(gh.ctx)).resolves.toBeUndefined();
   });
 
-  it("still refuses a 403 on the same probe, naming the permission", async () => {
+  it("still refuses a 403 on the same probes, naming the permissions", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.breakOn(({ path }) => path.startsWith("/commits/"), 403);
-    await expect(forgeOf(gh).check(gh.ctx)).rejects.toThrow('token needs "Checks: Read" on acme/widgets');
+    await expect(forgeOf(gh).check(gh.ctx)).rejects.toThrow('token needs "Checks: Read" and "Commit statuses: Read" on acme/widgets');
+  });
+
+  // A token made by the README before P6 lacks both: one restart should say so, not two.
+  it("names every missing permission in one sentence, for a token missing both", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.breakOn(({ path }) => path.endsWith("/check-runs") || path.endsWith("/status"), 403, {
+      message: "Resource not accessible by personal access token", status: "403",
+    });
+    const said = await forgeOf(gh).check(gh.ctx).then(() => "", (e: unknown) => (e as Error).message);
+    expect(said).toMatch(/^token needs "Checks: Read" and "Commit statuses: Read" on acme\/widgets \(GitHub answered: /);
+    expect(said.match(/token needs/g)).toHaveLength(1);
+    expect(gh.requests.map((r) => r.path)).toEqual(expect.arrayContaining(["/commits/main/check-runs", "/commits/main/status"]));
   });
 
   it("does not take a rejected token for a missing permission", async () => {

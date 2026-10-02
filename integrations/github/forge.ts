@@ -749,7 +749,8 @@ export class GitHubForge extends BaseForge {
    * dropped child's both need it — so a fine-grained token without it is
    * named by the write itself. Then "Checks: Read" and "Commit statuses:
    * Read", because every read of an open pull request asks for its checks: a
-   * token without them would fail every read and every briefing, not one step.
+   * token without them would fail every read, not one step. Every one
+   * missing is named in one sentence.
    */
   async check(ctx: RuntimeContext): Promise<void> {
     const gh = this.gh(ctx);
@@ -767,7 +768,10 @@ export class GitHubForge extends BaseForge {
 
     // The default branch's tip is a commit that always exists. An empty
     // repository has none (404, 422): nothing to read yet, so nothing to refuse.
+    // Both are asked whatever the first says, so a token missing both is told
+    // so at one start, not at two.
     const ref = await gh.defaultBranch();
+    const missing: Array<{ permission: string; said: string }> = [];
     for (const [read, permission] of [
       [() => gh.checkRuns(ref, 1), "Checks: Read"],
       [() => gh.commitStatus(ref), "Commit statuses: Read"],
@@ -777,8 +781,15 @@ export class GitHubForge extends BaseForge {
       } catch (e) {
         const status = (e as { status?: unknown } | null)?.status;
         if (status === 404 || status === 422) continue;
-        throw ciReadFailure(e, permission, gh.repo);
+        if (tokenRejected(e) !== null || !refusedRead(e)) throw ciReadFailure(e, permission, gh.repo);
+        missing.push({ permission, said: e instanceof Error ? e.message : String(e) });
       }
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `token needs ${missing.map((m) => `"${m.permission}"`).join(" and ")} on ${gh.repo} ` +
+        `(GitHub answered: ${missing.map((m) => m.said).join("; ")})`,
+      );
     }
   }
 }
