@@ -99,6 +99,19 @@ describe("decide", () => {
     expect(d.why).toMatch(/ambiguous/);
   });
 
+  // A workflow placed by the item's own state has no entry stage, and an item
+  // its identities leave out is not "a workflow without an entry stage": it
+  // is an item nothing here places, and the halt says that.
+  it("halts an item no identity places, in a workflow with no entry stage, saying so", () => {
+    const placed: Workflow = { version: 1, name: "t", description: "test", stages: [
+      { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["mine"] } } },
+      { id: "approved", terminal: true, identity: { "node.state.labels": { $in: ["approved"] } } },
+    ] };
+    expect(decide(placed, snap({ node: { state: { labels: ["review-requested"] } }, run: run({ stage: null }) }))).toEqual({
+      action: "halt", why: "no stage of this workflow places the item: none of its identities match, and there is no entry stage to start it at",
+    });
+  });
+
   it("halts when the item cannot be placed", () => {
     const both: Workflow = { version: 1, name: "t", description: "test", stages: [
       { id: "a", entry: true, identity: { x: 1 } },

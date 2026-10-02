@@ -188,17 +188,16 @@ function seenAt(workflow: WorkflowRuntime, node: Node): SeenAt | null {
 const sameStage = (a: SeenAt | undefined, b: SeenAt): boolean => a?.workflow === b.workflow && a.stage === b.stage;
 
 /**
- * Tell a person once that an item has come to wait on them by its own state,
- * and note where every item this tick works is.
+ * Note where every item this tick works is, and hand back the ones that have
+ * just come to wait on a person by their own state.
  *
  * Converge tells of an item that comes to rest at a person's turn after a
  * transition; an item placed by its own state makes none — it is at
  * `reviewing` because its labels say so, one tick and not the one before. So
  * an item at a stage that waits on a person, placed there by its own state,
- * that the last tick did not see there is told of here, through its
- * workflow's notify and the board's rule for who is waiting. Only such a
- * stage: one a label alone places an item at is reached by a transition, and
- * converge has told of it already.
+ * that the last tick did not see there has arrived. Only such a stage: one a
+ * label alone places an item at is reached by a transition, and converge
+ * tells of it. The tell itself waits for the item's converge (see `tellIf`).
  *
  * `runtime.seen` is the last tick's listing, in this process only. A restart
  * starts it empty, so every item already waiting is told of once more on the
@@ -207,27 +206,41 @@ const sameStage = (a: SeenAt | undefined, b: SeenAt): boolean => a?.workflow ===
  * and every item while a failed source leaves claims unjudged, so a tracker
  * coming back does not tell of everything again.
  */
-function tellArrivals(
+function noteArrivals(
   runtime: WorkspaceRuntime, listing: WorkspaceListing, work: ReadonlyArray<{ node: Node; workflow: WorkflowRuntime }>, unjudged: boolean,
-): void {
+): Set<string> {
   const before = new Map(runtime.seen);
   runtime.seen.clear();
   for (const [item, at] of before) {
     const index = listing.sourceOf.get(at.workflow);
     if (unjudged || (index !== undefined && listing.failed.has(index))) runtime.seen.set(item, at);
   }
+  const arrived = new Set<string>();
   for (const { node, workflow } of work) {
     const at = seenAt(workflow, node);
     if (at === null) continue;
     runtime.seen.set(node.id, at);
     if (sameStage(before.get(node.id), at)) continue;
     const stage = workflow.deps.workflow.stages.find((s) => s.id === at.stage);
-    if (stage?.waits !== "person" || !placedByState(stage)) continue;
-    try {
-      workflow.deps.notify?.({ node });
-    } catch (e) {
-      runtime.log("notify.failed", { item: node.id, reason: messageOf(e) });
-    }
+    if (stage?.waits === "person" && placedByState(stage)) arrived.add(node.id);
+  }
+  return arrived;
+}
+
+/**
+ * Tell a person of an item that arrived at their turn by its own state, once
+ * its converge has left it where it was listed: settled waiting on its first
+ * pass, so no transition took it on and nothing ran — or not converged at
+ * all, its lock held elsewhere. One a trigger moved on in the same tick never
+ * waited on anyone. Through the workflow's notify, so by the board's rule for
+ * who is waiting.
+ */
+function tellIf(runtime: WorkspaceRuntime, workflow: WorkflowRuntime, node: Node, result: ConvergeResult | "locked"): void {
+  if (result !== "locked" && (result.settled !== "wait" || result.passes !== 1)) return;
+  try {
+    workflow.deps.notify?.({ node });
+  } catch (e) {
+    runtime.log("notify.failed", { item: node.id, reason: messageOf(e) });
   }
 }
 
@@ -357,7 +370,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
 
   // Before the pool, and in one synchronous step after the listing: a tick
   // overlapping this one reads what this one noted, never the same old map.
-  tellArrivals(runtime, listing, work, unjudged);
+  const arrived = noteArrivals(runtime, listing, work, unjudged);
 
   await pool(work, runtime.concurrency, async ({ node, workflow: w }) => {
     const item = node.id;
@@ -399,10 +412,12 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
         opts.lock,
       );
       rows.push({ item, workflow: w.id, outcome: outcomeOf(result) });
+      if (arrived.has(item)) tellIf(runtime, w, node, result);
     } catch (e) {
       if (isLocked(e)) {
         log("lock.denied", { item, kind: "tick" });
         rows.push({ item, workflow: w.id, outcome: oneLine(messageOf(e)) });
+        if (arrived.has(item)) tellIf(runtime, w, node, "locked");
         return;
       }
       // One item's failure is one item's row. `messageOf`, not

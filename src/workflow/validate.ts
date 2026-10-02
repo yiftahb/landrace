@@ -28,8 +28,8 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
    * enters nothing: an item is at a stage because its labels say so, never
    * at no stage waiting to be entered — and entering is a write, which a
    * workflow over a tracker it only reads cannot make. An item its
-   * identities leave unplaced halts saying the workflow has no entry stage,
-   * and writes nothing.
+   * identities leave unplaced halts saying no stage places it, and writes
+   * nothing.
    */
   const open = w.stages.filter((s) => !s.terminal);
   const placedOnly = open.length > 0 && open.every(placedByState);
@@ -653,15 +653,18 @@ const waitsForAPerson = (c: Condition): boolean => c["run.lastEvent.actor"] === 
  * - the labels: every set of the labels the two name. Exhaustive for a bare
  *   label, `$eq`, `$ne`, `$in`, `$nin` and `$all`, which ask only which named
  *   labels an item carries — so where no set satisfies both, no item does.
- * - any other path: the one literal both demand, or that one side demands. A
- *   path that is not the labels holds one value, so two literals that differ
- *   are two positions, as `run.stage` is for every default identity.
+ * - any other path: one value, tried from what the demands on it name — each
+ *   literal and listed value, each bound and the numbers beside it, and a
+ *   string none of them names for a `$ne`, a `$nin` or an `$exists`. Such a
+ *   path holds one value, so two literals that differ are two positions, as
+ *   `run.stage` is for every default identity, and `$lt: 3` beside `$gte: 3`
+ *   finds no value; `$lt: 5` beside `$lt: 3` finds 2.
  *
- * Anything else builds no item and the pair is abstained on: an operator on
- * another path ($lt, $exists), $or, $and or $not at the top, one path inside
- * another, a reserved key, more labels than are worth enumerating. Disjoint
- * and unknown both report nothing, which is the direction this rule may be
- * wrong in.
+ * Where nothing tried satisfies every demand, the pair is abstained on, and
+ * so it is for $or, $and or $not at the top, one path inside another, a
+ * reserved key, or more labels than are worth enumerating. Disjoint and
+ * unknown both report nothing, which is the direction this rule may be wrong
+ * in.
  */
 function itemBothPlace(a: Condition, b: Condition): Record<string, unknown> | null {
   const paths = [...new Set([...Object.keys(a), ...Object.keys(b)])];
@@ -671,7 +674,7 @@ function itemBothPlace(a: Condition, b: Condition): Record<string, unknown> | nu
   try {
     for (const path of paths) {
       const demands = [a, b].filter((c) => path in c).map((c) => c[path]);
-      const found = path === LABELS_PATH ? labelsAll(demands) : literalAll(demands);
+      const found = path === LABELS_PATH ? labelsAll(demands) : valueAll(path, demands);
       if (found === null) return null;
       item[path] = found.value;
     }
@@ -698,16 +701,47 @@ function labelsAll(demands: unknown[]): { value: string[] } | null {
   return null;
 }
 
-/** The one literal every demand names — bare or as `$eq` — or null when they differ or one is an operator. */
-function literalAll(demands: unknown[]): { value: unknown } | null {
-  const literals = demands.map((d) => {
-    const eq = d !== null && typeof d === "object" && !Array.isArray(d) && Object.keys(d).length === 1 && "$eq" in d
-      ? (d as { $eq: unknown }).$eq
-      : d;
-    return eq === null || typeof eq !== "object" ? { value: eq } : null;
-  });
-  const [first] = literals;
-  return first && literals.every((l) => l !== null && l.value === first.value) ? first : null;
+/** A value at `path` every demand on it accepts, tried from what they name, or null when none is. */
+function valueAll(path: string, demands: unknown[]): { value: unknown } | null {
+  const accepts = demands.map((d) => compile({ [path]: d }));
+  const value = valuesNamedBy(demands).find((v) => accepts.every((accept) => accept(nested({ [path]: v }))));
+  return value === undefined ? null : { value };
+}
+
+const isScalar = (v: unknown): boolean => v === null || (typeof v !== "object" && v !== undefined);
+
+/**
+ * The single values worth trying at a path, from the demands on it: every
+ * literal and listed value, each number a bound names with the one on either
+ * side, and — for `$ne`, `$nin` and `$exists` — a string none of them names.
+ */
+function valuesNamedBy(demands: unknown[]): unknown[] {
+  const named: unknown[] = [];
+  let fresh = false;
+  const visit = (op: string, operand: unknown): void => {
+    if (op === "$in" || op === "$nin") {
+      if (Array.isArray(operand)) named.push(...operand.filter(isScalar));
+      fresh ||= op === "$nin";
+    } else if (op === "$ne" || op === "$exists") {
+      if (op === "$ne" && isScalar(operand)) named.push(operand);
+      fresh = true;
+    } else if (["$eq", "$lt", "$lte", "$gt", "$gte"].includes(op) && isScalar(operand)) {
+      named.push(operand);
+      if (typeof operand === "number" && op !== "$eq") named.push(operand - 1, operand + 1);
+    }
+  };
+  for (const d of demands) {
+    if (isScalar(d)) named.push(d);
+    else if (d !== null && typeof d === "object" && !Array.isArray(d)) {
+      for (const [op, operand] of Object.entries(d)) visit(op, operand);
+    }
+  }
+  if (fresh) {
+    let other = "other";
+    for (let n = 2; named.includes(other); n++) other = `other-${n}`;
+    named.push(other);
+  }
+  return [...new Set(named)];
 }
 
 /** Every string anywhere inside a demand: the labels it names. */

@@ -8,6 +8,7 @@ import type {
 } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
+import { acquire, release } from "#runner/lock.js";
 import { createNotify } from "#runner/notify.js";
 import { laneOf, workspaceStatusRows } from "#runner/status.js";
 import { listWorkspace, tickWorkspace } from "#runner/tick.js";
@@ -177,6 +178,24 @@ describe("a workflow placed by state alone, over a read-only tracker", () => {
     expect(state.writes()).toEqual(["comment #1"]);
   });
 
+  // Identities that leave an item out: nothing places it, and it is not
+  // entered anywhere, which would be a write.
+  it("halts an item no identity places, saying so, and writes nothing", async () => {
+    const gappy: Workflow = { ...review.workflow, stages: [
+      { id: "reviewing", waits: "person", identity: { "node.state.labels": { $in: ["mine"] } } },
+      { id: "approved", terminal: true, identity: { "node.state.labels": { $in: ["approved"] } } },
+    ] };
+    const state = requested();
+    const w = workspace(state, { workflow: gappy, steps: new Map() }, "review");
+
+    expect((await w.tick()).find((r) => r.item === "1")).toEqual({
+      item: "1", workflow: "review",
+      outcome: "halt after 1 pass(es): no stage of this workflow places the item: none of its identities match, " +
+        "and there is no entry stage to start it at",
+    });
+    expect(state.writes()).toEqual([]);
+  });
+
   /*
    * The same tracker and the same tick under a workflow that does write:
    * main still enters its first stage by recording the entry, and here that
@@ -268,6 +287,49 @@ describe("telling you an item placed by its own state waits on you", () => {
   });
 
   /*
+   * Where an item is listed is where it was when the tick began. One a
+   * trigger takes on in that same tick never waited on anyone, and is not
+   * said to: the tell waits for converge to leave it where it was listed.
+   */
+  it("tells nothing of an item a trigger moves on in the tick it arrives", async () => {
+    const nudging: Workflow = {
+      version: 1, name: "nudging", description: "test",
+      eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+      stages: [
+        { id: "waiting", waits: "person", identity: { "node.state.labels": { $nin: ["nudged"] } } },
+        {
+          id: "nudged", terminal: true, identity: { "node.state.labels": { $in: ["nudged"] } },
+          triggers: [{ when: { "node.state.labels": "stale" } }], on_enter: [{ type: "tracker.label", add: ["nudged"] }],
+        },
+      ],
+    };
+    const state = createExternalState({ items: [{ id: "1", title: "Old review", labels: ["lr:auto", "stale"] }] });
+    const w = workspace(state, { workflow: nudging, steps: new Map() }, "nudging");
+
+    await w.tick();
+    expect(state.item("1").labels).toEqual(["lr:auto", "stale", "nudged"]);
+    await w.tick();
+
+    expect(await w.sent()).toEqual([]);
+  });
+
+  // Held by something else — a goto, a person pairing — the item is not
+  // converged this tick, and where it was listed is all that is known.
+  it("tells you of an item that arrives while something else holds its lock", async () => {
+    const state = requested();
+    const w = workspace(state, review, "review");
+    expect(await acquire("1", "tick", { root })).toBe(true);
+    try {
+      expect((await w.tick()).find((r) => r.item === "1")?.outcome).toMatch(/lock/);
+    } finally {
+      await release("1", { root });
+    }
+    await w.tick();
+
+    expect(await w.sent()).toEqual([["1", "reviewing"]]);
+  });
+
+  /*
    * A stage placed by state can still be entered by a transition, which
    * converge tells of as it lands. The tick after must not tell it again for
    * having found it somewhere new.
@@ -312,14 +374,16 @@ describe("telling you an item placed by its own state waits on you", () => {
   // that wrote the label; a restart finding it there tells nothing, as before.
   it("tells nothing of an item main already has waiting on you when the engine starts", async () => {
     const state = createExternalState({
-      items: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:spec-human-review", "lr:awaiting"] }],
+      items: [{ id: "1", title: "Add export", labels: ["lr:auto", "lr:stage:spec-questions", "lr:awaiting"] }],
     });
     const w = workspace(state, await loadShipped(), "main");
 
-    await w.tick();
-    await w.tick();
+    // Waiting where it was listed, so nothing but the stage decides the tell.
+    for (let tick = 0; tick < 2; tick++) {
+      expect(await w.tick()).toEqual([{ item: "1", workflow: "main", outcome: "wait after 1 pass(es): no trigger matched" }]);
+    }
 
-    expect(await w.row("1")).toMatchObject({ stage: "spec-human-review", lane: "needs-you" });
+    expect(await w.row("1")).toMatchObject({ stage: "spec-questions", lane: "needs-you" });
     expect(await w.sent()).toEqual([]);
   });
 });

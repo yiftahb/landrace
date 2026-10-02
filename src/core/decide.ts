@@ -82,7 +82,14 @@ export function decide(w: Workflow, s: Snapshot): Decision {
   }
   if (where.kind === "none") {
     const entries = w.stages.filter((x) => x.entry);
-    if (entries.length === 0) return { action: "halt", why: "the workflow has no entry stage" };
+    // What happened, not what the workflow lacks: one placed by the item's
+    // own state has no entry stage by design, and validate lets it.
+    if (entries.length === 0) {
+      return {
+        action: "halt",
+        why: "no stage of this workflow places the item: none of its identities match, and there is no entry stage to start it at",
+      };
+    }
     /*
      * "No position" is the same thing as "a new item" only when the item
      * has no run behind it either. Position is one value written by a swap

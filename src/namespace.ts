@@ -1918,7 +1918,7 @@ export interface WorkspaceRuntime {
    * item placed by its own state has just come to wait on someone, since it
    * makes no transition to say so. In this process only, like `running` —
    * nothing about it is stored, so a restart tells once more of every item
-   * already waiting (see `tellArrivals`).
+   * already waiting (see `noteArrivals`).
    */
   seen: Map<string, SeenAt>;
   /** The one logger every workflow logs through; its `scrub` is the one redaction set. */

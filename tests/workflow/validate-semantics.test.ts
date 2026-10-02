@@ -810,8 +810,14 @@ describe("the graph rules, on stages the item's own state places it at", () => {
     // Abstained on, not proved: nothing here reasons about numeric ranges,
     // so a split it cannot see into is not reported — it once was, on
     // every workflow that wrote one.
-    it("abstains on identities it cannot build a common item for", () => {
+    it("finds no item both hold of a range split on one path", () => {
       expect(identities({ "run.counters.a": { $lt: 3 } }, { "run.counters.a": { $gte: 3 } })).toEqual([]);
+    });
+
+    // Nothing proved is nothing reported: no value built from the operands
+    // falls strictly between 1 and 2, though 1.5 would.
+    it("abstains on identities it cannot build a common item for", () => {
+      expect(identities({ "run.counters.a": { $gt: 1, $lt: 2 } }, undefined)).toEqual([]);
       expect(identities({ $or: [{ "node.state.labels": "x" }] }, { $or: [{ "node.state.labels": "y" }] })).toEqual([]);
     });
 
@@ -822,10 +828,89 @@ describe("the graph rules, on stages the item's own state places it at", () => {
       ["a label and a $nin of another", mine("x"), notMine("y"), '{"node.state.labels":["x"]}'],
       ["one identity twice", { "run.stage": "a" }, { "run.stage": "a" }, '{"run.stage":"a"}'],
       ["a position and a label", { "run.stage": "a" }, mine("x"), '{"run.stage":"a","node.state.labels":["x"]}'],
+      // One side's operator on a path the other leaves alone: any value it
+      // accepts makes the item, built from its own operand.
+      ["a position and a counter bound", undefined, { "run.counters.review": { $gte: 3 } }, '{"run.stage":"a","run.counters.review":3}'],
+      ["a position and an output it lists", undefined, { "run.outputs.a.verdict": { $in: ["reject", "hold"] } },
+        '{"run.stage":"a","run.outputs.a.verdict":"reject"}'],
+      ["a position and an output it refuses", undefined, { "run.outputs.a.verdict": { $nin: ["approve"] } },
+        '{"run.stage":"a","run.outputs.a.verdict":"other"}'],
+      ["a position and an output it lacks", undefined, { "run.outputs.a.verdict": { $ne: "other" } },
+        '{"run.stage":"a","run.outputs.a.verdict":"other-2"}'],
+      ["a position and an output that exists", undefined, { "run.outputs.a": { $exists: true } }, '{"run.stage":"a","run.outputs.a":"other"}'],
+      ["two bounds on one counter that overlap", { "run.counters.a": { $lt: 5 } }, { "run.counters.a": { $lt: 3 } }, '{"run.counters.a":2}'],
     ])("reports two that one item holds: %s, naming that item", (_, a, b, item) => {
       expect(identities(a, b)).toEqual([{
         rule: "identity", message: `stages "a" and "b" can both be the current position: an item with ${item} matches both`,
       }]);
+    });
+  });
+
+  /*
+   * Placed by state means placed by what the tracker holds — the item's own
+   * fields and its relations. An identity reading what the engine writes (a
+   * counter, an output) or pinning the position a transition writes places an
+   * item nowhere a transition did not first take it, and owes the graph rules
+   * every answer an ordinary stage does. Each of these validated clean once
+   * any custom identity was read as placement by state.
+   */
+  describe("a stage the engine's own records place an item at", () => {
+    const at = (id: string): Workflow["stages"] => [
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "b", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "done", terminal: true, triggers: [{ when: { "run.stage": "b" } }] },
+      { id, identity: {} },
+    ];
+    const reported = (w: Workflow) => validate(w, noSteps).map((p) => `${p.rule}: ${p.message}`);
+    const unplaced = (id: string, from: string) => [
+      `reachability: nothing can reach stage "${id}"`,
+      `dead-end: stage "${id}" has no way out and is not terminal`,
+      `reachability: stage "${id}" is not reachable from ${from}`,
+    ];
+    const both = (other: string, id: string, item: string) =>
+      `identity: stages "${other}" and "${id}" can both be the current position: an item with ${item} matches both`;
+
+    it("reports a stage whose identity pins the position beside a label, as it would without one", () => {
+      const w = flow([
+        { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+        { id: "done", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+        { id: "x", identity: { "run.stage": "x", "node.state.labels": { $in: ["ready"] } } },
+      ]);
+      expect(reported(w)).toEqual(unplaced("x", 'the entry stage "a"'));
+    });
+
+    it.each([
+      ["a counter", { "run.counters.review": { $gte: 3 } }, '"run.counters.review":3'],
+      ["a step's output", { "run.outputs.b.verdict": { $in: ["reject"] } }, '"run.outputs.b.verdict":"reject"'],
+    ])("reports a stage whose identity reads %s, and the stages it overlaps", (_, identity, value) => {
+      const w = flow(at("escalated").map((s) => (s.id === "escalated" ? { ...s, identity } : s)));
+      expect(reported(w)).toEqual([
+        ...unplaced("escalated", 'the entry stage "a"'),
+        ...["a", "b", "done"].map((other) => both(other, "escalated", `{"run.stage":"${other}",${value}}`)),
+      ]);
+    });
+
+    it("does not exempt from an entry stage a workflow whose every stage pins the position", () => {
+      const w = flow([
+        { id: "r", waits: "person", identity: { "run.stage": "r", "node.state.labels": { $nin: ["ok"] } } },
+        { id: "ok", terminal: true, identity: { "run.stage": "ok", "node.state.labels": { $in: ["ok"] } } },
+      ]);
+      expect(reported(w)).toEqual([
+        "entry: no stage has entry: true, so no item can start",
+        'reachability: nothing can reach stage "r"',
+        'reachability: nothing can reach stage "ok"',
+        'dead-end: stage "r" has no way out and is not terminal',
+      ]);
+    });
+
+    // An item at no stage yet: the one position an item's own state can
+    // stand for, since nothing has been written.
+    it("takes an identity that reads the labels of an item at no stage for a placement by state", () => {
+      const w = flow([
+        { id: "reviewing", waits: "person", identity: { "run.stage": null, "node.state.labels": { $nin: ["approved"] } } },
+        { id: "approved", terminal: true, identity: { "run.stage": null, "node.state.labels": { $in: ["approved"] } } },
+      ]);
+      expect(reported(w)).toEqual([]);
     });
   });
 });

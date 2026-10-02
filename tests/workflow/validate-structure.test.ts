@@ -429,6 +429,16 @@ describe("structural validation, of a workflow placed by the item's own state", 
     expect(rules(w)).toContain("entry");
   });
 
+  // Every unwritten item is at no stage, whatever its own state: an identity
+  // reading only that reads nothing the tracker holds.
+  it("does not take an identity reading only that nothing was written for a placement by state", () => {
+    const w = wf([
+      { id: "fresh", identity: { "run.stage": null } },
+      { id: "approved", terminal: true, identity: mine("approved") },
+    ]);
+    expect(rules(w)).toContain("entry");
+  });
+
   it("still asks for one of a workflow whose every stage is terminal", () => {
     expect(rules(wf([{ id: "done", terminal: true, identity: mine("done") }]))).toContain("entry");
   });
