@@ -398,6 +398,28 @@ describe("fastlane, end to end", () => {
   });
 
   /*
+   * publish, merge and closed are Retry's alone: after any other failure a
+   * person cannot send the item there — "Go to step… merge" after a broken
+   * review would merge code no review passed — and after one of them was
+   * refused, they can.
+   */
+  it("8d. lets a person into publish, merge or closed only as the Retry of a refused one", async () => {
+    const broken = road({ answers: { "code-review": "I looked, and it is fine." } });
+    await broken.run.converge(); // the broken answer is recorded
+    await broken.run.converge(); // and the next tick routes it to the halt
+    expect(broken.state.stage("1")).toBe("blocked");
+    for (const to of ["publish", "merge", "closed"]) {
+      expect(await broken.goto(to)).toEqual({ refused: expect.stringMatching(new RegExp(`"blocked" sends an item to "${to}" only while`)) });
+    }
+    expect(await broken.retry()).toEqual({ to: "code-review" });
+
+    const refused = road({ seed: (s) => { s.openPull("1", { branch: "landrace/1", mergeable: false }); } });
+    await refused.run.converge();
+    expect(refused.state.stage("1")).toBe("blocked");
+    expect(await refused.goto("merge")).toEqual({ to: "merge" });
+  });
+
+  /*
    * A merge that failed on the way — a 502, a dropped connection — is not a
    * refusal: nothing is recorded, the item stays at ci for this tick, and the
    * next tick merges. Over the in-memory forge, and over the fake GitHub,

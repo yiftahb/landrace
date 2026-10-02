@@ -140,7 +140,7 @@ describe.each(["main", "fastlane"])("%s's ways the forge can refuse", (id) => {
     }
   });
 
-  it("lets a halt Retry each of them, within rounds of its own, taking the halt's labels off", () => {
+  it("lets a halt Retry each of them, only as what failed and within rounds of its own, taking the halt's labels off", () => {
     const workflow = workflowOf();
     const pulling = pullingIn(workflow);
     const halts = workflow.stages.filter((s) => (s.triggers ?? []).some((t) => t.when["run.lastOutputValid"] === false));
@@ -149,6 +149,8 @@ describe.each(["main", "fastlane"])("%s's ways the forge can refuse", (id) => {
       for (const stage of pulling) {
         const target = gotoTargetsOf(halt).find((g) => g.stage === stage.id);
         expect([halt.id, stage.id, target?.when?.[`run.counters.${stage.id}`]]).toEqual([halt.id, stage.id, { $lt: 3 }]);
+        // Retry's alone: only while it is what failed, so "Go to step…" never takes an item there past a review.
+        expect([halt.id, stage.id, target?.when?.["run.failedStage"]]).toEqual([halt.id, stage.id, stage.id]);
         const removed = (stage.on_enter ?? []).flatMap((e) => (e.type === "tracker.label" ? (e.remove as string[]) : []));
         expect([stage.id, removed]).toEqual([stage.id, expect.arrayContaining(["lr:blocked", "lr:screened"])]);
       }
@@ -324,6 +326,20 @@ describe("fastlane's stages", () => {
   });
 
   /*
+   * The halts send an item to publish, merge or closed only as the Retry of
+   * that stage's refused way in: after any other failure, "Go to step…
+   * merge" would merge code a review never passed.
+   */
+  it.each(["blocked", "screened"].flatMap((halt) => ["publish", "merge", "closed"].map((to) => [halt, to] as const)))(
+    "from %s, a goto to %s is declined unless it is what failed",
+    (from, to) => {
+      expect(gotoDeclined(stageOf(from), snapshotOf({ stage: from, human: true, failedStage: "build" }), to)).toMatch(/only while/);
+      expect(gotoDeclined(stageOf(from), snapshotOf({ stage: from, human: true }), to)).toMatch(/only while/);
+      expect(gotoDeclined(stageOf(from), snapshotOf({ stage: from, human: true, failedStage: to }), to)).toBeNull();
+    },
+  );
+
+  /*
    * Each goto's cap, at the round below it and at it. Code review is held
    * to eight from a halt, past its loop's four; the retro to two, so a failed
    * retro's Retry is taken once.
@@ -335,7 +351,8 @@ describe("fastlane's stages", () => {
     ] as const),
     ["stuck", "build", 3], ["stuck", "code-review", 4],
   ] as const)("from %s, a goto to %s is taken below %i rounds and declined at it", (from, to, cap) => {
-    const at = (rounds: number): Snapshot => snapshotOf({ stage: from, human: true, counters: { [to]: rounds } });
+    const retried = ["publish", "merge", "closed"].includes(to) ? { failedStage: to } : {};
+    const at = (rounds: number): Snapshot => snapshotOf({ stage: from, human: true, counters: { [to]: rounds }, ...retried });
     expect(gotoNotListed(stageOf(from), to)).toBeNull();
     expect(gotoDeclined(stageOf(from), at(cap - 1), to)).toBeNull();
     expect(gotoDeclined(stageOf(from), at(cap), to)).toMatch(/only while/);
@@ -362,6 +379,8 @@ interface Facts {
   actor?: "agent" | "human";
   /** Whether a person has written on the item: `run.lastHuman`. */
   human?: boolean;
+  /** What failed and put the item where it is: `run.failedStage`. */
+  failedStage?: string;
   intent?: string;
   counters?: Record<string, number>;
   total?: number;
@@ -395,7 +414,7 @@ function snapshotOf(f: Facts): Snapshot {
     cleared: null,
     previousStage: f.previous ?? null,
     failedStages: f.valid === false ? [f.stage] : [],
-    failedStage: null,
+    failedStage: f.failedStage ?? null,
     unblockedAt: 0,
     pairing: null,
     lastOutputBy: "agent",

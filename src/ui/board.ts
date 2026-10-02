@@ -60,10 +60,16 @@ const clearPath = (id: string): string | null => (isItemId(id) ? `/items/${id}/c
  * person needs it for, and from the item a crash stranded between a
  * target's entry comment and its status label. `sendTo` stays the one
  * authority: it re-reads the item and refuses an owed step in a sentence.
+ * A target the stage sends to only as what failed — its `when` naming it as
+ * `run.failedStage` — is left to the row's Retry, which is exactly that.
  */
 const gotoPaths = (id: string, stage: Stage | undefined): BoardRow["goto"] =>
   stage !== undefined && isItemId(id)
-    ? gotoTargetsOf(stage).map((g) => ({ stage: g.stage, path: `/items/${id}/goto/${encodeURIComponent(g.stage)}` }))
+    ? gotoTargetsOf(stage)
+      // One the stage sends to only as what failed is Retry's: listed here it
+      // would be offered on every halt, there to be refused.
+      .filter((g) => g.when?.["run.failedStage"] !== g.stage)
+      .map((g) => ({ stage: g.stage, path: `/items/${id}/goto/${encodeURIComponent(g.stage)}` }))
     : [];
 
 /**

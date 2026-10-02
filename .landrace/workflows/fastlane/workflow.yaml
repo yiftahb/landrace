@@ -408,12 +408,13 @@ stages:
   # build adds a review through publish, uncapped, and a moved head another.
   # The retro is held to two — its one round, and one Retry of it. And the
   # three stages with no step whose way in the forge can refuse — publish,
-  # merge and closed — three times each: their rounds are only the refused
-  # ones.
+  # merge and closed — three times each, their rounds being only the refused
+  # ones, and only as what failed: Retry's alone. "Go to step… merge" after
+  # any other failure would merge code a review never passed.
   - id: blocked
     goto: &halt
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
-      - { stage: publish, when: { "run.counters.publish": { $lt: 3 } } }
+      - { stage: publish, when: { "run.failedStage": publish, "run.counters.publish": { $lt: 3 } } }
       - stage: code-review
         when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: fix-review
@@ -424,8 +425,8 @@ stages:
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": { $gt: 0 }
       - stage: merge
-        when: { "run.counters.merge": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 } }
-      - { stage: closed, when: { "run.counters.closed": { $lt: 3 } } }
+        when: { "run.failedStage": merge, "run.counters.merge": { $lt: 3 }, "rel.implements.in.total": { $gt: 0 } }
+      - { stage: closed, when: { "run.failedStage": closed, "run.counters.closed": { $lt: 3 } } }
       - stage: triage
         when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } }
     triggers:

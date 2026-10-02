@@ -70,11 +70,15 @@ budget:
 # will not open — and the engine records that as the rejected round of the
 # stage being entered, read where the item still stands: `run.lastOutputValid`
 # is false there, and only a halt may take it. A trigger that did not read it
-# would still match, beside the halt's. The record is the bot's, so it
-# outdates a person's message, and a trigger reading one needs nothing. A
-# stage with no step that opens, merges or closes a pull request writes its
-# `enter` record first — the refusal is read beside it, Retry finds the stage
-# by it, and the next entry supersedes it — and the halts list it for Retry.
+# would still match, beside the halt's. A trigger waiting on a person's
+# message needs nothing: the record is the bot's, so it is the latest word
+# when the next pass routes the item to the halt, in the same converge. (Were
+# entering the halt to fail then, a reply in the gap would match the halt and
+# the judge alike, an ambiguity that halts; only a refusal the tracker marks
+# could open that gap, and none does.) A stage with no step that opens,
+# merges or closes a pull request writes its `enter` record first — the
+# refusal is read beside it, Retry finds the stage by it, and the next visit,
+# a round of its own, supersedes it — and the halts list it for Retry alone.
 #
 # And one for a person's turn. A stage where it is theirs says `waits:
 # person`, and that — not the `lr:awaiting` its on_enter still writes, for
@@ -480,7 +484,8 @@ stages:
   #
   # And publish, which runs no step but whose way in the forge can refuse:
   # Retry pushes and opens again, three times in all — its rounds are only
-  # the refused ones.
+  # the refused ones — and only as what failed: "Go to step… publish" after
+  # any other failure would publish past a build that broke its contract.
   #
   # Each target takes lr:blocked and lr:screened off as it is entered, bar
   # triage, whose answers come back here or go on to spec or build. Written
@@ -489,7 +494,7 @@ stages:
     goto: &halt
       - { stage: spec, when: { "run.counters.spec": { $lt: 3 } } }
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
-      - { stage: publish, when: { "run.counters.publish": { $lt: 3 } } }
+      - { stage: publish, when: { "run.failedStage": publish, "run.counters.publish": { $lt: 3 } } }
       - stage: code-review
         when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: fix-review

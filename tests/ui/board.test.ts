@@ -195,6 +195,33 @@ describe("boardView: where a row may send its item back to", () => {
     expect(rowFor(["lr:stage:blocked"], {}, { running })?.goto).toEqual([]);
   });
 
+  /*
+   * A target a halt sends to only as what failed — `"run.failedStage"`
+   * naming it — is Retry's alone: listed under "Go to step…", it would be
+   * offered on every halt, there to be refused. The row's Retry reaches it.
+   */
+  it("leaves a target only Retry may reach to Retry", () => {
+    const retrying: Workflow = {
+      ...workflow,
+      stages: [
+        ...workflow.stages.filter((st) => st.id !== "blocked"),
+        {
+          id: "blocked",
+          goto: ["spec", { stage: "merge", when: { "run.failedStage": "merge", "run.counters.merge": { $lt: 3 } } }],
+          triggers: [{ when: { "run.lastOutputValid": false } }],
+        },
+        { id: "merge", triggers: [{ when: { "run.stage": "spec", "x": 1 } }] },
+      ],
+    };
+    const g = graph([item("7", {}, ["go", "lr:stage:blocked", "lr:blocked"])]);
+    const row = view(g, {
+      workflows: [{ id: "t", workflow: retrying }],
+      listing: { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: retrying, source: 0 }], [g]) },
+    }).rows[0];
+    expect(row?.goto).toEqual([{ stage: "spec", path: "/items/7/goto/spec" }]);
+    expect(row?.retry).not.toBeNull();
+  });
+
   it("offers none on a row held elsewhere", () => {
     const other: Held = { item: "7", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
     expect(rowFor(["lr:stage:blocked"], {}, { elsewhere: new Map([["7", other]]) })?.goto).toEqual([]);

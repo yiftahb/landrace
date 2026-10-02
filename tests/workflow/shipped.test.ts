@@ -332,7 +332,7 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     const every = [
       { stage: "spec", when: { "run.counters.spec": { $lt: 3 } } },
       { stage: "build", when: { "run.counters.build": { $lt: 3 } } },
-      { stage: "publish", when: { "run.counters.publish": { $lt: 3 } } },
+      { stage: "publish", when: { "run.failedStage": "publish", "run.counters.publish": { $lt: 3 } } },
       { stage: "code-review", when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "fix-review", when: { "run.counters.fix-review": { $lt: 20 }, "rel.implements.in.total": { $gt: 0 } } },
       { stage: "retro", when: {
@@ -362,9 +362,11 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     expect(await destination(at("fix-review", { "code-review": 9 }))).toBe("fix-review");
     expect(await destination(at("fix-review", { "fix-review": 20 }))).toMatch(/^wait: .*only while.*run\.counters\.fix-review/);
     expect(await destination(at("triage", { triage: 20 }))).toMatch(/^wait: .*only while/);
-    // A refused push or pull request, retried: three times in all.
-    expect(await destination(at("publish", { publish: 2 }))).toBe("publish");
-    expect(await destination(at("publish", { publish: 3 }))).toMatch(/^wait: .*only while.*run\.counters\.publish/);
+    // A refused push or pull request, retried: three times in all, and only as what failed.
+    const retried = (counters: object) => snapshotAt(halt, { goto: "publish", failedStage: "publish", counters: { build: 1, ...counters } });
+    expect(await destination(retried({ publish: 2 }))).toBe("publish");
+    expect(await destination(retried({ publish: 3 }))).toMatch(/^wait: .*only while.*run\.counters\.publish/);
+    expect(await destination(snapshotAt(halt, { goto: "publish", failedStage: "build", counters: { build: 1 } }))).toMatch(/^wait: .*only while.*run\.failedStage/);
   });
 
   it.each(["blocked", "screened"])("from %s, declines a review with no pull request and the judge with no message", async (halt) => {
