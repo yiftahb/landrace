@@ -5,27 +5,11 @@ import { locate } from "#core/locate.js";
 import type { Entry, Node, Run, Snapshot, StageRounds, Workflow } from "#namespace.js";
 
 /**
- * The run read from the stage the item is at, given the snapshot whose run
- * its label reads.
- *
- * `deriveRun` scopes the pending goto, the current stage's failure, refusal
- * and unblock, and the stage it was entered from, to the position it is
- * handed. The label's is the position for every item a label places. An item
- * a custom identity places carries none, and read from no position a goto
- * written where it stands was never read back and a round refused there was
- * nobody's. So such an item's run is read again, from the stage it is at.
- *
- * Only where no `lr:stage:` label says anything. A label naming one stage
- * while an identity places the item at another is a contradiction, and
- * choosing between them is not done here: the label's reading stays, as it
- * always has. Two labels are an item the engine halts on before it decides.
- *
- * Read again only if it leaves the item where it was found. An identity may
- * read the run itself, and one that holds only while the item has no
- * position would place it at a stage read from its label and nowhere read
- * from that stage — and the board, which places it with `run.stage` read
- * from its label, would show it where the tick could not find it. The
- * reading that places it is kept.
+ * The run read again from the stage an identity places the item at, for an
+ * item with no `lr:stage:` label, because `deriveRun` scopes a goto, a refusal
+ * and the entry record to the stage it is handed and a label-less item is
+ * handed none. A label naming a stage is never overridden, and the new reading
+ * is kept only if it leaves the item at the stage it was found at.
  */
 export function locatedRun(w: Workflow, s: Snapshot): Run {
   const labelled = s.run as Run;

@@ -85,16 +85,16 @@ export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, item: string)
   if (where.kind === "none") return { refused: `#${item} cannot be placed at any stage of this workflow` };
   const from = where.stage;
 
-  // `deriveRun` reads a goto record back only while its own `stage` still
-  // equals `run.stage`: the item's label, or, where it carries none, the
-  // stage an identity places it at (`locatedRun`) — never a stage a label
-  // contradicts. Writing one against a stage `run.stage` disagrees with
-  // would be a write nothing ever reads.
-  const label = snapshot.run?.stage ?? null;
-  if (from.id !== label) {
+  // `deriveRun` reads a goto record back only against `run.stage`: the
+  // stage label's stage, or, where the item has no label, the stage an
+  // identity places it at. A label naming a different stage than the one the
+  // item is located at is a contradiction, and a goto written against the
+  // located stage would be a write nothing ever reads.
+  const readAs = snapshot.run?.stage ?? null;
+  if (from.id !== readAs) {
     return {
       refused: `#${item} is at "${from.id}" only by a custom identity; its own stage label reads ` +
-        `${label === null ? "no stage at all" : `"${label}"`}, and a goto recorded against "${from.id}" would never be read back`,
+        `${readAs === null ? "no stage at all" : `"${readAs}"`}, and a goto recorded against "${from.id}" would never be read back`,
     };
   }
 

@@ -416,3 +416,22 @@ describe("releasing a pairing", () => {
     expect(second.session).not.toBe(first.session);
   });
 });
+
+describe("an item placed by a custom identity alone", () => {
+  const placed: Workflow = { ...workflow, stages: [
+    ...workflow.stages,
+    { id: "parked", identity: { "node.priority": 5 }, goto: ["spec"] },
+  ] };
+
+  it("is offered the steps its stage lists, and a pairing starts there", async () => {
+    const { deps, tracker } = world(["P5"], agent().executor, { workflow: placed });
+    expect((await pairingView(deps, "29")).offers).toEqual([{ stage: "spec", round: 1, continue: false }]);
+    await startPair(deps, "29", "spec");
+    expect(records(tracker, "pair")).toEqual([expect.objectContaining({ stage: "spec", round: 1 })]);
+  });
+
+  it("is offered nothing when a stage label names another stage", async () => {
+    const { deps } = world(["P5", "lr:stage:elsewhere"], agent().executor, { workflow: placed });
+    expect((await pairingView(deps, "29")).offers).toEqual([]);
+  });
+});

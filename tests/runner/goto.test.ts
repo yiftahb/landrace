@@ -304,3 +304,46 @@ describe("sending an item back to a step", () => {
     expect(tracker.comments.get(12)?.length ?? 0).toBe(before);
   });
 });
+
+/*
+ * An item a custom identity places carries no stage label. It can be sent on
+ * from where the identity puts it; a label naming another stage is still a
+ * contradiction and is refused (above).
+ */
+describe("an item placed by a custom identity alone", () => {
+  const placed: Workflow = { version: 1, name: "t", description: "test", stages: [
+    { id: "parked", identity: { "node.priority": 5 }, goto: ["spec"] },
+    { id: "spec", entry: true, step: "steps/spec.md", on_enter: [ENTER], triggers: [{ when: { "run.stage": null } }] },
+  ] };
+  const at = (labels: string[]) => {
+    const tracker = createFakeTracker([{ number: 9, labels: ["lr:auto", "P5", ...labels] }]);
+    const source = tracker.registry.source as Source;
+    const deps: GotoDeps = {
+      source, pre: tracker.registry.pre, dispatcher: createDispatcher(tracker.registry.post), ctx: tracker.ctx, workflow: placed, lock: { root },
+    };
+    const run = async () =>
+      (await buildSnapshot({ item: "9", source, hooks: tracker.registry.pre, workflow: placed, ctx: { ...tracker.ctx, item: "9" } })).run;
+    return { tracker, deps, run };
+  };
+
+  it("is sent on, and the goto reads back as pending at that stage", async () => {
+    const { deps, run } = at([]);
+    expect(await sendTo(deps, "9", "spec")).toEqual({ to: "spec" });
+    expect((await run())?.goto).toBe("spec");
+  });
+
+  it("is cleared and retried from there", async () => {
+    const { deps, run, tracker } = at(["lr:screened"]);
+    tracker.say(9, `entered${renderMarker({ stage: "spec", kind: "enter", round: 1 })}`);
+    tracker.say(9, `refused${renderMarker({ stage: "spec", kind: "refused", round: 1 })}`);
+    expect(await sendTo(deps, "9", null, { clear: true })).toEqual({ to: "spec" });
+    expect((await run())?.cleared).toEqual({ stage: "spec", round: 2 });
+  });
+
+  it("is still refused when a stage label names another stage, and nothing is written", async () => {
+    const { deps, tracker } = at(["lr:stage:elsewhere"]);
+    const before = tracker.comments.get(9)?.length ?? 0;
+    expect(await sendTo(deps, "9", "spec")).toEqual({ refused: expect.stringMatching(/"parked".*custom identity.*"elsewhere"/s) });
+    expect(tracker.comments.get(9)?.length ?? 0).toBe(before);
+  });
+});
