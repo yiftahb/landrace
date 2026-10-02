@@ -429,7 +429,16 @@ export class GitLab extends BaseForge {
     } catch (e) {
       const status = statusOf(e);
       if (status === 409) return "moved";
-      if (status === 401 || status === 403) throw this.tokenRefusal(e, false);
+      // Not a rejected token: GitLab answers a merge 401 for a user its
+      // `can_be_merged_by` refuses — a Developer on a default protected
+      // branch — and the read at apply has just proved the token good.
+      if (status === 401) {
+        throw new Error(
+          `the token's user may not merge ${which} into its target branch: check the protected branch's "Allowed to merge", ` +
+          `or give the user the Maintainer role (GitLab answered: ${refusalMessage(e)})`,
+        );
+      }
+      if (status === 403) throw this.tokenRefusal(e, false);
       if (status === 405 || status === 406 || status === 422) {
         const now = await gl.get<{ state?: unknown; sha?: unknown }>(`/merge_requests/${pull}`);
         // Unread is not moved: only a head GitLab names, and names as another, is.

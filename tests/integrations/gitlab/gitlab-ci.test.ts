@@ -237,12 +237,26 @@ describe("merging a merge request at its head", () => {
     await expect(forgeOver(gl).merge(8, "abc", forItem(gl))).rejects.toThrow(/^!8 for #1 could not be merged: GitLab answered 500: 500 the fake broke here$/);
   });
 
-  it.each([401, 403])("names the token's scope and role, not the merge request, on a %i", async (status) => {
+  it("names the token's scope and role, not the merge request, on a 403", async () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc" });
-    gl.breakNext(({ method }) => method === "PUT", status);
+    gl.breakNext(({ method }) => method === "PUT", 403);
     const rejected = forgeOver(gl).merge(8, "abc", forItem(gl));
-    await expect(rejected).rejects.toThrow(status === 401 ? /rejected by GitLab \(401\)/ : /token needs the "api" scope and Developer access on group\/app/);
+    await expect(rejected).rejects.toThrow(/token needs the "api" scope and Developer access on group\/app/);
+  });
+
+  // GitLab answers 401 to a valid token whose user may not merge here — a
+  // Developer on a default protected branch — and asks it before the head.
+  it.each([["at its head", "abc"], ["though its head moved", "old"]])("says the token's user may not merge it, %s, on a 401", async (_when, asked) => {
+    const gl = createFakeGitLab();
+    const mr = gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", mayMerge: false });
+    const said = await forgeOver(gl).merge(8, asked, forItem(gl)).then(String, (e: unknown) => (e as Error).message);
+    expect(said).toBe(
+      "the token's user may not merge !8 for #1 into its target branch: check the protected branch's \"Allowed to merge\", " +
+      "or give the user the Maintainer role (GitLab answered: 401 Unauthorized)",
+    );
+    expect(said).not.toMatch(/rejected/);
+    expect(mr.state).toBe("opened");
   });
 });
 
