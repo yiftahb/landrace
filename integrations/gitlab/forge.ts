@@ -13,6 +13,9 @@ import {
 } from "landrace/kit";
 import { type Client, clientFor, PER_PAGE, statusOf, tokenRejected } from "./client.js";
 
+/** The merge statuses GitLab answers while it is still working mergeability out: a refusal then clears by asking again. */
+const UNSETTLED = new Set(["checking", "unchecked", "ci_still_running"]);
+
 /** Developer: what opening a merge request, commenting and resolving need. */
 const DEVELOPER = 30;
 const LEVELS: Record<number, string> = { 5: "Minimal access", 10: "Guest", 15: "Planner", 20: "Reporter", 30: "Developer", 40: "Maintainer", 50: "Owner" };
@@ -448,10 +451,15 @@ export class GitLab extends BaseForge {
       }
       if (status === 403) throw this.tokenRefusal(e, false);
       if (status === 405 || status === 406 || status === 422) {
-        const now = await gl.get<{ state?: unknown; sha?: unknown }>(`/merge_requests/${pull}`);
+        const now = await gl.get<{ state?: unknown; sha?: unknown; detailed_merge_status?: unknown }>(`/merge_requests/${pull}`);
         // Unread is not moved: only a head GitLab names, and names as another, is.
         if (typeof now.sha === "string" && now.sha !== headSha) return "moved";
         if (now.state === "merged") return "merged";
+        // GitLab works mergeability out asynchronously and says to retry
+        // while it does: still checking, or waiting on a running pipeline.
+        if (typeof now.detailed_merge_status === "string" && UNSETTLED.has(now.detailed_merge_status)) {
+          throw new Error(`${which} cannot be merged yet: ${refusalMessage(e)} (GitLab's merge status is ${now.detailed_merge_status})`);
+        }
         // Not mergeable at the head asked for: conflicts, or the project's merge checks. A refusal.
         throw new EffectRefused(`${which} cannot be merged: ${refusalMessage(e)}`);
       }

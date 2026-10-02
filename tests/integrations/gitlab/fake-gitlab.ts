@@ -81,6 +81,8 @@ export interface FakeMr {
   mayMerge?: boolean;
   /** "Branch cannot be merged": 406 on an older GitLab, 422 on a newer one, answered after mergeability and before the head. */
   branchRefusal?: 406 | 422;
+  /** What GitLab says of its mergeability, on a read of the merge request: `checking` while it works it out. */
+  detailed_merge_status?: string;
 }
 
 export interface FakeSettings {
@@ -188,6 +190,7 @@ export function createFakeGitLab(): FakeGitLab {
       ...(mr.mergeable === undefined ? {} : { mergeable: mr.mergeable }),
       ...(mr.mayMerge === undefined ? {} : { mayMerge: mr.mayMerge }),
       ...(mr.branchRefusal === undefined ? {} : { branchRefusal: mr.branchRefusal }),
+      ...(mr.detailed_merge_status === undefined ? {} : { detailed_merge_status: mr.detailed_merge_status }),
     };
     mrs.set(iid, created);
     return created;

@@ -698,8 +698,13 @@ export class GitHubForge extends BaseForge {
         // Unread is not moved: only a head GitHub names, and names as another, is.
         if (typeof now.head?.sha === "string" && now.head.sha !== headSha) return "moved";
         if (now.merged === true) return "merged";
+        // GitHub still settling it — mergeability not worked out yet, or the
+        // base branch moved under the merge, which it says to try again —
+        // clears by asking again on the next tick.
+        const said = refusalMessage(e);
+        if (now.mergeable === null || /base branch was modified/i.test(said)) throw new Error(`${which} cannot be merged yet: ${said}`);
         // Not mergeable at the head asked for: conflicts, or branch protection. A refusal.
-        throw new EffectRefused(`${which} cannot be merged: ${refusalMessage(e)}`);
+        throw new EffectRefused(`${which} cannot be merged: ${said}`);
       }
       // A refused permission is already a sentence naming it, and still a
       // refusal; anything else is GitHub's own words, said whose merge it was.

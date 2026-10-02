@@ -35,6 +35,26 @@ describe("a merge GitHub refuses", () => {
     });
   });
 
+  /*
+   * GitHub still settling the merge: it answers 405 while it has not
+   * worked out whether the pull request can merge, or when the base branch
+   * moved under it, and says to try again. Both clear by asking again.
+   */
+  it("leaves 'Base branch was modified' unmarked, for the next tick", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 8, headSha: "abc" });
+    gh.breakOn(({ method }) => method === "PUT", 405, { message: "Base branch was modified. Review and try the merge again." });
+    expect(await failure(forgeOf(gh).merge(8, "abc", forItem(gh)))).toMatchObject({
+      message: expect.stringContaining("Base branch was modified"), refused: false,
+    });
+  });
+
+  it("leaves a merge GitHub refuses while it is still working out mergeability unmarked", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 8, headSha: "abc", mergeable: null });
+    expect(await failure(forgeOf(gh).merge(8, "abc", forItem(gh)))).toMatchObject({ refused: false });
+  });
+
   it.each([
     ["a 502", 502, undefined],
     ["a 503", 503, undefined],

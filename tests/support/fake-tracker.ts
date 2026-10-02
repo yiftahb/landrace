@@ -110,8 +110,8 @@ export interface FakePull {
   statuses?: Array<{ context: string; state: string; description?: string | null }>;
   /** What `GET /actions/jobs/{id}/logs` answers, by job id; a job not here is a 404. */
   jobLogs?: Map<number, string>;
-  /** Whether `PUT /pulls/{n}/merge` can merge it. Absent means it can. */
-  mergeable?: boolean;
+  /** Whether `PUT /pulls/{n}/merge` can merge it. Absent means it can; null is GitHub still working it out, which refuses too. */
+  mergeable?: boolean | null;
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -963,14 +963,17 @@ export function createFakeTracker(
       const pull = pulls.get(Number(onPullRead[1])) ?? null;
       return pull === null
         ? json({ message: "Not Found" }, 404)
-        : json({ number: pull.number, state: pullState(pull).toLowerCase(), merged: pull.merged, head: { ref: pull.head, sha: pull.headSha } });
+        : json({
+          number: pull.number, state: pullState(pull).toLowerCase(), merged: pull.merged, head: { ref: pull.head, sha: pull.headSha },
+          mergeable: pull.mergeable === undefined ? true : pull.mergeable,
+        });
     }
     if (onPullRead && onPullRead[2] !== undefined && method === "PUT") {
       const pull = pulls.get(Number(onPullRead[1])) ?? null;
       if (pull === null) return json({ message: "Not Found" }, 404);
       // Mergeability before the head, as branch protection's required checks
       // can answer: a push whose checks have not run is "not mergeable" first.
-      if (pull.merged || pull.mergeable === false) return json({ message: "Pull Request is not mergeable" }, 405);
+      if (pull.merged || pull.mergeable === false || pull.mergeable === null) return json({ message: "Pull Request is not mergeable" }, 405);
       if (body.sha !== pull.headSha) return json({ message: "Head branch was modified. Review and try the merge again." }, 409);
       pull.merged = true;
       return json({ sha: "merge-sha", merged: true, message: "Pull Request successfully merged" });

@@ -381,7 +381,7 @@ export function createClient(opts: GitHubOptions) {
       if (!res.ok) throw Object.assign(new Error(`GET /actions/jobs/${id}/logs → ${res.status}`), { status: res.status });
       return res.text();
     },
-    pull: (n: number) => call<{ merged?: boolean; head?: { sha?: unknown } | null }>("GET", `/pulls/${n}`),
+    pull: (n: number) => call<{ merged?: boolean; mergeable?: boolean | null; head?: { sha?: unknown } | null }>("GET", `/pulls/${n}`),
     /** Merge with a merge commit, only if the head is still `sha`: GitHub answers 409 when it is not. */
     mergePull: (n: number, sha: string) =>
       named(call("PUT", `/pulls/${n}/merge`, { sha, merge_method: "merge" }),

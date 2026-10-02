@@ -92,10 +92,31 @@ describe("the kit's own merge guards", () => {
     });
   });
 
-  it.each(["pending", "failure"] as const)("marks a merge whose checks are %s", async (checks) => {
+  it("marks a merge whose checks failed", async () => {
     const s = state();
-    s.openPull("7", { branch: "landrace/7", checks, headSha: "abc" });
-    expect(await failure(apply(s, merge, await read(s)))).toEqual({ message: `will not merge pr-1 for #7: its checks on abc are ${checks}`, refused: true });
+    s.openPull("7", { branch: "landrace/7", checks: "failure", headSha: "abc" });
+    expect(await failure(apply(s, merge, await read(s)))).toEqual({ message: "will not merge pr-1 for #7: its checks on abc are failure", refused: true });
+  });
+
+  /*
+   * Checks still running clear by themselves — a status a third-party app
+   * registered between the read and the merge — so the next tick waits at
+   * ci and merges then. Only checks that failed are a refusal.
+   */
+  it("leaves checks still running unmarked, read on the snapshot or again just before the merge", async () => {
+    const s = state();
+    s.openPull("7", { branch: "landrace/7", checks: "pending", headSha: "abc" });
+    expect(await failure(apply(s, merge, await read(s)))).toEqual({ message: "will not merge pr-1 for #7: its checks on abc are pending", refused: false });
+
+    const tracker = new MemoryTracker({ items: [{ id: "7" }] });
+    const forge = new MemoryForge();
+    const hooks = compose({ tracker, forge });
+    const pr = forge.add("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
+    const snapshot = await read(hooks);
+    forge.pull(pr).checks = "pending";
+    expect(await failure(apply(hooks, merge, snapshot))).toMatchObject({ refused: false });
+    forge.pull(pr).checks = "failure";
+    expect(await failure(apply(hooks, merge, snapshot))).toMatchObject({ refused: true });
   });
 
   it("marks a merge whose checks were never read", async () => {

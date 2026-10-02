@@ -29,6 +29,30 @@ describe("a merge GitLab refuses", () => {
     });
   });
 
+  /*
+   * GitLab works mergeability out asynchronously, and its documentation says
+   * to retry while it does: a 405 or 422 while the merge status is still
+   * being checked, or waits on a running pipeline, clears by asking again.
+   */
+  it.each([
+    ["checking", { mergeable: false }],
+    ["unchecked", { mergeable: false }],
+    ["ci_still_running", { mergeable: false }],
+    ["checking", { branchRefusal: 422 }],
+  ] as const)("leaves a merge refused while its merge status is %s unmarked, for the next tick", async (status, seed) => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", detailed_merge_status: status, ...seed });
+    expect(await failure(forgeOver(gl).merge(8, "abc", forItem(gl)))).toMatchObject({
+      message: expect.stringMatching(/^!8 for #1 cannot be merged yet: /), refused: false,
+    });
+  });
+
+  it("marks one whose merge status says it cannot merge", async () => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", mergeable: false, detailed_merge_status: "conflict" });
+    expect(await failure(forgeOver(gl).merge(8, "abc", forItem(gl)))).toMatchObject({ refused: true });
+  });
+
   it("marks a user the protected branch does not allow to merge (401)", async () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/1", iid: 8, sha: "abc", mayMerge: false });

@@ -667,8 +667,9 @@ export abstract class BaseForge {
    *
    * Every guard that will not pass is a refusal, marked so: asking again on
    * the next tick finds the same red checks or the same closed pull request,
-   * so the stage being entered records it and a person is asked. A forge read
-   * that failed on the way is not one, and is left to the next tick.
+   * so the stage being entered records it and a person is asked. Checks still
+   * running are not one, nor is a forge read that failed on the way: both
+   * are left to the next tick.
    */
   protected async mergeOpen(effect: Effect, ctx: HookContext): Promise<void> {
     const branch = effectBranch(effect);
@@ -682,9 +683,13 @@ export abstract class BaseForge {
     }
     const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
     if (head === "") throw new EffectRefused(`will not merge ${pr.id} for #${ctx.item}: its head was not read, so nothing guards what would merge`);
-    const refused = (checks: unknown): Error => new EffectRefused(
-      `will not merge ${pr.id} for #${ctx.item}: its checks on ${head.slice(0, 7)} are ${typeof checks === "string" ? checks : "unread"}`,
-    );
+    // Checks still running clear by themselves — one a third-party app
+    // registered after the read, say — so the next tick asks again; failed
+    // or unread ones are a refusal.
+    const refused = (checks: unknown): Error => {
+      const said = `will not merge ${pr.id} for #${ctx.item}: its checks on ${head.slice(0, 7)} are ${typeof checks === "string" ? checks : "unread"}`;
+      return checks === "pending" ? new Error(said) : new EffectRefused(said);
+    };
     const green = (checks: unknown): boolean => checks === "success" || checks === "none";
     if (!green(pr.state.checks)) throw refused(pr.state.checks);
     const moved = (): void => {
