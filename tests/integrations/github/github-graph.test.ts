@@ -1,4 +1,5 @@
 import { createFakeTracker, githubHooks, noBranches, type FakeIssue, type FakeThread, type FakeTracker } from "#tests/support/fake-tracker.js";
+import { createClient, GitHubIssues } from "landrace/integrations/github";
 import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
 import { hasPullFrom, MAX_SUBGRAPH_NODES, renderMarker } from "#conventions.js";
@@ -1152,5 +1153,231 @@ describe("a published spec page is a document node", () => {
     gh.seedFile("specs/19/index.md", "# Spec");
     gh.breakOn((r) => r.path.startsWith("/contents/"), 500);
     await expect(sourceOf(gh).read("19", ctx(gh))).rejects.toThrow(/500/);
+  });
+});
+
+/**
+ * GitHub's own issue dependencies, read as `blocked-by`: each blocker named,
+ * with its state, in the same answer that reads the issue — so a blocker
+ * costs no read of its own, and one that cannot be read all of says so.
+ */
+describe("an issue's blockers are read as blocked-by", () => {
+  const blockedBy = (g: Graph) => g.relationships.filter((r) => r.type === "blocked-by");
+  const nodeOf = (g: Graph, id: string) => g.nodes.find((n) => n.id === id);
+  const relOf = (gh: FakeTracker, g: Graph, id: string) => {
+    const rel = deriveRel(g, id, sourceOf(gh).relations.map((r) => r.type));
+    if (!rel.ok) throw new Error(rel.why);
+    return rel.rel["blocked-by"]?.out;
+  };
+  /** Both ways the engine reads an item, so each case is asked of the list and of the read alike. */
+  const both = async (gh: FakeTracker, id: string): Promise<Array<[string, Graph]>> => [
+    ["list", await sourceOf(gh).list(ctx(gh))],
+    ["read", await sourceOf(gh).read(id, ctx(gh))],
+  ];
+
+  it("reads a blocker in this repository by its own number, the listed item itself in a list", async () => {
+    const gh = createFakeTracker([{ number: 10, title: "schema" }, { number: 12, blockedBy: [10] }]);
+    for (const [, g] of await both(gh, "12")) {
+      expect(blockedBy(g)).toEqual([{ from: "12", to: "10", type: "blocked-by" }]);
+      expect(nodeOf(g, "10")).toMatchObject({ title: "schema", link: "https://github.com/acme/widgets/issues/10", closed: null });
+      expect(nodeOf(g, "12")?.state).not.toHaveProperty("relatedUnreadable");
+      expect(graphProblem(g, sourceOf(gh).relations)).toBeNull();
+      expect(relOf(gh, g, "12")).toMatchObject({ total: 1, dropped: 0, open: ["10"] });
+    }
+    const listed = await sourceOf(gh).list(ctx(gh));
+    expect(nodeOf(listed, "10")?.placeholder).toBeUndefined();
+  });
+
+  it("reads a blocker closed as completed as done, and one closed as not planned or a duplicate as dropped", async () => {
+    const gh = createFakeTracker([
+      { number: 10, state: "closed", stateReason: "COMPLETED" },
+      { number: 11, state: "closed", stateReason: "NOT_PLANNED" },
+      { number: 13, state: "closed", stateReason: "DUPLICATE" },
+      { number: 12, blockedBy: [10, 11, 13] },
+    ]);
+    for (const [, g] of await both(gh, "12")) {
+      expect(blockedBy(g).map((r) => r.to)).toEqual(["10", "11", "13"]);
+      expect(["10", "11", "13"].map((id) => nodeOf(g, id)?.closed)).toEqual(["done", "dropped", "dropped"]);
+      expect(relOf(gh, g, "12")).toMatchObject({ total: 1, dropped: 2, open: [] });
+    }
+  });
+
+  it("names a blocker in another repository by an id of its own, from what the answer said of it, and reads nothing there", async () => {
+    const gh = createFakeTracker([
+      { number: 12, blockedBy: [{ repo: "other-org/api.v2", number: 5, state: "open", title: "upstream fix" }] },
+    ]);
+    for (const [, g] of await both(gh, "12")) {
+      expect(blockedBy(g)).toEqual([{ from: "12", to: "x.other-org.api.v2.5", type: "blocked-by" }]);
+      expect(nodeOf(g, "x.other-org.api.v2.5")).toMatchObject({
+        kind: "item", title: "upstream fix", link: "https://github.com/other-org/api.v2/issues/5", closed: null, placeholder: true,
+      });
+      expect(nodeOf(g, "12")?.state).not.toHaveProperty("relatedUnreadable");
+      expect(nodeOf(g, "12")?.state).not.toHaveProperty("dependencyCycle");
+      expect(relOf(gh, g, "12")).toMatchObject({ total: 1, open: ["x.other-org.api.v2.5"] });
+    }
+    // Never asked of this repository by its number, nor of the other one at all.
+    expect(gh.graphql.every((q) => q.variables.owner === "acme" && q.variables.name === "widgets")).toBe(true);
+    expect(operations(gh, "LandraceIssue").map((q) => q.variables.number)).toEqual([12]);
+  });
+
+  it("tells apart blockers of one number in this repository and in two others", async () => {
+    const gh = createFakeTracker([
+      { number: 5 },
+      { number: 12, blockedBy: [5, { repo: "a/b", number: 5, state: "open" }, { repo: "a/b.c", number: 5, state: "closed", stateReason: "COMPLETED" }] },
+    ]);
+    const g = await sourceOf(gh).read("12", ctx(gh));
+    expect(blockedBy(g).map((r) => r.to)).toEqual(["5", "x.a.b.5", "x.a.b.c.5"]);
+    expect(nodeOf(g, "x.a.b.c.5")?.closed).toBe("done");
+  });
+
+  it("reads a blocker in this repository as its own, whatever case GitHub spells the repository in", async () => {
+    // GitHub's names are case-insensitive, and its answer spells them as the repository was created, not as configured.
+    const gh = createFakeTracker([{ number: 10 }, { number: 12, blockedBy: [{ repo: "ACME/Widgets", number: 10, state: "open" }] }]);
+    for (const [, g] of await both(gh, "12")) {
+      expect(blockedBy(g).map((r) => r.to)).toEqual(["10"]);
+    }
+  });
+
+  describe("and says what it could not read, never reading it as no blocker", () => {
+    const unreadable = (g: Graph, id: string) => nodeOf(g, id)?.state.relatedUnreadable;
+
+    it("when the connection holds fewer blockers than it says it has", async () => {
+      const gh = createFakeTracker([{ number: 10 }, { number: 11 }, { number: 12, blockedBy: [10, 11] }]);
+      gh.cutBlockers(1);
+      for (const [, g] of await both(gh, "12")) {
+        expect(unreadable(g, "12")).toBe(true);
+        expect(blockedBy(g).map((r) => r.to)).toEqual(["10"]);
+      }
+    });
+
+    it("when an issue has more blockers than one reading asks for, and not at exactly as many", async () => {
+      const seed: Array<Partial<FakeIssue>> = [];
+      for (let n = 100; n < 151; n++) seed.push({ number: n });
+      const at = createFakeTracker([...seed, { number: 12, blockedBy: seed.slice(0, 50).map((s) => s.number as number) }]);
+      const past = createFakeTracker([...seed, { number: 12, blockedBy: seed.map((s) => s.number as number) }]);
+      for (const [, g] of await both(at, "12")) {
+        expect(blockedBy(g)).toHaveLength(50);
+        expect(unreadable(g, "12")).toBeUndefined();
+      }
+      for (const [, g] of await both(past, "12")) {
+        expect(blockedBy(g)).toHaveLength(50);
+        expect(unreadable(g, "12")).toBe(true);
+      }
+    });
+
+    it("when the token may not see a blocker, reading the rest of the answer as ever", async () => {
+      const gh = createFakeTracker([
+        { number: 10 },
+        { number: 12, labels: ["lr:auto"], blockedBy: [10, { repo: "secret/vault", number: 1, state: "open", refused: true }] },
+        { number: 13, labels: ["lr:auto"] },
+      ]);
+      for (const [, g] of await both(gh, "12")) {
+        expect(unreadable(g, "12")).toBe(true);
+        expect(blockedBy(g).map((r) => r.to)).toEqual(["10"]);
+        expect(nodeOf(g, "12")?.state.labels).toEqual(["lr:auto"]);
+      }
+      expect((await sourceOf(gh).list(ctx(gh))).nodes.map((n) => n.id)).toEqual(["10", "12", "13"]);
+    });
+
+    it("when the token may not see a closed blocker's reason, rather than reading it as done", async () => {
+      const gh = createFakeTracker([
+        { number: 12, blockedBy: [{ repo: "secret/vault", number: 1, state: "closed", stateReason: "NOT_PLANNED", refused: "stateReason" }] },
+      ]);
+      for (const [, g] of await both(gh, "12")) {
+        expect(unreadable(g, "12")).toBe(true);
+        expect(blockedBy(g)).toEqual([]);
+      }
+    });
+
+    it("when a blocker is closed for a reason this integration does not map, rather than failing the read", async () => {
+      const gh = createFakeTracker([
+        { number: 12, blockedBy: [{ repo: "o/r", number: 1, state: "closed", stateReason: "SOMETHING_NEW" as never }] },
+      ]);
+      for (const [, g] of await both(gh, "12")) {
+        expect(unreadable(g, "12")).toBe(true);
+        expect(blockedBy(g)).toEqual([]);
+      }
+    });
+
+    /*
+     * Asked of the tracker's own record, beneath the graph: the kit would
+     * drop an id no node may have anyway, but an owner GitHub cannot have —
+     * one with a "." — would make two issues one id, which nothing past here
+     * could tell.
+     */
+    it.each([
+      ["could only be named past the length an id may have", `o/${"r".repeat(60)}`],
+      ["has an owner whose name holds a dot, which would make two repositories one", "o.x/r"],
+      ["has a name outside what an id may hold", "o/r r"],
+    ])("when another repository's blocker %s", async (_why, repo) => {
+      const gh = createFakeTracker([{ number: 10 }, { number: 12, blockedBy: [10, { repo, number: 1, state: "open" }] }]);
+      const tracker = new GitHubIssues({ client: createClient({ repo: "acme/widgets", token: "test-token", fetchImpl: gh.fetchImpl }) });
+      const record = await tracker.item("12", ctx(gh));
+      expect(record.related?.map((r) => r.to)).toEqual(["10"]);
+      expect(record.relatedComplete).toBe(false);
+      for (const [, g] of await both(gh, "12")) {
+        expect(unreadable(g, "12")).toBe(true);
+        expect(blockedBy(g).map((r) => r.to)).toEqual(["10"]);
+      }
+    });
+
+    it("in every reading of an issue: a recently closed one, and a sub-issue a read of its parent carries", async () => {
+      const recently = new Date(Date.now() - 86_400_000).toISOString();
+      const refused = { repo: "secret/vault", number: 1, state: "open", refused: true } as const;
+      const gh = createFakeTracker([
+        { number: 1 },
+        { number: 2, parent: 1, blockedBy: [refused] },
+        { number: 3, state: "closed", stateReason: "COMPLETED", labels: ["lr:stage:build"], closedAt: recently, updatedAt: recently, blockedBy: [refused] },
+      ]);
+      const listed = await sourceOf(gh).list(ctx(gh));
+      expect(unreadable(listed, "3")).toBe(true);
+      const read = await sourceOf(gh).read("1", ctx(gh));
+      expect(nodeOf(read, "2")?.closed).toBeNull();
+    });
+
+    it("when the answer carries no connection at all", async () => {
+      const gh = createFakeTracker([{ number: 12, blockedBy: [] }]);
+      const bare = (async (input: string | URL, init?: RequestInit) => {
+        const res = await gh.fetchImpl(input, init);
+        if (!String(input).endsWith("/graphql")) return res;
+        const body = (await res.json()) as { data?: { repository?: { issue?: Record<string, unknown> } } };
+        delete body.data?.repository?.issue?.blockedBy;
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch;
+      const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: bare, git: noBranches });
+      expect(unreadable(await hooks.source.read("12", ctx(gh)), "12")).toBe(true);
+    });
+
+    it.each([
+      ["the connection itself", ["repository", "issue", "blockedBy"]],
+      ["a blocker the answer does not hold", ["repository", "issue", "blockedBy", "nodes", 7]],
+      ["a field of the issue", ["repository", "issue", "labels"]],
+    ])("but still fails a read whose error is at %s", async (_where, path) => {
+      const gh = createFakeTracker([{ number: 12, blockedBy: [{ repo: "o/r", number: 1, state: "open" }] }]);
+      const failing = (async (input: string | URL, init?: RequestInit) => {
+        const res = await gh.fetchImpl(input, init);
+        // The tracker's own reading only: the forge's would fail the read whatever the tracker made of it.
+        if (!String(init?.body ?? "").includes("query LandraceIssue(")) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        body.errors = [{ message: "Something went wrong", type: "INTERNAL", path }];
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch;
+      const hooks = githubHooks({ repo: "acme/widgets", token: "test-token", fetchImpl: failing, git: noBranches });
+      await expect(hooks.source.read("12", ctx(gh))).rejects.toThrow(/Something went wrong/);
+    });
+  });
+
+  it("says dependencyCycle of both issues blocked by each other, in a list and in a read", async () => {
+    const gh = createFakeTracker([{ number: 1, blockedBy: [2] }, { number: 2, blockedBy: [1] }, { number: 3, blockedBy: [1] }]);
+    const listed = await sourceOf(gh).list(ctx(gh));
+    expect(["1", "2", "3"].map((id) => nodeOf(listed, id)?.state.dependencyCycle)).toEqual([true, true, undefined]);
+    expect(nodeOf(await sourceOf(gh).read("1", ctx(gh)), "1")?.state.dependencyCycle).toBe(true);
+    expect(nodeOf(await sourceOf(gh).read("3", ctx(gh)), "3")?.state.dependencyCycle).toBeUndefined();
+  });
+
+  it("walks no blocker in another repository, which holds an issue back by its state alone", async () => {
+    const gh = createFakeTracker([{ number: 1, blockedBy: [{ repo: "o/r", number: 1, state: "open" }] }]);
+    await sourceOf(gh).read("1", ctx(gh));
+    expect(operations(gh, "LandraceIssues")).toEqual([]);
   });
 });

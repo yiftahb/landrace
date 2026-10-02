@@ -93,9 +93,9 @@ describe("mcp server over a real transport", () => {
     const call = (relate: unknown) => client.callTool({ name: "landrace_create_item", arguments: { title: "x", relate } });
     const malformed = await call([{ type: "blocked-by" }]);
     expect((malformed as { isError?: boolean }).isError).toBe(true);
-    const refused = await call([{ type: "blocked-by", item: "10" }]);
+    const refused = await call([{ type: "relates-to", item: "10" }]);
     expect((refused as { isError?: boolean }).isError).toBe(true);
-    expect(textOf(refused)).toMatch(/cannot relate a new item to #10 as "blocked-by": .*writes no relationship/);
+    expect(textOf(refused)).toMatch(/cannot relate a new item to #10 as "relates-to": .*writes only "blocked-by"/);
     expect(gh.issues.size).toBe(0);
     await client.close();
   });

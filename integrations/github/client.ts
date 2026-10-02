@@ -26,10 +26,10 @@ export interface GitHubOptions {
   fetchImpl?: typeof fetch | undefined;
 }
 
-/** An issue as REST answers it: read for the id a sub-issue is linked by. */
+/** An issue as REST answers it: read for the id a sub-issue or a dependency is linked by. */
 interface Issue {
   number: number;
-  /** The REST id, which is not the number: a sub-issue is linked by this. */
+  /** The REST id, which is not the number: a sub-issue and a blocker are linked by this. */
   id: number;
 }
 
@@ -95,9 +95,32 @@ export const unseen = (repo: string): Error =>
  * the wrong thing.
  */
 export const issueNumber = (id: string): number => {
-  if (!/^[1-9][0-9]*$/.test(id)) throw new Error(`"${id}" is not a GitHub issue number`);
+  if (!isIssueNumber(id)) throw new Error(`"${id}" is not a GitHub issue number`);
   return Number(id);
 };
+
+/** Whether an id is an issue's number, as only an issue in this repository's is: one elsewhere is never all digits. */
+export const isIssueNumber = (id: string): boolean => /^[1-9][0-9]*$/.test(id);
+
+/** Where in a GraphQL answer an error is: field names and list indexes from the top. */
+export type GraphQLPath = ReadonlyArray<string | number>;
+
+/**
+ * Null what `path` points at in `data`, answering whether it was there to
+ * null: an error is read as a hole in the answer only where the hole is.
+ */
+function blank(data: unknown, path: GraphQLPath): boolean {
+  const last = path[path.length - 1];
+  if (last === undefined) return false;
+  let at = data;
+  for (const key of path.slice(0, -1)) {
+    if (at === null || typeof at !== "object") return false;
+    at = (at as Record<string, unknown>)[String(key)];
+  }
+  if (at === null || typeof at !== "object" || !Object.hasOwn(at, String(last))) return false;
+  (at as Record<string, unknown>)[String(last)] = null;
+  return true;
+}
 
 /**
  * A 401 means GitHub rejected the token itself, before any one permission
@@ -250,8 +273,9 @@ export function createClient(opts: GitHubOptions) {
 
   /**
    * A 403 on a write the preflight could not probe, reported as the permission
-   * it lacks. Closing a pull request and linking a sub-issue have no harmless
-   * form to try at startup, so this is where a token missing either is named.
+   * it lacks. Closing a pull request, linking a sub-issue and writing an issue
+   * dependency have no harmless form to try at startup, so this is where a
+   * token missing any of them is named.
    *
    * A refusal, marked so — asking again with the same token is refused again
    * — unless it is a rate limit, which GitHub also answers 403 and which the
@@ -279,10 +303,20 @@ export function createClient(opts: GitHubOptions) {
    * GraphQL failure is an HTTP 200 carrying an `errors` array — so it lives
    * beside `call` rather than inside it. The login gate is the same one for
    * the same reason.
+   *
+   * `spare` is for the one error a caller reads as a hole in the answer
+   * rather than a failure of it: given an error's path, it answers the part
+   * of the answer to read as null — or null, to fail as ever. GitHub answers
+   * an item the token may not see that way: null, or a field of it null,
+   * with an error at that place, and the rest of the answer whole.
    */
-  async function graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  async function graphql<T>(
+    query: string,
+    variables: Record<string, unknown>,
+    spare?: (path: GraphQLPath) => GraphQLPath | null,
+  ): Promise<T> {
     await botLogin();
-    const body = await request<{ data?: T; errors?: Array<{ message?: unknown; type?: unknown }> }>(
+    const body = await request<{ data?: T; errors?: Array<{ message?: unknown; type?: unknown; path?: unknown }> }>(
       "POST",
       "https://api.github.com/graphql",
       { query, variables },
@@ -292,10 +326,16 @@ export function createClient(opts: GitHubOptions) {
     // array rides on the thrown error too — a permission refusal (type
     // FORBIDDEN) and a rate limit (type RATE_LIMITED) are both this same
     // shape, and only the preflight cares which one it actually was.
-    if (body.errors?.length) {
+    const errors = (body.errors ?? []).filter((e) => {
+      const path = Array.isArray(e.path) && e.path.every((k) => typeof k === "string" || typeof k === "number")
+        ? (e.path as GraphQLPath) : null;
+      const hole = path === null || spare === undefined ? null : spare(path);
+      return hole === null || !blank(body.data, hole);
+    });
+    if (errors.length) {
       throw Object.assign(
-        new Error(`graphql: ${body.errors.map((e) => String(e.message ?? e)).join("; ")}`),
-        { errors: body.errors },
+        new Error(`graphql: ${errors.map((e) => String(e.message ?? e)).join("; ")}`),
+        { errors },
       );
     }
     if (body.data === undefined || body.data === null) throw new Error("graphql: the response carried no data");
@@ -428,6 +468,13 @@ export function createClient(opts: GitHubOptions) {
       ),
     addSubIssue: (parent: number, child: number) =>
       named(call("POST", `/issues/${parent}/sub_issues`, { sub_issue_id: child }), `"Issues: Read and write" on ${repo}`),
+    /** One issue as REST answers it: for the REST id a dependency names its blocker by. */
+    issue: (n: number) => call<Issue>("GET", `/issues/${n}`),
+    /** Issue `n` blocked by the issue whose REST id is `blocker` — an id, as a sub-issue's link takes, never a number. */
+    addBlockedBy: (n: number, blocker: number) =>
+      named(call("POST", `/issues/${n}/dependencies/blocked_by`, { issue_id: blocker }), `"Issues: Read and write" on ${repo}`),
+    removeBlockedBy: (n: number, blocker: number) =>
+      named(call("DELETE", `/issues/${n}/dependencies/blocked_by/${blocker}`), `"Issues: Read and write" on ${repo}`),
     /** One page of an issue's comments, oldest first. */
     listComments: (n: number, page: number) => call<Comment[]>("GET", `/issues/${n}/comments?per_page=100&page=${page}`),
     createComment: (n: number, body: string) => {

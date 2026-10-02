@@ -43,6 +43,29 @@ export interface FakeIssue {
   editor?: string;
   /** The issue this one is a sub-issue of, by number. */
   parent?: number;
+  /** What it is blocked by: an issue in this repository by its number, or one in another. */
+  blockedBy?: Array<number | FakeBlocker>;
+}
+
+/**
+ * A blocker in another repository, as GitHub answers it inside the blocked
+ * issue's `blockedBy` connection — the only place the fake knows of it.
+ */
+export interface FakeBlocker {
+  /** "owner/name". */
+  repo: string;
+  number: number;
+  /** "open" or "closed", as `FakeIssue.state`. */
+  state: string;
+  stateReason?: FakeIssue["stateReason"];
+  title?: string;
+  /**
+   * The token may not see it: GitHub answers the node null, with an error at
+   * its place beside an otherwise whole answer. Given a field, only that
+   * field is null and the error is at it — what a nullable field's own
+   * failure looks like.
+   */
+  refused?: true | "stateReason";
 }
 
 export interface FakeComment {
@@ -193,6 +216,8 @@ export interface FakeTracker {
   graphql: Array<{ query: string; variables: Record<string, unknown> }>;
   /** The boundary itself, so a test can point a second, differently configured client at the same in-memory GitHub. */
   fetchImpl: typeof fetch;
+  /** Answer every `blockedBy` connection with at most `to` nodes, its `totalCount` still all of them: a page cut short. */
+  cutBlockers(to: number): void;
 }
 
 const LOG_HOST = "blob.example";
@@ -310,6 +335,7 @@ export function createFakeTracker(
       ...(s.updatedAt === undefined ? {} : { updatedAt: s.updatedAt }),
       ...(s.parent === undefined ? {} : { parent: s.parent }),
       ...(s.editor === undefined ? {} : { editor: s.editor }),
+      ...(s.blockedBy === undefined ? {} : { blockedBy: s.blockedBy }),
     });
     nextIssue = Math.max(nextIssue, n + 1);
   }
@@ -385,6 +411,7 @@ export function createFakeTracker(
   let graphqlFailure: { message: string; type: string } | null = null;
   let repositoryMissing = false;
   let pagesSite: FakePages | number | null = null;
+  let blockersCut: number | null = null;
 
   /**
    * One page of review threads, as a connection.
@@ -437,6 +464,46 @@ export function createFakeTracker(
     labels: { nodes: i.labels.map((name) => ({ name })) },
     assignees: { nodes: i.assignees },
   });
+
+  type GraphQLError = { message: string; type: string; path: Array<string | number> };
+  const [OWNER, NAME] = REPO.split("/") as [string, string];
+
+  /**
+   * An issue's `blockedBy` connection as GitHub answers it at `path`, when
+   * the query asked for one: the first page it asked for, and how many there
+   * are in all. A blocker the token is refused is a null — or a null field —
+   * with an error at its place pushed onto `errors`, beside an answer
+   * otherwise whole.
+   */
+  const blockedByAt = (i: FakeIssue, query: string, path: Array<string | number>, errors: GraphQLError[]) => {
+    const first = /blockedBy\(first: (\d+)\)/.exec(query)?.[1];
+    if (first === undefined) return {};
+    const asked = Number(first);
+    const all = i.blockedBy ?? [];
+    const nodes = all.slice(0, Math.min(asked, blockersCut ?? asked)).map((b, j) => {
+      if (typeof b === "number") {
+        const own = issues.get(b);
+        return own === undefined ? null : {
+          number: own.number, title: own.title, url: own.html_url, state: own.state.toUpperCase(),
+          stateReason: own.stateReason ?? null, repository: { name: NAME, owner: { login: OWNER } },
+        };
+      }
+      const [owner = "", name = ""] = b.repo.split("/");
+      const node = {
+        number: b.number, title: b.title ?? `issue ${b.number}`, url: `https://github.com/${b.repo}/issues/${b.number}`,
+        state: b.state.toUpperCase(), stateReason: b.stateReason ?? null, repository: { name, owner: { login: owner } },
+      };
+      if (b.refused === undefined) return node;
+      const message = "Resource not accessible by personal access token";
+      if (b.refused === true) {
+        errors.push({ message, type: "FORBIDDEN", path: [...path, "blockedBy", "nodes", j] });
+        return null;
+      }
+      errors.push({ message, type: "FORBIDDEN", path: [...path, "blockedBy", "nodes", j, b.refused] });
+      return { ...node, [b.refused]: null };
+    });
+    return { blockedBy: { totalCount: all.length, nodes } };
+  };
 
   /** A connection as GraphQL pages one: the first page of nodes, and how many there are in all. */
   const connection = <T>(all: T[]) => ({ totalCount: all.length, nodes: all.slice(0, CONNECTION_PAGE) });
@@ -546,22 +613,25 @@ export function createFakeTracker(
       const operation = /(?:query|mutation) (\w+)/.exec(String(body.query ?? ""))?.[1];
       const pullOf = (n: unknown): FakePull | null => pulls.get(Number(n)) ?? null;
 
+      const query = String(body.query ?? "");
+      const errors: GraphQLError[] = [];
+      const answer = (data: unknown): Response => json({ data, ...(errors.length > 0 ? { errors } : {}) });
+
       if (operation === "LandraceIssues") {
         const open = [...issues.values()].filter((i) => i.state === "open").sort((a, b) => a.number - b.number);
         const from = typeof variables.cursor === "string" && variables.cursor ? Number(variables.cursor) : 0;
         const page = open.slice(from, from + ISSUE_PAGE);
         const end = from + page.length;
-        return json({
-          data: {
-            repository: {
-              issues: {
-                pageInfo: { hasNextPage: end < open.length, endCursor: String(end) },
-                nodes: page.map((i) => ({
-                  ...issueNode(i),
-                  parent: i.parent === undefined ? null : { number: i.parent },
-                  subIssues: { nodes: childrenOf(i.number).map(issueNode) },
-                })),
-              },
+        return answer({
+          repository: {
+            issues: {
+              pageInfo: { hasNextPage: end < open.length, endCursor: String(end) },
+              nodes: page.map((i, n) => ({
+                ...issueNode(i),
+                ...blockedByAt(i, query, ["repository", "issues", "nodes", n], errors),
+                parent: i.parent === undefined ? null : { number: i.parent },
+                subIssues: { nodes: childrenOf(i.number).map(issueNode) },
+              })),
             },
           },
         });
@@ -575,16 +645,15 @@ export function createFakeTracker(
         const size = Number(/issues\(states: CLOSED, first: (\d+)/.exec(String(body.query))?.[1] ?? ISSUE_PAGE);
         const page = closed.slice(from, from + size);
         const end = from + page.length;
-        return json({
-          data: {
-            repository: {
-              issues: {
-                pageInfo: { hasNextPage: end < closed.length, endCursor: String(end) },
-                nodes: page.map((i) => ({
-                  ...issueNode(i), closedAt: i.closedAt ?? null, updatedAt: i.updatedAt ?? null,
-                  parent: i.parent === undefined ? null : { number: i.parent },
-                })),
-              },
+        return answer({
+          repository: {
+            issues: {
+              pageInfo: { hasNextPage: end < closed.length, endCursor: String(end) },
+              nodes: page.map((i, n) => ({
+                ...issueNode(i), closedAt: i.closedAt ?? null, updatedAt: i.updatedAt ?? null,
+                ...blockedByAt(i, query, ["repository", "issues", "nodes", n], errors),
+                parent: i.parent === undefined ? null : { number: i.parent },
+              })),
             },
           },
         });
@@ -653,12 +722,12 @@ export function createFakeTracker(
 
       if (operation === "LandraceIssue") {
         const issue = issues.get(Number(variables.number));
-        return json({
-          data: {
-            repository: {
-              issue: issue === undefined
-                ? null
-                : { ...issueNode(issue), parent: issue.parent === undefined ? null : { number: issue.parent } },
+        return answer({
+          repository: {
+            issue: issue === undefined ? null : {
+              ...issueNode(issue),
+              ...blockedByAt(issue, query, ["repository", "issue"], errors),
+              parent: issue.parent === undefined ? null : { number: issue.parent },
             },
           },
         });
@@ -666,9 +735,14 @@ export function createFakeTracker(
 
       if (operation === "LandraceSubIssues") {
         const issue = issues.get(Number(variables.number));
-        return json({
-          data: {
-            repository: { issue: issue === undefined ? null : { subIssues: connection(childrenOf(issue.number).map(issueNode)) } },
+        return answer({
+          repository: {
+            issue: issue === undefined ? null : {
+              subIssues: connection(childrenOf(issue.number).map((c, n) => ({
+                ...issueNode(c),
+                ...blockedByAt(c, query, ["repository", "issue", "subIssues", "nodes", n], errors),
+              }))),
+            },
           },
         });
       }
@@ -765,6 +839,24 @@ export function createFakeTracker(
       if (!parent || !child) return new Response("Not Found", { status: 404 });
       child.parent = parent.number;
       return json(parent, 201);
+    }
+
+    // A dependency names its blocker by the REST id, as a sub-issue link does — never by its number.
+    const onBlockedBy = /^\/issues\/(\d+)\/dependencies\/blocked_by(?:\/(\d+))?$/.exec(path);
+    if (onBlockedBy) {
+      const issue = issueOf(Number(onBlockedBy[1]));
+      const blockerId = method === "DELETE" ? Number(onBlockedBy[2]) : body.issue_id;
+      const blocker = [...issues.values()].find((i) => i.id === blockerId);
+      if (!issue || !blocker) return json({ message: "Not Found" }, 404);
+      if (method === "POST" && onBlockedBy[2] === undefined) {
+        if (!(issue.blockedBy ?? []).includes(blocker.number)) issue.blockedBy = [...(issue.blockedBy ?? []), blocker.number];
+        return json(blocker, 201);
+      }
+      if (method === "DELETE" && onBlockedBy[2] !== undefined) {
+        if (!(issue.blockedBy ?? []).includes(blocker.number)) return json({ message: "Not Found" }, 404);
+        issue.blockedBy = (issue.blockedBy ?? []).filter((b) => b !== blocker.number);
+        return json(blocker);
+      }
     }
 
     // The repository itself, for the one thing asked of it: which branch a
@@ -1070,6 +1162,7 @@ export function createFakeTracker(
     seedFile,
     truncateTrees: () => { treesTruncated = true; },
     pages: (answer) => { pagesSite = answer; },
+    cutBlockers: (to) => { blockersCut = to; },
     bot: BOT,
     labelsOf: (item) => issues.get(item)?.labels ?? [],
     say: (item, body) => post(item, BOT, body),

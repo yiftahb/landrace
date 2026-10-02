@@ -3,6 +3,7 @@ import { source } from "#landrace/hooks/github.js";
 import type { Effect, HookContext, RuntimeContext, Snapshot } from "#namespace.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createFakeTracker, githubHooks, noBranches } from "#tests/support/fake-tracker.js";
+import { createClient, GitHubIssues } from "landrace/integrations/github";
 import type { FakeTracker } from "#tests/support/fake-tracker.js";
 
 /**
@@ -697,5 +698,102 @@ describe("a comment effect lands under either spelling of an app's login", () =>
 
   it("a comment by another account is not", () => {
     expect(post.satisfied(snapshot("myapp2[bot]", "myapp"), effect)).toBe(false);
+  });
+});
+
+/**
+ * The operator's relationship writes, as GitHub's issue dependencies: a
+ * dependency names its blocker by the REST id, as a sub-issue link names
+ * its child, and only within the configured repository.
+ */
+describe("blocked-by on GitHub", () => {
+  const operator = (gh: FakeTracker) => {
+    if (!gh.registry.operator) throw new Error("the fake tracker registered no operator");
+    return gh.registry.operator;
+  };
+  const dependencyWrites = (gh: FakeTracker) => gh.requests.filter((r) => r.path.includes("/dependencies/"));
+  const blockersRead = async (gh: FakeTracker, id: string) =>
+    (await gh.registry.source!.read(id, gh.ctx)).relationships.filter((r) => r.type === "blocked-by").map((r) => r.to);
+
+  it("writes only blocked-by", () => {
+    expect(operator(createFakeTracker()).relates()).toEqual(["blocked-by"]);
+  });
+
+  it("relates an issue to its blocker by the blocker's REST id, and reads it back", async () => {
+    const gh = createFakeTracker([{ number: 10 }, { number: 12 }]);
+    await operator(gh).relate("12", "blocked-by", "10", gh.ctx);
+    expect(dependencyWrites(gh)).toEqual([{ method: "POST", path: "/issues/12/dependencies/blocked_by" }]);
+    expect(gh.issues.get(12)?.blockedBy).toEqual([10]);
+    expect(await blockersRead(gh, "12")).toEqual(["10"]);
+  });
+
+  it("unrelates it by the same REST id, and reads none back", async () => {
+    const gh = createFakeTracker([{ number: 10 }, { number: 12, blockedBy: [10] }]);
+    await operator(gh).unrelate("12", "blocked-by", "10", gh.ctx);
+    expect(dependencyWrites(gh)).toEqual([{ method: "DELETE", path: "/issues/12/dependencies/blocked_by/100010" }]);
+    expect(gh.issues.get(12)?.blockedBy).toEqual([]);
+    expect(await blockersRead(gh, "12")).toEqual([]);
+  });
+
+  it.each([
+    ["relate", "POST"],
+    ["unrelate", "DELETE"],
+  ] as const)("names the permission a refused %s needs, keeping GitHub's own words", async (write, method) => {
+    const gh = createFakeTracker([{ number: 10 }, { number: 12, blockedBy: write === "unrelate" ? [10] : [] }]);
+    gh.breakOn((r) => r.method === method && r.path.includes("/dependencies/blocked_by"), 403);
+    await expect(operator(gh)[write]("12", "blocked-by", "10", gh.ctx))
+      .rejects.toThrow(/"Issues: Read and write" on acme\/widgets[\s\S]*the repository is unhappy/);
+  });
+
+  it.each([
+    ["relate", "12", "x.other.api.5"],
+    ["relate", "x.other.api.5", "12"],
+    ["unrelate", "12", "x.other.api.5"],
+    ["unrelate", "x.other.api.5", "12"],
+  ] as const)("refuses to %s #%s and #%s, across repositories, and writes nothing", async (write, item, other) => {
+    const gh = createFakeTracker([{ number: 12 }]);
+    const before = gh.requests.length;
+    await expect(operator(gh)[write](item, "blocked-by", other, gh.ctx))
+      .rejects.toThrow(/landrace writes relationships only within acme\/widgets/);
+    expect(gh.requests.slice(before).filter((r) => r.path !== "/user")).toEqual([]);
+  });
+
+  it("writes no other type as a dependency, even for a subclass that says it writes one", async () => {
+    class Wider extends GitHubIssues {
+      protected override writableRelations(): string[] {
+        return ["blocked-by", "relates-to"];
+      }
+    }
+    const gh = createFakeTracker([{ number: 10 }, { number: 12 }]);
+    const tracker = new Wider({ client: createClient({ repo: "acme/widgets", token: "test-token", fetchImpl: gh.fetchImpl }) });
+    await expect(tracker.relate("12", "relates-to", "10", gh.ctx)).rejects.toThrow(/GitHub writes only "blocked-by"/);
+    expect(dependencyWrites(gh)).toEqual([]);
+  });
+
+  it("creates an issue blocked by another, related before it is labelled", async () => {
+    const gh = createFakeTracker([{ number: 10 }]);
+    const node = await operator(gh).createItem(
+      { title: "next", labels: ["lr:auto"], relate: [{ type: "blocked-by", item: "10" }] }, gh.ctx,
+    );
+    const order = gh.requests.map((r) => `${r.method} ${r.path}`);
+    expect(order.indexOf(`POST /issues/${node.id}/dependencies/blocked_by`)).toBeGreaterThan(order.indexOf("POST /issues"));
+    expect(order.indexOf(`POST /issues/${node.id}/dependencies/blocked_by`)).toBeLessThan(order.indexOf(`POST /issues/${node.id}/labels`));
+    expect(await blockersRead(gh, node.id)).toEqual(["10"]);
+  });
+
+  it("refuses a new issue blocked by one in another repository before creating anything", async () => {
+    const gh = createFakeTracker([{ number: 10 }]);
+    await expect(operator(gh).createItem({ title: "next", relate: [{ type: "blocked-by", item: "x.other.api.5" }] }, gh.ctx))
+      .rejects.toThrow(/landrace writes relationships only within acme\/widgets/);
+    expect(gh.requests.some((r) => r.method === "POST")).toBe(false);
+    expect([...gh.issues.keys()]).toEqual([10]);
+  });
+
+  it("drops a new issue whose blocker GitHub would not relate, naming it", async () => {
+    const gh = createFakeTracker([{ number: 10 }]);
+    gh.breakOn((r) => r.path.endsWith("/dependencies/blocked_by"), 403);
+    await expect(operator(gh).createItem({ title: "next", relate: [{ type: "blocked-by", item: "10" }] }, gh.ctx))
+      .rejects.toThrow(/#11 was created, but relating it failed: blocked-by #10: .*Issues: Read and write/);
+    expect(gh.issues.get(11)).toMatchObject({ state: "closed", state_reason: "not_planned" });
   });
 });
