@@ -44,6 +44,12 @@ describe("substituting vars over a parsed tree", () => {
    * ate them would leave a marker with no round in it, which is how a looping
    * stage stops being able to tell it owes another pass.
    */
+  it("fills a var whose name has a hyphen in it", () => {
+    const out = substituteVars({ body: "for {vars.a-b}" }, vars({ "a-b": "ann" }), "w");
+    expect(out.value).toEqual({ body: "for ann" });
+    expect(out.used).toEqual(["a-b"]);
+  });
+
   it("leaves every template that is not a var exactly as it found it", () => {
     const body = "Round {round} of {stage}, shape {shape}, for {item.title} — {vars.team}";
     const out = substituteVars({ body }, vars({ team: "platform" }), "w");

@@ -64,6 +64,13 @@ describe("renderPrompt", () => {
     expect(renderPrompt("{run.lastHuman.data.body}", s)).toBe("{run.lastHuman.data.body}");
     expect(renderPrompt("{run.previousStage}", s)).toBe("{run.previousStage}");
   });
+
+  // Relationship types are spelled with a hyphen, so a path through `rel`
+  // has one; the template syntax every pass shares admits it.
+  it("fills a path through a hyphenated key", () => {
+    const s = { rel: { "x-y": { in: { total: 2, open: ["9", "10"] } } } } as unknown as Snapshot;
+    expect(renderPrompt("{rel.x-y.in.total} open: {rel.x-y.in.open}", s)).toBe("2 open: 9, 10");
+  });
 });
 
 describe("the model a step declares", () => {

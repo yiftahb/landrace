@@ -185,6 +185,19 @@ describe("boardView: every relationship of an item", () => {
   it("lists none for an item nothing relates to", () => {
     expect(view(graph([item("12")])).rows[0]?.related).toEqual([]);
   });
+
+  // The panel keys each entry by type, direction and id, so an edge a source
+  // reported twice, or two sources both reported, is one entry, not two.
+  it("lists an edge reported twice once", () => {
+    const g = graph([item("12"), item("10")], [edge("12", "10", "blocked-by"), edge("12", "10", "blocked-by")]);
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => [r.type, r.dir, r.id]))
+      .toEqual([["blocked-by", "out", "10"]]);
+    const twice = view(g, {
+      workflows: [{ id: "t", workflow }, { id: "u", workflow }],
+      listing: { graphs: [g, g], sourceOf: new Map([["t", 0], ["u", 1]]), claims: claimItems([], [g, g]) },
+    });
+    expect(flatten(twice.rows).find((r) => r.id === "12")?.related).toHaveLength(1);
+  });
 });
 
 /*

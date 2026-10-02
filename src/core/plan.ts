@@ -22,8 +22,8 @@ import type { Decision, Effect, Snapshot, Stage } from "#namespace.js";
  * another.
  *
  * So is the hyphen, for the same reason: relationship types are spelled with
- * one (`child-of`), so a path through `rel` has one, and a stage's note reads
- * `{rel.blocked-by.out.open}`.
+ * one (`child-of`), so a path through `rel` has one, and a stage's note
+ * naming a relationship type with a hyphen reads `{rel.<type>.out.open}`.
  */
 const TEMPLATE = /\{([a-zA-Z0-9_.-]+)\}/g;
 

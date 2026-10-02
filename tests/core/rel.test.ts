@@ -179,6 +179,25 @@ describe("deriveRel", () => {
     expect(r.ok && r.rel["implements"]?.in.open).toEqual([]);
   });
 
+  // Edges out of order, both ways, and ids whose text order is not their
+  // number order: "10" sorts before "9" as text, after it as an id.
+  it("orders the open ids by id, not by the order the edges came in, either way", () => {
+    const g: Graph = {
+      nodes: [n("1"), n("10"), n("9"), n("11")],
+      relationships: [
+        { from: "10", to: "1", type: "x" },
+        { from: "9", to: "1", type: "x" },
+        { from: "11", to: "1", type: "x" },
+        { from: "1", to: "11", type: "y" },
+        { from: "1", to: "10", type: "y" },
+        { from: "1", to: "9", type: "y" },
+      ],
+    };
+    const r = deriveRel(g, "1", ["x", "y"]);
+    expect(r.ok && r.rel["x"]?.in.open).toEqual(["9", "10", "11"]);
+    expect(r.ok && r.rel["y"]?.out.open).toEqual(["9", "10", "11"]);
+  });
+
   it("zero-fills not.merged when every related node reports merged: true", () => {
     const g: Graph = {
       nodes: [n("1"), pr("pr-1", { merged: true }), pr("pr-2", { merged: true })],
