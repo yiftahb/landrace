@@ -1,0 +1,377 @@
+version: 1
+name: Fastlane
+description: "Small changes from the item's own text: build, review, CI, merged automatically. A person only when it is stuck."
+
+# An item labelled lr:fast is built from its own text — there is no spec —
+# reviewed, put through CI, and merged by Landrace once its checks are green,
+# guarded by the head the checks ran on; then the item is closed. A person is
+# needed only at a halt, or when a cap leaves the item `stuck`.
+#
+# Rulings this file keeps:
+#
+# - A moved head goes back to code review, not straight to CI. A merge that
+#   answered moved is never applied again while the item stays at `merge`, and
+#   the new head may read no checks yet, so a way out that waited on pending or
+#   failed checks would hang. No stage without a step advances a counter, so a
+#   merge ⇄ ci loop could only be bounded by a counter it never moves; and a
+#   head that moved is code nobody reviewed.
+# - The retro goes back to code review: its commits land in the pull request
+#   before the merge, so they are reviewed and checked like any other.
+# - Friction — what sends a green pull request to the retro first — is a
+#   second build (a CI fix or a rework), any fix round, or any reply a person
+#   had to write. The retro runs at most once.
+# - Caps: build 3, CI fixes included; code review 4; fix review 8. At a cap
+#   the item is `stuck`, and waits on a person.
+# - A review that leaves threads open with none awaiting a fix is `stuck`
+#   too: the merge needs every thread resolved, and a thread the fixer
+#   answered waits on a person, never on a step.
+# - `done` closes the item itself, so it closes where the forge links nothing.
+admit: [lr:fast]
+
+# The same three integrations main loads, by the same paths: one project.
+hooks:
+  - ../../hooks/github.ts
+  - ../../hooks/claude.ts
+  - ../../hooks/slack.ts
+
+# Never lr:auto: an item both workflows accepted would be claimed twice and halt.
+eligible:
+  - when: { "node.state.labels": { $in: ["lr:fast"] } }
+    else: "no lr:fast label"
+
+# The default for triage, the one step that names no timeout of its own.
+budget:
+  stepTimeout: 10m
+
+# main's conventions hold here, and for the same reasons (its header says
+# why): `tracker.status` names the stage's own id; an `enter` record comes
+# first, before the status that moves the position; every trigger leaving a
+# stage that runs a step reads `"run.lastOutputValid": null`, so a failed round
+# is only the halts' to route; and wherever it is a person's turn a reply goes
+# to `triage`, which reads it into one closed set of answers.
+#
+# One more, about exits: two triggers leaving one stage are written as each
+# other's negation, never left to overlap. Two matching is an ambiguity halt,
+# and none matching is an item that waits with nothing to say why.
+# tests/workflow/fastlane.test.ts puts every stage's boundary values to them.
+stages:
+  # ── build ────────────────────────────────────────────────────────────────
+  #
+  # The item's own text is the whole brief. Reached fresh, from a red pull
+  # request while builds are left — a CI fix is a build round, within build's
+  # three — and from a person's reply asking for work, uncapped: each one
+  # waits for someone to write.
+  - id: build
+    step: steps/build.md
+    entry: true
+    branch: "landrace/{item}"
+    goto: [{ stage: build, when: { "run.counters.build": { $lt: 3 } } }]
+    triggers:
+      - name: a fresh item
+        when: { "run.stage": null }
+      - name: the checks failed
+        when:
+          "run.stage": ci
+          "rel.implements.in.sum.ciFailed": { $gt: 0 }
+          "run.counters.build": { $lt: 3 }
+      - name: you asked for work
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.outputs.triage.intent": rework
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Building the item, round {round}." }
+      - { type: tracker.status, value: build }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
+
+  # As main's: the push and the pull request land before the position moves,
+  # so a crash between them leaves the item at build to replan both. A later
+  # build round finds its pull request open, and only pushes.
+  - id: publish
+    triggers:
+      - name: the build is done
+        when: { "run.stage": build, "run.lastOutputValid": null, "run.outputs.build.kind": done }
+    on_enter:
+      - { type: branch.push, branch: "landrace/{item}" }
+      - { type: pull.open, branch: "landrace/{item}" }
+      - { type: tracker.status, value: publish }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+
+  # ── review ───────────────────────────────────────────────────────────────
+  #
+  # main's reviewer and fixer, run as they are. Every build is reviewed
+  # through publish, uncapped; every fix within fix review's eight; the
+  # retro's commit once; and a head that moved under the merge within code
+  # review's own four, since that is a loop of merges with no step to count.
+  - id: code-review
+    step: ../main/steps/code-review.md
+    branch: "landrace/{item}"
+    requires: { "rel.implements.in.total": { $gt: 0 } }
+    triggers:
+      - name: the pull request is open
+        when: { "run.stage": publish, "rel.implements.in.total": { $gt: 0 } }
+      - name: the fixer finished a round
+        when:
+          "run.stage": fix-review
+          "run.lastOutputValid": null
+          "run.counters.fix-review": { $lt: 8 }
+      - name: the retro is done
+        when: { "run.stage": retro, "run.lastOutputValid": null }
+      - name: the head moved before the merge
+        when:
+          "run.stage": merge
+          "rel.implements.in.not.merged": { $gt: 0 }
+          "run.counters.code-review": { $lt: 4 }
+    on_enter:
+      # Pushed first: a fix round's or the retro's commits are on the pull
+      # request before the reviewer reads it.
+      - { type: branch.push, branch: "landrace/{item}" }
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
+      - { type: tracker.status, value: code-review }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
+
+  - id: fix-review
+    step: ../main/steps/fix-review.md
+    branch: "landrace/{item}"
+    triggers:
+      - name: the reviewer left threads awaiting a fix
+        when:
+          "run.stage": code-review
+          "run.lastOutputValid": null
+          "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+          "run.counters.code-review": { $lt: 4 }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
+      - { type: tracker.status, value: fix-review }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
+
+  # ── CI and the merge ─────────────────────────────────────────────────────
+  #
+  # A review that settled with every thread resolved waits here for the
+  # checks on the pull request's head. Red goes back to build while builds
+  # are left; green goes to the retro after friction, and to the merge
+  # otherwise. Checks still running match nothing, and the item waits.
+  - id: ci
+    requires: { "rel.implements.in.total": { $gt: 0 } }
+    triggers:
+      - name: the review settled with every thread resolved
+        when:
+          "run.stage": code-review
+          "run.lastOutputValid": null
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": { $gt: 0 }
+          "rel.implements.in.sum.awaitingFix": 0
+          "rel.implements.in.sum.openThreads": 0
+    on_enter:
+      - { type: branch.push, branch: "landrace/{item}" }
+      - { type: tracker.status, value: ci }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+
+  # Once, on the whole history, when the item was corrected on the way. Not
+  # once the pull request merged — a person can merge it by hand — since
+  # lessons committed then land on a branch nothing will merge again.
+  - id: retro
+    step: ../main/steps/retro.md
+    branch: "landrace/{item}"
+    requires: { "rel.implements.in.total": { $gt: 0 } }
+    triggers:
+      - name: the checks passed after corrections
+        when:
+          "run.stage": ci
+          "rel.implements.in.sum.ciPending": 0
+          "rel.implements.in.sum.ciFailed": 0
+          "rel.implements.in.not.merged": { $gt: 0 }
+          "run.counters.retro": { $lt: 1 }
+          $or:
+            - { "run.counters.build": { $gt: 1 } }
+            - { "run.counters.fix-review": { $gt: 0 } }
+            - { "run.counters.triage": { $gt: 0 } }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Learning from this item's corrections, round {round}." }
+      - { type: tracker.status, value: retro }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
+
+  # The retro's trigger, negated: the two never match together. The merge
+  # comes before the status, as publish's push does: a refusal — conflicts,
+  # not mergeable, checks gone red since the read — leaves the item at ci,
+  # where the next tick plans the merge again and halts again with the forge's
+  # reason. A merge that answered moved lands here with the pull request open,
+  # and goes back to review.
+  - id: merge
+    triggers:
+      - name: the checks passed
+        when:
+          "run.stage": ci
+          "rel.implements.in.sum.ciPending": 0
+          "rel.implements.in.sum.ciFailed": 0
+          $or:
+            - $and:
+                - { "run.counters.build": { $lt: 2 } }
+                - { "run.counters.fix-review": { $lt: 1 } }
+                - { "run.counters.triage": { $lt: 1 } }
+            - { "run.counters.retro": { $gte: 1 } }
+            - { "rel.implements.in.not.merged": 0 }
+    on_enter:
+      - { type: pull.merge, branch: "landrace/{item}" }
+      - { type: tracker.status, value: merge }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+
+  # ── terminal ─────────────────────────────────────────────────────────────
+  - id: done
+    terminal: true
+    triggers:
+      - name: merged
+        when:
+          "run.stage": merge
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": 0
+      # The way on to CI, negated: a review that found the pull request
+      # merged — by a person, by hand — has nothing left to check or merge.
+      - name: the pull request was merged by hand
+        when:
+          "run.stage": code-review
+          "run.lastOutputValid": null
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": 0
+          "rel.implements.in.sum.awaitingFix": 0
+          "rel.implements.in.sum.openThreads": 0
+    on_enter:
+      - { type: tracker.status, value: done }
+      - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working"] }
+      - { type: tracker.close }
+
+  # A person asked to drop it. The item is closed; nodes.close cannot close
+  # its pull request here — it drops only what this item's own steps created,
+  # and validate refuses it on a stage whose step does not create items — so
+  # the pull request is left open.
+  - id: closed
+    terminal: true
+    triggers:
+      - name: you asked to close it
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.outputs.triage.intent": close
+    on_enter:
+      - { type: tracker.status, value: closed }
+      - { type: tracker.label, remove: ["lr:fast", "lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
+      - { type: tracker.close }
+
+  # ── a person's turn ──────────────────────────────────────────────────────
+  #
+  # Where a cap leaves the item. Each trigger is the exact negation of the way
+  # on it caps. A person may send it back to build or to review, within those
+  # caps, or reply: work, a close, or a question answered here.
+  - id: stuck
+    waits: person
+    goto:
+      - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
+      - stage: code-review
+        when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } }
+    triggers:
+      # The awaiting-fix count is the condition, as in main's: a last review
+      # that left nothing awaiting a fix goes on to CI instead.
+      - name: the review budget is exhausted
+        when:
+          "run.stage": code-review
+          "run.lastOutputValid": null
+          "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+          "run.counters.code-review": { $gte: 4 }
+      - name: threads are open that no fix awaits
+        when:
+          "run.stage": code-review
+          "run.lastOutputValid": null
+          "rel.implements.in.sum.awaitingFix": 0
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
+      - name: the fix budget is exhausted
+        when:
+          "run.stage": fix-review
+          "run.lastOutputValid": null
+          "run.counters.fix-review": { $gte: 8 }
+      - name: CI is still failing after three builds
+        when:
+          "run.stage": ci
+          "rel.implements.in.sum.ciFailed": { $gt: 0 }
+          "run.counters.build": { $gte: 3 }
+      - name: the head kept moving
+        when:
+          "run.stage": merge
+          "rel.implements.in.not.merged": { $gt: 0 }
+          "run.counters.code-review": { $gte: 4 }
+      - name: your reply changed nothing here
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": stuck
+          "run.outputs.triage.intent": { $in: [question, unclear] }
+    on_enter:
+      - { type: tracker.status, value: stuck }
+      - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
+
+  # The judge, for every reply where it is a person's turn. No round cap:
+  # every trigger here waits for a person's own message. `rework` goes to
+  # build and `close` to closed from wherever the reply was made; a question
+  # or an unclear reply comes home.
+  - id: triage
+    step: steps/triage.md
+    requires: { "run.lastHuman": { $ne: null } }
+    triggers:
+      - name: you replied where it was stuck
+        when: { "run.stage": stuck, "run.lastEvent.actor": human }
+      - name: you replied to a halt
+        when: { "run.stage": blocked, "run.lastEvent.actor": human }
+      - name: you replied to a security refusal
+        when: { "run.stage": screened, "run.lastEvent.actor": human }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reading your reply, round {round}." }
+      - { type: tracker.status, value: triage }
+
+  # ── halts ────────────────────────────────────────────────────────────────
+  #
+  # As main's: Retry is a goto to the step whose failure put the item here,
+  # so the halts list every step, each within its own rounds and only where
+  # it can run. Code review is held to eight, past its loop's four: each
+  # build adds a review through publish, uncapped, and a moved head another.
+  # The retro is held to two — its one round, and one Retry of it.
+  - id: blocked
+    goto: &halt
+      - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
+      - stage: code-review
+        when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
+      - stage: fix-review
+        when: { "run.counters.fix-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
+      - stage: retro
+        when:
+          "run.counters.retro": { $lt: 2 }
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": { $gt: 0 }
+      - stage: triage
+        when: { "run.counters.triage": { $lt: 20 }, "run.lastHuman": { $ne: null } }
+    triggers:
+      # `run.lastRefused` splits every failure between this and `screened`.
+      - name: a step broke its output contract
+        when: { "run.lastOutputValid": false, "run.lastRefused": false }
+      - name: your reply changed nothing here
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": blocked
+          "run.outputs.triage.intent": { $in: [question, unclear] }
+    on_enter:
+      - { type: tracker.status, value: blocked }
+      - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }
+
+  - id: screened
+    goto: *halt
+    triggers:
+      - name: a security check refused a step
+        when: { "run.lastOutputValid": false, "run.lastRefused": true }
+      - name: your reply changed nothing here
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": screened
+          "run.outputs.triage.intent": { $in: [question, unclear] }
+    on_enter:
+      - { type: tracker.status, value: screened }
+      - { type: tracker.label, add: ["lr:blocked", "lr:screened"], remove: ["lr:working", "lr:awaiting"] }

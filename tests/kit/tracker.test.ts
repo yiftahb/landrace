@@ -1,9 +1,11 @@
 import { LABELS, renderMarker, renderOrigin } from "#conventions.js";
+import { compose } from "#kit/compose.js";
 import {
-  botLoginOf, closeSatisfied, commentSatisfied, commentsOf, createdAtOf, labelSatisfied, nodesCloseSatisfied,
-  priorityFromLabels, statusSatisfied, itemNode, updatedAtOf, wroteIt,
+  BRIEF_ITEM_CHARS, botLoginOf, closeSatisfied, commentSatisfied, commentsOf, createdAtOf, labelSatisfied,
+  nodesCloseSatisfied, priorityFromLabels, statusSatisfied, itemNode, updatedAtOf, wroteIt,
 } from "#kit/tracker.js";
-import type { Effect, Node, Snapshot } from "#namespace.js";
+import { MemoryDocs, MemoryForge, MemoryTracker } from "#testing/index.js";
+import type { Effect, HookContext, Node, RuntimeContext, Snapshot } from "#namespace.js";
 
 const BOT = "landrace-bot";
 
@@ -158,5 +160,46 @@ describe("itemNode", () => {
     expect(itemNode({ ...fields, priority: 3 }, BOT).priority).toBe(3);
     expect(itemNode({ ...fields, priority: null }, BOT).priority).toBeNull();
     expect(itemNode({ ...fields, priority: undefined }, BOT).priority).toBe(1);
+  });
+});
+
+/*
+ * `{brief.project.body}`: the item's own text, which is the whole brief of a
+ * workflow with no spec — fastlane's build. Read through `compose`, as a
+ * prompt reads it, so what is checked is the base every tracker inherits:
+ * the in-memory one here, GitHub's in production.
+ */
+describe("the body briefing", () => {
+  const ctx: RuntimeContext = { config: {} as never, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
+  const on = (item: string): HookContext => ({ ...ctx, item, snapshot: {} });
+  const bodyOf = async (body: string): Promise<string | undefined> => {
+    const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "7", body }] }), forge: new MemoryForge() });
+    return (await hooks.source.brief?.(on("7"), new Set(["body"])))?.body;
+  };
+
+  it("is the item's own text", async () => {
+    expect(await bodyOf("Make the save button blue.\n\nOnly on the settings page.")).toBe(
+      "Make the save button blue.\n\nOnly on the settings page.",
+    );
+  });
+
+  it("says so when the item has no text beyond its title, rather than leave a hole in the prompt", async () => {
+    expect(await bodyOf("  \n")).toBe("This item has no description beyond its title.");
+  });
+
+  it("leaves off the marker Landrace stamps on an item it created", async () => {
+    expect(await bodyOf(`Split out: the export.${renderOrigin({ parent: "3", stage: "breakdown", round: 1 })}`))
+      .toBe("Split out: the export.");
+  });
+
+  it("keeps a body at its bound whole, and cuts one past it, saying so", async () => {
+    const whole = "x".repeat(BRIEF_ITEM_CHARS);
+    expect(await bodyOf(whole)).toBe(whole);
+    expect(await bodyOf(`${whole}y`)).toBe(`${whole}…`);
+  });
+
+  it("is a key of the project's own, beside the forge's and the shared history, claimed by no other role", async () => {
+    const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "7" }] }), forge: new MemoryForge(), docs: new MemoryDocs() });
+    expect(Object.keys((await hooks.source.brief?.(on("7"))) ?? {}).sort()).toEqual(["body", "ci", "diff", "history", "threads"]);
   });
 });

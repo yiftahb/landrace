@@ -31,10 +31,10 @@ describe("the shipped .landrace workflow", () => {
 });
 
 describe("the shipped workspace", () => {
-  it("is one workflow, main, with a title, a description and the label it admits", async () => {
+  it("holds main, with a title, a description and the label it admits, beside fastlane", async () => {
     const workspace = await loadWorkspace(".landrace");
-    expect(workspace.workflows.map((w) => w.id)).toEqual(["main"]);
-    const { workflow } = workspace.workflows[0]!;
+    expect(workspace.workflows.map((w) => w.id)).toEqual(["fastlane", "main"]);
+    const { workflow } = workspace.workflows.find((w) => w.id === "main")!;
     expect(workflow.name).toBe("Main");
     expect(workflow.description.trim()).not.toBe("");
     expect(workflow.admit).toEqual(["lr:auto"]);

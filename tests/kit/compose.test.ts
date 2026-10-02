@@ -327,7 +327,7 @@ describe("the briefing", () => {
       "@a-person: first\n\n@a-person: second\n\n" +
       "On PR #1 (merged): src/a.ts:3 — raised by @a-reviewer — open\nRename this.\n\n@a-person: last",
     );
-    expect(Object.keys(brief ?? {}).sort()).toEqual(["ci", "diff", "history", "threads"]);
+    expect(Object.keys(brief ?? {}).sort()).toEqual(["body", "ci", "diff", "history", "threads"]);
   });
 
   it("reads only the keys it is asked for, and every key when it is not told", async () => {
@@ -346,7 +346,7 @@ describe("the briefing", () => {
     expect(Object.keys(ci ?? {})).toEqual(["ci"]);
     expect(ci?.ci).toContain("boom");
 
-    expect(Object.keys((await hooks.source.brief?.(on("1"))) ?? {}).sort()).toEqual(["ci", "diff", "history", "threads"]);
+    expect(Object.keys((await hooks.source.brief?.(on("1"))) ?? {}).sort()).toEqual(["body", "ci", "diff", "history", "threads"]);
   });
 
   it("hands a step the spec page's text under the docs role's own artifact", async () => {

@@ -13,9 +13,9 @@
 import {
   allClosed, CLOSE_EFFECT, entriesFromComments, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES, neutraliseMarkers,
   NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATIONS, renderMarker, renderOrigin, sameLogin,
-  STAGE_LABEL_PREFIX, STATUS_EFFECT, ITEM_KIND,
+  STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND,
 } from "#conventions.js";
-import { commentLine } from "#kit/forge.js";
+import { commentLine, cut } from "#kit/forge.js";
 import type {
   BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, RelationDecl, Relationship,
   RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
@@ -63,6 +63,27 @@ export const DONE_WINDOW_MS = 30 * 86_400_000;
  * to a request that should never have gone out.
  */
 export const MAX_COMMENT_CHARS = 65_536;
+
+/**
+ * How much of an item's own text a prompt is handed: the whole brief of a
+ * step with no spec to work from. Beside the forge's `ci` briefing, which a
+ * build that fixes a red pull request names too, the two stay inside the
+ * engine's 32 KB per hook, so a long description never cuts the logs off.
+ */
+export const BRIEF_ITEM_CHARS = 16_000;
+
+/** Said, so a prompt never shows a hole where the item's text would be. */
+export const NO_ITEM_TEXT = "This item has no description beyond its title.";
+
+/**
+ * `{brief.project.body}`: the item's text as the tracker holds it, without
+ * the marker Landrace stamps on an item it created, and cut at a bound that
+ * says so. Escaping it is the engine's, on the way into the prompt.
+ */
+export function bodyBrief(body: string): string {
+  const text = stripMarker(body);
+  return text === "" ? NO_ITEM_TEXT : cut(text, BRIEF_ITEM_CHARS);
+}
 
 /** The item's comments, as the pre hook put them in the snapshot. */
 export const commentsOf = (s: Snapshot): SnapshotComment[] =>
@@ -351,9 +372,12 @@ export abstract class BaseTracker {
     };
   }
 
-  /** Prompt text under `{brief.project.<key>}`. A tracker's comments reach a step through `history`, so none by default. */
+  /**
+   * Prompt text under `{brief.project.<key>}`: `body`, the item's own text.
+   * Its comments reach a step through `history`, which the composition owns.
+   */
   briefs(): BriefTable {
-    return {};
+    return { body: async (ctx) => bodyBrief((await this.item(ctx.item, ctx)).body) };
   }
 
   /** The item's comments, for the history's one timeline. */
