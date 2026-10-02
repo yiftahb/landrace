@@ -200,13 +200,17 @@ src/config/          landrace.yaml + .env
 src/telemetry/       OpenTelemetry export of events, loaded only when it is on
 src/mcp/             operator tools over stdio
 src/cli/             validate, next, mcp, start, status
-src/testing/         the harness, for testing a workflow of your own
+src/ui/              the board: the triage page and its server, and the display-only table
+                     of the systems a link points into
+src/testing/         `landrace/testing` — the in-memory tracker, forge and docs on the kit's
+                     bases, and the harness, for testing a workflow of your own
 src/conventions.ts   label and marker vocabulary, shared by every hook
 src/sandbox.ts       repository identity; the tmp root locks and worktrees share
 
-integrations/        the integrations landrace ships: claude/ and codex/ on the kit, github/ on its
-                     tracker, forge and docs bases, and slack/ (`landrace/integrations/<vendor>`).
-                     Not part of the engine
+integrations/        the integrations landrace ships (`landrace/integrations/<vendor>`): claude/
+                     and codex/ on the kit; github/ on its tracker, forge and docs bases; gitlab/
+                     on the forge base, jira/ on the tracker base, notion/ on the docs base; and
+                     slack/, the notifier. Not part of the engine
 
 .landrace/
   landrace.yaml      runtime — how agents run, where items live
@@ -221,7 +225,9 @@ Imports inside `src/` and `tests/` go through the `imports` map in `package.json
 — `#core/index.js`, `#namespace.js` — so nothing walks up the tree. Hooks import
 `landrace/hooks`, and hooks and integrations `landrace/kit` too, which is what an external
 author writes; `integrations/` may import nothing else but `node:*`, and a test
-holds it to that.
+holds it to that — as it holds `src/kit/` to `#conventions`, `#namespace`,
+`#hooks/contracts`, `node:*` and its own files, and its logging to a base's, in
+its role's name.
 
 ## Configuration
 
@@ -637,14 +643,15 @@ The functions the bases are made of stay exported, over the same plain shapes, f
 
 | From `landrace/kit` | What it is |
 |---|---|
-| Tracker | `commentsOf`, `wroteIt` and `botLoginOf` — our comments told from a stranger's; `labelSatisfied`, `statusSatisfied`, `commentSatisfied`, `closeSatisfied`, `nodesCloseSatisfied`, one per tracker effect; `itemNode`, `priorityFromLabels`, `createdAtOf`, `updatedAtOf`, `stillOpen`; the paging bounds |
-| Forge | `answered` and `threadCounts` — whose turn a `ReviewThread` is; `placeFindings` for a review's findings on a diff of `ChangedFile`s; `pullNode`, `prBranch`, `itemsNamedBy`; the `threadsBrief` and `diffBrief` briefings, and `historyBrief` over `commentLine` and `threadLine` entries; `pushSatisfied` |
+| Tracker | `commentsOf`, `wroteIt` and `botLoginOf` — our comments told from a stranger's; `labelSatisfied`, `statusSatisfied`, `commentSatisfied`, `closeSatisfied`, `nodesCloseSatisfied`, one per tracker effect, and `closeHow`, the `done` or `dropped` a `tracker.close` asks for; `itemNode`, `priorityFromLabels`, `createdAtOf`, `updatedAtOf`, `stillOpen`; `bodyBrief`, the item's own text for a prompt; the paging bounds |
+| Forge | `answered` and `threadCounts` — whose turn a `ReviewThread` is; `checkCounts`, a `CheckState` as the `ciPending` and `ciFailed` a workflow counts; `placeFindings` for a review's findings on a diff of `ChangedFile`s, cut under the forge's own bound; `pullNode`, `prBranch`, `itemsNamedBy`; `globMatches`, the matcher `pull.merge`'s `refuse` is judged with; the `threadsBrief`, `diffBrief` and `ciBrief` briefings, `fenced` for a log or patch no fence inside can close, and `historyBrief` over `commentLine` and `threadLine` entries; `pushSatisfied` |
 | Docs | `SPEC`, `PUBLISH`, `hashOf`, `contentOf`, `mine`, `briefPage`, `publishSatisfied`, `specNode` |
-| Git | `gitIn`, `repositoryOf`, `ownGit`, `branchHeads`, `headsOf`, `headIn`; `originPushUrl` and `pushBranch`, fast-forward only with hooks off, the credential the hook's own |
+| Git | `gitIn`, `repositoryOf`, `ownGit`, `branchHeads`, `headsOf`, `headIn`; `originPushUrl` and `pushBranch`, fast-forward only with hooks off, the credential the hook's own; `nothingCommitted`, the refusal for a branch nothing was committed to |
+| Refusals | `EffectRefused` and `isEffectRefused` — what an integration throws for an effect it refuses on purpose, and how the engine reads the mark: the stage being entered records it as a rejected round |
 
 An integration keeps what is its vendor's: the client, the queries and their paging, its shapes and the mapping from them, which push URLs it trusts with a token and the scrubbing of it from what git says, and every event and word in its own name (GitHub's `github.issue.skipped`, `github.pages.unknown`). The kit's functions never log; a base logs only in its role's name (`forge.review.*`, `docs.skipped`).
 
-A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", item, title, link, stage, why, board }` — `board` the triage page's URL when one is running, else null. Two notifiers under one id halt at load, naming both modules. `landrace/integrations/slack` is the one landrace ships, and this repository's `.landrace/hooks/slack.ts` re-exports it: it posts `{ text }` to the webhook, mentioning `slackNotifyUser` and linking the item, with the title and why escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal throws Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading.
+A notifier is `{ id, send(event, ctx) }`, and `event` is `{ event: "needs-you", item, workflow, workflowName, title, link, stage, why, board }` — `workflow` the item's workflow by its folder under `workflows/` and `workflowName` by its `name`, `board` the triage page's URL when one is running, else null. Two notifiers under one id halt at load, naming both modules. `landrace/integrations/slack` is the one landrace ships, and this repository's `.landrace/hooks/slack.ts` re-exports it: it posts `{ text }` to the webhook, mentioning `slackNotifyUser` and linking the item, with the title and why escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal throws Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading.
 
 A pre hook declares the snapshot paths it fills, and a source declares which relationship types it reports; `validate`'s `path-coverage` rule is answered from both together with what the engine itself always provides — `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every type the source declares — so a predicate can only read what something actually provides. The shipped GitHub hook's pre hook provides `item` (`.body`, `.comments`), `entries` and `tracker.bot`; the in-memory tracker in `landrace/testing` provides the portable subset of that (no `tracker.bot`). An item's identity, labels and assignees are not among either — they live on the `node` the *source* reads (see [The item graph](#the-item-graph)), not on something a pre hook fetches a second time. `node.state.assignees` is a **list of logins** — GitHub's issue has a list, and the singular `assignee` it also returns is that list's first element under a second name, which disagrees with it the moment an issue has two. It is empty, never absent, when nobody is assigned: a rule reading a path an item does not carry is one the tick cannot answer, and it abstains on those rather than guessing.
 

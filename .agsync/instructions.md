@@ -17,10 +17,13 @@ src/runner/       tick, converge, step, lock, effect dispatch, events
 src/config/       landrace.yaml + .env
 src/mcp/          operator tools over stdio
 src/cli/          validate, next, mcp, start, status
+src/ui/           the board: the triage page, its server, and the display-only table of the systems a link points into
+src/testing/      `landrace/testing`: the in-memory tracker, forge and docs on the kit's bases, and the harness that drives a workflow over them
+src/telemetry/    OpenTelemetry export of the engine's events, off unless asked for
 src/conventions.ts  label and marker vocabulary shared by all of the above
 src/sandbox.ts     repository identity, and the tmp root locks and worktrees share
 
-integrations/     the integrations landrace ships — the coding agents on the kit (claude/, codex/), GitHub on its tracker, forge and docs bases (github/), and the Slack notifier (slack/), each `landrace/integrations/<vendor>`. Not part of the engine.
+integrations/     the integrations landrace ships, each `landrace/integrations/<vendor>` — the coding agents on the kit (claude/, codex/); GitHub on its tracker, forge and docs bases (github/); GitLab on the forge base (gitlab/), Jira on the tracker base (jira/), Notion on the docs base (notion/); and the Slack notifier (slack/). Not part of the engine.
 .landrace/workflows/<id>/  this project's workflows — each a workflow.yaml and its steps/*.md, paths relative to that folder and inside .landrace/. Not part of the engine.
 .landrace/hooks/  this project's integrations, shared by every workflow — GitHub's three roles made into hooks by one `compose` call (github.ts), and one-line re-exports of its coding agent (claude.ts: `new Claude()`) and its notifier (slack.ts). Not part of the engine.
 ```
@@ -64,7 +67,7 @@ This is the project's most important boundary. Two layers, and nothing crosses b
 
 The engine asks *what* (give me the graph, create this child under that parent, close these ids, run this prompt under these capabilities); the hook decides *how* for its vendor. A second tracker, or a second coding agent, is a new hook file, never a change to `src/`.
 
-Enforced: `tests/boundaries.test.ts` fails on "github", "claude" or "codex" anywhere under `src/`, naming the file and line — the kit included — and on an import under `integrations/` other than `landrace/kit`, `landrace/hooks`, `node:*` or a `./<file>.js` beside it. The deliberate exceptions are display-only. For "github", `src/ui/systems.ts`, a table that names the system a link points into; it imports nothing and a test pins that. For "claude" and "codex", `src/ui/chat.ts` and `src/ui/page.ts`, the board's links that open a chat in an editor, and any mention of `CLAUDE.md`, the instructions file comments cite.
+Enforced: `tests/boundaries.test.ts` fails on the name of any integration — every folder under `integrations/`, as a word, in code or a comment — anywhere under `src/`, naming the file and line — the kit included — and on an import under `integrations/` other than `landrace/kit`, `landrace/hooks`, `node:*` or a `./<file>.js` beside it. It holds the kit to its own import list, and its logging to a base's, in its role's name. The deliberate exceptions are display-only. For every vendor, `src/ui/systems.ts`, a table that names the system a link points into; it imports nothing and a test pins that. For "claude" and "codex", `src/ui/chat.ts` and `src/ui/page.ts`, the board's links that open a chat in an editor, and any mention of `CLAUDE.md`, the instructions file comments cite.
 
 If you are about to import a vendor SDK, call a vendor API, or write a vendor's field name into `src/`, you are writing a hook. If a hook seems to need a decision — which stage comes next, whether a step may run — that decision belongs in the engine, expressed as a value the workflow routes on.
 
@@ -95,6 +98,11 @@ types from it and export only values. A type inferred from a runtime value — a
 schema, for instance — is still declared there, in a `export type X = z.infer<typeof
 schema>` line that imports the schema in type position. `namespace.ts` itself exports
 no runtime value, which is what lets the pure core import from it freely.
+
+"The system" is the engine. An integration under `integrations/` keeps its own vendor's
+shapes — the wire types its API answers in, and its own options — beside the code that
+reads them: they are its vendor's, and the engine must never see them. What it maps them
+into, `ItemRecord`, `PullRecord` and the rest, is the namespace's.
 
 ### Ask the graph before you grep
 
