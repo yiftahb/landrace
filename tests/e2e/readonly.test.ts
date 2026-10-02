@@ -461,3 +461,70 @@ describe("telling you an item placed by its own state waits on you", () => {
     expect(await w.sent()).toEqual([]);
   });
 });
+
+/*
+ * Main and the read-only review workflow over one tracker, as a person would
+ * run both: each item is claimed by the one workflow whose `eligible` admits
+ * it and worked by it alone, the review item is never written to while main
+ * writes its own, each is told of once, and every surface that says who is
+ * waiting on you names each item's own workflow.
+ */
+describe("main and a read-only workflow over one tracker", () => {
+  it("works each item by its own workflow, writes nothing to the review, and tells of each once", async () => {
+    const main = await loadShipped();
+    const state = createExternalState({ items: [
+      { id: "1", title: "Add export", labels: ["lr:auto"] },
+      { id: "2", title: "Review MR", labels: ["review-requested"] },
+    ] });
+    const SPEC = '# The spec\n\nDo the thing.\n\n```json\n{"kind":"spec","title":"T"}\n```';
+    const agent: Executor = { id: "agent", run: async () => ({ text: SPEC, sessionId: null }) };
+    const log = createLogger({ sink: () => {} });
+    const stop = new AbortController();
+    const ctx: RuntimeContext = { config: {} as HookContext["config"], secrets: new Map(), signal: stop.signal, log: () => {} };
+    const sent: NotifyEvent[] = [];
+    const chat = defineNotifier({ id: "chat", send: async (e) => { sent.push(e); } });
+    const listed = (id: string, { workflow, steps }: { workflow: Workflow; steps: Map<string, Step> }) => ({
+      id, name: workflow.name, description: workflow.description, source: state.source,
+      deps: {
+        workflow, steps, source: state.source, pre: [state.pre], artifacts: [state.spec], dispatcher: createDispatcher([state.post, state.spec]),
+        executor: agent, ctx, log, scrub: (t: string) => t,
+        notify: createNotify({
+          id, workflow, notify: { on: ["needs-you"], via: ["chat"] }, notifiers: new Map([["chat", chat]]), ctx, log, board: () => null,
+        }),
+      },
+    });
+    const runtime: WorkspaceRuntime = {
+      dir: root, workflows: [listed("main", main), listed("review", review)],
+      preflights: [], intervalMs: 60_000, concurrency: 2, stop, running: new Map(), seen: new Map(), log, ctx,
+    };
+    const registry: Registry = {
+      preflights: [state.preflight], pre: [state.pre], post: [state.post], artifacts: [], source: state.source,
+      operator: state.operator, executors: new Map(), notifiers: new Map(),
+    };
+    const tools = createTools([
+      { id: "main", dir: "/w/workflows/main", workflow: main.workflow, steps: main.steps, registry },
+      { id: "review", dir: "/w/workflows/review", workflow: review.workflow, steps: review.steps, registry },
+    ], ctx, { lock: { root } });
+
+    const ticks = [];
+    for (let tick = 0; tick < 3; tick++) ticks.push(await tickWorkspace({ runtime, lock: { root } }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    for (const rows of ticks) expect(rows.map((r) => [r.item, r.workflow])).toEqual([["1", "main"], ["2", "review"]]);
+    expect(ticks[2]?.map((r) => r.outcome)).toEqual(["wait after 1 pass(es): no trigger matched", "wait after 1 pass(es): no trigger matched"]);
+    // Main wrote its own item, through the same tracker: nothing kept the review's writes from showing.
+    expect(state.writes().some((w) => w.endsWith("#1"))).toBe(true);
+    expect(state.writes().filter((w) => w.endsWith("#2"))).toEqual([]);
+    expect(sent.map((e) => [e.item, e.workflow, e.stage]).sort()).toEqual([["1", "main", "spec-human-review"], ["2", "review", "reviewing"]]);
+
+    expect(await tools.waiting()).toEqual([
+      { item: "1", title: "Add export", url: "memory://items/1", workflow: "main" },
+      { item: "2", title: "Review MR", url: "memory://items/2", workflow: "review" },
+    ]);
+    expect(await tools.items()).toEqual([
+      { item: "1", title: "Add export", workflow: "main", stage: "spec-human-review", lane: "needs-you" },
+      { item: "2", title: "Review MR", workflow: "review", stage: "reviewing", lane: "needs-you" },
+    ]);
+    expect((await tools.workflows()).map((w) => [w.id, w.claimed, w.needsYou])).toEqual([["main", 1, 1], ["review", 1, 1]]);
+  });
+});
