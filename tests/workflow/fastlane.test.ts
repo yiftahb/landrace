@@ -1,10 +1,12 @@
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GOTO_TRIGGER } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
 import { compile, decide, eligibilityOfNode, gotoDeclined, gotoNotListed, missingPaths } from "#core/index.js";
 import { globMatches } from "#kit/forge.js";
-import type { Condition, LoadedWorkflow, Run, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
+import type { Condition, Graph, LoadedWorkflow, Node, Run, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
+import { laneOf, statusRows } from "#runner/status.js";
 import { splitSections } from "#workflow/extend.js";
 import { admitProblems, claimProblems, validate } from "#workflow/validate.js";
 import { loadWorkspace } from "#workflow/workspace.js";
@@ -235,6 +237,51 @@ describe.each(["full-cycle", "fastlane"])("%s's ways the forge can refuse", (id)
         expect([stage.id, removed]).toEqual([stage.id, expect.arrayContaining(["lr:blocked", "lr:screened"])]);
       }
     }
+  });
+});
+
+/*
+ * Both workflows hold an item for its blockers at a stage of one shape:
+ * nobody's turn and no step, so the item rests there by itself under
+ * Waiting, its note naming the blockers still open, its on_enter taking the
+ * working and waiting-on-you labels off. Only the gate sends an item there
+ * — no goto lists it — and it is left for build, or for a person.
+ */
+describe.each([["full-cycle", "blocked"], ["fastlane", "stuck"]])("%s's waiting stage", (id, person) => {
+  const waitingOf = (): Stage => {
+    const found = flow(id).workflow.stages.find((s) => s.id === "waiting");
+    if (!found) throw new Error(`${id} has no stage waiting`);
+    return found;
+  };
+
+  it("runs no step, is nobody's turn, says what it waits on, and takes the working labels off", () => {
+    const waiting = waitingOf();
+    expect([waiting.step, waiting.waits, waiting.goto]).toEqual([undefined, undefined, undefined]);
+    expect(waiting.note).toBe("waiting on {rel.blocked-by.out.open}");
+    expect(waiting.on_enter).toEqual([
+      { type: "tracker.status", value: "waiting" },
+      { type: "tracker.label", remove: ["lr:working", "lr:awaiting"] },
+    ]);
+  });
+
+  it(`is left for build or ${person} alone, and no goto sends an item there`, () => {
+    const { workflow } = flow(id);
+    const leaving = workflow.stages.flatMap((s) => (s.triggers ?? []).filter((t) => t.when["run.stage"] === "waiting").map(() => s.id));
+    expect([...new Set(leaving)].sort()).toEqual(["build", person].sort());
+    expect(workflow.stages.flatMap((s) => gotoTargetsOf(s).map((g) => g.stage))).not.toContain("waiting");
+  });
+
+  it("names the open blockers of an item resting there, never a done one, and files it under Waiting", () => {
+    const { workflow } = flow(id);
+    const item = (key: string, labels: string[], closed: Node["closed"]): Node =>
+      ({ id: key, kind: "item", title: key, link: "", closed, priority: null, origin: null, state: { labels, assignees: [] } });
+    const held = item("12", [...(workflow.admit ?? []), "lr:stage:waiting"], null);
+    const graph: Graph = {
+      nodes: [held, item("10", [], null), item("11", [], "done"), item("9", [], "dropped")],
+      relationships: ["10", "11", "9"].map((to) => ({ from: "12", to, type: "blocked-by" })),
+    };
+    const [row] = statusRows(workflow, [held], graph);
+    expect([row?.note, row && laneOf(row, workflow)]).toEqual(["waiting on #10", "waiting"]);
   });
 });
 
@@ -509,7 +556,8 @@ describe("fastlane's stages", () => {
 
 /** The facts a fastlane trigger reads at one item. */
 interface Facts {
-  stage: string;
+  /** Null for a fresh item, which no stage holds yet. */
+  stage: string | null;
   valid?: false | null;
   refused?: boolean;
   previous?: string;
@@ -528,15 +576,27 @@ interface Facts {
   openThreads?: number;
   ciPending?: number;
   ciFailed?: number;
+  /** Items it is blocked by that are still open: `rel.blocked-by.out.not.closed`. */
+  notClosed?: number;
+  /** Items it is blocked by that are done: closed as completed. */
+  doneBlockers?: number;
+  /** Items it is blocked by that were dropped, which `notClosed` leaves out: `rel.blocked-by.out.dropped`. */
+  droppedBlockers?: number;
+  /** `node.state.dependencyCycle`, which the tracker writes only when it holds: undefined is unwritten. */
+  dependencyCycle?: boolean;
+  /** `node.state.relatedUnreadable`, likewise. */
+  relatedUnreadable?: boolean;
 }
 
 /**
  * The snapshot an item with these facts reads as. A counter at zero is left
  * out, as the engine derives one: a stage that never ran has no counter at
  * all. So are the per-field counts of an item with no pull request, as
- * deriveRel leaves them: `not.merged: 0` is no match there. A build has
- * always run, and an earlier reply's answer is still on the item wherever it
- * is now — a trigger routing on it must not fire elsewhere.
+ * deriveRel leaves them: `not.merged: 0` is no match there — and the
+ * blockers' `not.closed` of an item none of whose blockers is open or done.
+ * A fact the tracker did not write is absent. A build has always run, and
+ * an earlier reply's answer is still on the item wherever it is now — a
+ * trigger routing on it must not fire elsewhere.
  */
 function snapshotOf(f: Facts): Snapshot {
   const run: Run = {
@@ -546,13 +606,13 @@ function snapshotOf(f: Facts): Snapshot {
     next: {},
     outputs: { build: { kind: "done" }, triage: { intent: f.intent ?? "rework" } },
     lastEvent: { actor: f.actor ?? "agent", at: null },
-    lastHuman: f.human ? { stage: f.stage, kind: "human", round: 0, at: "2026-10-02T00:00:00.000Z", byAgent: false } : null,
+    lastHuman: f.human ? { stage: f.stage ?? "-", kind: "human", round: 0, at: "2026-10-02T00:00:00.000Z", byAgent: false } : null,
     lastOutputValid: f.valid ?? null,
     lastRefused: f.valid === false ? f.refused ?? false : null,
     goto: null,
     cleared: null,
     previousStage: f.previous ?? null,
-    failedStages: f.valid === false ? [f.stage] : [],
+    failedStages: f.valid === false && f.stage !== null ? [f.stage] : [],
     failedStage: f.failedStage ?? null,
     unblockedAt: 0,
     pairing: null,
@@ -568,11 +628,30 @@ function snapshotOf(f: Facts): Snapshot {
       total, dropped, is: { merged: total - notMerged }, not: { merged: notMerged }, stage: {},
       sum: { awaitingFix: f.awaitingFix ?? 0, openThreads: f.openThreads ?? 0, ciPending: f.ciPending ?? 0, ciFailed: f.ciFailed ?? 0 },
     };
-  return { run, rel: { implements: { in: counts, out: { total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {} } } } };
+  const none = { total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {}, open: [] };
+  const open = f.notClosed ?? 0;
+  const counted = open + (f.doneBlockers ?? 0);
+  const blockers = {
+    ...none, total: counted, dropped: f.droppedBlockers ?? 0,
+    ...(counted === 0 ? {} : { is: { closed: counted - open }, not: { closed: open } }),
+    open: Array.from({ length: open }, (_, i) => String(10 + i)),
+  };
+  const facts = {
+    ...(f.dependencyCycle === undefined ? {} : { dependencyCycle: f.dependencyCycle }),
+    ...(f.relatedUnreadable === undefined ? {} : { relatedUnreadable: f.relatedUnreadable }),
+  };
+  return {
+    run,
+    node: {
+      id: "1", kind: "item", title: "t", link: "", closed: null, priority: null, origin: null,
+      state: { labels: ["lr:auto", "lr:fast", ...(f.stage === null ? [] : [`lr:stage:${f.stage}`])], assignees: [], ...facts },
+    },
+    rel: { implements: { in: counts, out: none }, "blocked-by": { in: none, out: blockers } },
+  };
 }
 
 /** Each axis's values, every combination of them. A `counters.<stage>` axis sets that counter. */
-function grid(stage: string, axes: Record<string, readonly unknown[]>, base: Partial<Facts> = {}): Facts[] {
+function grid(stage: string | null, axes: Record<string, readonly unknown[]>, base: Partial<Facts> = {}): Facts[] {
   let out: Facts[] = [{ ...base, stage }];
   for (const [axis, values] of Object.entries(axes)) {
     out = out.flatMap((f) => values.map((v): Facts => (axis.startsWith("counters.")
@@ -586,8 +665,33 @@ const count = (f: Facts, stage: string): number => f.counters?.[stage] ?? 0;
 const friction = (f: Facts): boolean => count(f, "build") > 1 || count(f, "fix-review") > 0 || count(f, "triage") > 0;
 const n = (value: number | undefined, otherwise: number): number => value ?? otherwise;
 
+/** A blocker dropped, one not read, or a cycle of them back to the item: a person's to settle. */
+const blockersNeedYou = (f: Facts): boolean =>
+  n(f.droppedBlockers, 0) > 0 || f.dependencyCycle === true || f.relatedUnreadable === true;
+
+/** The gate before build: stuck when the blockers need a person, `open` while one is open, build once none is. */
+const gate = (f: Facts, open: string | null): string | null =>
+  blockersNeedYou(f) ? "stuck" : n(f.notClosed, 0) > 0 ? open : "build";
+
+/** Each blocker count at none, one and two — done ones beside them or not — and each fact unwritten, false and true. */
+const BLOCKERS = {
+  notClosed: [0, 1, 2], doneBlockers: [0, 1], droppedBlockers: [0, 1, 2],
+  dependencyCycle: [undefined, false, true], relatedUnreadable: [undefined, false, true],
+};
+
+/** What the engine leaves out of a snapshot: a counter at zero, a field counted over nothing related, a fact that does not hold. */
+const unwritten = (f: Facts, path: string): boolean =>
+  path.startsWith("run.counters.") ||
+  (path === "rel.blocked-by.out.not.closed" && n(f.notClosed, 0) + n(f.doneBlockers, 0) === 0) ||
+  (path === "node.state.dependencyCycle" && f.dependencyCycle === undefined) ||
+  (path === "node.state.relatedUnreadable" && f.relatedUnreadable === undefined);
+
 /** Each stage, the boundary values its exits read, and where the plan sends an item with those facts — null for a wait. */
 const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => string | null]> = [
+  // Held for its blockers: on to build once none is open or dropped and
+  // neither fact holds, to stuck once one was dropped, cannot be read, or
+  // leads back to the item. One still open is the wait.
+  ["waiting", BLOCKERS, (f) => gate(f, null)],
   // A pull request a person closed unmerged, with nothing open or merged
   // beside it, is their stop: a build done after it goes to stuck, never to
   // publish, which would open another. A replacement they opened is them
@@ -679,10 +783,49 @@ describe("every exit from a fastlane stage is exclusive", () => {
     const anchored = workflow.stages.flatMap((s) => (s.triggers ?? []).filter((t) => t.when["run.stage"] === stage).map((t) => ({ to: s.id, t })));
     expect(anchored.length).toBeGreaterThan(0);
     const missing = facts.filter((f) => n(f.total, 1) > 0).flatMap((f) => anchored.flatMap(({ t }) =>
-      missingPaths(t.when, snapshotOf(f)).filter((p) => !p.startsWith("run.counters."))));
+      missingPaths(t.when, snapshotOf(f)).filter((p) => !unwritten(f, p))));
     expect([...new Set(missing)]).toEqual([]);
     const reached = new Set(facts.flatMap((f) => exitsFrom(workflow, f)));
     expect(anchored.map(({ to: id, t }) => `${id}: ${t.name ?? ""}`).filter((exit) => !reached.has(exit))).toEqual([]);
+  });
+
+  /*
+   * A fresh item is placed by the entry stages' triggers alone (decide's
+   * pickEntry): build when nothing holds it, waiting while a blocker is
+   * open, stuck when one was dropped, cannot be read, or leads back to it.
+   * Exactly one at every boundary, through decide() itself: none matching is
+   * a halt, and two an ambiguity.
+   */
+  it("enters a fresh item at exactly one of build, waiting and stuck, by its blockers", () => {
+    const { workflow } = flow("fastlane");
+    expect(workflow.stages.filter((s) => s.entry).map((s) => s.id).sort()).toEqual(["build", "stuck", "waiting"]);
+    const facts = grid(null, BLOCKERS);
+    const entered = (f: Facts): string => {
+      const d = decide(workflow, snapshotOf(f));
+      return d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`;
+    };
+    expect(facts.map((f) => [label(f), entered(f)])).toEqual(facts.map((f) => [label(f), gate(f, "waiting")]));
+
+    const anchored = workflow.stages.flatMap((s) => (s.triggers ?? []).filter((t) => t.when["run.stage"] === null).map((t) => ({ to: s.id, t })));
+    const missing = facts.flatMap((f) => anchored.flatMap(({ t }) => missingPaths(t.when, snapshotOf(f)).filter((p) => !unwritten(f, p))));
+    expect([...new Set(missing)]).toEqual([]);
+    const reached = new Set(facts.flatMap((f) => exitsFrom(workflow, f)));
+    expect(anchored.map(({ to: id, t }) => `${id}: ${t.name ?? ""}`).filter((exit) => !reached.has(exit))).toEqual([]);
+  });
+
+  /*
+   * A person's Retry or "Go to step… build", from stuck or a halt, is
+   * theirs to make: the gate is read only on the way the workflow takes on
+   * its own, so the item goes to build whatever its blockers say.
+   */
+  it.each(["stuck", "blocked", "screened"])("from %s, a goto to build is taken with a blocker open, dropped, unread or on a cycle", (from) => {
+    const { workflow } = flow("fastlane");
+    const held: Array<Partial<Facts>> = [{ notClosed: 1 }, { droppedBlockers: 1 }, { relatedUnreadable: true }, { dependencyCycle: true }];
+    for (const blockers of held) {
+      const s = snapshotOf({ stage: from, human: true, failedStage: "build", counters: { build: 1 }, ...blockers });
+      const sent = { ...s, run: { ...(s.run as Run), goto: "build" } } as Snapshot;
+      expect([blockers, decide(workflow, sent)]).toEqual([blockers, expect.objectContaining({ action: "transition", trigger: GOTO_TRIGGER, to: expect.objectContaining({ id: "build" }) })]);
+    }
   });
 
   it.each(STEPPED.flatMap((stage) => [false, true].map((refused) => [stage, refused] as const)))(
@@ -705,7 +848,7 @@ describe("every exit from a fastlane stage is exclusive", () => {
    * there for them. A Retry from `screened` the forge refused goes to
    * `blocked`: the newest failure is the forge's, not a security check's.
    */
-  it.each(["publish", "ci", "merge", "stuck", "blocked", "screened"])("a refused way on from %s goes to blocked alone", (stage) => {
+  it.each(["publish", "ci", "merge", "waiting", "stuck", "blocked", "screened"])("a refused way on from %s goes to blocked alone", (stage) => {
     const axes = Object.fromEntries(Object.entries(STAGES.find(([id]) => id === stage)?.[1] ?? {}).filter(([axis]) => axis !== "actor"));
     const facts = grid(stage, axes, { valid: false, refused: false, actor: "agent" });
     const halt = (f: Facts): string[] => stage !== "blocked"

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { outputValueProblem } from "#conventions.js";
 import { decide } from "#core/decide.js";
-import type { Node, Snapshot } from "#namespace.js";
+import type { Node, Rel, Snapshot } from "#namespace.js";
 import { laneOf, statusRows } from "#runner/status.js";
 import { renderPrompt } from "#runner/step.js";
 import { loadShipped } from "#tests/support/shipped.js";
@@ -83,11 +83,16 @@ describe("the shipped workflow puts an item in Needs you where it is a person's 
     [["lr:auto", "lr:stage:blocked", "lr:blocked"], "needs-you"],
     [["lr:auto", "lr:stage:build", "lr:working"], "waiting"],
     [["lr:auto", "lr:stage:triage", "lr:working"], "waiting"],
+    // Held for its blockers, nobody's turn — even before the approval's lr:awaiting comes off.
+    [["lr:auto", "lr:stage:waiting"], "waiting"],
+    [["lr:auto", "lr:stage:waiting", "lr:awaiting"], "waiting"],
     [["lr:auto", "lr:stage:done"], "discharged"],
   ])("files %j under %s", async (labels, lane) => {
     const { workflow } = await loadShipped();
     const [row] = statusRows(workflow, [node(labels)]);
-    expect(row && laneOf(row, workflow)).toBe(lane);
+    // At the stage its label names: a label naming no stage reads as nowhere, and queued.
+    const at = labels.find((l) => l.startsWith("lr:stage:"))?.slice("lr:stage:".length);
+    expect([row?.stage, row && laneOf(row, workflow)]).toEqual([at, lane]);
   });
 });
 
@@ -202,6 +207,56 @@ const destination = async (s: Snapshot): Promise<string> => {
   const d = decide(workflow, s);
   return d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`;
 };
+
+/*
+ * Nothing the item is blocked by may still be open when it is built. The
+ * gate is three conditions on its blockers, each the others' negation:
+ * none open or dropped and neither fact — build; one open — waiting; one
+ * dropped, one not read, or a cycle back to the item — a person, at
+ * blocked. "None" and "not true" are spelt as negations, since an item with
+ * no blockers has no `not.closed` and the tracker writes a fact only when it
+ * holds: `0` or `false` there would hold every such item for good.
+ */
+const FREE = {
+  "rel.blocked-by.out.not.closed": { $not: { $gt: 0 } },
+  "rel.blocked-by.out.dropped": { $not: { $gt: 0 } },
+  "node.state.dependencyCycle": { $ne: true },
+  "node.state.relatedUnreadable": { $ne: true },
+};
+
+/** An item's blockers, as deriveRel and the tracker leave them: no `not.closed` when none is open or done, a fact only when written. */
+type Blockers = { open: number; done: number; dropped: number; dependencyCycle?: boolean; relatedUnreadable?: boolean };
+
+const blockedBy = (s: Snapshot, b: Blockers): Snapshot => {
+  const node = s.node as Node;
+  const none = { total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {}, open: [] };
+  const counted = b.open + b.done;
+  return {
+    ...s,
+    node: { ...node, state: {
+      ...node.state,
+      ...(b.dependencyCycle === undefined ? {} : { dependencyCycle: b.dependencyCycle }),
+      ...(b.relatedUnreadable === undefined ? {} : { relatedUnreadable: b.relatedUnreadable }),
+    } },
+    rel: { ...(s.rel as Rel), "blocked-by": { in: none, out: {
+      ...none, total: counted, dropped: b.dropped,
+      ...(counted === 0 ? {} : { is: { closed: b.done }, not: { closed: b.open } }),
+      open: Array.from({ length: b.open }, (_, i) => String(10 + i)),
+    } } },
+  } as Snapshot;
+};
+
+/** Each count at none, one and two — done blockers beside them or not — and each fact unwritten, false and true. */
+const BLOCKERS: Blockers[] = [0, 1, 2].flatMap((open) => [0, 1].flatMap((done) => [0, 1, 2].flatMap((dropped) =>
+  [undefined, false, true].flatMap((dependencyCycle) => [undefined, false, true].map((relatedUnreadable): Blockers => ({
+    open, done, dropped,
+    ...(dependencyCycle === undefined ? {} : { dependencyCycle }),
+    ...(relatedUnreadable === undefined ? {} : { relatedUnreadable }),
+  }))))));
+
+/** Where the gate sends an item: blocked when its blockers need a person, `open` while one is open, build once none is. */
+const gate = (b: Blockers, open: string): string =>
+  b.dropped > 0 || b.dependencyCycle === true || b.relatedUnreadable === true ? "blocked" : b.open > 0 ? open : "build";
 
 describe("the shipped workflow reads every reply with one judge, and sends each answer somewhere", () => {
   // No round cap: each round waits for a person to write, which is bound
@@ -400,17 +455,71 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     }
   });
 
-  it("builds only from an approved spec, a spec amended on the pull request, one written together, or when a person sends it back", async () => {
+  it("builds only from an approved spec, a spec amended on the pull request, one written together, or when a person sends it back — each once nothing holds it — or once its blockers are done", async () => {
     const { workflow } = await loadShipped();
     expect(workflow.stages.find((s) => s.id === "build")?.triggers?.map((t) => t.when)).toEqual([{
       "run.stage": "triage", "run.lastOutputValid": null,
-      "run.previousStage": "spec-human-review", "run.outputs.triage.intent": "approve",
+      "run.previousStage": "spec-human-review", "run.outputs.triage.intent": "approve", ...FREE,
     }, {
       "run.stage": "spec", "run.lastOutputValid": null, "run.outputs.spec.kind": "spec", "run.lastOutputBy": "agent",
-      "rel.implements.in.total": { $gt: 0 }, "run.outputs.triage.intent": "revise",
+      "rel.implements.in.total": { $gt: 0 }, "run.outputs.triage.intent": "revise", ...FREE,
     }, {
-      "run.stage": "spec", "run.lastOutputValid": null, "run.outputs.spec.kind": "spec", "run.lastOutputBy": "pair",
+      "run.stage": "spec", "run.lastOutputValid": null, "run.outputs.spec.kind": "spec", "run.lastOutputBy": "pair", ...FREE,
+    }, {
+      "run.stage": "waiting", "run.lastOutputValid": null, ...FREE,
     }]);
+  });
+});
+
+describe("the shipped workflow builds nothing while an item it is blocked by is open", () => {
+  const noPull = { total: 0, merged: 0, awaitingFix: 0 };
+  const WAYS_TO_BUILD: Array<[string, Snapshot]> = [
+    ["you approved the spec", snapshotAt("triage", {
+      previousStage: "spec-human-review", outputs: { spec: { kind: "spec" }, triage: { intent: "approve" } },
+      rounds: { triage: { entered: 1, output: 1 } },
+    }, noPull)],
+    ["you amended the spec on the pull request", snapshotAt("spec", {
+      outputs: { spec: { kind: "spec" }, triage: { intent: "revise" } }, rounds: { spec: { entered: 2, output: 2 } },
+      counters: { spec: 2, triage: 2, build: 1, "code-review": 1 },
+    })],
+    ["you wrote the spec together", snapshotAt("spec", {
+      outputs: { spec: { kind: "spec" } }, rounds: { spec: { entered: 1, output: 1 } }, counters: { spec: 1 }, lastOutputBy: "pair",
+    }, noPull)],
+  ];
+
+  /** Where decide() sends an item with each of these blockers, the workflow loaded once for all of them. */
+  const sweep = async (at: Snapshot): Promise<Array<[Blockers, string]>> => {
+    const { workflow } = await loadShipped();
+    return BLOCKERS.map((b) => {
+      const d = decide(workflow, blockedBy(at, b));
+      return [b, d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`];
+    });
+  };
+
+  it.each(WAYS_TO_BUILD)("%s: goes to build, waiting or blocked by its blockers, exactly one of them", async (_, at) => {
+    expect(await sweep(at)).toEqual(BLOCKERS.map((b) => [b, gate(b, "waiting")]));
+  });
+
+  // The spec was approved; only its blockers are left to wait for.
+  it("leaves waiting for build once its blockers are done, for blocked once they need a person, and waits while one is open", async () => {
+    const waiting = snapshotAt("waiting", {
+      outputs: { spec: { kind: "spec" }, triage: { intent: "approve" } }, counters: { spec: 1, triage: 1 },
+    }, noPull);
+    expect(await sweep(waiting)).toEqual(BLOCKERS.map((b) => [b, gate(b, "wait: no trigger matched")]));
+  });
+
+  /*
+   * A person's Retry or "Go to step… build" from a halt is theirs to make:
+   * the gate is read only on the ways the workflow takes on its own.
+   */
+  it.each(["blocked", "screened"])("from %s, a person's goto to build is taken whatever its blockers say", async (halt) => {
+    const held: Blockers[] = [
+      { open: 1, done: 0, dropped: 0 }, { open: 0, done: 0, dropped: 1 },
+      { open: 0, done: 0, dropped: 0, relatedUnreadable: true }, { open: 0, done: 0, dropped: 0, dependencyCycle: true },
+    ];
+    for (const b of held) {
+      expect([b, await destination(blockedBy(snapshotAt(halt, { goto: "build", failedStage: "build" }, noPull), b))]).toEqual([b, "build"]);
+    }
   });
 });
 

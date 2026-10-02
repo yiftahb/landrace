@@ -99,9 +99,37 @@ budget:
 # and none matching is an item that waits with nothing to say why.
 # tests/workflow/fastlane.test.ts puts every stage's boundary values to them.
 stages:
+  # ── waiting on blockers ──────────────────────────────────────────────────
+  #
+  # full-cycle's gate, read where fastlane starts: an item is built only once
+  # nothing it is blocked by is still open (full-cycle's `waiting` says why
+  # each count and fact is spelt as it is). Three entry stages take a fresh
+  # item between them, by three conditions each the others' negation: none
+  # open, none dropped and neither fact — build; one open — here, nobody's
+  # turn, the note naming the blockers left; one dropped, the item on a
+  # cycle of blockers, or its blockers not all read — stuck, for a person.
+  # From here the same two ways on: build once none is open, stuck once they
+  # need a person. A person's Retry or "Go to step… build" reads no gate:
+  # that is theirs to decide.
+  - id: waiting
+    entry: true
+    note: "waiting on {rel.blocked-by.out.open}"
+    triggers:
+      - name: a fresh item, and a blocker is open
+        when:
+          "run.stage": null
+          "rel.blocked-by.out.not.closed": { $gt: 0 }
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": { $ne: true }
+    on_enter:
+      - { type: tracker.status, value: waiting }
+      - { type: tracker.label, remove: ["lr:working", "lr:awaiting"] }
+
   # ── build ────────────────────────────────────────────────────────────────
   #
-  # The item's own text is the whole brief. Reached fresh, from a red pull
+  # The item's own text is the whole brief. Reached fresh, or from
+  # `waiting`, once nothing it is blocked by is open; from a red pull
   # request while builds are left — a CI fix is a build round, within build's
   # three — and from a person's reply asking for work, uncapped: each one
   # waits for someone to write.
@@ -112,7 +140,20 @@ stages:
     goto: [{ stage: build, when: { "run.counters.build": { $lt: 3 } } }]
     triggers:
       - name: a fresh item
-        when: { "run.stage": null }
+        when:
+          "run.stage": null
+          "rel.blocked-by.out.not.closed": { $not: { $gt: 0 } }
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": { $ne: true }
+      - name: its blockers are done
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          "rel.blocked-by.out.not.closed": { $not: { $gt: 0 } }
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": { $ne: true }
       - name: the checks failed
         when:
           "run.stage": ci
@@ -408,16 +449,34 @@ stages:
 
   # ── a person's turn ──────────────────────────────────────────────────────
   #
-  # Where a cap leaves the item. Each trigger is the exact negation of the way
-  # on it caps. A person may send it back to build or to review, within those
-  # caps, or reply: work, a close, or a question answered here.
+  # Where a cap leaves the item, and blockers a person has to settle. Each
+  # cap's trigger is the exact negation of the way on it caps, and the
+  # blockers' is the gate's third condition. A person may send it back to
+  # build or to review, within those caps, or reply: work, a close, or a
+  # question answered here.
   - id: stuck
+    entry: true
     waits: person
     goto:
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
       - stage: code-review
         when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } }
     triggers:
+      # The gate's third condition (see `waiting`), fresh and at `waiting`:
+      # a blocker dropped, one not read, or a cycle of blockers back to the
+      # item is a person's to settle, and "Go to step… build" sends it on.
+      - name: a fresh item, but a blocker was dropped or cannot be read, or the item waits on itself
+        when:
+          "run.stage": null
+          $or: &blockers-need-you
+            - { "rel.blocked-by.out.dropped": { $gt: 0 } }
+            - { "node.state.dependencyCycle": true }
+            - { "node.state.relatedUnreadable": true }
+      - name: a blocker was dropped or cannot be read, or the item waits on itself
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          $or: *blockers-need-you
       # The awaiting-fix count is the condition, as in full-cycle's: a last review
       # that left nothing awaiting a fix goes on to CI instead.
       - name: the review budget is exhausted
