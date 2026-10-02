@@ -82,7 +82,7 @@ left → skip to Step 8 and answer `nothing`.
 **Step 4 — Pick the narrowest file for each lesson.** The one file whose agents
 would have avoided the mistake:
 
-* A lesson about one stage goes in `.landrace/workflows/main/steps/<stage>.md` — the spec,
+* A lesson about one stage goes in `.landrace/workflows/full-cycle/steps/<stage>.md` — the spec,
   build, code-review, fix-review, triage or this retro's own prompt. Edit only
   the prompt below the file's closing `---`: the front matter above it —
   capabilities, model, timeout, output and routes — is configuration, as out

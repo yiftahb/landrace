@@ -34,7 +34,7 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 #   So is a pull request the forge will not open or close.
 admit: [lr:fast]
 
-# The same three integrations main loads, by the same paths: one project.
+# The same three integrations full-cycle loads, by the same paths: one project.
 hooks:
   - ../../hooks/github.ts
   - ../../hooks/claude.ts
@@ -49,14 +49,14 @@ eligible:
 budget:
   stepTimeout: 10m
 
-# main's conventions hold here, and for the same reasons (its header says
+# full-cycle's conventions hold here, and for the same reasons (its header says
 # why): `tracker.status` names the stage's own id; an `enter` record comes
 # first, before the status that moves the position; every trigger leaving a
 # stage that runs a step reads `"run.lastOutputValid": null`, so a failed round
 # is only the halts' to route; and wherever it is a person's turn a reply goes
 # to `triage`, which reads it into one closed set of answers.
 #
-# And main's rule for the ways the forge can refuse: every trigger leaving a
+# And full-cycle's rule for the ways the forge can refuse: every trigger leaving a
 # stage with no step reads `"run.lastOutputValid": null` too, unless it waits
 # on a person's own message. A refused merge, pull request or close is the
 # rejected round of the stage being entered, read where the item still
@@ -100,7 +100,7 @@ stages:
       - { type: tracker.status, value: build }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
-  # As main's: the push and the pull request land before the position moves,
+  # As full-cycle's: the push and the pull request land before the position moves,
   # so a crash between them leaves the item at build to replan both, and the
   # `enter` record before them, so a refusal of either is publish's rejected
   # round. A later build round finds its pull request open, and only pushes.
@@ -117,7 +117,7 @@ stages:
 
   # ── review ───────────────────────────────────────────────────────────────
   #
-  # main's reviewer and fixer, shown the item's own text where main's are
+  # full-cycle's reviewer and fixer, shown the item's own text where full-cycle's are
   # shown the spec, and otherwise as they are. Every build is reviewed
   # through publish, uncapped; every fix within fix review's eight; the
   # retro's commit once; and a head that moved under the merge, or a thread
@@ -329,7 +329,7 @@ stages:
       - stage: code-review
         when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } }
     triggers:
-      # The awaiting-fix count is the condition, as in main's: a last review
+      # The awaiting-fix count is the condition, as in full-cycle's: a last review
       # that left nothing awaiting a fix goes on to CI instead.
       - name: the review budget is exhausted
         when:
@@ -418,7 +418,7 @@ stages:
 
   # ── halts ────────────────────────────────────────────────────────────────
   #
-  # As main's: Retry is a goto to the step whose failure put the item here,
+  # As full-cycle's: Retry is a goto to the step whose failure put the item here,
   # so the halts list every step, each within its own rounds and only where
   # it can run. Code review is held to eight, past its loop's four: each
   # build adds a review through publish, uncapped, and a moved head another.

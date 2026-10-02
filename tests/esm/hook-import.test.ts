@@ -42,13 +42,13 @@ describe("hook modules are imported from disk and classified by their brand", ()
 
   /**
    * The integration this repository actually runs, loaded the way the CLI
-   * loads it: the path out of `.landrace/workflows/main/workflow.yaml`,
+   * loads it: the path out of `.landrace/workflows/full-cycle/workflow.yaml`,
    * resolved against that folder inside the `.landrace/` workspace. If the
    * engine's idea of a hook and the reference implementation's ever drift
    * apart, this is what says so.
    */
   it("loads the shipped tracker integration into every slot it fills", async () => {
-    const registry = await loadHooks({ dir: ".landrace/workflows/main", modules: ["../../hooks/github.ts"], workspace: ".landrace" });
+    const registry = await loadHooks({ dir: ".landrace/workflows/full-cycle", modules: ["../../hooks/github.ts"], workspace: ".landrace" });
 
     // Two pre hooks out of one module: the tracker's own, and the observe
     // half of the spec artifact, which the loader files for it. The order is

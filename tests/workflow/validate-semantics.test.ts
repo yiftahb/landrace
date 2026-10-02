@@ -360,7 +360,7 @@ describe("semantic validation", () => {
   // C1 — a stage with a step but no declared output can never be marked
   // complete by assess() (it only ever sees run.outputs[stage.id] ===
   // undefined), so decide() invokes it forever. This was live in the shipped
-  // .landrace/workflows/main/workflow.yaml for build, code-review and fix-review: 30 paid
+  // .landrace/workflows/full-cycle/workflow.yaml for build, code-review and fix-review: 30 paid
   // opus invocations in a single converge() call, then the same again on the
   // next poll. Under current assess() semantics such a stage is
   // unreachable-past, so it belongs with the other reachability rules.

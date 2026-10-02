@@ -1,5 +1,5 @@
 ---
-extends: ../../main/steps/code-review.md
+extends: ../../full-cycle/steps/code-review.md
 ---
 
 Review the pull request for #{node.id} against its spec. Your working

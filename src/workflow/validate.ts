@@ -934,7 +934,7 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   // returns no effects at all for a step with none). A stage like this is
   // therefore unreachable-past: decide() invokes it, forever, on every
   // single pass, no matter how many times it runs. This was live in
-  // .landrace/workflows/main/workflow.yaml for build, code-review and fix-review — 30 paid
+  // .landrace/workflows/full-cycle/workflow.yaml for build, code-review and fix-review — 30 paid
   // opus invocations in one converge() call, then the same again on the
   // next poll.
   //

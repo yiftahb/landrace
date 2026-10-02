@@ -1,5 +1,5 @@
 ---
-extends: ../../main/steps/fix-review.md
+extends: ../../full-cycle/steps/fix-review.md
 ---
 
 Address the open review threads across the pull requests for #{node.id}, and

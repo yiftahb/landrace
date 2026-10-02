@@ -79,7 +79,7 @@ async function filesUnder(dir: string): Promise<string[]> {
 
 describe("the .landrace workspace", () => {
   it("holds fastlane beside main, each started by a label of its own", () => {
-    expect(workspace.workflows.map((w) => w.id)).toEqual(["fastlane", "main"]);
+    expect(workspace.workflows.map((w) => w.id)).toEqual(["fastlane", "full-cycle"]);
     const { workflow } = flow("fastlane");
     expect(workflow.name).toBe("Fastlane");
     expect(workflow.description.trim()).not.toBe("");
@@ -95,8 +95,8 @@ describe("the .landrace workspace", () => {
     // And not by abstaining: both rules are labels alone, and each refuses the other's label.
     expect(accepts(flow("fastlane").workflow, ["lr:fast"])).toBe(true);
     expect(accepts(flow("fastlane").workflow, ["lr:auto"])).toBe(false);
-    expect(accepts(flow("main").workflow, ["lr:auto"])).toBe(true);
-    expect(accepts(flow("main").workflow, ["lr:fast"])).toBe(false);
+    expect(accepts(flow("full-cycle").workflow, ["lr:auto"])).toBe(true);
+    expect(accepts(flow("full-cycle").workflow, ["lr:fast"])).toBe(false);
   });
 
   it("leaves lr:fast to the workflow: the engine names it nowhere", async () => {
@@ -115,7 +115,7 @@ describe("the .landrace workspace", () => {
  * ambiguity where no board shows it. A person's own message is outdated by
  * the record, which is the bot's, so a trigger reading one needs nothing.
  */
-describe.each(["main", "fastlane"])("%s's ways the forge can refuse", (id) => {
+describe.each(["full-cycle", "fastlane"])("%s's ways the forge can refuse", (id) => {
   const PULL_EFFECTS = ["pull.open", "pull.merge", "pull.close"];
   const workflowOf = (): Workflow => flow(id).workflow;
   const pullingIn = (w: Workflow): Stage[] => w.stages.filter((s) => !s.step && (s.on_enter ?? []).some((e) => PULL_EFFECTS.includes(e.type)));
@@ -134,7 +134,7 @@ describe.each(["main", "fastlane"])("%s's ways the forge can refuse", (id) => {
 
   it("writes its entry record first wherever a stage with no step opens, merges or closes a pull request", () => {
     const pulling = pullingIn(workflowOf());
-    expect(pulling.map((s) => s.id).sort()).toEqual(id === "main" ? ["publish"] : ["closed", "merge", "publish"]);
+    expect(pulling.map((s) => s.id).sort()).toEqual(id === "full-cycle" ? ["publish"] : ["closed", "merge", "publish"]);
     for (const stage of pulling) {
       expect([stage.id, stage.on_enter?.[0]]).toEqual([stage.id, expect.objectContaining({ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" })]);
     }
@@ -179,7 +179,7 @@ const RETRO_NOBODY = "but no person\nreads it, or the commit, before the merge: 
 describe("fastlane's steps", () => {
   it("builds on main's build, from the item's own text and its checks rather than a spec", () => {
     const { prompt, ...front } = stepOf("fastlane", "steps/build.md");
-    const { prompt: base, ...baseFront } = stepOf("main", "steps/build.md");
+    const { prompt: base, ...baseFront } = stepOf("full-cycle", "steps/build.md");
     expect(front).toEqual(baseFront);
     expect(splitSections(prompt).sections.map((s) => s.heading)).toEqual(splitSections(base).sections.map((s) => s.heading));
     for (const heading of ["Procedure", "Rules"]) expect(sectionOf(prompt, heading)).toBe(sectionOf(base, heading));
@@ -198,7 +198,7 @@ describe("fastlane's steps", () => {
 
   it("judges a reply with main's judge, into four answers of its own", () => {
     const triage = stepOf("fastlane", "steps/triage.md");
-    const base = stepOf("main", "steps/triage.md");
+    const base = stepOf("full-cycle", "steps/triage.md");
     expect({ model: triage.model, capabilities: triage.capabilities }).toEqual({ model: base.model, capabilities: base.capabilities });
     // main's lead, and no item: a body the screener refuses would refuse every reply too.
     expect(splitSections(triage.prompt).lead.trim()).toBe(splitSections(base.prompt).lead.trim());
@@ -225,7 +225,7 @@ describe("fastlane's steps", () => {
   it.each(["code-review", "fix-review", "retro"])("runs main's %s with the item's own text where main's has the spec", (id) => {
     expect(stageOf(id).step).toBe(`steps/${id}.md`);
     const { prompt, ...front } = stepOf("fastlane", `steps/${id}.md`);
-    const { prompt: base, ...baseFront } = stepOf("main", `steps/${id}.md`);
+    const { prompt: base, ...baseFront } = stepOf("full-cycle", `steps/${id}.md`);
     expect(front).toEqual(baseFront);
 
     const own = splitSections(prompt).sections;
@@ -264,7 +264,7 @@ describe("fastlane's steps", () => {
 
   // A lesson that narrowed this back would let a retro rewrite the routing,
   // or the agents' configuration, that merges its own commit.
-  it.each(["main", "fastlane"])("keeps %s's retro off every workflow and the configuration", (id) => {
+  it.each(["full-cycle", "fastlane"])("keeps %s's retro off every workflow and the configuration", (id) => {
     const rules = sectionOf(stepOf(id, "steps/retro.md").prompt, "Rules") ?? "";
     expect(rules).toContain("`.landrace/workflows/*/workflow.yaml`");
     expect(rules).toContain("`.landrace/landrace.yaml`");

@@ -478,8 +478,8 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
   build: '```json\n{"kind":"done"}\n```',
   "code-review": '```json\n{"kind":"reviewed"}\n```',
   "fix-review": '```json\n{"kind":"addressed"}\n```',
-  retro: '- `.landrace/workflows/main/steps/build.md`: builds skipped the lint run a reviewer then flagged\n\n' +
-    '```json\n{"kind":"learned","changes":[{"file":".landrace/workflows/main/steps/build.md","why":"builds skipped the lint run"}]}\n```',
+  retro: '- `.landrace/workflows/full-cycle/steps/build.md`: builds skipped the lint run a reviewer then flagged\n\n' +
+    '```json\n{"kind":"learned","changes":[{"file":".landrace/workflows/full-cycle/steps/build.md","why":"builds skipped the lint run"}]}\n```',
 };
 
 describe("the §10 cycle, including a fix that does not satisfy the reviewer", () => {
@@ -1772,7 +1772,7 @@ describe("telling a person an item needs them", () => {
 
     expect((await converge()).trail).toEqual(["spec", "spec-questions"]);
     expect(posts).toEqual([{
-      event: "needs-you", item: "1", workflow: "main", workflowName: "Main", title: "Add export",
+      event: "needs-you", item: "1", workflow: "main", workflowName: "Full cycle", title: "Add export",
       link: expect.any(String) as unknown as string, stage: "spec-questions", why: "waiting on you", board: null,
     }]);
 

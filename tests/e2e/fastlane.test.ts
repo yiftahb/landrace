@@ -47,8 +47,8 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
   build: json({ kind: "done" }),
   "code-review": json({ kind: "reviewed" }),
   "fix-review": json({ kind: "addressed" }),
-  retro: `- \`.landrace/workflows/main/steps/build.md\`: the build skipped the test run CI then failed\n\n${json({
-    kind: "learned", changes: [{ file: ".landrace/workflows/main/steps/build.md", why: "the build skipped the test run" }],
+  retro: `- \`.landrace/workflows/full-cycle/steps/build.md\`: the build skipped the test run CI then failed\n\n${json({
+    kind: "learned", changes: [{ file: ".landrace/workflows/full-cycle/steps/build.md", why: "the build skipped the test run" }],
   })}`,
 };
 
@@ -624,7 +624,7 @@ describe("fastlane, end to end", () => {
       running: new Map(), seen: new Map(), log, ctx: runtimeCtx,
     };
 
-    expect(await tickWorkspace({ runtime, lock: { root } })).toEqual([{ item: "1", outcome: "claimed by fastlane and main" }]);
+    expect(await tickWorkspace({ runtime, lock: { root } })).toEqual([{ item: "1", outcome: "claimed by fastlane and full-cycle" }]);
     expect(ran).toEqual([]);
     expect(state.writes()).toEqual([]);
     expect(state.item("1").labels).toEqual(["lr:auto", "lr:fast"]);

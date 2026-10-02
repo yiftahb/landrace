@@ -1,5 +1,5 @@
 ---
-extends: ../../main/steps/build.md
+extends: ../../full-cycle/steps/build.md
 ---
 ## What to build
 

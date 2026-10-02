@@ -24,7 +24,7 @@ import { readClaudeSettings } from "landrace/integrations/claude";
  */
 describe("the shipped .landrace workflow", () => {
   it("reads no path the graph removed", async () => {
-    const text = await readFile(".landrace/workflows/main/workflow.yaml", "utf8");
+    const text = await readFile(".landrace/workflows/full-cycle/workflow.yaml", "utf8");
     expect(text).not.toMatch(/artifacts\.pr\./);
     expect(text).not.toMatch(/"item\.labels"/);
   });
@@ -33,9 +33,9 @@ describe("the shipped .landrace workflow", () => {
 describe("the shipped workspace", () => {
   it("holds main, with a title, a description and the label it admits, beside fastlane", async () => {
     const workspace = await loadWorkspace(".landrace");
-    expect(workspace.workflows.map((w) => w.id)).toEqual(["fastlane", "main"]);
-    const { workflow } = workspace.workflows.find((w) => w.id === "main")!;
-    expect(workflow.name).toBe("Main");
+    expect(workspace.workflows.map((w) => w.id)).toEqual(["fastlane", "full-cycle"]);
+    const { workflow } = workspace.workflows.find((w) => w.id === "full-cycle")!;
+    expect(workflow.name).toBe("Full cycle");
     expect(workflow.description.trim()).not.toBe("");
     expect(workflow.admit).toEqual(["lr:auto"]);
   });
@@ -118,7 +118,7 @@ describe("the shipped workflow is a single flow", () => {
     expect(ids).not.toContain("children-running");
     expect([...steps.values()].flatMap((s) => s.capabilities ?? [])).not.toContain("items:create");
     expect(workflow.stages.flatMap((s) => (s.on_enter ?? []).map((e) => e.type))).not.toContain("nodes.close");
-    const text = await readFile(".landrace/workflows/main/workflow.yaml", "utf8");
+    const text = await readFile(".landrace/workflows/full-cycle/workflow.yaml", "utf8");
     expect(text).not.toMatch(/rel\.child-of|node\.origin/);
   });
 });
@@ -953,7 +953,7 @@ describe("the shipped workflow learns from a corrected item before a person revi
 
     it("keeps its edits to prompts, instructions and skills, and its git to its own branch", async () => {
       const prompt = (await retro()).prompt;
-      expect(prompt).toContain(".landrace/workflows/main/steps/");
+      expect(prompt).toContain(".landrace/workflows/full-cycle/steps/");
       expect(prompt).toContain(".agsync/instructions.md");
       expect(prompt).toContain("agsync sync");
       expect(prompt).toContain(".agsync/skills/");

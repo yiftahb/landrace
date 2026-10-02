@@ -1,5 +1,5 @@
 ---
-extends: ../../main/steps/triage.md
+extends: ../../full-cycle/steps/triage.md
 output:
   discriminator: intent
   shapes:
