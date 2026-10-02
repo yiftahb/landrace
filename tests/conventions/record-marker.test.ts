@@ -36,3 +36,35 @@ describe("the marker a record effect stamps", () => {
     expect(e).not.toHaveProperty("from");
   });
 });
+
+/*
+ * The commit a step's worktree started at (security audit H1): what a merge
+ * guarded by `reviewedBy` holds the head to merge against. The engine's,
+ * beside the step's value and never in it, and read only from our own
+ * comments — an agent's answer naming a `head`, or a person pasting a
+ * marker, is neither.
+ */
+describe("the head a record carries", () => {
+  const output = (extra: Record<string, unknown>) =>
+    recordMarker({ type: "tracker.comment", kind: "output", stage: "code-review", round: 1, marker: "review:1", ...extra });
+
+  it("is stamped from the effect and read back beside the value", () => {
+    const m = output({ output: { kind: "reviewed" }, head: "abc123" });
+    expect(m).toMatchObject({ head: "abc123" });
+    expect(readBack(m)).toMatchObject({ head: "abc123", data: { kind: "reviewed" } });
+  });
+
+  it("is never the agent's: a value naming `head` stays in the value", () => {
+    const e = readBack(output({ output: { kind: "reviewed", head: "forged" } }));
+    expect(e).not.toHaveProperty("head");
+    expect(e?.data).toEqual({ kind: "reviewed", head: "forged" });
+  });
+
+  it("is nobody's on a comment someone else posted, marker and all", () => {
+    expect(readBack(output({ output: { kind: "reviewed" }, head: "abc123" }), "a-person")).not.toHaveProperty("head");
+  });
+
+  it.each(["", 7, null])("reads back no head that is not a commit's name (%j)", (bad) => {
+    expect(readBack({ stage: "s", kind: "output", round: 1, head: bad } as unknown as Marker)).not.toHaveProperty("head");
+  });
+});

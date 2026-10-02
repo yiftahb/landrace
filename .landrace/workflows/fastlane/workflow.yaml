@@ -255,14 +255,22 @@ stages:
             - { "rel.implements.in.not.merged": 0 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Merging the pull request, round {round}." }
-      # The paths only a person merges, whatever the review said: the engine's
-      # own hooks, imported with this project's secrets, its configuration and
-      # workflows, CI, the dependencies an install runs, and the agents' own
-      # instructions. The kit reads the pull request's changed files — a
-      # rename's old name too — and refuses one touching any of them, or one
-      # whose list it could not read to the end: `blocked`, for a person.
+      # Only the head code review read: the runner records the commit each
+      # review round started at, and a head that round did not start at —
+      # pushed after the review, while CI ran — answers as a moved head does,
+      # and goes back to review. A fix's or the retro's commits are reviewed
+      # the same way, since each goes through a review round of its own.
+      #
+      # And the paths only a person merges, whatever the review said: the
+      # engine's own hooks, imported with this project's secrets, its
+      # configuration and workflows, CI, the dependencies an install runs, and
+      # the agents' own instructions. The kit reads the pull request's changed
+      # files — a rename's old name too — and refuses one touching any of
+      # them, or one whose list it could not read to the end: `blocked`, for a
+      # person.
       - type: pull.merge
         branch: "landrace/{item}"
+        reviewedBy: code-review
         refuse:
           - .landrace/hooks/**
           - .landrace/landrace.yaml
@@ -475,9 +483,8 @@ stages:
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": { $gt: 0 }
       # The merge needs every thread resolved, a Retry's as much as the
-      # first. It merges the head the branch has now once CI is green on it:
-      # a head pushed while the item was halted is not reviewed again, so
-      # after pushing a fix send it to code-review instead (README).
+      # first, and the head the last review read: a head pushed while the
+      # item was halted answers as moved, and goes back to code review.
       - stage: merge
         when:
           "run.failedStage": merge

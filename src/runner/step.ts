@@ -199,6 +199,12 @@ export async function runStep(opts: {
   childServer?: ServerCommand;
   /** Where the agent's tool calls and messages go as they happen — the item panel's live lines. */
   onActivity?: (e: AgentActivity) => void;
+  /**
+   * The commit the step's worktree started at, for a stage on a branch:
+   * stamped on the record that settles the round, beside the value, where a
+   * merge guarded by `reviewedBy` reads it. The runner's, never the agent's.
+   */
+  head?: string;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
   const prompt = renderPrompt(step.prompt, snapshot, opts.briefing);
@@ -394,7 +400,7 @@ export async function runStep(opts: {
     }
   }
 
-  return settleOutput({ step, item: opts.item, stageId, round, text, sessionId, by: AGENT_BY });
+  return settleOutput({ step, item: opts.item, stageId, round, text, sessionId, by: AGENT_BY, ...(opts.head === undefined ? {} : { head: opts.head }) });
 }
 
 /**
@@ -416,9 +422,13 @@ export function settleOutput(opts: {
   text: string;
   sessionId: string | null;
   by: string;
+  /** See `runStep`'s: absent where no worktree was cut, and then no record carries one. */
+  head?: string;
 }): StepResult {
   const { step, stageId, round, text, sessionId } = opts;
   const by = opts.by === AGENT_BY ? {} : { by: opts.by };
+  // The engine's alone: whatever a route's effect names `head` is dropped below, so it cannot stand in for this.
+  const started = opts.head === undefined ? {} : { head: opts.head };
 
   // A step with no declared output contributes no effects; the workflow routes
   // it by trigger instead.
@@ -556,7 +566,8 @@ export function settleOutput(opts: {
   // schema change (`effects:` plural), not a second matching route.
   // The same rule, and the same code, as an on_enter effect's fields: a route
   // is a workflow-authored template and an effect is structure, not prose.
-  const expanded = expandEffectFields(route.effect, vars) as Effect;
+  const { head: _named, ...expanded } = expandEffectFields(route.effect, vars) as Effect;
+  void _named;
   // `output` last, as on the record below: the value the step produced, already
   // cut to its shape, which a hook posting structured content (a review's
   // findings) needs and a route must not be able to write over.
@@ -603,7 +614,7 @@ export function settleOutput(opts: {
   if (destination.type === RECORD_EFFECT) {
     return {
       ok: true,
-      effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session, ...sent, ...by }],
+      effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session, ...sent, ...by, ...started }],
       sessionId,
     };
   }
@@ -620,6 +631,7 @@ export function settleOutput(opts: {
     ...session,
     ...sent,
     ...by,
+    ...started,
   };
 
   // The destination first, and the order is the recovery property. Recorded

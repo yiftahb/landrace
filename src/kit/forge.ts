@@ -506,18 +506,30 @@ const NAMED_PATHS = 5;
 
 /**
  * `pull.merge`'s guards beyond the head and the checks, as the workflow
- * wrote them: `refuse`, the paths only a person may merge. Read before
+ * wrote them: `refuse`, the paths only a person may merge, and `reviewedBy`,
+ * the stage whose review the head to merge must be the head of. Read before
  * anything is asked of the forge; one the workflow wrote wrong is the
  * workflow's defect, said, never a guard quietly skipped.
  */
-function mergeGuards(effect: Effect): { refuse: string[] } {
-  const { refuse } = effect;
-  if (refuse === undefined) return { refuse: [] };
-  if (!Array.isArray(refuse) || refuse.length === 0 || !refuse.every((g): g is string => typeof g === "string" && g !== "")) {
+function mergeGuards(effect: Effect): { refuse: string[]; reviewedBy: string | null } {
+  const { refuse = [], reviewedBy = null } = effect;
+  if (effect.refuse !== undefined &&
+    (!Array.isArray(refuse) || refuse.length === 0 || !refuse.every((g): g is string => typeof g === "string" && g !== ""))) {
     throw new Error(`a ${effect.type} effect's refuse must be a list of path globs, each a non-empty string; this one is ${JSON.stringify(refuse)}`);
   }
-  return { refuse };
+  if (reviewedBy !== null && (typeof reviewedBy !== "string" || reviewedBy === "")) {
+    throw new Error(`a ${effect.type} effect's reviewedBy must name a stage; this one is ${JSON.stringify(reviewedBy)}`);
+  }
+  return { refuse: refuse as string[], reviewedBy: reviewedBy as string | null };
 }
+
+/** The commit `stage`'s latest settled round started at, as the run the snapshot carries read it off its record. */
+const reviewedHead = (snapshot: Snapshot, stage: string): string | undefined => {
+  const heads = (snapshot.run as { heads?: unknown } | undefined)?.heads;
+  if (typeof heads !== "object" || heads === null || !Object.hasOwn(heads, stage)) return undefined;
+  const head = (heads as Record<string, unknown>)[stage];
+  return typeof head === "string" ? head : undefined;
+};
 
 /**
  * A forge integration: its vendor's calls, and nothing else.
@@ -753,6 +765,13 @@ export abstract class BaseForge {
    * the moment after — is `moved`: nothing merges, nothing throws, and nothing
    * applies the merge again while the item stays in its stage.
    *
+   * And `reviewedBy`, when the workflow names it: the head to merge must be
+   * the one the named stage's latest settled round started at, as the runner
+   * recorded it on that round's record. One that review never saw — pushed
+   * since, or recorded by nobody — is answered as a moved head is, logged as
+   * `forge.merge.unreviewed`: nothing merges, nothing throws, and the
+   * workflow's route for a pull request still open sends it back to review.
+   *
    * And `refuse`, when the workflow names it: the paths only a person may
    * merge — the engine's own hooks and workflows, CI, the dependencies an
    * install runs. Last, once everything else would let the merge through,
@@ -771,7 +790,7 @@ export abstract class BaseForge {
    */
   protected async mergeOpen(effect: Effect, ctx: HookContext): Promise<void> {
     const branch = effectBranch(effect);
-    const { refuse } = mergeGuards(effect);
+    const { refuse, reviewedBy } = mergeGuards(effect);
     const open = pullsFrom(ctx.snapshot.graph as Graph | undefined, ctx.item, branch, PULL_MERGE_EFFECT).filter(proposed);
     const [pr, ...more] = open;
     if (pr === undefined) throw new EffectRefused(`cannot merge for #${ctx.item}: there is no open pull request from ${branch}`);
@@ -804,6 +823,15 @@ export abstract class BaseForge {
     if (fresh.merged) return;
     if (fresh.closed) throw new EffectRefused(`will not merge ${pr.id} for #${ctx.item}: it was closed without being merged after it was read`);
     if (fresh.headSha !== head) return moved();
+    if (reviewedBy !== null) {
+      const seen = reviewedHead(ctx.snapshot, reviewedBy);
+      if (seen !== fresh.headSha) {
+        ctx.log("forge.merge.unreviewed", {
+          pull: pr.id, branch, headSha: head, reviewedBy, reviewed: seen ?? null, why: `${reviewedBy} never reviewed this head`,
+        });
+        return;
+      }
+    }
     const checks = await this.checks(fresh, ctx);
     if (!green(checks)) throw refused(checks);
     if (refuse.length > 0) await this.refuseProtected(pr.id, number, refuse, ctx);

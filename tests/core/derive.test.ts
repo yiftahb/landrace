@@ -668,6 +668,40 @@ describe("who produced the latest output", () => {
 });
 
 /*
+ * The commit each stage's latest settled round started at (security audit
+ * H1): `pull.merge`'s `reviewedBy` merges only the head the review saw. Read
+ * off the engine's own field on the record — an output's or a rejection's —
+ * never off the value an agent wrote.
+ */
+describe("the head each stage's latest settled round started at", () => {
+  const at_ = (e: Entry, head: string): Entry => ({ ...e, head });
+
+  it("is the head on the latest settled round's record, output or rejection", () => {
+    const run = deriveRun([at_(out("code-review", 1), "a"), at_(out("code-review", 2), "b"), at_(out("build", 1), "x")], "ci");
+    expect(run.heads).toEqual({ "code-review": "b", build: "x" });
+    expect(deriveRun([at_(out("code-review", 1), "a"), at_(malformed("code-review", 2), "c")], "blocked").heads).toEqual({ "code-review": "c" });
+  });
+
+  it("is absent where the latest settled round recorded none, though an earlier one did", () => {
+    expect(deriveRun([at_(out("code-review", 1), "a"), out("code-review", 2)], "ci").heads).toEqual({});
+    expect(deriveRun([at_(out("code-review", 1), "a"), malformed("code-review", 2)], "blocked").heads).toEqual({});
+  });
+
+  it("is no round's that has not settled: an entry for the next one changes nothing", () => {
+    expect(deriveRun([at_(out("code-review", 1), "a"), entered("code-review", 2)], "code-review").heads).toEqual({ "code-review": "a" });
+  });
+
+  it("ignores an agent's value that names a head", () => {
+    expect(deriveRun([out("code-review", 1, { kind: "reviewed", head: "forged" })], "ci").heads).toEqual({});
+  });
+
+  it("is a map no stage id can reach the prototype of", () => {
+    const run = deriveRun([at_(out("__proto__", 1), "a")], "ci");
+    expect(Object.getPrototypeOf(run.heads)).toBeNull();
+  });
+});
+
+/*
  * deriveRun scopes a pending goto, the current stage's failure and refusal,
  * its unblock and the stage it was entered from to the position it is handed.
  * A snapshot hands it the label's, and an item a custom identity places

@@ -258,6 +258,15 @@ export async function worktreeOf(slot: string, repoRoot: string): Promise<string
 }
 
 /**
+ * The commit a worktree is at. Asked of a step's worktree as it is cut, once
+ * its branch has been brought up to origin's: the commit the step starts
+ * from, which is what its record says it saw.
+ */
+export async function worktreeHead(path: string): Promise<string> {
+  return (await git(["rev-parse", "HEAD"], path, "could not read the worktree's commit")).trim();
+}
+
+/**
  * What a worktree looks like right now: its commit, and every path git reports
  * as changed.
  *
@@ -268,7 +277,7 @@ export async function worktreeOf(slot: string, repoRoot: string): Promise<string
  * with the worktree either way.
  */
 export async function worktreeState(path: string): Promise<WorktreeState> {
-  const head = (await git(["rev-parse", "HEAD"], path, "could not read the worktree's commit")).trim();
+  const head = await worktreeHead(path);
   const status = await git(
     ["status", "--porcelain", "-z", "--untracked-files=all"],
     path,

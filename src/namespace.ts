@@ -98,6 +98,13 @@ export interface Entry {
    */
   session?: string;
   /**
+   * The commit the step's worktree started at, for a step on a branch — on
+   * its output record, or its rejection's. The engine's, beside `data` and
+   * never in it: an agent's answer naming a `head` is its value's, and a
+   * merge guarded by `reviewedBy` holds the head it merges to this one.
+   */
+  head?: string;
+  /**
    * Where a goto record asks the item to go: a stage id, written by
    * Landrace alone — beside a judge's output, or on the record the board's
    * "Go to step…" or `landrace_goto` writes. `run.goto` reads it.
@@ -222,6 +229,13 @@ export interface Run {
    * record that names nobody reads as "agent".
    */
   lastOutputBy: string | null;
+  /**
+   * Per stage, the commit its latest settled round — an output or a
+   * rejection — started at, when that record carries one: `run.heads.<stage>`.
+   * What `pull.merge`'s `reviewedBy` holds the head it merges to, so code no
+   * review saw is never merged. Null-prototype, as `counters` is.
+   */
+  heads: { [stage: string]: string };
 }
 
 /** An open pairing: its stage and round, which pairing at that round it is, and when it began (ISO 8601). */
@@ -370,6 +384,8 @@ export interface Marker {
   from?: string;
   /** On an output record, who produced it — see `Entry.by`. */
   by?: string;
+  /** On a step's record, the commit its worktree started at — see `Entry.head`. */
+  head?: string;
   [key: string]: unknown;
 }
 
@@ -1505,6 +1521,13 @@ export interface ConvergeDeps {
    * tick, which imports converge.
    */
   notify?: (snapshot: Snapshot) => void;
+  /**
+   * The commit a step on `branch` starts at, for a world with no repository
+   * to cut a worktree from — the harness's, where a branch is a pull
+   * request's head. Never asked when there is a `sandbox`: then the
+   * worktree's own commit is what a step's record carries.
+   */
+  startedAt?: (branch: string) => Promise<string | null>;
 }
 
 export interface ConvergeResult {
@@ -1652,6 +1675,12 @@ export interface HarnessOptions {
   maxPasses?: number;
   /** Handed to converge as-is — see `ConvergeDeps.notify`. */
   notify?: (snapshot: Snapshot) => void;
+  /**
+   * The commit a step on `branch` starts at, as a worktree cut now would
+   * start: there is no repository here, so a test says — the pull request's
+   * head, usually. Absent, no step's record carries one. See `ConvergeDeps.startedAt`.
+   */
+  startedAt?: (branch: string) => string | null;
 }
 
 export interface Harness {

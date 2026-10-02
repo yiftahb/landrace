@@ -304,6 +304,12 @@ describe("fastlane's stages", () => {
    * dependencies the next install runs; the agents' own instructions — is a
    * person's to merge, refused by the kit whatever the reviewer said.
    */
+  // Security audit H1: the head CI judged is not enough; the head a review read is.
+  it("merges only the head code review's latest round started at", () => {
+    const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
+    expect(merge?.reviewedBy).toBe("code-review");
+  });
+
   it("leaves to a person every merge that changes the engine's hooks, configuration or workflows, CI, dependencies or agent instructions", () => {
     const merge = (stageOf("merge").on_enter ?? []).find((e) => e.type === "pull.merge");
     expect(merge?.refuse).toEqual([
@@ -444,6 +450,7 @@ function snapshotOf(f: Facts): Snapshot {
     unblockedAt: 0,
     pairing: null,
     lastOutputBy: "agent",
+    heads: {},
   };
   const total = f.total ?? 1;
   const notMerged = f.notMerged ?? total;

@@ -151,3 +151,57 @@ describe("pull.merge's protected paths", () => {
     expect(asked).toEqual({ merges: 0, files: 0 });
   });
 });
+
+/*
+ * `reviewedBy` (security audit H1): the merge is held to the head the named
+ * stage's latest settled round started at, as the runner recorded it. A
+ * head that review never saw — pushed after it, or recorded by nobody — is
+ * answered as a moved head is: nothing merges, nothing throws, and the
+ * workflow's own route sends the item back to that review.
+ */
+describe("pull.merge held to the head a review saw", () => {
+  const held: Effect = { type: "pull.merge", branch: "landrace/7", reviewedBy: "code-review" };
+  const logged: Array<{ name: string; data: Record<string, unknown> }> = [];
+  const attemptAt = async (hooks: ComposedHooks, heads: Record<string, string>, effect: Effect = held) => {
+    logged.length = 0;
+    const snapshot = { ...(await read(hooks)), run: { heads } } as unknown as Snapshot;
+    const log = (name: string, data: Record<string, unknown> = {}): void => { logged.push({ name, data }); };
+    return hooks.post.apply(effect, { ...ctx, item: "7", snapshot, log } as HookContext)
+      .then(() => "resolved" as const, (e: unknown) => ({ message: (e as Error).message, refused: isEffectRefused(e) }));
+  };
+
+  it("merges the head the review's latest round started at", async () => {
+    const { hooks, forge, pr, asked } = world();
+    expect(await attemptAt(hooks, { "code-review": "abc" })).toBe("resolved");
+    expect(asked.merges).toBe(1);
+    expect(forge.pull(pr).merged).toBe(true);
+  });
+
+  it.each([
+    ["another head", { "code-review": "older" }],
+    ["no head at all", {}],
+    ["only another stage's head", { build: "abc" }],
+  ])("answers a head the review did not see — %s — as moved, asking the forge for no merge", async (_what, heads) => {
+    const { hooks, forge, pr, asked } = world();
+    expect(await attemptAt(hooks, heads)).toBe("resolved");
+    expect(asked.merges).toBe(0);
+    expect(forge.pull(pr).merged).toBe(false);
+    expect(logged).toEqual([expect.objectContaining({ name: "forge.merge.unreviewed", data: expect.objectContaining({ pull: "pr-1", headSha: "abc" }) })]);
+  });
+
+  it("judges the head the forge has now, read again just before the merge", async () => {
+    const { hooks, forge, pr, asked } = world();
+    const snapshot = { ...(await read(hooks)), run: { heads: { "code-review": "abc" } } } as unknown as Snapshot;
+    forge.pull(pr).headSha = "pushed";
+    await hooks.post.apply(held, { ...ctx, item: "7", snapshot } as HookContext);
+    expect(asked.merges).toBe(0);
+    expect(forge.pull(pr).merged).toBe(false);
+  });
+
+  it.each([["an empty name", ""], ["a number", 7]])("halts on a reviewedBy that is %s, before it asks the forge anything", async (_what, by) => {
+    const { hooks, asked } = world();
+    const said = await attemptAt(hooks, { "code-review": "abc" }, { ...held, reviewedBy: by });
+    expect(said).toMatchObject({ refused: false, message: expect.stringMatching(/reviewedBy/) });
+    expect(asked).toEqual({ merges: 0, files: 0 });
+  });
+});

@@ -1384,3 +1384,40 @@ describe("settling an answer handed in from a pairing", () => {
     expect(r.effects[0]).not.toHaveProperty("by");
   });
 });
+
+/*
+ * The commit a step on a branch started at (security audit H1), on the
+ * record that settles its round and on no published content: engine data,
+ * which a merge guarded by `reviewedBy` holds the head it merges to.
+ */
+describe("the head a step started at", () => {
+  it("rides on the output record when the content stays on the tracker", async () => {
+    const r = (await run('```json\n{"kind":"questions"}\n```', { head: "abc123" })) as Ok;
+    expect(r.effects).toEqual([expect.objectContaining({ kind: "output", head: "abc123" })]);
+  });
+
+  it("rides on the record, not the published content, when the content goes elsewhere", async () => {
+    const r = (await run('# Spec\n\n```json\n{"kind":"spec"}\n```', { head: "abc123" })) as Ok;
+    expect(r.effects[0]).not.toHaveProperty("head");
+    expect(r.effects[1]).toMatchObject({ kind: "output", head: "abc123" });
+  });
+
+  it("is the engine's, whatever the agent's answer or the route says", async () => {
+    const naming: Step = {
+      prompt: "go",
+      output: {
+        discriminator: "kind",
+        shapes: { reviewed: { head: "string" } },
+        routes: [{ when: { kind: "reviewed" }, effect: { type: "tracker.comment", marker: "review:{round}", head: "route-said" } }],
+      },
+    };
+    const r = (await run('```json\n{"kind":"reviewed","head":"agent-said"}\n```', { step: naming, head: "abc123" })) as Ok;
+    expect(r.effects[0]?.head).toBe("abc123");
+    expect(r.effects[0]?.output).toEqual({ kind: "reviewed", head: "agent-said" });
+  });
+
+  it("is not stamped where no worktree started anywhere", async () => {
+    const r = (await run('```json\n{"kind":"questions"}\n```')) as Ok;
+    expect(r.effects[0]).not.toHaveProperty("head");
+  });
+});

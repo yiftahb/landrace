@@ -678,6 +678,7 @@ export function recordMarker(effect: Effect): Marker {
   const goto = text(effect.goto);
   const from = text(effect.from);
   const by = text(effect.by);
+  const head = text(effect.head);
   return {
     stage: String(effect.stage ?? "-"),
     kind: String(effect.kind),
@@ -693,6 +694,8 @@ export function recordMarker(effect: Effect): Marker {
     ...(from === undefined ? {} : { from }),
     // Routed on: a spec handed in from a pairing goes straight to build.
     ...(by === undefined ? {} : { by }),
+    // What a merge guarded by `reviewedBy` is held to; the runner's, never the step's.
+    ...(head === undefined ? {} : { head }),
   };
 }
 
@@ -949,6 +952,12 @@ const byOf = (m: Marker): { by?: string } =>
   typeof m.by === "string" && m.by !== "" && !isReservedId(m.by) ? { by: m.by } : {};
 
 /**
+ * The commit a marker says its step started at — off the marker's own field,
+ * never the output, which is the agent's and may name a `head` of its own.
+ */
+const headOf = (m: Marker): { head?: string } => (typeof m.head === "string" && m.head !== "" ? { head: m.head } : {});
+
+/**
  * Turn a tracker's records into the engine's own. Vocabulary, not integration:
  * the marker format lives here, so every hook that records progress as text in
  * a comment reads it back the same way, and core never learns the format at
@@ -985,6 +994,7 @@ export function entriesFromComments(comments: TrackerComment[], botLogin: string
           ...sessionOf(marker),
           ...stageRefsOf(marker),
           ...byOf(marker),
+          ...headOf(marker),
           at: c.created_at,
           byAgent: true,
           text: stripMarker(c.body ?? ""),

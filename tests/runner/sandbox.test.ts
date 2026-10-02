@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
 import { labelsOf } from "#conventions.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
-import type { Executor, HookContext, Node, Step, StepResult, Workflow } from "#namespace.js";
+import type { Effect, Executor, HookContext, Node, Step, StepResult, Workflow } from "#namespace.js";
 import { converge } from "#runner/converge.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
@@ -602,6 +602,67 @@ describe("converge and a stage's branch", () => {
     expect(r.why).toMatch(/landrace\/1 is checked out at/);
     expect(invoked).toBe(false);
     expect(await git(root, "symbolic-ref", "--short", "HEAD")).toBe("landrace/1");
+  });
+
+  /*
+   * The commit a step on a branch started at (security audit H1) rides on
+   * the record that settles its round — the output's, or the rejection's —
+   * as the engine's own field: the branch's tip before the agent ran, not
+   * the commit it made, and not anything its answer says.
+   */
+  it("stamps the commit the step's worktree started at on the record that settles its round", async () => {
+    const root = await repo();
+    await git(root, "branch", "landrace/1", "main");
+    const started = await tip(root, "landrace/1");
+    const made: string[] = [];
+    const w = world();
+    const applied: Array<Record<string, unknown>> = [];
+    const watching = { ...w.post, apply: async (e: Effect, c: HookContext) => { applied.push(e); return w.post.apply(e, c); } };
+
+    const r = await converge("1", deps(w, {
+      workflow: branched("landrace/{item}"),
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: committer(made),
+      dispatcher: createDispatcher([watching]),
+      sandbox: { root },
+    }));
+
+    expect(r.settled).toBe("terminal");
+    expect(started).not.toBeNull();
+    expect(made[0]).not.toBe(started);
+    expect(applied.filter((e) => e.marker === "spec:1")).toEqual([expect.objectContaining({ kind: "output", head: started })]);
+  });
+
+  it("stamps it on a rejected round's record too", async () => {
+    const root = await repo();
+    await git(root, "branch", "landrace/1", "main");
+    const started = await tip(root, "landrace/1");
+    const w = world();
+    const applied: Array<Record<string, unknown>> = [];
+    const watching = { ...w.post, apply: async (e: Effect, c: HookContext) => { applied.push(e); return w.post.apply(e, c); } };
+
+    const r = await converge("1", deps(w, {
+      workflow: branched("landrace/{item}"),
+      executor: wellBehaved("no answer here"),
+      dispatcher: createDispatcher([watching]),
+      sandbox: { root },
+    }));
+
+    expect(r.settled).toBe("halt");
+    expect(applied.filter((e) => e.kind === "malformed")).toEqual([expect.objectContaining({ stage: "spec", round: 1, head: started })]);
+  });
+
+  it("stamps none for a stage that names no branch", async () => {
+    const root = await repo();
+    const w = world();
+    const applied: Array<Record<string, unknown>> = [];
+    const watching = { ...w.post, apply: async (e: Effect, c: HookContext) => { applied.push(e); return w.post.apply(e, c); } };
+
+    await converge("1", deps(w, { dispatcher: createDispatcher([watching]), sandbox: { root } }));
+
+    const record = applied.find((e) => e.marker === "spec:1");
+    expect(record).toBeDefined();
+    expect(record).not.toHaveProperty("head");
   });
 
   /*

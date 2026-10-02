@@ -276,7 +276,10 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     }
     const effects = [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).map((r) => r.effect)];
     for (const effect of effects) {
-      for (const field of ["goto", "from"]) {
+      // And `head`, the commit a step started at, which a merge guarded by
+      // `reviewedBy` holds the head it merges to: a record the workflow could
+      // stamp with one would vouch for a commit no review saw.
+      for (const field of ["goto", "from", "head"]) {
         if (field in effect) {
           problems.push({ rule: "reserved-field", message: `stage "${stage.id}" has an effect with a "${field}" field, which only the engine writes` });
         }
@@ -290,7 +293,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
           });
         }
       }
-      if (effect.type === PULL_MERGE_EFFECT) problems.push(...mergeGuardProblems(stage, effect));
+      if (effect.type === PULL_MERGE_EFFECT) problems.push(...mergeGuardProblems(w, stage, effect));
     }
   }
 
@@ -300,17 +303,30 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
 /**
  * What a `pull.merge` effect's guards would not do as written. `refuse` is
  * the paths only a person may merge: one the kit cannot read as a list of
- * globs would leave the gate on paper and off on the merge.
+ * globs would leave the gate on paper and off on the merge. `reviewedBy` is
+ * the stage whose head the merge is held to, which the runner records only
+ * for a step on a branch: a stage with neither records none, and every
+ * merge would answer that nobody reviewed it.
  */
-function mergeGuardProblems(stage: Stage, effect: Record<string, unknown>): Problem[] {
-  if (!("refuse" in effect)) return [];
-  const { refuse } = effect;
-  const globs = Array.isArray(refuse) && refuse.length > 0 && refuse.every((g) => typeof g === "string" && g !== "");
-  return globs ? [] : [{
-    rule: "merge-guard",
-    message: `stage "${stage.id}" has a pull.merge whose refuse is ${JSON.stringify(refuse)}; it must be a list of path globs, ` +
-      "each a non-empty string, naming the paths only a person may merge",
-  }];
+function mergeGuardProblems(w: Workflow, stage: Stage, effect: Record<string, unknown>): Problem[] {
+  const problems: Problem[] = [];
+  const said = (message: string): void => {
+    problems.push({ rule: "merge-guard", message: `stage "${stage.id}" has a pull.merge whose ${message}` });
+  };
+  if ("refuse" in effect) {
+    const { refuse } = effect;
+    const globs = Array.isArray(refuse) && refuse.length > 0 && refuse.every((g) => typeof g === "string" && g !== "");
+    if (!globs) said(`refuse is ${JSON.stringify(refuse)}; it must be a list of path globs, each a non-empty string, naming the paths only a person may merge`);
+  }
+  if ("reviewedBy" in effect) {
+    const by = effect.reviewedBy;
+    const named = typeof by === "string" ? w.stages.find((s) => s.id === by) : undefined;
+    if (typeof by !== "string" || by === "") said(`reviewedBy is ${JSON.stringify(by)}; it must name the stage whose review the merge is held to`);
+    else if (named === undefined) said(`reviewedBy names "${by}", which is not a stage of this workflow`);
+    else if (named.step === undefined) said(`reviewedBy names "${by}", which runs no step, so no head is ever recorded for it`);
+    else if (named.branch === undefined) said(`reviewedBy names "${by}", which works on no branch, so no head is ever recorded for it`);
+  }
+  return problems;
 }
 
 /**

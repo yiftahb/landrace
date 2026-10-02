@@ -48,6 +48,7 @@ export const ENGINE_PROVIDES: readonly string[] = [
   "run.unblockedAt",
   "run.pairing", "run.pairing.*",
   "run.lastOutputBy",
+  "run.heads", "run.heads.*",
   // The source's reading of the item, put in before any pre hook runs.
   "node", "node.id", "node.kind", "node.title", "node.link", "node.closed", "node.priority", "node.origin",
   "node.state", "node.state.*",

@@ -129,6 +129,7 @@ export function createHarness(options: HarnessOptions): Harness {
         log,
         ...(options.maxPasses === undefined ? {} : { maxPasses: options.maxPasses }),
         ...(options.notify === undefined ? {} : { notify: options.notify }),
+        ...(options.startedAt === undefined ? {} : { startedAt: async (branch: string) => options.startedAt?.(branch) ?? null }),
       }).catch((e: unknown) => {
         // A converge that throws is a defect in a hook, not a workflow
         // outcome, and it has to read as one rather than as a rejected

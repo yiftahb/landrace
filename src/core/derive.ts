@@ -41,6 +41,8 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   const ordered = [...entries].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 
   const outputsByStage = new Map<string, Entry>();
+  /** Each stage's latest settled record, an output or a rejection: what `heads` is read off. */
+  const settledByStage = new Map<string, Entry>();
   const roundsByStage = new Map<string, Set<number>>();
   const settledRoundsByStage = new Map<string, Set<number>>();
   const maxRejectedRoundByStage = new Map<string, number>();
@@ -58,6 +60,11 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     if (cur === undefined || round > cur) map.set(stage, round);
   };
 
+  const settle = (e: Entry): void => {
+    const cur = settledByStage.get(e.stage);
+    if (cur === undefined || e.round >= cur.round) settledByStage.set(e.stage, e);
+  };
+
   for (const e of ordered) {
     // A refusal is a rejection like any other — the same hard fail, the same
     // settled round — and is remembered apart only so lastRefused can say so.
@@ -65,6 +72,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
       raise(maxRejectedRoundByStage, e.stage, e.round);
       if (e.kind === REFUSED_KIND) raise(maxRefusedRoundByStage, e.stage, e.round);
       note(settledRoundsByStage, e.stage, e.round);
+      settle(e);
     }
 
     /*
@@ -83,6 +91,7 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     if (e.kind !== OUTPUT_KIND) continue;
     note(roundsByStage, e.stage, e.round);
     note(settledRoundsByStage, e.stage, e.round);
+    settle(e);
 
     const current = outputsByStage.get(e.stage);
     if (!current || e.round >= current.round) outputsByStage.set(e.stage, e);
@@ -374,6 +383,16 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   const lastOutput = ordered.findLast((e) => e.kind === OUTPUT_KIND);
   const lastOutputBy = lastOutput === undefined ? null : lastOutput.by ?? AGENT_BY;
 
+  /*
+   * The commit each stage's latest settled round started at, off the
+   * engine's own field on its record: a merge held to the head a review saw
+   * reads it here. Only the latest round's — an older round's head is a
+   * commit a later round may not have seen, and a round that recorded none
+   * says nothing. Null-prototype, as `counters` is.
+   */
+  const heads = Object.create(null) as Run["heads"];
+  for (const [s, e] of settledByStage) if (e.head !== undefined) heads[s] = e.head;
+
   return {
     stage,
     counters,
@@ -392,5 +411,6 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
     unblockedAt,
     pairing,
     lastOutputBy,
+    heads,
   };
 }

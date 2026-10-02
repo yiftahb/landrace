@@ -507,4 +507,41 @@ describe("a merge's guards", () => {
   ])("refuses a refuse that is %s, naming the stage", (_what, refuse) => {
     expect(said(merging({ refuse }))).toEqual([expect.stringMatching(/stage "m".*refuse/)]);
   });
+
+  /*
+   * `reviewedBy` holds the merge to the head a stage's step started at, which
+   * the runner records only for a step on a branch: a stage with no step or
+   * no branch would record none, and every merge would answer unreviewed.
+   */
+  const reviewing = (review: Partial<Stage>, by: unknown = "r"): Workflow => wf([
+    { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    { id: "r", triggers: [{ when: { "run.stage": "a" } }], on_enter: [enter], ...review },
+    { id: "m", triggers: [{ when: { "run.stage": "r" } }], on_enter: [{ type: "pull.merge", branch: "landrace/{item}", reviewedBy: by }] },
+    { id: "z", terminal: true, triggers: [{ when: { "run.stage": "m" } }] },
+  ]);
+  const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
+
+  it("accepts a reviewedBy naming a stage with a step and a branch", () => {
+    expect(said(reviewing({ step: "review.md", branch: "landrace/{item}" }))).toEqual([]);
+  });
+
+  it.each([
+    ["a stage that runs no step", { branch: "landrace/{item}" }, "r", /"r".*no step/],
+    ["a stage on no branch", { step: "review.md" }, "r", /"r".*no branch/],
+    ["no stage at all", { step: "review.md", branch: "landrace/{item}" }, "nope", /"nope".*not a stage/],
+    ["no stage's name", { step: "review.md", branch: "landrace/{item}" }, 7, /reviewedBy/],
+  ])("refuses a reviewedBy naming %s", (_what, review, by, message) => {
+    expect(said(reviewing(review, by))).toEqual([expect.stringMatching(message)]);
+  });
+});
+
+/* `head` is the engine's to stamp on a step's record, as `goto` and `from` are. */
+describe("the head a record carries", () => {
+  it("is refused in an effect the workflow writes", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.comment", kind: "enter", head: "abc" }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+    ]);
+    expect(validateStructure(w)).toContainEqual(expect.objectContaining({ rule: "reserved-field", message: expect.stringMatching(/"head"/) }));
+  });
 });

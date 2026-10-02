@@ -1,4 +1,4 @@
-import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
+import { ensureWorktree, removeWorktree, worktreeHead } from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
 import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
@@ -323,25 +323,36 @@ async function converging(
       // write, a detached look at it otherwise. Checked for this item before
       // anything is checked out — a template that was fine for the example
       // item at load is not always fine for this one.
+      //
+      // And for a stage on a branch, the commit the step starts at, once the
+      // worktree has caught the branch up to origin's: stamped on the record
+      // that settles the round, as engine data no answer can reach. A merge
+      // guarded by `reviewedBy` merges only a head that record names.
       let sandbox: { path: string } | null = null;
-      if (enterSandbox) {
+      let head: string | undefined;
+      if (enterSandbox || (deps.startedAt && stage.branch !== undefined)) {
         const branch = stageBranch(stage, item, round);
         if (!branch.ok) {
           deps.log("step.rejected", { item, stage: stage.id, round, reason: branch.reason });
           return { passes: pass, settled: "halt", why: branch.reason };
         }
         try {
-          sandbox = {
-            path: await enterSandbox(
+          if (enterSandbox) {
+            const path = await enterSandbox(
               branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) },
-            ),
-          };
+            );
+            sandbox = { path };
+            if (branch.branch !== null) head = await worktreeHead(path);
+          } else if (branch.branch !== null) {
+            head = (await deps.startedAt?.(branch.branch)) ?? undefined;
+          }
         } catch (e) {
           const reason = messageOf(e);
           deps.log("step.rejected", { item, stage: stage.id, round, reason });
           return { passes: pass, settled: "halt", why: reason };
         }
       }
+      const started = head === undefined ? {} : { head };
 
       // The engine's own record that an agent is in the room, bracketing the
       // one call that runs it. Not left to the executor: `step.completed`
@@ -365,6 +376,7 @@ async function converging(
           ...(deps.stepTimeoutMs === undefined ? {} : { defaultTimeoutMs: deps.stepTimeoutMs }),
           ...(deps.childServer ? { childServer: deps.childServer } : {}),
           ...(deps.activity ? { onActivity: (e: AgentActivity) => deps.activity?.record(item, stage.id, round, e) } : {}),
+          ...started,
           log: deps.log,
         });
         finishedOk = result.ok;
@@ -412,7 +424,7 @@ async function converging(
         // rather than as an agent that could not follow a format — routes on
         // run.lastRefused, which is read back from this kind.
         const posted = await tryApply(
-          [malformedEffect(stage.id, round, result.reason, scrub, result.kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)],
+          [{ ...malformedEffect(stage.id, round, result.reason, scrub, result.kind === "refused" ? REFUSED_KIND : MALFORMED_KIND), ...started }],
           item, snapshot, deps,
         );
         if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });
@@ -449,7 +461,7 @@ async function converging(
         // the round runs again, as for an agent that never answered.
         if (applied.refused) {
           const posted = await tryApply(
-            [malformedEffect(stage.id, round, applied.reason, scrub, MALFORMED_KIND, `Could not record ${stage.id}'s answer`)],
+            [{ ...malformedEffect(stage.id, round, applied.reason, scrub, MALFORMED_KIND, `Could not record ${stage.id}'s answer`), ...started }],
             item, snapshot, deps,
           );
           if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });

@@ -1,6 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { recordMarker, renderMarker } from "#conventions.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { sendTo } from "#runner/goto.js";
@@ -89,6 +90,7 @@ function road(opts: {
   const run = createHarness({
     workflow, steps, source: state.source, pre: [state.pre], post: [post],
     answers: { ...ANSWERS, ...opts.answers },
+    startedAt: (branch) => headOn(state, branch),
     ...(opts.during ? { during: (at: { stage: string; round: number }) => opts.during?.(at, pr) } : {}),
   });
   /** A person's goto, as the board and `landrace_goto` send it: to `target`, or Retry with none. */
@@ -108,6 +110,23 @@ function road(opts: {
   };
   return { state, run, pr, merges: () => merges, retry, goto, row };
 }
+
+/**
+ * Where a step on `branch` starts, as a worktree cut now would: the head of
+ * the open pull request from it, there being no repository here. The
+ * reviewer's round records it, and the merge is held to it.
+ */
+const headOn = (state: ExternalState, branch: string): string | null => {
+  for (let n = 1; ; n++) {
+    let pull: ExternalPull;
+    try {
+      pull = state.pull(`pr-${n}`);
+    } catch {
+      return null;
+    }
+    if (pull.branch === branch && pull.closed === null) return pull.headSha;
+  }
+};
 
 /** CI as a push leaves it: the checks on the new head, nothing failed. */
 const green = (pr: () => ExternalPull): void => {
@@ -263,7 +282,10 @@ describe("fastlane, end to end", () => {
     const forge = new RacingForge();
     const hooks = compose({ tracker, forge });
     const { workflow, steps } = flow("fastlane");
-    const run = createHarness({ workflow, steps, source: hooks.source, pre: [hooks.pre], post: [hooks.post], answers: ANSWERS });
+    const run = createHarness({
+      workflow, steps, source: hooks.source, pre: [hooks.pre], post: [hooks.post], answers: ANSWERS,
+      startedAt: () => forge.rows.get("pr-1")?.headSha ?? null,
+    });
     const r = await run.converge();
 
     expect(forge.raced).toBe(true);
@@ -440,6 +462,57 @@ describe("fastlane, end to end", () => {
     expect(state.item("1").labels).toContain("lr:stage:done");
     expect(state.item("1").labels).not.toEqual(expect.arrayContaining(["lr:fast"]));
     expect(state.item("1").labels).not.toContain("lr:blocked");
+  });
+
+  /*
+   * Security audit H1, probe P3: a push lands after the review read the pull
+   * request and before the merge. CI goes green on it, and nobody reviewed
+   * it. The merge is held to the head the review's round started at, so it
+   * answers as a moved head does: back to review, which reads the new head,
+   * and only then the merge, at that head.
+   */
+  it("14. sends a head pushed after the review back to review before it merges, and merges what the review read", async () => {
+    const { state, run, pr, merges } = road({
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) Object.assign(pull(), { headSha: "sha-unreviewed" });
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "merge", "code-review", "ci", "merge", "done"]);
+    expect(r.result.settled).toBe("terminal");
+    expect(run.counts()).toEqual({ build: 1, "code-review": 2 });
+    expect(merges()).toBe(2);
+    expect(pr()).toMatchObject({ merged: true, headSha: "sha-unreviewed" });
+    // Each review round's record says the head it read: the second one is the head that merged.
+    const reviews = state.entriesOf("1").filter((e) => e.kind === "output" && e.stage === "code-review");
+    expect(reviews.map((e) => e.head)).toEqual(["sha-1", "sha-unreviewed"]);
+    expect(state.item("1").closed).toBe("done");
+  });
+
+  /*
+   * The fixer's and the retro's commits move the head too, and each is
+   * reviewed before it can merge: both go back through a review round, which
+   * records the head it read, so the head that merges is always one a review
+   * round started at.
+   */
+  it("15. reviews the fixer's and the retro's commits at the heads they made, and merges the last one", async () => {
+    const { state, run, pr } = road({
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) Object.assign(pull(), { awaitingFix: 1, openThreads: 1 });
+        if (stage === "fix-review") Object.assign(pull(), { awaitingFix: 0, openThreads: 0, headSha: "sha-fixed" });
+        if (stage === "retro") Object.assign(pull(), { headSha: "sha-lessons" });
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual([
+      "build", "publish", "code-review", "fix-review", "code-review", "ci", "retro", "code-review", "ci", "merge", "done",
+    ]);
+    expect(r.result.settled).toBe("terminal");
+    const reviews = state.entriesOf("1").filter((e) => e.kind === "output" && e.stage === "code-review");
+    expect(reviews.map((e) => e.head)).toEqual(["sha-1", "sha-fixed", "sha-lessons"]);
+    expect(pr()).toMatchObject({ merged: true, headSha: "sha-lessons" });
   });
 
   /*
@@ -623,6 +696,10 @@ describe("fastlane, end to end", () => {
   it("8c. leaves GitHub's 502 on the merge unrecorded, and merges on the next tick", async () => {
     const gh = createFakeTracker([{ number: 1, labels: ["lr:fast", "lr:stage:ci"] }]);
     const opened = gh.openPull({ head: "landrace/1", number: 8, headSha: "abc1234", closes: [1], checks: "SUCCESS" });
+    // The review that passed it, at the head it read.
+    gh.sayAs("yiftahb", 1, `Reviewed.${renderMarker(recordMarker({
+      type: "tracker.comment", kind: "output", stage: "code-review", round: 1, marker: "review:1", output: { kind: "reviewed" }, head: "abc1234",
+    }))}`);
     const { workflow, steps } = flow("fastlane");
     const { source, pre, post } = gh.registry;
     if (!source) throw new Error("the fake GitHub registered no source");
