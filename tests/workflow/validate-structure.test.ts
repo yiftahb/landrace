@@ -257,6 +257,19 @@ describe("structural validation", () => {
     }]);
   });
 
+  // Needs you reads a stage's waits before it reads terminal, so an item
+  // there stayed in Needs you, its work done, until someone closed it.
+  it("refuses a terminal stage that waits on a person, naming it", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "z", terminal: true, waits: "person", triggers: [{ when: { "run.stage": "a" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "waits")).toEqual([{
+      rule: "waits",
+      message: 'stage "z" is terminal and waits on a person: an item\'s work is done at a terminal stage, so it waits on no one there',
+    }]);
+  });
+
   it("accepts a stage that waits on a person and runs no step", () => {
     const w = wf([
       { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },

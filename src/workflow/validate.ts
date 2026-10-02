@@ -115,6 +115,14 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
         message: `stage "${stage.id}" waits on a person and runs step ${stage.step}: a person's turn runs no agent, so it cannot do both`,
       });
     }
+    // Needs you asks a stage's waits before it asks terminal, so an item at
+    // one saying both sat in Needs you, its work done, until it was closed.
+    if (stage.waits === "person" && stage.terminal === true) {
+      problems.push({
+        rule: "waits",
+        message: `stage "${stage.id}" is terminal and waits on a person: an item's work is done at a terminal stage, so it waits on no one there`,
+      });
+    }
   }
 
   // decide() skips a candidate stage equal to the current stage — a trigger
