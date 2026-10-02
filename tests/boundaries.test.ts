@@ -194,6 +194,23 @@ const ROLE_EVENTS: Record<string, RegExp> = {
   [join("src", "kit", "executor.ts")]: /^(agent|step)\./,
 };
 
+/**
+ * Every call on a line of something named `log`, through whatever it is
+ * called on: `log(`, `ctx.log(`, `this.log(`, `c.log(`, `this.ctx.log?.(`,
+ * `make().log(`, `log.call(`. `through` is "" for a bare `log(` — the
+ * context's own, taken off it as `const { log } = ctx` or handed on as
+ * `log: ctx.log` — "ctx" only when `ctx` alone is the receiver, and
+ * "another" for anything else, which is never the context's log. `name` is
+ * the event, when the first argument is a string literal on that line.
+ * Re-review N11: matching only `log(` and `ctx.log(` let `this.log(` pass.
+ */
+const logCalls = (line: string): Array<{ through: "" | "ctx" | "another"; name: string | undefined }> =>
+  [...line.matchAll(/(?<![\w$])log\s*(?:\?\.)?(?:\.\s*(?:call|apply)\s*)?\(\s*(?:["'`]([^"'`]*)["'`])?/g)].map((m) => {
+    const before = line.slice(0, m.index);
+    const through = !/\??\.\s*$/.test(before) ? "" : /(?<![\w$.)\]])ctx\s*\??\.\s*$/.test(before) ? "ctx" : "another";
+    return { through, name: m[1] };
+  });
+
 /** Each line a top-level class covers, from `class` to the closing brace in the first column. */
 const classLines = (lines: string[]): Set<number> => {
   const inside = new Set<number>();
@@ -220,8 +237,9 @@ describe("the kit holds to what an integration author has", () => {
    * A function the kit exports is called by an integration not built on a
    * base, in that integration's name, so it never logs: what it says, it
    * says by returning or throwing. A base logs — through the context the
-   * engine hands it — and only in its role's name, so an event names the
-   * role that said it, whichever integration extends the base.
+   * engine hands it, and nothing else: not its own `this.log`, not a client's
+   * — and only in its role's name, so an event names the role that said it,
+   * whichever integration extends the base.
    */
   it("logs only inside a base, through the context's log, in its role's name", () => {
     const strays = KIT.flatMap((file) => {
@@ -230,8 +248,8 @@ describe("the kit holds to what an integration author has", () => {
       return lines.flatMap((line, i) => {
         const where = `${file}:${i + 1}: ${line.trim()}`;
         if (/\bconsole\./.test(line)) return [`${where} (console)`];
-        const calls = [...line.matchAll(/(?<![\w.])(?:ctx\.)?log(?:\?\.)?\(\s*(?:["'`]([^"'`]*)["'`])?/g)];
-        return calls.flatMap(([, name]) => {
+        return logCalls(line).flatMap(({ through, name }) => {
+          if (through === "another") return [`${where} (not through the context's log)`];
           if (!inside.has(i)) return [`${where} (outside a base)`];
           const role = ROLE_EVENTS[file];
           if (name === undefined || role === undefined || !role.test(name)) return [`${where} (not in its role's name)`];
@@ -243,9 +261,30 @@ describe("the kit holds to what an integration author has", () => {
   });
 
   it("finds every log call there is to judge", () => {
-    const calls = KIT.flatMap((file) => [...readFileSync(file, "utf8").matchAll(/(?<![\w.])(?:ctx\.)?log(?:\?\.)?\(/g)]);
+    const calls = KIT.flatMap((file) => readFileSync(file, "utf8").split("\n").flatMap(logCalls));
     expect(calls.length).toBeGreaterThanOrEqual(8);
   });
+
+  it.each([
+    ['ctx.log("forge.x", {});', "ctx"],
+    ['ctx?.log?.("forge.x");', "ctx"],
+    ['log?.("agent.event", { round });', ""],
+    ['this.log("forge.x", {});', "another"],
+    ['c.log("forge.x");', "another"],
+    ['this.ctx.log("forge.x");', "another"],
+    ['make().log("forge.x");', "another"],
+    ['items[0].log("forge.x");', "another"],
+    ['this.logger.log("forge.x");', "another"],
+    ['log.call(this, "forge.x");', ""],
+    ['ctx.log.apply(ctx, ["forge.x"]);', "ctx"],
+  ] as const)("reads %s as a log call through %j", (line, through) => {
+    expect(logCalls(line).map((c) => c.through)).toEqual([through]);
+  });
+
+  it.each(["logTail(x)", "blog(x)", "catalog(x)", "{ log: ctx.log }", "const { log } = ctx;", "dialog.open()"])(
+    "reads %s as no log call",
+    (line) => expect(logCalls(line)).toEqual([]),
+  );
 });
 
 describe("the one display-only file that may name a vendor", () => {
