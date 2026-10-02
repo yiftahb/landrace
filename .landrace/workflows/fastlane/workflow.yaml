@@ -12,9 +12,10 @@ description: "Small changes from the item's own text: build, review, CI, merged 
 # - A moved head goes back to code review, not straight to CI. A merge that
 #   answered moved is never applied again while the item stays at `merge`, and
 #   the new head may read no checks yet, so a way out that waited on pending or
-#   failed checks would hang. No stage without a step advances a counter, so a
-#   merge ⇄ ci loop could only be bounded by a counter it never moves; and a
-#   head that moved is code nobody reviewed.
+#   failed checks would hang. merge's counter advances only when the forge
+#   refuses its way in, never on a moved head, so a merge ⇄ ci loop could only
+#   be bounded by a counter it never moves; and a head that moved is code
+#   nobody reviewed.
 # - The retro goes back to code review: its commits land in the pull request
 #   before the merge, so they are reviewed and checked like any other.
 # - Friction — what sends a green pull request to the retro first — is a
@@ -121,7 +122,7 @@ stages:
   # through publish, uncapped; every fix within fix review's eight; the
   # retro's commit once; and a head that moved under the merge, or a thread
   # opened while the checks ran, within code review's own four — loops through
-  # stages with no step, which count nothing of their own.
+  # stages with no step, whose counters count only a refused way in.
   #
   # No `requires` here or on the retro: a pull request a person closed while
   # either ran is their stop, routed to `stuck`, where a failed precondition

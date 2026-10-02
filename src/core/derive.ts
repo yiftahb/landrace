@@ -71,8 +71,9 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
      * A stage's own on_enter writes these, so entering a state twice is a
      * fact on the tracker rather than something the engine remembers. Only
      * the highest round matters, and two records naming the same round are
-     * one entry: the round comes from the counter below, so a crash between
-     * posting this and running the step replans the identical round.
+     * one entry: the round comes from `next` below, which keeps a visit in
+     * flight at its round, so a crash between posting this and running the
+     * step replans the identical round.
      */
     if (e.kind === ENTRY_KIND) {
       const cur = maxEnteredRoundByStage.get(e.stage);
@@ -99,20 +100,21 @@ export function deriveRun(entries: Entry[], stage: string | null): Run {
   /*
    * A round counts once it has produced a verdict — an output, or a rejection.
    * Counting only outputs is what turned a rejected round into an infinite
-   * loop: the round a re-entry stamps on its own entry record is this counter
-   * plus one, so a stage that could never produce output re-entered at the
-   * same round forever, the identical record was reconciled away, nothing on
-   * the item changed, and the trigger that handed it back fired again on the
-   * very next pass — 30 passes and 60 tracker writes per tick, for good.
+   * loop: re-entries were numbered from this counter then, so a stage that
+   * could never produce output re-entered at the same round forever, the
+   * identical record was reconciled away, nothing on the item changed, and
+   * the trigger that handed it back fired again on the very next pass — 30
+   * passes and 60 tracker writes per tick, for good. Rounds are numbered by
+   * `next` now, from the same settled rounds and the entries; this counts.
    *
    * It is also what makes §11.4's bound a bound: a workflow writing
    * `run.counters.spec: { $lt: 3 }` on a handback trigger means "three
    * attempts", and an attempt that broke its contract is an attempt. A counter
    * only bounds a loop it advances on.
    *
-   * A round that produced nothing at all still does not count, which is what
-   * keeps the crash-recovery property: a crash between the entry record and
-   * the step replans the identical round.
+   * A round that produced nothing at all still does not count: a crash
+   * between the entry record and the step leaves that round in flight, and
+   * `next` replans it.
    */
   const counters = Object.create(null) as Run["counters"];
   for (const [s, rounds] of settledRoundsByStage) counters[s] = rounds.size;
