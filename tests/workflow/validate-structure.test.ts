@@ -545,3 +545,46 @@ describe("the head a record carries", () => {
     expect(validateStructure(w)).toContainEqual(expect.objectContaining({ rule: "reserved-field", message: expect.stringMatching(/"head"/) }));
   });
 });
+
+/*
+ * The halt labels are the shared vocabulary's contract (separation review
+ * I3): the engine never writes `lr:blocked` or `lr:screened`, yet the board's
+ * Retry and Clear, MCP's `blocked` and Needs you's note read them. So a stage
+ * entered on a failed round writes them itself: `lr:blocked` on any failure,
+ * and `lr:screened` beside it on a refusal.
+ */
+describe("a halt's labels", () => {
+  const halting = (when: Record<string, unknown>, on_enter: NonNullable<Stage["on_enter"]>): Workflow => wf([
+    { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    { id: "h", triggers: [{ name: "it failed", when }], on_enter },
+    { id: "z", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+  ]);
+  const said = (w: Workflow) => validateStructure(w).filter((p) => p.rule === "halt-labels").map((p) => p.message);
+  const label = (add: string[], remove: string[] = []) => ({ type: "tracker.label", add, remove });
+  const broken = { "run.lastOutputValid": false, "run.lastRefused": false };
+  const refused = { "run.lastOutputValid": false, "run.lastRefused": true };
+
+  it("accepts a halt that adds lr:blocked on a broken contract, and both on a refusal", () => {
+    expect(said(halting(broken, [{ type: "tracker.status", value: "h" }, label(["lr:blocked"], ["lr:working"])]))).toEqual([]);
+    expect(said(halting(refused, [label(["lr:blocked", "lr:screened"])]))).toEqual([]);
+    // Across two label effects, and spelled with $eq, it is the same.
+    expect(said(halting({ "run.lastOutputValid": { $eq: false }, "run.lastRefused": { $eq: true } }, [label(["lr:blocked"]), label(["lr:screened"])])))
+      .toEqual([]);
+  });
+
+  it("refuses a stage entered on a broken contract that does not add lr:blocked, naming it and the trigger", () => {
+    expect(said(halting(broken, [{ type: "tracker.status", value: "h" }, label(["lr:awaiting"])]))).toEqual([
+      expect.stringMatching(/stage "h".*"it failed".*lr:blocked/),
+    ]);
+    expect(said(halting({ "run.lastOutputValid": false }, []))).toEqual([expect.stringMatching(/lr:blocked/)]);
+  });
+
+  it("refuses a stage entered on a refusal that adds lr:blocked without lr:screened, or neither", () => {
+    expect(said(halting(refused, [label(["lr:blocked"])]))).toEqual([expect.stringMatching(/stage "h".*lr:screened/)]);
+    expect(said(halting(refused, [label([], ["lr:blocked", "lr:screened"])]))).toEqual([expect.stringMatching(/lr:blocked, lr:screened/)]);
+  });
+
+  it("asks nothing of a stage no failed round enters", () => {
+    expect(said(halting({ "run.stage": "a", "run.lastOutputValid": null }, []))).toEqual([]);
+  });
+});

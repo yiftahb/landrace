@@ -3,6 +3,8 @@ import {
   ENTRY_KIND,
   GOTO_TRIGGER,
   isReservedId,
+  LABEL_EFFECT,
+  LABELS,
   mayCreateItems,
   NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
@@ -297,7 +299,48 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     }
   }
 
+  problems.push(...haltLabelProblems(w));
+
   return dedupe(problems);
+}
+
+/** Whether a condition's value at `path` is exactly `value`, as written or as `$eq`. */
+const reads = (when: Condition, path: string, value: boolean): boolean => {
+  const v = when[path];
+  return v === value || (typeof v === "object" && v !== null && (v as Record<string, unknown>).$eq === value);
+};
+
+/**
+ * The halt labels, the shared vocabulary's contract: the engine never writes
+ * `lr:blocked` or `lr:screened`, yet the board's Retry and Clear, MCP's
+ * `blocked` and Needs you's note are read off them. So a stage entered on a
+ * failed round — a trigger reading `run.lastOutputValid: false` — adds
+ * `lr:blocked` as it is entered, and one entered on a refusal —
+ * `run.lastRefused: true` — adds `lr:screened` beside it. A halt that wrote
+ * neither would stop the item where no board offers it a Retry.
+ */
+function haltLabelProblems(w: Workflow): Problem[] {
+  const problems: Problem[] = [];
+  for (const stage of w.stages) {
+    const added = new Set((stage.on_enter ?? [])
+      .filter((e) => e.type === LABEL_EFFECT && Array.isArray(e.add))
+      .flatMap((e) => (e.add as unknown[]).filter((l): l is string => typeof l === "string").map((l) => l.trim().toLowerCase())));
+    for (const t of stage.triggers ?? []) {
+      const owed = [
+        ...(reads(t.when, "run.lastOutputValid", false) || reads(t.when, "run.lastRefused", true) ? [LABELS.blocked] : []),
+        ...(reads(t.when, "run.lastRefused", true) ? [LABELS.screened] : []),
+      ];
+      const missing = owed.filter((l) => !added.has(l));
+      if (missing.length === 0) continue;
+      problems.push({
+        rule: "halt-labels",
+        message: `stage "${stage.id}" is entered on a failed round${t.name ? ` ("${t.name}")` : ""} but does not add ` +
+          `${missing.join(", ")} in its on_enter: the board, Needs you and MCP know a halt only by ` +
+          `${owed.join(" and ")}, which the engine never writes`,
+      });
+    }
+  }
+  return problems;
 }
 
 /**

@@ -94,8 +94,10 @@ export function statusLines(rows: StatusRow[], opts: { several?: boolean } = {})
  * Position is the stage `locateNode` finds, not only the label: a stage can
  * place an item by its own state, and whose turn it is is that stage's
  * `waits`, never `lr:awaiting` — a workflow that writes nothing still says an
- * item is waiting on you. Blocked and screened are still read off the labels
- * the engine writes as it moves an item to either.
+ * item is waiting on you. Blocked and screened are still read off the
+ * `lr:blocked` and `lr:screened` labels — which the engine never writes: the
+ * workflow's halts do, in their own `on_enter`, and `validate`'s `halt-labels`
+ * rule holds a stage entered on a failed round to writing them.
  *
  * This used to say that naming the first of the two "would print a position
  * the engine itself refuses to believe". The engine believed it and spent
