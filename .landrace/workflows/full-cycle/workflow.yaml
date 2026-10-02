@@ -332,11 +332,15 @@ stages:
           "run.lastOutputValid": null
           "run.counters.fix-review": { $lt: 20 }
     on_enter:
-      # Pushed first: a fix round's commits have to be on the pull request
-      # before the reviewer reads it. The fixer pushes its own; this pushes
-      # any it left unpushed, and otherwise reconciles away as satisfied.
-      - { type: branch.push, branch: "landrace/{item}" }
+      # The enter record first (rule 2, and validate's entry-first): a push
+      # the forge refuses is then code review's rejected round, a halt with
+      # the reason, never a refusal asked again on every tick.
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
+      # Pushed before the status, and so before the step: a fix round's
+      # commits have to be on the pull request before the reviewer reads it.
+      # The fixer pushes its own; this pushes any it left unpushed, and
+      # otherwise reconciles away as satisfied.
+      - { type: branch.push, branch: "landrace/{item}" }
       - { type: tracker.status, value: code-review }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 

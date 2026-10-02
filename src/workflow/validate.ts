@@ -5,6 +5,7 @@ import {
   isReservedId,
   LABEL_EFFECT,
   LABELS,
+  STATUS_EFFECT,
   mayCreateItems,
   NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
@@ -311,8 +312,36 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   }
 
   problems.push(...haltLabelProblems(w));
+  problems.push(...entryFirstProblems(w));
 
   return dedupe(problems);
+}
+
+/**
+ * `entry-first`: in a stage whose `on_enter` records its entry, every effect
+ * but the status and labels comes after that record. A refusal is recorded
+ * as the entering stage's rejected round only when the record was planned
+ * before the refused effect (converge.ts, `refusedEntry`); planned after,
+ * the item halts for this tick only and the forge is asked again on every
+ * tick, the refusal never recorded and never shown. Code review once pushed
+ * before its record.
+ */
+function entryFirstProblems(w: Workflow): Problem[] {
+  const problems: Problem[] = [];
+  for (const stage of w.stages) {
+    const effects = stage.on_enter ?? [];
+    const at = effects.findIndex((e) => e.type === RECORD_EFFECT && e.kind === ENTRY_KIND);
+    if (at === -1) continue;
+    for (const effect of effects.slice(0, at)) {
+      if (effect.type === STATUS_EFFECT || effect.type === LABEL_EFFECT) continue;
+      problems.push({
+        rule: "entry-first",
+        message: `stage "${stage.id}" plans ${effect.type} before its enter record: a refusal there would never be ` +
+          "recorded as this stage's round, so the item would halt on every tick with nothing to show why; put the record first",
+      });
+    }
+  }
+  return problems;
 }
 
 /** Whether a condition's value at `path` is exactly `value`, as written or as `$eq`. */

@@ -137,12 +137,14 @@ stages:
       - { type: tracker.status, value: triage }
 
   # ── breakdown ────────────────────────────────────────────────────────────
-  # Whether the approved spec is one piece of work or several. The close comes
-  # first, before the entry record, for the same reason the entry record comes
-  # before the status: a crash between them must leave the item where its
-  # trigger fires again and replans them all. It drops every child an earlier
-  # round made, and everything those own; converge re-plans it before every
-  # invocation too, which is what cleans up after a crashed attempt.
+  # Whether the approved spec is one piece of work or several. The entry
+  # record first, as validate's entry-first asks — a close the tracker refuses
+  # is then this stage's rejected round, not a refusal asked again on every
+  # tick — and the close before the status: a crash between them must leave
+  # the item where its trigger fires again and replans them all. It drops
+  # every child an earlier round made, and everything those own; converge
+  # re-plans it before every invocation too, which is what cleans up after a
+  # crashed attempt.
   #
   # Every trigger out of here that reads the kind also reads
   # run.lastOutputValid: null. A rejected round leaves the last *accepted*
@@ -156,8 +158,8 @@ stages:
       - name: the spec was approved
         when: { "run.stage": triage, "run.outputs.triage.intent": approve }
     on_enter:
-      - { type: nodes.close, follow: [child-of, implements] }
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Deciding whether to split the work, round {round}." }
+      - { type: nodes.close, follow: [child-of, implements] }
       - { type: tracker.status, value: breakdown }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 

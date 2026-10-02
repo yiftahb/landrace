@@ -139,6 +139,16 @@ describe.each(["full-cycle", "fastlane"])("%s's ways the forge can refuse", (id)
     expect(unguarded).toEqual([]);
   });
 
+  /*
+   * Code review's push is a way the forge can refuse too (separation review
+   * M2): the record first, so a refused push is its rejected round; the push
+   * before the status, so a crash between them leaves the item where it was.
+   */
+  it("records code review's entry before its push, and pushes before the status moves the item", () => {
+    const review = workflowOf().stages.find((s) => s.id === "code-review");
+    expect((review?.on_enter ?? []).map((e) => e.type)).toEqual(["tracker.comment", "branch.push", "tracker.status", "tracker.label"]);
+  });
+
   it("writes its entry record first wherever a stage with no step opens, merges or closes a pull request", () => {
     const pulling = pullingIn(workflowOf());
     expect(pulling.map((s) => s.id).sort()).toEqual(id === "full-cycle" ? ["publish"] : ["closed", "merge", "publish"]);

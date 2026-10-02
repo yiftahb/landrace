@@ -609,3 +609,43 @@ describe("a goto entry declared Retry's alone", () => {
     expect(said(halting(retry))).toEqual([expect.stringMatching(/stage "h" declares retry .* on its goto to "a"; retry takes one value, "only"/)]);
   });
 });
+
+/*
+ * `entry-first` (separation review M2): a refusal is recorded as the
+ * entering stage's rejected round only when its `enter` record was planned
+ * before the refused effect. After it, the item halts this tick only, and
+ * the forge is asked again on every tick. So in a stage that records its
+ * entry, every effect but the status and labels comes after that record.
+ */
+describe("an enter record before the stage's effects", () => {
+  const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
+  const entering = (on_enter: NonNullable<Stage["on_enter"]>): Workflow => wf([
+    { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+    { id: "p", triggers: [{ when: { "run.stage": "a" } }], on_enter },
+    { id: "z", terminal: true, triggers: [{ when: { "run.stage": "p" } }] },
+  ]);
+  const said = (w: Workflow) => validateStructure(w).filter((p) => p.rule === "entry-first").map((p) => p.message);
+
+  it("accepts a stage whose enter record comes before every effect but its status and labels", () => {
+    expect(said(entering([enter, { type: "branch.push", branch: "landrace/{item}" }, { type: "tracker.status", value: "p" }]))).toEqual([]);
+    expect(said(entering([{ type: "tracker.label", add: ["lr:working"] }, { type: "tracker.status", value: "p" }, enter, { type: "pull.open", branch: "b" }])))
+      .toEqual([]);
+  });
+
+  it("asks nothing of a stage that records no entry", () => {
+    expect(said(entering([{ type: "branch.push", branch: "landrace/{item}" }, { type: "tracker.status", value: "p" }]))).toEqual([]);
+  });
+
+  it("refuses an effect planned before the enter record, naming the stage and each effect", () => {
+    expect(said(entering([
+      { type: "branch.push", branch: "landrace/{item}" },
+      { type: "tracker.status", value: "p" },
+      { type: "tracker.comment", kind: "note", body: "x" },
+      enter,
+      { type: "pull.open", branch: "b" },
+    ]))).toEqual([
+      expect.stringMatching(/stage "p" plans branch\.push before its enter record/),
+      expect.stringMatching(/stage "p" plans tracker\.comment before its enter record/),
+    ]);
+  });
+});

@@ -180,10 +180,12 @@ stages:
           "rel.implements.in.sum.openThreads": { $gt: 0 }
           "run.counters.code-review": { $lt: 4 }
     on_enter:
-      # Pushed first: a fix round's or the retro's commits are on the pull
-      # request before the reviewer reads it.
-      - { type: branch.push, branch: "landrace/{item}" }
+      # The enter record first, as main's: a push the forge refuses is code
+      # review's rejected round, a halt with the reason. Then the push, before
+      # the status and so before the step: a fix round's or the retro's
+      # commits are on the pull request before the reviewer reads it.
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
+      - { type: branch.push, branch: "landrace/{item}" }
       - { type: tracker.status, value: code-review }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
