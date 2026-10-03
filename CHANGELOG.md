@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-03
+
 ### Added
 
 - **Install with `npm i -g landrace`.** A hook's `landrace`, `landrace/hooks`, `landrace/kit`, `landrace/testing` and `landrace/integrations/<vendor>` imports now resolve to the copy of Landrace that is running, so a project needs no `node_modules` for its hooks, and one process never loads a second landrace from the project's own. A hook that imports an export an installed copy lacks says to update Landrace rather than rebuild it.
@@ -34,5 +36,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/yiftahb/landrace/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/yiftahb/landrace/releases/tag/v1.0.0
