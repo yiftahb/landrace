@@ -43,7 +43,7 @@ body:
     id: validate
     attributes:
       label: "`landrace validate` output"
-      description: Run `landrace validate` in the workspace and paste everything it prints.
+      description: Run `landrace validate` in the workspace and paste what it prints, with every token, secret and private URL removed.
       render: text
     validations:
       required: true

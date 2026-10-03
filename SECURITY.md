@@ -39,14 +39,16 @@ Do not open a public issue, pull request or comment about it.
 
 In scope is anything that breaks the guards Landrace promises, including:
 
-- **Token exposure.** A tracker, forge, docs or notifier token reaching an agent's process or environment, a command line, a log line, an error message, a comment, or a URL other than the one it is scoped to.
-- **Sandbox escape.** A step's agent writing outside its worktree and the repository's git directory, reaching a host it was not allowed, using a capability or an MCP server its step did not declare, or reaching Landrace's own operator server.
-- **Forged control state from untrusted text.** An issue, a comment, a pull request, a document or an agent's output that makes Landrace read a marker, record, label, `goto`, step output or security verdict it did not write itself, or that gets past the screening of a step's prompt.
+- **Token exposure.** A token Landrace holds, the tracker, forge, docs and notifier secrets in `.landrace/.env`, reaching an agent's process or environment, a command line, a log line, an error message, a comment, or a URL other than the one it is scoped to.
+- **Sandbox escape.** A step's agent writing outside its worktree and the repository's git directory, or into `.git/hooks` or `.git/config`, reaching a host it was not allowed, using a capability or an MCP server its step did not declare, or reaching Landrace's own operator server.
+- **Forged control state from untrusted text.** An issue, a comment, a pull request, a document or an agent's output that makes Landrace read a marker, record, label, `goto`, step output or security verdict it did not write itself, including a screening verdict planted in the screened text, or a step that can act running unscreened.
 - **The merge gate.** A `pull.merge` that goes through on pending or failing checks, on a head the review did not read, on a change to a protected path, or for a pull request that is not the item's own (one from a fork, or one that only says it closes the item).
-- **The board.** A request from another website, or from anything but the page itself, that starts a tick, a Retry, a Clear, a `goto` or a refresh on the local triage page.
+- **The board.** Another website open in the operator's browser getting the local triage page to perform any write it offers: a tick, a Retry, a Clear, a `goto`, a refresh, or a reply, ask, resolve or pairing from an item's panel.
 
 Out of scope:
 
 - What the operator chose to trust: a hook file under `.landrace/`, an MCP server or plugin allowlisted for a step, and the people who can label, edit or comment on items in a workflow that merges with no person (see "Who fastlane trusts" in the README).
+- The limits the README documents: a write step pushes with your own git credentials, which a command in its sandbox can read and use to push any branch origin accepts; in-process tools such as web fetches are outside the command sandbox; and a merge treats a head with no checks registered on it as green, so a repository that merges with no person must require status checks on its default branch.
+- The screening model misjudging a prompt. Screening is one layer; a verdict it was tricked into is in scope only as above.
 - A flaw in a coding agent, tracker or forge itself. Report it to that vendor; tell us too if Landrace makes it worse.
 - An attack that needs control of the operator's machine or accounts already.

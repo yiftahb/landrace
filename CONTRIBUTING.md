@@ -42,7 +42,7 @@ Write the failing test, run it, and watch it fail before you write the code that
 Lint and tests enforce these. Do not weaken a rule or a test to make something compile: if a rule is in your way, the code you are writing probably belongs on the other side of it.
 
 - **The core is pure.** `src/core/**` imports no node builtin and no sibling layer, and never calls `Date.now()`, `Math.random()`, `new Date()`, `process`, `crypto`, `performance` or `fetch`. Time arrives as `snapshot.now`, and hashing takes an injected `digest`. If the core seems to need I/O, what you are writing belongs in a hook.
-- **No vendor names under `src/`.** The engine knows no vendor. `tests/boundaries.test.ts` fails on the name of any integration (every folder under `integrations/`, whatever its case, inside an identifier too, in code or a comment) anywhere under `src/`, naming the file and line. A second tracker or a second coding agent is a new integration, never a change to `src/`.
+- **No vendor names under `src/`.** The engine knows no vendor. `tests/boundaries.test.ts` fails on the name of any integration (every folder under `integrations/`, whatever its case, inside an identifier too, in code or a comment) anywhere under `src/`, naming the file and line. The exceptions are display-only: `src/ui/systems.ts`, the table that names the system a link points into; "claude" and "codex" in `src/ui/chat.ts` and `src/ui/page.ts`, the board's links that open a chat in an editor; and mentions of `CLAUDE.md`. A second tracker or a second coding agent is a new integration, never a change to `src/`.
 - **Imports are absolute.** Every import under `src/` and `tests/` goes through the `imports` map in `package.json`: `#core/index.js`, `#namespace.js`, `#tests/...`. A lint rule refuses `./` and `../`.
 - **Every type lives in `src/namespace.ts`.** Modules import their types from it and export only values, and `namespace.ts` exports no runtime value. A type inferred from a Zod schema is declared there too, as `export type X = z.infer<typeof schema>`. An integration keeps its own vendor's wire types beside the code that reads them.
 - **Integrations import only `landrace/kit`, `landrace/hooks`, `node:*` and their own files** (`./<file>.js` inside one integration), so each is exactly what a third party could write.
@@ -59,8 +59,8 @@ A project wires it in with a hook file under `.landrace/hooks/`, as `.landrace/h
 
 ## Commits
 
-- [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary`, where the type is `feat`, `fix`, `docs`, `test`, `refactor` or `chore`, and the scope is the layer or integration (`core`, `runner`, `kit`, `board`, `mcp`, `github`, `jira`, ...). For example, `fix(kit): refuse a merge whose head moved since the review`.
-- The summary is lower case and says what changes for someone using Landrace. The body, where there is one, says why.
+- [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary`, where the type is `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci` or `chore`, and the scope is the layer or integration (`core`, `runner`, `kit`, `board`, `mcp`, `github`, `jira`, ...). For example, `fix(kit): refuse a merge whose head moved since the review`.
+- The summary says what changes for someone using Landrace. The body, where there is one, says why.
 - One logical change per commit, and every commit passes the gate.
 
 ## Pull requests
