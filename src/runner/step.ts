@@ -257,9 +257,9 @@ export async function runStep(opts: {
   const before = start.before;
 
   // The screener guards an agent that can act. One declaring no capability
-  // runs with no tool and no repository — a judge answering from a closed
-  // set — and screening it only refused people's approvals for the judge
-  // template's own wording (#39, #41). A person cleared exactly this round of
+  // is a judge answering from a closed set — still at the read tier, in a
+  // worktree, with the operator's MCP servers — and screening it only refused
+  // people's approvals for the judge template's own wording (#39, #41). A person cleared exactly this round of
   // this stage after reading what the screener refused (`run.cleared`, void
   // once anyone wrote since); any other round is screened as ever.
   const cleared = snapshot.run?.cleared;
