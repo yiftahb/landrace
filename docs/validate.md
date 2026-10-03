@@ -9,7 +9,7 @@ landrace validate path/to/ws   # another workspace
 
 It prints `<dir>: valid`, or one line per problem — `  <rule>: <message>` — and a count, and exits 1. With several workflows, a problem in one is prefixed with its id; a problem every workflow shares (the configuration, an executor, a notifier) is said once.
 
-In a worktree with no secrets, such as CI, the `githubToken` secret not resolving and `.mcp.json` missing are expected reports.
+In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's worktree — the declared secrets not resolving and `.mcp.json` missing are expected reports.
 
 ## The order it checks in
 
@@ -83,8 +83,7 @@ In a worktree with no secrets, such as CI, the `githubToken` secret not resolvin
 | Rule | Catches |
 |---|---|
 | `path-coverage` | A condition — in a trigger, an `identity`, a `requires`, a `goto` entry or an `eligible` rule — reading a path no hook provides. What counts as provided is the engine's own (`run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every type a source declares) plus each pre hook's declared paths. Reading `rel.<type>.in` of an outward-only type is refused here too |
-| `executor` | An executor that cannot start: an `agent.*` key it does not read, a step's `effort` it has no level for, an `agent.sandbox` it cannot keep, an `agent.mcp` server it cannot resolve. One problem per line |
-| `mcp` | An `agent.mcp` server with no `.mcp.json` at the repository root, a name `.mcp.json` does not define, or Landrace's own operator server |
+| `executor` | An executor that cannot start: an `agent.*` key it does not read, a step's `effort` it has no level for, an `agent.sandbox` it cannot keep. One problem per line, as `executor "<id>" could not start: <reason>`. A problem with `agent.mcp` reads `… could not start: mcp: <reason>`: a server named with no `.mcp.json` at the repository root, a name `.mcp.json` does not define, a server named twice or with an empty `tools` list, or Landrace's own operator server |
 | `notify` | A `notify.via` id no loaded notifier answers to |
 | `admit` | A label a workflow admits items with that one of its own `eligible` rules (labels only) turns away, so the item would be started and never worked; an admitted label the engine writes itself (`lr:working`, `lr:stage:…`) |
 | `claims` | Two workflows over one source — the same loaded hook object — where the labels one admits satisfy the other's `eligible` rules, all label-only, so an item started in one would be claimed by both and halt |
