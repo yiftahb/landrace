@@ -30,7 +30,7 @@
 
 Landrace watches your issue tracker. Each issue it works on is an **item**, and a **workflow** moves the item through **stages**: spec, build, review, fix, CI and merge. At some stages a coding agent, such as Claude Code or Codex, does one piece of work, called a **step**. It writes the spec, the code, the review or the fix.
 
-The agent never chooses what happens next. It answers with a value, and a rule in the workflow routes on that value. A deterministic state machine decides every step, and a person decides at the gates you choose. Two workflows ship: **full-cycle** starts with a written spec, and **fastlane**, for small changes, starts at the build.
+The agent never chooses what happens next. It answers with a value, and a rule in the workflow routes on that value. A deterministic state machine decides every step, and a person decides at the gates you choose. This repository ships two workflows: **full-cycle** starts with a written spec, and **fastlane**, for small changes, starts at the build.
 
 ```mermaid
 stateDiagram-v2
@@ -70,6 +70,8 @@ git clone https://github.com/yiftahb/landrace.git ../landrace && pnpm -C ../land
 npm install --save-dev ../landrace
 npx landrace init main
 ```
+
+`npm install` records Landrace as a `file:../landrace` dependency, so CI and other clones need the same clone beside the repository.
 
 `init` writes `.landrace/`: a commented `landrace.yaml`, and a workflow named `main` that takes issues labelled `lr:main`. It also adds `.landrace/.env` to `.gitignore`. Before you start it, connect it to GitHub and Claude Code.
 
@@ -111,21 +113,21 @@ npx landrace start
 
 `start` checks the token's permissions, then serves the **board** at `http://127.0.0.1:4545/`. Every 60 seconds it runs a **tick**: one pass over the tracker's issues.
 
-To give it work, label an issue `lr:main`. On the next tick the issue enters the `todo` stage, and the board lists it under Waiting. The workflow `init` wrote runs no agent yet, so the issue stays there. Give `todo` a step, as [Workflows](docs/workflows.md#step-files) shows, or copy a shipped workflow from [`.landrace/workflows/`](.landrace/workflows/). Each step is a paid agent run, and the workflow's round caps bound how many run.
+To give it work, label an issue `lr:main`. On the next tick the issue enters the `todo` stage, and the board lists it under Waiting. The workflow `init` wrote runs no agent yet, so the issue stays there. To run one, give `todo` a step, as [Workflows](docs/workflows.md#step-files) shows. A step that changes files reaches only the hosts listed under `agent.sandbox.hosts`, so list your forge and package registry there: see [A write step's sandbox](docs/security.md#a-write-steps-sandbox). Each step is a paid agent run, and a cap in the workflow bounds how many times each step runs.
 
 ## The two workflows
 
-This repository ships two workflows, and both are examples to copy. Each open item is **claimed** by exactly one workflow, decided by its labels.
+Both shipped workflows are examples. Their hooks, step prompts and protected paths are this repository's own, so a copy needs them changed. Each open item is **claimed** by exactly one workflow, decided by its labels.
 
 | | full-cycle | fastlane |
 |---|---|---|
 | For | A change worth a written spec | A change small enough to need no spec |
 | Labels | `lr:auto` | `lr:auto` and `lr:fast` |
 | Path | spec → approval → build → review ⇄ fix → merge | build → review ⇄ fix → CI → merge |
-| Who merges | A person | Landrace, on green checks at the head the review read |
-| Stops for a person | To answer the spec's questions, to approve the spec, and to merge | When the change touches a protected path, when a retro commits a lesson, or when a review loop reaches its cap |
+| Who merges | A person | Landrace, once the review and the checks pass |
+| Stops for a person | To answer the spec's questions, to approve the spec, to merge, or when a review loop reaches its cap | When the change touches a protected path, or when a review loop reaches its cap |
 
-Both also stop for a person at a halt: a step whose output was broken, a push the forge refused, or a blocker that was dropped. The protected paths are Landrace's workflows and hooks, CI, dependency files and agent instructions. Every stage, cap and protected path is in [Workflows](docs/workflows.md#the-shipped-workflows).
+Both also stop for a person at a halt: a step whose output was broken, a push the forge refused, or a blocker that was dropped. Fastlane's protected paths are `.landrace/`, CI, pnpm's dependency files and the agents' instructions. Every stage, cap and protected path is in [Workflows](docs/workflows.md#the-shipped-workflows).
 
 ## The board
 
@@ -135,7 +137,7 @@ Both also stop for a person at a halt: a step whose output was broken, a push th
 - **A page per workflow**, with its items in lanes: Needs you, Agent running, Held elsewhere, Waiting, Not admitted and Done.
 - **An item's panel**: its stage, its pull requests and spec, its conversation with Landrace, and its relationships to other items.
 
-From the board, a person can reply on an item, ask a running step a question, or hand the item back. They can retry a failed step, or send an item back to an earlier step. They can also take a step over in their own terminal, which Landrace calls pairing. Browser notifications say when an item needs you.
+From the board, a person can reply on an item, ask the step that last ran a question, then hand the item back to its workflow. They can retry a failed step, or send an item back to an earlier step. They can also take a step over in their own terminal, which Landrace calls pairing. Browser notifications say when an item needs you.
 
 The same reads and writes are MCP tools, so Claude Code, Codex or Cursor can drive Landrace through `landrace mcp`: see [the operator tools](docs/cli.md#the-operator-tools).
 
@@ -178,14 +180,12 @@ GitHub, GitLab, Jira and Notion each have a script that checks the integration a
 
 ## Safety
 
-- **Write steps run sandboxed.** A step that may change files runs its shell commands in the coding agent's OS sandbox. Under Claude Code, it writes only to its own worktree and the repository's git directory, and reaches only the hosts you list. Codex's sandbox keeps less: see [Integrations](docs/integrations.md#codex).
-- **The agent never holds the tracker's token.** Landrace makes every tracker and forge write itself.
-- **Untrusted text cannot forge control state.** Everything Landrace writes ends in a marker, and only the last marker in a comment counts. Landrace escapes text it did not write, so neither an agent nor a commenter can fake a Landrace record.
+- **Write steps run sandboxed.** A step that may change files runs its shell commands in the coding agent's OS sandbox. Under Claude Code, those commands write only to the step's worktree and the repository's git directory, and reach only the hosts you list. In-process tools such as WebFetch follow Claude Code's own permission rules instead. Codex's sandbox keeps less: see [Integrations](docs/integrations.md#codex).
+- **The agent never holds the tracker's token.** Landrace makes every tracker and forge write itself: pull requests, comments and labels. A write step pushes its own branch with your git credentials, so protect your default branch on the forge before you run one.
+- **Untrusted text cannot forge control state.** Everything Landrace writes ends in a hidden marker, and only the last marker in a comment counts. Landrace escapes text it did not write, so neither an agent nor a commenter can fake a Landrace record.
 - **Prompts are screened.** Before any step that can act, a separate agent run with no tools checks the prompt for injected instructions.
-- **Fastlane never merges a protected path without a person.** It also merges only on green checks, at the head the review read.
+- **Fastlane never merges a protected path without a person.** It merges only the commit the review read, when no check on it has failed or is still running. A commit with no checks counts as passing, so require status checks on your default branch.
 - **What runs on your machine:** Landrace, as one process; the coding agent's CLI, in a git worktree per item under your temporary folder; and the board, on `127.0.0.1`. Landrace reaches the outside only through your hooks, and through telemetry when you turn it on.
-
-A write step pushes with your own git credentials, so protect your default branch on the forge before you run one.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/needs-you-dark.png">
