@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { messageOf } from "#runner/errors.js";
 import { reexec, shouldReexec, STRIP_TYPES } from "#cli/reexec.js";
+import { runInit } from "#cli/init.js";
 import { runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
 import { runChildMcp, runMcp } from "#cli/mcp.js";
@@ -50,6 +51,19 @@ async function loadingHooks(what: string, run: () => Promise<void>): Promise<voi
     process.exitCode = 1;
   }
 }
+
+program
+  .command("init")
+  .description("create a workflow skeleton, and .landrace/ when it is missing")
+  .argument("<name>", "the new workflow's id, its folder under .landrace/workflows/")
+  .action(async (name: string) => {
+    try {
+      for (const line of await runInit(process.cwd(), name)) console.log(line);
+    } catch (e) {
+      console.error(`landrace init: ${messageOf(e)}`);
+      process.exitCode = 1;
+    }
+  });
 
 program
   .command("validate")
