@@ -144,6 +144,22 @@ Everything we write carries a trailing marker. Only the **last** marker in a bod
 - Prefer deleting to abstracting. No interface with one implementation, no config for a value that never changes.
 - Errors report, they do not crash. A CLI that exits through a stack trace has given the user nothing to act on.
 
+## README and docs
+
+These rules hold for anyone, person or agent, who edits `README.md` or `docs/`. The README grew past a thousand lines of reference, and a reader who wanted to start had to dig for how.
+
+- **The README is for users, and it stays short:** about 250 lines at most. Reference lives in `docs/`: configuration, schemas, CLI flags, `validate` rules, integration setup. The README links to it. Never add a configuration table, a schema or a flag list to the README.
+- **Keep the README's order:** hero, what it does, why, quick start, the two workflows, the board, how it works, integrations, safety, documentation map, contributing, license.
+- **The hero** opens with a tagline of at most 12 words that names the job, with no internal jargon, in one sentence. It carries at most 5 badges, and each proves something: CI, release, license, Node version. It shows one real image of the product, with descriptive alt text.
+- **The quick start** has at most 4 commands, with the prerequisites in one line above them, and says what the reader sees on success. It works on a clean machine. Re-run it whenever a command, a flag or a default changes.
+- **Every code block is copy-pasteable.** No `$` prompts. Input and output go in separate blocks. Every block has a language tag. A placeholder says where its value comes from.
+- **Define each Landrace term where it first appears, or use plain words.** The terms are stage, effect, hook, claim, halt, waits, fastlane and relationship.
+- **Write plainly:** present tense, active voice, plain words, one idea per sentence. No superlative without a number. Every claim is checkable. State limits honestly, and say which integrations are unverified.
+- **Diagrams are mermaid,** one concept each, at most about 8 nodes. **Images** live in `docs/assets/`, stay under about 1 MB, carry alt text, and are regenerated when the UI changes.
+- **Links inside the repository are relative,** and every link resolves.
+- **One home per fact.** `docs/` pages and the README link to each other instead of repeating. `docs/README.md` lists every page. A change to a command, a config key, a workflow or an integration updates its page in the same change.
+- **The README is for users. `CLAUDE.md` and `AGENTS.md` are for contributors and agents,** and what they say stays out of the README.
+
 <!-- agsync:begin -->
 ## Available Skills
 
