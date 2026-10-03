@@ -854,7 +854,7 @@ describe("the shipped write steps merge, test, commit and push their own branch"
     expect(prompt).toContain("git branch --show-current");
     expect(prompt).toMatch(/git merge origin\//);
     // Commits and fetches also write the repo's shared git directory
-    // (README, "A write step's sandbox"), not only the worktree.
+    // (docs/security.md, "A write step's sandbox"), not only the worktree.
     expect(prompt).toContain("only inside this worktree and the repository's git directory");
   });
 
