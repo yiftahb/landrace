@@ -99,10 +99,10 @@ where it becomes a thread), and what is wrong in one or two sentences.
 Mark each finding `wording`: true only when its fix changes nothing but
 documentation — a `README.md` or `docs/` page, or a code comment — and no line
 that runs. A step prompt, instructions or a skill is never wording: an agent
-acts on it. When you are unsure, it is false. The mark checks nothing less: a
-wording finding is fixed and re-reviewed like any other. It only lets fastlane
-give a review that found nothing but wording two more rounds before a person
-is asked; a wrong mark wastes those rounds.
+acts on it. When you are unsure, it is false. The mark does not lighten the
+check: a wording finding is fixed and re-reviewed like any other. It only lets
+fastlane give a review that found nothing but wording two more rounds before a
+person is asked; a wrong mark wastes those rounds.
 
 **Step 7 — Summarise and end with the json block.** Start your final summary with the Progress checklist, each box ticked, or left open with the reason.
 Then one line per spec requirement: met or not. Your summary becomes the

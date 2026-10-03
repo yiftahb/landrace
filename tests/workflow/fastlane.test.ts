@@ -399,7 +399,7 @@ describe("fastlane's steps", () => {
     expect(procedure).toMatch(/Mark each finding `wording`: true only when its fix changes nothing but documentation — a `README\.md` or `docs\/` page, or a code comment — and no line that runs\./);
     expect(procedure).toMatch(/A step prompt, instructions or a skill is never wording/);
     expect(procedure).toMatch(/When you are unsure, it is false\./);
-    expect(procedure).toMatch(/a wording finding is fixed and re-reviewed like any other/);
+    expect(procedure).toMatch(/The mark does not lighten the check: a wording finding is fixed and re-reviewed like any other\./);
     expect(procedure).toMatch(/`findings` a list of objects each with `file`, `line`, `body` and `wording` \(true or false, by Step 6\)/);
   });
 
