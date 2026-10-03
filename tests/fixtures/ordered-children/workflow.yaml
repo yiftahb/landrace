@@ -1,0 +1,377 @@
+version: 1
+name: ordered-children
+description: test
+
+# tests/fixtures/children, with its children gated on their blockers the way
+# the shipped workflows gate an item before build: a breakdown may order its
+# sub-items — `relate: [{ type: blocked-by, item: <sibling> }]` on
+# landrace_create_child — and a child is built only once nothing it is
+# blocked by is open. The gate (`waiting`, the child's triggers into `build`,
+# and `stuck`) is the only difference from that fixture; everything else is
+# its, word for word.
+
+# What starts an item here, and every child a breakdown files.
+admit: [lr:auto]
+
+# The engine's child-item feature, end to end: an approved spec is either
+# built as one piece of work or split into sub-items that are each built and
+# reviewed on their own, and the parent finishes when they do. The shipped
+# .landrace workflow is a single flow and uses none of this; this is the
+# example a project that wants splitting copies from, and what the tests drive
+# to keep the feature working.
+#
+# No `hooks:` list: the tests hand the harness its hooks directly (the
+# in-memory tracker, or the GitHub hook over an in-memory GitHub), and a hook
+# path must stay inside this directory. tests/esm/cli-validate.test.ts checks
+# path coverage against the shipped GitHub hook explicitly.
+
+eligible:
+  - when: { "node.state.labels": { $in: ["lr:auto"] } }
+    else: "no lr:auto label"
+
+# One key, because one key is read. The spec and review caps are the `$lt`
+# comparisons in the triggers below, where the validator can see them (§11.4)
+# and where editing one actually changes what happens — `spec: 3` here was a
+# number an operator could edit to no effect at all.
+budget:
+  stepTimeout: 10m
+
+# Two rules govern every on_enter list below, and both are load-bearing.
+#
+# 1. `tracker.status` names the stage's own id, because on GitHub the status
+#    *is* the position: the hook writes it as `lr:stage:<value>` and the engine
+#    reads run.stage back out of that label. A display name there ("Building")
+#    derives a position no stage's identity matches, and the item cannot be
+#    placed at all.
+#
+# 2. The `enter` record comes first, before the status that moves the position.
+#    It is what tells the engine the stage owes another round — a crash between
+#    the two effects must leave the item at the *previous* stage, whose
+#    trigger simply fires again and replans the identical entry record (the
+#    round is derived, so it does not move). Written after the status instead,
+#    a crash would land the item on a stage that still reads as complete from
+#    its last round, and that round would be silently skipped.
+# Pull requests are graph nodes: rel.implements.in.* counts every PR tied to the item — "all merged" is total > 0 and not.merged: 0, never a single PR's flag.
+stages:
+  # ── spec phase ───────────────────────────────────────────────────────────
+  - id: spec
+    step: steps/spec.md
+    entry: true
+    triggers:
+      # Any item a person made — top-level, or a sub-issue they filed by
+      # hand, which nobody planned and so needs a spec like any other. A
+      # child a breakdown created carries an origin, and enters at build
+      # instead — see below. With two entry stages, each trigger here that
+      # places a fresh item must be anchored on "run.stage": null, or it
+      # would also fire mid-workflow.
+      - name: an item a person made
+        when: { "run.stage": null, "node.origin": null }
+      # run.lastEvent.actor, not lastEvent.actor: the spec lists lastEvent.* as
+      # a conventional top-level path, but deriveRun puts it inside run and no
+      # hook provides a top-level one, so the bare path matched nothing and
+      # every human handback below was dead.
+      #
+      # run.outputs.* is the same correction for the same reason, and it was
+      # dead the same way: outputs live at run.outputs, so `outputs.spec.kind`
+      # read nothing at all. One path to one fact, and it is the derived one —
+      # a second, aliased spelling is how a predicate silently stops matching.
+      - name: human answered the questions
+        when:
+          "run.stage": spec-questions
+          "run.lastEvent.actor": human
+          "run.counters.spec": { $lt: 3 }
+      - name: reviewer's reply read as a change request
+        when:
+          "run.stage": triage
+          "run.outputs.triage.intent": revise
+          "run.counters.spec": { $lt: 3 }
+      - name: a halt was handed back
+        when:
+          "run.stage": blocked
+          "run.lastEvent.actor": human
+          "run.counters.spec": { $lt: 3 }
+      # The open sub-items are what keep this disjoint from done's "every
+      # sub-item is finished": with none left open there is nothing to
+      # revise, and the item is finished instead.
+      - name: you asked for changes while the sub-items were running
+        when:
+          "run.stage": children-running
+          "run.lastEvent.actor": human
+          "rel.child-of.in.not.closed": { $gt: 0 }
+          "run.counters.spec": { $lt: 3 }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Writing the spec, round {round}." }
+      - { type: tracker.status, value: spec }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked"] }
+
+  # Where the conversation rests while it is the human's turn. §10 routes
+  # `triage --question--> spec-questions`, and `unclear` here too: the enum
+  # exists so the model can abstain instead of guessing, and an abstention has
+  # to land somewhere a human turn can reach or it is worse than a guess — the
+  # item sat at `triage` wearing `lr:awaiting` and the next reply did
+  # nothing, because decide() never evaluates the current stage's own
+  # triggers. The triage step's own comment — its reason, in its own words —
+  # is already on the item by the time this is entered, so "waits and asks"
+  # is the asking; this is the waiting.
+  - id: spec-questions
+    triggers:
+      - name: the agent has blocking questions
+        when: { "run.stage": spec, "run.outputs.spec.kind": questions }
+      - name: the reviewer's reply was a question
+        when: { "run.stage": triage, "run.outputs.triage.intent": question }
+      - name: the reviewer's reply could not be read either way
+        when: { "run.stage": triage, "run.outputs.triage.intent": unclear }
+    on_enter:
+      - { type: tracker.status, value: spec-questions }
+      - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
+
+  - id: spec-human-review
+    requires: { "run.outputs.spec.kind": spec }
+    triggers:
+      - name: the spec was published
+        when: { "run.stage": spec, "run.outputs.spec.kind": spec }
+    on_enter:
+      - { type: tracker.status, value: spec-human-review }
+      - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
+
+  - id: triage
+    step: steps/triage.md
+    requires: { "run.lastHuman": { $ne: null } }
+    triggers:
+      - name: you replied
+        when: { "run.stage": spec-human-review, "run.lastEvent.actor": human }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reading your reply, round {round}." }
+      - { type: tracker.status, value: triage }
+
+  # ── breakdown ────────────────────────────────────────────────────────────
+  # Whether the approved spec is one piece of work or several. The entry
+  # record first, as validate's entry-first asks — a close the tracker refuses
+  # is then this stage's rejected round, not a refusal asked again on every
+  # tick — and the close before the status: a crash between them must leave
+  # the item where its trigger fires again and replans them all. It drops
+  # every child an earlier round made, and everything those own; converge
+  # re-plans it before every invocation too, which is what cleans up after a
+  # crashed attempt.
+  #
+  # Every trigger out of here that reads the kind also reads
+  # run.lastOutputValid: null. A rejected round leaves the last *accepted*
+  # output in run.outputs, so a second round that broke its contract still
+  # shows round 1's kind — and without this, "a step broke its output
+  # contract" and a stale kind would both match, and the item would halt as
+  # ambiguous instead of being blocked for a person to hand back.
+  - id: breakdown
+    step: steps/breakdown.md
+    triggers:
+      - name: the spec was approved
+        when: { "run.stage": triage, "run.outputs.triage.intent": approve }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Deciding whether to split the work, round {round}." }
+      - { type: nodes.close, follow: [child-of, implements] }
+      - { type: tracker.status, value: breakdown }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+
+  # Nobody's turn: the children are being worked, each as its own item. Not
+  # lr:awaiting — a person has nothing to answer here — and not lr:working,
+  # which would read as an agent running on this item.
+  - id: children-running
+    triggers:
+      - name: the breakdown created sub-items
+        when:
+          "run.stage": breakdown
+          "run.outputs.breakdown.kind": children
+          "run.lastOutputValid": null
+          "rel.child-of.in.total": { $gt: 0 }
+    on_enter:
+      - { type: tracker.status, value: children-running }
+      - { type: tracker.label, remove: ["lr:working", "lr:awaiting"] }
+
+  # ── waiting on blockers ──────────────────────────────────────────────────
+  #
+  # fastlane's gate, read where a child starts (.landrace/workflows/full-cycle
+  # says why each count and fact is spelt as it is). Three entry stages take
+  # a fresh child between them, once its parent waits on its children, by
+  # three conditions each the others' negation: none open, none dropped and
+  # neither fact — build; one open — here, nobody's turn, the note naming the
+  # blockers left; one dropped, the child on a cycle of blockers, or its
+  # blockers not all read — stuck. From here the same two ways on.
+  - id: waiting
+    entry: true
+    note: "waiting on {rel.blocked-by.out.open}"
+    triggers:
+      - name: a child from a breakdown, and a blocker is open
+        when:
+          "run.stage": null
+          "node.origin": { $ne: null }
+          "rel.child-of.out.stage.children-running": 1
+          "rel.blocked-by.out.not.closed": { $gt: 0 }
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": { $ne: true }
+    on_enter:
+      - { type: tracker.status, value: waiting }
+      - { type: tracker.label, remove: ["lr:working", "lr:awaiting"] }
+
+  # ── build phase ──────────────────────────────────────────────────────────
+  - id: build
+    step: steps/build.md
+    # The second way in. A child a breakdown created was planned as part of
+    # its parent's spec, so it skips spec, spec-questions and triage and
+    # starts here, working from its own body (steps/build.md says how).
+    entry: true
+    triggers:
+      # Only once the parent waits on its children: until then the
+      # breakdown may still fail or be revised and drop this child, and a
+      # build started now is a paid step on work about to be thrown away.
+      # The cost is one "no entry stage accepts" halt per child per tick
+      # until then — non-durable, since nothing is written for it.
+      - name: child from a breakdown
+        when:
+          "run.stage": null
+          "node.origin": { $ne: null }
+          "rel.child-of.out.stage.children-running": 1
+          "rel.blocked-by.out.not.closed": { $not: { $gt: 0 } }
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": { $ne: true }
+      - name: its blockers are done
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          "rel.blocked-by.out.not.closed": { $not: { $gt: 0 } }
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": { $ne: true }
+      - name: the breakdown chose one piece of work
+        when:
+          "run.stage": breakdown
+          "run.outputs.breakdown.kind": single
+          "run.lastOutputValid": null
+          "rel.child-of.in.total": 0
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Implementing the spec, round {round}." }
+      - { type: tracker.status, value: build }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+
+  - id: code-review
+    step: steps/code-review.md
+    requires: { "rel.implements.in.total": { $gt: 0 } }
+    triggers:
+      - name: a pull request exists
+        when: { "run.stage": build, "rel.implements.in.total": { $gt: 0 } }
+      - name: the fixer pushed a new head
+        when:
+          "run.stage": fix-review
+          "run.counters.code-review": { $lt: 4 }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
+      - { type: tracker.status, value: code-review }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+
+  - id: fix-review
+    step: steps/fix-review.md
+    triggers:
+      - name: the reviewer left open threads
+        when:
+          "run.stage": code-review
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
+          "run.counters.code-review": { $lt: 4 }
+      - name: you reopened a thread
+        when:
+          "run.stage": pr-human-review
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
+          "run.counters.code-review": { $lt: 4 }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
+      - { type: tracker.status, value: fix-review }
+      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
+
+  - id: pr-human-review
+    triggers:
+      - name: no threads are open
+        when:
+          "run.stage": code-review
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.sum.openThreads": 0
+    on_enter:
+      - { type: tracker.status, value: pr-human-review }
+      - { type: tracker.label, add: ["lr:awaiting"], remove: ["lr:working"] }
+
+  # ── terminal ─────────────────────────────────────────────────────────────
+  - id: done
+    terminal: true
+    triggers:
+      - name: merged
+        when:
+          "run.stage": pr-human-review
+          "rel.implements.in.total": { $gt: 0 }
+          "rel.implements.in.not.merged": 0
+      - name: every sub-item is finished
+        when:
+          "run.stage": children-running
+          "rel.child-of.in.total": { $gt: 0 }
+          "rel.child-of.in.not.closed": 0
+    # Closed as finished, so a parent waiting in children-running sees this
+    # item among its closed children.
+    on_enter:
+      - { type: tracker.status, value: done }
+      - { type: tracker.label, remove: ["lr:auto", "lr:awaiting", "lr:working"] }
+      - { type: tracker.close }
+
+  # The gate's third condition, fresh and at `waiting`: a blocker dropped,
+  # one not read, or a cycle of blockers back to the child is a person's to
+  # settle. An entry stage of its own, as fastlane's `stuck` is, because
+  # `blocked` below takes a failed round from anywhere and so cannot be one.
+  - id: stuck
+    entry: true
+    triggers:
+      - name: a child from a breakdown, but a blocker was dropped or cannot be read, or the child waits on itself
+        when:
+          "run.stage": null
+          "node.origin": { $ne: null }
+          "rel.child-of.out.stage.children-running": 1
+          $or: &blockers-need-you
+            - { "rel.blocked-by.out.dropped": { $gt: 0 } }
+            - { "node.state.dependencyCycle": true }
+            - { "node.state.relatedUnreadable": true }
+      - name: a blocker was dropped or cannot be read, or the child waits on itself
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          $or: *blockers-need-you
+    on_enter:
+      - { type: tracker.status, value: stuck }
+      - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }
+
+  - id: blocked
+    triggers:
+      # The open-thread count is part of the condition, not decoration: the
+      # last review round can finish with nothing left open, and then
+      # pr-human-review's trigger fires too. Two triggers matching is a halt,
+      # so "the budget is spent" has to mean "spent with findings still open".
+      - name: the review budget is exhausted
+        when:
+          "run.stage": code-review
+          "rel.implements.in.sum.openThreads": { $gt: 0 }
+          "run.counters.code-review": { $gte: 4 }
+      - name: a step broke its output contract
+        when: { "run.lastOutputValid": false }
+      # A breakdown whose words and deeds disagree. Without these both would
+      # wait for ever, no trigger matching. The first is also what a child MCP
+      # server that failed to start looks like: the agent could not create
+      # anything, whatever it then said.
+      - name: the breakdown said it split the work but created nothing
+        when:
+          "run.stage": breakdown
+          "run.outputs.breakdown.kind": children
+          "run.lastOutputValid": null
+          "rel.child-of.in.total": 0
+      - name: the breakdown said one piece of work but created sub-items
+        when:
+          "run.stage": breakdown
+          "run.outputs.breakdown.kind": single
+          "run.lastOutputValid": null
+          "rel.child-of.in.total": { $gt: 0 }
+    on_enter:
+      - { type: tracker.status, value: blocked }
+      - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }
