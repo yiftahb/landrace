@@ -72,6 +72,7 @@ Every agent that can act is screened first: every step declaring a capability, a
 The screener is a model, and it can refuse a prompt that is fine — #39's spec was refused twice for its own template's wording. A person can overrule it, and only a person: the board's "Clear & retry", offered beside Retry on a screened item, or `landrace_clear`. Never a reply — a comment is text anyone can write, and an injection that could clear itself would make the screener decoration.
 
 - Clearing writes a `cleared` record naming exactly the round the retry will run (`cleared:<stage>:<round>`), then the same goto Retry writes. That round runs without screening and logs `screen.cleared`; every later round is screened as ever.
+- `landrace_clear` also takes a `stage`: the item goes there instead of back to the refused step — only where its stage lists that goto, within its cap — and the clearance covers that stage's next round.
 - A comment on the item after the clearance, other than Landrace's own records, voids it. Nothing else does: an edit to the item's title or body, or a comment on its pull request, leaves the clearance in force, and that text reaches the unscreened round unread. Clear only an item whose text you trust not to change before the retry runs.
 - It is refused on an item no security check stopped, and nothing is written where the goto itself would be refused.
 - The agent's confinement does not change: the sandbox, the capability checks and the worktree comparison still hold for a cleared round.

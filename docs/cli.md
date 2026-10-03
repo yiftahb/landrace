@@ -160,7 +160,7 @@ The generated files are gitignored, so run it after cloning. Then ask your clien
 | `landrace_update_item` | Changes an item's `title`, `body`, `state` (`open` or `closed`) or labels (`addLabels`, `removeLabels`), and its relationships (`relate`, `unrelate`). Removing the admit label stops further work |
 | `landrace_reply` | Posts a comment as you — approve the work, or ask for changes — exactly as if you had typed it on the tracker |
 | `landrace_goto` | Sends an item back to a step its stage lists, within its cap. The step re-runs on the next tick |
-| `landrace_clear` | Overrules the security check on a screened item: the refused step's next round runs unscreened, once |
+| `landrace_clear` | Overrules the security check on a screened item: the refused step's next round runs unscreened, once. With `stage`, it sends the item to that stage instead — one its stage lists, within its cap, as `landrace_goto` — and that stage's next round runs unscreened |
 | `landrace_ask` | Answers a step's open questions, or asks it something, by resuming the step's own session. Records both halves on the item and returns the reply. A turn takes 5–70 seconds. The workflow stays where it is until `landrace_resolve` |
 | `landrace_resolve` | Hands the item back: `why` (by default, that the questions are answered) is posted as your reply, and the workflow's next step reads it on the next tick |
 | `landrace_pair` | Works a step together with the agent in your own terminal. Without `stage`, lists what may be paired on and any open pairing. With it, holds that step's round for you — the agent never runs it alone meanwhile — and returns the command to run |
