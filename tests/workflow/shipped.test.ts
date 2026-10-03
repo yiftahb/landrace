@@ -711,6 +711,21 @@ it.each(["build", "fix-review", "retro"])("%s says which sandbox skips and valid
   expect(prose).toMatch(/Anything else that fails is real/);
 });
 
+// #63: docs drifted as features landed, since no step prompt named the
+// "README and docs" standards. Build keeps the docs current, the reviewer
+// checks it, and the retro fixes what drifted. fastlane's build and review
+// inherit these sections; its retro's Procedure is held equal to this one.
+it.each([
+  ["build", /`docs\/` page that is that fact's one home[\s\S]*Never add reference material to the README/],
+  ["code-review", /user-visible change without its `docs\/` page updated, or reference material added to the README/],
+  ["retro", /`README\.md` or `docs\/` page[\s\S]*A retro that finds documentation drift and leaves it is incomplete/],
+])("%s holds README.md and docs/ to the README and docs standards", async (id, rule) => {
+  const { steps } = await loadShipped();
+  const prose = (steps.get(`steps/${id}.md`)?.prompt ?? "").replace(/\s+/g, " ");
+  expect(prose).toMatch(rule);
+  expect(prose).toContain(`"README and docs"`);
+});
+
 // Every step that does real work thinks hard; the spec hardest, since every
 // later step answers to it. Triage is a quick classifier on haiku and
 // declares no capability, so it is handed no effort at all.

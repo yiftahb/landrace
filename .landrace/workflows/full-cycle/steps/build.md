@@ -99,6 +99,7 @@ only field is `kind`, set to `done`.
 
 ## Rules
 
+- A change a user sees — a command, flag, configuration key, workflow stage, effect, integration or default, added or changed — updates the `docs/` page that is that fact's one home, in the same change. Change `README.md` only where the change alters what it states: the quick start, the workflows table, the integrations table. Both follow the "README and docs" standards in the agent instructions. Never add reference material to the README.
 - Work on the branch you are on — do not create, switch or rename branches.
 - Your commands run in a sandbox: they can write only inside this worktree and the repository's git directory, and reach only the hosts the operator allowed.
 - Never push any other branch, never force-push, and never touch `main`.
