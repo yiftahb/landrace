@@ -369,7 +369,7 @@ One `landrace start` runs every workflow: each workflow's source is listed, each
 
 - **Claims.** A workflow claims an item its `eligible` rules accept. Exactly one claim is the rule: an item two workflows accept is a **conflict**, and an id two different sources report is a **clash**. Either halts, naming both workflows. An item no workflow accepts is unclaimed, and shows as Not admitted with each workflow's reason.
 - **Keeping claims apart.** Give each workflow `admit` labels and `eligible` rules the other turns away — here `full-cycle` admits `lr:auto` and refuses `lr:fast`, and fastlane needs both. `validate` reports, and `start` refuses, two workflows over one source where what one admits the other certainly accepts (the `claims` rule).
-- **One pool.** `tick.concurrency` bounds the workspace, not each workflow: items of every workflow share its slots, most urgent first.
+- **One pool.** `tick.concurrency` bounds the agents running at once across the whole workspace, overlapping ticks and every workflow included, not each workflow or each tick: items of every workflow share its slots, most urgent first. [Configuration](configuration.md#landraceyaml) says when a tick leaves an item for a later one.
 - **A failing source.** With several sources, one that cannot list leaves every clash unjudged, so that tick no other source's items are worked, and the board refuses writes while any source is failing. Runs already in flight are not stopped. With one source, its own items are simply absent.
 
 How the board and the MCP show several workflows is in [the CLI](cli.md#the-board).
