@@ -16,7 +16,7 @@ const ENV_ENTRY = ".landrace/.env";
  * until a hook does, which is the next thing a new project has to write.
  */
 const CONFIG = `# Landrace's runtime: how agents run and where items live. Every key is
-# described in Landrace's README, under "Configuration".
+# described in Landrace's docs/configuration.md.
 version: 1 # the file format; 1 is the only one
 
 agent:
@@ -46,11 +46,9 @@ agent:
 
 /** Quoted, since YAML would read an id such as `123` as a number and `name` is a string. */
 const workflowYaml = (name: string, label: string): string => `# The ${name} workflow: the stages an item moves through, from the one it
-# starts at to the one where its work is done. Every key is described in
-# Landrace's README — this file under ".landrace/workflows/<id>/workflow.yaml
-# — the process", the prompts a stage runs under ".landrace/workflows/<id>/
-# steps/*.md — the work", and hooks under ".landrace/hooks/*.ts — the
-# integrations". Check it with \`landrace validate\`.
+# starts at to the one where its work is done. Every key, and the prompts a
+# stage runs from steps/, is described in Landrace's docs/workflows.md, and
+# hooks in docs/hooks.md. Check it with \`landrace validate\`.
 version: 1 # the file format; 1 is the only one
 
 # The title the board shows, and what landrace_workflows tells an agent this

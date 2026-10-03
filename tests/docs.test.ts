@@ -10,9 +10,9 @@ import { dirname, join } from "node:path";
  */
 const DOCS = "docs";
 const pages = readdirSync(DOCS).filter((f) => f.endsWith(".md")).map((f) => join(DOCS, f));
-// The README links into docs/ and shows its images through <picture>, so it
-// is held to the same checks.
-const checked = ["README.md", ...pages];
+// The README, CONTRIBUTING and SECURITY link into docs/, and the README shows
+// its images through <picture>, so they are held to the same checks.
+const checked = ["README.md", "CONTRIBUTING.md", "SECURITY.md", ...pages];
 
 /** Each line outside a fenced code block, and each fence's opening info string. */
 function scan(text: string): { prose: string[]; fences: Array<{ line: number; info: string }> } {
