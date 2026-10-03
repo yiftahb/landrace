@@ -12,7 +12,7 @@ Every key, with its default:
 |---|---|---|
 | `version` | — (required) | Always `1` |
 | `agent.adapter` | — (required) | The executor that runs steps and conversation turns: an id a hook registers with `defineExecutor`. The shipped ones are `claude` and `codex` — see [Integrations](integrations.md#claude-code) |
-| `agent.isolation` | `worktree` | How the engine prepares the folder a step runs in: `none`, `worktree` or `container`. A stage that names a `branch` needs `worktree` |
+| `agent.isolation` | `worktree` | How the engine prepares the folder a step runs in: `worktree`, or `none` to run the agent in this checkout. A stage that names a `branch` needs `worktree`. The schema also accepts `container`, but it is not implemented: `landrace start` and `landrace mcp` refuse it |
 | `agent.*` (any other key) | — | Passed unread to the executor `agent.adapter` names. The shipped executors' keys are below |
 | `tracker.*` | `{}` | Passed unread to the hooks. The GitHub integration reads `tracker.repo` and `tracker.bot` — see [Integrations](integrations.md#github) |
 | `tick.interval` | `60s` | How often a tick runs, as a [duration](#durations) |
