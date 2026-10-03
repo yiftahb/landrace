@@ -7,9 +7,10 @@ import { runNext } from "#cli/next.js";
 import { runChildMcp, runMcp } from "#cli/mcp.js";
 import { DEFAULT_UI_PORT, parsePort, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
+import { latestVersion, ownVersion, runCommand, runUpdate, runVersion, updateCommand, updateNotice } from "#cli/version.js";
 
 const program = new Command();
-program.name("landrace").description("Local-first SDLC orchestrator");
+program.name("landrace").description("Local-first SDLC orchestrator").version(ownVersion());
 
 /**
  * Run a command that imports hook modules, and report rather than crash.
@@ -117,6 +118,9 @@ program
   .action(async (opts: {
     workspace: string; once?: boolean; debug?: boolean; ui: boolean; uiPort: string; telemetry?: boolean; otel: string[];
   }) => {
+    // Beside the start, never ahead of it: a slow or absent npm costs nothing
+    // but the line. Not in `mcp`, whose stdout is the protocol.
+    void updateNotice(process.env, ownVersion()).then((line) => { if (line) console.error(line); }, () => {});
     await loadingHooks("start", () =>
       runStart(opts.workspace, {
         ...(opts.once === undefined ? {} : { once: opts.once }),
@@ -159,6 +163,31 @@ program
       }
       return runMcp(opts.workspace, opts.workflow);
     });
+  });
+
+program
+  .command("version")
+  .description("print the version, and whether npm has a newer one")
+  .action(async () => {
+    await runVersion({ env: process.env, current: ownVersion(), latest: () => latestVersion(), log: (line) => console.log(line) });
+  });
+
+program
+  .command("update")
+  .description("update landrace to the latest version on npm: this project's dependency, or the global install")
+  .action(async () => {
+    try {
+      await runUpdate({
+        current: ownVersion(),
+        latest: () => latestVersion(),
+        plan: () => updateCommand(process.cwd()),
+        run: runCommand,
+        log: (line) => console.log(line),
+      });
+    } catch (e) {
+      console.error(`landrace update: ${messageOf(e)}`);
+      process.exitCode = 1;
+    }
   });
 
 await program.parseAsync();

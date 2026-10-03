@@ -2797,3 +2797,29 @@ export interface UiServer {
   port: number;
   close(): Promise<void>;
 }
+
+/** How `landrace update` updates: the project's own dependency, or the global install. */
+export interface UpdateCommand {
+  command: string;
+  args: string[];
+  where: "project" | "global";
+  cwd: string;
+}
+
+/** What `landrace version` reads and writes, injected so a test asks npm nothing. */
+export interface VersionDeps {
+  env: Record<string, string | undefined>;
+  current: string;
+  latest: () => Promise<string | null>;
+  log: (line: string) => void;
+}
+
+/** What `landrace update` reads and runs, injected for the same reason. */
+export interface UpdateDeps {
+  current: string;
+  latest: () => Promise<string | null>;
+  plan: () => UpdateCommand;
+  /** Runs the command with the terminal attached; its exit status. */
+  run: (plan: UpdateCommand) => number;
+  log: (line: string) => void;
+}

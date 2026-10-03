@@ -1,7 +1,17 @@
 {
   "name": "landrace",
-  "version": "0.0.0",
-  "description": "Local-first SDLC orchestrator. Explicit workflow state machine, agent-agnostic.",
+  "version": "1.0.0",
+  "description": "Local-first orchestration for coding agents, defined inside your project.",
+  "keywords": ["coding-agents", "orchestration", "sdlc", "workflow", "state-machine", "claude-code", "codex", "mcp", "github", "local-first"],
+  "homepage": "https://github.com/yiftahb/landrace#readme",
+  "bugs": {
+    "url": "https://github.com/yiftahb/landrace/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yiftahb/landrace.git"
+  },
+  "license": "MIT",
   "type": "module",
   "bin": {
     "landrace": "./dist/cli.js"
@@ -59,6 +69,5 @@
     "tsup": "^8.4.0",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.30.1"
-  },
-  "license": "MIT"
+  }
 }

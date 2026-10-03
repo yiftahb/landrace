@@ -1,6 +1,6 @@
 # Command line
 
-Landrace is one command, `landrace`, with six subcommands. Each but `init` takes the **workspace** — the `.landrace/` folder holding `landrace.yaml`, the workflows and the hooks. Every one of those but `next`, which requires it, defaults to `.landrace` in the current folder.
+Landrace is one command, `landrace`, with eight subcommands. Each but `init`, `version` and `update` takes the **workspace** — the `.landrace/` folder holding `landrace.yaml`, the workflows and the hooks. Every one of those but `next`, which requires it, defaults to `.landrace` in the current folder.
 
 ```text
 landrace init     <name>
@@ -11,7 +11,11 @@ landrace start    [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] 
 landrace next     -w, --workspace <dir> [--workflow <id>] -s, --snapshot <file>
 landrace mcp      [-w, --workspace <dir>] [--workflow <id>]
                   [--child <parent> --stage <stage> --round <round>]
+landrace version
+landrace update
 ```
+
+`landrace --version` prints the version alone.
 
 Every subcommand but `init` and `next` imports the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
 
@@ -56,6 +60,8 @@ landrace start [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--
 ```
 
 Watches the tracker and advances every item a workflow claims. It runs a **tick** every `tick.interval`: each tick lists every workflow's source, then works the claimed items, most urgent first. `tick.concurrency` bounds the agents running at once across the whole workspace, overlapping ticks and every workflow included. [Configuration](configuration.md#landraceyaml) says when a tick leaves an item for a later one.
+
+As it starts, it asks npm whether a newer Landrace is out and, if one is, prints one line to stderr naming it — see [Checking for a newer version](#checking-for-a-newer-version).
 
 | Flag | Meaning |
 |---|---|
@@ -189,3 +195,30 @@ landrace mcp --workspace <dir> --workflow <id> --child <parent> --stage <stage> 
 ```
 
 The runner starts this itself, beside the agent of a step that declares `items:create`. It serves exactly one tool, `landrace_create_child`, bound on its command line to the parent item, the creating stage and round, and the workflow. `--child` needs `--stage`, `--round` and `--workflow`. See [Workflows](workflows.md#splitting-work-into-sub-items).
+
+## landrace version
+
+```text
+landrace version
+```
+
+Prints `landrace <version>`, then what npm has: a newer version and how to get it, "This is the latest version.", or that npm gave no latest version to compare with.
+
+## landrace update
+
+```text
+landrace update
+```
+
+Updates Landrace to the latest version on npm, wherever the current folder takes it from. Landrace is installed per project — a hook imports `landrace/kit` from the project's `node_modules` — so:
+
+- When the folder's `package.json` lists `landrace`, it updates that dependency with the package manager the folder's lockfile names: `pnpm add -D landrace@latest`, `yarn add -D landrace@latest` or `npm install --save-dev landrace@latest` (without `-D` for a runtime dependency). Two lockfiles in one folder are refused, naming both: run the update with your package manager yourself.
+- Otherwise it updates the global install: `npm install -g landrace@latest`.
+
+It prints the command before running it, and runs nothing when this is already the latest version. When the command fails, it says so and names it, to run by hand.
+
+### Checking for a newer version
+
+`landrace start` and `landrace version` ask npm's registry for the latest version (`https://registry.npmjs.org/landrace/latest`). It is the one request Landrace makes that no hook asked for. The check sends nothing about your project, gives up after two seconds, and never fails the command it runs beside. `landrace mcp` never checks, because its stdout is the MCP protocol.
+
+It is off in CI (when `CI` is set) and when `LANDRACE_NO_UPDATE_CHECK` is set to anything but `0`.

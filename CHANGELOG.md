@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-03
+
 ### Added
 
 - **The decision engine.** A pure core that derives an item's whole state from its tracker on every run, with no database, and routes each step's output through explicit rules in a workflow file; ambiguity halts the item instead of being resolved by order. `landrace validate` proves a workflow sound before it runs: every loop bounded by a counter, no dead ends, no item two stages' identities both place, no field nothing provides.
@@ -19,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The board.** `landrace start` serves a triage page on loopback: a Needs You home across every workflow and a page per workflow, each item's tree of sub-items, pull requests and specs in lanes, and a panel per item with its activity, conversation, relationships and replies. Retry, "Go to step…", "Clear & retry", Refresh and every other write the page offers are guarded against other origins; a Chat menu opens the item in Claude Code, Cursor or Codex; browser notifications say when an item needs you.
 - **The integration kit and its integrations.** `landrace/kit` holds what every integration shares: `BaseExecutor` for coding agents, and `BaseTracker`, `BaseForge`, `BaseDocs` and `compose()` for trackers, forges and docs sites. Landrace ships Claude Code and Codex as coding agents, GitHub as tracker, forge and docs (GitHub Pages), GitLab as a forge, Jira as a tracker, Notion as docs, and Slack as a notifier. `landrace/testing` drives a workflow over an in-memory tracker, forge and docs.
 - **Security.** Every step that can act, and every typed conversation turn, is screened before it runs; a refusal stops the item in Screened for a person to read and clear. A step's declared capabilities are enforced on its worktree, a write step's commands run in the agent's OS sandbox, writing only to its worktree and the repository's git directory and reaching only the hosts `agent.sandbox` allows, the agent never holds the tracker's token, and text Landrace did not write is escaped so it cannot forge control state.
+- **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/commits/main
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/yiftahb/landrace/releases/tag/v1.0.0

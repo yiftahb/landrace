@@ -1,0 +1,86 @@
+# Publishes landrace to npm and creates the GitHub Release, when a v* tag is
+# pushed. The release itself is a pull request that sets package.json's
+# version and moves CHANGELOG.md's [Unreleased] to that version; once it is
+# merged, push the tag on main (see CONTRIBUTING.md, "Releasing").
+#
+# npm trusts this workflow by OIDC (trusted publishing): there is no npm token
+# to leak, and each version carries a provenance attestation. A tag publishes,
+# so it is held to what it publishes: on main, matching package.json, with a
+# changelog section — and every action is pinned to a commit, with no cache.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The environment npm's trusted publisher names; add a required reviewer
+    # to it in the repository settings to approve each publish by hand.
+    environment: npm
+    permissions:
+      contents: write # the GitHub Release
+      id-token: write # npm's trusted publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The tag is on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::$GITHUB_REF_NAME is not on main: only a merged release is published"
+            exit 1
+          }
+
+      - name: The tag, package.json and CHANGELOG.md agree
+        run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" "$RUNNER_TEMP/notes.md"
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or newer; Node 22 ships npm 10.
+      - run: npm install -g npm@^11.5.1
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+
+      # Skipped when the version is already on npm: the first release is
+      # published by hand, and a re-run must not fail on what already went out.
+      - name: Publish to npm
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Compared, not just run: npm view of a missing version can exit 0 and print nothing.
+          if [ "$(npm view "landrace@$version" version 2>/dev/null)" = "$version" ]; then
+            echo "landrace@$version is already on npm; not publishing it again"
+          else
+            # The gates above are prepublishOnly's; they just ran.
+            npm publish --provenance --access public --ignore-scripts
+          fi
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "The release $GITHUB_REF_NAME already exists"
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+          fi

@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
 export default defineConfig({
   // `hooks` is what a hook module imports: package.json has declared
@@ -32,4 +32,7 @@ export default defineConfig({
   sourcemap: true,
   dts: true,
   banner: { js: "#!/usr/bin/env node" },
+  // `landrace --version` and the update check read this, so an installed copy
+  // never has to find its own package.json at run time.
+  define: { __LANDRACE_VERSION__: JSON.stringify((JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version) },
 });

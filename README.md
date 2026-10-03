@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/yiftahb/landrace/actions/workflows/ci.yml"><img src="https://github.com/yiftahb/landrace/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/landrace"><img src="https://img.shields.io/npm/v/landrace" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen" alt="Node 22 or newer"></a>
 </p>
@@ -69,17 +70,16 @@ stateDiagram-v2
 
 ## Quick start
 
-You need Node 22 or newer with pnpm, a GitHub repository and a classic token with the `repo` scope, and Claude Code or Codex installed.
+You need Node 22 or newer, a GitHub repository and a classic token with the `repo` scope, and Claude Code or Codex installed.
 
-Landrace is not on npm yet, so build it from a clone and install it from there. In your repository's root:
+In your repository's root:
 
 ```bash
-git clone https://github.com/yiftahb/landrace.git ../landrace && pnpm -C ../landrace install && pnpm -C ../landrace build
-npm install --save-dev ../landrace
+npm install --save-dev landrace
 npx landrace init main
 ```
 
-`npm install` records Landrace as a `file:../landrace` dependency, so CI and other clones need the same clone beside the repository.
+Landrace is a dependency of the project, not a global tool: your hooks import `landrace/kit` from its `node_modules`.
 
 `init` writes `.landrace/`: a commented `landrace.yaml`, and a workflow named `main` that takes issues labelled `lr:main`. It also adds `.landrace/.env` to `.gitignore`. Before you start it, connect it to GitHub and Claude Code.
 
@@ -205,7 +205,7 @@ GitHub, GitLab, Jira and Notion each have a script that checks the integration a
 - **Untrusted text cannot forge control state.** Everything Landrace writes ends in a hidden marker, and only the last marker in a comment counts. Landrace escapes text it did not write, so neither an agent nor a commenter can fake a Landrace record.
 - **Prompts are screened.** Before any step that can act, a separate agent run with no tools checks the prompt for injected instructions.
 - **Fastlane never merges a protected path without a person.** It merges only the commit the review read, when no check on it has failed or is still running. A commit with no checks counts as passing, so require status checks on your default branch.
-- **What runs on your machine:** Landrace, as one process; the coding agent's CLI, in a git worktree per item under your temporary folder; and the board, on `127.0.0.1`. Landrace reaches the outside only through your hooks, and through telemetry when you turn it on.
+- **What runs on your machine:** Landrace, as one process; the coding agent's CLI, in a git worktree per item under your temporary folder; and the board, on `127.0.0.1`. Landrace reaches the outside only through your hooks, through telemetry when you turn it on, and through npm's registry, which `start` asks whether a newer version is out ([turned off](docs/cli.md#checking-for-a-newer-version) with `LANDRACE_NO_UPDATE_CHECK=1`).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/needs-you-dark.png">
