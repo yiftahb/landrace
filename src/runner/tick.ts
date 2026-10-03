@@ -20,7 +20,7 @@ import type {
 import { compareIds, compareWork, isItemNode, isOpenItem, itemIdProblem } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
-import { withLock } from "#runner/lock.js";
+import { held, withLock } from "#runner/lock.js";
 import { oneLine } from "#runner/status.js";
 
 /** Claims and the tick judge eligibility through one function, so they cannot disagree. */
@@ -410,6 +410,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   // overlapping this one reads what this one noted, never the same old map.
   const arrived = noteArrivals(runtime, listing, work, unjudged);
 
+  let overtaken = false;
   const left = await pool(work, runtime.concurrency, async ({ node, workflow: w }) => {
     const item = node.id;
     // Moved here from another workflow this tick: its stopped run lets go of
@@ -427,7 +428,10 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
     // one another process holds takes one only until its lock says so.
     let slot = false;
     const take = (): boolean => {
-      if (runtime.listed !== listed || runtime.converging >= runtime.concurrency) return false;
+      // Once a later tick lists, every take after says so: the last refusal
+      // is the reason this tick leaves what it has not started.
+      overtaken = runtime.listed !== listed;
+      if (overtaken || runtime.converging >= runtime.concurrency) return false;
       runtime.converging += 1;
       return (slot = true);
     };
@@ -494,8 +498,20 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
 
   // Skipped as a busy item is, not queued behind runs another tick started:
   // by the time one ends this listing is stale, and a later tick lists anew.
-  const reason = `no free slot of tick.concurrency (${runtime.concurrency}): left for a later tick`;
+  // A busy one queued behind the first refusal says who holds it, as it would
+  // had a worker reached it: looked up, never taken.
+  const reason = overtaken
+    ? "left for a later tick: a later tick has listed"
+    : `no free slot of tick.concurrency (${runtime.concurrency}): left for a later tick`;
   for (const { node, workflow: w } of left) {
+    const by = await held(node.id, opts.lock);
+    if (by) {
+      log("lock.denied", { item: node.id, kind: "tick" });
+      rows.push({ item: node.id, workflow: w.id, outcome: `#${node.id} is locked by ${by.holder}` });
+      const at = arrived.get(node.id);
+      if (at) tellIf(runtime, w, node, at, "locked");
+      continue;
+    }
     log("item.skipped", { item: node.id, workflow: w.id, reason });
     rows.push({ item: node.id, workflow: w.id, outcome: reason });
     const at = arrived.get(node.id);

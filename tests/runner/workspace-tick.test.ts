@@ -468,16 +468,25 @@ describe("tick.concurrency across overlapping ticks", () => {
     const h = holds();
     const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 1);
     const left = "no free slot of tick.concurrency (1): left for a later tick";
+    const overtaken = "left for a later tick: a later tick has listed";
 
     const first = w.once();
     await until(() => a.runs.length === 1, "item 1's run to start");
     state.label("3", "lr:auto");
-    await w.once();
+    // Busy item 1 sits behind item 3, the first to find no slot: its row
+    // still says who holds it.
+    expect(await w.once()).toEqual([
+      { item: "1", workflow: "main", outcome: expect.stringMatching(/locked by/) },
+      { item: "2", workflow: "main", outcome: left },
+      { item: "3", workflow: "main", outcome: left },
+    ]);
 
     h.release(0);
     await finishedOrOver(w, a, 2, 1);
     expect(a.runs).toHaveLength(1);
-    expect((await first).find((r) => r.item === "2")).toEqual({ item: "2", workflow: "main", outcome: left });
+    // Item 1's end freed the slot: item 2 is left because a later tick has
+    // listed, not for want of a slot.
+    expect((await first).find((r) => r.item === "2")).toEqual({ item: "2", workflow: "main", outcome: overtaken });
 
     const third = w.once();
     await until(() => a.runs.length === 2, "the next tick to start its most urgent item");
