@@ -311,7 +311,7 @@ Write the spec for #{node.id}: {node.title}…
 | `effort` | Overrides `agent.effort` for this step and its conversation turns. The level is the agent's own word; an executor refuses one it has no level for |
 | `timeout` | Overrides `budget.stepTimeout` for this step, as a duration such as `120m` |
 | `output.discriminator` | The field of the answer whose value picks the shape |
-| `output.shapes` | What each value of the discriminator must look like. An answer that matches none fails the round, and is never retried |
+| `output.shapes` | The values the discriminator may take, each with the fields that shape may carry. An answer whose discriminator names no shape fails the round, and is never retried. Only the discriminator is checked, never the fields: a declared field the answer omits is absent, and one it mistypes is kept as written. Neither fails the round; each shows up as a trigger that never matches. A field the shape does not declare is dropped |
 | `output.routes` | Where each shape goes: a `when` over the answer, one `effect`, and an optional `goto`. Two routes matching one answer is ambiguity, and halts |
 
 The agent ends its answer with a fenced JSON block, which the engine reads as its output. The schema is strict: an unknown key fails to load.
