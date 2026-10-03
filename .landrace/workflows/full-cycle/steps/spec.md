@@ -90,8 +90,11 @@ No implementation plan, no step list, no test list: build plans its own steps.
 
 **Step 5 — Validate the spec and fix it until every check passes.**
 Under 400 words. Every path exists. Every Done-when check is observable. No step list.
-Nothing the item decided is reopened. Caveman style throughout. Fix,
-recheck, repeat.
+Nothing the item decided is reopened. A trigger or route the spec adds or
+changes is checked against every other way out of its stage, the clean state
+included: exactly one holds of any item, or it halts as ambiguous; a Done-when
+sweep of them varies every count any of them reads. Caveman style throughout.
+Fix, recheck, repeat.
 
 **Step 6 — End with the json block.** Either `kind` `spec` with a `title`, or,
 from Step 3, `kind` `questions` with a `questions` array. Nothing after it.
