@@ -39,6 +39,8 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
       preflights: [],
       intervalMs: 60_000,
       concurrency: opts.concurrency ?? 3,
+      converging: 0,
+      listed: 0,
       stop: new AbortController(),
       running: opts.running ?? new Map(),
       seen: new Map(),

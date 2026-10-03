@@ -10,6 +10,9 @@ import { dirname, join } from "node:path";
  */
 const DOCS = "docs";
 const pages = readdirSync(DOCS).filter((f) => f.endsWith(".md")).map((f) => join(DOCS, f));
+// The README, CONTRIBUTING and SECURITY link into docs/, and the README shows
+// its images through <picture>, so they are held to the same checks.
+const checked = ["README.md", "CONTRIBUTING.md", "SECURITY.md", ...pages];
 
 /** Each line outside a fenced code block, and each fence's opening info string. */
 function scan(text: string): { prose: string[]; fences: Array<{ line: number; info: string }> } {
@@ -45,10 +48,14 @@ function anchors(file: string): Set<string> {
   return out;
 }
 
+/** Markdown link targets, and an HTML tag's href, src or srcset — a <picture>'s images. */
 function links(file: string): string[] {
   return scan(readFileSync(file, "utf8")).prose
     .map((line) => line.replace(/`[^`]*`/g, ""))
-    .flatMap((line) => [...line.matchAll(/\]\(([^)\s]+)\)/g)].map((m) => m[1] ?? ""))
+    .flatMap((line) => [
+      ...[...line.matchAll(/\]\(([^)\s]+)\)/g)].map((m) => m[1] ?? ""),
+      ...[...line.matchAll(/\b(?:href|src|srcset)="([^"\s]+)"/g)].map((m) => m[1] ?? ""),
+    ])
     .filter((href) => !/^[a-z][a-z+.-]*:/i.test(href));
 }
 
@@ -60,12 +67,12 @@ describe("docs/", () => {
     ].map((f) => join(DOCS, f))));
   });
 
-  it.each(pages)("%s tags every code block with its language", (page) => {
+  it.each(checked)("%s tags every code block with its language", (page) => {
     const untagged = scan(readFileSync(page, "utf8")).fences.filter((f) => f.info === "").map((f) => f.line);
     expect(untagged).toEqual([]);
   });
 
-  it.each(pages)("%s links only to files and headings that exist", (page) => {
+  it.each(checked)("%s links only to files and headings that exist", (page) => {
     const broken = links(page).filter((href) => {
       const [path = "", anchor] = href.split("#");
       const target = path === "" ? page : join(dirname(page), decodeURI(path));

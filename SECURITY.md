@@ -47,8 +47,8 @@ In scope is anything that breaks the guards Landrace promises, including:
 
 Out of scope:
 
-- What the operator chose to trust: a hook file under `.landrace/`, an MCP server or plugin allowlisted for a step, and the people who can label, edit or comment on items in a workflow that merges with no person (see "Who fastlane trusts" in the README).
-- The limits the README documents: a write step pushes with your own git credentials, which a command in its sandbox can read and use to push any branch origin accepts; in-process tools such as web fetches are outside the command sandbox; and a merge treats a head with no checks registered on it as green, so a repository that merges with no person must require status checks on its default branch.
+- What the operator chose to trust: a hook file under `.landrace/`, an MCP server or plugin allowlisted for a step, and the people who can label, edit or comment on items in a workflow that merges with no person (see [Who fastlane trusts](docs/security.md#who-fastlane-trusts)).
+- The limits [docs/security.md](docs/security.md#a-write-steps-sandbox) documents: a write step pushes with your own git credentials, which a command in its sandbox can read and use to push any branch origin accepts; in-process tools such as web fetches are outside the command sandbox; and a merge treats a head with no checks registered on it as green, so a repository that merges with no person must require status checks on its default branch.
 - The screening model misjudging a prompt. Screening is one layer; a verdict it was tricked into is in scope only as above.
 - A flaw in a coding agent, tracker or forge itself. Report it to that vendor; tell us too if Landrace makes it worse.
 - An attack that needs control of the operator's machine or accounts already.

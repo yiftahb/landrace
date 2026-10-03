@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +52,22 @@ describe("landrace init", () => {
       expect(lines).toContainEqual(expect.stringContaining(path));
     }
     expect(lines.at(-1)).toMatch(/landrace validate/);
+  });
+
+  /*
+   * The README is for users and holds no reference, so a comment sending the
+   * reader to a README section sends them nowhere; each points at the docs/
+   * page that describes its keys.
+   */
+  it("points its comments at docs/ pages that exist, never at the README", async () => {
+    const cwd = await fresh();
+    await runInit(cwd, "triage");
+    for (const path of [".landrace/landrace.yaml", ".landrace/workflows/triage/workflow.yaml"]) {
+      const text = await readFile(join(cwd, path), "utf8");
+      const pages = [...text.matchAll(/\bdocs\/[\w-]+\.md\b/g)].map((m) => m[0]);
+      expect({ path, pages: pages.length > 0, readme: /README/.test(text) }).toEqual({ path, pages: true, readme: false });
+      for (const page of pages) expect(existsSync(join(process.cwd(), page))).toBe(true);
+    }
   });
 
   it("writes a landrace.yaml that loads as written, with every key commented", async () => {

@@ -74,7 +74,7 @@ function workspace(
         }),
       },
     }],
-    preflights: [], intervalMs: 60_000, concurrency: 2, stop, running: new Map(), seen: new Map(), log, ctx,
+    preflights: [], intervalMs: 60_000, concurrency: 2, converging: 0, listed: 0, stop, running: new Map(), seen: new Map(), log, ctx,
   };
   const registry: Registry = {
     preflights: [state.preflight], pre: [state.pre], post: [state.post], artifacts: [], source: state.source,
@@ -495,7 +495,7 @@ describe("main and a read-only workflow over one tracker", () => {
     });
     const runtime: WorkspaceRuntime = {
       dir: root, workflows: [listed("main", main), listed("review", review)],
-      preflights: [], intervalMs: 60_000, concurrency: 2, stop, running: new Map(), seen: new Map(), log, ctx,
+      preflights: [], intervalMs: 60_000, concurrency: 2, converging: 0, listed: 0, stop, running: new Map(), seen: new Map(), log, ctx,
     };
     const registry: Registry = {
       preflights: [state.preflight], pre: [state.pre], post: [state.post], artifacts: [], source: state.source,

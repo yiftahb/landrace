@@ -20,7 +20,7 @@ import type {
 import { compareIds, compareWork, isItemNode, isOpenItem, itemIdProblem } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
-import { withLock } from "#runner/lock.js";
+import { held, withLock } from "#runner/lock.js";
 import { oneLine } from "#runner/status.js";
 
 /** Claims and the tick judge eligibility through one function, so they cannot disagree. */
@@ -244,18 +244,19 @@ function noteArrivals(
  * Tell a person of an item that arrived at their turn by its own state, once
  * its converge has left it where it was listed: settled waiting on its first
  * pass, so no transition took it on and nothing ran — or not converged at
- * all, its lock held elsewhere. One a trigger moved on in the same tick never
- * waited on anyone. Through the workflow's notify, so by the board's rule for
- * who is waiting, and noted where it was told of, so no tick tells it again.
+ * all, its lock held elsewhere or no slot free for it. One a trigger moved on
+ * in the same tick never waited on anyone. Through the workflow's notify, so
+ * by the board's rule for who is waiting, and noted where it was told of, so
+ * no tick tells it again.
  *
  * Unless a tick overlapping this one has already told of it there: one that
  * listed before this one told finds it arriving too, and the first to tell is
  * the one tell.
  */
 function tellIf(
-  runtime: WorkspaceRuntime, workflow: WorkflowRuntime, node: Node, at: SeenAt, result: ConvergeResult | "locked",
+  runtime: WorkspaceRuntime, workflow: WorkflowRuntime, node: Node, at: SeenAt, result: ConvergeResult | "locked" | "left",
 ): void {
-  if (result !== "locked" && (result.settled !== "wait" || result.passes !== 1)) return;
+  if (typeof result !== "string" && (result.settled !== "wait" || result.passes !== 1)) return;
   if (sameStage(runtime.seen.get(node.id), at)) return;
   runtime.seen.set(node.id, at);
   try {
@@ -288,22 +289,34 @@ const outcomeOf = (result: ConvergeResult): string =>
   `${result.settled} after ${result.passes} pass(es)${result.why ? `: ${oneLine(result.why)}` : ""}`;
 
 /**
- * Run `fn` over `items`, never more than `limit` at a time.
+ * Run `fn` over `items`, never more than `limit` at a time, and hand back the
+ * items it never ran, in order.
  *
  * A shared queue rather than fixed-size batches: a batch finishes at the pace
  * of its slowest member, which is the starvation this whole design exists to
  * avoid, one level down.
+ *
+ * A worker whose `fn` answers false puts that item back where it was and
+ * stops: the rest of the queue goes to the workers still running, or back to
+ * the caller once none is. Where it was, not at the front — workers turned
+ * away in one round resume in no order of the items', and each putting its
+ * own first would hand the next free slot to the least urgent of them.
  */
-async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
-  const queue = [...items];
+async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<boolean>): Promise<T[]> {
+  const queue = items.map((_, i) => i);
   const worker = async (): Promise<void> => {
     for (;;) {
       const next = queue.shift();
       if (next === undefined) return;
-      await fn(next);
+      if (!(await fn(items[next] as T))) {
+        const after = queue.findIndex((i) => i > next);
+        queue.splice(after === -1 ? queue.length : after, 0, next);
+        return;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, queue.length)) }, worker));
+  return queue.map((i) => items[i] as T);
 }
 
 /**
@@ -311,8 +324,12 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
  *
  * Each open item is worked by the one workflow that claims it, converged with
  * that workflow's own deps; one claimed twice, or reported by two sources, is
- * worked by neither and its row says who. Every workflow's items share one
- * pool: `tick.concurrency` bounds the workspace, not each workflow.
+ * worked by neither and its row says who. `tick.concurrency` bounds the
+ * workspace, not each workflow and not each tick: the converges in flight
+ * over every workflow and every tick still running, counted in
+ * `runtime.converging`. Each tick's pool is that size too, so a tick alone
+ * works its list as it always did, its own runs queueing the rest — until a
+ * later tick lists, which from then on hands out every slot that frees.
  *
  * Items are independent, so one item running a long agent must not hold up
  * the rest: mutual exclusion is per item, and ticks themselves are allowed
@@ -320,7 +337,9 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
  * step starve every other item in the repository.
  *
  * A busy item is skipped, not queued. It will still be there next tick, and
- * forcing in would mean two invocations resuming the same agent session.
+ * forcing in would mean two invocations resuming the same agent session. So
+ * is what this tick has not started once no slot is free and no run of its
+ * own is left to free one, or once a later tick has listed.
  */
 export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow[]> {
   const { runtime } = opts;
@@ -329,6 +348,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   log("tick.started", {});
 
   const listing = await listWorkspace(runtime);
+  const listed = ++runtime.listed;
 
   // A display must never be able to stop the work it is displaying.
   try {
@@ -393,7 +413,8 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   // overlapping this one reads what this one noted, never the same old map.
   const arrived = noteArrivals(runtime, listing, work, unjudged);
 
-  await pool(work, runtime.concurrency, async ({ node, workflow: w }) => {
+  let overtaken = false;
+  const left = await pool(work, runtime.concurrency, async ({ node, workflow: w }) => {
     const item = node.id;
     // Moved here from another workflow this tick: its stopped run lets go of
     // the item first, so the new owner works it in this same tick and never
@@ -401,6 +422,23 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
     // is this slot's work — and is bounded by the old run honouring the abort
     // it was just sent, as Ctrl-C's own wait for every run is.
     await moved.get(item);
+    // A slot of the workspace's, taken here in compareWork order before the
+    // lock, because a slot taken after an awaited lock goes to whichever lock
+    // came back first. None free, or a later tick has listed since: this
+    // worker stops, and the item waits for another of this tick's own workers
+    // or a later tick, never for another tick's runs. An item running in this
+    // process takes none, since its run holds one and its lock turns it away;
+    // one another process holds takes one only until its lock says so.
+    let slot = false;
+    const take = (): boolean => {
+      // Once a later tick lists, every take after says so: the last refusal
+      // is the reason this tick leaves what it has not started.
+      overtaken = runtime.listed !== listed;
+      if (overtaken || runtime.converging >= runtime.concurrency) return false;
+      runtime.converging += 1;
+      return (slot = true);
+    };
+    if (!runtime.running.has(item) && !take()) return false;
     let settle!: () => void;
     const done = new Promise<void>((resolve) => {
       settle = resolve;
@@ -410,6 +448,8 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
         item,
         "tick",
         async () => {
+          // Its run of an earlier tick ended while this one asked for the lock.
+          if (!slot && !take()) return null;
           log("lock.acquired", { item, kind: "tick" });
           // Its own controller, so a later tick can stop this item alone;
           // joined to the loop's, so Ctrl-C still stops every one.
@@ -432,6 +472,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
         },
         opts.lock,
       );
+      if (result === null) return false;
       rows.push({ item, workflow: w.id, outcome: outcomeOf(result) });
       const at = arrived.get(item);
       if (at) tellIf(runtime, w, node, at, result);
@@ -441,7 +482,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
         rows.push({ item, workflow: w.id, outcome: oneLine(messageOf(e)) });
         const at = arrived.get(item);
         if (at) tellIf(runtime, w, node, at, "locked");
-        return;
+        return true;
       }
       // One item's failure is one item's row. `messageOf`, not
       // `(e as Error).message`: a hook is a plain interface and nothing stops
@@ -450,10 +491,35 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       log("item.skipped", { item, reason: messageOf(e) });
       rows.push({ item, workflow: w.id, outcome: `error: ${oneLine(messageOf(e))}` });
     } finally {
+      // Before settling: a handoff waiting on this takes the slot it frees.
+      if (slot) runtime.converging -= 1;
       // After withLock has released: whoever waits on this may take the lock.
       settle();
     }
+    return true;
   });
+
+  // Skipped as a busy item is, not queued behind runs another tick started:
+  // by the time one ends this listing is stale, and a later tick lists anew.
+  // A busy one queued behind the first refusal says who holds it, as it would
+  // had a worker reached it: looked up, never taken.
+  const reason = overtaken
+    ? "left for a later tick: a later tick has listed"
+    : `no free slot of tick.concurrency (${runtime.concurrency}): left for a later tick`;
+  for (const { node, workflow: w } of left) {
+    const by = await held(node.id, opts.lock);
+    if (by) {
+      log("lock.denied", { item: node.id, kind: "tick" });
+      rows.push({ item: node.id, workflow: w.id, outcome: `#${node.id} is locked by ${by.holder}` });
+      const at = arrived.get(node.id);
+      if (at) tellIf(runtime, w, node, at, "locked");
+      continue;
+    }
+    log("item.skipped", { item: node.id, workflow: w.id, reason });
+    rows.push({ item: node.id, workflow: w.id, outcome: reason });
+    const at = arrived.get(node.id);
+    if (at) tellIf(runtime, w, node, at, "left");
+  }
 
   // Sorted rather than left in completion order: the same repository in the
   // same state should print the same thing twice running, and completion order

@@ -295,7 +295,8 @@ const ADDED: Record<string, RegExp[]> = {
   // A lesson commit changes agent instructions, not the item: judged for what it loosens.
   "code-review": [/^Commits titled `retro: lessons from #\{node\.id\}` change agent instructions/],
   "fix-review": [],
-  // Every file a lesson goes in is protected (re-review N1): a retro's commit is a person's to merge.
+  // Every file a lesson goes in is protected (re-review N1): a retro's commit is a person's to merge,
+  // unless it fixed only README.md or docs/ (#63).
   retro: [/^Here the code reviewer checks what you change, and then a person merges it/],
 };
 
