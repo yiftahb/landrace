@@ -122,7 +122,8 @@ again.
 **Step 8 — Summarise and end with the json block.** Start your final summary with the Progress checklist, each box ticked, or left open with the reason.
 Your final summary becomes this round's comment on the item, and if you
 commit, the code reviewer checks the commit, then a person reads both before
-they merge. If you changed something, list
+they merge — unless it fixes only `README.md` or `docs/`, which merges once
+the reviewer passes it. If you changed something, list
 each file you changed with a one-line reason. If you did not, say in a
 sentence or two why there was nothing to learn. End with a fenced json block:
 either `kind` `learned`, with `changes` a list holding one object per file you

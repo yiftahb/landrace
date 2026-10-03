@@ -299,9 +299,12 @@ const ADDED: Record<string, RegExp[]> = {
   retro: [/^Here the code reviewer checks what you change, and then a person merges it/],
 };
 
-/** full-cycle's retro promises a person reads the commit before the merge; fastlane's says the reviewer reads it first. */
+/**
+ * full-cycle's retro promises a person reads the commit before the merge; fastlane's says the reviewer reads it first,
+ * and that a docs-only fix merges on the reviewer alone (#63).
+ */
 const RETRO_PROMISE = "and a person\nreads it beside the commit before they merge.";
-const RETRO_REVIEWED = "and if you\ncommit, the code reviewer checks the commit, then a person reads both before\nthey merge.";
+const RETRO_REVIEWED = "and if you\ncommit, the code reviewer checks the commit, then a person reads both before\nthey merge — unless it fixes only `README.md` or `docs/`, which merges once\nthe reviewer passes it.";
 
 describe("fastlane's steps", () => {
   it("builds on main's build, from the item's own text and its checks rather than a spec", () => {
