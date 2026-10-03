@@ -1,6 +1,6 @@
 {
   "name": "landrace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local-first orchestration for coding agents, defined inside your project.",
   "keywords": ["coding-agents", "orchestration", "sdlc", "workflow", "state-machine", "claude-code", "codex", "mcp", "github", "local-first"],
   "homepage": "https://github.com/yiftahb/landrace#readme",
