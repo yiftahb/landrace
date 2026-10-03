@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Install with `npm i -g landrace`.** A hook's `landrace`, `landrace/hooks`, `landrace/kit`, `landrace/testing` and `landrace/integrations/<vendor>` imports now resolve to the copy of Landrace that is running, so a project needs no `node_modules` for its hooks, and one process never loads a second landrace from the project's own. A hook that imports an export an installed copy lacks says to update Landrace rather than rebuild it.
+- **Pairing in the README.** A key concept of its own: working a step together with the agent in your terminal, from the board or with `landrace_pair`.
+
+### Changed
+
+- **`landrace update` updates the copy that is running.** The project's dependency only when the project's own `node_modules/landrace` is the copy running; the global install otherwise, even when the project's `package.json` lists `landrace`.
+- **The README's quick start installs Landrace globally** and drops `npx`.
+
 ## [1.0.0] - 2026-10-03
 
 ### Added

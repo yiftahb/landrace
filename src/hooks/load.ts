@@ -1,3 +1,4 @@
+import { register } from "node:module";
 import { posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { containedPath, workspacePath } from "#workflow/load.js";
@@ -143,6 +144,9 @@ export function buildRegistry(modules: HookModule[]): Registry {
   };
 }
 
+/** A file URL inside the copy of landrace this process runs, once `resolveLandraceToSelf` has named it. */
+let running: string | null = null;
+
 /**
  * Why an import failed, in terms of what to do about it.
  *
@@ -151,7 +155,7 @@ export function buildRegistry(modules: HookModule[]): Registry {
  * to read a TypeScript file — and the raw "Unknown file extension .ts" tells
  * an operator nothing about which of their two problems it is.
  */
-export function importFailure(specifier: string, error: unknown): Error {
+export function importFailure(specifier: string, error: unknown, copy: string | null = running): Error {
   if ((error as { code?: unknown } | null)?.code === "ERR_UNKNOWN_FILE_EXTENSION") {
     // The code rides along on the wrapper. `landrace start` and `landrace mcp`
     // re-run themselves with --experimental-strip-types on exactly this
@@ -172,15 +176,50 @@ export function importFailure(specifier: string, error: unknown): Error {
   // repository, a dist/ not rebuilt since a pull — fails on its first import
   // line, and Node names only the export it could not find, which reads as a
   // bug in the hook rather than a build to run. Only when the module Node
-  // quotes is landrace's own — the package, `landrace/hooks`, `landrace/kit`
-  // or one `landrace/integrations/<vendor>`: a sibling of the hook lacking an
-  // export is the hook's bug, and a rebuild would fix nothing.
+  // quotes is landrace's own — the package, `landrace/hooks`, `landrace/kit`,
+  // `landrace/testing` or one `landrace/integrations/<vendor>`: a sibling of
+  // the hook lacking an export is the hook's bug, and a rebuild would fix
+  // nothing. An installed copy — anywhere under a node_modules, global or the
+  // project's — has no build to run, only a newer release.
   const stale = (error as { name?: unknown } | null)?.name === "SyntaxError" &&
-    /^The requested module 'landrace(?:\/(?:hooks|kit|integrations\/[a-z0-9-]+))?' does not provide an export named /.test(reason);
+    /^The requested module 'landrace(?:\/(?:hooks|kit|testing|integrations\/[a-z0-9-]+))?' does not provide an export named /.test(reason);
+  const remedy = copy !== null && copy.includes("/node_modules/") ? "update landrace (`landrace update`)" : "rebuild or update it";
   return new Error(
     `cannot import hook module "${specifier}": ${reason}` +
-    (stale ? "; the landrace this hook was loaded against may be older than the hook expects: rebuild or update it" : ""),
+    (stale ? `; the landrace this hook was loaded against may be older than the hook expects: ${remedy}` : ""),
+    { cause: error },
   );
+}
+
+/**
+ * Answer every hook's `landrace` and `landrace/*` import with the copy of
+ * landrace that is running.
+ *
+ * Node looks a hook's `import "landrace/kit"` up in the project's
+ * node_modules: a global install put nothing there, so the first hook import
+ * fails, and a project that has its own would load a second landrace, of
+ * whatever version it pinned, beside the engine. Instead, that one name is
+ * resolved as though imported from `self`, a file inside the running copy,
+ * which Node answers by package self-reference through the copy's own
+ * `exports` — the map is never written out here. Every other specifier,
+ * `landrace-foo`, `@scope/landrace`, a relative path or `node:`, goes on
+ * exactly as Node would resolve it.
+ *
+ * This is not a loader that rewrites the module graph, the thing that must
+ * never sit under a hook (see importFailure): it rewrites no source and
+ * transforms nothing, and changes only where one package name is looked up.
+ * `module.register` rather than `registerHooks`, which Node lacks before
+ * 22.15 while `engines` says `>=22`. Once per process: a second call does
+ * nothing.
+ */
+export function resolveLandraceToSelf(self: string): void {
+  if (running !== null) return;
+  running = self;
+  const hook = `const self = ${JSON.stringify(self)};
+export async function resolve(specifier, context, next) {
+  return next(specifier, specifier === "landrace" || specifier.startsWith("landrace/") ? { ...context, parentURL: self } : context);
+}`;
+  register(`data:text/javascript,${encodeURIComponent(hook)}`);
 }
 
 /**

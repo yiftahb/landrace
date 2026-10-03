@@ -19,7 +19,7 @@ landrace update
 
 Every subcommand but `init` and `next` imports the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
 
-Inside this repository, `landrace/hooks`, `landrace/kit` and `landrace/integrations/<vendor>` resolve to the built `dist/`, so run `pnpm build` after pulling and before any of these commands. A hook newer than the build fails to import, and the error says to rebuild.
+A hook's `landrace/*` imports resolve to the copy of Landrace that is running ([Hook modules](hooks.md#hook-modules)). Inside this repository that copy is the built `dist/` only when this checkout's own CLI runs, as `node dist/cli.js`: run `pnpm build` after pulling and before any of these commands. A global `landrace` run here loads its own copy instead, whatever `dist/` holds, so `pnpm build` changes nothing for it. A hook newer than the copy fails to import: the error says to rebuild when the copy is a checkout, and to update Landrace when it is an installed one.
 
 ## landrace init
 
@@ -210,10 +210,10 @@ Prints `landrace <version>`, then what npm has: a newer version and how to get i
 landrace update
 ```
 
-Updates Landrace to the latest version on npm, wherever the current folder takes it from. Landrace is installed per project — a hook imports `landrace/kit` from the project's `node_modules` — so:
+Updates the copy of Landrace that is running to the latest version on npm. That copy is the one a hook's `landrace/*` imports resolve to ([Hook modules](hooks.md#hook-modules)), so:
 
-- When the folder's `package.json` lists `landrace`, it updates that dependency with the package manager the folder's lockfile names: `pnpm add -D landrace@latest`, `yarn add -D landrace@latest` or `npm install --save-dev landrace@latest` (without `-D` for a runtime dependency). Two lockfiles in one folder are refused, naming both: run the update with your package manager yourself.
-- Otherwise it updates the global install: `npm install -g landrace@latest`.
+- When the running copy is the current folder's own — the real path of `node_modules/landrace` is the running package — and the folder's `package.json` lists `landrace`, it updates that dependency with the package manager the folder's lockfile names: `pnpm add -D landrace@latest`, `yarn add -D landrace@latest` or `npm install --save-dev landrace@latest` (without `-D` for a runtime dependency). Two lockfiles in one folder are refused, naming both: run the update with your package manager yourself.
+- Otherwise it updates the global install: `npm install -g landrace@latest`. That is the usual case, and it holds even when the folder's `package.json` lists `landrace` as well.
 
 It prints the command before running it, and runs nothing when this is already the latest version. When the command fails, it says so and names it, to run by hand.
 

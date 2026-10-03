@@ -1,5 +1,7 @@
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { messageOf } from "#runner/errors.js";
+import { resolveLandraceToSelf } from "#hooks/load.js";
 import { reexec, shouldReexec, STRIP_TYPES } from "#cli/reexec.js";
 import { runInit } from "#cli/init.js";
 import { runValidate } from "#cli/validate.js";
@@ -27,8 +29,14 @@ program.name("landrace").description("Local-first SDLC orchestrator").version(ow
  * here has done nothing but read files. Later — a hook that imports another
  * module lazily, mid-tick — the retry starts the loop again, and re-entering a
  * state replans its effects and reconcile drops the ones already applied.
+ *
+ * Before any hook is imported, a hook's `landrace/*` imports are pointed at
+ * this copy — the file this is, built or not — whatever the project's own
+ * node_modules holds (see resolveLandraceToSelf). A re-run does the same in
+ * its own process.
  */
 async function loadingHooks(what: string, run: () => Promise<void>): Promise<void> {
+  resolveLandraceToSelf(import.meta.url);
   try {
     await run();
   } catch (e) {
@@ -174,13 +182,13 @@ program
 
 program
   .command("update")
-  .description("update landrace to the latest version on npm: this project's dependency, or the global install")
+  .description("update the landrace that is running to the latest version on npm: the global install, or this project's own")
   .action(async () => {
     try {
       await runUpdate({
         current: ownVersion(),
         latest: () => latestVersion(),
-        plan: () => updateCommand(process.cwd()),
+        plan: () => updateCommand(process.cwd(), fileURLToPath(import.meta.url)),
         run: runCommand,
         log: (line) => console.log(line),
       });

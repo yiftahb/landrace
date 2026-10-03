@@ -13,7 +13,7 @@ pnpm build
 node dist/cli.js --help
 ```
 
-The project's own hooks (`.landrace/hooks/*.ts`) import from the built `dist/`, so a command run after pulling needs a fresh build first — see [Command line](cli.md).
+The project's own hooks (`.landrace/hooks/*.ts`) import from the built `dist/` when this checkout's CLI runs them (`node dist/cli.js`), so a command run after pulling needs a fresh build first. A global `landrace` run here loads its own copy, not `dist/` — see [Command line](cli.md).
 
 ## The gate
 
@@ -47,7 +47,7 @@ How tests are written here:
 
 Every import under `src/` and `tests/` goes through the `imports` map in `package.json` — `#core/index.js`, `#namespace.js`, `#tests/...` — never a relative path; a lint rule refuses `./` and `../` imports. Not tsconfig `paths`: the code runs three ways that must agree — tsc, tsup, and raw Node in the ESM test pass and the hook loader — and `paths` would rewrite nothing for Node.
 
-Hooks in `.landrace/` and integrations in `integrations/` are the exception. They import `landrace/hooks` and `landrace/kit` (and a hook, `landrace/integrations/<vendor>`), which is what an outside author writes. Node resolves those by package self-reference to `dist/`; the typechecker and jest resolve them to the source, through tsconfig `paths` and the jest mapping derived from them, so tests never depend on a build.
+Hooks in `.landrace/` and integrations in `integrations/` are the exception. They import `landrace/hooks` and `landrace/kit` (and a hook, `landrace/integrations/<vendor>`), which is what an outside author writes. At run time the engine resolves those to the copy of Landrace that is running: this checkout's `dist/` under `node dist/cli.js`, a global install's own copy under `landrace` ([Command line](cli.md)). The typechecker and jest resolve them to the source, through tsconfig `paths` and the jest mapping derived from them, so tests never depend on a build.
 
 ## Types live in src/namespace.ts
 

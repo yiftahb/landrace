@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { UpdateCommand, UpdateDeps, VersionDeps } from "#namespace.js";
 
 // Stamped by tsup from package.json at build time. A run from source — the
@@ -82,21 +82,36 @@ const LOCKFILES: ReadonlyArray<[file: string, command: string]> = [
   ["package-lock.json", "npm"],
 ];
 
+/** Whether `running`, a file of the copy that is running, is inside the folder's own `node_modules/landrace`, after realpath. */
+function isOwnCopy(cwd: string, running: string): boolean {
+  try {
+    const own = relative(realpathSync(join(cwd, "node_modules", "landrace")), realpathSync(running));
+    return !own.startsWith("..") && !isAbsolute(own);
+  } catch {
+    return false;
+  }
+}
+
 /**
- * How to update the landrace this folder uses. Landrace is installed per
- * project — a hook imports `landrace/kit` from the project's node_modules —
- * so a package.json listing it is updated with the package manager its
- * lockfile names; with none, the global install is. Two lockfiles is a
+ * How to update the copy of landrace that is running, `running` being one of
+ * its files. A hook's `landrace/*` imports resolve to that copy, wherever it
+ * is installed, so it is the one to update: the project's dependency, with the
+ * package manager its lockfile names, only when the copy running is the
+ * project's own (pnpm links it from its store, hence the realpath) and its
+ * package.json lists it; the global install otherwise — the usual case, even
+ * where a project lists landrace too, for its editor. Two lockfiles is a
  * question for a person, not an order to pick from.
  */
-export function updateCommand(cwd: string): UpdateCommand {
+export function updateCommand(cwd: string, running: string): UpdateCommand {
+  const global: UpdateCommand = { command: "npm", args: ["install", "-g", "landrace@latest"], where: "global", cwd };
+  if (!isOwnCopy(cwd, running)) return global;
   const file = join(cwd, "package.json");
   const pkg = existsSync(file)
     ? (JSON.parse(readFileSync(file, "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> })
     : {};
   const asDev = pkg.devDependencies?.landrace !== undefined;
   const asRuntime = pkg.dependencies?.landrace !== undefined;
-  if (!asDev && !asRuntime) return { command: "npm", args: ["install", "-g", "landrace@latest"], where: "global", cwd };
+  if (!asDev && !asRuntime) return global;
 
   const locks = LOCKFILES.filter(([lock]) => existsSync(join(cwd, lock)));
   if (locks.length > 1) {

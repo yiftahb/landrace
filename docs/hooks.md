@@ -19,6 +19,8 @@ hooks:
 
 Hook modules are imported at runtime with no build step. Which Node that needs, and the build it needs inside this repository, is in [Command line](cli.md).
 
+A hook's `landrace` imports — `landrace` itself, `landrace/hooks`, `landrace/kit`, `landrace/testing` and `landrace/integrations/<vendor>` — always resolve to the copy of Landrace that is running, through that copy's own `exports`: the global install, or the project's own copy when that is the one running. A `landrace` in the project's `node_modules` is never loaded beside it, so one process holds one version of the engine and the kit, and a project needs no `node_modules` for its hooks to run. Every other import, `landrace-foo` and `@scope/landrace` included, resolves as Node resolves it. For type checking in an editor, a project may also add `landrace` as a dev dependency; at run time the engine's copy wins. A hook that imports an export the running copy lacks fails to load, and the error says to update Landrace.
+
 ## The define* contracts
 
 A hook that works on one item gets a `HookContext`: the item's id, its snapshot, the configuration, the resolved secrets, an abort signal and a logger. Every other call gets a `RuntimeContext`, the same without the item and the snapshot: a source's `list()`, `read()` and `remoteHead()`, every operator method, a notifier's `send()` and a preflight's `check()`. A source's `read()` is what the snapshot is built from, so it never gets one. A hook never reads `process.env`: its secrets arrive as values, which keeps it testable and lets the log redact every one.

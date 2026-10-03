@@ -112,10 +112,21 @@ describe("an import failure says what to do about it", () => {
     expect(importFailure("hooks/x.ts", bare).message).toMatch(/may be older than the hook expects/);
   });
 
+  // An installed copy has no build to run: the remedy is a newer release. A
+  // clone, linked or run from its own folder, is rebuilt.
+  it("says to update landrace, not rebuild it, when the running copy is an installed package", () => {
+    const missing = new SyntaxError("The requested module 'landrace/kit' does not provide an export named 'compose'");
+    const installed = importFailure("hooks/x.ts", missing, "file:///usr/local/lib/node_modules/landrace/dist/cli.js").message;
+    expect(installed).toMatch(/may be older than the hook expects: update landrace/);
+    expect(installed).not.toMatch(/rebuild/);
+    expect(importFailure("hooks/x.ts", missing, "file:///home/me/src/landrace/dist/cli.js").message)
+      .toMatch(/may be older than the hook expects: rebuild or update it$/);
+  });
+
   // #32's last review: the kit and the integrations are landrace's own entry
   // points too, and a hook reaching for an export one gained since the last
   // build got Node's bare error with no hint.
-  it.each(["landrace/kit", "landrace/integrations/claude", "landrace/integrations/codex"])(
+  it.each(["landrace/kit", "landrace/testing", "landrace/integrations/claude", "landrace/integrations/codex"])(
     "says the same when the module lacking the export is %s",
     (module) => {
       const missing = new SyntaxError(`The requested module '${module}' does not provide an export named 'Claude'`);
