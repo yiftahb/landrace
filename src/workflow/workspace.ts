@@ -4,7 +4,9 @@ import type { LoadFailure, LoadedWorkflow, Workspace, WorkspaceRead } from "#nam
 import { messageOf } from "#runner/errors.js";
 import { idleVars, loadWorkflow, WorkflowLoadError } from "#workflow/load.js";
 
-const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** A workflow's id, its folder's name: the loader's rule, and `init`'s. */
+export const WORKFLOW_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const WORKFLOW_ID_RULE = 'lowercase letters, digits and "-", starting with a letter or digit, at most 64 characters';
 // Not localeCompare: the order must not depend on the machine's locale.
 const byCodePoint = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const exists = (p: string) => stat(p).then(() => true, () => false);
@@ -56,7 +58,7 @@ export async function readWorkspace(dir: string, vars: ReadonlyMap<string, strin
     // skipped and reported as "no workflows" or a missing folder.
     if (e.isSymbolicLink()) throw new WorkflowLoadError("layout", `workflows/${e.name} is a symbolic link; a workflow must be a real folder inside the workspace`);
     if (!e.isDirectory() || !(await exists(join(root, e.name, "workflow.yaml")))) continue;
-    if (!ID.test(e.name)) throw new WorkflowLoadError("layout", `workflows/"${e.name}" is not a usable workflow id: lowercase letters, digits and "-", starting with a letter or digit`);
+    if (!WORKFLOW_ID.test(e.name)) throw new WorkflowLoadError("layout", `workflows/"${e.name}" is not a usable workflow id: ${WORKFLOW_ID_RULE}`);
     ids.push(e.name);
   }
   if (ids.length === 0) throw new WorkflowLoadError("layout", `${dir} has no workflows: create ${join(dir, "workflows", "<id>", "workflow.yaml")}`);
