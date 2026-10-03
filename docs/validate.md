@@ -31,7 +31,7 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 | `secret` | A secret whose `$VAR` does not resolve; a `.env` that exists and git does not ignore |
 | `vars` | A var that does not resolve or resolves to an empty value; a `{vars.x}` nothing defines; a declared var nothing references; a var holding a secret's value |
 | `layout` | A workspace that is not one: the old single `workflow.yaml` at its root, no workflows, a workflow id that is not usable (lowercase letters, digits and `-`, starting with a letter or digit), a `workflows` folder or a workflow folder that is a symbolic link, a `workflows:` list in `landrace.yaml` that does not name exactly the folders |
-| `schema` | A `workflow.yaml` or step front matter that does not match its strict schema — an unknown key included; an `extends` that is empty; a step file with one `## ` heading twice |
+| `schema` | A `workflow.yaml` or step front matter that does not match its strict schema — an unknown key included; an `extends` that is empty; a step in an `extends` chain with one `## ` heading twice (a step that extends nothing and that nothing extends is read whole, repeats and all) |
 | `duplicate-id` | Two stages with one id |
 | `missing-step`, `step-path` | A step file, or an `extends` target, that does not exist or resolves outside `.landrace/`; an `extends` loop |
 | `branch` | A stage `branch` git would refuse as a name, one using anything but `{item}`, `{stage}` and `{round}`, or one on a stage that runs no step |
@@ -94,7 +94,7 @@ A validator that flags healthy workflows gets switched off, and one that silentl
 
 - **`identity`** reports two stages only for an item it can construct that both place, confirmed by the engine's own compiler. Where it cannot construct one, it abstains — except beside a stage placed by its label alone, which an identity reading no `run.stage` overlaps unless it can never hold, so that pair is reported either way.
 - **`claims`** abstains where an `eligible` rule reads anything but labels, where a workflow admits nothing, or where the two sources are not the same loaded object. It does report a workflow that claims every item — one with no `eligible` rule, or one reading what no listed item carries, such as `run.counters`.
-- **`path-coverage`** abstains when a hook will not import, and for a workflow whose graph already failed.
+- **`path-coverage`** abstains when a hook will not import, and for a workflow whose graph already failed. It also abstains for the whole workflow when any loaded pre hook declares no `provides` — nothing can tell which paths that hook adds — and when the hooks load no pre hook and no source.
 - **`shape-edge`** counts a trigger it cannot read — an operator document such as `$in`, or a condition under `$or` — as claiming the shape, rather than report a healthy workflow.
 - **`note`** and **`children`** abstain on relationship types when the hooks' declarations are unknown.
 
