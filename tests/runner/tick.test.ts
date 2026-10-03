@@ -299,6 +299,42 @@ describe("tick", () => {
     expect(peak).toBe(2);
   });
 
+  /*
+   * One tick alone, at the shipped bound: its own runs fill the slots and the
+   * rest of its work queues behind them, as before the bound covered ticks
+   * that overlap (#65). Nothing is left for a later tick.
+   */
+  it("with concurrency 3 and one tick, runs three at once and works every item", async () => {
+    const open = gate();
+    let inFlight = 0;
+    let peak = 0;
+    const counting = definePreHook({
+      id: "counting",
+      run: async () => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await open.wait;
+        inFlight--;
+        return { entries: [] };
+      },
+    });
+
+    const running = tick({
+      source: source([1, 2, 3, 4, 5].map((n) => itemNode(String(n)))),
+      deps: deps({ pre: [counting] }),
+      concurrency: 3,
+      lock: { root },
+    });
+
+    await until(() => peak >= 3, "three items in flight");
+    await new Promise((r) => setTimeout(r, 25));
+    expect(peak).toBe(3);
+
+    open.open();
+    expect((await running).map((r) => r.outcome)).toEqual(Array(5).fill("terminal after 1 pass(es)"));
+    expect(peak).toBe(3);
+  });
+
   it("holds the item's lock for as long as it is working on it", async () => {
     const slow = gate();
     const blocking = definePreHook({
