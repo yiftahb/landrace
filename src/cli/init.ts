@@ -94,33 +94,35 @@ stages:
 `;
 
 /**
- * Whether `.landrace/.env` is ignored already. Git answers where it can, as
- * `validate` asks it, since a pattern such as `.env` covers the file without
- * naming it; outside a repository, or without git, the file's own lines are
- * all there is to read.
+ * Whether the repository already ignores `.landrace/.env`. Git answers where
+ * it can, since a pattern such as `.env` covers the file without naming it —
+ * a `.gitignore` above this folder's too. Not the person's own excludes file,
+ * which `validate` counts: that ignores it on this machine only, and the
+ * entry is for every clone. Outside a repository, or without git, the file's
+ * own lines are all there is to read.
  */
-async function ignored(cwd: string, text: string): Promise<boolean> {
+async function ignored(cwd: string, text: string | null): Promise<boolean> {
   try {
-    await execFileAsync("git", ["check-ignore", "-q", ENV_ENTRY], { cwd });
+    await execFileAsync("git", ["-c", "core.excludesFile=/dev/null", "check-ignore", "-q", ENV_ENTRY], { cwd });
     return true;
   } catch (e) {
     if ((e as { code?: unknown }).code === 1) return false;
   }
-  return text.split(/\r?\n/).some((line) => [ENV_ENTRY, `/${ENV_ENTRY}`].includes(line.trim()));
+  return (text ?? "").split(/\r?\n/).some((line) => [ENV_ENTRY, `/${ENV_ENTRY}`].includes(line.trim()));
 }
 
-/** The `.landrace/.env` entry, or null when `.gitignore` already has what it needs. */
+/** The `.landrace/.env` entry, or null when the repository already ignores it. */
 async function gitignore(cwd: string): Promise<string | null> {
   const file = join(cwd, ".gitignore");
   const text = await readFile(file, "utf8").catch((e: unknown) => {
     if ((e as { code?: unknown }).code === "ENOENT") return null;
     throw e;
   });
+  if (await ignored(cwd, text)) return null;
   if (text === null) {
     await writeFile(file, `${ENV_ENTRY}\n`, { flag: "wx" });
     return `created .gitignore, ignoring ${ENV_ENTRY}`;
   }
-  if (await ignored(cwd, text)) return null;
   await writeFile(file, `${text}${text === "" || text.endsWith("\n") ? "" : "\n"}${ENV_ENTRY}\n`);
   return `added ${ENV_ENTRY} to .gitignore`;
 }

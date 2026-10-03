@@ -9,6 +9,7 @@ import { configProblems, loadConfig } from "#config/load.js";
 
 const exec = promisify(execFile);
 const fresh = (): Promise<string> => mkdtemp(join(tmpdir(), "landrace-init-"));
+const CLI = join(process.cwd(), "src/cli/index.ts");
 
 /** Every file under `dir`, by path, with its contents: what "nothing changed" is compared on. */
 async function tree(dir: string): Promise<Record<string, string>> {
@@ -25,7 +26,8 @@ async function tree(dir: string): Promise<Record<string, string>> {
  * the engine names no vendor — so that one executor problem is what validate
  * owes a fresh init. Anything else is the skeleton being wrong.
  */
-const beyondTheMissingAgent = (problems: { rule: string }[]) => problems.filter((p) => p.rule !== "executor");
+const beyondTheMissingAgent = (problems: { rule: string; message: string }[]) =>
+  problems.filter((p) => !(p.rule === "executor" && /^agent\.adapter "my-agent" names no executor/.test(p.message)));
 
 describe("landrace init", () => {
   it("makes .landrace/ in a fresh directory: the config, the workflow, its steps/ and the .gitignore entry", async () => {
@@ -87,7 +89,9 @@ describe("landrace init", () => {
     const cwd = await fresh();
     await runInit(cwd, "triage");
     const config = await readFile(join(cwd, ".landrace/landrace.yaml"), "utf8");
-    const ignore = await readFile(join(cwd, ".gitignore"), "utf8");
+    // Without the entry, so a second init that touched .gitignore would show.
+    const ignore = "node_modules/\n";
+    await writeFile(join(cwd, ".gitignore"), ignore);
 
     const lines = await runInit(cwd, "release");
 
@@ -155,6 +159,45 @@ describe("landrace init's .gitignore entry", () => {
     expect(lines.filter((l) => l.includes(".gitignore"))).toEqual([]);
   });
 
+  it("appends inside a repository whose .gitignore does not ignore .landrace/.env", async () => {
+    const cwd = await fresh();
+    await exec("git", ["init", "-q"], { cwd });
+    await writeFile(join(cwd, ".gitignore"), "node_modules/\n");
+    await runInit(cwd, "triage");
+    expect(await readFile(join(cwd, ".gitignore"), "utf8")).toBe("node_modules/\n.landrace/.env\n");
+  });
+
+  /*
+   * A personal excludes file ignores the file on this machine only; the
+   * entry is for every clone, so it is written whatever that file says.
+   */
+  it("writes the entry even when the person's global excludes file already ignores .env", async () => {
+    const cwd = await fresh();
+    await exec("git", ["init", "-q"], { cwd });
+    await writeFile(join(cwd, ".gitignore"), "node_modules/\n");
+    const home = await fresh();
+    await writeFile(join(home, "ignore"), ".env\n");
+    await writeFile(join(home, "config"), `[core]\n\texcludesFile = ${join(home, "ignore")}\n`);
+    // Through the binary: jest hands a test its own process.env, which a
+    // child process never sees.
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: join(home, "config") };
+    // The scenario is real: git itself calls it ignored through that file.
+    await expect(exec("git", ["check-ignore", "-q", ".landrace/.env"], { cwd, env })).resolves.toBeDefined();
+
+    await exec(process.execPath, ["--experimental-strip-types", "--no-warnings", CLI, "init", "triage"], { cwd, env });
+    expect(await readFile(join(cwd, ".gitignore"), "utf8")).toBe("node_modules/\n.landrace/.env\n");
+  });
+
+  it("creates no .gitignore in a repository's subfolder when the repository's own already ignores .landrace/.env", async () => {
+    const root = await fresh();
+    await exec("git", ["init", "-q"], { cwd: root });
+    await writeFile(join(root, ".gitignore"), ".env\n");
+    const cwd = join(root, "pkg");
+    await mkdir(cwd);
+    await runInit(cwd, "triage");
+    expect(Object.keys(await tree(cwd))).not.toContain(".gitignore");
+  });
+
   it("leaves a .gitignore alone that already names .landrace/.env, outside any git repository", async () => {
     const cwd = await fresh();
     await writeFile(join(cwd, ".gitignore"), "dist/\n.landrace/.env\n");
@@ -164,8 +207,7 @@ describe("landrace init's .gitignore entry", () => {
 });
 
 describe("the landrace binary", () => {
-  const cli = join(process.cwd(), "src/cli/index.ts");
-  const run = (args: string[], cwd: string) => exec(process.execPath, ["--experimental-strip-types", "--no-warnings", cli, ...args], { cwd });
+  const run = (args: string[], cwd: string) => exec(process.execPath, ["--experimental-strip-types", "--no-warnings", CLI, ...args], { cwd });
 
   it("lists init in --help", async () => {
     const { stdout } = await run(["--help"], process.cwd());
