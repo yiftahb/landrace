@@ -92,7 +92,7 @@ The forge pushes from the repository its own file is in:
 - The token goes to git only when that URL is exactly `https://github.com/<tracker.repo>`, with or without `.git` or a trailing `/` — matched as a string, not parsed. It travels in git's environment (`GIT_CONFIG_*`, as an `extraheader` scoped to that exact URL), never on a command line. `git@github.com:<owner>/<repo>.git` and `ssh://git@github.com/<owner>/<repo>.git` are pushed with your own ssh credentials and no token, as is any origin not on GitHub. A GitHub origin naming another repository is refused, and so is any other URL mentioning github.com — with credentials, a port, percent-encoding or a query.
 - The push is the item's branch and nothing else: an explicit refspec, with tag-following and submodule pushing off.
 - Every push runs with `core.hooksPath=/dev/null`, so none of the checkout's git hooks run — including your own pre-push hooks.
-- A branch with nothing committed beyond `origin/HEAD` is not pushed; the item halts saying so, and carries on once something is committed. GitHub's "No commits between" on `pull.open` says the same.
+- A branch with nothing committed beyond `origin/HEAD` is not pushed. The push is refused, saying "Commit to the branch, then Retry", and the item halts at `blocked` until a person's Retry — a commit alone does not move it ([A way on the forge refused](workflows.md#a-way-on-the-forge-refused)). GitHub's "No commits between" on `pull.open` is refused the same way.
 - A push is stopped after five minutes, or when the run is.
 - Fetching an item's branch uses the same URL and token handling, one branch, no tags and no hooks; git's own words are scrubbed of the token before they reach an error.
 
