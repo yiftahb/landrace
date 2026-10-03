@@ -296,24 +296,27 @@ const outcomeOf = (result: ConvergeResult): string =>
  * of its slowest member, which is the starvation this whole design exists to
  * avoid, one level down.
  *
- * A worker whose `fn` answers false puts that item back and stops: the rest
- * of the queue goes to the workers still running, or back to the caller once
- * none is.
+ * A worker whose `fn` answers false puts that item back where it was and
+ * stops: the rest of the queue goes to the workers still running, or back to
+ * the caller once none is. Where it was, not at the front — workers turned
+ * away in one round resume in no order of the items', and each putting its
+ * own first would hand the next free slot to the least urgent of them.
  */
 async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<boolean>): Promise<T[]> {
-  const queue = [...items];
+  const queue = items.map((_, i) => i);
   const worker = async (): Promise<void> => {
     for (;;) {
       const next = queue.shift();
       if (next === undefined) return;
-      if (!(await fn(next))) {
-        queue.unshift(next);
+      if (!(await fn(items[next] as T))) {
+        const after = queue.findIndex((i) => i > next);
+        queue.splice(after === -1 ? queue.length : after, 0, next);
         return;
       }
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, queue.length)) }, worker));
-  return queue;
+  return queue.map((i) => items[i] as T);
 }
 
 /**

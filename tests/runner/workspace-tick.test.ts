@@ -521,6 +521,37 @@ describe("tick.concurrency across overlapping ticks", () => {
     expect(a.peak()).toBe(2);
     expect(w.runtime.converging).toBe(0);
   });
+
+  /*
+   * Review of #65: two workers turned away in one round put their items back
+   * in the order they resumed, so the queue read `[5, 4]` and the slot the
+   * tick's own run freed went to 5 ahead of the more urgent 4.
+   */
+  it("gives a slot its own run frees to the most urgent item it was refused for", async () => {
+    const state = createExternalState({
+      items: [
+        { id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:auto"] },
+        { id: "3", labels: [], priority: 0 }, { id: "4", labels: [], priority: 1 }, { id: "5", labels: [], priority: 2 },
+      ],
+    });
+    const a = agents();
+    const h = holds();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 3);
+
+    const first = w.once();
+    await until(() => a.runs.length === 2, "the first tick to start items 1 and 2");
+    for (const id of ["3", "4", "5"]) state.label(id, "lr:auto");
+
+    const second = w.once();
+    await until(() => a.runs.length === 3, "item 3 to take the last slot");
+    h.release(2);
+    await until(() => a.runs.length === 4, "item 3's freed slot to go to the next item");
+    expect([...w.runtime.running.keys()].sort()).toEqual(["1", "2", "4"]);
+
+    h.all();
+    await Promise.all([first, second]);
+    expect(w.runtime.converging).toBe(0);
+  });
 });
 
 /*
