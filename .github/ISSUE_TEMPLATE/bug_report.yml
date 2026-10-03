@@ -1,0 +1,75 @@
+name: Bug report
+description: Landrace did something it should not have, or did not do something it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. A vulnerability goes through [SECURITY.md](https://github.com/yiftahb/landrace/blob/main/SECURITY.md), never a public issue.
+
+        **Never paste a token.** Everything below is public: remove every token, secret and private URL from what you paste. If a token leaked, revoke it first.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The Landrace version or commit (`git rev-parse --short HEAD`), your Node version and operating system.
+      placeholder: 3f2a1bc, Node 22.12, macOS 15
+    validations:
+      required: true
+  - type: input
+    id: workflow
+    attributes:
+      label: Workflow
+      description: The workflow the item was in.
+      placeholder: full-cycle, fastlane, or your own
+    validations:
+      required: true
+  - type: input
+    id: tracker
+    attributes:
+      label: Tracker and forge
+      placeholder: GitHub issues and GitHub; Jira and GitLab
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Coding agent
+      description: The coding agent integration, and the model and effort if you know them.
+      placeholder: Claude Code, Codex
+    validations:
+      required: true
+  - type: textarea
+    id: validate
+    attributes:
+      label: "`landrace validate` output"
+      description: Run `landrace validate` in the workspace and paste everything it prints.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What you did, and what Landrace did. Name the item, its stage, and what the board or `landrace status` showed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: The lines around the problem from `landrace start --debug`. Redact them first, and never paste a token.
+      render: text
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Redaction
+      options:
+        - label: I removed every token, secret and private URL from what I pasted.
+          required: true
