@@ -1470,8 +1470,7 @@ describe("the page", () => {
 describe("the item panel's markup", () => {
   const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
 
-  it("starts closed, and takes the full width below sm", () => {
-    expect(aside).toMatch(/\shidden[\s>]/);
+  it("takes the full width below sm", () => {
     expect(aside).toMatch(/ w-full /);
     expect(aside).toMatch(/sm:w-\[28rem\]/);
   });
@@ -1518,7 +1517,8 @@ describe("the item panel's markup", () => {
       runInNewContext(`${fnSource("showPanel")} showPanel(TO)`, {
         TO: to, openMenuKey: "panel", closeMenu: () => closed.push("panel"),
         panelHeld: "7", pairingOnOpen: null, panelWide: false, messageBox: {}, setPanelNote: () => {},
-        panelEl: {}, document: { body: { classList: { toggle: () => {} } } },
+        panelEl: { classList: { toggle: () => {} } }, panelItem: {}, panelEmpty: {},
+        document: { body: { classList: { toggle: () => {} } } },
         stopPanelPoll: () => {}, renderPanel: () => {}, loadPairing: () => {}, markSelected: () => {},
       });
       expect(closed).toEqual(["panel"]);
@@ -1533,10 +1533,6 @@ describe("the item panel's markup", () => {
     // Not a <form>: the CSP's form-action 'none' would refuse a submit, and
     // Enter in a field must never try one.
     expect(PAGE_HTML).not.toMatch(/<form/);
-  });
-
-  it("pushes the board left while open, rather than covering it", () => {
-    expect(APP_JS).toContain('document.body.classList.toggle("sm:pr-[28rem]", open && !panelWide)');
   });
 
   it("polls every 1.5s", () => {
@@ -1603,6 +1599,236 @@ describe("the Escape key and the panel", () => {
 
   it("closes the panel when no menu is open", () => {
     expect(run({ menuOpen: false, panelId: "12" })).toEqual({ menus: 0, panels: 1 });
+  });
+});
+
+/** A classList that keeps what toggle(cls, force) leaves, for contains() to read back. */
+class FakeClasses {
+  private readonly set: Set<string>;
+  constructor(...cls: string[]) { this.set = new Set(cls); }
+  toggle(cls: string, force?: boolean): void { if (force ?? !this.set.has(cls)) this.set.add(cls); else this.set.delete(cls); }
+  contains(cls: string): boolean { return this.set.has(cls); }
+}
+
+// From sm up the panel never comes or goes, so opening or closing an item
+// never moves the board; with no item it says how to fill it.
+describe("the item panel with nothing selected", () => {
+  const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
+  const itemPart = PAGE_HTML.slice(PAGE_HTML.indexOf('<div id="panel-item"'), PAGE_HTML.indexOf("</aside>"));
+  const empty = /<p id="panel-empty" class="([^"]*)"[^>]*>([^<]*)<\/p>/.exec(PAGE_HTML);
+
+  it("starts on its empty state: no hidden attribute, the message shown and the item's part hidden", () => {
+    expect(aside).not.toMatch(/\shidden[\s>]/);
+    expect(empty?.[2]).toBe("Select an item to see its details");
+    expect(empty?.[0]).not.toMatch(/\shidden[\s>]/);
+    expect(PAGE_HTML).toMatch(/<div id="panel-item" hidden[\s>]/);
+  });
+
+  it("keeps the header's ⋯, Full width and ✕, and the composer, in the part the empty state hides", () => {
+    for (const id of ["panel-more", "panel-wide", "panel-close", "panel-composer"]) expect(itemPart).toContain(`id="${id}"`);
+    expect(itemPart).not.toContain('id="panel-empty"');
+  });
+
+  it("says it centred, in the quiet neutral of the empty Needs You, and no new colour", () => {
+    const cls = empty?.[1]?.split(" ") ?? [];
+    expect(cls).toEqual(expect.arrayContaining(["items-center", "justify-center", "text-center", "text-neutral-500", "dark:text-neutral-400"]));
+    expect(cls.join(" ")).not.toMatch(/(rose|amber|emerald|blue)-/);
+  });
+
+  it("leaves the board room for it from the first paint, before the script runs", () => {
+    expect(/<body class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ")).toContain("sm:pr-[28rem]");
+    expect(aside.split(/[\s"]+/)).toContain("max-sm:hidden");
+  });
+
+  // The page script for real: the hash, ✕, Escape and Back all end in
+  // showPanel, run here against elements that keep what it sets.
+  const page = (hash: string, panelWide = false) => {
+    const location = { hash, pathname: "/", search: "" };
+    const panelEl = { classList: new FakeClasses("sm:w-[28rem]", "max-sm:hidden") };
+    const panelItem = { hidden: true };
+    const panelEmpty = { hidden: false };
+    const body = { classList: new FakeClasses("sm:pr-[28rem]") };
+    const c: Record<string, unknown> = {
+      location, lastView: null, openMenuKey: null, panelId: null, panelHeld: null, panelWide, pairingOnOpen: null,
+      panelEl, panelItem, panelEmpty, document: { body, activeElement: null },
+      history: { replaceState: (_a: unknown, _b: string, url: string) => { location.hash = url.slice(url.indexOf("#")); } },
+      messageBox: { value: "" }, setPanelNote: () => {}, closeMenu: () => {}, markSelected: () => {},
+      stopPanelPoll: () => {}, renderPanel: () => {}, loadPairing: () => {}, render: () => {},
+      resetIdleTimer: () => {}, toggleAll: { click: () => {} },
+    };
+    for (const f of ["routeOf", "hashOf", "pageOf", "pageNow", "showPanel", "closePanel", "onHashChange", "isTypingTarget", "onBoard", "onKeydown"]) {
+      runInNewContext(fnSource(f), c);
+    }
+    const go = (code: string): void => { runInNewContext(code, c); };
+    // What a person sees: the empty state or the item, whether a phone shows
+    // the panel at all, and whether the board keeps room for it from sm up.
+    const seen = () => ({
+      empty: !panelEmpty.hidden,
+      item: !panelItem.hidden,
+      belowSm: !panelEl.classList.contains("max-sm:hidden"),
+      narrow: panelEl.classList.contains("sm:w-[28rem]"),
+      padded: body.classList.contains("sm:pr-[28rem]"),
+    });
+    const select = (id: string): void => { location.hash = "#/w/main?item=" + id; go("onHashChange()"); };
+    return { location, go, seen, select };
+  };
+  const EMPTY = { empty: true, item: false, belowSm: false, narrow: true, padded: true };
+  const OPEN = { empty: false, item: true, belowSm: true, narrow: true, padded: true };
+
+  it("shows the empty state when the page opens with no item in the hash", () => {
+    const p = page("#/w/main");
+    p.go("onHashChange()");
+    expect(p.seen()).toEqual(EMPTY);
+  });
+
+  it("goes back to the empty state after ✕, Escape and Back, never hidden, the board padded throughout", () => {
+    const p = page("#/w/main");
+    p.select("12");
+    expect(p.seen()).toEqual(OPEN);
+    p.go("closePanel()");
+    expect(p.seen()).toEqual(EMPTY);
+    expect(p.location.hash).toBe("#/w/main");
+    p.select("12");
+    p.go('onKeydown({ key: "Escape" })');
+    expect(p.seen()).toEqual(EMPTY);
+    expect(p.location.hash).toBe("#/w/main");
+    p.select("12");
+    p.location.hash = "#/w/main";
+    p.go("onHashChange()");
+    expect(p.seen()).toEqual(EMPTY);
+  });
+
+  it("stays hidden below sm with no item selected, where it would cover the whole board", () => {
+    const p = page("#/");
+    p.go("onHashChange()");
+    expect(p.seen().belowSm).toBe(false);
+    p.select("12");
+    expect(p.seen().belowSm).toBe(true);
+    p.go("closePanel()");
+    expect(p.seen().belowSm).toBe(false);
+  });
+
+  it("takes the whole page in Full width only while an item is open", () => {
+    const p = page("#/w/main", true);
+    p.select("12");
+    expect(p.seen()).toEqual({ ...OPEN, narrow: false, padded: false });
+    p.go("closePanel()");
+    expect(p.seen()).toEqual(EMPTY);
+  });
+
+  it("ships the rule that hides it below sm", () => {
+    expect(APP_CSS).toContain(".max-sm\\:hidden{");
+  });
+});
+
+describe("a click on the board's empty space", () => {
+  interface Node { tag: string; id: string | undefined; role: string | undefined; parent: Node | null; closest(sel: string): Node | null }
+  // A target and its ancestors, outermost first — enough of closest() for
+  // tag, #id and [role=…] selectors.
+  const at = (...path: string[]): Node => {
+    let parent: Node | null = null;
+    for (const step of ["html", "body", ...path]) {
+      const [, tag = "", id, role] = /^(\w+)(?:#([\w-]+))?(?:\[role=(\w+)\])?$/.exec(step) ?? [];
+      const self: Node = {
+        tag, id, role, parent,
+        closest(sel) {
+          const hits = (n: Node, s: string): boolean => s === n.tag || s === "#" + n.id || s === "[role=" + n.role + "]";
+          for (let n: Node | null = self; n; n = n.parent) if (sel.split(",").some((s) => hits(n as Node, s.trim()))) return n;
+          return null;
+        },
+      };
+      parent = self;
+    }
+    return parent as Node;
+  };
+  const click = (target: Node, opts: { panelId?: string | null; menu?: string | null; selected?: boolean } = {}) => {
+    const seen = { cleared: 0, menus: 0 };
+    runInNewContext(`${fnSource("emptySpace")}${fnSource("onDocumentClick")} onDocumentClick({ target: TARGET })`, {
+      TARGET: target, panelId: opts.panelId === undefined ? "12" : opts.panelId, openMenuKey: opts.menu ?? null,
+      getSelection: () => ({ isCollapsed: !opts.selected }),
+      closePanel: () => { seen.cleared++; }, closeMenu: () => { seen.menus++; },
+      byKey: () => null, menuKeyOf: (k: string) => k, triggerKeyOf: (k: string) => k, resetIdleTimer: () => {},
+    });
+    return seen;
+  };
+
+  it("clears the selection, as ✕ does, beside or below the lanes", () => {
+    expect(click(at("div"))).toEqual({ cleared: 1, menus: 0 });
+    expect(click(at("div", "main"))).toEqual({ cleared: 1, menus: 0 });
+    expect(click(at("div", "main", "section", "ul", "li"))).toEqual({ cleared: 1, menus: 0 });
+  });
+
+  it("leaves it on a row, a row's menu button, a lane's header, a link, an input or the panel", () => {
+    const row = ["div", "main", "section", "ul", "li[role=treeitem]"];
+    for (const target of [
+      at(...row, "div", "span"),
+      at(...row, "div", "button"),
+      at("div", "main", "details", "summary", "h2"),
+      at("div", "main", "section", "header", "h2"),
+      at("div", "nav", "ul", "li", "a", "span"),
+      at("div", "main", "div", "input"),
+      at("aside#panel", "div", "p"),
+      at("header", "div", "span"),
+    ]) {
+      expect(click(target)).toEqual({ cleared: 0, menus: 0 });
+    }
+  });
+
+  // The click above on a section lane's header holds only if the page draws
+  // that header as a <header>, as a collapsible lane's is a <summary>.
+  it("draws every lane's header as one the click leaves alone", () => {
+    for (const lane of ["needs-you", "running", "elsewhere", "waiting"]) {
+      expect(PAGE_HTML).toMatch(new RegExp(`<section data-lane="${lane}"[^>]*>\\s*<header\\b`));
+    }
+  });
+
+  it("only closes an open menu, as Escape does", () => {
+    expect(click(at("div", "main"), { menu: "19:menu" })).toEqual({ cleared: 0, menus: 1 });
+  });
+
+  // A drag that selects the panel's text and ends past its edge clicks the
+  // body: clearing then would hide what was just selected, before the copy.
+  it("leaves it when the click ends a drag that selected text", () => {
+    expect(click(at("div"), { selected: true })).toEqual({ cleared: 0, menus: 0 });
+  });
+
+  it("does nothing with no item selected", () => {
+    expect(click(at("div", "main"), { panelId: null })).toEqual({ cleared: 0, menus: 0 });
+  });
+
+  it("is the one document click listener, beside the menus' outside click", () => {
+    expect(APP_JS).toContain('document.addEventListener("click", onDocumentClick);');
+  });
+});
+
+describe("a selected item no longer on the board", () => {
+  const draw = (view: unknown) => {
+    const seen = { cleared: 0, title: "" };
+    const c: Record<string, unknown> = {
+      panelId: "12", lastView: view, openMenuKey: null, pairing: { shown: false },
+      keepingFocus: (f: () => void) => f(),
+      panelMore: {}, pairingItem: {}, composer: {},
+      panelTop: { replaceChildren: () => {} }, panelBottom: { replaceChildren: () => {} },
+      panelTitle: { set textContent(v: string) { seen.title = v; } },
+      closePanel: () => { seen.cleared++; }, closeMenu: () => {}, el: () => ({}),
+    };
+    for (const f of ["findRow", "currentRow", "bareRow", "panelTitleOf", "viewListed", "renderPanel"]) runInNewContext(fnSource(f), c);
+    runInNewContext("renderPanel()", c);
+    return seen;
+  };
+
+  it("is let go, as ✕ would, once the board has listed without it", () => {
+    expect(draw({ listed: true, rows: [] })).toEqual({ cleared: 1, title: "" });
+  });
+
+  it("reads Loading… until the board has listed, rather than being let go of", () => {
+    expect(draw(null)).toEqual({ cleared: 0, title: "Loading…" });
+    expect(draw({ listed: false, rows: [] })).toEqual({ cleared: 0, title: "Loading…" });
+  });
+
+  it("stays when the board lists it with no panel, titled by its number", () => {
+    const rows = [{ id: "12", kind: "item", title: "Two trackers", panel: null, note: "two sources", children: [] }];
+    expect(draw({ listed: true, rows })).toEqual({ cleared: 0, title: "#12 Two trackers" });
   });
 });
 
@@ -2879,15 +3105,14 @@ describe("the render rules of the sidebar pages", () => {
     };
     const clash = { id: "17", kind: "item", title: "Two trackers", panel: null, note: "reported by the sources of a and b" };
 
-    it("is titled by the row's own number and title, not 'not on the board'", () => {
-      expect(title(clash, "17", true)).toBe("#17 Two trackers");
+    it("is titled by the row's own number and title", () => {
+      expect(title(clash)).toBe("#17 Two trackers");
     });
-    it("keeps 'not on the board' for an id the view lacks, and Loading… before a view", () => {
-      expect(title(null, "17", true)).toBe("#17 is not on the board");
-      expect(title(null, "17", false)).toBe("Loading…");
+    it("reads Loading… while there is no row yet", () => {
+      expect(title(null)).toBe("Loading…");
     });
     it("titles a row with a panel by its title alone", () => {
-      expect(title({ ...clash, panel: {} }, "17", true)).toBe("Two trackers");
+      expect(title({ ...clash, panel: {} })).toBe("Two trackers");
     });
     it("is found by a lookup that offers no reads or writes", () => {
       const src = fnSource("renderPanel");

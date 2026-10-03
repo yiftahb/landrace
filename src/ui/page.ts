@@ -12,10 +12,10 @@ export { APP_CSS } from "#ui/styles.generated.js";
  */
 const lane = (id: string, label: string, accent: string, dot = ""): string => `
 <section data-lane="${id}" class="mb-4 rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900${accent}">
-<div class="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+<header class="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
 ${dot}<h2 class="font-mono text-xs font-semibold uppercase tracking-wider">${label}</h2>
 <span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-medium">0</span>
-</div>
+</header>
 <ul role="tree" aria-label="${label}" class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
 </section>`;
 
@@ -45,12 +45,17 @@ const ICON_BUTTON =
 
 /**
  * The item panel: fixed to the right, the board pushed left beside it from
- * `sm` up and covered by it below. A static skeleton the script fills with
+ * `sm` up and covered by it below. From `sm` up it is always there, so
+ * opening an item never moves the board: with none selected it shows
+ * #panel-empty in place of #panel-item. Below `sm` it covers the board, so it
+ * shows only while an item is open. A static skeleton the script fills with
  * textContent — the composer lives here, outside anything a poll redraws, so
  * what someone is typing survives every poll.
  */
 const PANEL = `
-<aside id="panel" hidden aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]">
+<aside id="panel" aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl max-sm:hidden dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]">
+<p id="panel-empty" class="flex flex-1 items-center justify-center px-4 text-center text-sm text-neutral-500 dark:text-neutral-400">Select an item to see its details</p>
+<div id="panel-item" hidden class="flex min-h-0 flex-1 flex-col">
 <div class="flex items-start gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
 <h2 id="panel-title" class="min-w-0 flex-1 break-words text-sm font-semibold"></h2>
 <div class="relative shrink-0">
@@ -74,6 +79,7 @@ const PANEL = `
 </div>
 <p id="panel-status" role="status" aria-live="polite" class="mt-2 text-xs text-neutral-500 empty:hidden dark:text-neutral-400"></p>
 <div id="panel-chat" class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500 dark:text-neutral-400"></div>
+</div>
 </div>
 </aside>`;
 
@@ -99,7 +105,7 @@ export const PAGE_HTML = `<!doctype html>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
-<body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+<body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 sm:pr-[28rem]">
 <header class="border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
 <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
 <div class="flex min-w-0 flex-wrap items-center gap-2">
@@ -431,16 +437,30 @@ function closeMenu(opts) {
   }
 }
 
+// The board's empty space: not a header (the page's or a lane's), the panel,
+// an item's row or a control — a collapsible lane's summary among them.
+function emptySpace(target) {
+  return Boolean(target && typeof target.closest === "function")
+    && target.closest("header, #panel, [role=treeitem], [role=menu], a, button, input, textarea, select, label, summary") === null;
+}
+
 // Defined once, not per row: because these are module-level listeners
-// rather than one pair per row, re-rendering never multiplies them.
-document.addEventListener("click", (e) => {
-  if (openMenuKey === null) return;
+// rather than one pair per row, re-rendering never multiplies them. A click
+// outside an open menu closes it; with none open, a click on the board's
+// empty space clears the panel's item, as ✕ does — never one that ends a
+// drag selecting text, which lands on whatever holds both of its ends.
+function onDocumentClick(e) {
+  if (openMenuKey === null) {
+    if (panelId !== null && emptySpace(e.target) && getSelection().isCollapsed) closePanel();
+    return;
+  }
   const menu = byKey(menuKeyOf(openMenuKey));
   const trigger = byKey(triggerKeyOf(openMenuKey));
   const inside = (menu && menu.contains(e.target)) || (trigger && trigger.contains(e.target));
   if (!inside) { closeMenu(); return; }
   resetIdleTimer();
-});
+}
+document.addEventListener("click", onDocumentClick);
 // Whether focus is somewhere a "c" is a letter someone is typing, not a
 // shortcut — the search box above all, but any field or contenteditable
 // reads the same way.
@@ -451,7 +471,7 @@ function isTypingTarget(el) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
-// Escape closes whatever row menu is open, else the item panel; an
+// Escape closes whatever row menu is open, else clears the panel's item; an
 // unmodified "c" answers a click on Collapse all / Expand all — never while
 // it would be typed instead, and never while a row's own menu is open, so its
 // own keys are never raced.
@@ -1495,8 +1515,8 @@ refreshButton.addEventListener("click", () => {
 // within two seconds of the agent reporting them.
 const PANEL_POLL_MS = 1500;
 
-// The item the panel is open on, or null. The hash is its one source:
-// Back closes the panel, and a reload reopens it (see showPanel).
+// The item the panel shows, or null for its empty state. The hash is its one
+// source: Back clears it, and a reload reopens it (see showPanel).
 let panelId = null;
 // The item the state below belongs to — kept across a close, so Escape
 // halfway through a reply loses nothing if the same item is reopened.
@@ -1520,6 +1540,8 @@ let pairing = { shown: false, view: null, command: null, note: "", busy: false, 
 let pairingOnOpen = null;
 
 const panelEl = document.getElementById("panel");
+const panelItem = document.getElementById("panel-item");
+const panelEmpty = document.getElementById("panel-empty");
 const panelTitle = document.getElementById("panel-title");
 const panelTop = document.getElementById("panel-top");
 const panelPairing = document.getElementById("panel-pairing");
@@ -1565,9 +1587,9 @@ function bareRow() {
   return row && row.kind === "item" && !row.panel ? row : null;
 }
 
-// "Not on the board" is only for an id the view does not have.
-function panelTitleOf(row, id, loaded) {
-  if (!row) return loaded ? "#" + id + " is not on the board" : "Loading…";
+// No row yet is the board still listing: one it listed without is let go of.
+function panelTitleOf(row) {
+  if (!row) return "Loading…";
   return row.panel ? row.title : "#" + row.id + " " + row.title;
 }
 
@@ -1826,7 +1848,9 @@ function renderPanel() {
     pairingItem.textContent = pairing.shown ? "Hide pairing" : "Pairing…";
     if (!row) {
       const bare = bareRow();
-      panelTitle.textContent = panelTitleOf(bare, panelId, viewListed(lastView));
+      // An item the board has listed without is let go of, as ✕ would.
+      if (!bare && viewListed(lastView)) { closePanel(); return; }
+      panelTitle.textContent = panelTitleOf(bare);
       panelTop.replaceChildren(...(bare ? [el("p", "text-sm text-neutral-600 dark:text-neutral-300", bare.note)] : []));
       panelBottom.replaceChildren();
       composer.hidden = true;
@@ -2139,7 +2163,8 @@ function pairWrite(kind, stage) {
     });
 }
 
-// The one way the panel opens, shuts or changes item: the hash changed.
+// The one way the panel shows an item, its empty state or another item: the
+// hash changed.
 function showPanel(id) {
   if (openMenuKey === "panel") closeMenu();
   if (id !== null && id !== panelHeld) {
@@ -2162,8 +2187,14 @@ function showPanel(id) {
   panelMode = null;
   markSelected();
   const open = id !== null;
-  panelEl.hidden = !open;
-  document.body.classList.toggle("sm:pr-[28rem]", open && !panelWide);
+  // From sm up the panel stays, its empty state in place of an item; below
+  // sm it covers the board, so it goes. Full width is an open item's alone.
+  panelItem.hidden = !open;
+  panelEmpty.hidden = open;
+  panelEl.classList.toggle("max-sm:hidden", !open);
+  const wide = open && panelWide;
+  panelEl.classList.toggle("sm:w-[28rem]", !wide);
+  document.body.classList.toggle("sm:pr-[28rem]", !wide);
   if (!open) { stopPanelPoll(); return; }
   renderPanel();
 }
@@ -2177,8 +2208,8 @@ function markSelected() {
   if (li) li.setAttribute("aria-selected", "true");
 }
 
-// A row click: pushed onto the hash, so Back closes the panel and a reload
-// reopens it.
+// A row click: pushed onto the hash, so Back clears the panel's item and a
+// reload reopens it.
 function openPanel(id) {
   location.hash = hashOf({ workflow: pageNow(), item: id });
 }
@@ -2200,7 +2231,6 @@ panelMore.addEventListener("click", () => toggleMenu("panel"));
 pairingItem.addEventListener("click", () => { closeMenu(); togglePairing(); });
 wideButton.addEventListener("click", () => {
   panelWide = !panelWide;
-  panelEl.classList.toggle("sm:w-[28rem]", !panelWide);
   wideButton.setAttribute("aria-pressed", panelWide ? "true" : "false");
   showPanel(panelId);
 });
