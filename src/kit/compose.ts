@@ -214,6 +214,7 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
       relates: () => tracker.relates(),
       relate: (item, type, other, ctx) => tracker.relate(item, type, other, ctx),
       unrelate: (item, type, other, ctx) => tracker.unrelate(item, type, other, ctx),
+      checkRelate: (item, type, other, ctx) => tracker.checkRelate(item, type, other, ctx),
     }),
 
     pre: definePreHook({

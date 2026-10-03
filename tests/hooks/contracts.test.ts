@@ -28,6 +28,7 @@ describe("a define* helper brands what it returns", () => {
       relates: () => [],
       relate: async () => {},
       unrelate: async () => {},
+      checkRelate: async () => null,
     }),
     executor: defineExecutor({ id: "f", run: async () => ({ text: "", sessionId: null }) }),
     preflight: definePreflight({ id: "g", check: async () => {} }),

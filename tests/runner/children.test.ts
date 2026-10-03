@@ -77,7 +77,8 @@ describe("childServerFor", () => {
 
 describe("createChild, relating siblings", () => {
   const spy = () => {
-    const state = createExternalState({ items: [{ id: "1", title: "big" }] });
+    // #2 is the sibling a child is ordered after: one the tracker holds, as a relationship's other end must be.
+    const state = createExternalState({ items: [{ id: "1", title: "big" }, { id: "2", title: "api" }] });
     const created: unknown[] = [];
     const operator = {
       ...state.operator,

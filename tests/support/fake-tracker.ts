@@ -839,6 +839,15 @@ export function createFakeTracker(
     const single = /^\/issues\/(\d+)$/.exec(path);
     if (single) {
       const issue = issueOf(Number(single[1]));
+      // REST answers a pull request's number as an issue, marked as one.
+      const pull = issue ? undefined : pulls.get(Number(single[1]));
+      if (pull && method === "GET") {
+        return json({
+          number: pull.number, id: 300_000 + pull.number, title: pull.title ?? `pull ${pull.number}`, state: "open",
+          html_url: `https://github.com/${REPO}/pull/${pull.number}`, labels: [], assignees: [],
+          pull_request: { url: `https://api.github.com/repos/${REPO}/pulls/${pull.number}` },
+        });
+      }
       if (!issue) return new Response("Not Found", { status: 404 });
       if (method === "PATCH") {
         Object.assign(issue, body);

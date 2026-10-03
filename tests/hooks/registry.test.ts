@@ -27,6 +27,7 @@ const operator = (id: string) =>
     relates: () => [],
     relate: async () => {},
     unrelate: async () => {},
+    checkRelate: async () => null,
   });
 
 const executor = (id: string) => defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) });

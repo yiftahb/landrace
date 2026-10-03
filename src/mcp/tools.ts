@@ -13,7 +13,7 @@ import {
 } from "#conventions.js";
 import { cannotPlace, checkEligible, locateNode } from "#core/index.js";
 import type { Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, Workflow, WorkspaceListing } from "#namespace.js";
-import type { ItemRelation, Operator, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
+import type { ItemRelation, Operator, RelationWrite, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf, Refusal } from "#runner/errors.js";
@@ -481,28 +481,55 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       refuseEngineLabels(removeLabels, "remove");
       const edit = await editor(item);
       const operator = requireOperator(edit.operator, "update an item");
-      // Every entry of both lists, before the first write.
+      // Every entry of both lists, before the first write: its shape here,
+      // then what only the tracker can say — whether the other end is an
+      // item it may relate at all. Each once: a tracker refuses a second
+      // copy of what it already holds.
       refuseRelations(operator, item, relate);
       refuseRelations(operator, item, unrelate);
+      const writes: RelationWrite[] = [
+        ...distinctRelations(relate).map((r) => ({ ...r, verb: "relate" as const })),
+        ...distinctRelations(unrelate).map((r) => ({ ...r, verb: "unrelate" as const })),
+      ];
+      const refused: string[] = [];
+      for (const w of writes) {
+        const problem = await operator.checkRelate(item, w.type, w.item, ctx);
+        if (problem !== null) refused.push(`cannot ${w.verb} #${item} ${w.verb === "relate" ? "to" : "from"} #${w.item} as ${JSON.stringify(w.type)}: ${problem}`);
+      }
+      if (refused.length > 0) throw new Error(refused.join("; "));
 
-      const updated = await operator.updateItem(
-        item,
-        {
-          ...(title === undefined ? {} : { title }),
-          ...(body === undefined ? {} : { body: neutraliseMarkers(body) }),
-          ...(state === undefined ? {} : { state }),
-          addLabels,
-          removeLabels,
-        },
-        ctx,
-      );
-      // After the labels, before the reply: relating is the last write. Each
-      // once: a tracker refuses a second copy of what it already holds.
-      const relating = distinctRelations(relate);
-      const unrelating = distinctRelations(unrelate);
-      for (const { type, item: other } of relating) await operator.relate(item, type, other, ctx);
-      for (const { type, item: other } of unrelating) await operator.unrelate(item, type, other, ctx);
+      const fields = {
+        ...(title === undefined ? {} : { title }),
+        ...(body === undefined ? {} : { body: neutraliseMarkers(body) }),
+        ...(state === undefined ? {} : { state }),
+      };
+      const updated = await operator.updateItem(item, { ...fields, addLabels, removeLabels }, ctx);
+      // After the labels, before the reply: relating is the last write. One
+      // that fails after the checks — an outage, a permission — stops the
+      // rest, and the sentence says what was written, what failed and what
+      // was never tried; the loop is woken for what was.
+      const done: RelationWrite[] = [];
+      try {
+        for (const w of writes) {
+          await (w.verb === "relate" ? operator.relate(item, w.type, w.item, ctx) : operator.unrelate(item, w.type, w.item, ctx));
+          done.push(w);
+        }
+      } catch (e) {
+        wakeLoop();
+        const said = (w: RelationWrite): string => `${w.verb} ${w.type} #${w.item}`;
+        const failed = writes[done.length];
+        const changed = Object.keys(fields).length > 0 || addLabels.length > 0 || removeLabels.length > 0;
+        const written = [...(changed ? ["its labels and fields"] : []), ...done.map(said)];
+        const untried = writes.slice(done.length + 1).map(said);
+        throw new Error(
+          (written.length === 0 ? `#${item} was left as it was.` : `#${item} was changed only in part. Written: ${written.join(", ")}.`) +
+          ` Failed: ${failed ? said(failed) : "a relationship"}, saying ${messageOf(e)}` +
+          (untried.length === 0 ? "" : ` Not tried: ${untried.join(", ")}.`),
+        );
+      }
       wakeLoop();
+      const relating = done.filter((w) => w.verb === "relate").map(({ type, item: other }) => ({ type, item: other }));
+      const unrelating = done.filter((w) => w.verb === "unrelate").map(({ type, item: other }) => ({ type, item: other }));
       // Null for an item no one workflow owns: its edit went through no workflow.
       return {
         ...summarise(updated), workflow: edit.workflow,

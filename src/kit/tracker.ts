@@ -504,6 +504,35 @@ export abstract class BaseTracker {
     await this.removeRelation(item, type, other, ctx);
   }
 
+  /** The operator's: what `relate` or `unrelate` would refuse, asked before anything is written. */
+  async checkRelate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<string | null> {
+    const types = this.writableRelations();
+    if (!types.includes(type)) return `this tracker writes ${writtenTypes(types)}`;
+    if (item === other) return "an item is never related to itself";
+    return this.relationProblem(item, type, other, ctx);
+  }
+
+  /**
+   * Why `item` — null for one not yet created — cannot be related to
+   * `other` as `type`, or null: asked of every entry before the first write
+   * of `createItem` and of the operator's lists. By default, a relationship
+   * runs only between this tracker's own items, the other end one it can
+   * read: an item elsewhere is read, never written, and one it cannot read
+   * is not one it can say exists. An integration whose tracker refuses more
+   * — a kind of item that cannot be related — says so here, read as its
+   * write would read it.
+   */
+  protected async relationProblem(item: string | null, type: string, other: string, ctx: RuntimeContext): Promise<string | null> {
+    const elsewhere = [item, other].find((id): id is string => id !== null && !this.ownsId(id));
+    if (elsewhere !== undefined) return `#${elsewhere} is not one of this tracker's own items, and landrace relates only those`;
+    try {
+      await this.item(other, ctx);
+    } catch (e) {
+      return `#${other} could not be read: ${messageOf(e)}`;
+    }
+    return null;
+  }
+
   private writable(type: string, what: string): void {
     const types = this.writableRelations();
     if (!types.includes(type)) throw new Error(`cannot ${what} as "${type}": this tracker writes ${writtenTypes(types)}`);
@@ -703,16 +732,12 @@ export abstract class BaseTracker {
    */
   async createItem({ title, body, labels, parent, origin, priority, relate }: NewItem, ctx: RuntimeContext): Promise<Node> {
     const relations = distinctRelations(relate ?? []);
-    // Every type, and every item of its own it names, checked before anything
-    // is written: a refusal leaves nothing behind.
+    // Every type, and every item it names, checked before anything is
+    // written: a refusal leaves nothing behind.
     for (const { type, item } of relations) this.writable(type, `relate a new item to #${item}`);
     for (const { type, item } of relations) {
-      if (!this.ownsId(item)) continue;
-      try {
-        await this.item(item, ctx);
-      } catch (e) {
-        throw new Error(`cannot relate a new item to #${item} as "${type}": #${item} could not be read: ${messageOf(e)}`);
-      }
+      const problem = await this.relationProblem(null, type, item, ctx);
+      if (problem !== null) throw new Error(`cannot relate a new item to #${item} as "${type}": ${problem}`);
     }
     const stamped = neutraliseMarkers(body ?? "") + (origin ? renderOrigin(origin) : "");
     const id = await this.create({ title, body: stamped, parent, priority }, ctx);
@@ -735,7 +760,7 @@ export abstract class BaseTracker {
       try {
         await this.close(id, "dropped", ctx);
       } catch (e) {
-        closing = `and closing it as dropped failed too: ${messageOf(e)}`;
+        closing = `and closing it as dropped failed too, so it is still open, and unlabelled so nothing works it: ${messageOf(e)}`;
       }
       throw new Error(`#${id} was created, but relating it failed: ${failed.join("; ")}; ${closing}`);
     }

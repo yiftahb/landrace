@@ -129,8 +129,13 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
       state: z.enum(["open", "closed"]).optional(),
       addLabels: z.array(z.string()).optional(),
       removeLabels: z.array(z.string()).optional(),
-      relate: relations('Relationships to make from this item, e.g. [{ "type": "blocked-by", "item": "10" }]; applied after the label changes. One refused entry changes nothing.'),
-      unrelate: relations("Relationships to remove from this item, in the same shape."),
+      relate: relations(
+        'Relationships to make from this item, e.g. [{ "type": "blocked-by", "item": "10" }]; the types are those its tracker writes. ' +
+          "Every entry of this list and of unrelate is checked with the tracker before anything is written, labels included, so one " +
+          "refused entry changes nothing. They are written after the label changes, one by one: should a write still fail partway " +
+          "— an outage, say — the error says which were written, which failed and which were not tried.",
+      ),
+      unrelate: relations("Relationships to remove from this item, in the same shape, checked and written as relate's are."),
     },
     guard(({ item: n, ...rest }) => tools.updateItem(n, rest)),
   );

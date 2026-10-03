@@ -5,7 +5,7 @@
  */
 import { createHash } from "node:crypto";
 import {
-  type Closed, type ItemPatch, type NewItem, type Node, RELATIONS, type RuntimeContext, STAGE_LABEL_PREFIX, isItemId,
+  type Closed, type ItemPatch, RELATIONS, type RuntimeContext, STAGE_LABEL_PREFIX, isItemId,
 } from "landrace/hooks";
 import {
   BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
@@ -19,6 +19,8 @@ import { type Client, type Spare, clientFor, isIssueNumber, issueNumber, unseen 
  * it — a limit GitHub raised, say — reads as not whole, never as fewer.
  */
 const BLOCKERS_PAGE = 50;
+
+const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** A blocker as the walk reads it: which issue, where, and whether it is done — no title, no link. */
 interface WalkBlocker {
@@ -551,12 +553,6 @@ export class GitHubIssues extends BaseTracker {
     return isIssueNumber(id);
   }
 
-  /** Refused before the base creates anything: past `create`, a relationship that fails drops the new issue. */
-  override async createItem(item: NewItem, ctx: RuntimeContext): Promise<Node> {
-    for (const { type, item: other } of item.relate ?? []) this.within(`relate a new item to #${other}`, type, [other], ctx);
-    return super.createItem(item, ctx);
-  }
-
   /**
    * GitHub writes a dependency by the blocker's REST id, not its number —
    * read first, as a sub-issue is linked by the child's. Writing one already
@@ -571,39 +567,56 @@ export class GitHubIssues extends BaseTracker {
     await this.dependency(`unrelate #${item} from #${other}`, item, type, other, ctx, (gh, n, blocker) => gh.removeBlockedBy(n, blocker));
   }
 
+  /**
+   * What a dependency write would refuse, asked before anything is written
+   * — by the very lookup the write makes, so the two cannot disagree about
+   * what the other end is.
+   */
+  protected override async relationProblem(item: string | null, type: string, other: string, ctx: RuntimeContext): Promise<string | null> {
+    try {
+      await this.blockerOf(item, type, other, ctx);
+      return null;
+    } catch (e) {
+      return messageOf(e);
+    }
+  }
+
   /** One dependency write between two issues here, by the blocker's REST id — or a refusal saying why there is none. */
   private async dependency(
     what: string, item: string, type: string, other: string, ctx: RuntimeContext,
     write: (gh: Client, n: number, blocker: number) => Promise<void>,
   ): Promise<void> {
-    if (type !== RELATIONS.blockedBy) throw new Error(`cannot ${what} as "${type}": GitHub writes only "${RELATIONS.blockedBy}"`);
-    this.within(what, type, [item, other], ctx);
-    const [n, number] = [issueNumber(item), issueNumber(other)];
-    const gh = this.gh(ctx);
     try {
-      const blocker = await gh.issue(number);
-      // REST answers a pull request as an issue; GitHub's dependencies are between issues.
-      if (blocker.pull_request !== undefined && blocker.pull_request !== null) {
-        throw new Error(`#${other} is a pull request, not an issue: only an issue blocks another`);
-      }
-      if (!Number.isSafeInteger(blocker.id)) throw new Error(`GitHub answered #${other} with no usable id`);
-      await write(gh, n, blocker.id);
+      const blocker = await this.blockerOf(item, type, other, ctx);
+      await write(this.gh(ctx), issueNumber(item), blocker);
     } catch (e) {
-      throw new Error(`cannot ${what} as "${type}": ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`cannot ${what} as "${type}": ${messageOf(e)}`);
     }
   }
 
   /**
-   * A blocker in another repository is read, never written: landrace's token
-   * is the configured repository's, and an item elsewhere is not one it
-   * works.
+   * The REST id a dependency on `other` is written by, or a refusal saying
+   * why there is none. A blocker in another repository is read, never
+   * written: landrace's token is the configured repository's, and an item
+   * elsewhere is not one it works.
    */
-  private within(what: string, type: string, ids: string[], ctx: RuntimeContext): void {
-    const elsewhere = ids.find((id) => !this.ownsId(id));
-    if (elsewhere === undefined) return;
-    throw new Error(
-      `cannot ${what} as "${type}": landrace writes relationships only within ${this.gh(ctx).repo}, and #${elsewhere} is not an issue there`,
-    );
+  private async blockerOf(item: string | null, type: string, other: string, ctx: RuntimeContext): Promise<number> {
+    if (type !== RELATIONS.blockedBy) throw new Error(`GitHub writes only "${RELATIONS.blockedBy}"`);
+    const gh = this.gh(ctx);
+    const elsewhere = [item, other].find((id): id is string => id !== null && !this.ownsId(id));
+    if (elsewhere !== undefined) throw new Error(`landrace writes relationships only within ${gh.repo}, and #${elsewhere} is not an issue there`);
+    let blocker: Awaited<ReturnType<Client["issue"]>>;
+    try {
+      blocker = await gh.issue(issueNumber(other));
+    } catch (e) {
+      throw new Error(`#${other} could not be read: ${messageOf(e)}`);
+    }
+    // REST answers a pull request as an issue; GitHub's dependencies are between issues.
+    if (blocker.pull_request !== undefined && blocker.pull_request !== null) {
+      throw new Error(`#${other} is a pull request, not an issue: only an issue blocks another`);
+    }
+    if (!Number.isSafeInteger(blocker.id)) throw new Error(`GitHub answered #${other} with no usable id`);
+    return blocker.id;
   }
 
   /**

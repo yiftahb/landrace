@@ -671,29 +671,72 @@ describe("relationships on the tracker base", () => {
 
     /*
      * A relationship that still cannot be made after the item exists — a
-     * permission, an outage, an item elsewhere — would leave an open child
-     * nobody works holding its parent for ever. It is closed as dropped, as a
-     * sub-item that cannot be linked is, and the sentence names it.
+     * permission, an outage — would leave an open child nobody works holding
+     * its parent for ever. It is closed as dropped, as a sub-item that cannot
+     * be linked is, and the sentence names it.
      */
+    class Refusing extends MemoryTracker {
+      protected override async addRelation(item: string, type: string, other: string): Promise<void> {
+        if (other === "11") throw new Error("the tracker answered 502");
+        return super.addRelation(item, type, other);
+      }
+    }
+
     it("closes the item it created as dropped when a relationship cannot be made, so it holds nothing up", async () => {
-      const state = createExternalState({ items: [{ id: "1" }, { id: "10" }] });
-      await expect(state.operator.createItem({ title: "after", parent: "1", labels: ["lr:auto"], relate: [{ type: B, item: "x-far-9" }, { type: B, item: "10" }] }, ctx))
-        .rejects.toThrow("#3 was created, but relating it failed: blocked-by #x-far-9: no such item #x-far-9; it was closed as dropped, so it holds nothing up");
-      expect(state.item("3")).toMatchObject({ title: "after", labels: [], closed: "dropped", parent: "1" });
-      expect(state.writes()).toEqual(["create a new item under #1", "relate #3 blocked-by #x-far-9", "relate #3 blocked-by #10", "close #3"]);
-      const parent = deriveRel(await state.source.read("1", ctx), "1", ["child-of"]);
+      const tracker = new Refusing({ items: [{ id: "1" }, { id: "10" }, { id: "11" }] });
+      const hooks = compose({ tracker });
+      await expect(hooks.operator.createItem({ title: "after", parent: "1", labels: ["lr:auto"], relate: [{ type: B, item: "11" }, { type: B, item: "10" }] }, ctx))
+        .rejects.toThrow("#4 was created, but relating it failed: blocked-by #11: the tracker answered 502; it was closed as dropped, so it holds nothing up");
+      expect(tracker.row("4")).toMatchObject({ title: "after", labels: [], closed: "dropped", parent: "1" });
+      expect(tracker.writes()).toEqual(["create a new item under #1", "relate #4 blocked-by #10", "close #4"]);
+      const parent = deriveRel(await hooks.source.read("1", ctx), "1", ["child-of"]);
       expect(parent.ok && parent.rel["child-of"]?.in).toMatchObject({ total: 0, dropped: 1, open: [] });
     });
 
-    it("says so when the item it could not relate cannot be closed either", async () => {
-      class Stuck extends MemoryTracker {
+    it("says so when the item it could not relate cannot be closed either, and that it is still open and unlabelled", async () => {
+      class Stuck extends Refusing {
         override async close(): Promise<void> {
           throw new Error("the tracker answered 502");
         }
       }
-      const tracker = new Stuck({ items: [{ id: "1" }] });
-      await expect(compose({ tracker }).operator.createItem({ title: "after", relate: [{ type: B, item: "x-far-9" }] }, ctx))
-        .rejects.toThrow("#2 was created, but relating it failed: blocked-by #x-far-9: no such item #x-far-9; and closing it as dropped failed too: the tracker answered 502");
+      const tracker = new Stuck({ items: [{ id: "1" }, { id: "11" }] });
+      await expect(compose({ tracker }).operator.createItem({ title: "after", labels: ["lr:auto"], relate: [{ type: B, item: "11" }] }, ctx))
+        .rejects.toThrow(
+          "#3 was created, but relating it failed: blocked-by #11: the tracker answered 502; and closing it as dropped failed too, " +
+          "so it is still open, and unlabelled so nothing works it: the tracker answered 502",
+        );
+      expect(tracker.row("3")).toMatchObject({ labels: [], closed: null });
+    });
+
+    it("refuses a relationship to an item that is not its own before creating anything", async () => {
+      const state = createExternalState({ items: [{ id: "10" }] });
+      await expect(state.operator.createItem({ title: "after", relate: [{ type: B, item: "10" }, { type: B, item: "x-far-9" }] }, ctx))
+        .rejects.toThrow('cannot relate a new item to #x-far-9 as "blocked-by": #x-far-9 is not one of this tracker\'s own items, and landrace relates only those');
+      expect(state.writes()).toEqual([]);
+    });
+
+    /*
+     * Everything `relate` and `unrelate` would refuse, asked before anything
+     * is written, so a caller with a list of them can refuse the whole list
+     * having written none of it. The reason alone: the caller says what it asked.
+     */
+    it("says, before any write, why an item cannot be related to another, or nothing when it can", async () => {
+      const state = createExternalState({ items: [{ id: "10" }, { id: "12" }] });
+      expect(await state.operator.checkRelate("12", B, "10", ctx)).toBeNull();
+      expect(await state.operator.checkRelate("12", "duplicates", "10", ctx)).toBe('this tracker writes only "blocked-by"');
+      expect(await state.operator.checkRelate("12", B, "12", ctx)).toBe("an item is never related to itself");
+      expect(await state.operator.checkRelate("12", B, "99", ctx)).toBe("#99 is not one of this tracker's own items, and landrace relates only those");
+      expect(state.writes()).toEqual([]);
+    });
+
+    it("says an item of its own it cannot read cannot be related", async () => {
+      class Owning extends MemoryTracker {
+        protected override ownsId(): boolean {
+          return true;
+        }
+      }
+      const hooks = compose({ tracker: new Owning({ items: [{ id: "12" }] }) });
+      expect(await hooks.operator.checkRelate("12", B, "99", ctx)).toBe("#99 could not be read: no such item #99");
     });
   });
 });

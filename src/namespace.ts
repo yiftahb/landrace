@@ -1334,6 +1334,11 @@ export interface ItemRelation {
   item: string;
 }
 
+/** One relationship to make or remove, as the operator tool writes its two lists in turn. */
+export interface RelationWrite extends ItemRelation {
+  verb: "relate" | "unrelate";
+}
+
 export interface ItemPatch {
   title?: string | undefined;
   body?: string | undefined;
@@ -1364,6 +1369,14 @@ export interface Operator {
   /** Relate `item` to `other` as `type` — `#12` blocked by `#10` is `relate("12", "blocked-by", "10")`. */
   relate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
   unrelate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
+  /**
+   * Why `relate` or `unrelate` of these would be refused — a type it does not
+   * write, the other end no item of its own it can read, whatever its tracker
+   * refuses — or null. Asked of every entry before the first write, so a list
+   * with one refused entry is refused having written none of it. The reason
+   * alone: the caller says what it asked.
+   */
+  checkRelate(item: string, type: string, other: string, ctx: RuntimeContext): Promise<string | null>;
 }
 
 /**

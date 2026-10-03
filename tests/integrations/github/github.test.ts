@@ -849,6 +849,27 @@ describe("blocked-by on GitHub", () => {
     expect([...gh.issues.keys()]).toEqual([10]);
   });
 
+  it.each([
+    ["a pull request", "20", /#20 is a pull request, not an issue/],
+    ["no issue at all", "99", /#99 could not be read: .*404/],
+  ])("refuses a new issue blocked by %s before creating anything", async (_what, other, refusal) => {
+    const gh = createFakeTracker([{ number: 10 }]);
+    gh.openPull({ number: 20, head: "feature" });
+    await expect(operator(gh).createItem({ title: "next", relate: [{ type: "blocked-by", item: other }] }, gh.ctx)).rejects.toThrow(refusal);
+    expect(gh.requests.filter((r) => r.method !== "GET" && r.path !== "/graphql")).toEqual([]);
+    expect([...gh.issues.keys()]).toEqual([10]);
+  });
+
+  it("asks, before any write, by the lookup the write makes", async () => {
+    const gh = createFakeTracker([{ number: 10 }, { number: 12 }]);
+    gh.openPull({ number: 20, head: "feature" });
+    expect(await operator(gh).checkRelate("12", "blocked-by", "10", gh.ctx)).toBeNull();
+    expect(await operator(gh).checkRelate("12", "blocked-by", "20", gh.ctx)).toBe("#20 is a pull request, not an issue: only an issue blocks another");
+    expect(await operator(gh).checkRelate("12", "blocked-by", "x.other.api.5", gh.ctx))
+      .toBe("landrace writes relationships only within acme/widgets, and #x.other.api.5 is not an issue there");
+    expect(gh.requests.filter((r) => r.method !== "GET" && r.path !== "/graphql")).toEqual([]);
+  });
+
   it("drops a new issue whose blocker GitHub would not relate, naming it", async () => {
     const gh = createFakeTracker([{ number: 10 }]);
     gh.breakOn((r) => r.path.endsWith("/dependencies/blocked_by"), 403);

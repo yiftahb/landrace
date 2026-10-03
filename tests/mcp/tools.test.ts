@@ -11,6 +11,7 @@ import { listWorkspace } from "#runner/tick.js";
 import { boardView } from "#ui/board.js";
 import { hooked, loaded } from "#tests/support/loaded.js";
 import { createFakeTracker, type FakeIssue } from "#tests/support/fake-tracker.js";
+import { createExternalState } from "#testing/index.js";
 
 // Its own lock root: these tests must not race the default one a developer's
 // own loop might be holding.
@@ -765,6 +766,30 @@ describe("over a workspace of two workflows", () => {
     expect(await tools.updateItem("1", { title: "Renamed" })).toMatchObject({ item: "1", workflow: "main" });
   });
 
+  it("relates an item through the operator of the workflow that claims it, and only that one", async () => {
+    const asked: string[] = [];
+    const { tracker, tools } = two({
+      mainRegistry: (r) => {
+        const shared = r.operator;
+        if (!shared) throw new Error("the fake tracker has an operator");
+        return {
+          ...r,
+          operator: {
+            ...shared, id: "own",
+            checkRelate: async (i, t, o, ctx) => { asked.push(`check ${i} ${o}`); return shared.checkRelate(i, t, o, ctx); },
+            relate: async (i, t, o, ctx) => { asked.push(`relate ${i} ${o}`); return shared.relate(i, t, o, ctx); },
+          },
+        };
+      },
+    });
+    await tools.updateItem("1", { relate: [{ type: "blocked-by", item: "6" }] });
+    await tools.updateItem("2", { relate: [{ type: "blocked-by", item: "5" }] });
+    // #1 is main's, through its own operator; #2 is fast's, through the shared one, which main's never hears of.
+    expect(asked).toEqual(["check 1 6", "relate 1 6"]);
+    expect(tracker.issues.get(1)?.blockedBy).toEqual([6]);
+    expect(tracker.issues.get(2)?.blockedBy).toEqual([5]);
+  });
+
   /*
    * A read through a source, rather than through one workflow, is made with
    * the pre hooks every workflow on it loads. Two that share none would read
@@ -868,6 +893,7 @@ describe("over a workspace of two workflows", () => {
 
     const writes: Array<[string, (t: Tools, item: string) => Promise<unknown>]> = [
       ["landrace_update_item", (t, i) => t.updateItem(i, { title: "Renamed", addLabels: ["bug"] })],
+      ["landrace_update_item relate", (t, i) => t.updateItem(i, { relate: [{ type: "blocked-by", item: "1" }] })],
       ["landrace_reply", (t, i) => t.reply(i, "go ahead")],
       ["landrace_goto", (t, i) => t.goto(i, "spec")],
       ["landrace_clear", (t, i) => t.clear(i, "spec")],
@@ -925,6 +951,7 @@ describe("relationships by hand", () => {
       updateItem: async (...a: Parameters<typeof real.updateItem>) => { calls.push("update"); return real.updateItem(...a); },
       relate: async (i: string, t: string, o: string) => { calls.push(`relate ${i} ${t} ${o}`); },
       unrelate: async (i: string, t: string, o: string) => { calls.push(`unrelate ${i} ${t} ${o}`); },
+      checkRelate: async (i: string, t: string, o: string) => { calls.push(`check ${i} ${t} ${o}`); return null; },
     };
     const tools = createTools([hooked({ ...tracker.registry, operator }, loaded(admitting(["lr:auto"])))], tracker.ctx);
     return { tracker, tools, calls };
@@ -941,7 +968,7 @@ describe("relationships by hand", () => {
     const r = await tools.updateItem("4", {
       addLabels: ["bug"], relate: [{ type: "blocked-by", item: "10" }], unrelate: [{ type: "blocked-by", item: "9" }],
     });
-    expect(calls).toEqual(["update", "relate 4 blocked-by 10", "unrelate 4 blocked-by 9"]);
+    expect(calls).toEqual(["check 4 blocked-by 10", "check 4 blocked-by 9", "update", "relate 4 blocked-by 10", "unrelate 4 blocked-by 9"]);
     expect(r).toMatchObject({
       related: [{ type: "blocked-by", item: "10" }], unrelated: [{ type: "blocked-by", item: "9" }],
     });
@@ -953,7 +980,7 @@ describe("relationships by hand", () => {
       relate: [{ type: "blocked-by", item: "10" }, { type: "blocked-by", item: "10" }],
       unrelate: [{ type: "blocked-by", item: "9" }, { type: "blocked-by", item: "9" }],
     });
-    expect(calls).toEqual(["update", "relate 4 blocked-by 10", "unrelate 4 blocked-by 9"]);
+    expect(calls).toEqual(["check 4 blocked-by 10", "check 4 blocked-by 9", "update", "relate 4 blocked-by 10", "unrelate 4 blocked-by 9"]);
     expect(r).toMatchObject({ related: [{ type: "blocked-by", item: "10" }], unrelated: [{ type: "blocked-by", item: "9" }] });
   });
 
@@ -981,5 +1008,109 @@ describe("relationships by hand", () => {
     await expect(none.tools.updateItem("4", { relate: [{ type: "blocked-by", item: "10" }] })).rejects.toThrow(/writes no relationship/);
     expect(calls).toEqual([]);
     expect(none.calls).toEqual([]);
+  });
+});
+
+/*
+ * What only the tracker can tell — whether the other end is an item it may
+ * relate at all — is asked of it for every entry of both lists before the
+ * first write, labels included. Through the real GitHub integration over its
+ * fake, and over the in-memory tracker: a refused entry leaves the item
+ * exactly as it was, and wakes nothing.
+ */
+describe("relationships by hand, asked of the tracker before anything is written", () => {
+  const github = () => {
+    const tracker = createFakeTracker([
+      { number: 4, labels: ["lr:auto"], blockedBy: [9] }, { number: 9 }, { number: 10 }, { number: 11 },
+    ]);
+    tracker.openPull({ number: 20, head: "feature" });
+    const wake = jest.fn();
+    const tools = createTools([hooked(tracker.registry, loaded(admitting(["lr:auto"])))], tracker.ctx, { wake });
+    return { tracker, tools, wake };
+  };
+  // Every write the fake heard: a GraphQL query is a POST that writes nothing.
+  const writesTo = (tracker: ReturnType<typeof createFakeTracker>) =>
+    tracker.requests.filter((r) => r.method !== "GET" && r.path !== "/graphql");
+
+  it.each([
+    ["a blocker in another repository", "x.other.api.5", /cannot relate #4 to #x\.other\.api\.5 as "blocked-by": landrace writes relationships only within acme\/widgets/],
+    ["a blocker that is no issue", "99", /cannot relate #4 to #99 as "blocked-by": #99 could not be read: .*404/],
+    ["a pull request's number", "20", /cannot relate #4 to #20 as "blocked-by": #20 is a pull request, not an issue/],
+  ])("refuses %s on GitHub with nothing written, labels included", async (_what, other, refusal) => {
+    const { tracker, tools, wake } = github();
+    await expect(tools.updateItem("4", {
+      addLabels: ["bug"], relate: [{ type: "blocked-by", item: "10" }, { type: "blocked-by", item: other }],
+    })).rejects.toThrow(refusal);
+    expect(writesTo(tracker)).toEqual([]);
+    expect(tracker.issues.get(4)).toMatchObject({ labels: ["lr:auto"], blockedBy: [9] });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unrelate entry the same way, before the relate entries are written", async () => {
+    const { tracker, tools } = github();
+    await expect(tools.updateItem("4", {
+      relate: [{ type: "blocked-by", item: "10" }], unrelate: [{ type: "blocked-by", item: "x.other.api.5" }],
+    })).rejects.toThrow(/cannot unrelate #4 from #x\.other\.api\.5 as "blocked-by": landrace writes relationships only within/);
+    expect(writesTo(tracker)).toEqual([]);
+  });
+
+  it("names every entry it refuses, not the first alone", async () => {
+    const { tools } = github();
+    await expect(tools.updateItem("4", {
+      relate: [{ type: "blocked-by", item: "99" }, { type: "blocked-by", item: "20" }],
+    })).rejects.toThrow(/#99 could not be read[\s\S]*#20 is a pull request/);
+  });
+
+  it("says what it wrote and what failed when a write fails partway through the list, and wakes the loop", async () => {
+    const { tracker, tools, wake } = github();
+    let posts = 0;
+    tracker.breakOn((r) => r.method === "POST" && r.path === "/issues/4/dependencies/blocked_by" && ++posts === 2, 500);
+    const failed = tools.updateItem("4", {
+      addLabels: ["bug"],
+      relate: [{ type: "blocked-by", item: "10" }, { type: "blocked-by", item: "11" }],
+      unrelate: [{ type: "blocked-by", item: "9" }],
+    });
+    await expect(failed).rejects.toThrow(
+      /^#4 was changed only in part\. Written: its labels and fields, relate blocked-by #10\. Failed: relate blocked-by #11, saying [\s\S]*500[\s\S]* Not tried: unrelate blocked-by #9\.$/,
+    );
+    expect(tracker.issues.get(4)).toMatchObject({ labels: ["lr:auto", "bug"], blockedBy: [9, 10] });
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("says it left the item as it was when the first write fails and nothing else was asked for", async () => {
+    const { tracker, tools, wake } = github();
+    tracker.breakOn((r) => r.method === "POST" && r.path === "/issues/4/dependencies/blocked_by", 500);
+    await expect(tools.updateItem("4", { relate: [{ type: "blocked-by", item: "10" }] }))
+      .rejects.toThrow(/^#4 was left as it was\. Failed: relate blocked-by #10, saying /);
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  const memory = () => {
+    const state = createExternalState({ items: [{ id: "4", labels: ["lr:auto"] }, { id: "10" }] });
+    const registry: Registry = {
+      preflights: [], pre: [state.pre], post: [state.post], artifacts: [], source: state.source, operator: state.operator,
+      executors: new Map(), notifiers: new Map(),
+    };
+    const tools = createTools([hooked(registry, loaded(admitting(["lr:auto"])))], { ...createFakeTracker().ctx });
+    return { state, tools };
+  };
+
+  it.each([
+    ["an item it does not hold", "99"],
+    ["a pull request", "pr-1"],
+  ])("refuses %s in memory, with nothing written", async (_what, other) => {
+    const { state, tools } = memory();
+    state.openPull("10");
+    await expect(tools.updateItem("4", {
+      addLabels: ["bug"], relate: [{ type: "blocked-by", item: "10" }, { type: "blocked-by", item: other }],
+    })).rejects.toThrow(new RegExp(`cannot relate #4 to #${other} as "blocked-by": #${other} is not one of this tracker's own items`));
+    expect(state.writes()).toEqual([]);
+    expect(state.item("4").labels).toEqual(["lr:auto"]);
+  });
+
+  it("relates in memory once every entry passes", async () => {
+    const { state, tools } = memory();
+    await tools.updateItem("4", { relate: [{ type: "blocked-by", item: "10" }] });
+    expect(state.writes()).toEqual(["relate #4 blocked-by #10"]);
   });
 });
