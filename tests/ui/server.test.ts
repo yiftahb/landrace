@@ -67,6 +67,20 @@ describeLoopback("serveBoard", () => {
     expect(String(res.headers["content-security-policy"])).toContain("script-src 'self'");
   });
 
+  // The browser tab shows the mark: served from the board itself, and the CSP
+  // lets an image load from here and nowhere else.
+  it("serves the mark as /favicon.svg, an image the CSP lets load only from the board itself", async () => {
+    server = await serveBoard({ port: 0, view: async () => empty });
+    const res = await get(server.port, "/favicon.svg");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/svg+xml");
+    expect(res.body).toMatch(/^<svg [^>]*viewBox="0 0 100 100"/);
+    expect(res.body).toContain("prefers-color-scheme: dark");
+    const csp = String(res.headers["content-security-policy"]);
+    expect(csp).toContain("img-src 'self'");
+    expect(csp).toContain("default-src 'none'");
+  });
+
   it("405s POST /theme.js, like every other route that is not /tick", async () => {
     server = await serveBoard({ port: 0, view: async () => empty });
     expect((await get(server.port, "/theme.js", { method: "POST" })).status).toBe(405);

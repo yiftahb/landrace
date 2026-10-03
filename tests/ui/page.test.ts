@@ -1,5 +1,5 @@
 import { runInNewContext, Script } from "node:vm";
-import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
+import { APP_CSS, APP_JS, FAVICON_SVG, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 /**
  * One top-level function of the page script, as source. The page has no
@@ -2915,6 +2915,29 @@ describe("a narrow screen", () => {
 
   it("gives the header the sidebar's width, so the logo lines up", () => {
     expect(PAGE_HTML).toMatch(/<header[^>]*>\s*<div class="[^"]*max-w-6xl/);
+  });
+});
+
+describe("the mark", () => {
+  it("heads the page in the page's own colour, so light and dark both read it", () => {
+    const header = /<header[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+    const mark = /<svg[^>]*>[\s\S]*?<\/svg>/.exec(header)?.[0] ?? "";
+    expect(mark).toContain('viewBox="0 0 100 100"');
+    expect(mark).toMatch(/<path fill="currentColor" d="M[^"]+"/);
+    expect(mark).toContain('aria-hidden="true"');
+  });
+
+  it("is the tab's icon, served by the board", () => {
+    expect(PAGE_HTML).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg">');
+  });
+
+  it("draws the favicon from the same path as the header, black in light and white in dark", () => {
+    const header = /<header[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+    const d = /<path fill="currentColor" d="([^"]+)"/.exec(header)?.[1];
+    expect(d).toBeDefined();
+    expect(FAVICON_SVG).toContain(`d="${d}"`);
+    expect(FAVICON_SVG).toMatch(/path\s*\{\s*fill:\s*#[0-9a-f]{3,6}/i);
+    expect(FAVICON_SVG).toMatch(/@media \(prefers-color-scheme: dark\)\s*\{\s*path\s*\{\s*fill:\s*#[0-9a-f]{3,6}/i);
   });
 });
 

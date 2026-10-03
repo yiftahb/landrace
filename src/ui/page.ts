@@ -77,12 +77,24 @@ const PANEL = `
 </div>
 </aside>`;
 
+/**
+ * The mark: a leaf cut by a furrow, traced once from the logo. One path for
+ * the header, drawn in the page's own colour, and for the tab's icon.
+ */
+const MARK_PATH = "M21.1 54.4 L20.9 70.8 Q21.4 71 21.6 71.15 L21.8 71.3 Q37 68.2 44.85 66.25 Q52.7 64.3 58.3 62.4 Q63.9 60.5 71.25 57.25 Q78.6 54 78.85 53.5 Q79.1 53 79 44.6 L78.9 36.2 Q77.7 36 72 38.55 Q66.3 41.1 59.4 43.7 Q52.5 46.3 47.9 47.7 Q43.3 49.1 32.2 51.75 L21.1 54.4 Z M29.1 46.3 Q30.7 46.5 37.15 44.85 Q43.6 43.2 48.25 41.7 Q52.9 40.2 56.4 38.55 Q59.9 36.9 62.6 35.05 Q65.3 33.2 67.75 30.6 Q70.2 28 71.5 26 Q72.8 24 73.6 22.15 Q74.4 20.3 75 18.45 Q75.6 16.6 76.05 13.9 Q76.5 11.2 76.65 7.8 L76.8 4.4 Q76.3 3.9 75.25 3.8 Q74.2 3.7 68.35 4.85 Q62.5 6 59.6 7.05 Q56.7 8.1 53.3 9.9 Q49.9 11.7 46.6 14.15 Q43.3 16.6 40.15 20.1 Q37 23.6 34.55 27.9 Q32.1 32.2 30.7 36.65 Q29.3 41.1 28.95 43.2 Q28.6 45.3 28.85 45.8 L29.1 46.3 Z M28.6 76 Q28.6 84.8 29.05 86.8 Q29.5 88.8 30.1 90 Q30.7 91.2 31.65 92.35 Q32.6 93.5 34.1 94.45 Q35.6 95.4 37.15 95.75 Q38.7 96.1 39.85 96.2 Q41 96.3 43.35 95.7 Q45.7 95.1 48.05 93.95 Q50.4 92.8 53.9 90.2 Q57.4 87.6 59.7 85.4 Q62 83.2 64 80.75 Q66 78.3 67.9 75 Q69.8 71.7 70.7 68.45 Q71.6 65.2 71.4 64.6 L71.2 64 Q70.2 63.8 61.9 66.7 Q53.6 69.6 41.35 72.55 Q29.1 75.5 28.85 75.75 L28.6 76 Z";
+
+const MARK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" class="h-5 w-5 shrink-0" aria-hidden="true"><path fill="currentColor" d="${MARK_PATH}"></path></svg>`;
+
+/** The tab's icon. A tab has no page colour to inherit, so it says both. */
+export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><style>path { fill: #111111 } @media (prefers-color-scheme: dark) { path { fill: #f5f5f5 } }</style><path d="${MARK_PATH}"/></svg>`;
+
 export const PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Landrace</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/theme.js"></script>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
@@ -91,7 +103,7 @@ export const PAGE_HTML = `<!doctype html>
 <header class="border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
 <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
 <div class="flex min-w-0 flex-wrap items-center gap-2">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="h-5 w-5 shrink-0" aria-hidden="true"><line x1="4" y1="4" x2="4" y2="20"></line><line x1="9" y1="7" x2="20" y2="7"></line><line x1="9" y1="12" x2="20" y2="12"></line><line x1="9" y1="17" x2="16" y2="17"></line></svg>
+${MARK}
 <h1 class="text-sm font-semibold">Landrace</h1>
 <span id="folder" class="min-w-0 truncate rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400"></span>
 <span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 sm:inline"></span>

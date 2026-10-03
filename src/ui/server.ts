@@ -4,13 +4,13 @@ import { itemIdProblem } from "#conventions.js";
 import type { UiOptions, UiServer } from "#namespace.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import { oneLine } from "#runner/status.js";
-import { APP_CSS, APP_JS, PAGE_HTML, THEME_JS } from "#ui/page.js";
+import { APP_CSS, APP_JS, FAVICON_SVG, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 const HOST = "127.0.0.1";
 
 /** Even a slipped innerHTML in the page could not run a script under this. */
 const CSP = [
-  "default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'",
+  "default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self'",
   "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
 ].join("; ");
 
@@ -19,6 +19,7 @@ const STATIC: Record<string, { type: string; body: string }> = {
   "/app.js": { type: "text/javascript; charset=utf-8", body: APP_JS },
   "/app.css": { type: "text/css; charset=utf-8", body: APP_CSS },
   "/theme.js": { type: "text/javascript; charset=utf-8", body: THEME_JS },
+  "/favicon.svg": { type: "image/svg+xml", body: FAVICON_SVG },
 };
 
 /**
