@@ -28,16 +28,18 @@
 
 ## Key concepts
 
-- **Agents work, code decides.** The agent answers with a value, and a rule in a readable `workflow.yaml` routes on it. [`landrace validate`](docs/validate.md) checks that every loop has a bound before anything runs. When two rules match, the item stops for a person instead of guessing: a **halt** ([Architecture](docs/architecture.md#ambiguity-halts)).
-- **Local-first.** Landrace runs on your machine, with your coding agent and your git credentials. There is no server to host and no database: each item's progress is re-read from the tracker on every pass, so a crash recovers by reading again ([Derived state](docs/architecture.md#derived-state)).
-- **Workspaces.** A project's workflows live in its own `.landrace/` folder and are reviewed like code. One `landrace start` runs several side by side (this repository runs full-cycle, and **fastlane** for small changes), and each item is worked by one of them only: an item two would take stops for a person ([Several workflows](docs/workflows.md#several-workflows-in-one-workspace)).
+Landrace takes issues from your issue tracker; each one it works on is an **item**.
+
+- **Agents work, code decides.** The agent answers with a value, and a rule in a readable `workflow.yaml` routes on it. [`landrace validate`](docs/validate.md) checks that every loop has a bound before anything runs. When two rules match, the item stops instead of guessing. An item stopped for a person, for this or for a failure, is a **halt** ([Architecture](docs/architecture.md#ambiguity-halts)).
+- **Local-first.** Landrace runs on your machine, with your coding agent and your git credentials. There is no server to host and no database: each item's progress is re-read from the tracker and its pull requests on every pass, so after a crash Landrace recovers by reading again ([Derived state](docs/architecture.md#derived-state)).
+- **Workspaces.** A project's workspace is its `.landrace/` folder: its workflows live there and can be reviewed like code. One `landrace start` runs several side by side (this repository runs two: full-cycle, which starts with a written spec, and fastlane, for small changes), and each item is worked by one of them only: an item two would take stops for a person ([Several workflows](docs/workflows.md#several-workflows-in-one-workspace)).
 - **The engine knows no vendor.** GitHub, GitLab, Jira, Notion, Slack, Claude Code and Codex are integrations, not part of the engine. You can add your own on the integration kit: see [Writing an integration](docs/hooks.md).
 - **MCP.** Drive Landrace from your coding agent's chat, over the Model Context Protocol: see [MCP](#mcp).
 - **The board.** A local web page that sorts items into lanes, with the ones that need you first. From it you reply, retry a failed agent run, or take an agent's work over in your own terminal, which Landrace calls pairing ([The board](docs/cli.md#the-board)).
 - **A person at the gates you choose, or none.** Approve a spec, merge a pull request, or let fastlane merge by itself ([The shipped workflows](docs/workflows.md#the-shipped-workflows)). Browser or Slack [notifications](docs/configuration.md#notify) say when an item needs you.
-- **Dependencies.** In the shipped workflows, an item waits until the items blocking it are done ([Waiting on blockers](docs/workflows.md#waiting-on-blockers)).
-- **It learns from friction.** In the shipped workflows, after an item that needed corrections, a retro agent writes the lessons into the agents' prompts, and a reviewer reads them before they merge ([The retro](docs/workflows.md#the-retro)).
-- **Security.** Prompts are screened for injected instructions, an agent that may change files runs sandboxed, and the tracker's token never reaches an agent. A change to a **protected path**, a file that changes how Landrace itself runs, waits for a person to merge ([Security](docs/security.md)).
+- **Dependencies.** In the shipped workflows, an item waits before it builds until the items blocking it are done ([Waiting on blockers](docs/workflows.md#waiting-on-blockers)).
+- **It learns from friction.** In the shipped workflows, once an item that needed corrections passes review, a retro agent writes the lessons into the agents' prompts and docs, and a reviewer reads them before they merge ([The retro](docs/workflows.md#the-retro)).
+- **Security.** Before an agent that can act runs, its prompt is screened for injected instructions. An agent that may change files runs its shell commands in a sandbox, and the tracker's token never reaches an agent. Fastlane never merges a change to a **protected path**, a file that changes how Landrace itself runs: it waits for a person ([Security](docs/security.md)).
 - **OpenTelemetry.** Every engine event can be exported to your collector. It is off by default ([Telemetry](docs/configuration.md#telemetry)).
 
 ## What it does
@@ -147,7 +149,7 @@ From the board, a person can reply on an item, ask the step that last ran a ques
 
 ## MCP
 
-`landrace mcp` is Landrace's operator server: an MCP server over stdio, with the board's reads and writes as its tools. Claude Code, Codex or Cursor use it to read and drive items from a chat, where you type requests such as:
+`landrace mcp` is Landrace's operator server: an MCP server over stdio, whose tools read and drive items as the board does, and also open and edit them. Claude Code, Codex or Cursor use it from a chat, where you type requests such as:
 
 - *"What needs me?"*
 - *"File a fastlane item to fix the bell."*
@@ -155,9 +157,9 @@ From the board, a person can reply on an item, ask the step that last ran a ques
 - *"Send #65 back to build with this note."*
 - *"Make #59 wait for #56."*
 
-The agent answers them with tools such as `landrace_waiting`, `landrace_create_item`, `landrace_reply` and `landrace_goto`, and with `relate`, which links one item to another. Every tool is in [the operator tools](docs/cli.md#the-operator-tools). To connect your editor, see [Connecting an editor](docs/cli.md#connecting-an-editor).
+The agent answers them with tools such as `landrace_waiting`, `landrace_create_item`, `landrace_reply`, `landrace_goto`, and `landrace_update_item`, whose `relate` field links one item to another. Every tool is in [the operator tools](docs/cli.md#the-operator-tools). How this repository connects Claude Code and Codex is in [Connecting an editor](docs/cli.md#connecting-an-editor).
 
-The board's Chat menu opens a chat about an item over this server. A step allowed to create sub-items gets the engine's own server, with exactly one tool, `landrace_create_child`: see [Workflows](docs/workflows.md#splitting-work-into-sub-items).
+The Chat entries in an item's ⋯ menu on the board open a chat about it over this server, with the prompt filled in. A step allowed to create sub-items gets the engine's own server instead, a separate one bound to its item, with exactly one tool, `landrace_create_child`: see [Workflows](docs/workflows.md#splitting-work-into-sub-items).
 
 ## Dependencies
 
