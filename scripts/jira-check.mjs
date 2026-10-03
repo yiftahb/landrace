@@ -21,9 +21,11 @@
  * issues, created and dropped again — or `JIRA_LINK_KEYS=KEY-12,OTHER-3`, two
  * issues of yours not linked so already: the first, the project's own, to be
  * blocked by the second, anywhere on the site. It relates them, reads back through the integration
- * that the first is blocked by the second and not the other way round,
- * prints the direction Jira itself shows on the blocked issue, unrelates
- * them and reads back none: the first run on a site proves the direction.
+ * that the first is blocked by the second — the blocker's side through
+ * Jira's own answer, never a read of an issue in another project — prints
+ * the slot and words Jira shows on each end, and checks the blocked issue's
+ * own history, in Jira's words, against them; then it unrelates them and
+ * reads back none. A run that fails partway names the link it left.
  */
 import { Jira } from "landrace/integrations/jira";
 import { compose } from "landrace/kit";
@@ -158,17 +160,23 @@ if (item) {
 
 if (JIRA_CHECK_LINKS || JIRA_LINK_KEYS) {
   const linkType = options.blockedByLinkType ?? "Blocks";
+  const site = JIRA_BASE_URL.trim().replace(/\/$/, "");
   const scratch = [];
   let blocked;
   let blocker;
-  if (JIRA_LINK_KEYS) {
+  // This script's own requests carry the token too: to the same sites the integration's client takes, and no other.
+  const siteOk = await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
+    expect(/^https:\/\/[a-z0-9][a-z0-9-]*\.atlassian\.net$/i.test(site), `got ${JSON.stringify(site)}`);
+  });
+  if (siteOk && JIRA_LINK_KEYS) {
     const keys = JIRA_LINK_KEYS.split(",").map((k) => k.trim());
-    await check("JIRA_LINK_KEYS names two issues, the blocked one first", async () => {
+    await check("JIRA_LINK_KEYS names two issues, the blocked one first and the project's own", async () => {
       expect(keys.length === 2 && keys[0] && keys[1] && keys[0] !== keys[1], `got ${JSON.stringify(JIRA_LINK_KEYS)}; want KEY-12,OTHER-3`);
+      expect(keys[0].startsWith(`${JIRA_PROJECT}-`), `${keys[0]} is not a ${JIRA_PROJECT} issue; the blocked one is the project's own`);
       [blocked, blocker] = keys;
       return `${blocked} to be blocked by ${blocker}`;
     });
-  } else {
+  } else if (siteOk) {
     await check("create two scratch issues to link", async () => {
       blocker = (await hooks.operator.createItem({ title: `landrace jira-check blocker ${stamp}`, body }, ctx)).id;
       scratch.push(blocker);
@@ -178,58 +186,83 @@ if (JIRA_CHECK_LINKS || JIRA_LINK_KEYS) {
     });
   }
 
-  /** What the integration reads `id` as blocked by: the edges a read draws from it. */
+  /** What the integration reads the blocked issue as blocked by: the edges a read draws from it. Never asked of the blocker, which may be in another project. */
   const blockersOf = async (id) =>
     (await hooks.source.read(id, ctx)).relationships.filter((r) => r.type === "blocked-by" && r.from === id).map((r) => r.to);
 
-  /** The blocked issue's links as Jira answers them, unread by the integration: what its UI shows. */
-  const rawLinks = async (id) => {
-    const res = await fetch(`${JIRA_BASE_URL.trim().replace(/\/$/, "")}/rest/api/3/issue/${encodeURIComponent(id)}?fields=issuelinks`, {
+  /** Jira's own answers, unread by the integration. */
+  const raw = async (path) => {
+    const res = await fetch(`${site}${path}`, {
       headers: { Authorization: `Basic ${Buffer.from(`${JIRA_EMAIL}:${JIRA_TOKEN}`).toString("base64")}`, Accept: "application/json" },
     });
-    if (!res.ok) throw new Error(`GET ${id}?fields=issuelinks → ${res.status} ${await res.text()}`);
-    return (await res.json()).fields?.issuelinks ?? [];
+    if (!res.ok) throw new Error(`GET ${path} → ${res.status} ${await res.text()}`);
+    return res.json();
   };
+  /** An issue's links of the type to `to`, as Jira answers them: what its UI shows. */
+  const linksBetween = async (id, to) => ((await raw(`/rest/api/3/issue/${encodeURIComponent(id)}?fields=issuelinks`)).fields?.issuelinks ?? [])
+    .filter((l) => l?.type?.name === linkType && (l.inwardIssue?.key === to || l.outwardIssue?.key === to));
 
   if (blocked && blocker) {
     let related = false;
+    /** The link this run made, by id, so a run that fails partway says what it left behind. */
+    let made = null;
     await check(`relate: ${blocked} blocked by ${blocker}`, async () => {
       const before = await blockersOf(blocked);
       // A link of yours already there would be removed by the unrelate below: refused rather than undone.
       expect(!before.includes(blocker), `${blocked} is already blocked by ${blocker}; name two issues not linked so`);
+      const had = new Set((await linksBetween(blocked, blocker)).map((l) => l.id));
       const problem = await hooks.operator.checkRelate(blocked, "blocked-by", blocker, ctx);
       expect(problem === null, `checkRelate refused it: ${problem}`);
       await hooks.operator.relate(blocked, "blocked-by", blocker, ctx);
       related = true;
+      made = (await linksBetween(blocked, blocker)).find((l) => !had.has(l.id))?.id ?? null;
+      return made === null ? "no new link to be seen yet" : `link ${made}`;
     });
 
     if (related) {
-      await check(`read back: ${blocked} is blocked by ${blocker}, and ${blocker} by nothing of it`, async () => {
+      await check(`read back through the integration: ${blocked} is blocked by ${blocker}`, async () => {
         const of = await blockersOf(blocked);
         expect(of.includes(blocker), `${blocked} reads as blocked by ${JSON.stringify(of)}`);
-        const back = await blockersOf(blocker);
-        expect(!back.includes(blocked), `${blocker} reads as blocked by ${blocked} too: the link was read the wrong way round`);
-        return `${blocked} blocked by ${JSON.stringify(of)}; ${blocker} blocked by ${JSON.stringify(back)}`;
+        return `${blocked} blocked by ${JSON.stringify(of)}`;
       });
 
-      await check("the direction Jira shows on the blocked issue", async () => {
-        const entry = (await rawLinks(blocked)).find((l) =>
-          l?.type?.name === linkType && (l.inwardIssue?.key === blocker || l.outwardIssue?.key === blocker));
-        expect(entry, `${blocked} has no "${linkType}" link to ${blocker}`);
-        const slot = entry.inwardIssue?.key === blocker ? "inwardIssue" : "outwardIssue";
-        const words = slot === "inwardIssue" ? entry.type.inward : entry.type.outward;
-        const seen = `on ${blocked}, Jira lists ${blocker} under ${slot}, worded "${blocked} ${words} ${blocker}" (link ${entry.id})`;
+      await check("the direction Jira shows on each end", async () => {
+        const [onBlocked] = await linksBetween(blocked, blocker);
+        expect(onBlocked, `${blocked} has no "${linkType}" link to ${blocker}`);
+        const slot = onBlocked.inwardIssue?.key === blocker ? "inwardIssue" : "outwardIssue";
+        const seen = `on ${blocked}, Jira lists ${blocker} under ${slot}, worded "${blocked} ${slot === "inwardIssue" ? onBlocked.type.inward : onBlocked.type.outward} ${blocker}"`;
         expect(slot === "inwardIssue", `${seen}: the reverse of what the integration writes and reads`);
-        return seen;
+        const [onBlocker] = await linksBetween(blocker, blocked);
+        expect(onBlocker, `${blocker} has no "${linkType}" link to ${blocked}`);
+        const back = onBlocker.outwardIssue?.key === blocked ? "outwardIssue" : "inwardIssue";
+        expect(back === "outwardIssue", `on ${blocker}, Jira lists ${blocked} under ${back}: the reverse of what the integration reads`);
+        return `${seen}; on ${blocker}, ${blocked} sits under outwardIssue, worded "${blocker} ${onBlocker.type.outward} ${blocked}"`;
       });
 
-      await check(`unrelate, and read back no blocker`, async () => {
+      // Not the slot-to-words rule the two checks above rest on: what Jira wrote in the blocked issue's history, in its own words.
+      await check(`Jira's own history of ${blocked} says it is blocked by ${blocker}`, async () => {
+        let latest = null;
+        for (let startAt = 0, page = 0; page < 20; page++) {
+          const res = await raw(`/rest/api/3/issue/${encodeURIComponent(blocked)}/changelog?startAt=${startAt}&maxResults=100`);
+          for (const history of res.values ?? []) {
+            for (const item of history.items ?? []) if (item.field === "Link" && item.to === blocker) latest = item.toString;
+          }
+          startAt += (res.values ?? []).length;
+          if (res.isLast !== false || (res.values ?? []).length === 0) break;
+        }
+        expect(latest !== null, `no "Link" change to ${blocker} in ${blocked}'s history: look at ${site}/browse/${blocked} — it should say "is blocked by ${blocker}"`);
+        const inward = (await raw("/rest/api/3/issueLinkType")).issueLinkTypes?.find((t) => t.name === linkType)?.inward ?? "is blocked by";
+        expect(latest.toLowerCase().includes(inward.toLowerCase()), `${blocked}'s history says ${JSON.stringify(latest)}, not "${inward}"`);
+        return JSON.stringify(latest);
+      });
+
+      await check("unrelate, and read back no blocker", async () => {
         await hooks.operator.unrelate(blocked, "blocked-by", blocker, ctx);
         const of = await blockersOf(blocked);
-        expect(!of.includes(blocker), `${blocked} still reads as blocked by ${JSON.stringify(of)}`);
-        const left = (await rawLinks(blocked)).filter((l) =>
-          l?.type?.name === linkType && (l.inwardIssue?.key === blocker || l.outwardIssue?.key === blocker));
-        expect(left.length === 0, `Jira still holds ${left.length} "${linkType}" link(s) between them`);
+        const left = await linksBetween(blocked, blocker);
+        const behind = made === null ? "" : `; remove link ${made} by hand`;
+        expect(!of.includes(blocker), `${blocked} still reads as blocked by ${JSON.stringify(of)}${behind}`);
+        expect(left.length === 0, `Jira still holds "${linkType}" link(s) ${left.map((l) => l.id).join(", ")} between them${behind}`);
       });
     }
 

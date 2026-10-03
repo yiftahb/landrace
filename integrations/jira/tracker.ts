@@ -26,7 +26,15 @@ export interface JiraOptions {
    * the dropped one's name reads as dropped.
    */
   transitions?: { done?: string | undefined; dropped?: string | undefined } | undefined;
-  /** The issue link type read and written as blocked-by, by its name: "Blocks" unless named. */
+  /**
+   * The issue link type read and written as blocked-by, by its exact name:
+   * "Blocks" unless named. Its inward side must read "is blocked by", as
+   * Jira's "Blocks" does — the blocker is the link's inward end — and the
+   * preflight refuses a type that reads the same both ways. A blocker the
+   * account may not browse is left out of an issue's links by Jira, so it is
+   * unseen, not unreadable: the account needs "Browse projects" wherever a
+   * blocker may be.
+   */
   blockedByLinkType?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
 }
@@ -52,8 +60,16 @@ const FIELDS = [...CHILD_FIELDS, "issuelinks"];
  */
 const SITE_KEY = /^[A-Z][A-Z0-9_]+-[1-9][0-9]*$/;
 
-/** What the tracker does, as Jira's permission keys: read, create, label and edit, transition, comment. */
-const PERMISSIONS = ["BROWSE_PROJECTS", "CREATE_ISSUES", "EDIT_ISSUES", "TRANSITION_ISSUES", "ADD_COMMENTS"];
+/**
+ * What the tracker does, as Jira's permission keys: read, create, label and
+ * edit, transition, comment, and link — a breakdown's related child is
+ * created before it is linked, and one whose link is refused is dropped
+ * again, in the project's history.
+ */
+const PERMISSIONS = ["BROWSE_PROJECTS", "CREATE_ISSUES", "EDIT_ISSUES", "TRANSITION_ISSUES", "ADD_COMMENTS", "LINK_ISSUES"];
+
+/** Issues one `issue/bulkfetch` returns whatever fields it asks for: up to 1000 only when they are named, and this stays inside both. */
+const BULK_BATCH = 100;
 
 /** Bulk changelog takes a thousand issues a request. */
 const CHANGELOG_BATCH = 1000;
@@ -62,13 +78,17 @@ interface User { accountId?: string }
 interface Status { name?: string; statusCategory?: { key?: string } }
 
 /** The issue at a link's other end, as an issue's `issuelinks` names it: its key, and a few of its fields — never its resolution. */
-interface LinkEnd { key?: unknown; fields?: { summary?: unknown; status?: Status } | null }
+interface LinkEnd { id?: unknown; key?: unknown; fields?: { summary?: unknown; status?: Status } | null }
 
 /** One entry of an issue's `issuelinks`: the link, its type, and the other end, in one slot of two. */
 interface LinkEntry { id?: unknown; type?: { name?: unknown } | null; inwardIssue?: LinkEnd | null; outwardIssue?: LinkEnd | null }
 
-/** A blocker as an issue's own links name it: the link's id, which deletes it, and what the link says of the blocker. */
-interface Blocker { link: string | null; key: string; title: string; status: Status | undefined }
+/**
+ * A blocker as an issue's own links name it: the link's id, which deletes
+ * it, the blocker's issue id, which survives a move, and what the link says
+ * of the blocker.
+ */
+interface Blocker { link: string | null; id: string | null; key: string; title: string; status: Status | undefined }
 
 /** An issue as search and `GET /issue` answer it, with `FIELDS`. */
 interface Issue {
@@ -169,6 +189,7 @@ function blockersIn(issuelinks: unknown, type: string): { blockers: Blocker[]; w
     }
     blockers.push({
       link: typeof entry?.id === "string" && /^[0-9]+$/.test(entry.id) ? entry.id : null,
+      id: typeof inward.id === "string" && /^[0-9]+$/.test(inward.id) ? inward.id : null,
       key: inward.key,
       title: typeof inward.fields?.summary === "string" ? inward.fields.summary : "",
       status: inward.fields?.status ?? undefined,
@@ -177,8 +198,12 @@ function blockersIn(issuelinks: unknown, type: string): { blockers: Blocker[]; w
   return { blockers, whole };
 }
 
-/** A blocker's issue as read for its state, by key: once per answer, and what Jira said where it refused the reading. */
-type StateReads = Map<string, Promise<Issue["fields"] | { refused: string }>>;
+/**
+ * The closed blockers' own fields, for their resolutions: those the answer
+ * holds, by key, and those fetched, by issue id — or by key, for one whose
+ * link gave no id.
+ */
+interface Resolutions { held: Map<string, Issue["fields"]>; fetched: Map<string, Issue["fields"]> }
 
 /**
  * Jira Cloud issues, in one project, over one client per configuration —
@@ -322,40 +347,63 @@ export class Jira extends BaseTracker {
     return same(status.name, this.dropped) || same(resolution?.name ?? undefined, this.dropped) ? "dropped" : "done";
   }
 
+  /** A done blocker its link cannot tell done from dropped: its resolution is read. */
+  private needsResolution({ status }: Blocker): boolean {
+    return status?.statusCategory?.key === "done" && !same(status.name, this.dropped);
+  }
+
+  /**
+   * The resolutions of every closed blocker the answer does not hold, in one
+   * `issue/bulkfetch` per hundred, by issue id where the link gave one, so a
+   * blocker moved since is found all the same. Jira leaves out an issue that
+   * is gone or that the account may not see — read as unreadable, never as
+   * done — and names in `issueErrors` one it could not return for a reason
+   * that passes, which fails the read for the next tick to read again.
+   */
+  private async resolutions(jira: Client, issues: Issue[], wanted: Blocker[]): Promise<Resolutions> {
+    const held = new Map(issues.map((i) => [i.key, i.fields]));
+    const ids = [...new Set(wanted.filter((b) => !held.has(b.key)).map((b) => b.id ?? b.key))];
+    const fetched = new Map<string, Issue["fields"]>();
+    for (let i = 0; i < ids.length; i += BULK_BATCH) {
+      const res = await jira.call<{ issues?: Issue[]; issueErrors?: Array<{ id?: unknown; errorMessage?: unknown }> } | null>(
+        "POST", "/rest/api/3/issue/bulkfetch", { issueIdsOrKeys: ids.slice(i, i + BULK_BATCH), fields: ["status", "resolution"] },
+      );
+      const errors = res?.issueErrors ?? [];
+      if (errors.length > 0) {
+        throw new Error(`Jira could not return ${errors.map((e) => `issue ${String(e.id)}: ${String(e.errorMessage)}`).join("; ")}`);
+      }
+      for (const issue of res?.issues ?? []) {
+        fetched.set(issue.id, issue.fields);
+        fetched.set(issue.key, issue.fields);
+      }
+    }
+    return { held, fetched };
+  }
+
   /**
    * A blocker's state. Its link carries its status, with the status's
    * category, but not its resolution: a status outside the done category is
    * open, and a done one named as dropped is dropped. Any other done one is
-   * read for its resolution — once per answer, or not at all where the
-   * answer already holds the issue — and judged as an item's own state is.
-   * A reading Jira refuses, an issue the account may not see or one gone
-   * since, is unreadable, never done; any other failure fails the read, and
-   * the next tick reads it again.
+   * judged by its own fields, as an item's own state is — read off the
+   * answer where it holds the issue, fetched where it does not. One Jira did
+   * not return, or returned with no status, is unreadable, never done or open.
    */
-  private async blockerState(
-    jira: Client, blocker: Blocker, reads: StateReads, of: string, ctx: RuntimeContext,
-  ): Promise<{ closed: Closed; unreadable: boolean }> {
+  private blockerState(blocker: Blocker, { held, fetched }: Resolutions, of: string, ctx: RuntimeContext): { closed: Closed; unreadable: boolean } {
     const category = blocker.status?.statusCategory?.key;
     if (typeof category !== "string") {
       this.sayUnreadable(ctx, of, blocker.key, "Jira's link names it with no status");
       return { closed: null, unreadable: true };
     }
     if (category !== "done") return { closed: null, unreadable: false };
-    if (same(blocker.status?.name, this.dropped)) return { closed: "dropped", unreadable: false };
-    let read = reads.get(blocker.key);
-    if (read === undefined) {
-      read = jira.call<Issue>("GET", `/rest/api/3/issue/${blocker.key}?fields=status,resolution`).then(
-        (issue) => issue?.fields ?? {},
-        (e: unknown) => {
-          if (isRefused(e)) return { refused: messageOf(e) };
-          throw e;
-        },
-      );
-      reads.set(blocker.key, read);
+    // Its status's own name already says dropped.
+    if (!this.needsResolution(blocker)) return { closed: "dropped", unreadable: false };
+    const fields = held.get(blocker.key) ?? fetched.get(blocker.id ?? blocker.key);
+    if (fields === undefined) {
+      this.sayUnreadable(ctx, of, blocker.key, "Jira did not return it: it is gone, or this account may not see it");
+      return { closed: null, unreadable: true };
     }
-    const fields = await read;
-    if ("refused" in fields) {
-      this.sayUnreadable(ctx, of, blocker.key, fields.refused);
+    if (typeof fields.status?.statusCategory?.key !== "string") {
+      this.sayUnreadable(ctx, of, blocker.key, "Jira returned it with no status");
       return { closed: null, unreadable: true };
     }
     return { closed: this.closedOf(fields), unreadable: false };
@@ -374,19 +422,17 @@ export class Jira extends BaseTracker {
   }
 
   /** An issue's blockers, as the kit reads relationships. */
-  private async blockersOf(
-    jira: Client, { key, fields }: Issue, reads: StateReads, ctx: RuntimeContext,
-  ): Promise<Pick<ItemRecord, "related" | "relatedComplete">> {
-    const { blockers, whole } = blockersIn(fields.issuelinks, this.linkType);
+  private blockersOf(
+    jira: Client, key: string, { blockers, whole }: { blockers: Blocker[]; whole: boolean }, resolutions: Resolutions, ctx: RuntimeContext,
+  ): Pick<ItemRecord, "related" | "relatedComplete"> {
     if (!whole) this.sayUnreadable(ctx, key, "a link", `Jira answered ${key}'s issue links with one this integration cannot read`);
-    const related: RelatedRecord[] = [];
-    for (const blocker of blockers) {
-      const { closed, unreadable } = await this.blockerState(jira, blocker, reads, key, ctx);
-      related.push({
+    const related = blockers.map((blocker): RelatedRecord => {
+      const { closed, unreadable } = this.blockerState(blocker, resolutions, key, ctx);
+      return {
         type: RELATIONS.blockedBy, to: blocker.key, title: blocker.title, link: `${jira.baseUrl}/browse/${blocker.key}`, closed,
         ...(unreadable ? { unreadable: true as const } : {}),
-      });
-    }
+      };
+    });
     return { related, relatedComplete: whole };
   }
 
@@ -399,11 +445,13 @@ export class Jira extends BaseTracker {
     if (issues.length === 0) return [];
     const editors = await this.editors(jira, issues.map((i) => i.id));
     const priorities = await this.priorityIds(jira);
-    // A blocker this answer holds is read off it, never again.
-    const reads: StateReads = new Map(issues.map((i) => [i.key, Promise.resolve(i.fields)]));
+    const parsed = new Map(links ? issues.map((i) => [i.key, blockersIn(i.fields.issuelinks, this.linkType)]) : []);
+    const wanted = [...parsed.values()].flatMap((p) => p.blockers).filter((b) => this.needsResolution(b));
+    const resolutions = await this.resolutions(jira, issues, wanted);
     const records: ItemRecord[] = [];
     for (const issue of issues) {
       const { id, key, fields } = issue;
+      const own = parsed.get(key);
       const parent = fields.parent?.key;
       const priority = fields.priority?.id === undefined ? -1 : priorities.indexOf(fields.priority.id);
       records.push({
@@ -423,7 +471,7 @@ export class Jira extends BaseTracker {
         // A parent in another project is no item of this tracker's.
         parent: parent !== undefined && this.keyPattern.test(parent) ? parent : null,
         priority: priority === -1 ? null : priority,
-        ...(links ? await this.blockersOf(jira, issue, reads, ctx) : {}),
+        ...(own === undefined ? {} : this.blockersOf(jira, key, own, resolutions, ctx)),
       });
     }
     return records;
@@ -502,6 +550,12 @@ export class Jira extends BaseTracker {
    * `partial`. A closed blocker is no edge, whichever way it closed, so none
    * is read further. Search lags a moment behind a link just made or
    * removed; the next tick's walk sees it.
+   *
+   * So it parts from the list in one place: a blocker two hops away whose
+   * own closed blocker could not be read. The list, judging from each item's
+   * full record, counts that blocker's relationships as not all read; this
+   * walk needs none of a closed blocker's state and counts them whole. The
+   * engine decides from a read, so only the board's fact differs.
    */
   protected override async openRelations(type: string, ctx: RuntimeContext): Promise<OpenRelations> {
     if (type !== RELATIONS.blockedBy) return super.openRelations(type, ctx);
@@ -689,7 +743,7 @@ export class Jira extends BaseTracker {
         });
       } catch (e) {
         // Both ends were just read: a 404 now is Jira's answer for an account without "Link issues", or a type the site lacks.
-        if (isRefused(e)) throw this.mayNotLink(e, isMissing(e) ? `or the site has no "${this.linkType}" link type` : "");
+        if (isRefused(e)) throw this.mayNotLink(e, other, isMissing(e) ? `or the site has no "${this.linkType}" link type` : "");
         throw e;
       }
     });
@@ -712,7 +766,7 @@ export class Jira extends BaseTracker {
         } catch (e) {
           if (!isRefused(e)) throw e;
           const still = isMissing(e) ? (await this.linksOf(jira, item)).blockers.some((b) => b.link === link) : true;
-          if (still) throw this.mayNotLink(e);
+          if (still) throw this.mayNotLink(e, other);
         }
       }
     });
@@ -748,8 +802,10 @@ export class Jira extends BaseTracker {
 
   /** The blocked issue's own links, read off the issue rather than search, which lags a link just made. */
   private async linksOf(jira: Client, item: string): Promise<{ blockers: Blocker[]; whole: boolean }> {
-    const issue = await jira.call<Issue>("GET", `/rest/api/3/issue/${this.keyOf(item)}?fields=issuelinks`);
-    return blockersIn(issue?.fields?.issuelinks, this.linkType);
+    const issue = await jira.call<Issue | null>("GET", `/rest/api/3/issue/${this.keyOf(item)}?fields=issuelinks`);
+    // Jira answers a moved issue's old key with the issue under its new one: a link written there is on an issue the id no longer names.
+    if (issue?.key !== item) throw new Error(`${item} has moved to ${String(issue?.key)}; landrace will not follow an issue to a new key`);
+    return blockersIn(issue.fields?.issuelinks, this.linkType);
   }
 
   /**
@@ -767,15 +823,23 @@ export class Jira extends BaseTracker {
     try {
       found = await this.jira(ctx).call<{ key?: unknown } | null>("GET", `/rest/api/3/issue/${other}?fields=status`);
     } catch (e) {
-      if (isMissing(e)) throw new Error(`${other} is not an issue on this site, or this account cannot see it`);
+      // Jira answers 403 or 404 for an issue the account may not see, as it does for none at all.
+      if (isRefused(e)) throw new Error(`${other} is not an issue on this site, or this account cannot see it`);
       throw e;
     }
     if (found?.key !== other) throw new Error(`${other} has moved to ${String(found?.key)}; landrace will not follow an issue to a new key`);
   }
 
-  /** A link write Jira refused, as the permission it takes, in Jira's own words too. */
-  private mayNotLink(e: unknown, or = ""): Error {
-    return new Error(`the account needs the "Link issues" permission on ${this.project}${or ? `, ${or}` : ""} (Jira answered: ${messageOf(e)})`);
+  /**
+   * A link write Jira refused, as the permission it takes, in Jira's own
+   * words too. Jira checks "Link issues" on one end's project for a new link
+   * and on either's for a removal, and does not say which it found missing:
+   * a blocker elsewhere names both projects.
+   */
+  private mayNotLink(e: unknown, other: string, or = ""): Error {
+    const there = other.slice(0, other.lastIndexOf("-"));
+    const projects = there === this.project ? this.project : `${this.project}, or on ${there}, the blocker's project`;
+    return new Error(`the account needs the "Link issues" permission on ${projects}${or ? `, ${or}` : ""} (Jira answered: ${messageOf(e)})`);
   }
 
   /**
@@ -812,13 +876,24 @@ export class Jira extends BaseTracker {
       }
     }
     // blocked-by is read off links of one type: a site without it would read every item as blocked by nothing.
+    // The blocker is the link's inward end, so the type's inward side must say so; one that reads the same both ways cannot.
     try {
-      const { issueLinkTypes = [] } = await jira.call<{ issueLinkTypes?: Array<{ name?: string }> }>("GET", "/rest/api/3/issueLinkType");
-      if (!issueLinkTypes.some((t) => t.name === this.linkType)) {
+      const { issueLinkTypes = [] } = await jira.call<{ issueLinkTypes?: Array<{ name?: string; inward?: string; outward?: string }> }>(
+        "GET", "/rest/api/3/issueLinkType",
+      );
+      const type = issueLinkTypes.find((t) => t.name === this.linkType);
+      if (!type) {
         problems.push(
           `the site has no issue link type "${this.linkType}" (blockedByLinkType), which blocked-by is read from; ` +
           `it has ${issueLinkTypes.map((t) => `"${t.name}"`).join(", ") || "none"}`,
         );
+      } else if (same(type.inward, type.outward ?? "")) {
+        problems.push(
+          `"${this.linkType}" (blockedByLinkType) reads "${type.inward ?? ""}" both ways, so which end blocks cannot be told; ` +
+          'name a type whose inward side reads "is blocked by", as Jira\'s "Blocks" does',
+        );
+      } else {
+        ctx.log("jira.blocked-by.link-type", { linkType: this.linkType, blocker: "inward", inward: type.inward, outward: type.outward });
       }
     } catch (e) {
       if (!isMissing(e)) throw e;

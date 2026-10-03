@@ -119,6 +119,7 @@ const PERMISSION_NAMES: Record<string, string> = {
   EDIT_ISSUES: "Edit Issues",
   TRANSITION_ISSUES: "Transition Issues",
   ADD_COMMENTS: "Add Comments",
+  LINK_ISSUES: "Link Issues",
 };
 
 /** One ADF paragraph of plain text, the way a person's comment arrives. */
@@ -189,6 +190,10 @@ export function createFakeJira(project = "KEY") {
     canLink: true,
     /** A status to answer a request with instead of its own answer, when it returns one: a refusal, a fault. */
     failOn: null as ((method: string, path: string) => number | null) | null,
+    /** Issues `issue/bulkfetch` leaves out of its answer, as Jira does one gone or one the account may not see. */
+    unreturned: new Set<string>(),
+    /** Issues `issue/bulkfetch` names in `issueErrors` instead: a retriable failure, or a payload limit. */
+    retriable: new Set<string>(),
 
     /** A link a person made in Jira's UI, its ends in the slots `POST /issueLink` takes them in. */
     link(type: string, inward: string, outward: string): FakeLink {
@@ -245,18 +250,22 @@ export function createFakeJira(project = "KEY") {
       issue.history.push({ id: String(nextHistory++), author, created: issue.updated });
     },
 
-    /** Moved to another project: Jira answers the old key with the issue under its new one. */
+    /** Moved to another project: Jira answers the old key with the issue under its new one, links included. */
     move(key: string, to: string): void {
       const issue = fake.issue(key);
       issues.delete(key);
       issue.key = to;
       issues.set(to, issue);
       moved.set(key, to);
+      for (const l of fake.links) {
+        if (l.inward === key) l.inward = to;
+        if (l.outward === key) l.outward = to;
+      }
     },
 
     /** Only the requests that change something. */
     writes: () => calls.filter((c) => c.method !== "GET" && !c.path.startsWith("/rest/api/3/search/jql") &&
-      !c.path.startsWith("/rest/api/3/changelog/bulkfetch")),
+      !c.path.startsWith("/rest/api/3/changelog/bulkfetch") && !c.path.startsWith("/rest/api/3/issue/bulkfetch")),
 
     fetchImpl: (async (input: string | URL, init?: RequestInit): Promise<Response> => {
       const url = new URL(String(input));
@@ -492,6 +501,29 @@ export function createFakeJira(project = "KEY") {
       return json({
         issueChangeLogs: [...byIssue].map(([issueId, changeHistories]) => ({ issueId, changeHistories })),
         nextPageToken: next,
+      });
+    }
+
+    /*
+     * Documented: up to 1000 ids or keys when the fields are named, ascending
+     * id order, a moved or differently cased key found all the same; one gone
+     * or not permitted is left out of both lists, and one Jira could not
+     * return for a reason that passes is in `issueErrors`.
+     */
+    if (method === "POST" && path === "/rest/api/3/issue/bulkfetch") {
+      const asked = Array.isArray(b.issueIdsOrKeys) ? (b.issueIdsOrKeys as unknown[]).map(String) : null;
+      const fields = Array.isArray(b.fields) ? (b.fields as string[]) : [];
+      if (asked === null || asked.length > (fields.length > 0 ? 1000 : 100)) return errors(400, ["issueIdsOrKeys is required, and at most 1000 with named fields"]);
+      const found = new Map<string, FakeIssue>();
+      for (const one of asked) {
+        const issue = [...issues.values()].find((i) => i.id === one) ?? visible(one.toUpperCase());
+        if (issue && !fake.unreturned.has(issue.key)) found.set(issue.id, issue);
+      }
+      const all = [...found.values()].sort((x, y) => Number(x.id) - Number(y.id));
+      return json({
+        expand: "",
+        issues: all.filter((i) => !fake.retriable.has(i.key)).map((i) => issueJson(i, fields)),
+        issueErrors: all.filter((i) => fake.retriable.has(i.key)).map((i) => ({ id: i.id, errorMessage: "Retry the request later." })),
       });
     }
 

@@ -451,6 +451,31 @@ describe("the preflight", () => {
     await expect(jira.check?.(ctx)).rejects.toThrow(/no issue link type "Blocks" \(blockedByLinkType\)[\s\S]*"blocks"/);
   });
 
+  // A breakdown's related children are created before they are linked: a refused link drops each, in Jira's history.
+  it("names a missing \"Link Issues\" permission", async () => {
+    const { fake, jira, ctx } = setup();
+    fake.permissions.LINK_ISSUES = false;
+    await expect(jira.check?.(ctx)).rejects.toThrow(/"Link Issues" \(LINK_ISSUES\) on KEY/);
+  });
+
+  // The blocker is the link's inward end: a type that reads the same both ways cannot say which end that is.
+  it("refuses a link type that reads the same both ways, naming the option", async () => {
+    const { jira, ctx } = setup({ blockedByLinkType: "Relates" });
+    await expect(jira.check?.(ctx)).rejects.toThrow(
+      /"Relates" \(blockedByLinkType\) reads "relates to" both ways[\s\S]*inward side reads "is blocked by"/,
+    );
+  });
+
+  it("says once, at start, how the link type it reads words each side", async () => {
+    const { jira, ctx } = setup();
+    const events: Array<{ event: string; data: Record<string, unknown> | undefined }> = [];
+    await jira.check?.({ ...ctx, log: (event, data) => { events.push({ event, data }); } });
+    expect(events.filter((e) => e.event === "jira.blocked-by.link-type")).toEqual([{
+      event: "jira.blocked-by.link-type",
+      data: { linkType: "Blocks", blocker: "inward", inward: "is blocked by", outward: "blocks" },
+    }]);
+  });
+
   it("refuses a site with issue linking turned off", async () => {
     const { fake, jira, ctx } = setup();
     fake.linking = false;
@@ -645,11 +670,45 @@ describe("blocked-by, as Jira's Blocks links", () => {
         expect(relOf(g, item.key)).toMatchObject({ total: 1, dropped: 2, open: [] });
         expect(nodeOf(g, item.key)?.state).not.toHaveProperty("relatedUnreadable");
       }
-      // The link carries the status, not the resolution: a done status is read for it, a dropped one's name already says.
-      const asked = fake.calls.filter((c) => c.method === "GET" && /^\/rest\/api\/3\/issue\/KEY-[123]\?/.test(c.path)).map((c) => c.path);
-      expect(new Set(asked)).toEqual(new Set([
-        `/rest/api/3/issue/${done.key}?fields=status,resolution`, `/rest/api/3/issue/${resolved.key}?fields=status,resolution`,
-      ]));
+      // The link carries the status, not the resolution: a done status is read for it, in one request by issue
+      // id, and a dropped one's name already says. Once for the list and once for the read, and never one by one.
+      expect(fake.calls.filter((c) => c.path === "/rest/api/3/issue/bulkfetch").map((c) => c.body)).toEqual([
+        { issueIdsOrKeys: [done.id, resolved.id], fields: ["status", "resolution"] },
+        { issueIdsOrKeys: [done.id, resolved.id], fields: ["status", "resolution"] },
+      ]);
+      expect(fake.calls.filter((c) => c.method === "GET" && /^\/rest\/api\/3\/issue\/KEY-[123]\?/.test(c.path))).toEqual([]);
+    });
+
+    it("asks nothing of a closed blocker the list already holds", async () => {
+      const { fake, jira, ctx } = setup();
+      const recent = jiraTime(Date.now() - DAY);
+      const done = fake.add({ status: "Done", resolution: "Won't Do", labels: [LABELS.stage("build")], updated: recent, statusChanged: recent });
+      const item = fake.add();
+      blocks(fake, done.key, item.key);
+      const listed = await hooksOf(jira).source.list(ctx);
+      expect(nodeOf(listed, done.key)?.closed).toBe("dropped");
+      expect(relOf(listed, item.key)).toMatchObject({ dropped: 1 });
+      expect(fake.calls.filter((c) => c.path === "/rest/api/3/issue/bulkfetch")).toEqual([]);
+    });
+
+    // Jira answers a link with the issue under the key it has now, and so is it read.
+    it("reads a blocker moved to another project under its new key", async () => {
+      const { fake, jira, ctx } = setup();
+      const blocker = fake.add();
+      const item = fake.add();
+      blocks(fake, blocker.key, item.key);
+      fake.move(blocker.key, "OTHER-7");
+      for (const [, g] of await both(jira, ctx, item.key)) expect(blockedBy(g).map((r) => r.to)).toEqual(["OTHER-7"]);
+    });
+
+    // Link type names are compared as Jira spells them: "blocks" is some other type.
+    it("reads no link of a type named like the configured one in another case", async () => {
+      const { fake, jira, ctx } = setup();
+      fake.linkTypes.push({ id: "10101", name: "blocks", inward: "is blocked by", outward: "blocks" });
+      const a = fake.add();
+      const item = fake.add();
+      fake.link("blocks", a.key, item.key);
+      for (const [, g] of await both(jira, ctx, item.key)) expect(blockedBy(g)).toEqual([]);
     });
 
     it("reads a blocker in another project on the site by its own key, from what the link said of it", async () => {
@@ -705,16 +764,17 @@ describe("blocked-by, as Jira's Blocks links", () => {
       const children = searches(fake).filter((b) => b.jql.includes("parent ="));
       expect(children.length).toBeGreaterThan(0);
       expect(children.filter((b) => b.fields.includes("issuelinks"))).toEqual([]);
+      expect((await jira.children(parent.key, ctx)).map((c) => Object.keys(c).filter((k) => k.startsWith("related")))).toEqual([[]]);
     });
   });
 
   describe("and says what it could not read, never reading it as no blocker", () => {
-    it.each([403, 404])("when a closed blocker's own reading is refused with %i: unreadable, never done", async (status) => {
+    it("when Jira does not return a closed blocker's state — gone, or not the account's to see: unreadable, never done", async () => {
       const { fake, jira, ctx } = setup();
       fake.add({ key: "OTHER-5", summary: "Upstream", status: "Done", resolution: "Done" });
       const item = fake.add({ labels: ["lr:auto"] });
       blocks(fake, "OTHER-5", item.key);
-      fake.failOn = (method, path) => (method === "GET" && path === "/rest/api/3/issue/OTHER-5" ? status : null);
+      fake.unreturned.add("OTHER-5");
       for (const [, g] of await both(jira, ctx, item.key)) {
         expect(nodeOf(g, item.key)?.state.relatedUnreadable).toBe(true);
         expect(nodeOf(g, "OTHER-5")).toMatchObject({ title: "Upstream", closed: null, placeholder: true, unreadable: true });
@@ -722,14 +782,37 @@ describe("blocked-by, as Jira's Blocks links", () => {
       }
     });
 
-    it("but fails the read on any other answer, for the next tick to read again", async () => {
+    it.each([
+      ["a fault", (fake: FakeJira) => { fake.failOn = (method, path) => (path === "/rest/api/3/issue/bulkfetch" ? 500 : null); }, /500/],
+      ["an error Jira says passes", (fake: FakeJira) => { fake.retriable.add("OTHER-5"); }, /Jira could not return issue \d+: Retry the request later/],
+    ] as const)("but fails the read on %s, for the next tick to read again", async (_what, fail, said) => {
       const { fake, jira, ctx } = setup();
       fake.add({ key: "OTHER-5", status: "Done", resolution: "Done" });
       const item = fake.add();
       blocks(fake, "OTHER-5", item.key);
-      fake.failOn = (method, path) => (method === "GET" && path === "/rest/api/3/issue/OTHER-5" ? 500 : null);
-      await expect(hooksOf(jira).source.read(item.key, ctx)).rejects.toThrow(/500/);
-      await expect(hooksOf(jira).source.list(ctx)).rejects.toThrow(/500/);
+      fail(fake);
+      await expect(hooksOf(jira).source.read(item.key, ctx)).rejects.toThrow(said);
+      await expect(hooksOf(jira).source.list(ctx)).rejects.toThrow(said);
+    });
+
+    it("when Jira returns a closed blocker with no status, rather than reading it open", async () => {
+      const { fake, ctx } = setup();
+      fake.add({ key: "OTHER-5", status: "Done", resolution: "Done" });
+      const item = fake.add();
+      blocks(fake, "OTHER-5", item.key);
+      const statusless = (async (input: string | URL, init?: RequestInit) => {
+        const res = await fake.fetchImpl(input, init);
+        if (!String(input).endsWith("/rest/api/3/issue/bulkfetch")) return res;
+        const body = (await res.json()) as { issues: Array<{ fields: Record<string, unknown> }> };
+        for (const issue of body.issues) delete issue.fields.status;
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch;
+      const jira = new Jira({ project: "KEY", fetchImpl: statusless });
+      const fresh: RuntimeContext = { ...ctx, config: {} as never };
+      for (const [, g] of await both(jira, fresh, item.key)) {
+        expect(nodeOf(g, item.key)?.state.relatedUnreadable).toBe(true);
+        expect(nodeOf(g, "OTHER-5")).toMatchObject({ closed: null, unreadable: true });
+      }
     });
 
     it("saying once a tick which item's blocker it could not read, and what Jira answered", async () => {
@@ -737,7 +820,7 @@ describe("blocked-by, as Jira's Blocks links", () => {
       fake.add({ key: "OTHER-5", status: "Done", resolution: "Done" });
       const item = fake.add();
       blocks(fake, "OTHER-5", item.key);
-      fake.failOn = (method, path) => (method === "GET" && path === "/rest/api/3/issue/OTHER-5" ? 404 : null);
+      fake.unreturned.add("OTHER-5");
       const events: Array<Record<string, unknown> | undefined> = [];
       const logged: RuntimeContext = { ...ctx, log: (event, data) => { if (event === "jira.blocker.unreadable") events.push(data); } };
       const tick = async (): Promise<void> => {
@@ -745,7 +828,7 @@ describe("blocked-by, as Jira's Blocks links", () => {
         await hooksOf(jira).source.read(item.key, logged);
       };
       await tick();
-      expect(events).toEqual([{ item: item.key, blocker: "OTHER-5", message: expect.stringMatching(/404/) }]);
+      expect(events).toEqual([{ item: item.key, blocker: "OTHER-5", message: expect.stringMatching(/gone, or this account may not see it/) }]);
       await tick();
       expect(events).toHaveLength(2);
     });
@@ -791,20 +874,24 @@ describe("blocked-by, as Jira's Blocks links", () => {
       for (const [, g] of await both(jira, fresh, "KEY-1")) expect(nodeOf(g, "KEY-1")?.state.relatedUnreadable).toBe(true);
     });
 
-    it("of an item whose cycle walk meets an issue whose links could not all be read", async () => {
+    /*
+     * The list judges a walk by each listed item's own record, the read by
+     * the walk's own search: both are asked, since each takes its own path.
+     */
+    it.each([
+      ["names no key for the blocker's blocker", (e: Entry) => { delete e.inwardIssue?.key; return e; }],
+      ["carries no status for the blocker's blocker", (e: Entry) => { delete e.inwardIssue?.fields?.status; return e; }],
+    ] as const)("of an item whose cycle walk meets a link that %s", async (_what, cut) => {
       const { fake, ctx } = setup();
       for (let i = 0; i < 4; i++) fake.add();
       blocks(fake, "KEY-2", "KEY-1");
       blocks(fake, "KEY-3", "KEY-2");
-      fake.link("Blocks", "KEY-4", "KEY-2");
+      blocks(fake, "KEY-4", "KEY-2");
       const jira = new Jira({
         project: "KEY",
-        fetchImpl: editing(fake, (key, links) => (key === "KEY-2" ? links.map((e) => {
-          if (e.inwardIssue?.key !== "KEY-4") return e;
-          const cut = structuredClone(e);
-          delete cut.inwardIssue?.key;
-          return cut;
-        }) : links)),
+        fetchImpl: editing(fake, (key, links) => (key === "KEY-2"
+          ? links.map((e) => (e.inwardIssue?.key === "KEY-4" ? cut(structuredClone(e)) : e))
+          : links)),
       });
       const fresh: RuntimeContext = { ...ctx, config: {} as never };
       for (const [, g] of await both(jira, fresh, "KEY-1")) expect(nodeOf(g, "KEY-1")?.state.relatedUnreadable).toBe(true);
@@ -916,6 +1003,19 @@ describe("blocked-by, as Jira's Blocks links", () => {
       expect(await blockersRead(jira, ctx, item.key)).toEqual([]);
     });
 
+    it("unrelates one blocker by its own link alone, leaving the item's other blockers linked", async () => {
+      const { fake, jira, ctx } = setup();
+      const first = fake.add();
+      const second = fake.add();
+      const item = fake.add();
+      const gone = blocks(fake, first.key, item.key);
+      const kept = blocks(fake, second.key, item.key);
+      await hooksOf(jira).operator.unrelate(item.key, "blocked-by", first.key, ctx);
+      expect(fake.writes()).toEqual([{ method: "DELETE", path: `/rest/api/3/issueLink/${gone.id}`, body: undefined }]);
+      expect(fake.links).toEqual([kept]);
+      expect(await blockersRead(jira, ctx, item.key)).toEqual([second.key]);
+    });
+
     it("unrelates what Jira no longer holds, writing nothing", async () => {
       const { fake, jira, ctx } = setup();
       const blocker = fake.add();
@@ -937,6 +1037,18 @@ describe("blocked-by, as Jira's Blocks links", () => {
       expect(fake.writes()).toEqual([]);
     });
 
+    it("refuses to delete a link Jira answered with no usable id, rather than spell it into a URL", async () => {
+      const { fake, ctx } = setup();
+      fake.add();
+      fake.add();
+      blocks(fake, "KEY-1", "KEY-2");
+      const jira = new Jira({ project: "KEY", fetchImpl: editing(fake, (_key, links) => links.map((e) => ({ ...e, id: "1/../../myself" }))) });
+      const fresh: RuntimeContext = { ...ctx, config: {} as never };
+      await expect(hooksOf(jira).operator.unrelate("KEY-2", "blocked-by", "KEY-1", fresh))
+        .rejects.toThrow(/Jira answered KEY-2's link to KEY-1 with no usable id/);
+      expect(fake.writes()).toEqual([]);
+    });
+
     it("relates to a blocker in another project on the site, and unrelates it", async () => {
       const { fake, jira, ctx } = setup();
       fake.add({ key: "OTHER-5" });
@@ -954,11 +1066,17 @@ describe("blocked-by, as Jira's Blocks links", () => {
       ["relate", "KEY-1", "KEY-99", /cannot relate KEY-1 to KEY-99 as "blocked-by": KEY-99 is not an issue on this site, or this account cannot see it/],
       ["unrelate", "KEY-1", "KEY-99", /cannot unrelate KEY-1 from KEY-99 as "blocked-by": KEY-99 is not an issue on this site/],
       ["relate", "KEY-1", "KEY-2", /KEY-2 has moved to NEW-9; landrace will not follow an issue to a new key/],
+      ["relate", "KEY-2", "KEY-1", /cannot relate KEY-2 to KEY-1 as "blocked-by": KEY-2 has moved to NEW-9/],
+      ["unrelate", "KEY-2", "KEY-1", /cannot unrelate KEY-2 from KEY-1 as "blocked-by": KEY-2 has moved to NEW-9/],
+      ["relate", "KEY-1", "OTHER-5", /cannot relate KEY-1 to OTHER-5 as "blocked-by": OTHER-5 is not an issue on this site, or this account cannot see it$/],
     ] as const)("refuses to %s %s and %s, writing nothing", async (write, item, other, refusal) => {
       const { fake, jira, ctx } = setup();
       fake.add();
       fake.add();
+      fake.add({ key: "OTHER-5" });
       fake.move("KEY-2", "NEW-9");
+      // Jira's 403 for an issue the account may not browse, which it answers as a 404 elsewhere.
+      fake.failOn = (method, path) => (method === "GET" && path === "/rest/api/3/issue/OTHER-5" ? 403 : null);
       await expect(hooksOf(jira).operator[write](item, "blocked-by", other, ctx)).rejects.toThrow(refusal);
       expect(fake.writes()).toEqual([]);
     });
@@ -976,6 +1094,15 @@ describe("blocked-by, as Jira's Blocks links", () => {
       refuse(fake);
       await expect(hooksOf(jira).operator[write](item.key, "blocked-by", blocker.key, ctx))
         .rejects.toThrow(/the account needs the "Link issues" permission on KEY/);
+    });
+
+    it("names both projects' \"Link issues\" when the blocker is in another, Jira not saying which it checked", async () => {
+      const { fake, jira, ctx } = setup();
+      fake.add({ key: "OTHER-5" });
+      const item = fake.add();
+      fake.canLink = false;
+      await expect(hooksOf(jira).operator.relate(item.key, "blocked-by", "OTHER-5", ctx))
+        .rejects.toThrow(/the account needs the "Link issues" permission on KEY, or on OTHER, the blocker's project/);
     });
 
     it("unrelates a link Jira answers 404 for that is gone by the time it is read again, as done", async () => {
