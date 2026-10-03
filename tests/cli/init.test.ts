@@ -102,6 +102,35 @@ describe("landrace init", () => {
     expect(beyondTheMissingAgent((await runValidate(join(cwd, ".landrace"))).problems)).toEqual([]);
   });
 
+  /*
+   * landrace.yaml's workflows: must name every folder, and init never edits
+   * it, so a new folder breaks the workspace until the person adds it there.
+   */
+  it("says to add the workflow to landrace.yaml's workflows: when that list does not name it", async () => {
+    const cwd = await fresh();
+    await runInit(cwd, "triage");
+    const file = join(cwd, ".landrace/landrace.yaml");
+    const config = `${await readFile(file, "utf8")}workflows: [triage]\n`;
+    await writeFile(file, config);
+
+    const lines = await runInit(cwd, "release");
+
+    expect(await readFile(file, "utf8")).toBe(config);
+    expect(lines.at(-1)).toMatch(/^next: add "release" to workflows: in \.landrace\/landrace\.yaml.*landrace validate/);
+    expect((await runValidate(join(cwd, ".landrace"))).problems).toContainEqual(expect.objectContaining({ message: expect.stringMatching(/does not name "release"/) }));
+    // What the line says is all it takes.
+    await writeFile(file, config.replace("workflows: [triage]", "workflows: [triage, release]"));
+    expect(beyondTheMissingAgent((await runValidate(join(cwd, ".landrace"))).problems)).toEqual([]);
+  });
+
+  it("says nothing of workflows: when landrace.yaml's list already names the workflow", async () => {
+    const cwd = await fresh();
+    await runInit(cwd, "triage");
+    const file = join(cwd, ".landrace/landrace.yaml");
+    await writeFile(file, `${await readFile(file, "utf8")}workflows: [triage, release]\n`);
+    expect((await runInit(cwd, "release")).at(-1)).toMatch(/^next: edit /);
+  });
+
   it("refuses a workflow folder that already exists, and changes nothing", async () => {
     const cwd = await fresh();
     await runInit(cwd, "triage");

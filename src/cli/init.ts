@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { parse } from "yaml";
 import { isEngineLabel } from "#conventions.js";
 import { WORKFLOW_ID, WORKFLOW_ID_RULE } from "#workflow/workspace.js";
 
@@ -163,8 +164,19 @@ export async function runInit(cwd: string, name: string): Promise<string[]> {
   const entry = fresh ? await gitignore(cwd) : null;
   if (entry) created.push(entry);
 
+  /*
+   * A workflows: list must name every folder, so until it names this one the
+   * workspace does not load. init never edits landrace.yaml; it says so. One
+   * that will not parse is validate's to report.
+   */
+  const order = fresh ? undefined : await readFile(join(cwd, ".landrace", "landrace.yaml"), "utf8")
+    .then((text) => (parse(text) as { workflows?: unknown } | null)?.workflows)
+    .catch(() => undefined);
+  const next = `edit ${join(folder, "workflow.yaml")}, add the hooks it loads under .landrace/hooks/, then run landrace validate`;
   return [
     ...created,
-    `next: edit ${join(folder, "workflow.yaml")}, add the hooks it loads under .landrace/hooks/, then run landrace validate`,
+    Array.isArray(order) && !order.includes(name)
+      ? `next: add "${name}" to workflows: in .landrace/landrace.yaml, which must name every workflow folder or the workspace will not load; then ${next}`
+      : `next: ${next}`,
   ];
 }
