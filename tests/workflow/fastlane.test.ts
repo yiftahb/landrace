@@ -378,6 +378,9 @@ describe("fastlane's steps", () => {
     expect(lead).toMatch(/loosens any rule, check or guard/);
     expect(lead).toMatch(/raise a finding/);
     expect(lead).toMatch(/do not review it against the item's text/);
+    // A docs-only lesson merges with no person, so it is judged for what it
+    // loosens as well as against the code, never instead of it.
+    expect(lead).toMatch(/`docs\/` page one fixes gets that check too, and is checked against the code as well/);
   });
 
   it("names the item's text in every step but the judge's, and the spec in none", () => {
