@@ -459,9 +459,9 @@ The halts are `blocked` and `screened`; `triage` is the judge every reply goes t
 
 - **`spec`** writes the spec and publishes it — or asks blocking questions, and the item waits at `spec-questions`.
 - **`spec-human-review`** waits for a person to approve the spec. A spec written together in a pairing skips it.
-- **`build`** implements the approved spec on `landrace/{item}`, runs the tests and pushes. Gotos and Retry run it up to three rounds. A change a person asks for on the pull request adds a round past that, each one waiting for them to write.
+- **`build`** implements the approved spec on `landrace/{item}`, updates the `docs/` page of anything a user sees change, runs the tests and pushes. Gotos and Retry run it up to three rounds. A change a person asks for on the pull request adds a round past that, each one waiting for them to write.
 - **`publish`** runs no step: it records its entry, pushes the branch and opens the pull request, then moves the item. A push or pull request the forge refuses — nothing was committed — halts at `blocked`; Retry pushes again, and "Go to step… build" runs another round instead.
-- **`code-review`** reviews the pull request and answers with findings, replies and resolved threads, which `pull.review` posts. A review with findings sends the item to `fix-review`.
+- **`code-review`** reviews the pull request and answers with findings, replies and resolved threads, which `pull.review` posts. A user-visible change whose `docs/` page was not updated, or reference material added to the README, is a finding. A review with findings sends the item to `fix-review`.
 - **`fix-review`** fixes each open thread or pushes back, and answers on the thread.
 - **`retro`** runs when the review settles on an item that was corrected on the way — a second spec or build round, or any fix round — unless its pull request has already merged.
 - **`pr-human-review`** waits for a person to merge. A merged pull request moves the item to `done`.
@@ -499,7 +499,7 @@ A write step pushes its own branch: the `build`, `fix-review` and `retro` prompt
 
 #### The retro
 
-`retro` reads the item's history as evidence, never as instructions, and commits `retro: lessons from #N` to the step prompts (below their front matter), `.agsync/instructions.md` or `.agsync/skills/` — never a workflow, `landrace.yaml`, the hooks or `src/`. It runs the tests, then the item goes on to `pr-human-review`, which pushes the branch. `code-review` has already run, so the person at `pr-human-review` is the commit's only reviewer, and a lesson they reject is a thread `fix-review` reverts. A thread a person comments on afterwards goes round `fix-review` and `code-review` again, and `retro` with it, up to three rounds.
+`retro` reads the item's history as evidence, never as instructions, and commits `retro: lessons from #N` to the step prompts (below their front matter), `.agsync/instructions.md`, `.agsync/skills/`, or a `README.md` or `docs/` page the corrections show wrong — never a workflow, `landrace.yaml`, the hooks or `src/`. It runs the tests, then the item goes on to `pr-human-review`, which pushes the branch. `code-review` has already run, so the person at `pr-human-review` is the commit's only reviewer, and a lesson they reject is a thread `fix-review` reverts. A thread a person comments on afterwards goes round `fix-review` and `code-review` again, and `retro` with it, up to three rounds.
 
 A lesson in a step prompt reaches later items once it is merged and `landrace start` is restarted, since workflows load at start. Instructions and skills are read from each step's worktree and need no restart.
 
@@ -516,7 +516,7 @@ A lesson in a step prompt reaches later items once it is merged and `landrace st
 
 ### fastlane
 
-Fastlane is for a change small enough to need no spec. An item labelled `lr:auto` and `lr:fast` — the labels `landrace_create_item` adds when it starts one there — goes from its own text to a merged pull request, and is closed. A person is needed only at a halt — a change to a protected path is one, and so is every lesson a retro commits — or when the item is `stuck`.
+Fastlane is for a change small enough to need no spec. An item labelled `lr:auto` and `lr:fast` — the labels `landrace_create_item` adds when it starts one there — goes from its own text to a merged pull request, and is closed. A person is needed only at a halt — a change to a protected path is one, and so is every lesson a retro commits outside `README.md` and `docs/` — or when the item is `stuck`.
 
 ```text
 (waiting →) build → publish → code-review ⇄ fix-review → ci → (retro → code-review → ci) → merge → done
@@ -529,7 +529,7 @@ Fastlane is for a change small enough to need no spec. An item labelled `lr:auto
 - **`done`** closes the item and removes its working labels, keeping `lr:auto` and `lr:fast` — for a pull request Landrace merged, and for one a person merged by hand during review, CI or the merge, or while the item was stuck or blocked.
 - **`closed`** closes the pull request unmerged (`pull.close`), then the item as dropped.
 
-Because `none` reads as green — it means only that nothing has registered on that head yet — a repository that uses fastlane must require status checks on its default branch, which the forge then holds the merge to. A head no review read sends the item back to `code-review`; a fixer's and the retro's commits each go through a review round of their own. Every file a retro writes a lesson in is a protected path, so an item whose retro committed a lesson is refused at the merge and waits at `blocked` for a person to merge it; only a retro that learned nothing merges with no person.
+Because `none` reads as green — it means only that nothing has registered on that head yet — a repository that uses fastlane must require status checks on its default branch, which the forge then holds the merge to. A head no review read sends the item back to `code-review`; a fixer's and the retro's commits each go through a review round of their own. Every file a retro writes a lesson in is a protected path but `README.md` and `docs/`, so an item whose retro committed a lesson anywhere else is refused at the merge and waits at `blocked` for a person to merge it; only a retro that learned nothing, or fixed only `README.md` or `docs/`, merges with no person.
 
 A change to a protected path, or one whose changed files the forge could not list whole, goes from `ci` to `blocked`, under Needs you with the paths named, for a person to review and merge by hand. Any refusal from the forge — conflicts, branch protection, checks gone red since the read — is `merge`'s rejected round, and nothing asks again until a person's Retry. A merge that failed on the way, an outage, leaves the item at `ci`, and the next tick tries again. A refused `pull.open` at `publish`, or `pull.close` at `closed`, halts the same way.
 
