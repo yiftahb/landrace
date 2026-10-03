@@ -97,7 +97,7 @@ Every mistake is a load error, never a default:
 - a `{vars.x}` nothing defines is refused, naming the variable, the file and the field;
 - a `vars` entry nothing references is refused too — usually the same typo seen from the other end.
 
-**Vars are not secrets.** A secret is handed to a hook, cut from every comment Landrace posts, and — when `log.redact` names it — cut from the log, all by value. A var is substituted into the workflow, so it reaches tracker comments, agents' prompts and the events recording both, with nothing redacting it. `validate` reports, and `start` refuses, a var whose value equals a declared secret's.
+**Vars are not secrets.** A secret is handed to a hook, cut by value from the text Landrace composes itself, and — when `log.redact` names it — cut from the log; what is and is not scrubbed is under [.env](#env). A var is substituted into the workflow, so it reaches tracker comments, agents' prompts and the events recording both, with nothing redacting it. `validate` reports, and `start` refuses, a var whose value equals a declared secret's.
 
 **Several developers, one repository.** Each instance exports its own assignee, and the workflow filters on it:
 
@@ -139,7 +139,7 @@ log:
   redact: [githubToken]
 ```
 
-The reference is resolved at load, from `.env` first and then your shell — a project's own file wins over whatever is exported in the terminal. The value is handed to hooks; a hook never reads `process.env` itself, which keeps it testable and lets redaction know every value to suppress. Every declared secret of 8 characters or more is cut from the comments Landrace posts; name a secret in `log.redact` to cut it from the log too. A secret whose variable is set nowhere is reported by `validate`, and `landrace start` and `landrace mcp` refuse to start over it.
+The reference is resolved at load, from `.env` first and then your shell — a project's own file wins over whatever is exported in the terminal. The value is handed to hooks; a hook never reads `process.env` itself, which keeps it testable and lets redaction know every value to suppress. Every declared secret of 8 characters or more is cut from the text Landrace composes itself: the failure records it writes on an item (a refused or rejected round's reason), the errors the board's item panel shows, and the agent activity the panel lists. What an agent writes is posted as the agent wrote it, unscrubbed: a step's prose and output through its route (`tracker.comment`, `pull.review`, a published spec), and a conversation's answers. Name a secret in `log.redact` to cut it from the log too. A secret whose variable is set nowhere is reported by `validate`, and `landrace start` and `landrace mcp` refuse to start over it.
 
 `validate` fails if `.env` exists and git does not ignore it. `.landrace/.env.example` lists the variables this repository uses.
 
