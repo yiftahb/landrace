@@ -142,7 +142,7 @@ Everything we write carries a trailing marker. Only the **last** marker in a bod
 
 - Comments explain **why**, not what. A comment restating the code is noise; one recording the failure that produced a rule is worth keeping.
 - Prefer deleting to abstracting. No interface with one implementation, no config for a value that never changes.
-- Errors report, they do not crash. A CLI that exits through a stack trace has given the user nothing to act on.
+- Errors report, they do not crash. A CLI that exits through a stack trace has given the user nothing to act on, and so has a reason naming a cause that did not apply: when a guard gains a second condition, its message says which one fired, for each item it is printed beside.
 
 ## README and docs
 
