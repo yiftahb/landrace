@@ -537,6 +537,6 @@ A change to a protected path, or one whose changed files the forge could not lis
 
 **Replies.** At `stuck`, `blocked` or `screened`, a reply goes to `triage`, which reads it as `rework` (back to `build`, which is shown the message), `close` (`pull.close` closes its pull request unmerged, then the item is closed as dropped — "not planned" on GitHub), `question` (answered on the item) or `unclear`; the last two leave the item where it was. "Go to step…" offers `build` and `code-review` from `stuck`, each within its cap, and every step from a halt. `publish`, `merge` and `closed` are the halts' too, but only as the Retry of one the forge refused, three times each. A Retry of a refused merge is declined while a thread is open; a head pushed while the item was halted — the conflict a person resolved — is not one the last review read, so it goes back to `code-review`.
 
-**To stop an item, take `lr:auto` off** — taking `lr:fast` off sends it to full-cycle instead. Closing its pull request unmerged stops it too: the item goes to `stuck`. Reopen the pull request to go on.
+**To stop an item, take `lr:auto` off** — taking `lr:fast` off sends it to full-cycle instead. Closing its pull request unmerged stops it too: the item goes to `stuck`. Reopening the pull request does not move it; reopen it, then use "Go to step… code-review" to go on.
 
 Who fastlane trusts, and what to set up before the first `lr:fast` item, is in [Security](security.md#who-fastlane-trusts).
