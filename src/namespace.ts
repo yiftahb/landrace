@@ -2512,10 +2512,17 @@ export interface BoardRow {
    */
   panel: PanelPaths | null;
   /**
-   * Every relationship the node has, of any type and either way, as the
-   * listing's edges say — the panel lists them. Empty, never absent.
+   * Every relationship the node has to an item, of any type and either way,
+   * as the listing's edges say — the panel lists them; a pull request or a
+   * page about it is an artifact, listed as one. Empty, never absent.
    */
   related: BoardRelated[];
+  /**
+   * What the item's source reports of its relationships on its own node —
+   * not all of them read, on a dependency cycle — in a person's words, for
+   * the panel to say why. Empty, never absent.
+   */
+  facts: string[];
   children: BoardRow[];
 }
 
@@ -2529,7 +2536,8 @@ export interface BoardRelated {
   title: string;
   /** http(s) only, else empty — it becomes an href. */
   link: string;
-  state: "open" | "done" | "dropped";
+  /** `unreadable` where its source knew which item it is but not what state it is in. */
+  state: "open" | "done" | "dropped" | "unreadable";
 }
 
 /** The item panel's routes for one item. */

@@ -1,4 +1,6 @@
-import { compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, stageFromLabels } from "#conventions.js";
+import {
+  compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, RELATED_FACT_WORDS, RELATED_FACTS, stageFromLabels,
+} from "#conventions.js";
 import { claimItems, eligibilityOfNode, gotoTargetsOf, writesNothing } from "#core/index.js";
 import { BLOCKED_NOTE, engineNoteOf, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { haltOf, readRoute, writeRoute } from "#runner/route.js";
@@ -19,13 +21,15 @@ import type {
  * its owner was judged by — the closed one said "closed" over an agent
  * running on it. An id two sources both have open is a clash nobody works;
  * which of its two nodes is drawn is display only, and its row says it is a
- * clash.
+ * clash. Of two placeholders, one a source could read is drawn over one
+ * another could not, and either over a closed one.
  */
 function unionOf(graphs: readonly Graph[]): Graph {
   const nodes = new Map<string, Node>();
   const edges = new Map<string, Relationship>();
+  const rank = (node: Node): number => (node.closed !== null ? 0 : node.unreadable === true ? 1 : 2);
   const over = (drawn: Node, node: Node): boolean =>
-    drawn.placeholder === node.placeholder ? drawn.closed !== null && node.closed === null : drawn.placeholder === true;
+    drawn.placeholder === node.placeholder ? rank(node) > rank(drawn) : drawn.placeholder === true;
   for (const graph of graphs) {
     for (const node of graph.nodes) {
       const drawn = nodes.get(node.id);
@@ -235,18 +239,26 @@ export function boardView(input: {
   };
 
   /**
-   * Every edge touching `id`, with the node at its other end as the listing
-   * has it: any type, either way, since the panel lists them all and no type
-   * is one the board knows. An edge whose other end the listing does not
-   * hold has nothing to show of it.
+   * Every edge touching `id` whose other end is an item, with that item as
+   * the listing has it: any type, either way, since the panel lists them all
+   * and no type is one the board knows. A pull request or a page is an
+   * artifact, which the panel lists as one; an edge whose other end the
+   * listing does not hold has nothing to show of it.
    */
   const relatedOf = (id: string): BoardRelated[] =>
     graph.relationships.flatMap((r): BoardRelated[] => {
       const dir = r.to === id ? "in" : r.from === id ? "out" : null;
       const other = dir === null ? undefined : nodes.get(dir === "in" ? r.from : r.to);
-      if (dir === null || other === undefined) return [];
-      return [{ type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state: other.closed ?? "open" }];
+      if (dir === null || other === undefined || other.kind !== ITEM_KIND) return [];
+      const state = other.unreadable === true ? "unreadable" : other.closed ?? "open";
+      return [{ type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state }];
     }).sort(byRelation);
+
+  /** The item's own relationship facts, each its source reports true, in words: read off the shared vocabulary, never a type. */
+  const factsOf = (node: Node): string[] =>
+    node.kind !== ITEM_KIND ? [] : (Object.keys(RELATED_FACTS) as Array<keyof typeof RELATED_FACTS>)
+      .filter((fact) => node.state[RELATED_FACTS[fact]] === true)
+      .map((fact) => RELATED_FACT_WORDS[fact]);
 
   const rowOf = (node: Node): BoardRow => {
     const link = safeUrl(node.link);
@@ -257,7 +269,7 @@ export function boardView(input: {
       note: "", since: null, createdAt: node.createdAt ?? null, updatedAt: node.updatedAt ?? null,
       round: null, model: null, effort: null,
       pages: [], chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null,
-      related: relatedOf(node.id), children: [],
+      related: relatedOf(node.id), facts: factsOf(node), children: [],
     };
     if (node.kind !== ITEM_KIND) return base;
 

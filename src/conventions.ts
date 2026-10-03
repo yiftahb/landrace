@@ -180,6 +180,12 @@ export const RELATIONS = { childOf: "child-of", implements: "implements", docume
  */
 export const RELATED_FACTS = { unreadable: "relatedUnreadable", cycle: "dependencyCycle" } as const;
 
+/** Each of RELATED_FACTS as the board's panel says it of the item, in a person's words. */
+export const RELATED_FACT_WORDS = {
+  unreadable: "Not all of its related items could be read",
+  cycle: "In a dependency cycle",
+} as const satisfies Record<keyof typeof RELATED_FACTS, string>;
+
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 

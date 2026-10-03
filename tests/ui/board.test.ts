@@ -175,7 +175,6 @@ describe("boardView: every relationship of an item", () => {
       { type: "blocked-by", dir: "out", id: "10", title: "t10", link: "https://x/10", state: "open" },
       { type: "blocked-by", dir: "in", id: "13", title: "t13", link: "https://x/13", state: "open" },
       { type: "child-of", dir: "out", id: "1", title: "t1", link: "https://x/1", state: "open" },
-      { type: "implements", dir: "in", id: "pr-5", title: "PR pr-5", link: "https://github.com/a/b/pull/pr-5", state: "open" },
       // Only an http(s) link becomes an href, and a title is one line.
       { type: "x", dir: "out", id: "8", title: "bad name", link: "", state: "dropped" },
     ]);
@@ -184,6 +183,42 @@ describe("boardView: every relationship of an item", () => {
 
   it("lists none for an item nothing relates to", () => {
     expect(view(graph([item("12")])).rows[0]?.related).toEqual([]);
+  });
+
+  // A pull request or a page about the item is an artifact, listed as one:
+  // the related list names items, by kind, whatever the edge's type.
+  it("lists only items at the other end, leaving pull requests and pages to the Artifacts", () => {
+    const doc: Node = { ...item("spec-12"), kind: "document" };
+    const g = graph([item("12"), item("10"), pr("pr-5"), doc], [edge("12", "10", "blocked-by"), edge("pr-5", "12", "implements"), edge("spec-12", "12", "documents")]);
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => r.id)).toEqual(["10"]);
+  });
+
+  it("says a related item it could not read is unreadable, not open", () => {
+    const g = graph([item("12"), item("x.o.r.1", { placeholder: true, unreadable: true })], [edge("12", "x.o.r.1", "blocked-by")]);
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => [r.id, r.state])).toEqual([["x.o.r.1", "unreadable"]]);
+  });
+
+  /*
+   * Why a person was sent to a halt by its relationships: the facts its
+   * tracker reports on the item, read off the shared vocabulary — no type
+   * is named — and put in a person's words.
+   */
+  it("says the item's own relationship facts in words, and none where there are none", () => {
+    const flagged = item("12", { state: { labels: ["go"], assignees: [], relatedUnreadable: true, dependencyCycle: true } });
+    expect(view(graph([flagged])).rows[0]?.facts).toEqual(["Not all of its related items could be read", "In a dependency cycle"]);
+    expect(view(graph([item("12", { state: { labels: ["go"], assignees: [], dependencyCycle: false } })])).rows[0]?.facts).toEqual([]);
+  });
+
+  it("draws a related item one source read over another's that could not", () => {
+    const read = graph([item("12"), item("x.o.r.1", { placeholder: true, title: "read" })], [edge("12", "x.o.r.1", "blocked-by")]);
+    const unread = graph([item("13"), item("x.o.r.1", { placeholder: true, unreadable: true, title: "unread" })], [edge("13", "x.o.r.1", "blocked-by")]);
+    for (const graphs of [[read, unread], [unread, read]]) {
+      const both = view(read, {
+        workflows: [{ id: "t", workflow }, { id: "u", workflow }],
+        listing: { graphs, sourceOf: new Map([["t", 0], ["u", 1]]), claims: claimItems([], graphs) },
+      });
+      expect(flatten(both.rows).find((r) => r.id === "13")?.related.map((r) => [r.title, r.state])).toEqual([["read", "open"]]);
+    }
   });
 
   /*
@@ -726,7 +761,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "goto", "id", "kind", "lane", "link", "model", "note", "pages", "panel",
+      "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "facts", "goto", "id", "kind", "lane", "link", "model", "note", "pages", "panel",
       "priority", "related", "retry", "round", "screened", "since", "stage", "stale", "system", "tag", "title", "updatedAt", "workflow",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");

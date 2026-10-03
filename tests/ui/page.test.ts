@@ -1609,7 +1609,7 @@ describe("the Escape key and the panel", () => {
 describe("the item panel's facts", () => {
   const facts = (row: object): Record<string, string> => {
     const [, dl] = runInNewContext(`${["el", "relatedOf", "panelTopOf"].map(fnSource).join("")} panelTopOf(ROW, null, 0)`, {
-      ROW: { id: "12", link: "", badge: null, screened: false, stage: "build", round: 2, createdAt: null, since: null, children: [], related: [], ...row },
+      ROW: { id: "12", link: "", badge: null, screened: false, stage: "build", round: 2, createdAt: null, since: null, children: [], related: [], facts: [], ...row },
       document: fakeDocument,
     }) as FakeElement[];
     const cells = dl?.children ?? [];
@@ -1631,9 +1631,9 @@ describe("the item panel's facts", () => {
  * server gave one, and its state.
  */
 describe("the item panel's relationships", () => {
-  const draw = (related: object[]): FakeElement[] =>
-    runInNewContext(`${["el", "panelLink", "relatedOf"].map(fnSource).join("")} relatedOf(RELATED)`, {
-      RELATED: related, document: fakeDocument,
+  const draw = (related: object[], facts: string[] = []): FakeElement[] =>
+    runInNewContext(`${["el", "panelLink", "relatedOf"].map(fnSource).join("")} relatedOf(RELATED, FACTS)`, {
+      RELATED: related, FACTS: facts, document: fakeDocument,
     }) as FakeElement[];
 
   it("lists each related item under Related, by type and way, number, title and state", () => {
@@ -1658,8 +1658,27 @@ describe("the item panel's relationships", () => {
     expect(draw([])).toEqual([]);
   });
 
+  // Why a person was sent here: what the item's tracker says of its
+  // relationships, in words, above the related items — one it could not
+  // read among them, said to be unreadable.
+  it("says what its tracker reports of the item's relationships, in words, above them", () => {
+    const [head, ...rest] = draw(
+      [{ type: "blocked-by", dir: "out", id: "x.o.r.1", title: "Upstream", link: "", state: "unreadable" }],
+      ["Not all of its related items could be read", "In a dependency cycle"],
+    );
+    expect(head?.text).toBe("Related");
+    expect(rest.map((e) => e.tag)).toEqual(["p", "p", "ul"]);
+    expect(rest.slice(0, 2).map((e) => e.text)).toEqual(["Not all of its related items could be read", "In a dependency cycle"]);
+    expect(rest[2]?.children.map((li) => li.children.map((c) => c.textContent))).toEqual([["blocked-by →", "#x.o.r.1 Upstream", "unreadable"]]);
+  });
+
+  it("says them where nothing could be read to list", () => {
+    const [head, fact, ...more] = draw([], ["Not all of its related items could be read"]);
+    expect([head?.text, fact?.text, more]).toEqual(["Related", "Not all of its related items could be read", []]);
+  });
+
   it("is drawn in the panel's top half", () => {
-    expect(fnSource("panelTopOf")).toContain("relatedOf(row.related)");
+    expect(fnSource("panelTopOf")).toContain("relatedOf(row.related, row.facts)");
   });
 });
 

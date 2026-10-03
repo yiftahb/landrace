@@ -1693,8 +1693,13 @@ function artifactItem(row, now) {
 // Every relationship the item has, any type, either way, as the row
 // carries it: the other item's number and title as text — a title is
 // whoever wrote it — its link only where the server gave one, and its state.
-function relatedOf(related) {
-  if (!related.length) return [];
+// Above them, what its tracker says of them, in words: why a person was
+// sent here, when that is why.
+function relatedOf(related, facts) {
+  if (!related.length && !facts.length) return [];
+  const out = [el("div", "mt-3 text-[11px] font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400", "Related")];
+  for (const fact of facts) out.push(el("p", "mt-1 text-amber-700 dark:text-amber-400", fact));
+  if (!related.length) return out;
   const list = el("ul", "mt-1 space-y-1");
   for (const r of related) {
     const li = el("li", "flex min-w-0 items-center gap-2");
@@ -1704,7 +1709,8 @@ function relatedOf(related) {
     li.append(name, el("span", "ml-auto shrink-0 text-neutral-400 dark:text-neutral-500", r.state));
     list.append(li);
   }
-  return [el("div", "mt-3 text-[11px] font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400", "Related"), list];
+  out.push(list);
+  return out;
 }
 
 // The panel's top half: the BoardRow already in /board.json, and nothing
@@ -1738,7 +1744,7 @@ function panelTopOf(row, last, now) {
     for (const a of artifacts) list.append(artifactItem(a, now));
     out.push(el("div", "mt-3 text-[11px] font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400", "Artifacts"), list);
   }
-  out.push(...relatedOf(row.related));
+  out.push(...relatedOf(row.related, row.facts));
   return out;
 }
 
