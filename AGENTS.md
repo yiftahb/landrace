@@ -130,7 +130,7 @@ Everything we write carries a trailing marker. Only the **last** marker in a bod
 - **TDD.** Write the failing test, run it, watch it fail, then implement. A test that has never failed has proved nothing.
 - **Verify by running, not by reading.** The defects that survive review are the ones that look right. Attack a guard with the case it is meant to catch, on every path it takes, and watch it fail before you believe it works: a check that makes what is missing and one that finds it already there are two checks, each proving only what it tries. An input placed on an edge — a boundary, a limit — asserts it landed there, or it passes just as well when it misses.
 - **Tests pin behaviour, not implementation.** A test asserting values the test itself just wrote cannot fail; delete it — the typechecker already covers that claim.
-- Unit tests are pure functions with fixtures; there is nothing below the core to mock. Tests touching a tracker use the in-memory adapter, which implements the real interface so a leak across the boundary is caught rather than hidden.
+- Unit tests are pure functions with fixtures; there is nothing below the core to mock. Tests touching a tracker use the in-memory adapter, `createExternalState` from `#testing/index.js`, which implements the real interface so a leak across the boundary is caught rather than hidden. Never `landrace/testing`, its published name, here or in a page telling contributors how to test: no `paths` entry maps it, so from `tests/` it loads the built `dist/`.
 
 ## Toolchain
 
