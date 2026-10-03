@@ -673,6 +673,16 @@ const blockersNeedYou = (f: Facts): boolean =>
 const gate = (f: Facts, open: string | null): string | null =>
   blockersNeedYou(f) ? "stuck" : n(f.notClosed, 0) > 0 ? open : "build";
 
+/**
+ * Why the gate sends an item to a person, as the one trigger that does
+ * names it: a dropped blocker whatever the facts say, a cycle with none
+ * dropped, blockers not all read with neither.
+ */
+const reasonOf = (f: Facts): string | null =>
+  n(f.droppedBlockers, 0) > 0 ? "a blocker was dropped"
+    : f.dependencyCycle === true ? "it is on a cycle of blockers"
+      : f.relatedUnreadable === true ? "its blockers cannot all be read" : null;
+
 /** Each blocker count at none, one and two — done ones beside them or not — and each fact unwritten, false and true. */
 const BLOCKERS = {
   notClosed: [0, 1, 2], doneBlockers: [0, 1], droppedBlockers: [0, 1, 2],
@@ -770,6 +780,13 @@ const label = (f: Facts): string => JSON.stringify({ ...f, stage: undefined });
 const destinationOf = (exit: string): string => exit.split(":")[0] ?? exit;
 
 describe("every exit from a fastlane stage is exclusive", () => {
+  it("leaves waiting for a person on the one trigger named for why, at every boundary", () => {
+    const { workflow } = flow("fastlane");
+    const needs = grid("waiting", BLOCKERS).filter((f) => reasonOf(f) !== null);
+    expect(needs.length).toBeGreaterThan(0);
+    expect(needs.map((f) => [label(f), exitsFrom(workflow, f)])).toEqual(needs.map((f) => [label(f), [`stuck: ${reasonOf(f) ?? ""}`]]));
+  });
+
   it.each(STAGES)("from %s, exactly the exit the plan names matches, at every boundary", (stage, axes, to) => {
     const { workflow } = flow("fastlane");
     const facts = grid(stage, axes);
@@ -805,6 +822,10 @@ describe("every exit from a fastlane stage is exclusive", () => {
       return d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`;
     };
     expect(facts.map((f) => [label(f), entered(f)])).toEqual(facts.map((f) => [label(f), gate(f, "waiting")]));
+    // Sent to a person, on the one trigger named for why.
+    const needs = facts.filter((f) => reasonOf(f) !== null);
+    expect(needs.map((f) => [label(f), decide(workflow, snapshotOf(f)).trigger]))
+      .toEqual(needs.map((f) => [label(f), `a fresh item, but ${reasonOf(f) ?? ""}`]));
 
     const anchored = workflow.stages.flatMap((s) => (s.triggers ?? []).filter((t) => t.when["run.stage"] === null).map((t) => ({ to: s.id, t })));
     const missing = facts.flatMap((f) => anchored.flatMap(({ t }) => missingPaths(t.when, snapshotOf(f)).filter((p) => !unwritten(f, p))));

@@ -194,7 +194,8 @@ stages:
   # three conditions each the others' negation: none open, none dropped and
   # neither fact — build; one open — here, nobody's turn, the note naming the
   # blockers left; one dropped, the child on a cycle of blockers, or its
-  # blockers not all read — stuck. From here the same two ways on.
+  # blockers not all read — stuck, on a trigger named for that reason. From
+  # here the same two ways on.
   - id: waiting
     entry: true
     note: "waiting on {rel.blocked-by.out.open}"
@@ -319,26 +320,51 @@ stages:
       - { type: tracker.close }
 
   # The gate's third condition, fresh and at `waiting`: a blocker dropped,
-  # one not read, or a cycle of blockers back to the child is a person's to
-  # settle. An entry stage of its own, as fastlane's `stuck` is, because
+  # a cycle of blockers back to the child, or one not read is a person's to
+  # settle, on three triggers each, named for the reason and never overlapping. An entry stage of its own, as fastlane's `stuck` is, because
   # `blocked` below takes a failed round from anywhere and so cannot be one.
   - id: stuck
     entry: true
     triggers:
-      - name: a child from a breakdown, but a blocker was dropped or cannot be read, or the child waits on itself
+      - name: a child from a breakdown, but a blocker was dropped
         when:
           "run.stage": null
           "node.origin": { $ne: null }
           "rel.child-of.out.stage.children-running": 1
-          $or: &blockers-need-you
-            - { "rel.blocked-by.out.dropped": { $gt: 0 } }
-            - { "node.state.dependencyCycle": true }
-            - { "node.state.relatedUnreadable": true }
-      - name: a blocker was dropped or cannot be read, or the child waits on itself
+          "rel.blocked-by.out.dropped": { $gt: 0 }
+      - name: a child from a breakdown, but it is on a cycle of blockers
+        when:
+          "run.stage": null
+          "node.origin": { $ne: null }
+          "rel.child-of.out.stage.children-running": 1
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": true
+      - name: a child from a breakdown, but its blockers cannot all be read
+        when:
+          "run.stage": null
+          "node.origin": { $ne: null }
+          "rel.child-of.out.stage.children-running": 1
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": true
+      - name: a blocker was dropped
         when:
           "run.stage": waiting
           "run.lastOutputValid": null
-          $or: *blockers-need-you
+          "rel.blocked-by.out.dropped": { $gt: 0 }
+      - name: it is on a cycle of blockers
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": true
+      - name: its blockers cannot all be read
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": true
     on_enter:
       - { type: tracker.status, value: stuck }
       - { type: tracker.label, add: ["lr:blocked"], remove: ["lr:working", "lr:awaiting"] }

@@ -107,10 +107,10 @@ stages:
   # item between them, by three conditions each the others' negation: none
   # open, none dropped and neither fact — build; one open — here, nobody's
   # turn, the note naming the blockers left; one dropped, the item on a
-  # cycle of blockers, or its blockers not all read — stuck, for a person.
-  # From here the same two ways on: build once none is open, stuck once they
-  # need a person. A person's Retry or "Go to step… build" reads no gate:
-  # that is theirs to decide.
+  # cycle of blockers, or its blockers not all read — stuck, for a person,
+  # on a trigger named for that reason. From here the same two ways on:
+  # build once none is open, stuck once they need a person. A person's
+  # Retry or "Go to step… build" reads no gate: that is theirs to decide.
   - id: waiting
     entry: true
     note: "waiting on {rel.blocked-by.out.open}"
@@ -463,20 +463,44 @@ stages:
         when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } }
     triggers:
       # The gate's third condition (see `waiting`), fresh and at `waiting`:
-      # a blocker dropped, one not read, or a cycle of blockers back to the
-      # item is a person's to settle, and "Go to step… build" sends it on.
-      - name: a fresh item, but a blocker was dropped or cannot be read, or the item waits on itself
+      # a blocker dropped, the item on a cycle of blockers, or its blockers
+      # not all read is a person's to settle, and "Go to step… build" sends
+      # it on. Three triggers to each, named for the reason, which cannot
+      # overlap: dropped whatever the facts say, a cycle with none dropped,
+      # unread with neither.
+      - name: a fresh item, but a blocker was dropped
         when:
           "run.stage": null
-          $or: &blockers-need-you
-            - { "rel.blocked-by.out.dropped": { $gt: 0 } }
-            - { "node.state.dependencyCycle": true }
-            - { "node.state.relatedUnreadable": true }
-      - name: a blocker was dropped or cannot be read, or the item waits on itself
+          "rel.blocked-by.out.dropped": { $gt: 0 }
+      - name: a fresh item, but it is on a cycle of blockers
+        when:
+          "run.stage": null
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": true
+      - name: a fresh item, but its blockers cannot all be read
+        when:
+          "run.stage": null
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": true
+      - name: a blocker was dropped
         when:
           "run.stage": waiting
           "run.lastOutputValid": null
-          $or: *blockers-need-you
+          "rel.blocked-by.out.dropped": { $gt: 0 }
+      - name: it is on a cycle of blockers
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": true
+      - name: its blockers cannot all be read
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": true
       # The awaiting-fix count is the condition, as in full-cycle's: a last review
       # that left nothing awaiting a fix goes on to CI instead.
       - name: the review budget is exhausted

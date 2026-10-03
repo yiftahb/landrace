@@ -44,7 +44,12 @@ const ANSWERS: Record<string, ScriptedAnswer> = {
 
 /** The trigger names the gate is read by, word for word as the workflows write them. */
 const BLOCKERS_DONE = "its blockers are done";
-const NEEDS_YOU_FROM_WAITING = "a blocker was dropped or cannot be read, or the item waits on itself";
+/** Why the gate sends an item to a person: each reason its own trigger, so the person is told which. */
+const REASONS = {
+  dropped: "a blocker was dropped",
+  cycle: "it is on a cycle of blockers",
+  unreadable: "its blockers cannot all be read",
+} as const;
 
 interface Flow {
   id: string;
@@ -53,10 +58,10 @@ interface Flow {
   before: string[];
   /** From build to closed as completed, with nothing found in review. */
   road: string[];
-  /** The gate's three triggers where it is first read: to `waiting`, to build, and to a person. */
+  /** The gate's triggers where it is first read: to `waiting`, to build, and to a person — for each reason its own. */
   waits: string;
   frees: string;
-  needsYou: string;
+  needsYou: (reason: string) => string;
   /** Where a person is sent, what it then wears beside the workflow's own labels, and what its row says. */
   person: { stage: string; labels: string[]; note: string };
 }
@@ -80,7 +85,7 @@ const FULL: Flow = {
   road: ["build", "publish", "code-review", "pr-human-review", "done"],
   waits: "you approved the spec, and a blocker is open",
   frees: "you approved the spec",
-  needsYou: "you approved the spec, but a blocker was dropped or cannot be read, or the item waits on itself",
+  needsYou: (reason) => `you approved the spec, but ${reason}`,
   person: { stage: "blocked", labels: ["lr:blocked", "lr:stage:blocked"], note: BLOCKED_NOTE },
 };
 
@@ -91,7 +96,7 @@ const FAST: Flow = {
   road: ["build", "publish", "code-review", "ci", "merge", "done"],
   waits: "a fresh item, and a blocker is open",
   frees: "a fresh item",
-  needsYou: "a fresh item, but a blocker was dropped or cannot be read, or the item waits on itself",
+  needsYou: (reason) => `a fresh item, but ${reason}`,
   person: { stage: "stuck", labels: ["lr:awaiting", "lr:stage:stuck"], note: "waiting on you" },
 };
 
@@ -126,7 +131,7 @@ type During = (call: { item: string; stage: string; round: number }) => void | P
  * The docs role's spec page is wired as the hook loader wires an artifact:
  * its observe half as a pre hook, its publish as a post hook.
  */
-function world(loaded: { workflow: Workflow; steps: Map<string, Step> }, seed: Array<Partial<ExternalItem>>) {
+function world(loaded: { workflow: Workflow; steps: Map<string, Step> }, seed: Array<Partial<ExternalItem>>, answers = ANSWERS) {
   const { workflow, steps } = loaded;
   const state = createExternalState({ items: seed.map((s) => ({ labels: [...(workflow.admit ?? [])], ...s })) });
   const moves: Move[] = [];
@@ -158,7 +163,7 @@ function world(loaded: { workflow: Workflow; steps: Map<string, Step> }, seed: A
       const known = runs.get(item);
       if (known) return known;
       const made = createHarness({
-        workflow, steps, item, answers: ANSWERS, source: state.source,
+        workflow, steps, item, answers, source: state.source,
         pre: [state.pre, artifactPreHook(state.spec)], post: [state.post, state.spec], artifacts: [state.spec],
         // Where a step on a branch starts: the head of its open pull request, there being no repository here.
         startedAt: (branch) => {
@@ -294,7 +299,7 @@ describe.each([FULL, FAST])("$id, an item blocked by another", (flow) => {
     await w.tick("12");
 
     expect(w.trail("12")).toEqual([...flow.before, "waiting", flow.person.stage]);
-    expect(w.why("12", flow.person.stage)).toBe(NEEDS_YOU_FROM_WAITING);
+    expect(w.why("12", flow.person.stage)).toBe(REASONS.dropped);
     expect(w.builds("12")).toBe(0);
     expect(w.labels("12")).toEqual(admitted(...flow.person.labels));
     expect(await w.row("12")).toMatchObject({ stage: flow.person.stage, note: flow.person.note, lane: "needs-you" });
@@ -306,7 +311,7 @@ describe.each([FULL, FAST])("$id, an item blocked by another", (flow) => {
     await w.tick("12");
 
     expect(w.trail("12")).toEqual([...flow.before, flow.person.stage]);
-    expect(w.why("12", flow.person.stage)).toBe(flow.needsYou);
+    expect(w.why("12", flow.person.stage)).toBe(flow.needsYou(REASONS.dropped));
     expect(w.builds("12")).toBe(0);
     expect(w.labels("12")).toEqual(admitted(...flow.person.labels));
     expect(await w.row("12")).toMatchObject({ stage: flow.person.stage, note: flow.person.note, lane: "needs-you" });
@@ -321,7 +326,7 @@ describe.each([FULL, FAST])("$id, an item blocked by another", (flow) => {
 
     for (const id of ["12", "13"]) {
       expect(w.trail(id)).toEqual([...flow.before, flow.person.stage]);
-      expect(w.why(id, flow.person.stage)).toBe(flow.needsYou);
+      expect(w.why(id, flow.person.stage)).toBe(flow.needsYou(REASONS.cycle));
       expect(w.builds(id)).toBe(0);
       expect(w.labels(id)).toEqual(admitted(...flow.person.labels));
       expect(await w.row(id)).toMatchObject({ stage: flow.person.stage, note: flow.person.note, lane: "needs-you" });
@@ -335,10 +340,24 @@ describe.each([FULL, FAST])("$id, an item blocked by another", (flow) => {
     await w.tick("12");
 
     expect(w.trail("12")).toEqual([...flow.before, flow.person.stage]);
-    expect(w.why("12", flow.person.stage)).toBe(flow.needsYou);
+    expect(w.why("12", flow.person.stage)).toBe(flow.needsYou(REASONS.unreadable));
     expect(w.builds("12")).toBe(0);
     expect(w.labels("12")).toEqual(admitted(...flow.person.labels));
     expect(await w.row("12")).toMatchObject({ stage: flow.person.stage, note: flow.person.note, lane: "needs-you" });
+  });
+
+  // The tracker said which item it waits on, but not what state it is in.
+  it("4. goes to a person when a blocker it knows cannot be read, never reading it as open or done", async () => {
+    const unseen = { type: RELATIONS.blockedBy, to: "x-upstream-7", title: "Upstream fix", closed: "done" as const, unreadable: true as const };
+    const w = world(flow.loaded(), [{ id: "12", related: [unseen] }]);
+    await w.start("12");
+    await w.tick("12");
+
+    expect(w.trail("12")).toEqual([...flow.before, flow.person.stage]);
+    expect(w.why("12", flow.person.stage)).toBe(flow.needsYou(REASONS.unreadable));
+    expect(w.builds("12")).toBe(0);
+    const listed = await w.state.source.list(ctx);
+    expect(listed.nodes.find((n) => n.id === "x-upstream-7")).toMatchObject({ closed: null, unreadable: true });
   });
 
   it("5. starts three items nothing relates at once, and none of them waits", async () => {
@@ -451,6 +470,31 @@ describe("6. full-cycle, an item blocked by another", () => {
 });
 
 /*
+ * Decision 9: the gate is passed once. A change a person asks for on the
+ * pull request amends the spec and goes back to build — whatever the item's
+ * blockers say by then.
+ */
+describe("7. full-cycle, a spec amended on the pull request", () => {
+  it("goes back to build while a blocker reopened since is open, and never waits", async () => {
+    const answers: Record<string, ScriptedAnswer> = { ...ANSWERS, triage: (round) => json({ intent: round === 1 ? "approve" : "revise" }) };
+    const w = world(FULL.loaded(), [{ id: "10", labels: [], closed: "done" }, { id: "12", related: blockedBy("10") }], answers);
+    await w.start("12");
+    expect(w.trail("12")).toEqual(["spec", "spec-human-review", "triage", "build", "publish", "code-review", "pr-human-review"]);
+
+    // #10 reopens while the pull request waits on the person, who asks for a change.
+    w.state.item("10").closed = null;
+    w.state.say("12", "Use the new endpoint instead.");
+    await w.run("12").converge();
+
+    expect(w.trail("12").slice(7, 10)).toEqual(["triage", "spec", "build"]);
+    expect(w.why("12", "build")).toBe("you amended the spec on the pull request");
+    expect(w.why("12", "waiting")).toBeUndefined();
+    expect(w.builds("12")).toBe(2);
+    expect(w.starts()).toEqual([{ item: "12", open: [] }, { item: "12", open: ["10"] }]);
+  });
+});
+
+/*
  * A breakdown that orders what it splits the work into: the second child is
  * created blocked by the first, through `relate` on the child tool, as the
  * breakdown's agent would call it. tests/fixtures/children starts every
@@ -527,7 +571,7 @@ describe("8. a breakdown that orders its children", () => {
     await w.tick(ui);
 
     expect(w.trail(ui)).toEqual(["waiting", "stuck"]);
-    expect(w.why(ui, "stuck")).toBe("a blocker was dropped or cannot be read, or the child waits on itself");
+    expect(w.why(ui, "stuck")).toBe(REASONS.dropped);
     expect(w.builds(ui)).toBe(0);
     expect(w.labels(ui)).toEqual(sorted(["lr:auto", "lr:blocked", "lr:stage:stuck"]));
     expect(await w.row(ui)).toMatchObject({ stage: "stuck", note: BLOCKED_NOTE, lane: "needs-you" });

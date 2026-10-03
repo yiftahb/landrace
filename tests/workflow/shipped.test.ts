@@ -258,6 +258,16 @@ const BLOCKERS: Blockers[] = [0, 1, 2].flatMap((open) => [0, 1].flatMap((done) =
 const gate = (b: Blockers, open: string): string =>
   b.dropped > 0 || b.dependencyCycle === true || b.relatedUnreadable === true ? "blocked" : b.open > 0 ? open : "build";
 
+/**
+ * Why the gate sends an item to a person, as the one trigger that does
+ * names it: a dropped blocker whatever the facts say, a cycle with none
+ * dropped, blockers not all read with neither — never two, never none.
+ */
+const reasonOf = (b: Blockers): string | null =>
+  b.dropped > 0 ? "a blocker was dropped"
+    : b.dependencyCycle === true ? "it is on a cycle of blockers"
+      : b.relatedUnreadable === true ? "its blockers cannot all be read" : null;
+
 describe("the shipped workflow reads every reply with one judge, and sends each answer somewhere", () => {
   // No round cap: each round waits for a person to write, which is bound
   // enough, and a cap only ended a real back-and-forth.
@@ -455,14 +465,15 @@ describe("the shipped workflow reads every reply with one judge, and sends each 
     }
   });
 
-  it("builds only from an approved spec, a spec amended on the pull request, one written together, or when a person sends it back — each once nothing holds it — or once its blockers are done", async () => {
+  it("builds only from an approved spec or one written together once nothing holds it, a spec amended on the pull request, or when a person sends it back — or once its blockers are done", async () => {
     const { workflow } = await loadShipped();
     expect(workflow.stages.find((s) => s.id === "build")?.triggers?.map((t) => t.when)).toEqual([{
       "run.stage": "triage", "run.lastOutputValid": null,
       "run.previousStage": "spec-human-review", "run.outputs.triage.intent": "approve", ...FREE,
     }, {
+      // Built once already, so past the gate: it is passed once.
       "run.stage": "spec", "run.lastOutputValid": null, "run.outputs.spec.kind": "spec", "run.lastOutputBy": "agent",
-      "rel.implements.in.total": { $gt: 0 }, "run.outputs.triage.intent": "revise", ...FREE,
+      "rel.implements.in.total": { $gt: 0 }, "run.outputs.triage.intent": "revise",
     }, {
       "run.stage": "spec", "run.lastOutputValid": null, "run.outputs.spec.kind": "spec", "run.lastOutputBy": "pair", ...FREE,
     }, {
@@ -478,26 +489,31 @@ describe("the shipped workflow builds nothing while an item it is blocked by is 
       previousStage: "spec-human-review", outputs: { spec: { kind: "spec" }, triage: { intent: "approve" } },
       rounds: { triage: { entered: 1, output: 1 } },
     }, noPull)],
-    ["you amended the spec on the pull request", snapshotAt("spec", {
-      outputs: { spec: { kind: "spec" }, triage: { intent: "revise" } }, rounds: { spec: { entered: 2, output: 2 } },
-      counters: { spec: 2, triage: 2, build: 1, "code-review": 1 },
-    })],
     ["you wrote the spec together", snapshotAt("spec", {
       outputs: { spec: { kind: "spec" } }, rounds: { spec: { entered: 1, output: 1 } }, counters: { spec: 1 }, lastOutputBy: "pair",
     }, noPull)],
   ];
 
-  /** Where decide() sends an item with each of these blockers, the workflow loaded once for all of them. */
-  const sweep = async (at: Snapshot): Promise<Array<[Blockers, string]>> => {
+  /** Where decide() sends an item with each of these blockers, and on which trigger, the workflow loaded once for all of them. */
+  const sweep = async (at: Snapshot): Promise<Array<[Blockers, string, string | undefined]>> => {
     const { workflow } = await loadShipped();
     return BLOCKERS.map((b) => {
       const d = decide(workflow, blockedBy(at, b));
-      return [b, d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`];
+      return [b, d.action === "transition" ? d.to?.id ?? "?" : `${d.action}: ${d.why ?? ""}`, d.trigger];
     });
   };
+  /** Which trigger takes an item to a person, from where the gate is read: named for the reason, after where it was. */
+  const toPerson = (where: string) => (b: Blockers): string | undefined => {
+    const reason = reasonOf(b);
+    return reason === null ? undefined : where === "" ? reason : `${where}, but ${reason}`;
+  };
 
-  it.each(WAYS_TO_BUILD)("%s: goes to build, waiting or blocked by its blockers, exactly one of them", async (_, at) => {
-    expect(await sweep(at)).toEqual(BLOCKERS.map((b) => [b, gate(b, "waiting")]));
+  it.each(WAYS_TO_BUILD)("%s: goes to build, waiting or blocked by its blockers, exactly one of them", async (way, at) => {
+    const got = await sweep(at);
+    expect(got.map(([b, to]) => [b, to])).toEqual(BLOCKERS.map((b) => [b, gate(b, "waiting")]));
+    // Sent to a person, on the one trigger named for why.
+    expect(got.filter(([, to]) => to === "blocked").map(([b, , trigger]) => [b, trigger]))
+      .toEqual(BLOCKERS.filter((b) => reasonOf(b) !== null).map((b) => [b, toPerson(way)(b)]));
   });
 
   // The spec was approved; only its blockers are left to wait for.
@@ -505,7 +521,23 @@ describe("the shipped workflow builds nothing while an item it is blocked by is 
     const waiting = snapshotAt("waiting", {
       outputs: { spec: { kind: "spec" }, triage: { intent: "approve" } }, counters: { spec: 1, triage: 1 },
     }, noPull);
-    expect(await sweep(waiting)).toEqual(BLOCKERS.map((b) => [b, gate(b, "wait: no trigger matched")]));
+    const got = await sweep(waiting);
+    expect(got.map(([b, to]) => [b, to])).toEqual(BLOCKERS.map((b) => [b, gate(b, "wait: no trigger matched")]));
+    expect(got.filter(([, to]) => to === "blocked").map(([b, , trigger]) => [b, trigger]))
+      .toEqual(BLOCKERS.filter((b) => reasonOf(b) !== null).map((b) => [b, toPerson("")(b)]));
+  });
+
+  /*
+   * Decision 9: the gate is passed once. A change asked for on the pull
+   * request goes back to build whatever the item's blockers now say — a
+   * blocker reopened, or added, since it was first built holds nothing back.
+   */
+  it("goes back to build from a spec amended on the pull request, whatever its blockers say", async () => {
+    const amended = snapshotAt("spec", {
+      outputs: { spec: { kind: "spec" }, triage: { intent: "revise" } }, rounds: { spec: { entered: 2, output: 2 } },
+      counters: { spec: 2, triage: 2, build: 1, "code-review": 1 },
+    });
+    expect(await sweep(amended)).toEqual(BLOCKERS.map((b) => [b, "build", "you amended the spec on the pull request"]));
   });
 
   /*

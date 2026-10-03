@@ -256,18 +256,22 @@ stages:
   # - one open or more, none dropped, neither fact: here;
   # - one dropped (closed as not planned), the item on a cycle of blockers
   #   (`node.state.dependencyCycle`), or its blockers not all read
-  #   (`node.state.relatedUnreadable`): `blocked`, for a person, on a
-  #   trigger whose name says so.
+  #   (`node.state.relatedUnreadable`): `blocked`, for a person — on one of
+  #   three triggers, each named for its reason, so the person is told
+  #   which. They cannot overlap: a dropped blocker is the reason whatever
+  #   the facts say, a cycle the reason when none is dropped, and blockers
+  #   not all read only when neither holds.
   #
   # "None" is `{ $not: { $gt: 0 } }` and "neither" `{ $ne: true }`, never `0`
   # and `false`: deriveRel counts `not.closed` only over a related node, and
   # the tracker writes a fact only when it holds, so an item with no blockers
   # has neither path, and `0` or `false` there would hold it for good. The
-  # gate is read on each way to build from a spec — an approval, an
-  # amendment, one written together — and here, and never on a person's
-  # Retry or "Go to step… build": that is theirs to decide. A blocker that
-  # reopens once the item is past the gate holds nothing back; an amended
-  # spec meets the gate again on its way back to build.
+  # gate is read on the two ways to build from a spec that has not been
+  # built — an approval, one written together — and here, and never on a
+  # person's Retry or "Go to step… build": that is theirs to decide. It is
+  # passed once: a blocker that reopens once the item is past it holds
+  # nothing back, and a spec amended on the pull request goes back to build
+  # ungated.
   - id: waiting
     note: "waiting on {rel.blocked-by.out.open}"
     triggers:
@@ -277,18 +281,6 @@ stages:
           "run.lastOutputValid": null
           "run.previousStage": spec-human-review
           "run.outputs.triage.intent": approve
-          "rel.blocked-by.out.not.closed": { $gt: 0 }
-          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
-          "node.state.dependencyCycle": { $ne: true }
-          "node.state.relatedUnreadable": { $ne: true }
-      - name: you amended the spec on the pull request, and a blocker is open
-        when:
-          "run.stage": spec
-          "run.lastOutputValid": null
-          "run.outputs.spec.kind": spec
-          "run.lastOutputBy": agent
-          "rel.implements.in.total": { $gt: 0 }
-          "run.outputs.triage.intent": revise
           "rel.blocked-by.out.not.closed": { $gt: 0 }
           "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
           "node.state.dependencyCycle": { $ne: true }
@@ -319,11 +311,12 @@ stages:
   # head a forge ties a pull request to the item by, and validate refuses
   # any other.
   #
-  # Reached from an approved spec, from a spec amended with a change asked for
-  # at pr-human-review, and from one written together — each only while
-  # nothing the item is blocked by is open (see `waiting`), and from
-  # `waiting` once that is so — and otherwise only by a person sending the
-  # item back — a `goto-build` answer, Retry, or "Go to step…".
+  # Reached from an approved spec and from one written together — each only
+  # while nothing the item is blocked by is open (see `waiting`) — from
+  # `waiting` once that is so, and from a spec amended with a change asked
+  # for at pr-human-review, which the gate passed before it was first built;
+  # and otherwise only by a person sending the item back — a `goto-build`
+  # answer, Retry, or "Go to step…".
   #
   # And from itself. publish pushes before it moves the position, so a push
   # the forge refuses — nothing was committed — is publish's rejected round,
@@ -349,7 +342,9 @@ stages:
           "node.state.dependencyCycle": { $ne: true }
           "node.state.relatedUnreadable": { $ne: true }
       # A change asked for on the pull request, once it is in the spec: the
-      # person asked for exactly this, so it needs no second approval.
+      # person asked for exactly this, so it needs no second approval. Nor
+      # a second gate: there is a pull request, so the item was built, and
+      # the gate is passed once.
       - name: you amended the spec on the pull request
         when:
           "run.stage": spec
@@ -358,10 +353,6 @@ stages:
           "run.lastOutputBy": agent
           "rel.implements.in.total": { $gt: 0 }
           "run.outputs.triage.intent": revise
-          "rel.blocked-by.out.not.closed": { $not: { $gt: 0 } }
-          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
-          "node.state.dependencyCycle": { $ne: true }
-          "node.state.relatedUnreadable": { $ne: true }
       # Handed in from a pairing: the person approved it by writing it.
       - name: you wrote the spec together
         when:
@@ -647,42 +638,80 @@ stages:
           "run.outputs.build.kind": done
           "rel.implements.in.dropped": { $gt: 0 }
           "rel.implements.in.total": 0
-      # The gate's third condition (see `waiting`), on each way to build from
-      # a spec and at `waiting`: a blocker dropped, one not read, or a cycle
-      # of blockers back to the item is a person's to settle. Nothing failed,
-      # so Retry has nothing to retry; they settle it and send the item on
-      # with "Go to step… build", which reads no gate.
-      - name: you approved the spec, but a blocker was dropped or cannot be read, or the item waits on itself
+      # The gate's third condition (see `waiting`), on each of its ways to
+      # build and at `waiting`: a blocker dropped, the item on a cycle of
+      # blockers, or its blockers not all read is a person's to settle —
+      # three triggers to each, named for the reason, which cannot overlap:
+      # dropped whatever the facts say, a cycle with none dropped, unread
+      # with neither. Nothing failed, so Retry has nothing to retry; they
+      # settle it and send the item on with "Go to step… build", which reads
+      # no gate.
+      - name: you approved the spec, but a blocker was dropped
         when:
           "run.stage": triage
           "run.lastOutputValid": null
           "run.previousStage": spec-human-review
           "run.outputs.triage.intent": approve
-          $or: &blockers-need-you
-            - { "rel.blocked-by.out.dropped": { $gt: 0 } }
-            - { "node.state.dependencyCycle": true }
-            - { "node.state.relatedUnreadable": true }
-      - name: you amended the spec on the pull request, but a blocker was dropped or cannot be read, or the item waits on itself
+          "rel.blocked-by.out.dropped": { $gt: 0 }
+      - name: you approved the spec, but it is on a cycle of blockers
         when:
-          "run.stage": spec
+          "run.stage": triage
           "run.lastOutputValid": null
-          "run.outputs.spec.kind": spec
-          "run.lastOutputBy": agent
-          "rel.implements.in.total": { $gt: 0 }
-          "run.outputs.triage.intent": revise
-          $or: *blockers-need-you
-      - name: you wrote the spec together, but a blocker was dropped or cannot be read, or the item waits on itself
+          "run.previousStage": spec-human-review
+          "run.outputs.triage.intent": approve
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": true
+      - name: you approved the spec, but its blockers cannot all be read
+        when:
+          "run.stage": triage
+          "run.lastOutputValid": null
+          "run.previousStage": spec-human-review
+          "run.outputs.triage.intent": approve
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": true
+      - name: you wrote the spec together, but a blocker was dropped
         when:
           "run.stage": spec
           "run.lastOutputValid": null
           "run.outputs.spec.kind": spec
           "run.lastOutputBy": pair
-          $or: *blockers-need-you
-      - name: a blocker was dropped or cannot be read, or the item waits on itself
+          "rel.blocked-by.out.dropped": { $gt: 0 }
+      - name: you wrote the spec together, but it is on a cycle of blockers
+        when:
+          "run.stage": spec
+          "run.lastOutputValid": null
+          "run.outputs.spec.kind": spec
+          "run.lastOutputBy": pair
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": true
+      - name: you wrote the spec together, but its blockers cannot all be read
+        when:
+          "run.stage": spec
+          "run.lastOutputValid": null
+          "run.outputs.spec.kind": spec
+          "run.lastOutputBy": pair
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": true
+      - name: a blocker was dropped
         when:
           "run.stage": waiting
           "run.lastOutputValid": null
-          $or: *blockers-need-you
+          "rel.blocked-by.out.dropped": { $gt: 0 }
+      - name: it is on a cycle of blockers
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": true
+      - name: its blockers cannot all be read
+        when:
+          "run.stage": waiting
+          "run.lastOutputValid": null
+          "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
+          "node.state.dependencyCycle": { $ne: true }
+          "node.state.relatedUnreadable": true
       # `run.lastRefused` is false for a broken contract and true for a
       # refusal, never null while `lastOutputValid` is false — so this and
       # `screened` below split every failure between them, one each.
