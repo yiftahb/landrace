@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { messageOf } from "#runner/errors.js";
 import { resolveLandraceToSelf } from "#hooks/load.js";
@@ -181,13 +182,13 @@ program
 
 program
   .command("update")
-  .description("update landrace to the latest version on npm: this project's dependency, or the global install")
+  .description("update the landrace that is running to the latest version on npm: the global install, or this project's own")
   .action(async () => {
     try {
       await runUpdate({
         current: ownVersion(),
         latest: () => latestVersion(),
-        plan: () => updateCommand(process.cwd()),
+        plan: () => updateCommand(process.cwd(), fileURLToPath(import.meta.url)),
         run: runCommand,
         log: (line) => console.log(line),
       });

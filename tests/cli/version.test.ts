@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   isNewer, latestVersion, ownVersion, runUpdate, runVersion, updateCheckOff, updateCommand, updateNotice,
@@ -91,37 +91,62 @@ describe("updateNotice", () => {
 });
 
 describe("updateCommand", () => {
+  // The project's own copy, with the file a running CLI would be: its own
+  // node_modules/landrace, installed there by its package manager.
+  const CLI_FILE = "node_modules/landrace/dist/cli.js";
   async function project(files: Record<string, string>): Promise<string> {
     const dir = await fresh();
-    for (const [name, body] of Object.entries(files)) await writeFile(join(dir, name), body);
+    for (const [name, body] of Object.entries(files)) {
+      await mkdir(dirname(join(dir, name)), { recursive: true });
+      await writeFile(join(dir, name), body);
+    }
     return dir;
   }
   const dev = JSON.stringify({ devDependencies: { landrace: "^1.0.0" } });
+  const GLOBAL = { command: "npm", args: ["install", "-g", "landrace@latest"], where: "global" };
 
-  it("updates the project's own dependency with the project's package manager", async () => {
-    const pnpm = await project({ "package.json": dev, "pnpm-lock.yaml": "" });
-    expect(updateCommand(pnpm)).toEqual({ command: "pnpm", args: ["add", "-D", "landrace@latest"], where: "project", cwd: pnpm });
-    const yarn = await project({ "package.json": dev, "yarn.lock": "" });
-    expect(updateCommand(yarn)).toEqual({ command: "yarn", args: ["add", "-D", "landrace@latest"], where: "project", cwd: yarn });
-    const npm = await project({ "package.json": dev, "package-lock.json": "{}" });
-    expect(updateCommand(npm)).toEqual({ command: "npm", args: ["install", "--save-dev", "landrace@latest"], where: "project", cwd: npm });
+  it("updates the project's own dependency with the project's package manager, when that copy is the one running", async () => {
+    const pnpm = await project({ "package.json": dev, "pnpm-lock.yaml": "", [CLI_FILE]: "" });
+    expect(updateCommand(pnpm, join(pnpm, CLI_FILE))).toEqual({ command: "pnpm", args: ["add", "-D", "landrace@latest"], where: "project", cwd: pnpm });
+    const yarn = await project({ "package.json": dev, "yarn.lock": "", [CLI_FILE]: "" });
+    expect(updateCommand(yarn, join(yarn, CLI_FILE))).toEqual({ command: "yarn", args: ["add", "-D", "landrace@latest"], where: "project", cwd: yarn });
+    const npm = await project({ "package.json": dev, "package-lock.json": "{}", [CLI_FILE]: "" });
+    expect(updateCommand(npm, join(npm, CLI_FILE))).toEqual({ command: "npm", args: ["install", "--save-dev", "landrace@latest"], where: "project", cwd: npm });
+  });
+
+  // pnpm links node_modules/landrace from its store: the copy is the same one.
+  it("knows the project's own copy through the link pnpm installs it as", async () => {
+    const stored = "node_modules/.pnpm/landrace@1.0.0/node_modules/landrace";
+    const dir = await project({ "package.json": dev, "pnpm-lock.yaml": "", [`${stored}/dist/cli.js`]: "" });
+    await symlink(join(dir, stored), join(dir, "node_modules/landrace"), "dir");
+    expect(updateCommand(dir, join(dir, stored, "dist/cli.js")).where).toBe("project");
   });
 
   it("keeps a runtime dependency a runtime one", async () => {
-    const dir = await project({ "package.json": JSON.stringify({ dependencies: { landrace: "^1.0.0" } }), "pnpm-lock.yaml": "" });
-    expect(updateCommand(dir).args).toEqual(["add", "landrace@latest"]);
+    const dir = await project({ "package.json": JSON.stringify({ dependencies: { landrace: "^1.0.0" } }), "pnpm-lock.yaml": "", [CLI_FILE]: "" });
+    expect(updateCommand(dir, join(dir, CLI_FILE)).args).toEqual(["add", "landrace@latest"]);
+  });
+
+  // The usual case: `npm i -g landrace`, run in a project that may also list
+  // it for its editor's types. Updating the project's copy would leave the
+  // one running as old as it was.
+  it("updates the global install when the copy running is not the project's own, even where package.json lists landrace", async () => {
+    const elsewhere = await project({ "lib/node_modules/landrace/dist/cli.js": "" });
+    const running = join(elsewhere, "lib/node_modules/landrace/dist/cli.js");
+    const listed = await project({ "package.json": dev, "pnpm-lock.yaml": "", [CLI_FILE]: "" });
+    expect(updateCommand(listed, running)).toEqual({ ...GLOBAL, cwd: listed });
+    const bare = await fresh();
+    expect(updateCommand(bare, running)).toEqual({ ...GLOBAL, cwd: bare });
   });
 
   it("updates the global install where the folder's package.json does not list landrace", async () => {
-    const none = await fresh();
-    expect(updateCommand(none)).toEqual({ command: "npm", args: ["install", "-g", "landrace@latest"], where: "global", cwd: none });
-    const other = await project({ "package.json": JSON.stringify({ devDependencies: { jest: "1" } }) });
-    expect(updateCommand(other).where).toBe("global");
+    const other = await project({ "package.json": JSON.stringify({ devDependencies: { jest: "1" } }), [CLI_FILE]: "" });
+    expect(updateCommand(other, join(other, CLI_FILE)).where).toBe("global");
   });
 
   it("refuses to guess between two lockfiles, naming both", async () => {
-    const dir = await project({ "package.json": dev, "pnpm-lock.yaml": "", "yarn.lock": "" });
-    expect(() => updateCommand(dir)).toThrow(/pnpm-lock\.yaml.*yarn\.lock/);
+    const dir = await project({ "package.json": dev, "pnpm-lock.yaml": "", "yarn.lock": "", [CLI_FILE]: "" });
+    expect(() => updateCommand(dir, join(dir, CLI_FILE))).toThrow(/pnpm-lock\.yaml.*yarn\.lock/);
   });
 });
 

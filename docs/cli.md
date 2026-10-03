@@ -210,10 +210,10 @@ Prints `landrace <version>`, then what npm has: a newer version and how to get i
 landrace update
 ```
 
-Updates Landrace to the latest version on npm, wherever the current folder takes it from. Landrace is installed per project — a hook imports `landrace/kit` from the project's `node_modules` — so:
+Updates the copy of Landrace that is running to the latest version on npm. That copy is the one a hook's `landrace/*` imports resolve to ([Hook modules](hooks.md#hook-modules)), so:
 
-- When the folder's `package.json` lists `landrace`, it updates that dependency with the package manager the folder's lockfile names: `pnpm add -D landrace@latest`, `yarn add -D landrace@latest` or `npm install --save-dev landrace@latest` (without `-D` for a runtime dependency). Two lockfiles in one folder are refused, naming both: run the update with your package manager yourself.
-- Otherwise it updates the global install: `npm install -g landrace@latest`.
+- When the running copy is the current folder's own — the real path of `node_modules/landrace` is the running package — and the folder's `package.json` lists `landrace`, it updates that dependency with the package manager the folder's lockfile names: `pnpm add -D landrace@latest`, `yarn add -D landrace@latest` or `npm install --save-dev landrace@latest` (without `-D` for a runtime dependency). Two lockfiles in one folder are refused, naming both: run the update with your package manager yourself.
+- Otherwise it updates the global install: `npm install -g landrace@latest`. That is the usual case, and it holds even when the folder's `package.json` lists `landrace` as well.
 
 It prints the command before running it, and runs nothing when this is already the latest version. When the command fails, it says so and names it, to run by hand.
 
