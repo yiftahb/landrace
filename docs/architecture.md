@@ -151,6 +151,8 @@ The snapshot carries three views of the graph:
 | `rel.<type>.in.stage.<id>` | How many related items sit at stage `<id>` right now |
 | `rel.<type>.in.open` | The ids of the open nodes `total` counts, in id order — which nodes a count is of |
 
+A field keeps one type across every related node of one type and direction. If it is a boolean on one node and anything else — `null`, a number, a string — on another, or a number on one and not on another, the item halts: `a field has one type or it cannot be counted`. Only values that are neither booleans nor numbers may mix, and they are counted nowhere. A node that lacks the field is simply not counted for it, so a source leaves a field out rather than set it to `null`.
+
 The same fields exist under `out`. Besides its own `state`, every counted node has one more field, `closed`, which is `true` when it is done: so `is.closed` counts the done nodes and `not.closed` the open ones. Like any `is` or `not` count, `not.closed` is absent — not `0` — when nothing of that type is related, which is why the shipped workflows write "none open" as `{ $not: { $gt: 0 } }`.
 
 Because a workflow reads counts, "every pull request on the item is merged" is `rel.implements.in.total: { $gt: 0 }` together with `rel.implements.in.not.merged: 0` — never one pull request's own flag, since an item can have more than one.
