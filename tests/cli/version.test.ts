@@ -198,5 +198,7 @@ describe("the CLI", () => {
     const version = ownVersion();
     expect((await run(["--version"])).stdout.trim()).toBe(version);
     expect((await run(["version"])).stdout.trim()).toBe(`landrace ${version}`);
-  });
+    // Two cold starts of the CLI from source, each loading its whole module
+    // graph: under a full, parallel suite they outran jest's default 5s.
+  }, 30_000);
 });
