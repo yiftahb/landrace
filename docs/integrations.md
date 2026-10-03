@@ -201,7 +201,7 @@ secrets:
 **Checking it live.** The script creates an item and a child in the project, comments, labels, drops the child and closes the item, printing each check. It exits 1 on any failed check, and when none passed.
 
 ```bash
-pnpm build && JIRA_BASE_URL=https://<site>.atlassian.net JIRA_EMAIL=… JIRA_TOKEN=… JIRA_PROJECT=KEY \
+pnpm build && JIRA_BASE_URL=https://your-site.atlassian.net JIRA_EMAIL=… JIRA_TOKEN=… JIRA_PROJECT=KEY \
   node scripts/jira-check.mjs
 ```
 
@@ -250,7 +250,7 @@ pnpm build && JIRA_BASE_URL=https://<site>.atlassian.net JIRA_EMAIL=… JIRA_TOK
 **Checking it live.** The script runs the check, a publish, the same text, changed text (over a hundred blocks, 60,000 characters with an emoji astride a piece boundary, a fence, a table, an item with 120 children) and the read back. It prints each step, exits 1 when one failed or nothing was checked, and leaves its `check-<time>` row in the database for you to look at.
 
 ```bash
-pnpm build && NOTION_TOKEN=… NOTION_PARENT=<the page's id> node scripts/notion-check.mjs
+pnpm build && NOTION_TOKEN=… NOTION_PARENT=0123456789abcdef0123456789abcdef node scripts/notion-check.mjs
 ```
 
 ## Slack

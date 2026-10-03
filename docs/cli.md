@@ -18,7 +18,7 @@ Inside this repository, `landrace/hooks`, `landrace/kit` and `landrace/integrati
 
 ## landrace validate
 
-```bash
+```text
 landrace validate [dir]
 ```
 
@@ -26,7 +26,7 @@ Proves every workflow in the workspace `dir` (default `.landrace`) sound, and ex
 
 ## landrace status
 
-```bash
+```text
 landrace status [-w, --workspace <dir>]
 ```
 
@@ -34,7 +34,7 @@ Prints one line per listed item — `#<id>  <stage>  <title>  <note>`, with the 
 
 ## landrace start
 
-```bash
+```text
 landrace start [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui] [--telemetry] [--otel KEY=VALUE]...
 ```
 
@@ -104,7 +104,7 @@ The page follows the system's light or dark preference, or whatever you last tog
 
 ## landrace next
 
-```bash
+```text
 landrace next -w, --workspace <dir> [--workflow <id>] -s, --snapshot <file>
 ```
 
@@ -112,7 +112,7 @@ Prints, as JSON, the decision and the planned effects the engine would make for 
 
 ## landrace mcp
 
-```bash
+```text
 landrace mcp [-w, --workspace <dir>] [--workflow <id>]
 ```
 
@@ -157,7 +157,7 @@ The generated files are gitignored, so run it after cloning. Then ask your clien
 
 ### The child server
 
-```bash
+```text
 landrace mcp --workspace <dir> --workflow <id> --child <parent> --stage <stage> --round <round>
 ```
 
