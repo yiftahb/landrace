@@ -352,14 +352,15 @@ export class MemoryForge extends BaseForge {
    * the item's own `landrace/{item}` branch unless the test names another —
    * which ties it to nothing, unless `items` says. Merged means closed as
    * done unless `closed` says otherwise, and `awaitingFix` defaults to
-   * `openThreads`: a thread nobody answered awaits a fix. Its head is
+   * `openThreads`: a thread nobody answered awaits a fix — a behaviour fix,
+   * `awaitingWordingFix` being 0 unless the test says. Its head is
    * `sha-<number>` and nothing checks it, unless the test says.
    */
   add(item: string, pr: ExternalPullSeed = {}): string {
     const number = this.rows.size + 1;
     const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
     const pull: ExternalPull = {
-      id: `pr-${number}`, number, item, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0,
+      id: `pr-${number}`, number, item, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, awaitingWordingFix: 0,
       headSha: `sha-${number}`, checks: "none", failed: [], branch: prBranch(item), ...pr, closed,
     };
     this.rows.set(pull.id, pull);
@@ -499,6 +500,7 @@ export class MemoryForge extends BaseForge {
         headSha: p.headSha,
         openThreads: p.closed === null ? p.openThreads : 0,
         awaitingFix: p.closed === null ? p.awaitingFix : 0,
+        awaitingBehaviourFix: p.closed === null ? p.awaitingFix - Math.min(p.awaitingWordingFix, p.awaitingFix) : 0,
         ...(p.branch === undefined ? {} : { branch: p.branch }),
         ...ci,
       },
@@ -532,7 +534,8 @@ export class MemoryForge extends BaseForge {
 
   /*
    * A review, as what it does to the counts: each well-formed finding opens a
-   * thread awaiting a fix; each reply from a `fix` round hands one to the
+   * thread awaiting a fix — a wording fix too, when it is flagged
+   * `wording: true`; each reply from a `fix` round hands one to the
    * person and each other reply hands one back; and each id a review lists as
    * resolved closes one the reviewer raised — never more than it raised, since
    * a person's thread is theirs to close. A fix round resolves nothing. Once
@@ -554,10 +557,11 @@ export class MemoryForge extends BaseForge {
     const marker = String(effect.marker);
     if ((pull.reviews ?? []).includes(marker)) return;
     const fix = marker.split(":")[0] === FIX_KIND;
-    const opened = (Array.isArray(out.findings) ? out.findings : []).filter((f) => {
+    const findings = (Array.isArray(out.findings) ? out.findings : []).filter((f): f is { wording?: unknown } => {
       const x = f as { file?: unknown; line?: unknown; body?: unknown } | null;
       return typeof x === "object" && x !== null && typeof x.file === "string" && Number.isInteger(x.line) && typeof x.body === "string";
-    }).length;
+    });
+    const opened = findings.length;
     const replied = (Array.isArray(out.replies) ? out.replies : []).filter((r) => {
       const x = r as { thread?: unknown; body?: unknown } | null;
       return typeof x === "object" && x !== null && typeof x.thread === "string" && typeof x.body === "string";
@@ -571,6 +575,11 @@ export class MemoryForge extends BaseForge {
     // each thread's last word instead.
     const awaiting = pull.awaitingFix + opened + (fix ? -replied : replied);
     pull.awaitingFix = Math.min(pull.openThreads, Math.max(0, awaiting));
+    // ponytail: nor which kind a reply answered — a fix round that answers
+    // one of a wording and a behaviour thread is unmodelled here, and pinned
+    // on the kit's threadCounts instead. A reply handed back is behaviour.
+    const wording = findings.filter((f) => f.wording === true).length;
+    pull.awaitingWordingFix = Math.min(pull.awaitingFix, pull.awaitingWordingFix + wording);
     pull.reviews = [...(pull.reviews ?? []), marker];
   }
 }

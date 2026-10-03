@@ -271,6 +271,38 @@ describe("publishing in the in-memory tracker", () => {
     expect(graph.nodes.find((n) => n.id === pr)?.state).toMatchObject({ openThreads: 2, awaitingFix: 1 });
   });
 
+  /*
+   * #71: a finding flagged `wording: true` — only `true` — awaits a wording
+   * fix, and the node reports the rest as awaiting a behaviour fix. A count
+   * cannot tell which thread a reply answered, so a wording count is held
+   * at or under the awaiting-fix count, never past it.
+   */
+  it("counts flagged findings as awaiting a wording fix, and reports the rest as behaviour", async () => {
+    const state = createExternalState({ items: [{ id: "1" }] });
+    const pr = state.openPull("1", { branch: "landrace/1" });
+    expect(state.pull(pr).awaitingWordingFix).toBe(0);
+    const at = (marker: string, output: object) => ({ type: "pull.review", branch: "landrace/1", marker, output });
+    const node = async () => (await state.source.read("1", ctx)).nodes.find((n) => n.id === pr)?.state;
+
+    await apply(state, at("review:1", { findings: [{ file: "docs/a.md", line: 1, body: "Typo.", wording: true }] }));
+    expect(state.pull(pr)).toMatchObject({ openThreads: 1, awaitingFix: 1, awaitingWordingFix: 1 });
+    expect(await node()).toMatchObject({ awaitingFix: 1, awaitingBehaviourFix: 0 });
+
+    await apply(state, at("review:2", { findings: [{ file: "a.ts", line: 1, body: "Says yes.", wording: "yes" }, { file: "a.ts", line: 2, body: "Null." }] }));
+    expect(await node()).toMatchObject({ openThreads: 3, awaitingFix: 3, awaitingBehaviourFix: 2 });
+
+    await apply(state, at("fix:2", { replies: [{ thread: "T1", body: "Fixed." }, { thread: "T2", body: "Fixed." }, { thread: "T3", body: "Fixed." }] }));
+    expect(state.pull(pr)).toMatchObject({ awaitingFix: 0, awaitingWordingFix: 0 });
+    expect(await node()).toMatchObject({ awaitingFix: 0, awaitingBehaviourFix: 0 });
+
+    // A test that moves the awaiting count itself never reads a negative behaviour count.
+    Object.assign(state.pull(pr), { awaitingFix: 1, awaitingWordingFix: 2 });
+    expect(await node()).toMatchObject({ awaitingFix: 1, awaitingBehaviourFix: 0 });
+    // Closed, nothing awaits.
+    state.pull(pr).closed = "dropped";
+    expect(await node()).toMatchObject({ awaitingFix: 0, awaitingBehaviourFix: 0 });
+  });
+
   it("refuses a publishing effect that names no branch", async () => {
     const state = createExternalState({ items: [{ id: "1" }] });
     expect(() => state.post.satisfied({}, { type: "pull.open" })).toThrow(/branch/);

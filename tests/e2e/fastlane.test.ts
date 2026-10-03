@@ -13,8 +13,8 @@ import { createExternalState, createHarness, MemoryForge, MemoryTracker } from "
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 import type {
-  Effect, Executor, ExternalPull, ExternalState, GotoDeps, LoadedWorkflow, MergeAnswer, Node, PostHook, RuntimeContext, ScriptedAnswer, StatusRow,
-  Workspace,
+  Effect, Executor, ExternalPull, ExternalState, GotoDeps, LoadedWorkflow, Logger, MergeAnswer, Node, PostHook, RuntimeContext, ScriptedAnswer,
+  StatusRow, Workspace,
 } from "#namespace.js";
 
 /*
@@ -70,6 +70,7 @@ function road(opts: {
   during?: During;
   seed?: (state: ExternalState) => void;
   before?: (effect: Effect, state: ExternalState) => void;
+  log?: Logger;
 } = {}) {
   const { workflow, steps } = flow("fastlane");
   const state = createExternalState({
@@ -93,6 +94,7 @@ function road(opts: {
     answers: { ...ANSWERS, ...opts.answers },
     startedAt: (branch) => headOn(state, branch),
     ...(opts.during ? { during: (at: { stage: string; round: number }) => opts.during?.(at, pr) } : {}),
+    ...(opts.log ? { log: opts.log } : {}),
   });
   /** A person's goto, as the board and `landrace_goto` send it: to `target`, or Retry with none. */
   const goto = async (target: string | null): Promise<unknown> => {
@@ -387,6 +389,78 @@ describe("fastlane, end to end", () => {
     expect(state.item("1").labels).toContain("lr:awaiting");
     expect(state.item("1").labels).not.toContain("lr:working");
     expect(pr()).toMatchObject({ merged: false, awaitingFix: 1 });
+  });
+
+  /*
+   * #71, as #56 went: three reviews each found behaviour to fix, and a fourth
+   * found only wording in `docs/`, flagged so. That goes round once more
+   * instead of to `stuck`; the retro the fix rounds earn is reviewed in round
+   * 6, clean, and Landrace merges — no person anywhere on the road.
+   */
+  const CHANGED = [
+    { path: "src/export.ts", status: "modified", additions: 20, deletions: 0 },
+    { path: "docs/export.md", status: "modified", additions: 4, deletions: 0 },
+  ];
+  const reviewer = (rounds: Record<number, object>) => (round: number): string =>
+    json({ kind: "reviewed", findings: [], replies: [], resolved: [], ...rounds[round] });
+  const fixer = json({ kind: "addressed", replies: [{ thread: "T", body: "Fixed." }] });
+  const behaviour = (round: number) => ({
+    ...(round > 1 ? { resolved: [`T${round - 1}`] } : {}),
+    findings: [{ file: "src/export.ts", line: round, body: "Handle an empty table." }],
+  });
+  const wording = (round: number) => ({
+    resolved: [`T${round - 1}`],
+    findings: [{ file: "docs/export.md", line: 2, body: "Say semicolon, not comma.", wording: true }],
+  });
+
+  it("7b. merges an item whose fourth review found only wording in docs/, with no person", async () => {
+    const { state, run, pr, merges } = road({
+      answers: {
+        "code-review": reviewer({ 1: behaviour(1), 2: behaviour(2), 3: behaviour(3), 4: wording(4), 5: { resolved: ["T4"] } }),
+        "fix-review": fixer,
+        retro: json({ kind: "nothing", reason: "Each finding was this item's own." }),
+      },
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) Object.assign(pull(), { files: CHANGED });
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual([
+      "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
+      "code-review", "fix-review", "code-review", "ci", "retro", "code-review", "ci", "merge", "done",
+    ]);
+    expect(r.result.settled).toBe("terminal");
+    expect(run.counts()).toEqual({ build: 1, "code-review": 6, "fix-review": 4, retro: 1 });
+    expect(merges()).toBe(1);
+    expect(pr()).toMatchObject({ merged: true, closed: "done", openThreads: 0, awaitingFix: 0 });
+    expect(state.item("1").closed).toBe("done");
+    expect(state.item("1").labels).toContain("lr:stage:done");
+    expect(state.item("1").labels).not.toContain("lr:awaiting");
+  });
+
+  it("7c. leaves the item stuck on the wording budget once a sixth review still finds only wording", async () => {
+    const why: unknown[] = [];
+    const { state, run, pr } = road({
+      answers: {
+        "code-review": reviewer({ 1: behaviour(1), 2: behaviour(2), 3: behaviour(3), 4: wording(4), 5: wording(5), 6: wording(6) }),
+        "fix-review": fixer,
+      },
+      log: (name, data = {}) => {
+        if (name === "item.evaluated" && data.to === "stuck") why.push(data.why);
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual([
+      "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
+      "code-review", "fix-review", "code-review", "fix-review", "code-review", "stuck",
+    ]);
+    expect(r.result.settled).toBe("wait");
+    expect(why).toEqual(["the wording budget is exhausted"]);
+    expect(run.counts()).toEqual({ build: 1, "code-review": 6, "fix-review": 5 });
+    expect(state.item("1").labels).toContain("lr:awaiting");
+    expect(pr()).toMatchObject({ merged: false, awaitingFix: 1, awaitingWordingFix: 1 });
   });
 
   /*

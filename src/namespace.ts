@@ -1181,10 +1181,15 @@ export interface ComposedHooks {
   spec?: ArtifactHook;
 }
 
-/** What a pull request node says of its threads: how many are unresolved, and how many of those await a fix. */
+/**
+ * What a pull request node says of its threads: how many are unresolved, how
+ * many of those await a fix, and how many of those are not the reviewer's own
+ * wording findings — a person's, or a finding that changes behaviour (#71).
+ */
 export interface ThreadCounts {
   openThreads: number;
   awaitingFix: number;
+  awaitingBehaviourFix: number;
 }
 
 /** A pull request's checks on its head commit. `none`: nothing is configured to check it — or nothing has started yet. */
@@ -1211,6 +1216,8 @@ export interface Finding {
   file: string;
   line: number;
   body: string;
+  /** True when fixing it changes only docs or code comments: the finding's marker says so, and fastlane's review budget reads it. */
+  wording?: boolean;
 }
 
 /** One reply a step posts on a review thread, by the thread's id. */
@@ -1891,6 +1898,8 @@ export interface ExternalPull {
   openThreads: number;
   /** Of `openThreads`, how many await a fix: every one whose last word is not the fixer's answer. */
   awaitingFix: number;
+  /** Of `awaitingFix`, how many are the reviewer's wording findings; the rest it reports as `awaitingBehaviourFix`. */
+  awaitingWordingFix: number;
   closed: Closed;
   /**
    * The branch it was opened from: what `pull.open` looks a pull request up
@@ -1925,7 +1934,8 @@ export interface ExternalPull {
 /** What a test may set on a pull request it opens in memory; everything else is defaulted. */
 export type ExternalPullSeed = Partial<Pick<
   ExternalPull,
-  "merged" | "openThreads" | "awaitingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable" | "files" | "filesComplete"
+  "merged" | "openThreads" | "awaitingFix" | "awaitingWordingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable" |
+  "files" | "filesComplete"
 >>;
 
 /**

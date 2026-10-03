@@ -495,7 +495,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     gh.openPull({ head: "landrace/1", number: 42, headSha: "abc123", threads: threads([false, true, false]), checks: "PENDING" });
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({
-      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2, checks: "pending", ciPending: 1, ciFailed: 0,
+      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2, awaitingBehaviourFix: 2, checks: "pending", ciPending: 1, ciFailed: 0,
     });
   });
 
@@ -546,16 +546,37 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     });
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({
-      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 5, awaitingFix: 4, checks: "none", ciPending: 0, ciFailed: 0,
+      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 5, awaitingFix: 4, awaitingBehaviourFix: 4, checks: "none", ciPending: 0, ciFailed: 0,
     });
     expect(gate({ "rel.implements.in.sum.awaitingFix": 4 }, g, "1")).toBe(true);
+  });
+
+  /*
+   * #71: of those, the reviewer's own wording findings are not behaviour — by
+   * the opening comment's author and marker both, as the fixer's answer is
+   * read. A person who pastes the flag opened a behaviour thread of their own.
+   */
+  it("counts as behaviour every thread awaiting a fix but the reviewer's own wording findings", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const wording = `Say semicolon.${renderMarker({ stage: "code-review", kind: "finding", round: 4, marker: "finding:code-review:4:0", wording: true })}`;
+    const fixed = `Fixed.${renderMarker({ stage: "fix-review", kind: "fix", round: 4, marker: "fix:fix-review:4:T" })}`;
+    gh.openPull({
+      head: "landrace/1", number: 42,
+      threads: [
+        { isResolved: false, body: wording },
+        { isResolved: false, body: wording, replies: [{ author: gh.bot, body: fixed }] },
+        { isResolved: false, body: wording, author: "mallory" },
+      ],
+    });
+    const g = await sourceOf(gh).read("1", ctx(gh));
+    expect(g.nodes.find((n) => n.id === "pr-42")?.state).toMatchObject({ openThreads: 3, awaitingFix: 2, awaitingBehaviourFix: 1 });
   });
 
   it("reports nothing awaiting a fix on a pull request that is no longer open", async () => {
     const gh = createFakeTracker([{ number: 1 }]);
     gh.openPull({ head: "landrace/1", number: 43, merged: true, threads: threads([false]) });
     const g = await sourceOf(gh).read("1", ctx(gh));
-    expect(g.nodes.find((n) => n.id === "pr-43")?.state).toMatchObject({ openThreads: 0, awaitingFix: 0 });
+    expect(g.nodes.find((n) => n.id === "pr-43")?.state).toMatchObject({ openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0 });
   });
 
   it("refuses to report a count it could not finish reading", async () => {
@@ -584,7 +605,7 @@ describe("untrusted thread text does not reach the graph", () => {
     expect(JSON.stringify(g)).not.toContain("landrace:");
     expect(JSON.stringify(g)).not.toContain("rm -rf");
     expect(g.nodes.find((n) => n.kind === "pull-request")?.state).toEqual({
-      merged: false, headSha: "sha-100", branch: "landrace/1", openThreads: 2, awaitingFix: 2, checks: "none", ciPending: 0, ciFailed: 0,
+      merged: false, headSha: "sha-100", branch: "landrace/1", openThreads: 2, awaitingFix: 2, awaitingBehaviourFix: 2, checks: "none", ciPending: 0, ciFailed: 0,
     });
   });
 

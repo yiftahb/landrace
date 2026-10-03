@@ -41,7 +41,11 @@ description: "Small changes from the item's own text: build, review, CI, then me
 #   second build (a CI fix or a rework), any fix round, or any reply a person
 #   had to write. The retro runs at most once.
 # - Caps: build 3, CI fixes included; code review 4; fix review 8. At a cap
-#   the item is `stuck`, and waits on a person.
+#   the item is `stuck`, and waits on a person. Code review's 4 is for
+#   behaviour, which loops; a review whose every thread awaiting a fix is a
+#   wording finding — docs or code comments only, flagged by the reviewer —
+#   goes round twice more, to 6 (#71). A mislabel costs two fix rounds, each
+#   re-reviewed, and the merge's guards are the same.
 # - The merge needs every thread resolved. A review that leaves threads open
 #   with none awaiting a fix is `stuck` too, since a thread the fixer answered
 #   waits on a person, never on a step; and a thread opened while the checks
@@ -247,6 +251,9 @@ stages:
       - { type: tracker.status, value: code-review }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
+  # Within code review's four; or within six when every thread awaiting a fix
+  # is the reviewer's wording finding — docs or code comments only (#71). A
+  # count the forge did not report is behaviour, and matches only the four.
   - id: fix-review
     step: steps/fix-review.md
     branch: "landrace/{item}"
@@ -256,7 +263,9 @@ stages:
           "run.stage": code-review
           "run.lastOutputValid": null
           "rel.implements.in.sum.awaitingFix": { $gt: 0 }
-          "run.counters.code-review": { $lt: 4 }
+          $or:
+            - { "run.counters.code-review": { $lt: 4 } }
+            - { "run.counters.code-review": { $lt: 6 }, "rel.implements.in.sum.awaitingBehaviourFix": 0 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
       - { type: tracker.status, value: fix-review }
@@ -503,13 +512,23 @@ stages:
           "node.state.dependencyCycle": { $ne: true }
           "node.state.relatedUnreadable": true
       # The awaiting-fix count is the condition, as in full-cycle's: a last review
-      # that left nothing awaiting a fix goes on to CI instead.
+      # that left nothing awaiting a fix goes on to CI instead. Then which
+      # budget: behaviour awaiting a fix — or a count the forge did not
+      # report — after four reviews; only wording after six.
       - name: the review budget is exhausted
         when:
           "run.stage": code-review
           "run.lastOutputValid": null
           "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+          "rel.implements.in.sum.awaitingBehaviourFix": { $ne: 0 }
           "run.counters.code-review": { $gte: 4 }
+      - name: the wording budget is exhausted
+        when:
+          "run.stage": code-review
+          "run.lastOutputValid": null
+          "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+          "rel.implements.in.sum.awaitingBehaviourFix": 0
+          "run.counters.code-review": { $gte: 6 }
       - name: threads are open that no fix awaits
         when:
           "run.stage": code-review

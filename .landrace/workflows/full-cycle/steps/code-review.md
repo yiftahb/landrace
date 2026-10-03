@@ -7,7 +7,7 @@ output:
   discriminator: kind
   shapes:
     reviewed:
-      findings: { type: array, items: { file: string, line: number, body: string } }
+      findings: { type: array, items: { file: string, line: number, body: string, wording: boolean } }
       replies: { type: array, items: { thread: string, body: string } }
       resolved: { type: array, items: string }
   routes:
@@ -96,10 +96,19 @@ nothing. Each finding names the file as the diff names it, the line in the new
 version of that file (a line the diff shows wherever you can, since that is
 where it becomes a thread), and what is wrong in one or two sentences.
 
+Mark each finding `wording`: true only when its fix changes nothing but
+documentation — a `README.md` or `docs/` page, or a code comment — and no line
+that runs. A step prompt, instructions or a skill is never wording: an agent
+acts on it. When you are unsure, it is false. The mark does not lighten the
+check: a wording finding is fixed and re-reviewed like any other. It only lets
+fastlane give a review that found nothing but wording two more rounds before a
+person is asked; a wrong mark wastes those rounds.
+
 **Step 7 — Summarise and end with the json block.** Start your final summary with the Progress checklist, each box ticked, or left open with the reason.
 Then one line per spec requirement: met or not. Your summary becomes the
 review on the pull request, each finding a thread under it, and each reply a
 comment on its thread — you post nothing yourself. End with a fenced json
-block: `kind` `reviewed`, `findings` a list of objects each with `file`, `line`
-and `body`, `replies` a list of objects each with `thread` (its id) and `body`,
+block: `kind` `reviewed`, `findings` a list of objects each with `file`, `line`,
+`body` and `wording` (true or false, by Step 6), `replies` a list of objects
+each with `thread` (its id) and `body`,
 and `resolved` a list of thread ids. Any list may be empty.

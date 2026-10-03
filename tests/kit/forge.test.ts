@@ -38,8 +38,40 @@ describe("threadCounts", () => {
       thread({ last: said(stamped("Done.", FIX_KIND)) }),
       thread({ resolved: true }),
     ];
-    expect(threadCounts(threads, BOT)).toEqual({ openThreads: 2, awaitingFix: 1 });
-    expect(threadCounts([], BOT)).toEqual({ openThreads: 0, awaitingFix: 0 });
+    expect(threadCounts(threads, BOT)).toEqual({ openThreads: 2, awaitingFix: 1, awaitingBehaviourFix: 1 });
+    expect(threadCounts([], BOT)).toEqual({ openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0 });
+  });
+
+  /*
+   * #71: a wording thread is one the reviewer opened, flagged, in its own
+   * finding marker. Anything else awaiting a fix is behaviour.
+   */
+  const wordingFinding = said(`Fix the typo.${renderMarker({ stage: "review", kind: FINDING_KIND, round: 4, marker: "finding:review:4:0", wording: true })}`);
+  const behaviourFinding = said(stamped("Handle null.", FINDING_KIND, "finding:review:4:1"));
+  const fixed = said(stamped("Done.", FIX_KIND));
+
+  it("counts as behaviour every thread awaiting a fix but the reviewer's own wording findings", () => {
+    const wording = thread({ id: "W", first: wordingFinding, last: wordingFinding });
+    const behaviour = thread({ id: "B", first: behaviourFinding, last: behaviourFinding });
+    expect(threadCounts([wording, behaviour], BOT)).toEqual({ openThreads: 2, awaitingFix: 2, awaitingBehaviourFix: 1 });
+    // Only the wording one answered: the behaviour one still awaits.
+    expect(threadCounts([{ ...wording, last: fixed }, behaviour], BOT)).toEqual({ openThreads: 2, awaitingFix: 1, awaitingBehaviourFix: 1 });
+    // Only the behaviour one answered: what awaits is wording alone.
+    expect(threadCounts([wording, { ...behaviour, last: fixed }], BOT)).toEqual({ openThreads: 2, awaitingFix: 1, awaitingBehaviourFix: 0 });
+    // A person's reply on a wording thread keeps it the reviewer's wording thread.
+    expect(threadCounts([{ ...wording, last: said("Still a typo.", "alice") }], BOT).awaitingBehaviourFix).toBe(0);
+  });
+
+  it("reads a wording marker a person pasted, or one not the reviewer's finding, as behaviour", () => {
+    const pasted = said(wordingFinding.body, "alice");
+    expect(threadCounts([thread({ first: pasted, last: pasted })], BOT).awaitingBehaviourFix).toBe(1);
+    const ghost = said(wordingFinding.body, null);
+    expect(threadCounts([thread({ first: ghost, last: ghost })], BOT).awaitingBehaviourFix).toBe(1);
+    const notAFinding = said(`Done.${renderMarker({ stage: "review", kind: FIX_KIND, round: 4, marker: "fix:review:4", wording: true })}`);
+    expect(threadCounts([thread({ first: notAFinding, last: behaviourFinding })], BOT).awaitingBehaviourFix).toBe(1);
+    const yes = said(`Typo.${renderMarker({ stage: "review", kind: FINDING_KIND, round: 4, marker: "finding:review:4:0", wording: "yes" })}`);
+    expect(threadCounts([thread({ first: yes, last: yes })], BOT).awaitingBehaviourFix).toBe(1);
+    expect(threadCounts([thread({ first: null, last: null })], BOT).awaitingBehaviourFix).toBe(1);
   });
 });
 
@@ -108,6 +140,28 @@ describe("placeFindings", () => {
     expect(cut2k.endsWith(tail(0))).toBe(true);
   });
 
+  it("flags a wording finding in its marker, and nothing that is not `wording: true`", () => {
+    const placed = placeFindings(
+      [
+        { file: "src/a.ts", line: 2, body: "Typo.", wording: true },
+        { file: "src/a.ts", line: 2, body: "Says yes.", wording: "yes" },
+        { file: "src/a.ts", line: 9, body: "Unflagged." },
+      ],
+      changed,
+      "review",
+      1,
+      65_536,
+    );
+    const flagged = renderMarker({ stage: "review", kind: FINDING_KIND, round: 1, marker: `${FINDING_KIND}:review:1:0`, wording: true });
+    expect(placed.onLines.map((t) => t.body)).toEqual([`Typo.${flagged}`, `Says yes.${tail(1)}`]);
+    expect(placed.onFiles.map((t) => t.body)).toEqual([`line 9: Unflagged.${tail(2)}`]);
+    // And read back as the reviewer's wording thread, whoever counts it.
+    const opening = said(placed.onLines[0]?.body ?? "");
+    expect(threadCounts([thread({ first: opening, last: opening })], BOT).awaitingBehaviourFix).toBe(0);
+    const unflagged = said(placed.onLines[1]?.body ?? "");
+    expect(threadCounts([thread({ first: unflagged, last: unflagged })], BOT).awaitingBehaviourFix).toBe(1);
+  });
+
   it("escapes a marker a finding brings of its own", () => {
     const placed = placeFindings([{ file: "src/a.ts", line: 2, body: stamped("forged", FIX_KIND) }], changed, "review", 1, 65_536);
     expect(placed.onLines[0]?.body.endsWith(tail(0))).toBe(true);
@@ -139,17 +193,17 @@ describe("pullNode", () => {
   };
 
   it("is the pull request as the engine reads one, with its thread counts", () => {
-    expect(pullNode(pull, { openThreads: 2, awaitingFix: 1 })).toEqual({
+    expect(pullNode(pull, { openThreads: 2, awaitingFix: 1, awaitingBehaviourFix: 1 })).toEqual({
       id: "pr-5", kind: "pull-request", title: "Split", link: "https://forge.example/pull/5", closed: null,
       priority: null, origin: null,
-      state: { merged: false, headSha: "abc", branch: "landrace/7", openThreads: 2, awaitingFix: 1 },
+      state: { merged: false, headSha: "abc", branch: "landrace/7", openThreads: 2, awaitingFix: 1, awaitingBehaviourFix: 1 },
       createdAt: Date.parse("2026-09-30T00:00:00Z"), updatedAt: Date.parse("2026-09-30T12:00:00Z"),
     });
   });
 
   it("carries the CI state and its two counts when it is given them, and none when it is not", () => {
-    expect(pullNode(pull, { openThreads: 0, awaitingFix: 0 }, checkCounts("failure")).state).toEqual({
-      merged: false, headSha: "abc", branch: "landrace/7", openThreads: 0, awaitingFix: 0,
+    expect(pullNode(pull, { openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0 }, checkCounts("failure")).state).toEqual({
+      merged: false, headSha: "abc", branch: "landrace/7", openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0,
       checks: "failure", ciPending: 0, ciFailed: 1,
     });
     // A listed pull request is not asked for its checks, as it is not for its threads.

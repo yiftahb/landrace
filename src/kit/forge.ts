@@ -41,16 +41,30 @@ export const answered = (last: ThreadComment | null | undefined, bot: string): b
   typeof last?.author === "string" && sameLogin(last.author, bot) && parseMarker(last.body)?.kind === FIX_KIND;
 
 /**
- * How many of these threads nobody has resolved, and how many of those await
- * a fix. Every page of them, or the integration refuses: a count over part of
- * a pull request's threads is a number known to be short.
+ * Whether a thread opens with the reviewer's own wording finding: ours, by
+ * login and marker both, as `answered` reads the fixer's — a person who pasted
+ * the marker opened a thread of their own, and theirs is never wording (#71).
  */
-export function threadCounts(threads: Array<Pick<ReviewThread, "resolved" | "last">>, bot: string): ThreadCounts {
-  const counts: ThreadCounts = { openThreads: 0, awaitingFix: 0 };
+const wordingFinding = (first: ThreadComment | null | undefined, bot: string): boolean => {
+  if (typeof first?.author !== "string" || !sameLogin(first.author, bot)) return false;
+  const marker = parseMarker(first.body);
+  return marker?.kind === FINDING_KIND && marker.wording === true;
+};
+
+/**
+ * How many of these threads nobody has resolved, how many of those await a
+ * fix, and how many of those are anything but the reviewer's wording
+ * findings. Every page of them, or the integration refuses: a count over
+ * part of a pull request's threads is a number known to be short.
+ */
+export function threadCounts(threads: Array<Pick<ReviewThread, "resolved" | "first" | "last">>, bot: string): ThreadCounts {
+  const counts: ThreadCounts = { openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0 };
   for (const t of threads) {
     if (t.resolved) continue;
     counts.openThreads++;
-    if (!answered(t.last, bot)) counts.awaitingFix++;
+    if (answered(t.last, bot)) continue;
+    counts.awaitingFix++;
+    if (!wordingFinding(t.first, bot)) counts.awaitingBehaviourFix++;
   }
   return counts;
 }
@@ -100,7 +114,9 @@ export function commentableLines(patch: string | undefined): Set<number> {
  * a thousand under it, room for its marker.
  *
  * Each threaded body ends in its own finding marker, `finding:{stage}:{round}:{i}`,
- * which is how a reviewer later tells its own threads from a person's.
+ * which is how a reviewer later tells its own threads from a person's — and,
+ * with `wording: true` when the finding is flagged so, its wording threads
+ * from the rest. Only `true` is a flag: anything else is behaviour.
  */
 export function placeFindings(findings: unknown[], changed: ChangedFile[], stage: string, round: number, commentChars: number): {
   onLines: Array<{ path: string; line: number; body: string }>;
@@ -116,7 +132,9 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
       unplaced.push(`- ${neutraliseMarkers(cut(typeof f === "string" ? f : JSON.stringify(f) ?? String(f), BRIEF_BODY_CHARS))}`);
       return;
     }
-    const tail = renderMarker({ stage, kind: FINDING_KIND, round, marker: `${FINDING_KIND}:${stage}:${round}:${i}` });
+    const tail = renderMarker({
+      stage, kind: FINDING_KIND, round, marker: `${FINDING_KIND}:${stage}:${round}:${i}`, ...(f.wording === true ? { wording: true } : {}),
+    });
     const text = neutraliseMarkers(cut(f.body.trim(), commentChars - 1_000));
     const shown = lines.get(f.file);
     if (shown?.has(f.line)) onLines.push({ path: f.file, line: f.line, body: text + tail });
@@ -715,7 +733,7 @@ export abstract class BaseForge {
         const open = isOpen(pull);
         const threads = open
           ? threadCounts(await this.threads(pull.number, ctx), await this.login(ctx))
-          : { openThreads: 0, awaitingFix: 0 };
+          : { openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0 };
         const node = this.node(pull, threads, checkCounts(open ? await this.checks(pull, ctx) : "none"));
         nodes.set(pull.number, node);
         relationships.push({ from: node.id, to: item, type: RELATIONS.implements });
