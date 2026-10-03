@@ -1586,9 +1586,9 @@ function bareRow() {
   return row && row.kind === "item" && !row.panel ? row : null;
 }
 
-// "Not on the board" is only for an id the view does not have.
-function panelTitleOf(row, id, loaded) {
-  if (!row) return loaded ? "#" + id + " is not on the board" : "Loading…";
+// No row yet is the board still listing: one it listed without is let go of.
+function panelTitleOf(row) {
+  if (!row) return "Loading…";
   return row.panel ? row.title : "#" + row.id + " " + row.title;
 }
 
@@ -1847,7 +1847,9 @@ function renderPanel() {
     pairingItem.textContent = pairing.shown ? "Hide pairing" : "Pairing…";
     if (!row) {
       const bare = bareRow();
-      panelTitle.textContent = panelTitleOf(bare, panelId, viewListed(lastView));
+      // An item the board has listed without is let go of, as ✕ would.
+      if (!bare && viewListed(lastView)) { closePanel(); return; }
+      panelTitle.textContent = panelTitleOf(bare);
       panelTop.replaceChildren(...(bare ? [el("p", "text-sm text-neutral-600 dark:text-neutral-300", bare.note)] : []));
       panelBottom.replaceChildren();
       composer.hidden = true;

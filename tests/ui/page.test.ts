@@ -1785,6 +1785,37 @@ describe("a click on the board's empty space", () => {
   });
 });
 
+describe("a selected item no longer on the board", () => {
+  const draw = (view: unknown) => {
+    const seen = { cleared: 0, title: "" };
+    const c: Record<string, unknown> = {
+      panelId: "12", lastView: view, openMenuKey: null, pairing: { shown: false },
+      keepingFocus: (f: () => void) => f(),
+      panelMore: {}, pairingItem: {}, composer: {},
+      panelTop: { replaceChildren: () => {} }, panelBottom: { replaceChildren: () => {} },
+      panelTitle: { set textContent(v: string) { seen.title = v; } },
+      closePanel: () => { seen.cleared++; }, closeMenu: () => {}, el: () => ({}),
+    };
+    for (const f of ["findRow", "currentRow", "bareRow", "panelTitleOf", "viewListed", "renderPanel"]) runInNewContext(fnSource(f), c);
+    runInNewContext("renderPanel()", c);
+    return seen;
+  };
+
+  it("is let go, as ✕ would, once the board has listed without it", () => {
+    expect(draw({ listed: true, rows: [] })).toEqual({ cleared: 1, title: "" });
+  });
+
+  it("reads Loading… until the board has listed, rather than being let go of", () => {
+    expect(draw(null)).toEqual({ cleared: 0, title: "Loading…" });
+    expect(draw({ listed: false, rows: [] })).toEqual({ cleared: 0, title: "Loading…" });
+  });
+
+  it("stays when the board lists it with no panel, titled by its number", () => {
+    const rows = [{ id: "12", kind: "item", title: "Two trackers", panel: null, note: "two sources", children: [] }];
+    expect(draw({ listed: true, rows })).toEqual({ cleared: 0, title: "#12 Two trackers" });
+  });
+});
+
 describe("the item panel's facts", () => {
   const facts = (row: object): Record<string, string> => {
     const [, dl] = runInNewContext(`${["el", "relatedOf", "panelTopOf"].map(fnSource).join("")} panelTopOf(ROW, null, 0)`, {
@@ -3058,15 +3089,14 @@ describe("the render rules of the sidebar pages", () => {
     };
     const clash = { id: "17", kind: "item", title: "Two trackers", panel: null, note: "reported by the sources of a and b" };
 
-    it("is titled by the row's own number and title, not 'not on the board'", () => {
-      expect(title(clash, "17", true)).toBe("#17 Two trackers");
+    it("is titled by the row's own number and title", () => {
+      expect(title(clash)).toBe("#17 Two trackers");
     });
-    it("keeps 'not on the board' for an id the view lacks, and Loading… before a view", () => {
-      expect(title(null, "17", true)).toBe("#17 is not on the board");
-      expect(title(null, "17", false)).toBe("Loading…");
+    it("reads Loading… while there is no row yet", () => {
+      expect(title(null)).toBe("Loading…");
     });
     it("titles a row with a panel by its title alone", () => {
-      expect(title({ ...clash, panel: {} }, "17", true)).toBe("Two trackers");
+      expect(title({ ...clash, panel: {} })).toBe("Two trackers");
     });
     it("is found by a lookup that offers no reads or writes", () => {
       const src = fnSource("renderPanel");
