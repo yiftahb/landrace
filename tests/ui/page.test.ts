@@ -1470,8 +1470,7 @@ describe("the page", () => {
 describe("the item panel's markup", () => {
   const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
 
-  it("starts closed, and takes the full width below sm", () => {
-    expect(aside).toMatch(/\shidden[\s>]/);
+  it("takes the full width below sm", () => {
     expect(aside).toMatch(/ w-full /);
     expect(aside).toMatch(/sm:w-\[28rem\]/);
   });
@@ -1518,7 +1517,8 @@ describe("the item panel's markup", () => {
       runInNewContext(`${fnSource("showPanel")} showPanel(TO)`, {
         TO: to, openMenuKey: "panel", closeMenu: () => closed.push("panel"),
         panelHeld: "7", pairingOnOpen: null, panelWide: false, messageBox: {}, setPanelNote: () => {},
-        panelEl: {}, document: { body: { classList: { toggle: () => {} } } },
+        panelEl: { classList: { toggle: () => {} } }, panelItem: {}, panelEmpty: {},
+        document: { body: { classList: { toggle: () => {} } } },
         stopPanelPoll: () => {}, renderPanel: () => {}, loadPairing: () => {}, markSelected: () => {},
       });
       expect(closed).toEqual(["panel"]);
@@ -1533,10 +1533,6 @@ describe("the item panel's markup", () => {
     // Not a <form>: the CSP's form-action 'none' would refuse a submit, and
     // Enter in a field must never try one.
     expect(PAGE_HTML).not.toMatch(/<form/);
-  });
-
-  it("pushes the board left while open, rather than covering it", () => {
-    expect(APP_JS).toContain('document.body.classList.toggle("sm:pr-[28rem]", open && !panelWide)');
   });
 
   it("polls every 1.5s", () => {
@@ -1603,6 +1599,125 @@ describe("the Escape key and the panel", () => {
 
   it("closes the panel when no menu is open", () => {
     expect(run({ menuOpen: false, panelId: "12" })).toEqual({ menus: 0, panels: 1 });
+  });
+});
+
+/** A classList that keeps what toggle(cls, force) leaves, for contains() to read back. */
+class FakeClasses {
+  private readonly set: Set<string>;
+  constructor(...cls: string[]) { this.set = new Set(cls); }
+  toggle(cls: string, force?: boolean): void { if (force ?? !this.set.has(cls)) this.set.add(cls); else this.set.delete(cls); }
+  contains(cls: string): boolean { return this.set.has(cls); }
+}
+
+// From sm up the panel never comes or goes, so opening or closing an item
+// never moves the board; with no item it says how to fill it.
+describe("the item panel with nothing selected", () => {
+  const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
+  const itemPart = PAGE_HTML.slice(PAGE_HTML.indexOf('<div id="panel-item"'), PAGE_HTML.indexOf("</aside>"));
+  const empty = /<p id="panel-empty" class="([^"]*)"[^>]*>([^<]*)<\/p>/.exec(PAGE_HTML);
+
+  it("starts on its empty state: no hidden attribute, the message shown and the item's part hidden", () => {
+    expect(aside).not.toMatch(/\shidden[\s>]/);
+    expect(empty?.[2]).toBe("Select an item to see its details");
+    expect(empty?.[0]).not.toMatch(/\shidden[\s>]/);
+    expect(PAGE_HTML).toMatch(/<div id="panel-item" hidden[\s>]/);
+  });
+
+  it("keeps the header's ⋯, Full width and ✕, and the composer, in the part the empty state hides", () => {
+    for (const id of ["panel-more", "panel-wide", "panel-close", "panel-composer"]) expect(itemPart).toContain(`id="${id}"`);
+    expect(itemPart).not.toContain('id="panel-empty"');
+  });
+
+  it("says it centred, in the quiet neutral of the empty Needs You, and no new colour", () => {
+    const cls = empty?.[1]?.split(" ") ?? [];
+    expect(cls).toEqual(expect.arrayContaining(["items-center", "justify-center", "text-center", "text-neutral-500", "dark:text-neutral-400"]));
+    expect(cls.join(" ")).not.toMatch(/(rose|amber|emerald|blue)-/);
+  });
+
+  it("leaves the board room for it from the first paint, before the script runs", () => {
+    expect(/<body class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ")).toContain("sm:pr-[28rem]");
+    expect(aside.split(/[\s"]+/)).toContain("max-sm:hidden");
+  });
+
+  // The page script for real: the hash, ✕, Escape and Back all end in
+  // showPanel, run here against elements that keep what it sets.
+  const page = (hash: string, panelWide = false) => {
+    const location = { hash, pathname: "/", search: "" };
+    const panelEl = { classList: new FakeClasses("sm:w-[28rem]", "max-sm:hidden") };
+    const panelItem = { hidden: true };
+    const panelEmpty = { hidden: false };
+    const body = { classList: new FakeClasses("sm:pr-[28rem]") };
+    const c: Record<string, unknown> = {
+      location, lastView: null, openMenuKey: null, panelId: null, panelHeld: null, panelWide, pairingOnOpen: null,
+      panelEl, panelItem, panelEmpty, document: { body, activeElement: null },
+      history: { replaceState: (_a: unknown, _b: string, url: string) => { location.hash = url.slice(url.indexOf("#")); } },
+      messageBox: { value: "" }, setPanelNote: () => {}, closeMenu: () => {}, markSelected: () => {},
+      stopPanelPoll: () => {}, renderPanel: () => {}, loadPairing: () => {}, render: () => {},
+      resetIdleTimer: () => {}, toggleAll: { click: () => {} },
+    };
+    for (const f of ["routeOf", "hashOf", "pageOf", "pageNow", "showPanel", "closePanel", "onHashChange", "isTypingTarget", "onBoard", "onKeydown"]) {
+      runInNewContext(fnSource(f), c);
+    }
+    const go = (code: string): void => { runInNewContext(code, c); };
+    // What a person sees: the empty state or the item, whether a phone shows
+    // the panel at all, and whether the board keeps room for it from sm up.
+    const seen = () => ({
+      empty: !panelEmpty.hidden,
+      item: !panelItem.hidden,
+      belowSm: !panelEl.classList.contains("max-sm:hidden"),
+      narrow: panelEl.classList.contains("sm:w-[28rem]"),
+      padded: body.classList.contains("sm:pr-[28rem]"),
+    });
+    const select = (id: string): void => { location.hash = "#/w/main?item=" + id; go("onHashChange()"); };
+    return { location, go, seen, select };
+  };
+  const EMPTY = { empty: true, item: false, belowSm: false, narrow: true, padded: true };
+  const OPEN = { empty: false, item: true, belowSm: true, narrow: true, padded: true };
+
+  it("shows the empty state when the page opens with no item in the hash", () => {
+    const p = page("#/w/main");
+    p.go("onHashChange()");
+    expect(p.seen()).toEqual(EMPTY);
+  });
+
+  it("goes back to the empty state after ✕, Escape and Back, never hidden, the board padded throughout", () => {
+    const p = page("#/w/main");
+    p.select("12");
+    expect(p.seen()).toEqual(OPEN);
+    p.go("closePanel()");
+    expect(p.seen()).toEqual(EMPTY);
+    expect(p.location.hash).toBe("#/w/main");
+    p.select("12");
+    p.go('onKeydown({ key: "Escape" })');
+    expect(p.seen()).toEqual(EMPTY);
+    expect(p.location.hash).toBe("#/w/main");
+    p.select("12");
+    p.location.hash = "#/w/main";
+    p.go("onHashChange()");
+    expect(p.seen()).toEqual(EMPTY);
+  });
+
+  it("stays hidden below sm with no item selected, where it would cover the whole board", () => {
+    const p = page("#/");
+    p.go("onHashChange()");
+    expect(p.seen().belowSm).toBe(false);
+    p.select("12");
+    expect(p.seen().belowSm).toBe(true);
+    p.go("closePanel()");
+    expect(p.seen().belowSm).toBe(false);
+  });
+
+  it("takes the whole page in Full width only while an item is open", () => {
+    const p = page("#/w/main", true);
+    p.select("12");
+    expect(p.seen()).toEqual({ ...OPEN, narrow: false, padded: false });
+    p.go("closePanel()");
+    expect(p.seen()).toEqual(EMPTY);
+  });
+
+  it("ships the rule that hides it below sm", () => {
+    expect(APP_CSS).toContain(".max-sm\\:hidden{");
   });
 });
 
