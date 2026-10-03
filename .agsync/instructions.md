@@ -149,7 +149,7 @@ Everything we write carries a trailing marker. Only the **last** marker in a bod
 These rules hold for anyone, person or agent, who edits `README.md` or `docs/`. The README grew past a thousand lines, most of them reference.
 
 - **The README is for users, and it stays short:** about 250 lines at most. Reference lives in `docs/`: configuration, schemas, CLI flags, `validate` rules, integration setup. The README links to it. Never add a configuration table, a schema or a flag list to the README.
-- **Keep the README's order:** hero, what it does, why, quick start, the two workflows, the board, how it works, integrations, safety, documentation map, contributing, license.
+- **Keep the README's order:** hero, key concepts, what it does, quick start, the two workflows, the board, MCP, how it works, integrations, safety, documentation map, contributing, license.
 - **The hero** opens with a tagline of at most 12 words that names the job, with no internal jargon. One sentence follows it. It carries at most 5 badges, and each proves something: CI, release, license, Node version. It shows one real image of the product, with descriptive alt text.
 - **The quick start** has at most 4 commands, with the prerequisites in one line above them, and says what the reader sees on success. It works on a clean machine. Re-run it whenever a command, a flag or a default changes.
 - **Every code block is copy-pasteable.** No `$` prompts. Input and output go in separate blocks. Every block has a language tag. A placeholder says where its value comes from.
