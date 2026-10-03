@@ -437,16 +437,29 @@ function closeMenu(opts) {
   }
 }
 
+// The board's empty space: not the page header, the panel, an item's row or
+// a control — a lane's header among them, which collapses the lane.
+function emptySpace(target) {
+  return Boolean(target && typeof target.closest === "function")
+    && target.closest("header, #panel, [role=treeitem], [role=menu], a, button, input, textarea, select, label, summary") === null;
+}
+
 // Defined once, not per row: because these are module-level listeners
-// rather than one pair per row, re-rendering never multiplies them.
-document.addEventListener("click", (e) => {
-  if (openMenuKey === null) return;
+// rather than one pair per row, re-rendering never multiplies them. A click
+// outside an open menu closes it; with none open, a click on the board's
+// empty space clears the panel's item, as ✕ does.
+function onDocumentClick(e) {
+  if (openMenuKey === null) {
+    if (panelId !== null && emptySpace(e.target)) closePanel();
+    return;
+  }
   const menu = byKey(menuKeyOf(openMenuKey));
   const trigger = byKey(triggerKeyOf(openMenuKey));
   const inside = (menu && menu.contains(e.target)) || (trigger && trigger.contains(e.target));
   if (!inside) { closeMenu(); return; }
   resetIdleTimer();
-});
+}
+document.addEventListener("click", onDocumentClick);
 // Whether focus is somewhere a "c" is a letter someone is typing, not a
 // shortcut — the search box above all, but any field or contenteditable
 // reads the same way.

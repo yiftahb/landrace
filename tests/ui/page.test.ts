@@ -1721,6 +1721,70 @@ describe("the item panel with nothing selected", () => {
   });
 });
 
+describe("a click on the board's empty space", () => {
+  interface Node { tag: string; id: string | undefined; role: string | undefined; parent: Node | null; closest(sel: string): Node | null }
+  // A target and its ancestors, outermost first — enough of closest() for
+  // tag, #id and [role=…] selectors.
+  const at = (...path: string[]): Node => {
+    let parent: Node | null = null;
+    for (const step of ["html", "body", ...path]) {
+      const [, tag = "", id, role] = /^(\w+)(?:#([\w-]+))?(?:\[role=(\w+)\])?$/.exec(step) ?? [];
+      const self: Node = {
+        tag, id, role, parent,
+        closest(sel) {
+          const hits = (n: Node, s: string): boolean => s === n.tag || s === "#" + n.id || s === "[role=" + n.role + "]";
+          for (let n: Node | null = self; n; n = n.parent) if (sel.split(",").some((s) => hits(n as Node, s.trim()))) return n;
+          return null;
+        },
+      };
+      parent = self;
+    }
+    return parent as Node;
+  };
+  const click = (target: Node, opts: { panelId?: string | null; menu?: string | null } = {}) => {
+    const seen = { cleared: 0, menus: 0 };
+    runInNewContext(`${fnSource("emptySpace")}${fnSource("onDocumentClick")} onDocumentClick({ target: TARGET })`, {
+      TARGET: target, panelId: opts.panelId === undefined ? "12" : opts.panelId, openMenuKey: opts.menu ?? null,
+      closePanel: () => { seen.cleared++; }, closeMenu: () => { seen.menus++; },
+      byKey: () => null, menuKeyOf: (k: string) => k, triggerKeyOf: (k: string) => k, resetIdleTimer: () => {},
+    });
+    return seen;
+  };
+
+  it("clears the selection, as ✕ does, beside or below the lanes", () => {
+    expect(click(at("div"))).toEqual({ cleared: 1, menus: 0 });
+    expect(click(at("div", "main"))).toEqual({ cleared: 1, menus: 0 });
+    expect(click(at("div", "main", "section", "ul", "li"))).toEqual({ cleared: 1, menus: 0 });
+  });
+
+  it("leaves it on a row, a row's menu button, a lane's header, a link, an input or the panel", () => {
+    const row = ["div", "main", "section", "ul", "li[role=treeitem]"];
+    for (const target of [
+      at(...row, "div", "span"),
+      at(...row, "div", "button"),
+      at("div", "main", "details", "summary", "h2"),
+      at("div", "nav", "ul", "li", "a", "span"),
+      at("div", "main", "div", "input"),
+      at("aside#panel", "div", "p"),
+      at("header", "div", "span"),
+    ]) {
+      expect(click(target)).toEqual({ cleared: 0, menus: 0 });
+    }
+  });
+
+  it("only closes an open menu, as Escape does", () => {
+    expect(click(at("div", "main"), { menu: "19:menu" })).toEqual({ cleared: 0, menus: 1 });
+  });
+
+  it("does nothing with no item selected", () => {
+    expect(click(at("div", "main"), { panelId: null })).toEqual({ cleared: 0, menus: 0 });
+  });
+
+  it("is the one document click listener, beside the menus' outside click", () => {
+    expect(APP_JS).toContain('document.addEventListener("click", onDocumentClick);');
+  });
+});
+
 describe("the item panel's facts", () => {
   const facts = (row: object): Record<string, string> => {
     const [, dl] = runInNewContext(`${["el", "relatedOf", "panelTopOf"].map(fnSource).join("")} panelTopOf(ROW, null, 0)`, {
