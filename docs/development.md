@@ -13,7 +13,7 @@ pnpm build
 node dist/cli.js --help
 ```
 
-The project's own hooks (`.landrace/hooks/*.ts`) import `landrace/hooks`, `landrace/kit` and `landrace/integrations/<vendor>`, which resolve to the built `dist/`. Run `pnpm build` after pulling, before `landrace start`, `landrace mcp` or `landrace validate`.
+The project's own hooks (`.landrace/hooks/*.ts`) import from the built `dist/`, so a command run after pulling needs a fresh build first — see [Command line](cli.md).
 
 ## The gate
 

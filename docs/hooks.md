@@ -17,7 +17,7 @@ hooks:
 - A module imports the contracts from `landrace/hooks` and exports whatever kinds it implements. The loader classifies each export by the **brand** its `define*` helper stamped, never by its shape, so one module can be a whole integration.
 - Two of anything singular — two sources, two operators, two hooks of one kind under one id, two notifiers under one id — halt at load, naming both modules.
 
-Hook modules are imported at runtime with no build step, so they need a Node that strips types: 22.18 or newer does it unflagged, and the CLI re-runs itself with `--experimental-strip-types` on an older 22.x. Inside this repository, `landrace/hooks`, `landrace/kit` and `landrace/integrations/<vendor>` resolve to the built `dist/`, so run `pnpm build` after pulling.
+Hook modules are imported at runtime with no build step. Which Node that needs, and the build it needs inside this repository, is in [Command line](cli.md).
 
 ## The define* contracts
 
