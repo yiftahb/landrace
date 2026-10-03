@@ -270,8 +270,23 @@ describe("relationships on the tracker base", () => {
   const chain = (...ids: string[]): Array<Partial<ExternalItem>> =>
     ids.map((id, i) => ({ id, related: ids[i + 1] === undefined ? [] : [{ type: B, to: ids[i + 1] as string }] }));
 
-  it("declares blocked-by, which an item may have many of, beside child-of", () => {
-    expect(new MemoryTracker().relations()).toEqual([{ type: "child-of", singular: true }, { type: B, singular: false }]);
+  // A read draws only the item's own relationships, never another item's
+  // toward it: `rel.blocked-by.in` would count none in every read.
+  it("declares blocked-by, which an item may have many of and a read draws outward only, beside child-of", () => {
+    expect(new MemoryTracker().relations()).toEqual([
+      { type: "child-of", singular: true }, { type: B, singular: false, outwardOnly: true },
+    ]);
+  });
+
+  // Not found is not missing, at the kit's default too: a tracker that reads
+  // no relationship declares none, so a workflow gated on one fails validate.
+  it("declares no relationship but the parent for a tracker that does not say it reads one", () => {
+    class Unread extends MemoryTracker {
+      protected override readRelations(): string[] {
+        return [];
+      }
+    }
+    expect(new Unread().relations()).toEqual([{ type: "child-of", singular: true }]);
   });
 
   describe("in the listing", () => {

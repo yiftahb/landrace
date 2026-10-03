@@ -69,6 +69,11 @@ describe("the client", () => {
     expect(await jira.login(ctx)).toBe(BOT.accountId);
   });
 
+  // Jira's issue links are not read: an item's blockers would read as none.
+  it("declares the parent alone, reading no other relationship", () => {
+    expect(new Jira({ project: "KEY" }).relations()).toEqual([{ type: "child-of", singular: true }]);
+  });
+
   it("refuses a project that is not a Jira project key", () => {
     expect(() => new Jira({ project: "key" })).toThrow(/project key/);
     expect(() => new Jira({ project: "K\" OR project = X" })).toThrow(/project key/);

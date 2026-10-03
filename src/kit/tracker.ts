@@ -479,11 +479,25 @@ export abstract class BaseTracker {
   }
 
   /**
-   * An item's parent, and whatever else it relates to — `blocked-by` first.
-   * Not singular: an item may wait on many.
+   * The relationship types beside `child-of` this tracker's
+   * `ItemRecord.related` reports: none, until an integration says which it
+   * reads. A type it never reads is never declared, so a workflow routing
+   * on one fails `validate` rather than reading "none" of what it cannot see.
+   */
+  protected readRelations(): string[] {
+    return [];
+  }
+
+  /**
+   * An item's parent, and whatever else it relates to — `blocked-by`, say.
+   * Not singular: an item may wait on many. Drawn outward only by a read,
+   * which reads the item's own relationships and never another's toward it.
    */
   relations(): RelationDecl[] {
-    return [{ type: RELATIONS.childOf, singular: true }, { type: RELATIONS.blockedBy, singular: false }];
+    return [
+      { type: RELATIONS.childOf, singular: true },
+      ...this.readRelations().map((type): RelationDecl => ({ type, singular: false, outwardOnly: true })),
+    ];
   }
 
   /** The operator's: the types `relate` and `unrelate` take. */

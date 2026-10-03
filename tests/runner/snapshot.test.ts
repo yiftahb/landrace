@@ -339,6 +339,12 @@ describe("snapshotProvides", () => {
     expect(covered("now")).toBe(true);
   });
 
+  it("provides only the outgoing side of a type a read draws outward only", () => {
+    const provided = snapshotProvides([], staticSource({ nodes: [], relationships: [] }, [{ type: "x", singular: false, outwardOnly: true }])) ?? [];
+    expect(provided).toEqual(expect.arrayContaining(["rel.x", "rel.x.out", "rel.x.out.total", "rel.x.out.open"]));
+    expect(provided.filter((p) => p.startsWith("rel.x.in"))).toEqual([]);
+  });
+
   // The same guard for `rel`: REL_AGG is written by hand and RelAgg is not.
   it("covers every field deriveRel counts, for a declared type, both ways", () => {
     const provided = snapshotProvides([], staticSource({ nodes: [], relationships: [] }, [{ type: "x", singular: false }])) ?? [];

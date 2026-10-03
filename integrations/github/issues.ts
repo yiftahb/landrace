@@ -543,6 +543,11 @@ export class GitHubIssues extends BaseTracker {
     await this.gh(ctx).updateIssue(issueNumber(id), fields);
   }
 
+  /** GitHub's issue dependencies, "blocked by", read off each issue's `blockedBy`. */
+  protected override readRelations(): string[] {
+    return [RELATIONS.blockedBy];
+  }
+
   /** GitHub's issue dependencies, "blocked by". */
   protected override writableRelations(): string[] {
     return [RELATIONS.blockedBy];

@@ -74,9 +74,12 @@ export function snapshotProvides(pre: PreHook[], source: Source | null): string[
   if (pre.length === 0 && source === null) return null;
   // Per declared type, so `rel.blocks.in.total` against a source that never
   // reports `blocks` is flagged: it would count zero for ever.
-  const rel = (source?.relations ?? []).flatMap(({ type }) => [
+  // And only the side a read draws: a type drawn outward only would count
+  // none inward in every read.
+  const rel = (source?.relations ?? []).flatMap(({ type, outwardOnly }) => [
     `rel.${type}`,
-    ...(["in", "out"] as const).flatMap((side) => [`rel.${type}.${side}`, ...REL_AGG.map((f) => `rel.${type}.${side}.${f}`)]),
+    ...(outwardOnly ? (["out"] as const) : (["in", "out"] as const))
+      .flatMap((side) => [`rel.${type}.${side}`, ...REL_AGG.map((f) => `rel.${type}.${side}.${f}`)]),
   ]);
   return [...ENGINE_PROVIDES, "rel", ...rel, ...pre.flatMap((hook) => hook.provides ?? [])];
 }

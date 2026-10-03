@@ -243,6 +243,11 @@ export class MemoryTracker extends BaseTracker {
     return this.add({ ...item, author: BOT, parent: item.parent ?? null, priority: item.priority ?? null }, String(n)).id;
   }
 
+  /** It reads `blocked-by` off its rows' `related`. */
+  protected override readRelations(): string[] {
+    return [RELATIONS.blockedBy];
+  }
+
   /** It writes `blocked-by`: any other type is refused before it gets here. */
   protected override writableRelations(): string[] {
     return [RELATIONS.blockedBy];

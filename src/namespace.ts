@@ -73,7 +73,17 @@ export interface Relationship { from: string; to: string; type: string }
 export interface Graph { nodes: Node[]; relationships: Relationship[] }
 
 /** A relationship type a source reports, and whether a node may have at most one OUTGOING edge of it. */
-export interface RelationDecl { type: string; singular: boolean }
+export interface RelationDecl {
+  type: string;
+  singular: boolean;
+  /**
+   * True where a read draws this type only from its item outward — the
+   * edges other items have toward it are not read — so `rel.<type>.in`
+   * would count none in every read. The snapshot provides only its `out`
+   * side, and `validate` refuses a workflow reading the other.
+   */
+  outwardOnly?: true;
+}
 
 /** The counts over one direction of one relationship type. */
 export interface RelAgg {
