@@ -1,8 +1,9 @@
 # Command line
 
-Landrace is one command, `landrace`, with five subcommands. Each takes the **workspace** — the `.landrace/` folder holding `landrace.yaml`, the workflows and the hooks. Every subcommand but `next`, which requires it, defaults to `.landrace` in the current folder.
+Landrace is one command, `landrace`, with six subcommands. Each but `init` takes the **workspace** — the `.landrace/` folder holding `landrace.yaml`, the workflows and the hooks. Every one of those but `next`, which requires it, defaults to `.landrace` in the current folder.
 
 ```text
+landrace init     <name>
 landrace validate [dir]
 landrace status   [-w, --workspace <dir>]
 landrace start    [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui]
@@ -12,9 +13,17 @@ landrace mcp      [-w, --workspace <dir>] [--workflow <id>]
                   [--child <parent> --stage <stage> --round <round>]
 ```
 
-Every subcommand but `next` imports the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
+Every subcommand but `init` and `next` imports the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
 
 Inside this repository, `landrace/hooks`, `landrace/kit` and `landrace/integrations/<vendor>` resolve to the built `dist/`, so run `pnpm build` after pulling and before any of these commands. A hook newer than the build fails to import, and the error says to rebuild.
+
+## landrace init
+
+```text
+landrace init <name>
+```
+
+Creates the workflow `<name>` under `.landrace/workflows/<name>/` in the current folder: a commented `workflow.yaml` with one entry stage that admits items labelled `lr:<name>`, and an empty `steps/`. Where `.landrace/` does not exist yet, it also writes a commented `landrace.yaml` and adds `.landrace/.env` to `.gitignore` unless git already ignores it. It never overwrites: an existing workflow folder is refused, and so is a `<name>` that is not a usable workflow id or whose label the engine writes itself. It prints each file it created and what to do next — including, when `landrace.yaml` has a `workflows:` list, adding `<name>` to it, which `init` never edits.
 
 ## landrace validate
 
