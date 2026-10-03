@@ -19,7 +19,7 @@ landrace update
 
 Every subcommand but `init` and `next` imports the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
 
-Inside this repository, `landrace/hooks`, `landrace/kit` and `landrace/integrations/<vendor>` resolve to the built `dist/`, so run `pnpm build` after pulling and before any of these commands. A hook newer than the build fails to import, and the error says to rebuild.
+A hook's `landrace/*` imports resolve to the copy of Landrace that is running ([Hook modules](hooks.md#hook-modules)). Inside this repository that copy is the built `dist/`, so run `pnpm build` after pulling and before any of these commands. A hook newer than the build fails to import, and the error says to rebuild; with an installed copy, it says to update Landrace.
 
 ## landrace init
 

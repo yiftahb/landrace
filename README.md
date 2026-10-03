@@ -36,7 +36,8 @@ Landrace takes issues from your issue tracker; each one it works on is an **item
 - **Workspaces.** A project's workspace is its `.landrace/` folder: its workflows live there and can be reviewed like code. One `landrace start` runs several side by side (this repository runs two: full-cycle, which starts with a written spec, and fastlane, for small changes), and each item is worked by one of them only: an item two would take stops for a person ([Several workflows](docs/workflows.md#several-workflows-in-one-workspace)).
 - **The engine knows no vendor.** GitHub, GitLab, Jira, Notion, Slack, Claude Code and Codex are integrations, not part of the engine. You can add your own on the integration kit: see [Writing an integration](docs/hooks.md).
 - **MCP.** Drive Landrace from your coding agent's chat, over the Model Context Protocol: see [MCP](#mcp).
-- **The board.** A local web page that sorts items into lanes, with the ones that need you first. From it you reply, retry a failed agent run, or take an agent's work over in your own terminal, which Landrace calls pairing ([The board](docs/cli.md#the-board)).
+- **The board.** A local web page that sorts items into lanes, with the ones that need you first. From it you reply, retry a failed agent run, or start pairing ([The board](docs/cli.md#the-board)).
+- **Pairing.** Work a step together with the agent in your own terminal instead of letting it run alone: write the spec with it, or build with it. Landrace holds the step for you, and when you finish, the work is handed in as yours. In full-cycle, a spec written together needs no separate approval. Start it from [the board](docs/cli.md#the-board) or with `landrace_pair` over MCP ([the operator tools](docs/cli.md#the-operator-tools)). It works with Claude Code and Codex; Codex can only carry on a step its agent has already run.
 - **A person at the gates you choose, or none.** Approve a spec, merge a pull request, or let fastlane merge by itself ([The shipped workflows](docs/workflows.md#the-shipped-workflows)). Browser or Slack [notifications](docs/configuration.md#notify) say when an item needs you.
 - **Dependencies.** In the shipped workflows, an item waits before it builds until the items blocking it are done ([Waiting on blockers](docs/workflows.md#waiting-on-blockers)).
 - **It learns from friction.** In the shipped workflows, once an item that needed corrections passes review, a retro agent writes the lessons into the agents' prompts and docs, and a reviewer reads them before they merge ([The retro](docs/workflows.md#the-retro)).
@@ -75,11 +76,9 @@ You need Node 22 or newer, a GitHub repository and a classic token with the `rep
 In your repository's root:
 
 ```bash
-npm install --save-dev landrace
-npx landrace init main
+npm install -g landrace
+landrace init main
 ```
-
-Landrace is a dependency of the project, not a global tool: your hooks import `landrace/kit` from its `node_modules`.
 
 `init` writes `.landrace/`: a commented `landrace.yaml`, and a workflow named `main` that takes issues labelled `lr:main`. It also adds `.landrace/.env` to `.gitignore`. Before you start it, connect it to GitHub and Claude Code.
 
@@ -116,7 +115,7 @@ Landrace is a dependency of the project, not a global tool: your hooks import `l
 Using Codex instead? Its hook and settings are in [Integrations](docs/integrations.md#codex). Then start Landrace:
 
 ```bash
-npx landrace start
+landrace start
 ```
 
 `start` checks the token's permissions, then serves the **board** at `http://127.0.0.1:4545/`. Every 60 seconds it runs a **tick**: one pass over the tracker's issues.
@@ -145,7 +144,7 @@ Both also stop for a person at a halt: a step whose output was broken, a push th
 - **A page per workflow**, with its items in lanes: Needs you, Agent running, Held elsewhere, Waiting, Not admitted and Done.
 - **An item's panel**: its stage, its pull requests and spec, its conversation with Landrace, and its relationships to other items. From 640 px up the panel is always open on the right, so the board never shifts; with nothing selected it says "Select an item to see its details".
 
-From the board, a person can reply on an item, ask the step that last ran a question, then hand the item back to its workflow. They can retry a failed step, or send an item back to an earlier step. They can also take a step over in their own terminal, which Landrace calls pairing. Browser notifications say when an item needs you.
+From the board, a person can reply on an item, ask the step that last ran a question, then hand the item back to its workflow. They can retry a failed step, or send an item back to an earlier step. They can also pair on a step. Browser notifications say when an item needs you.
 
 ## MCP
 
