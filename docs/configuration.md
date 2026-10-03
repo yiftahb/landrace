@@ -1,0 +1,174 @@
+# Configuration
+
+A project's Landrace settings live in its **workspace**, the `.landrace/` folder: `landrace.yaml` for how Landrace runs, and `.env` for secrets. The workflows themselves are described in [Workflows](workflows.md).
+
+## landrace.yaml
+
+`.landrace/landrace.yaml` holds the runtime: how agents run and where items live. A workflow keeps none of this, so one workflow carries from project to project.
+
+Every key, with its default:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `version` | — (required) | Always `1` |
+| `agent.adapter` | — (required) | The executor that runs steps and conversation turns: an id a hook registers with `defineExecutor`. The shipped ones are `claude` and `codex` — see [Integrations](integrations.md#claude-code) |
+| `agent.isolation` | `worktree` | How the engine prepares the folder a step runs in: `none`, `worktree` or `container`. A stage that names a `branch` needs `worktree` |
+| `agent.*` (any other key) | — | Passed unread to the executor `agent.adapter` names. The shipped executors' keys are below |
+| `tracker.*` | `{}` | Passed unread to the hooks. The GitHub integration reads `tracker.repo` and `tracker.bot` — see [Integrations](integrations.md#github) |
+| `tick.interval` | `60s` | How often a tick runs, as a [duration](#durations) |
+| `tick.concurrency` | `3` | How many items are acted on at once, across every workflow in the workspace |
+| `security.screen` | `true` | Screen each prompt for injection before running an agent that can act — see [Security](security.md#screening-prompts) |
+| `security.adapter` | `agent.adapter` | The executor that screens: an id a hook registers with `defineExecutor`. It must run the screener with no tools, or refuse |
+| `security.model` | none | The model the screening run asks for. Absent, the screening executor's own default decides |
+| `log.redact` | `[]` | Names of secrets whose values are never logged |
+| `secrets.*` | `{}` | Values handed to hooks, usually `$VAR` references resolved from [`.env`](#env) |
+| `workflows` | by each workflow's `name`, then folder id | The order workflows are listed in, on the board and by the MCP. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
+| `vars.*` | `{}` | Values substituted into the workflow files — see [vars](#vars) |
+| `notify.on` | none | The events to tell a person about. There is one: `needs-you` |
+| `notify.via` | none | Notifier ids, each registered by a hook with `defineNotifier`. The shipped one is `slack` |
+
+### The agent block
+
+Both shipped executors, Claude Code and Codex, read these `agent.*` keys and refuse any other at startup:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `agent.model` | the agent's own default | The model every step and turn asks for. A step's own `model` wins |
+| `agent.effort` | the agent's own default | How hard the agent thinks, for every step and turn (never the screener). A step's own `effort` wins. Claude takes `low`, `medium`, `high`, `xhigh` or `max`; Codex takes `none`, `low`, `medium`, `high` or `xhigh` |
+| `agent.mcp` | `[]` | The MCP servers a step or turn may use. Each entry is a server name, or `{ name, tools }` to allow only some of its tools |
+| `agent.sandbox.hosts` | `[]` | The only hosts a write step's commands may reach |
+| `agent.sandbox.deny` | `[~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc]` | Paths under your home that a write step may not read. A list you write replaces the default |
+| `agent.plugins` | `[]` | Claude Code only: the plugins a step runs with. Codex refuses it |
+
+What these keys do to a run — which servers a step gets, what the sandbox allows and refuses — is in [Security](security.md#mcp-servers-a-step-may-hold) and [Security](security.md#a-write-steps-sandbox); how each executor applies them is in [Integrations](integrations.md#claude-code).
+
+An `agent.mcp` entry names a server defined in the repository root's `.mcp.json`. A tool name follows the same rule as a server name — letters, digits, `.`, `_` and `-`. An entry with an empty `tools` list, or a server named twice, is refused. This repository's own configuration allows the code graph's reading tools and nothing else:
+
+```yaml
+agent:
+  mcp:
+    - name: codebase-memory-mcp
+      tools: [search_graph, trace_path, get_code_snippet, query_graph, get_architecture,
+              search_code, get_graph_schema, index_status, list_projects, index_repository]
+```
+
+`landrace start` and `landrace mcp` refuse to start — and `landrace validate` reports the same — when `agent.mcp` names a server but the repository root has no `.mcp.json`, when a name is not in it (the refusal lists the names it does define), or when a name is Landrace's own operator server. `landrace status` runs no step and needs no `.mcp.json`.
+
+### notify
+
+With a `notify:` block, an item that comes to rest in Needs you is announced once through each notifier `via` names:
+
+```yaml
+notify:
+  on: [needs-you]
+  via: [slack]
+```
+
+The message reads `#29 needs you in <workflow> — <title> · <why>`, where `<workflow>` is the name of the workflow that owns the item and `<why>` is the board's note for it (`waiting on you`, `blocked by a security check`, …). Needs you is the board's own rule, so the two never disagree.
+
+- An item that stays in Needs you is not announced again; one that leaves and comes back is.
+- An item that arrives at a `waits: person` stage placed by its own state is announced by the tick, after its pass, when it settled there on its first pass or its lock was held elsewhere. A stage placed by a label is announced on the transition into it.
+- A tick whose pass halts, fails or moves the item on announces nothing, and the next tick that finds it waiting announces it.
+- Nothing is kept about what was sent. After a restart — and on every `start --once`, which is a process of its own — each item already waiting at a stage placed by state is announced once more.
+- An item passing through `triage` on its way back is never announced: `triage` runs its step at once.
+- Sending is fire and forget. A notifier that fails is a `notify.failed` line in the log, and it never stops an item.
+
+`start` refuses, and `validate` reports, a `via` id no loaded notifier answers to. Writing a notifier is in [Writing an integration](hooks.md#notifiers); Slack's setup is in [Integrations](integrations.md#slack).
+
+### vars
+
+`vars` lets one workflow serve several instances — say, one per developer, each working the items assigned to them:
+
+```yaml
+vars:
+  assignee: $LANDRACE_ASSIGNEE
+  team: platform
+```
+
+Wherever `{vars.<name>}` appears in `workflow.yaml` or a step file — a condition, an effect field, a prompt — it is replaced at load with the resolved value. Everything downstream then sees a literal, exactly as if it had been typed: the schema, the operator allowlist, `validate`'s path coverage and the condition itself.
+
+Substitution walks the parsed YAML, never its text, so a value with a colon, a newline or a quote lands in one string and stays one string. It fills in `{vars.…}` and nothing else: `{round}`, `{stage}` and `{node.title}` belong to the engine and survive untouched. Values are strings.
+
+Vars are configuration, not state. They do not vary per item, so they are not in the snapshot.
+
+Every mistake is a load error, never a default:
+
+- a var that does not resolve, or resolves to an empty value, is refused by name — a condition filled in with nothing matches no item, which is the hardest failure there is to read;
+- a `{vars.x}` nothing defines is refused, naming the variable, the file and the field;
+- a `vars` entry nothing references is refused too — usually the same typo seen from the other end.
+
+**Vars are not secrets.** A secret is handed to a hook and redacted from every log line by value. A var is substituted into the workflow, so it reaches tracker comments, agents' prompts and the events recording both, with nothing redacting it. `validate` reports, and `start` refuses, a var whose value equals a declared secret's.
+
+**Several developers, one repository.** Each instance exports its own assignee, and the workflow filters on it:
+
+```yaml
+# landrace.yaml — differs per developer, through the environment
+vars:
+  assignee: $LANDRACE_ASSIGNEE
+```
+
+```yaml
+# workflow.yaml — the same file for everyone
+eligible:
+  - when: { "node.state.assignees": { $in: ["{vars.assignee}"] } }
+    else: "assigned to somebody else"
+```
+
+An item assigned to somebody else is skipped, with that `else` as the reason `landrace status` prints, and nothing is written to it. An item assigned to nobody is skipped by everybody rather than worked by everybody, because `node.state.assignees` is an empty list, never absent. The skip costs nothing per item: `list()` already carries every item's assignees, so the rule is answered before any item is read and before any lock is taken.
+
+### Durations
+
+`tick.interval`, a workflow's `budget.stepTimeout` and a step's `timeout` are durations: a whole number followed by `s`, `m` or `h` — `60s`, `2m`, `1h`. A bare number is refused, and so is anything above 596 hours.
+
+## .env
+
+`.landrace/.env` holds secrets as `KEY=value` lines. Blank lines and lines starting with `#` are ignored, and a value may be quoted.
+
+```dotenv
+GITHUB_TOKEN=ghp_your_token_here
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T…/B…/…
+SLACK_NOTIFY_USER=U0123456789
+```
+
+`landrace.yaml` names each secret it wants under `secrets:`, as a `$VAR` or `${VAR}` reference:
+
+```yaml
+secrets:
+  githubToken: $GITHUB_TOKEN
+log:
+  redact: [githubToken]
+```
+
+The reference is resolved at load, from `.env` first and then your shell — a project's own file wins over whatever is exported in the terminal. The value is handed to hooks; a hook never reads `process.env` itself, which keeps it testable and lets redaction know every value to suppress. A secret whose variable is set nowhere is reported by `validate`, and `landrace start` and `landrace mcp` refuse to start over it.
+
+`validate` fails if `.env` exists and git does not ignore it. `.landrace/.env.example` lists the variables this repository uses.
+
+## Telemetry
+
+Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to an OpenTelemetry collector as a **log record**, the way Claude Code exports its own events.
+
+- The record's body and its `event.name` attribute are the event's name.
+- Every other field becomes an attribute prefixed `landrace.` (`landrace.item`, and the agent's output in `landrace.raw`), JSON-encoded unless it is a string, number or boolean.
+- `*.failed`, `*.denied`, `*.blocked` and `lock.stolen` are `WARN`; everything else is `INFO`.
+- Records carry the same redaction as the console. Traces and metrics are not exported.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `LANDRACE_ENABLE_TELEMETRY` | `1` turns export on | off |
+| `OTEL_LOGS_EXPORTER` | `otlp` or `console` | `otlp` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` or `http/json`; `grpc` is refused | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | The collector's base URL; `/v1/logs` is appended | `http://localhost:4318` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `k=v,k=v`, for example auth; values are percent-decoded | none |
+| `OTEL_SERVICE_NAME` | `service.name` | `landrace` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `k=v,k=v`, extra resource attributes | none |
+| `OTEL_LOGS_EXPORT_INTERVAL` | Batch delay, in milliseconds | `5000` |
+
+Set them in `.landrace/.env` or your shell (`.env` wins), or on the command line, which wins over both: `landrace start --telemetry` sets `LANDRACE_ENABLE_TELEMETRY=1`, and `--otel KEY=VALUE`, repeatable, sets any key in the table — any other key is a startup error. `landrace mcp` reads `.env` and the shell only, and refuses `OTEL_LOGS_EXPORTER=console`, which would write into its protocol on stdout. `landrace status` never exports.
+
+`landrace start` flushes the batch on `--once`, on a normal stop and on the first Ctrl-C; a second Ctrl-C exits without waiting. An export that fails says so once on stderr, and again only after one has succeeded. None of these variables reach the agent's process: `OTEL_EXPORTER_OTLP_HEADERS` is usually a credential.
+
+To see it work, run a collector with the `debug` exporter on port 4318, then:
+
+```bash
+landrace start --once --telemetry
+```
