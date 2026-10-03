@@ -94,9 +94,19 @@ It costs no tracker calls: it polls the process every two seconds and shows what
 - **Go to step…** — on any open item whose agent is not running and whose stage lists a goto — sends it back to a step its stage names.
 - **Clear & retry** — on a screened item only — is a Retry that also clears the refused step's next round of the security check. See [Security](security.md#clearing-a-refused-step).
 
-Each asks first, then writes the same goto record `landrace_goto` does, after reading the item afresh; an item that has moved on, a step its stage does not list, or one past its cap is refused in a sentence the menu shows. Top right are a countdown to the next tick and **Run next tick now**, which starts a tick — or, while one is running, says "queued" and runs one once every tick in flight has ended. The icon-only **Refresh** button re-reads the tracker and reloads the board, one listing and nothing more. How these writes are guarded against other websites is in [Security](security.md#the-board).
+Each asks first, then writes the same goto record `landrace_goto` does, after reading the item afresh; an item that has moved on, a step its stage does not list, or one past its cap is refused in a sentence the menu shows. Top right are a countdown to the next tick and **Run next tick now**, which starts a tick — or, while one is running, says "queued" and runs one once every tick in flight has ended. The icon-only **Refresh** button re-reads the tracker and reloads the board, one listing and nothing more.
 
 **Chat.** Below the writes, the menu's "Chat" entries open a chat about that item, over the Landrace MCP, in Claude Code (`claude://`, the desktop app's Code tab), Claude Code (CLI) (`claude-cli://`, a terminal running `claude`), Cursor or Codex, plus a "Copy prompt" entry. Each only pre-fills the prompt; nothing is sent on its own. Cursor's link opens in whatever window is active. The CLI's link handler registers itself only after you have run an interactive `claude` session once.
+
+**The panel's writes.** At the panel's foot, a box takes your words for three writes, each the board's form of an [operator tool](#the-operator-tools):
+
+- **Reply** (Ctrl+Enter or ⌘+Enter) posts them as your comment, as `landrace_reply` does. It wakes no tick.
+- **Ask the step** asks first, then resumes the step's session with them, as `landrace_ask` does — a paid agent turn.
+- **Resolve** hands the item back, as `landrace_resolve` does, with the default reply.
+
+**Pairing…**, in the row's menu and the panel's own "⋯", opens the panel's Pairing section: what may be paired on, or the pairing open now. **Pair on `<stage>`** (or **Continue `<stage>` together**) asks first, then holds that step's round for you and shows the command to run, as `landrace_pair` does. With a pairing open, **Finish…** asks for an optional note and hands the work in — a paid agent turn — and **Release** asks first and gives the step back to the agent, as `landrace_finish` and `landrace_release` do.
+
+How every one of these writes is guarded against other websites is in [Security](security.md#the-board).
 
 **Notifications.** The 🔔 beside the theme toggle turns on browser notifications, remembered per browser. With it on, each item that has come into Needs you since the last poll raises one notification — "#29 needs you", with the title and why — and clicking it opens that item's panel. Opening the page announces nothing that was already waiting. If the browser has blocked notifications, the bell turns to 🔕 and says so.
 
@@ -153,7 +163,7 @@ The generated files are gitignored, so run it after cloning. Then ask your clien
 
 **Edits.** `landrace_update_item` is an edit, as on the tracker — a workflow's admit labels included, so taking `lr:auto` off stops an item and taking `lr:fast` off sends a fastlane item to full-cycle. The engine's own labels — `lr:working`, `lr:awaiting`, `lr:blocked`, `lr:screened` and every `lr:stage:*` — are refused, there and in `landrace_create_item`. An item no one workflow claims is edited through the one operator every workflow that could claim it shares, and refused, naming them, when they edit through different ones. How `relate` and `unrelate` are checked is in [Workflows](workflows.md#relating-items).
 
-**Waking the loop.** Every write — reply, goto, clear, ask, resolve, create or update — wakes `landrace start`, so a person does not wait out the interval. The MCP server is a separate process: it touches a `wake` file beside the locks, and `start` checks that file every second. A Retry or "Go to step…" on the board wakes it the same way.
+**Waking the loop.** Every write — reply, goto, clear, ask, resolve, create or update — wakes `landrace start`, so a person does not wait out the interval. The MCP server is a separate process: it touches a `wake` file beside the locks, and `start` checks that file every second. On the board, Retry, Clear & retry, "Go to step…" and every panel write but Reply wake it too.
 
 ### The child server
 
