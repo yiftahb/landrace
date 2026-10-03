@@ -30,7 +30,15 @@ Proves every workflow in the workspace `dir` (default `.landrace`) sound, and ex
 landrace status [-w, --workspace <dir>]
 ```
 
-Prints one line per listed item — `#<id>  <stage>  <title>  <note>`, with the workflow beside the id (`#12 [fastlane]`) when the workspace has several. The note says what the item waits on, or why it was skipped or stopped — including the workflow's own `else` reason for an item its `eligible` rules turn away, `blocked: needs a human` for a halted item, and `blocked by a security check` for one a security check stopped. It runs no agent, writes nothing, checks no token and exports no telemetry, so it is the safe way to see what Landrace thinks of your items. It needs no `.mcp.json`.
+Prints one line per listed item — `#<id>  <stage>  <title>  <note>`, with the workflow beside the id (`#12 [fastlane]`) when the workspace has several. The note says what the item waits on, or why it was skipped or stopped:
+
+- `skipped: <reason>` — the workflow's own `else` reason, for an item its `eligible` rules turn away;
+- `blocked: needs a human` — an item labelled `lr:blocked`;
+- `blocked by a security check` — one a security check stopped;
+- `halted: <why>` — a halt the engine finds itself: two `lr:stage:*` labels, an item two stages place, an item no stage places in a workflow with no entry stage, a conflict (two workflows claim it) or a clash (two sources report it);
+- `error: <message>` — an `identity` that cannot be evaluated, such as one using an operator outside the allowlist.
+
+`status` runs no agent, writes nothing, checks no token and exports no telemetry, so it is the safe way to see what Landrace thinks of your items. It needs no `.mcp.json`.
 
 ## landrace start
 
