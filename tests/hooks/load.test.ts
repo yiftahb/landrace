@@ -126,7 +126,7 @@ describe("an import failure says what to do about it", () => {
   // #32's last review: the kit and the integrations are landrace's own entry
   // points too, and a hook reaching for an export one gained since the last
   // build got Node's bare error with no hint.
-  it.each(["landrace/kit", "landrace/integrations/claude", "landrace/integrations/codex"])(
+  it.each(["landrace/kit", "landrace/testing", "landrace/integrations/claude", "landrace/integrations/codex"])(
     "says the same when the module lacking the export is %s",
     (module) => {
       const missing = new SyntaxError(`The requested module '${module}' does not provide an export named 'Claude'`);
