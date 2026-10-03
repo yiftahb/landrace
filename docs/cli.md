@@ -55,7 +55,7 @@ Prints one line per listed item — `#<id>  <stage>  <title>  <note>`, with the 
 landrace start [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui] [--telemetry] [--otel KEY=VALUE]...
 ```
 
-Watches the tracker and advances every item a workflow claims. It runs a **tick** every `tick.interval`: each tick lists every workflow's source, then works the claimed items, at most `tick.concurrency` at once, most urgent first.
+Watches the tracker and advances every item a workflow claims. It runs a **tick** every `tick.interval`: each tick lists every workflow's source, then works the claimed items, most urgent first. `tick.concurrency` bounds the agents running at once across the whole workspace, overlapping ticks and every workflow included. [Configuration](configuration.md#landraceyaml) says when a tick leaves an item for a later one.
 
 | Flag | Meaning |
 |---|---|

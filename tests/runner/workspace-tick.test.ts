@@ -122,7 +122,7 @@ function world(
         steps: minimal.steps, source, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor, ctx, log, scrub: (t) => t,
       },
     })),
-    preflights: [], intervalMs: 60_000, concurrency, stop, running: new Map(), seen: new Map(), log, ctx,
+    preflights: [], intervalMs: 60_000, concurrency, converging: 0, listed: 0, stop, running: new Map(), seen: new Map(), log, ctx,
   };
   return {
     runtime, events, listings,
@@ -350,6 +350,207 @@ describe("one tick over every workflow", () => {
     expect((await first)[0]?.outcome).toMatch(/^halt .*aborted/);
     expect(a.runs).toEqual([{ workflow: "main", stopped: true }]);
     expect(two.comments("12")).toEqual([]);
+  });
+});
+
+/*
+ * #65: ticks overlap, so one tick's pool is not the bound. The board showed
+ * four agents running under `concurrency: 3` — two started by one tick, two
+ * more by the next while the first two still ran.
+ */
+describe("tick.concurrency across overlapping ticks", () => {
+  const LEFT = "no free slot of tick.concurrency (2): left for a later tick";
+
+  /*
+   * A hold for each run, in the order the runs ask for one, released by hand:
+   * one, or every one from now on. A run is counted before it asks, so the
+   * nth hold may be released before it is asked for, and stays released.
+   */
+  function holds(): { hold: () => Promise<void>; release: (n: number) => void; all: () => void } {
+    const held: Array<ReturnType<typeof gate>> = [];
+    const nth = (n: number) => (held[n] ??= gate());
+    let asked = 0;
+    let free = false;
+    return {
+      hold: () => (free ? Promise.resolve() : nth(asked++).wait),
+      release: (n) => nth(n).open(),
+      all: () => {
+        free = true;
+        for (const g of held) g?.open();
+      },
+    };
+  }
+
+  /*
+   * Until the `n`th tick has finished, or an agent past `max` has started: a
+   * tick that starts one too many waits on its hold, and awaiting it would
+   * hang the test instead of failing it.
+   */
+  const finishedOrOver = (w: World, a: Agents, n: number, max: number) =>
+    until(() => w.named("tick.finished").length === n || a.runs.length > max, `tick ${n} to finish`);
+
+  it("starts nothing in a tick that overlaps runs holding every slot, and exactly one in the tick after one frees", async () => {
+    const state = createExternalState({
+      items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:auto"] }, ...["3", "4", "5"].map((id) => ({ id, labels: [] }))],
+    });
+    const a = agents();
+    const h = holds();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 2);
+
+    const first = w.once();
+    await until(() => a.runs.length === 2, "the first tick to fill both slots");
+    for (const id of ["3", "4", "5"]) state.label(id, "lr:auto");
+
+    const second = w.once();
+    await finishedOrOver(w, a, 1, 2);
+    expect(a.runs).toHaveLength(2);
+    expect(await second).toEqual([
+      { item: "1", workflow: "main", outcome: expect.stringMatching(/locked by/) },
+      { item: "2", workflow: "main", outcome: expect.stringMatching(/locked by/) },
+      { item: "3", workflow: "main", outcome: LEFT },
+      { item: "4", workflow: "main", outcome: LEFT },
+      { item: "5", workflow: "main", outcome: LEFT },
+    ]);
+    expect(w.named("item.skipped").filter((e) => e.reason === LEFT).map((e) => e.item)).toEqual(["3", "4", "5"]);
+
+    h.release(0);
+    await until(() => w.runtime.converging === 1, "item 1's run to give up its slot");
+    const third = w.once();
+    await until(() => a.runs.length === 3, "the next tick to start one");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(a.runs).toHaveLength(3);
+    expect(a.peak()).toBe(2);
+
+    h.all();
+    await Promise.all([first, third]);
+    expect(w.runtime.converging).toBe(0);
+  });
+
+  it("holds the bound across two workflows sharing the workspace", async () => {
+    const state = createExternalState({
+      items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:fast"] }, { id: "3", labels: [] }, { id: "4", labels: [] }],
+    });
+    const a = agents();
+    const h = holds();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)], ["fast", "lr:fast", state, state.source, a.agent("fast", h.hold)]], 2);
+
+    const first = w.once();
+    await until(() => a.runs.length === 2, "one run under each workflow");
+    state.label("3", "lr:auto");
+    state.label("4", "lr:fast");
+
+    const second = w.once();
+    await finishedOrOver(w, a, 1, 2);
+    expect(a.runs).toHaveLength(2);
+    expect(await second).toEqual([
+      { item: "1", workflow: "main", outcome: expect.stringMatching(/locked by/) },
+      { item: "2", workflow: "fast", outcome: expect.stringMatching(/locked by/) },
+      { item: "3", workflow: "main", outcome: LEFT },
+      { item: "4", workflow: "fast", outcome: LEFT },
+    ]);
+
+    h.all();
+    await first;
+    expect(a.peak()).toBe(2);
+    expect(w.runtime.converging).toBe(0);
+  });
+
+  /*
+   * Review of #65: a tick whose own run ended took the freed slot for the
+   * next item of its own listing, however stale, before any later tick could
+   * — so an urgent item filed since waited behind the whole of that queue.
+   */
+  it("gives a freed slot to the freshest listing, never to the queue of a tick listed since", async () => {
+    const state = createExternalState({
+      items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:auto"] }, { id: "3", labels: [], priority: 0 }],
+    });
+    const a = agents();
+    const h = holds();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 1);
+    const left = "no free slot of tick.concurrency (1): left for a later tick";
+    const overtaken = "left for a later tick: a later tick has listed";
+
+    const first = w.once();
+    await until(() => a.runs.length === 1, "item 1's run to start");
+    state.label("3", "lr:auto");
+    // Busy item 1 sits behind item 3, the first to find no slot: its row
+    // still says who holds it.
+    expect(await w.once()).toEqual([
+      { item: "1", workflow: "main", outcome: expect.stringMatching(/locked by/) },
+      { item: "2", workflow: "main", outcome: left },
+      { item: "3", workflow: "main", outcome: left },
+    ]);
+
+    h.release(0);
+    await finishedOrOver(w, a, 2, 1);
+    expect(a.runs).toHaveLength(1);
+    // Item 1's end freed the slot: item 2 is left because a later tick has
+    // listed, not for want of a slot.
+    expect((await first).find((r) => r.item === "2")).toEqual({ item: "2", workflow: "main", outcome: overtaken });
+
+    const third = w.once();
+    await until(() => a.runs.length === 2, "the next tick to start its most urgent item");
+    expect([...w.runtime.running.keys()]).toEqual(["3"]);
+    h.all();
+    await third;
+    expect(w.runtime.converging).toBe(0);
+  });
+
+  it("takes no slot for a busy item, and still starts the free one behind it", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: [] }, { id: "3", labels: [] }] });
+    const a = agents();
+    const h = holds();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 2);
+
+    const first = w.once();
+    await until(() => a.runs.length === 1, "item 1's run to start");
+    state.label("2", "lr:auto");
+    state.label("3", "lr:auto");
+
+    const second = w.once();
+    await until(() => a.runs.length >= 2, "the overlapping tick to start item 2");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(a.runs).toHaveLength(2);
+    expect(w.runtime.converging).toBe(2);
+
+    h.all();
+    const rows = await second;
+    expect(rows.find((r) => r.item === "1")?.outcome).toMatch(/locked by/);
+    expect(rows.find((r) => r.item === "2")?.outcome).toMatch(/^terminal/);
+    await first;
+    expect(a.peak()).toBe(2);
+    expect(w.runtime.converging).toBe(0);
+  });
+
+  /*
+   * Review of #65: two workers turned away in one round put their items back
+   * in the order they resumed, so the queue read `[5, 4]` and the slot the
+   * tick's own run freed went to 5 ahead of the more urgent 4.
+   */
+  it("gives a slot its own run frees to the most urgent item it was refused for", async () => {
+    const state = createExternalState({
+      items: [
+        { id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:auto"] },
+        { id: "3", labels: [], priority: 0 }, { id: "4", labels: [], priority: 1 }, { id: "5", labels: [], priority: 2 },
+      ],
+    });
+    const a = agents();
+    const h = holds();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 3);
+
+    const first = w.once();
+    await until(() => a.runs.length === 2, "the first tick to start items 1 and 2");
+    for (const id of ["3", "4", "5"]) state.label(id, "lr:auto");
+
+    const second = w.once();
+    await until(() => a.runs.length === 3, "item 3 to take the last slot");
+    h.release(2);
+    await until(() => a.runs.length === 4, "item 3's freed slot to go to the next item");
+    expect([...w.runtime.running.keys()].sort()).toEqual(["1", "2", "4"]);
+
+    h.all();
+    await Promise.all([first, second]);
+    expect(w.runtime.converging).toBe(0);
   });
 });
 

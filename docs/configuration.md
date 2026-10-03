@@ -16,7 +16,7 @@ Every key, with its default:
 | `agent.*` (any other key) | — | Passed unread to the executor `agent.adapter` names. The shipped executors' keys are below |
 | `tracker.*` | `{}` | Passed unread to the hooks. The GitHub integration reads `tracker.repo` and `tracker.bot` — see [Integrations](integrations.md#github) |
 | `tick.interval` | `60s` | How often a tick runs, as a [duration](#durations) |
-| `tick.concurrency` | `3` | How many items are acted on at once, across every workflow in the workspace |
+| `tick.concurrency` | `3` | How many agents run at once across the whole workspace, overlapping ticks and every workflow included. A tick keeps starting its remaining items as its own runs finish. It leaves an item for a later tick once no slot is free and no run of its own is left to free one, or once a later tick has listed. A pairing or an MCP conversation turn takes no slot |
 | `security.screen` | `true` | Screen each prompt for injection before running an agent that can act — see [Security](security.md#screening-prompts) |
 | `security.adapter` | `agent.adapter` | The executor that screens: an id a hook registers with `defineExecutor`. It must run the screener with no tools, or refuse |
 | `security.model` | none | The model the screening run asks for. Absent, the screening executor's own default decides |

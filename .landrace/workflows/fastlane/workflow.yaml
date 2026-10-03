@@ -17,8 +17,8 @@ description: "Small changes from the item's own text: build, review, CI, then me
 # skills — which are a person's to merge. Only the item's own
 # `landrace/{item}` pull request in this repository is its work: one that
 # merely says it closes the item, from a fork or not, is nobody's (H2).
-# Before the first lr:fast item, see "Before your first lr:fast item" in the
-# README: branch protection, the narrowest token that works, code owners.
+# Before the first lr:fast item, see "Who fastlane trusts" in
+# docs/security.md: branch protection, the narrowest token that works, code owners.
 #
 # Rulings this file keeps:
 #

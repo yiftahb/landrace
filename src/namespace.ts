@@ -2184,8 +2184,19 @@ export interface WorkspaceRuntime {
    */
   preflights: Preflight[];
   intervalMs: number;
-  /** Workspace-wide: one pool for every workflow's items. */
+  /**
+   * How many converges may be in flight at once across the workspace: every
+   * workflow's, and every tick's still running, since ticks overlap.
+   */
   concurrency: number;
+  /** Converges in flight now, over every tick and workflow: what `concurrency` bounds. Starts at 0. */
+  converging: number;
+  /**
+   * How many ticks have listed. Only the latest listing hands out slots: a
+   * tick a later one has listed since takes none, so a freed slot goes to the
+   * most urgent item as it is now, not to an older tick's queue. Starts at 0.
+   */
+  listed: number;
   /**
    * Ctrl-C. The same signal every hook and executor is handed, so aborting it
    * stops the agent subprocess, stops the next pass from starting, and lets
