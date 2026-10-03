@@ -15,12 +15,21 @@
  * dropped, the item as done. Each check prints `ok` or `FAIL` with what it
  * saw; a check whose item was never created is not run. Exits 1 on any
  * failure, and when nothing passed: nothing checked is not a pass.
+ *
+ * Opt in to a blocked-by round trip over the site's "Blocks" links (or the
+ * type `blockedByLinkType` names) with `JIRA_CHECK_LINKS=1` — two scratch
+ * issues, created and dropped again — or `JIRA_LINK_KEYS=KEY-12,OTHER-3`, two
+ * issues of yours not linked so already: the first, the project's own, to be
+ * blocked by the second, anywhere on the site. It relates them, reads back through the integration
+ * that the first is blocked by the second and not the other way round,
+ * prints the direction Jira itself shows on the blocked issue, unrelates
+ * them and reads back none: the first run on a site proves the direction.
  */
 import { Jira } from "landrace/integrations/jira";
 import { compose } from "landrace/kit";
 import { MemoryDocs, MemoryForge } from "landrace/testing";
 
-const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT, JIRA_OPTIONS } = process.env;
+const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT, JIRA_OPTIONS, JIRA_CHECK_LINKS, JIRA_LINK_KEYS } = process.env;
 const unset = Object.entries({ JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT }).filter(([, v]) => !v).map(([k]) => k);
 if (unset.length > 0) {
   console.error(`jira-check: set ${unset.join(", ")}`);
@@ -145,6 +154,93 @@ if (item) {
     const { node } = await snapshotOf(item.id);
     expect(node.closed === "done", `${item.id} reads back as ${node.closed}`);
   });
+}
+
+if (JIRA_CHECK_LINKS || JIRA_LINK_KEYS) {
+  const linkType = options.blockedByLinkType ?? "Blocks";
+  const scratch = [];
+  let blocked;
+  let blocker;
+  if (JIRA_LINK_KEYS) {
+    const keys = JIRA_LINK_KEYS.split(",").map((k) => k.trim());
+    await check("JIRA_LINK_KEYS names two issues, the blocked one first", async () => {
+      expect(keys.length === 2 && keys[0] && keys[1] && keys[0] !== keys[1], `got ${JSON.stringify(JIRA_LINK_KEYS)}; want KEY-12,OTHER-3`);
+      [blocked, blocker] = keys;
+      return `${blocked} to be blocked by ${blocker}`;
+    });
+  } else {
+    await check("create two scratch issues to link", async () => {
+      blocker = (await hooks.operator.createItem({ title: `landrace jira-check blocker ${stamp}`, body }, ctx)).id;
+      scratch.push(blocker);
+      blocked = (await hooks.operator.createItem({ title: `landrace jira-check blocked ${stamp}`, body }, ctx)).id;
+      scratch.push(blocked);
+      return `${blocked} to be blocked by ${blocker}`;
+    });
+  }
+
+  /** What the integration reads `id` as blocked by: the edges a read draws from it. */
+  const blockersOf = async (id) =>
+    (await hooks.source.read(id, ctx)).relationships.filter((r) => r.type === "blocked-by" && r.from === id).map((r) => r.to);
+
+  /** The blocked issue's links as Jira answers them, unread by the integration: what its UI shows. */
+  const rawLinks = async (id) => {
+    const res = await fetch(`${JIRA_BASE_URL.trim().replace(/\/$/, "")}/rest/api/3/issue/${encodeURIComponent(id)}?fields=issuelinks`, {
+      headers: { Authorization: `Basic ${Buffer.from(`${JIRA_EMAIL}:${JIRA_TOKEN}`).toString("base64")}`, Accept: "application/json" },
+    });
+    if (!res.ok) throw new Error(`GET ${id}?fields=issuelinks → ${res.status} ${await res.text()}`);
+    return (await res.json()).fields?.issuelinks ?? [];
+  };
+
+  if (blocked && blocker) {
+    let related = false;
+    await check(`relate: ${blocked} blocked by ${blocker}`, async () => {
+      const before = await blockersOf(blocked);
+      // A link of yours already there would be removed by the unrelate below: refused rather than undone.
+      expect(!before.includes(blocker), `${blocked} is already blocked by ${blocker}; name two issues not linked so`);
+      const problem = await hooks.operator.checkRelate(blocked, "blocked-by", blocker, ctx);
+      expect(problem === null, `checkRelate refused it: ${problem}`);
+      await hooks.operator.relate(blocked, "blocked-by", blocker, ctx);
+      related = true;
+    });
+
+    if (related) {
+      await check(`read back: ${blocked} is blocked by ${blocker}, and ${blocker} by nothing of it`, async () => {
+        const of = await blockersOf(blocked);
+        expect(of.includes(blocker), `${blocked} reads as blocked by ${JSON.stringify(of)}`);
+        const back = await blockersOf(blocker);
+        expect(!back.includes(blocked), `${blocker} reads as blocked by ${blocked} too: the link was read the wrong way round`);
+        return `${blocked} blocked by ${JSON.stringify(of)}; ${blocker} blocked by ${JSON.stringify(back)}`;
+      });
+
+      await check("the direction Jira shows on the blocked issue", async () => {
+        const entry = (await rawLinks(blocked)).find((l) =>
+          l?.type?.name === linkType && (l.inwardIssue?.key === blocker || l.outwardIssue?.key === blocker));
+        expect(entry, `${blocked} has no "${linkType}" link to ${blocker}`);
+        const slot = entry.inwardIssue?.key === blocker ? "inwardIssue" : "outwardIssue";
+        const words = slot === "inwardIssue" ? entry.type.inward : entry.type.outward;
+        const seen = `on ${blocked}, Jira lists ${blocker} under ${slot}, worded "${blocked} ${words} ${blocker}" (link ${entry.id})`;
+        expect(slot === "inwardIssue", `${seen}: the reverse of what the integration writes and reads`);
+        return seen;
+      });
+
+      await check(`unrelate, and read back no blocker`, async () => {
+        await hooks.operator.unrelate(blocked, "blocked-by", blocker, ctx);
+        const of = await blockersOf(blocked);
+        expect(!of.includes(blocker), `${blocked} still reads as blocked by ${JSON.stringify(of)}`);
+        const left = (await rawLinks(blocked)).filter((l) =>
+          l?.type?.name === linkType && (l.inwardIssue?.key === blocker || l.outwardIssue?.key === blocker));
+        expect(left.length === 0, `Jira still holds ${left.length} "${linkType}" link(s) between them`);
+      });
+    }
+
+    for (const id of scratch) {
+      await check(`drop the scratch issue ${id}`, async () => {
+        await hooks.post.apply({ type: "tracker.close", how: "dropped" }, on(id, await snapshotOf(id)));
+        const { node } = await snapshotOf(id);
+        expect(node.closed === "dropped", `${id} reads back as ${node.closed}`);
+      });
+    }
+  }
 }
 
 console.log(`${passed} passed, ${failed} failed`);

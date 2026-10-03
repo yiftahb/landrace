@@ -66,6 +66,15 @@ export interface FakeIssue {
 
 export interface FakeIssueType { id: string; name: string; subtask: boolean; fields: string[] }
 
+export interface FakeLinkType { id: string; name: string; inward: string; outward: string }
+
+/**
+ * One issue link, its two ends named by the slot `POST /issueLink` sent each
+ * in. Jira gives the type's outward words to the issue sent as `inwardIssue`:
+ * of "Blocks", `inward` blocks `outward` — `outward` is blocked by `inward`.
+ */
+export interface FakeLink { id: string; type: string; inward: string; outward: string }
+
 export const MINUTE = 60_000;
 export const DAY = 86_400_000;
 
@@ -126,6 +135,7 @@ export function createFakeJira(project = "KEY") {
   let nextNumber = 1;
   let nextComment = 100_000;
   let nextHistory = 50_000;
+  let nextLink = 20_000;
 
   const issues = new Map<string, FakeIssue>();
   const moved = new Map<string, string>();
@@ -162,6 +172,30 @@ export function createFakeJira(project = "KEY") {
       { id: "31", name: "Done", to: "Done" },
       { id: "41", name: "Won't Do", to: "Won't Do" },
     ] as FakeTransition[],
+    /** The site's link types, as `GET /issueLinkType` lists them: Jira Cloud's defaults. */
+    linkTypes: [
+      { id: "10000", name: "Blocks", inward: "is blocked by", outward: "blocks" },
+      { id: "10001", name: "Cloners", inward: "is cloned by", outward: "clones" },
+      { id: "10002", name: "Duplicate", inward: "is duplicated by", outward: "duplicates" },
+      { id: "10003", name: "Relates", inward: "relates to", outward: "relates to" },
+    ] as FakeLinkType[],
+    links: [] as FakeLink[],
+    /** Off, the site has issue linking disabled: every issueLink endpoint answers 404, as Jira documents. */
+    linking: true,
+    /**
+     * Off, the account lacks "Link issues": a link write answers 404, which
+     * is what Jira documents for that refusal, not a 403.
+     */
+    canLink: true,
+    /** A status to answer a request with instead of its own answer, when it returns one: a refusal, a fault. */
+    failOn: null as ((method: string, path: string) => number | null) | null,
+
+    /** A link a person made in Jira's UI, its ends in the slots `POST /issueLink` takes them in. */
+    link(type: string, inward: string, outward: string): FakeLink {
+      const made = { id: String(nextLink++), type, inward, outward };
+      fake.links.push(made);
+      return made;
+    },
 
     /** An issue as a person on the project would have filed it. */
     add(seed: Partial<FakeIssue> = {}): FakeIssue {
@@ -234,11 +268,47 @@ export function createFakeJira(project = "KEY") {
       if (fake.me === null || auth !== `Basic ${Buffer.from(`${EMAIL}:${TOKEN}`).toString("base64")}`) {
         return new Response("Client must be authenticated to access this resource.", { status: 401 });
       }
+      const forced = fake.failOn?.(method, url.pathname);
+      if (forced !== null && forced !== undefined) return errors(forced, [`the fake was told to answer ${method} ${url.pathname} with ${forced}`]);
       return route(method, url, body);
     }) as unknown as typeof fetch,
   };
 
   const visible = (key: string): FakeIssue | undefined => issues.get(moved.get(key) ?? key);
+
+  const linkTypeJson = (t: FakeLinkType) => ({ id: t.id, name: t.name, inward: t.inward, outward: t.outward, self: `${SITE}/rest/api/3/issueLinkType/${t.id}` });
+
+  /** The other end of a link, as an issue's `issuelinks` names it: key, and the few fields Jira carries — no resolution. */
+  const linkedJson = (key: string) => {
+    const other = fake.issue(key);
+    return {
+      id: other.id,
+      key: other.key,
+      self: `${SITE}/rest/api/3/issue/${other.id}`,
+      fields: {
+        summary: other.summary,
+        status: statusJson(other.status),
+        priority: { self: `${SITE}/rest/api/3/priority/${other.priority ?? "3"}`, iconUrl: `${SITE}/images/icons/priorities/medium.svg`, name: "Medium", id: other.priority ?? "3" },
+        issuetype: { id: "10001", name: other.issuetype, subtask: other.issuetype === "Subtask" },
+      },
+    };
+  };
+
+  /**
+   * An issue's links, each with the other end in the slot it was sent in:
+   * the blocked issue (sent as `outwardIssue`) carries its blocker under
+   * `inwardIssue`, which Atlassian says to label with the type's inward
+   * words — "is blocked by".
+   */
+  const linksJson = (issue: FakeIssue) => fake.links.flatMap((l) => {
+    const type = fake.linkTypes.find((t) => t.name === l.type);
+    if (!type) return [];
+    const at = { id: l.id, self: `${SITE}/rest/api/3/issueLink/${l.id}`, type: linkTypeJson(type) };
+    return [
+      ...(l.outward === issue.key ? [{ ...at, inwardIssue: linkedJson(l.inward) }] : []),
+      ...(l.inward === issue.key ? [{ ...at, outwardIssue: linkedJson(l.outward) }] : []),
+    ];
+  });
 
   /** An issue as the search and the issue endpoints answer it: only the fields asked for. */
   const issueJson = (issue: FakeIssue, fields: string[]) => {
@@ -263,6 +333,7 @@ export function createFakeJira(project = "KEY") {
         id: issue.priority,
       },
       issuetype: { id: "10001", name: issue.issuetype, subtask: issue.issuetype === "Subtask" },
+      issuelinks: linksJson(issue),
       // Read off the issue itself, so never behind the way search can be.
       subtasks: [...issues.values()]
         .filter((s) => s.parent === issue.key && fake.issueTypes.some((t) => t.name === s.issuetype && t.subtask))
@@ -523,6 +594,40 @@ export function createFakeJira(project = "KEY") {
         issue.updated = issue.statusChanged = tick();
         return noContent();
       }
+    }
+
+    if (method === "GET" && path === "/rest/api/3/issueLinkType") {
+      if (!fake.linking) return errors(404, ["Issue linking is disabled."]);
+      return json({ issueLinkTypes: fake.linkTypes.map(linkTypeJson) });
+    }
+
+    /*
+     * Documented: 201 with no body, and a duplicate of a link already there is
+     * answered as created. A refusal of any kind — linking off, an issue the
+     * account cannot see, no "Link issues", no such type — is a 404.
+     */
+    if (method === "POST" && path === "/rest/api/3/issueLink") {
+      if (!fake.linking) return errors(404, ["Issue linking is disabled."]);
+      const name = (b.type as { name?: unknown } | undefined)?.name;
+      const type = fake.linkTypes.find((t) => t.name === name);
+      if (!type) return errors(404, [`No issue link type with name '${String(name)}' found.`]);
+      const inward = visible(String((b.inwardIssue as { key?: unknown } | undefined)?.key));
+      const outward = visible(String((b.outwardIssue as { key?: unknown } | undefined)?.key));
+      if (!inward || !outward) return errors(404, ["Issue does not exist or you do not have permission to see it."]);
+      if (!fake.canLink) return errors(404, ["You do not have the permission to link issues."]);
+      if (!fake.links.some((l) => l.type === type.name && l.inward === inward.key && l.outward === outward.key)) {
+        fake.link(type.name, inward.key, outward.key);
+      }
+      return new Response(null, { status: 201 });
+    }
+
+    if (method === "DELETE" && (m = /^\/rest\/api\/3\/issueLink\/([^/]+)$/.exec(path))) {
+      if (!fake.linking) return errors(404, ["Issue linking is disabled."]);
+      const at = fake.links.findIndex((l) => l.id === m?.[1]);
+      if (at === -1) return errors(404, [`No issue link with id '${m[1]}' exists.`]);
+      if (!fake.canLink) return errors(404, ["You do not have the permission to link issues."]);
+      fake.links.splice(at, 1);
+      return noContent();
     }
 
     return errors(404, [`the fake has no ${method} ${path}`]);
