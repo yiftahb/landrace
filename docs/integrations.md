@@ -12,7 +12,7 @@ The engine has no vendor in it. Each tracker, forge, docs site, notifier and cod
 | [Claude Code](#claude-code) | executor (coding agent) |
 | [Codex](#codex) | executor (coding agent) |
 
-A tracker, a forge and a docs role are combined into one project's hooks by the kit's `compose`, and an executor is a hook on its own. How that works, and how to write a new integration, is in [Writing an integration](hooks.md). Each vendor-facing integration has a script that checks it against a live account; those scripts need `pnpm build` first.
+A tracker, a forge and a docs role are combined into one project's hooks by the kit's `compose`, and an executor is a hook on its own. How that works, and how to write a new integration, is in [Writing an integration](hooks.md). GitHub, GitLab, Jira and Notion each have a script that checks the integration against a live account; those scripts need `pnpm build` first.
 
 ## GitHub
 
@@ -61,7 +61,7 @@ GitHub's own issue dependencies are read as `blocked-by`: an issue to each issue
 - A blocker closed as completed is done; one closed as not planned or as a duplicate is dropped.
 - A blocker in this repository is its own number. One in another repository is a placeholder named `x.<owner>.<name>.<number>` — `x.acme.api.5` — or, where that would pass 64 characters, `x.<owner, cut to fit>.<12 hex of sha1(owner/name)>.<number>`. It is never read and never walked for a cycle: it holds the item back by the state GitHub reports for it.
 - A blocker it cannot read all of makes the item `node.state.relatedUnreadable`, never "no blocker": one the token may not see (GitHub answers it null with a `FORBIDDEN` or `NOT_FOUND` error, logged once a tick as `github.blocker.unreadable`), one whose owner holds anything but letters, digits, `-` and `_`, a list holding fewer than GitHub counts, or one closed for a reason it does not map. Any other error beside the answer — a fault, a rate limit — fails the read for that tick.
-- Whether an item is on a cycle is walked over one light query of the open issues' blockers.
+- Whether an item is on a cycle is walked, in a read, over one light query of the open issues' blockers alone; `list` walks its own listing.
 - **Writing.** `relate` and `unrelate` write through GitHub's issue-dependency endpoints, `POST` and `DELETE /repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by`. These name the blocker by its REST id, so each write reads the blocker first, and refuses a pull request. A relationship asked for twice is written once, one GitHub already holds is done, and removing one already gone is done. Writes stay within the configured repository: a relationship to or from an issue elsewhere is read but never written, and asking for one is refused before anything is written. A 403 names the permission it needs.
 
 **Check live:** if GitHub leaves a blocker the token may not see out of the answer *and* out of its count, nothing shows it, and it reads as no blocker. Check that with a token that cannot see a blocking repository before relying on cross-repository blockers.
@@ -79,9 +79,10 @@ Use a **classic** token with the `repo` scope, and `workflow` if a build may cha
 | Checks | Read | A pull request's CI state on its head, and its failed check runs |
 | Commit statuses | Read | The same, for services that report a status rather than a check run |
 | Actions | Read | The log of a failed GitHub Actions job, for `{brief.project.ci}`; without it the check is still named, with `(log unavailable)` |
+| Pages | Read | Whether a Pages site serves `gh-pages`, for spec links; without it, links point at the file on GitHub |
 | Metadata | Read | Granted automatically |
 
-`landrace start` and `landrace mcp` check these before anything else — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions. Both also read one commit's check runs and statuses, naming every permission missing in one sentence. Actions is not checked, because a log is optional. A token missing something refuses to start, rather than fail midway through a paid agent run. `landrace status` checks and writes nothing.
+`landrace start` and `landrace mcp` check these before anything else — including a one-time write of a single empty, unreferenced blob to prove Contents is writable, since a fine-grained token cannot report its own permissions. Both also read one commit's check runs and statuses, naming every permission missing in one sentence. Actions and Pages are not checked, because a log and a site link are optional. A token missing something refuses to start, rather than fail midway through a paid agent run. `landrace status` checks and writes nothing.
 
 ### Pushing
 
@@ -128,7 +129,7 @@ agent:
 
 `gitlabBaseUrl` is the instance as `https://host[:port]` and nothing more, so the token never travels in cleartext. A declared secret whose variable is unset refuses to start.
 
-**Token.** Personal, project or group, with the `api` scope, and its user given Developer access to the project — direct, inherited or through a group the project is shared with. `landrace start` refuses one without either, naming which, and names a missing `gitlabToken` too. The same scope and role read a merge request's pipelines and failed jobs' traces; `start` also probes the pipeline read. Merging depends on the target branch: a default protected branch lets only Maintainers merge, so a Developer token merges only where that branch's "Allowed to merge" includes Developers — otherwise the item halts saying the token's user may not merge into its target branch.
+**Token.** Personal, project or group, with the `api` scope, and its user given Developer access to the project — direct, inherited or through a group the project is shared with. `landrace start` refuses one without either, naming which, and names a missing `gitlabToken` too. The same scope and role read a merge request's pipelines and failed jobs' traces; `start` also probes the pipeline read. Merging depends on the target branch: a default protected branch lets only Maintainers merge, so a Developer token merges only where that branch's "Allowed to merge" includes Developers, which is not the default — otherwise the item halts saying the token's user may not merge into its target branch.
 
 **Limits.** CI/CD must be enabled on the project. The forge needs GitLab 16.4 or later, for a finding on a file.
 
@@ -191,8 +192,8 @@ secrets:
 **Blocked-by.** `blocked-by` is Jira's own issue links of `blockedByLinkType`, visible and editable in Jira's UI; Landrace stores nothing of its own.
 
 - It is read off each issue's `issuelinks`: the blocked issue lists its blocker under `inwardIssue`. A link of any other type is not read.
-- The link carries the blocker's status but not its resolution: a status outside Jira's done category is open, a done one named `transitions.dropped` is dropped, and any other done one is judged by its resolution — from the listing when it holds the blocker, otherwise in one `issue/bulkfetch` per answer.
-- A blocker Jira does not return, or returns with no status, is unreadable, never done, and logged once a tick as `jira.blocker.unreadable`; so is a link entry with no type, no key, or no status for its other end. The item's relationships then read as not all read.
+- The link carries the blocker's status but not its resolution: a status outside Jira's done category is open, a done one named `transitions.dropped` is dropped, and any other done one is judged by its resolution — from the listing when it holds the blocker, otherwise by `issue/bulkfetch`, a hundred issues a request.
+- A blocker Jira does not return, or returns with no status, is unreadable, never done, and logged once a tick as `jira.blocker.unreadable`; so is a link entry with no type, no key, or no status for its other end. The item's relationships then read as not all read. Any other failure, `issueErrors` included, fails the read, and the next tick reads it again. A read's children are read without their links, which a read never draws.
 - A blocker in another project on the same site is read and written by its own key. Jira leaves out of `issuelinks` a link to an issue the account may not browse, so such a blocker is unseen, not unreadable: give the account "Browse projects" on every project whose issues may block this one's.
 - The cycle walk covers the configured project only, over one search of its open issues' links, so a cycle through another project goes undetected. Search lags a link just written by a moment: the walk sees it on the next tick.
 - A relationship is written as Jira's own link — `POST /rest/api/3/issueLink`, the blocker as `inwardIssue` — after the blocked issue's links are read, so a link already there is not asked for again. `unrelate` finds the link by type and other end and deletes it by id. Both ends are read first. A write takes the "Link issues" permission, and Jira refuses an account without it with a 404; the refusal names the permission, and, for a blocker in another project, both projects. The blocked issue is always the project's own.
@@ -242,7 +243,7 @@ pnpm build && JIRA_BASE_URL=https://<site>.atlassian.net JIRA_EMAIL=… JIRA_TOK
 
 - Give each project a parent page of its own: two projects in one parent share one database, where item 12 of one is item 12 of the other.
 - Anyone who can edit the parent page can edit `Source`, which later steps are briefed with.
-- The body shows `#` to `###` headings (deeper ones as `###`), paragraphs, bulleted and numbered lists one level deep, fenced code, quotes, inline code, and links to absolute http(s) addresses. A table, a rule or HTML on lines of its own is shown in a code block as written; inside a paragraph or list item, anything else stays the text it was.
+- The body shows `#` to `###` headings (deeper ones as `###`), paragraphs, bulleted and numbered lists one level deep, fenced code (in plain text when Notion does not know the language), quotes, inline code, and links to absolute http(s) addresses. A table, a rule or HTML on lines of its own is shown in a code block as written. Inside a paragraph or list item, anything else — bold, an indented table — stays the text it was, as does a line with more inline code and links than one block takes, and a link longer than 2,000 characters.
 - `Source` holds at most a hundred pieces of 2,000 characters; a longer spec is refused before anything is written.
 - Every request names `Notion-Version: 2025-09-03`; one that appends blocks carries at most 100; a 429 is waited out for as long as Notion's `Retry-After` says, five tries in all.
 
@@ -330,7 +331,7 @@ agent:
 | `repo:write` | `workspace-write`, with the network off | `$TMPDIR` and `/tmp` not writable: `$TMPDIR` holds every other item's worktree, Landrace's locks and the screener's folder |
 | the screener | `read-only` | every built-in tool off — the shell, web search, the image viewer, connectors and plugins, the browser, sub-agents, hooks — no server, and run in a folder of its own that only you can write |
 
-Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `config.toml` — whose servers include Landrace's operator server — and your execpolicy rules do not load. It runs with `approval_policy="never"`, since nobody is there to ask; gets `agent.mcp`'s servers per run as `-c mcp_servers.<name>.*`, with a listed server's tools as its `enabled_tools`; takes the prompt on stdin; and has `CODEX_HOME` passed on, nothing else of Landrace's environment. The session is `thread.started`'s id, the answer the last `agent_message`, and a `turn.failed` fails the run with Codex's own reason.
+Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `config.toml` — whose servers include Landrace's operator server — and your execpolicy rules do not load. It runs with `approval_policy="never"`, since nobody is there to ask; gets `agent.mcp`'s servers per run as `-c mcp_servers.<name>.*`, with a listed server's tools as its `enabled_tools`; takes the prompt on stdin; and has `CODEX_HOME` passed on beside the kit's few basic variables (see [BaseExecutor](hooks.md#baseexecutor)), nothing else of Landrace's environment. The session is `thread.started`'s id, the answer the last `agent_message`, and a `turn.failed` fails the run with Codex's own reason.
 
 **What it refuses.** What Codex cannot do is refused rather than run without. At startup, and by `validate`:
 

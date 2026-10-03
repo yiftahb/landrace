@@ -1,6 +1,6 @@
 # Command line
 
-Landrace is one command, `landrace`, with five subcommands. Each takes the **workspace** — the `.landrace/` folder holding `landrace.yaml`, the workflows and the hooks — and defaults to `.landrace` in the current folder.
+Landrace is one command, `landrace`, with five subcommands. Each takes the **workspace** — the `.landrace/` folder holding `landrace.yaml`, the workflows and the hooks. Every subcommand but `next`, which requires it, defaults to `.landrace` in the current folder.
 
 ```text
 landrace validate [dir]
@@ -12,7 +12,7 @@ landrace mcp      [-w, --workspace <dir>] [--workflow <id>]
                   [--child <parent> --stage <stage> --round <round>]
 ```
 
-Every subcommand imports the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
+Every subcommand but `next` imports the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
 
 Inside this repository, `landrace/hooks`, `landrace/kit` and `landrace/integrations/<vendor>` resolve to the built `dist/`, so run `pnpm build` after pulling and before any of these commands. A hook newer than the build fails to import, and the error says to rebuild.
 
@@ -30,7 +30,7 @@ Proves every workflow in the workspace `dir` (default `.landrace`) sound, and ex
 landrace status [-w, --workspace <dir>]
 ```
 
-Prints one line per listed item — `#<id>  <stage>  <title>  <note>`, with the workflow beside the id (`#12 [fastlane]`) when the workspace has several. The note says what the item waits on, or why it was skipped or stopped — including the workflow's own `else` reason for an item its `eligible` rules turn away, and `blocked: security check refused a step` for an item a security check stopped. It runs no agent, writes nothing, checks no token and exports no telemetry, so it is the safe way to see what Landrace thinks of your items. It needs no `.mcp.json`.
+Prints one line per listed item — `#<id>  <stage>  <title>  <note>`, with the workflow beside the id (`#12 [fastlane]`) when the workspace has several. The note says what the item waits on, or why it was skipped or stopped — including the workflow's own `else` reason for an item its `eligible` rules turn away, `blocked: needs a human` for a halted item, and `blocked by a security check` for one a security check stopped. It runs no agent, writes nothing, checks no token and exports no telemetry, so it is the safe way to see what Landrace thinks of your items. It needs no `.mcp.json`.
 
 ## landrace start
 
@@ -54,7 +54,7 @@ Before the first tick, `start` loads the configuration and every workflow, runs 
 
 Ticks overlap: the lock is per item, so an item busy with a ten-minute agent run delays only itself. **A step run spends real money**, and the round caps are the `$lt` counters in your workflow, not something the engine imposes. The first time, escalate: `validate`, then `status`, then `start --once --debug`, then `start`.
 
-Ctrl-C releases the locks and exits. Press it twice and it says which lock it left behind, for the next run to reclaim.
+Ctrl-C stops: nothing new starts, agent runs in flight are cancelled, and the locks are released as it exits. Press it twice to stop at once; the locks this process holds are left behind, and since they name its process id, the next run reclaims them.
 
 Locks, worktrees and the wake file live under `$TMPDIR/landrace/<repo>/`.
 
@@ -108,7 +108,7 @@ The page follows the system's light or dark preference, or whatever you last tog
 landrace next -w, --workspace <dir> [--workflow <id>] -s, --snapshot <file>
 ```
 
-Prints, as JSON, the decision and the planned effects the engine would make for a saved snapshot: `{ "decision": …, "effects": … }`. It does no I/O beyond reading the files, which makes it the way to test a workflow's routing by hand. `--workflow` names the workflow, by its folder under `workflows/`, and is needed when the workspace has several.
+Prints, as JSON, the decision and the planned effects the engine would make for a saved snapshot: `{ "decision": …, "effects": … }`. It derives the run from the snapshot's `entries` and `run.stage`, imports no hooks and does no I/O beyond reading the files, which makes it the way to test a workflow's routing by hand. With no post hooks to say what is already satisfied, the effects are the plan before reconciling. `--workflow` names the workflow, by its folder under `workflows/`, and is needed when the workspace has several.
 
 ## landrace mcp
 

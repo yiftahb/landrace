@@ -40,9 +40,9 @@ Every hook gets a `HookContext` — the item's id, its snapshot, the configurati
 
 ## Pre hooks and path coverage
 
-A pre hook declares the snapshot paths it fills (`provides`), and a source declares its relationship types. `validate`'s `path-coverage` rule is answered from both, together with what the engine always provides — `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every declared type — so a condition can only read what something actually provides.
+A pre hook declares the snapshot paths it fills (`provides`), and a source declares its relationship types. `validate`'s `path-coverage` rule is answered from both, together with what the engine always provides — `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every declared type (only `out` for an outward-only one) — so a condition can only read what something actually provides.
 
-The GitHub integration's pre hook provides `item` (`item.body`, `item.comments`), `entries` and `tracker.bot`; the in-memory tracker in `landrace/testing` provides the portable subset (no `tracker.bot`). An item's identity, labels and assignees are not among them: they live on the `node` the source reads, not on something a pre hook fetches a second time.
+The composed GitHub pre hook provides `item` (`item.body`, `item.comments`), `entries` and `tracker.bot` from the tracker, and `git` (`git.local`, `git.remote`, the branch heads) from the forge; the in-memory tracker in `landrace/testing` provides the portable subset (no `tracker.bot`). An item's identity, labels and assignees are not among them: they live on the `node` the source reads, not on something a pre hook fetches a second time.
 
 A source fills every field an `eligible` rule may read — `labels`, and `assignees` as a list, empty rather than absent — because a rule reading a path an item does not carry abstains, and abstaining means eligible.
 
@@ -140,7 +140,7 @@ import { Claude } from "landrace/integrations/claude";
 export const claude = new Claude();
 ```
 
-The kit starts the agent with no shell and none of Landrace's environment; checks every value before it reaches argv, and the folder it runs in; refuses a capability it cannot enforce; resolves `agent.mcp` from `.mcp.json`; reads and shape-checks `agent.sandbox`; kills the whole process group at the limit or on abort; re-checks the abort after the integration's own preparation and before it spawns; and refuses at startup an `agent.*` key nobody reads and a step's effort the agent has no level for. An integration says only what is its agent's:
+The kit starts the agent with no shell, and with only a few basic variables of Landrace's environment — `PATH`, `HOME`, the locale, the temporary folders, `USER`, `LOGNAME`, `SHELL` — plus the integration's own `envKeys`; checks every value before it reaches argv, and the folder it runs in; refuses a capability it cannot enforce; resolves `agent.mcp` from `.mcp.json`; reads and shape-checks `agent.sandbox`; kills the whole process group at the limit or on abort; re-checks the abort after the integration's own preparation and before it spawns; and refuses at startup an `agent.*` key nobody reads and a step's effort the agent has no level for. An integration says only what is its agent's:
 
 | Method | What it says |
 |---|---|

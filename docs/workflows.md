@@ -91,7 +91,7 @@ when:
 
 Conditions use a closed list of operators: `$eq $ne $in $nin $lt $lte $gt $gte $exists $all $size $and $or $not`. Anything else, `$where` and `$regex` included, is refused at load, because a workflow file is a repository file a pull request can edit.
 
-A path an item does not carry matches nothing. That is why "none open" is written `{ $not: { $gt: 0 } }` rather than `0` for a count that may be absent.
+A path the snapshot does not carry fails a plain value, `$in`, `$gt`, `$gte` and `$exists: true`, and passes `$lt`, `$lte`, `$ne`, `$nin` and `$not`. That is why "none open" is written `{ $not: { $gt: 0 } }` rather than `0` for a count that may be absent — and why `{ $lt: 1 }` on a count also matches an item that has nothing of that type related.
 
 ## What a condition can read
 
@@ -111,7 +111,7 @@ An item's priority comes from a `P0`..`P9` label (`P0` most urgent), unless its 
 | Path | Meaning |
 |---|---|
 | `run.stage` | The stage the item is at, or `null` for an item nothing has been written to |
-| `run.counters.<stage>` | How many rounds that stage has produced output for. A stage that never ran reads `0` |
+| `run.counters.<stage>` | How many rounds of that stage reached a verdict — an output or a rejection. Absent for a stage that never settled a round, which `$lt` reads as below any cap |
 | `run.outputs.<stage>` | The latest valid output of that stage's step, e.g. `run.outputs.triage.intent` |
 | `run.lastOutputValid` | `false` when the current stage's latest round failed; `null` otherwise. Never `true` |
 | `run.lastRefused` | `true` when that failure was a security refusal, `false` when it was a broken output, `null` when nothing failed |

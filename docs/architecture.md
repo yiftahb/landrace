@@ -157,7 +157,7 @@ Because a workflow reads counts, "every pull request on the item is merged" is `
 
 ### Relationship types
 
-A source declares which relationship types it reports, and for each whether a node may have at most one outgoing edge of it (singular). The engine refuses any type not declared. For a declared type nothing relates, every `rel` count reads `0` — never absent — so "no thread awaits a fix" can still be read once every pull request is merged.
+A source declares which relationship types it reports, and for each whether a node may have at most one outgoing edge of it (singular). The engine refuses any type not declared. For a declared type nothing relates, `total` and `dropped` read `0` and `open` is empty — never absent — while the `is`, `not`, `sum` and `stage` fields are absent, since there is no node to have them.
 
 A type whose reads draw only from the item outward — its own relationships, never another item's toward it — is declared **outward-only**, and `validate` refuses a workflow that reads its `rel.<type>.in`, which would always count nothing.
 

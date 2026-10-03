@@ -20,7 +20,7 @@ Every key, with its default:
 | `security.screen` | `true` | Screen each prompt for injection before running an agent that can act — see [Security](security.md#screening-prompts) |
 | `security.adapter` | `agent.adapter` | The executor that screens: an id a hook registers with `defineExecutor`. It must run the screener with no tools, or refuse |
 | `security.model` | none | The model the screening run asks for. Absent, the screening executor's own default decides |
-| `log.redact` | `[]` | Names of secrets whose values are never logged |
+| `log.redact` | `[]` | Names of secrets whose values are cut from every log line and event. Each must name a declared secret whose value is 8 characters or longer, or `landrace start` refuses. A secret not named here is not redacted from the log |
 | `secrets.*` | `{}` | Values handed to hooks, usually `$VAR` references resolved from [`.env`](#env) |
 | `workflows` | by each workflow's `name`, then folder id | The order workflows are listed in, on the board and by the MCP. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
 | `vars.*` | `{}` | Values substituted into the workflow files — see [vars](#vars) |
@@ -97,7 +97,7 @@ Every mistake is a load error, never a default:
 - a `{vars.x}` nothing defines is refused, naming the variable, the file and the field;
 - a `vars` entry nothing references is refused too — usually the same typo seen from the other end.
 
-**Vars are not secrets.** A secret is handed to a hook and redacted from every log line by value. A var is substituted into the workflow, so it reaches tracker comments, agents' prompts and the events recording both, with nothing redacting it. `validate` reports, and `start` refuses, a var whose value equals a declared secret's.
+**Vars are not secrets.** A secret is handed to a hook, cut from every comment Landrace posts, and — when `log.redact` names it — cut from the log, all by value. A var is substituted into the workflow, so it reaches tracker comments, agents' prompts and the events recording both, with nothing redacting it. `validate` reports, and `start` refuses, a var whose value equals a declared secret's.
 
 **Several developers, one repository.** Each instance exports its own assignee, and the workflow filters on it:
 
@@ -139,7 +139,7 @@ log:
   redact: [githubToken]
 ```
 
-The reference is resolved at load, from `.env` first and then your shell — a project's own file wins over whatever is exported in the terminal. The value is handed to hooks; a hook never reads `process.env` itself, which keeps it testable and lets redaction know every value to suppress. A secret whose variable is set nowhere is reported by `validate`, and `landrace start` and `landrace mcp` refuse to start over it.
+The reference is resolved at load, from `.env` first and then your shell — a project's own file wins over whatever is exported in the terminal. The value is handed to hooks; a hook never reads `process.env` itself, which keeps it testable and lets redaction know every value to suppress. Every declared secret of 8 characters or more is cut from the comments Landrace posts; name a secret in `log.redact` to cut it from the log too. A secret whose variable is set nowhere is reported by `validate`, and `landrace start` and `landrace mcp` refuse to start over it.
 
 `validate` fails if `.env` exists and git does not ignore it. `.landrace/.env.example` lists the variables this repository uses.
 
