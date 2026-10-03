@@ -58,7 +58,10 @@ Progress:
 Decisions say what a person will see; its Technical design names the files.
 A change the person's message asks for is part of this round. On a later
 round the branch already holds the earlier work: build on it, do not start
-over. Done when you know every file you will touch.
+over. Done when you know every file you will touch, and every place the code
+draws each thing the spec names: a rule about a kind of thing — a lane's
+header, a control — holds for each one however it is built, not only the form
+an example or an aside in the spec describes, and its test tries each form.
 
 **Step 2 — Bring the branch up to date with main.** `git fetch origin`, then
 `git merge origin/main`. Resolve any conflict and commit the merge. Done when
