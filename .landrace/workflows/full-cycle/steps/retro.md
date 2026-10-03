@@ -75,7 +75,8 @@ bring it back in any form.
 **Step 3 — Decide, for each correction, whether it generalises.** A lesson is a
 mistake a future item would plausibly make again, stated so it would stop
 that. A fact about this one item — its file names, its requirements, a bug
-in its code — is not a lesson. Most items teach nothing that generalises,
+in its code — is not a lesson, but documentation it shows wrong is one (Step
+4). Most items teach nothing that generalises,
 and "nothing" is a good answer: answer it rather than invent a rule. No lesson
 left → skip to Step 8 and answer `nothing`.
 
@@ -92,6 +93,10 @@ would have avoided the mistake:
   `CLAUDE.md` or `AGENTS.md` directly; they are generated from that file. If
   `agsync sync` cannot run or cannot write, say so in your summary.
 * A technique goes in a skill under `.agsync/skills/`.
+* A `README.md` or `docs/` page the corrections show was wrong, missing, or
+  contradicted by the code is fixed in that page, by the "README and docs"
+  standards in the agent instructions, beside any lesson above. A retro that
+  finds documentation drift and leaves it is incomplete.
 
 **Step 5 — Bring the branch up to date with main, then make the edits.**
 `git fetch origin`, then `git merge origin/main`. Resolve any conflict and

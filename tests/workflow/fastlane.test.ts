@@ -295,13 +295,17 @@ const ADDED: Record<string, RegExp[]> = {
   // A lesson commit changes agent instructions, not the item: judged for what it loosens.
   "code-review": [/^Commits titled `retro: lessons from #\{node\.id\}` change agent instructions/],
   "fix-review": [],
-  // Every file a lesson goes in is protected (re-review N1): a retro's commit is a person's to merge.
+  // Every file a lesson goes in is protected (re-review N1): a retro's commit is a person's to merge,
+  // unless it fixed only README.md or docs/ (#63).
   retro: [/^Here the code reviewer checks what you change, and then a person merges it/],
 };
 
-/** full-cycle's retro promises a person reads the commit before the merge; fastlane's says the reviewer reads it first. */
+/**
+ * full-cycle's retro promises a person reads the commit before the merge; fastlane's says the reviewer reads it first,
+ * and that a docs-only fix merges on the reviewer alone (#63).
+ */
 const RETRO_PROMISE = "and a person\nreads it beside the commit before they merge.";
-const RETRO_REVIEWED = "and if you\ncommit, the code reviewer checks the commit, then a person reads both before\nthey merge.";
+const RETRO_REVIEWED = "and if you\ncommit, the code reviewer checks the commit, then a person reads both before\nthey merge — unless it fixes only `README.md` or `docs/`, which merges once\nthe reviewer passes it.";
 
 describe("fastlane's steps", () => {
   it("builds on main's build, from the item's own text and its checks rather than a spec", () => {
@@ -378,6 +382,9 @@ describe("fastlane's steps", () => {
     expect(lead).toMatch(/loosens any rule, check or guard/);
     expect(lead).toMatch(/raise a finding/);
     expect(lead).toMatch(/do not review it against the item's text/);
+    // A docs-only lesson merges with no person, so it is judged for what it
+    // loosens as well as against the code, never instead of it.
+    expect(lead).toMatch(/`docs\/` page one fixes gets that check too, and is checked against the code as well/);
   });
 
   it("names the item's text in every step but the judge's, and the spec in none", () => {
