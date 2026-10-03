@@ -30,7 +30,7 @@
 
 Landrace watches your issue tracker. Each issue it works on is an **item**, and a **workflow** moves the item through **stages**: spec, build, review, fix, CI and merge. At some stages a coding agent, such as Claude Code or Codex, does one piece of work, called a **step**. It writes the spec, the code, the review or the fix.
 
-The agent never chooses what happens next. It answers with a value, and a rule in the workflow routes on that value. A deterministic state machine decides every step, and a person decides at the gates you choose.
+The agent never chooses what happens next. It answers with a value, and a rule in the workflow routes on that value. A deterministic state machine decides every step, and a person decides at the gates you choose. Two workflows ship: **full-cycle** starts with a written spec, and **fastlane**, for small changes, starts at the build.
 
 ```mermaid
 stateDiagram-v2
@@ -57,7 +57,7 @@ stateDiagram-v2
 - **No hidden state.** Landrace keeps no database. On every pass it re-derives each item's stage and history from the tracker: a label, its own comments, the review threads. After a crash it recovers by reading them again.
 - **Ambiguity halts instead of guessing.** When two rules match, Landrace stops the item and says why. A stopped item is a **halt**, and it waits for a person.
 - **Local-first.** Landrace runs on your machine, with your coding agent and your git credentials. There is no server to host and no cloud sandbox.
-- **A person at the gates you choose, or none.** A stage can wait for a person to approve a spec or merge a pull request. **Fastlane**, the workflow for small changes, merges by itself unless the change touches a protected path.
+- **A person at the gates you choose, or none.** A stage can wait for a person to approve a spec or merge a pull request. Fastlane merges by itself unless the change touches a **protected path**, a file that changes how Landrace itself runs.
 
 ## Quick start
 
@@ -125,7 +125,7 @@ This repository ships two workflows, and both are examples to copy. Each open it
 | Who merges | A person | Landrace, on green checks at the head the review read |
 | Stops for a person | To answer the spec's questions, to approve the spec, and to merge | When the change touches a protected path, when a retro commits a lesson, or when a review loop reaches its cap |
 
-Both also stop for a person at a halt: a step whose output was broken, a push the forge refused, or a blocker that was dropped. A **protected path** is a file that changes how Landrace itself runs: its workflows and hooks, CI, dependency files and agent instructions. Every stage, cap and protected path is in [Workflows](docs/workflows.md#the-shipped-workflows).
+Both also stop for a person at a halt: a step whose output was broken, a push the forge refused, or a blocker that was dropped. The protected paths are Landrace's workflows and hooks, CI, dependency files and agent instructions. Every stage, cap and protected path is in [Workflows](docs/workflows.md#the-shipped-workflows).
 
 ## The board
 
