@@ -100,4 +100,12 @@ A validator that flags healthy workflows gets switched off, and one that silentl
 
 The graph rules work from two derived views. An earlier version abstained wherever a trigger could fire from anywhere, which turned out to mean always — the entry trigger every real workflow needs switched three rules off graph-wide. Now `dead-end` and `reachability` use a superset that treats an unanchored trigger as an edge from every stage, and `cycle-bound` uses the anchored edges alone.
 
-`landrace start` runs the same checks before its first tick, through the same functions, and refuses an unsound workspace: the command and the loop cannot disagree about what is fatal.
+## What start checks differently
+
+`landrace start` runs these checks before its first tick, through the same functions, and refuses an unsound workspace. The two still differ:
+
+- `validate` fails a `.env` that git does not ignore; `start` does not check it.
+- `validate` passes, and `start` refuses: a `log.redact` name that is not a declared secret of 8 characters or more, `agent.isolation: container`, and a `tick.interval` that is not a [duration](configuration.md#durations). `landrace mcp` refuses the first two too.
+- `start` and `landrace mcp` run each hook's preflight, such as the GitHub integration's check of the token's permissions; `validate` runs none.
+
+So a workspace `validate` passes can still be refused by `start`.
