@@ -114,28 +114,40 @@ export interface LocatedError { path: GraphQLPath; type: unknown; message: unkno
  * The errors a caller reads as a hole in an answer rather than a failure of
  * it: `at` answers the part of the answer to read as null for one, or null
  * to fail as ever, and `spared` hears of each one that was — once the answer
- * is known to stand.
+ * is known to stand — with where the hole is, what was there before it was
+ * nulled, and the answer around it.
  */
 export interface Spare {
   at(error: LocatedError): GraphQLPath | null;
-  spared(error: LocatedError): void;
+  spared(error: LocatedError, hole: SparedHole): void;
+}
+
+/** Where an answer was read as null, what GitHub had put there, and the whole answer it is in. */
+export interface SparedHole { path: GraphQLPath; was: unknown; data: unknown }
+
+/** What `path` points at in `data`, or undefined where nothing does. */
+export function valueAt(data: unknown, path: GraphQLPath): unknown {
+  let at = data;
+  for (const key of path) {
+    if (at === null || typeof at !== "object") return undefined;
+    at = (at as Record<string, unknown>)[String(key)];
+  }
+  return at;
 }
 
 /**
- * Null what `path` points at in `data`, answering whether it was there to
- * null: an error is read as a hole in the answer only where the hole is.
+ * Null what `path` points at in `data`, answering what was there, or null
+ * when nothing was to null: an error is read as a hole in the answer only
+ * where the hole is.
  */
-function blank(data: unknown, path: GraphQLPath): boolean {
+function blank(data: unknown, path: GraphQLPath): { was: unknown } | null {
   const last = path[path.length - 1];
-  if (last === undefined) return false;
-  let at = data;
-  for (const key of path.slice(0, -1)) {
-    if (at === null || typeof at !== "object") return false;
-    at = (at as Record<string, unknown>)[String(key)];
-  }
-  if (at === null || typeof at !== "object" || !Object.hasOwn(at, String(last))) return false;
+  if (last === undefined) return null;
+  const at = valueAt(data, path.slice(0, -1));
+  if (at === null || typeof at !== "object" || !Object.hasOwn(at, String(last))) return null;
+  const was = (at as Record<string, unknown>)[String(last)];
   (at as Record<string, unknown>)[String(last)] = null;
-  return true;
+  return { was };
 }
 
 /**
@@ -337,15 +349,16 @@ export function createClient(opts: GitHubOptions) {
     // array rides on the thrown error too — a permission refusal (type
     // FORBIDDEN) and a rate limit (type RATE_LIMITED) are both this same
     // shape, and only the preflight cares which one it actually was.
-    const spared: LocatedError[] = [];
+    const spared: Array<{ error: LocatedError; path: GraphQLPath; was: unknown }> = [];
     const errors = (body.errors ?? []).filter((e) => {
       const path = Array.isArray(e.path) && e.path.every((k) => typeof k === "string" || typeof k === "number")
         ? (e.path as GraphQLPath) : null;
       if (path === null || spare === undefined) return true;
       const located = { path, type: e.type, message: e.message };
       const hole = spare.at(located);
-      if (hole === null || !blank(body.data, hole)) return true;
-      spared.push(located);
+      const blanked = hole === null ? null : blank(body.data, hole);
+      if (hole === null || blanked === null) return true;
+      spared.push({ error: located, path: hole, was: blanked.was });
       return false;
     });
     if (errors.length) {
@@ -355,7 +368,7 @@ export function createClient(opts: GitHubOptions) {
       );
     }
     if (body.data === undefined || body.data === null) throw new Error("graphql: the response carried no data");
-    for (const e of spared) spare?.spared(e);
+    for (const { error, path, was } of spared) spare?.spared(error, { path, was, data: body.data });
     return body.data;
   }
 

@@ -1329,13 +1329,15 @@ describe("an issue's blockers are read as blocked-by", () => {
       }
     });
 
+    // Which issue it is, GitHub said: the panel names it, as unreadable, and never as done.
     it("when a blocker is closed for a reason this integration does not map, rather than failing the read", async () => {
       const gh = createFakeTracker([
-        { number: 12, blockedBy: [{ repo: "o/r", number: 1, state: "closed", stateReason: "SOMETHING_NEW" as never }] },
+        { number: 12, blockedBy: [{ repo: "o/r", number: 1, state: "closed", stateReason: "SOMETHING_NEW" as never, title: "Upstream" }] },
       ]);
       for (const [, g] of await both(gh, "12")) {
         expect(unreadable(g, "12")).toBe(true);
-        expect(blockedBy(g)).toEqual([]);
+        expect(blockedBy(g).map((r) => r.to)).toEqual(["x.o.r.1"]);
+        expect(nodeOf(g, "x.o.r.1")).toMatchObject({ title: "Upstream", closed: null, placeholder: true, unreadable: true });
       }
     });
 
@@ -1419,15 +1421,49 @@ describe("an issue's blockers are read as blocked-by", () => {
       expect(unreadable(await erring(gh, error).source.read("12", ctx(gh)), "12")).toBe(true);
     });
 
-    it("saying, once for each, which blocker it could not read and what GitHub answered", async () => {
-      const gh = createFakeTracker([{ number: 12, blockedBy: [{ repo: "secret/vault", number: 1, state: "open", refused: true }] }]);
+    it("saying, once for each, which issue's blocker it could not read and what GitHub answered", async () => {
+      const gh = createFakeTracker([{ number: 12, blockedBy: [10, { repo: "secret/vault", number: 1, state: "open", refused: true }] }, { number: 10 }]);
       const events: Array<{ event: string; data: Record<string, unknown> | undefined }> = [];
       const logged: RuntimeContext = { ...gh.ctx, log: (event, data) => { events.push({ event, data }); } };
       await sourceOf(gh).read("12", logged);
       expect(events.filter((e) => e.event === "github.blocker.unreadable")).toEqual([{
         event: "github.blocker.unreadable",
-        data: { path: "repository.issue.blockedBy.nodes.0", message: "Resource not accessible by personal access token" },
+        data: {
+          item: "12", blocker: "#12's blocker 2", path: "repository.issue.blockedBy.nodes.1",
+          message: "Resource not accessible by personal access token",
+        },
       }]);
+    });
+
+    it("naming the blocker where GitHub said which it is", async () => {
+      const gh = createFakeTracker([
+        { number: 12, blockedBy: [{ repo: "secret/vault", number: 1, state: "closed", stateReason: "NOT_PLANNED", refused: "stateReason" }] },
+      ]);
+      const events: Array<Record<string, unknown> | undefined> = [];
+      await sourceOf(gh).list({ ...gh.ctx, log: (event, data) => { if (event === "github.blocker.unreadable") events.push(data); } });
+      expect(events).toEqual([expect.objectContaining({ item: "12", blocker: "secret/vault#1" })]);
+    });
+
+    /*
+     * A blocker the token may never see is met by the list, by every read of
+     * its item and by every walk that passes it, every tick: said once a
+     * tick, a listing beginning each, it is the one line a person looks for.
+     */
+    it("once each tick, however many readings meet it", async () => {
+      const gh = createFakeTracker([
+        { number: 2, blockedBy: [12] }, { number: 3, blockedBy: [12] },
+        { number: 12, blockedBy: [2, { repo: "secret/vault", number: 1, state: "open", refused: true }] },
+      ]);
+      let said = 0;
+      const logged: RuntimeContext = { ...gh.ctx, log: (event) => { if (event === "github.blocker.unreadable") said++; } };
+      const tick = async (): Promise<void> => {
+        await sourceOf(gh).list(logged);
+        for (const id of ["2", "3", "12"]) await sourceOf(gh).read(id, logged);
+      };
+      await tick();
+      expect(said).toBe(1);
+      await tick();
+      expect(said).toBe(2);
     });
   });
 

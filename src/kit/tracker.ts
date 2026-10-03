@@ -256,13 +256,23 @@ export function placeholderNode(related: RelatedRecord): Node {
     kind: ITEM_KIND,
     title: related.title,
     link: related.link,
-    closed: related.closed,
+    // One whose state could not be read is open, never a guess at done.
+    closed: related.unreadable === true ? null : related.closed,
     priority: null,
     origin: null,
     state: { labels: [], assignees: [] },
     placeholder: true,
+    ...(related.unreadable === true ? { unreadable: true as const } : {}),
   };
 }
+
+/**
+ * Which of two placeholders for one id is drawn: an open one over one that
+ * could not be read, and either over a closed one — so nothing reads as
+ * done that may not be, and a state one answer read is not hidden by
+ * another that could not read it.
+ */
+const placeholderRank = (node: Node): number => (node.closed !== null ? 0 : node.unreadable === true ? 1 : 2);
 
 /**
  * The relationships of an item a graph can carry, and whether it reported
@@ -272,7 +282,10 @@ export function placeholderNode(related: RelatedRecord): Node {
 export function relatedOf(item: ItemRecord): { related: RelatedRecord[]; whole: boolean } {
   const all = item.related ?? [];
   const related = all.filter((r) => itemIdProblem(r.to) === null);
-  return { related, whole: item.relatedComplete !== false && related.length === all.length };
+  return {
+    related,
+    whole: item.relatedComplete !== false && related.length === all.length && !related.some((r) => r.unreadable === true),
+  };
 }
 
 /**
@@ -286,7 +299,7 @@ export function openRelationsOf(items: ReadonlyArray<ItemRecord>, type: string):
   return {
     open: open.map((t) => t.id),
     edges: open.flatMap((t) => (t.related ?? []).filter((r) => r.type === type && r.closed === null).map((r) => ({ from: t.id, to: r.to }))),
-    partial: open.filter((t) => t.relatedComplete === false).map((t) => t.id),
+    partial: open.filter((t) => t.relatedComplete === false || (t.related ?? []).some((r) => r.unreadable === true)).map((t) => t.id),
   };
 }
 
@@ -373,7 +386,7 @@ function withFacts(node: Node, { unreadable, cycle }: { unreadable: boolean; cyc
   };
 }
 
-/** One edge per relationship, a repeat dropped; and a placeholder for an id `known` does not hold, an open one over a closed. */
+/** One edge per relationship, a repeat dropped; and a placeholder for an id `known` does not hold, by `placeholderRank`. */
 function drawRelated(
   from: string, related: RelatedRecord[], known: (id: string) => boolean,
   edges: Map<string, Relationship>, placeholders: Map<string, Node>,
@@ -382,7 +395,8 @@ function drawRelated(
     edges.set(JSON.stringify([from, r.to, r.type]), { from, to: r.to, type: r.type });
     if (known(r.to)) continue;
     const had = placeholders.get(r.to);
-    if (had === undefined || (had.closed !== null && r.closed === null)) placeholders.set(r.to, placeholderNode(r));
+    const next = placeholderNode(r);
+    if (had === undefined || placeholderRank(next) > placeholderRank(had)) placeholders.set(r.to, next);
   }
 }
 

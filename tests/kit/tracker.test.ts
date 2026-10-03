@@ -325,6 +325,28 @@ describe("relationships on the tracker base", () => {
       expect(g.nodes.filter((n) => n.id === "x-far-3").map((n) => n.closed)).toEqual([null]);
     });
 
+    // Which item, but not what state it is in: drawn open, never guessed
+    // done, and said to be unreadable — and the item's relationships are not whole.
+    it("draws a related item it knows but could not read as an open placeholder that says so", async () => {
+      const tracker = new MemoryTracker({ items: [{ id: "12", related: [{ type: B, to: "x-far-3", title: "Upstream", closed: "done", unreadable: true }] }] });
+      for (const g of [await tracker.list(ctx), await tracker.read("12", ctx)]) {
+        expect(nodeOf(g, "x-far-3")).toMatchObject({ title: "Upstream", closed: null, placeholder: true, unreadable: true });
+        expect(nodeOf(g, "12")?.state).toMatchObject({ relatedUnreadable: true });
+        expect(g.relationships).toEqual([{ from: "12", to: "x-far-3", type: B }]);
+      }
+    });
+
+    it("draws a placeholder one item could read and another could not as read, and one read as closed as unreadable", async () => {
+      const read = await new MemoryTracker({
+        items: [{ id: "12", related: [{ type: B, to: "x-far-3", unreadable: true }] }, { id: "13", related: [{ type: B, to: "x-far-3" }] }],
+      }).list(ctx);
+      expect(read.nodes.filter((n) => n.id === "x-far-3").map((n) => [n.closed, n.unreadable])).toEqual([[null, undefined]]);
+      const closed = await new MemoryTracker({
+        items: [{ id: "12", related: [{ type: B, to: "x-far-3", closed: "done" }] }, { id: "13", related: [{ type: B, to: "x-far-3", unreadable: true }] }],
+      }).list(ctx);
+      expect(closed.nodes.filter((n) => n.id === "x-far-3").map((n) => [n.closed, n.unreadable])).toEqual([[null, true]]);
+    });
+
     it("draws an edge reported twice once", async () => {
       const g = await new MemoryTracker({ items: [{ id: "10" }, { id: "12", related: [{ type: B, to: "10" }, { type: B, to: "10" }] }] }).list(ctx);
       expect(g.relationships).toEqual([{ from: "12", to: "10", type: B }]);

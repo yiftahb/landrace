@@ -113,7 +113,8 @@ const recordOf = (row: ExternalItem, rows: ReadonlyMap<string, ExternalItem>): I
       to: r.to,
       title: other?.title ?? r.title ?? `item ${r.to}`,
       link: (other ? undefined : r.link) ?? `memory://items/${r.to}`,
-      closed: other ? other.closed : r.closed ?? null,
+      // Seeded unreadable, its state is not known, whatever its row says.
+      ...(r.unreadable === true ? { closed: null, unreadable: true as const } : { closed: other ? other.closed : r.closed ?? null }),
     };
   }),
   relatedComplete: row.relatedComplete,

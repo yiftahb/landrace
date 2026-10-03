@@ -11,7 +11,7 @@ import {
   BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
   type ItemRecord, type OpenRelations, type TrackerComment,
 } from "landrace/kit";
-import { type Client, type Spare, clientFor, isIssueNumber, issueNumber, unseen } from "./client.js";
+import { type Client, type Spare, clientFor, isIssueNumber, issueNumber, unseen, valueAt } from "./client.js";
 
 /**
  * How many blockers one reading asks an issue for: all of them, since GitHub
@@ -240,35 +240,41 @@ function blockerId({ number, repository: { owner: { login: owner }, name } }: Wa
 /**
  * The blockers an answer could read, each by id and state, and whether that
  * was all of them. One that cannot be read — null where the token may not
- * see it, closed for a reason this does not map, in a repository it cannot
- * name — is left out and the rest said not to be whole, as is a connection
- * holding fewer than it counts: not found is not missing. Both readings of
- * an issue's blockers go through this, so the walk and the list agree.
+ * see it, in a repository it cannot name — is left out and the rest said
+ * not to be whole, as is a connection holding fewer than it counts: not
+ * found is not missing. One closed for a reason this does not map is kept,
+ * by the id GitHub gave it, as unreadable and open: which it is is known,
+ * what state it is in is not. Both readings of an issue's blockers go
+ * through this, so the walk and the list agree.
  */
 function readBlockers<N extends WalkBlocker>(
   blockedBy: Blockers<N> | undefined, here: Here,
-): { read: Array<{ node: N; to: string; closed: Closed }>; whole: boolean } {
+): { read: Array<{ node: N; to: string; closed: Closed; unreadable: boolean }>; whole: boolean } {
   if (!Array.isArray(blockedBy?.nodes)) return { read: [], whole: false };
-  const read: Array<{ node: N; to: string; closed: Closed }> = [];
+  const read: Array<{ node: N; to: string; closed: Closed; unreadable: boolean }> = [];
   for (const node of blockedBy.nodes) {
     if (node === null) continue;
-    let closed: Closed;
-    try {
-      closed = closedOf(node);
-    } catch {
-      continue;
-    }
     const to = blockerId(node, here);
-    if (to !== null) read.push({ node, to, closed });
+    if (to === null) continue;
+    try {
+      read.push({ node, to, closed: closedOf(node), unreadable: false });
+    } catch {
+      read.push({ node, to, closed: null, unreadable: true });
+    }
   }
-  return { read, whole: read.length === blockedBy.nodes.length && blockedBy.totalCount <= blockedBy.nodes.length };
+  return {
+    read,
+    whole: read.length === blockedBy.nodes.length && !read.some((r) => r.unreadable) && blockedBy.totalCount <= blockedBy.nodes.length,
+  };
 }
 
 /** An issue's blockers, as the kit reads relationships. */
 function blockersOf(blockedBy: Blockers<BlockerNode> | undefined, here: Here): Pick<ItemRecord, "related" | "relatedComplete"> {
   const { read, whole } = readBlockers(blockedBy, here);
   return {
-    related: read.map(({ node, to, closed }) => ({ type: RELATIONS.blockedBy, to, title: node.title, link: node.url, closed })),
+    related: read.map(({ node, to, closed, unreadable }) => ({
+      type: RELATIONS.blockedBy, to, title: node.title, link: node.url, closed, ...(unreadable ? { unreadable: true as const } : {}),
+    })),
     relatedComplete: whole,
   };
 }
@@ -277,11 +283,14 @@ function blockersOf(blockedBy: Blockers<BlockerNode> | undefined, here: Here): P
  * A blocker the token may not see: GitHub answers it — or a field of it —
  * null, with a FORBIDDEN or NOT_FOUND error at that place beside an
  * otherwise whole answer. That whole blocker reads as null, so as
- * unreadable, never as one missing a field, and the log says which and what
- * GitHub said. Any other error — a fault, a rate limit — fails the read as
+ * unreadable, never as one missing a field, and the log says whose blocker
+ * it is, which — by name where GitHub gave one, by its place among the
+ * issue's blockers where it did not — and what GitHub said. Once in `said`:
+ * the list, every read of the issue and every walk past it meet it again,
+ * every tick. Any other error — a fault, a rate limit — fails the read as
  * ever, and the next tick reads it again.
  */
-const unseenBlockers = (ctx: RuntimeContext): Spare => ({
+const unseenBlockers = (ctx: RuntimeContext, said: Set<string>): Spare => ({
   at: ({ path, type }) => {
     if (type !== "FORBIDDEN" && type !== "NOT_FOUND") return null;
     for (let k = 0; k + 2 < path.length; k++) {
@@ -289,7 +298,20 @@ const unseenBlockers = (ctx: RuntimeContext): Spare => ({
     }
     return null;
   },
-  spared: ({ path, message }) => ctx.log("github.blocker.unreadable", { path: path.join("."), message: String(message) }),
+  spared: ({ message }, { path, was, data }) => {
+    const number = (valueAt(data, path.slice(0, -3)) as { number?: unknown } | null | undefined)?.number;
+    const item = typeof number === "number" ? String(number) : null;
+    const place = Number(path[path.length - 1]) + 1;
+    const known = was as Partial<WalkBlocker> | null;
+    const named = typeof known?.number === "number" && typeof known.repository?.name === "string" && typeof known.repository.owner?.login === "string"
+      ? `${known.repository.owner.login}/${known.repository.name}#${known.number}`
+      : null;
+    const blocker = named ?? (item === null ? `blocker ${place}` : `#${item}'s blocker ${place}`);
+    const key = JSON.stringify([item, place, blocker, String(message)]);
+    if (said.has(key)) return;
+    said.add(key);
+    ctx.log("github.blocker.unreadable", { item, blocker, path: path.join("."), message: String(message) });
+  },
 });
 
 /** The repository as an answer names it — following a rename the configuration may not have — or as configured, where it does not say. */
@@ -326,6 +348,8 @@ const subRecordOf = (issue: SubIssueNode, parent: string | null): ItemRecord => 
  */
 export class GitHubIssues extends BaseTracker {
   private readonly client: Client | undefined;
+  /** The unseen blockers already logged this tick: a listing begins each one, and clears it. */
+  private readonly unseenSaid = new Set<string>();
 
   constructor({ client }: { client?: Client } = {}) {
     super();
@@ -347,6 +371,7 @@ export class GitHubIssues extends BaseTracker {
    * whose neighbourhood holds it halts, naming it.
    */
   async items(ctx: RuntimeContext): Promise<ItemRecord[]> {
+    this.unseenSaid.clear();
     const gh = this.gh(ctx);
     const { owner, name } = gh;
     const records = new Map<string, ItemRecord>();
@@ -363,7 +388,7 @@ export class GitHubIssues extends BaseTracker {
     for (let page = 0; ; page++) {
       if (page === MAX_ISSUE_PAGES) throw tooMany(gh.repo);
       const data: { repository: Named<{ issues: Page<Listed> }> | null } =
-        await gh.graphql(ISSUES_QUERY, { owner, name, cursor }, unseenBlockers(ctx));
+        await gh.graphql(ISSUES_QUERY, { owner, name, cursor }, unseenBlockers(ctx, this.unseenSaid));
       if (!data.repository) throw unseen(gh.repo);
       const { issues } = data.repository;
       const here = hereOf(data.repository, gh);
@@ -394,7 +419,7 @@ export class GitHubIssues extends BaseTracker {
     cursor = null;
     closed: for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
       const data: { repository: Named<{ issues: Page<ClosedIssue> }> | null } =
-        await gh.graphql(CLOSED_QUERY, { owner, name, cursor }, unseenBlockers(ctx));
+        await gh.graphql(CLOSED_QUERY, { owner, name, cursor }, unseenBlockers(ctx, this.unseenSaid));
       if (!data.repository) throw unseen(gh.repo);
       const { issues } = data.repository;
       const here = hereOf(data.repository, gh);
@@ -419,7 +444,7 @@ export class GitHubIssues extends BaseTracker {
     const number = issueNumber(id);
     const gh = this.gh(ctx);
     const data = await gh.graphql<{ repository: Named<{ issue: (IssueNode & { parent: { number: number } | null }) | null }> | null }>(
-      ISSUE_QUERY, { owner: gh.owner, name: gh.name, number }, unseenBlockers(ctx),
+      ISSUE_QUERY, { owner: gh.owner, name: gh.name, number }, unseenBlockers(ctx, this.unseenSaid),
     );
     if (!data.repository) throw unseen(gh.repo);
     const issue = data.repository.issue;
@@ -441,7 +466,7 @@ export class GitHubIssues extends BaseTracker {
     for (let page = 0; ; page++) {
       if (page === MAX_ISSUE_PAGES) throw tooMany(gh.repo);
       const data: { repository: Named<{ issues: Page<{ number: number; blockedBy: Blockers<WalkBlocker> }> }> | null } =
-        await gh.graphql(OPEN_BLOCKERS_QUERY, { owner, name, cursor }, unseenBlockers(ctx));
+        await gh.graphql(OPEN_BLOCKERS_QUERY, { owner, name, cursor }, unseenBlockers(ctx, this.unseenSaid));
       if (!data.repository) throw unseen(gh.repo);
       const { issues } = data.repository;
       const here = hereOf(data.repository, gh);

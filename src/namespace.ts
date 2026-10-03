@@ -66,6 +66,12 @@ export interface Node {
    * panel, as the other end of an edge. Absent on every other node.
    */
   placeholder?: true;
+  /**
+   * True on a placeholder whose source knew which item it is but could not
+   * read what state it is in: its `closed` is null, never a guess, and the
+   * panel says it is unreadable. Absent on every other node.
+   */
+  unreadable?: true;
 }
 
 export interface Relationship { from: string; to: string; type: string }
@@ -1048,7 +1054,20 @@ export interface ReviewThread {
  * another role's node-id form (`pr-<n>`, `spec-<id>`) — that is two roles
  * reporting one id, which halts the whole listing.
  */
-export interface RelatedRecord { type: string; to: string; title: string; link: string; closed: Closed }
+export interface RelatedRecord {
+  type: string;
+  to: string;
+  title: string;
+  link: string;
+  closed: Closed;
+  /**
+   * True where the tracker said which item it is but not what state it is
+   * in — closed for a reason its integration does not map, say. Its
+   * `closed` is null, never a guess: drawn as open, and the item's
+   * relationships read as not all read.
+   */
+  unreadable?: true;
+}
 
 /**
  * Every open item's relationships of one type, as the blocker walk reads
@@ -1859,7 +1878,7 @@ export interface ExternalItem {
 }
 
 /** One relationship an in-memory item has, as a test seeds it. */
-export interface ExternalRelation { type: string; to: string; title?: string; link?: string; closed?: Closed }
+export interface ExternalRelation { type: string; to: string; title?: string; link?: string; closed?: Closed; unreadable?: true }
 
 /** A pull request as the in-memory tracker holds it: live and mutable, so a test moves it the way a person on the tracker would. */
 export interface ExternalPull {
