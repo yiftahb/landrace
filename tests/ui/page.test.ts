@@ -1741,10 +1741,11 @@ describe("a click on the board's empty space", () => {
     }
     return parent as Node;
   };
-  const click = (target: Node, opts: { panelId?: string | null; menu?: string | null } = {}) => {
+  const click = (target: Node, opts: { panelId?: string | null; menu?: string | null; selected?: boolean } = {}) => {
     const seen = { cleared: 0, menus: 0 };
     runInNewContext(`${fnSource("emptySpace")}${fnSource("onDocumentClick")} onDocumentClick({ target: TARGET })`, {
       TARGET: target, panelId: opts.panelId === undefined ? "12" : opts.panelId, openMenuKey: opts.menu ?? null,
+      getSelection: () => ({ isCollapsed: !opts.selected }),
       closePanel: () => { seen.cleared++; }, closeMenu: () => { seen.menus++; },
       byKey: () => null, menuKeyOf: (k: string) => k, triggerKeyOf: (k: string) => k, resetIdleTimer: () => {},
     });
@@ -1774,6 +1775,12 @@ describe("a click on the board's empty space", () => {
 
   it("only closes an open menu, as Escape does", () => {
     expect(click(at("div", "main"), { menu: "19:menu" })).toEqual({ cleared: 0, menus: 1 });
+  });
+
+  // A drag that selects the panel's text and ends past its edge clicks the
+  // body: clearing then would hide what was just selected, before the copy.
+  it("leaves it when the click ends a drag that selected text", () => {
+    expect(click(at("div"), { selected: true })).toEqual({ cleared: 0, menus: 0 });
   });
 
   it("does nothing with no item selected", () => {

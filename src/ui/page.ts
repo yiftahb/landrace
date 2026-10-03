@@ -447,10 +447,11 @@ function emptySpace(target) {
 // Defined once, not per row: because these are module-level listeners
 // rather than one pair per row, re-rendering never multiplies them. A click
 // outside an open menu closes it; with none open, a click on the board's
-// empty space clears the panel's item, as ✕ does.
+// empty space clears the panel's item, as ✕ does — never one that ends a
+// drag selecting text, which lands on whatever holds both of its ends.
 function onDocumentClick(e) {
   if (openMenuKey === null) {
-    if (panelId !== null && emptySpace(e.target)) closePanel();
+    if (panelId !== null && emptySpace(e.target) && getSelection().isCollapsed) closePanel();
     return;
   }
   const menu = byKey(menuKeyOf(openMenuKey));
