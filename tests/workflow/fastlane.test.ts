@@ -387,6 +387,22 @@ describe("fastlane's steps", () => {
     expect(lead).toMatch(/`docs\/` page one fixes gets that check too, and is checked against the code as well/);
   });
 
+  /*
+   * #71: the flag fastlane's review budget reads, asked for in the reviewer's
+   * answer and taught in its Steps 6 and 7 — main's, which fastlane's inherits.
+   */
+  it.each(["full-cycle", "fastlane"])("has %s's reviewer flag a finding wording only for docs or code comments, false when unsure", (id) => {
+    const step = stepOf(id, "steps/code-review.md");
+    expect((step.output?.shapes.reviewed as { findings?: { items?: unknown } }).findings?.items)
+      .toEqual({ file: "string", line: "number", body: "string", wording: "boolean" });
+    const procedure = flat(sectionOf(step.prompt, "Procedure"));
+    expect(procedure).toMatch(/Mark each finding `wording`: true only when its fix changes nothing but documentation — a `README\.md` or `docs\/` page, or a code comment — and no line that runs\./);
+    expect(procedure).toMatch(/A step prompt, instructions or a skill is never wording/);
+    expect(procedure).toMatch(/When you are unsure, it is false\./);
+    expect(procedure).toMatch(/a wording finding is fixed and re-reviewed like any other/);
+    expect(procedure).toMatch(/`findings` a list of objects each with `file`, `line`, `body` and `wording` \(true or false, by Step 6\)/);
+  });
+
   it("names the item's text in every step but the judge's, and the spec in none", () => {
     const steps = flow("fastlane").steps;
     expect([...steps.keys()].sort()).toEqual(STEPPED.map((id) => `steps/${id}.md`).sort());
