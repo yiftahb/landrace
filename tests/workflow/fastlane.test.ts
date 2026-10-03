@@ -580,6 +580,8 @@ interface Facts {
   dropped?: number;
   notMerged?: number;
   awaitingFix?: number;
+  /** Of `awaitingFix`, those not the reviewer's wording findings: all of them unless the facts say. */
+  awaitingBehaviourFix?: number;
   openThreads?: number;
   ciPending?: number;
   ciFailed?: number;
@@ -633,7 +635,10 @@ function snapshotOf(f: Facts): Snapshot {
     ? { total, dropped, is: {}, not: {}, sum: {}, stage: {} }
     : {
       total, dropped, is: { merged: total - notMerged }, not: { merged: notMerged }, stage: {},
-      sum: { awaitingFix: f.awaitingFix ?? 0, openThreads: f.openThreads ?? 0, ciPending: f.ciPending ?? 0, ciFailed: f.ciFailed ?? 0 },
+      sum: {
+        awaitingFix: f.awaitingFix ?? 0, awaitingBehaviourFix: f.awaitingBehaviourFix ?? f.awaitingFix ?? 0,
+        openThreads: f.openThreads ?? 0, ciPending: f.ciPending ?? 0, ciFailed: f.ciFailed ?? 0,
+      },
     };
   const none = { total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {}, open: [] };
   const open = f.notClosed ?? 0;
@@ -667,6 +672,10 @@ function grid(stage: string | null, axes: Record<string, readonly unknown[]>, ba
   }
   return out;
 }
+
+/** Thread counts a forge can report: a behaviour fix is a fix awaited, and a fix awaited is on an open thread. */
+const possible = (f: Facts): boolean =>
+  n(f.awaitingBehaviourFix, n(f.awaitingFix, 0)) <= n(f.awaitingFix, 0) && n(f.awaitingFix, 0) <= n(f.openThreads, 0);
 
 const count = (f: Facts, stage: string): number => f.counters?.[stage] ?? 0;
 const friction = (f: Facts): boolean => count(f, "build") > 1 || count(f, "fix-review") > 0 || count(f, "triage") > 0;
@@ -717,11 +726,16 @@ const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => s
   // No pull request at publish is no exit: pull.open lands before the position moves there.
   ["publish", { total: [0, 1] }, (f) => (n(f.total, 1) > 0 ? "code-review" : null)],
   // A pull request a person closed during a review, a fix or the retro is their stop: stuck.
+  // Past round 3, only wording awaiting a fix goes round twice more (#71).
   ["code-review", {
-    total: [0, 1], awaitingFix: [0, 1], openThreads: [0, 1], notMerged: [0, 1], "counters.code-review": [3, 4],
+    total: [0, 1], awaitingBehaviourFix: [0, 1], awaitingFix: [0, 1], openThreads: [0, 1], notMerged: [0, 1],
+    "counters.code-review": [3, 4, 5, 6],
   }, (f) => {
     if (n(f.total, 1) === 0) return "stuck";
-    if (n(f.awaitingFix, 0) > 0) return count(f, "code-review") < 4 ? "fix-review" : "stuck";
+    if (n(f.awaitingFix, 0) > 0) {
+      const round = count(f, "code-review");
+      return round < 4 || (round < 6 && n(f.awaitingBehaviourFix, 1) === 0) ? "fix-review" : "stuck";
+    }
     if (n(f.openThreads, 0) > 0) return "stuck";
     return n(f.notMerged, 1) > 0 ? "ci" : "done";
   }],
@@ -774,8 +788,7 @@ const matches = (when: Condition, s: Snapshot): boolean => {
 };
 
 /** What decide() weighs once a stage has settled: every other stage's triggers, through the engine's compiler. */
-const exitsFrom = (w: Workflow, f: Facts): string[] => {
-  const s = snapshotOf(f);
+const exitsFrom = (w: Workflow, f: Facts, s: Snapshot = snapshotOf(f)): string[] => {
   return w.stages
     .filter((candidate) => candidate.id !== f.stage)
     .flatMap((candidate) => (candidate.triggers ?? [])
@@ -796,7 +809,7 @@ describe("every exit from a fastlane stage is exclusive", () => {
 
   it.each(STAGES)("from %s, exactly the exit the plan names matches, at every boundary", (stage, axes, to) => {
     const { workflow } = flow("fastlane");
-    const facts = grid(stage, axes);
+    const facts = grid(stage, axes).filter(possible);
     const got = facts.map((f) => [label(f), exitsFrom(workflow, f).map(destinationOf)]);
     const want = facts.map((f) => [label(f), [to(f)].filter((x) => x !== null)]);
     expect(got).toEqual(want);
@@ -811,6 +824,38 @@ describe("every exit from a fastlane stage is exclusive", () => {
     expect([...new Set(missing)]).toEqual([]);
     const reached = new Set(facts.flatMap((f) => exitsFrom(workflow, f)));
     expect(anchored.map(({ to: id, t }) => `${id}: ${t.name ?? ""}`).filter((exit) => !reached.has(exit))).toEqual([]);
+  });
+
+  /*
+   * #71: past round 3 a review leaves the item for a person on the budget
+   * named for what still awaits a fix — wording after round 5, behaviour
+   * after round 3 — and a clean round 6 goes on to CI.
+   */
+  it("leaves code review for a person on the budget named for what still awaits a fix", () => {
+    const { workflow } = flow("fastlane");
+    const at = (round: number, facts: Partial<Facts>): string[] =>
+      exitsFrom(workflow, { stage: "code-review", counters: { "code-review": round }, openThreads: 2, awaitingFix: 1, awaitingBehaviourFix: 0, ...facts });
+    expect(at(4, {})).toEqual(["fix-review: the reviewer left threads awaiting a fix"]);
+    expect(at(5, {})).toEqual(["fix-review: the reviewer left threads awaiting a fix"]);
+    expect(at(6, {})).toEqual(["stuck: the wording budget is exhausted"]);
+    expect(at(4, { awaitingFix: 2, awaitingBehaviourFix: 1 })).toEqual(["stuck: the review budget is exhausted"]);
+    expect(at(6, { awaitingFix: 2, awaitingBehaviourFix: 1 })).toEqual(["stuck: the review budget is exhausted"]);
+    expect(at(6, { openThreads: 0, awaitingFix: 0 })).toEqual(["ci: the review settled with every thread resolved"]);
+  });
+
+  /*
+   * A forge that reports no behaviour count — an integration not on the kit,
+   * or one written before it — reads as behaviour: its items keep the
+   * review budget as it was, and never reach the wording budget.
+   */
+  it("reads a behaviour count no forge reported as behaviour, at every round past three", () => {
+    const { workflow } = flow("fastlane");
+    for (const round of [4, 5, 6]) {
+      const s = snapshotOf({ stage: "code-review", counters: { "code-review": round }, openThreads: 1, awaitingFix: 1 });
+      const sum = (s.rel as { implements: { in: { sum: Record<string, number> } } }).implements.in.sum;
+      delete sum.awaitingBehaviourFix;
+      expect([round, exitsFrom(workflow, { stage: "code-review" }, s)]).toEqual([round, ["stuck: the review budget is exhausted"]]);
+    }
   });
 
   /*
