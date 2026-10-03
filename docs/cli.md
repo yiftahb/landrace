@@ -67,8 +67,8 @@ To stop a step while it runs, close its item or take its admit label (`lr:auto` 
 `start` serves a **board**, the triage page, at `http://127.0.0.1:4545/`. It shows every candidate item, with its sub-items and pull requests nested beneath it, in lanes:
 
 - **Needs you** — an item at a `waits: person` stage, and every halt;
-- **Agent running now**;
-- **Held by another process** — an MCP conversation, another instance;
+- **Agent running** — an agent this process started is running on it;
+- **Held elsewhere** — held outside this process: a person's pairing, an MCP conversation, another instance;
 - **Waiting**;
 - **Not admitted** and **Done**, collapsed.
 
@@ -76,7 +76,7 @@ It costs no tracker calls: it polls the process every two seconds and shows what
 
 **Pages.** A sidebar lists *Needs You*, then each workflow by name (case-folded, then id); under 640 px it is a row of chips. `#/` is Needs You, `#/w/<id>` a workflow, and either takes `?item=<id>` to open that item's panel. Old `#item=<id>` links still open the panel on Needs You, and a workflow the board no longer has shows Needs You. Moving between pages closes the panel.
 
-- **Needs You** is the home page: one lane across every workflow. With more than one workflow, each row is tagged with its workflow's name, except a conflict or a clash, whose note names the workflows involved. The sidebar and the browser tab count its branches — `(3) Landrace`. Empty, it shows a person in a beach chair and "You're all set!"; a search that matches nothing says "Nothing matches."; before the first listing has landed it says "Listing…".
+- **Needs You** is the home page: one lane across every workflow. With more than one workflow, each row is tagged with its workflow's name, except a conflict or a clash, whose note names the workflows involved. The sidebar and the browser tab count its branches — `(3) Landrace`. Empty, it shows a stack of ticked checklist cards and "You're all set!"; a search that matches nothing says "Nothing matches."; before the first listing has landed it says "Listing…".
 - **A workflow page** draws every lane for that workflow's own items. A branch appears on every workflow page any of its rows belongs to, in its most urgent row's lane; the sidebar's count and rose dot count only that workflow's own rows. A conflict is on the page of each workflow that claims it, and a clash on the page of each workflow whose source reports the id. Not admitted lists what the workflow's source sees and nobody claims. A closed item shows on the pages whose `eligible` rule admits it — or, when none does, on every page whose source lists it.
 
 **Order.** A branch sits in the lane of its most urgent item, so a sub-item that needs you lifts its whole branch into Needs you, opened down to it. Needs you is a queue: by priority, `P0` first and unprioritised last, then whoever has waited longest. Every other lane is newest first. Both go by when the source says the item or pull request last changed; a row with no time goes last. A branch's rows follow its lane's order, and a branch is placed by its root. Done holds what the source lists as closed; the GitHub integration lists an item Landrace moved (one with an `lr:stage:*` label) for 30 days after it closes.
