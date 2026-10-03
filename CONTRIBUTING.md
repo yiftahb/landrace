@@ -55,7 +55,7 @@ A new tracker, forge, docs site, coding agent or notifier goes in `integrations/
 - A **tracker, forge or docs site** extends `BaseTracker`, `BaseForge` or `BaseDocs`, writes only its vendor's calls, and maps the answers into the neutral shapes in `src/namespace.ts` (`ItemRecord`, `PullRecord`, `ReviewThread`, `ChangedFile`). Every effect it adds has a `satisfied()` beside its `apply()`.
 - A **notifier** is a `defineNotifier` from `landrace/hooks`, as `integrations/slack/` is.
 
-A project wires it in with a hook file under `.landrace/hooks/`, as `.landrace/hooks/github.ts` does with `compose({ tracker, forge, docs })`. Test it against an in-memory stand-in for the vendor's API, as `tests/integrations/gitlab/fake-gitlab.ts` is, and document it in the README. If an integration seems to need a change to `src/`, open an issue first.
+A project wires it in with a hook file under `.landrace/hooks/`, as `.landrace/hooks/github.ts` does with `compose({ tracker, forge, docs })`. Test it against an in-memory stand-in for the vendor's API, as `tests/integrations/gitlab/fake-gitlab.ts` is. Document its setup in [docs/integrations.md](docs/integrations.md), not in the README: the README's integrations section only lists it, linked to that page. If an integration seems to need a change to `src/`, open an issue first.
 
 ## Commits
 
