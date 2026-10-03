@@ -1764,12 +1764,21 @@ describe("a click on the board's empty space", () => {
       at(...row, "div", "span"),
       at(...row, "div", "button"),
       at("div", "main", "details", "summary", "h2"),
+      at("div", "main", "section", "header", "h2"),
       at("div", "nav", "ul", "li", "a", "span"),
       at("div", "main", "div", "input"),
       at("aside#panel", "div", "p"),
       at("header", "div", "span"),
     ]) {
       expect(click(target)).toEqual({ cleared: 0, menus: 0 });
+    }
+  });
+
+  // The click above on a section lane's header holds only if the page draws
+  // that header as a <header>, as a collapsible lane's is a <summary>.
+  it("draws every lane's header as one the click leaves alone", () => {
+    for (const lane of ["needs-you", "running", "elsewhere", "waiting"]) {
+      expect(PAGE_HTML).toMatch(new RegExp(`<section data-lane="${lane}"[^>]*>\\s*<header\\b`));
     }
   });
 

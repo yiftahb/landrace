@@ -12,10 +12,10 @@ export { APP_CSS } from "#ui/styles.generated.js";
  */
 const lane = (id: string, label: string, accent: string, dot = ""): string => `
 <section data-lane="${id}" class="mb-4 rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900${accent}">
-<div class="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+<header class="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
 ${dot}<h2 class="font-mono text-xs font-semibold uppercase tracking-wider">${label}</h2>
 <span class="lane-count inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-medium">0</span>
-</div>
+</header>
 <ul role="tree" aria-label="${label}" class="divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
 </section>`;
 
@@ -437,8 +437,8 @@ function closeMenu(opts) {
   }
 }
 
-// The board's empty space: not the page header, the panel, an item's row or
-// a control — a lane's header among them, which collapses the lane.
+// The board's empty space: not a header (the page's or a lane's), the panel,
+// an item's row or a control — a collapsible lane's summary among them.
 function emptySpace(target) {
   return Boolean(target && typeof target.closest === "function")
     && target.closest("header, #panel, [role=treeitem], [role=menu], a, button, input, textarea, select, label, summary") === null;
