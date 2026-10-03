@@ -106,6 +106,7 @@ The graph rules work from two derived views. An earlier version abstained wherev
 
 - `validate` fails a `.env` that git does not ignore; `start` does not check it.
 - `validate` passes, and `start` refuses: a `log.redact` name that is not a declared secret of 8 characters or more, `agent.isolation: container`, and a `tick.interval` that is not a [duration](configuration.md#durations). `landrace mcp` refuses the first two too.
+- `validate` passes, and `start` refuses, a workflow whose hooks load no source (`no source hook is configured`). With no pre hook either, `path-coverage` abstains, so `validate` reports such a workflow valid.
 - `start` and `landrace mcp` run each hook's preflight, such as the GitHub integration's check of the token's permissions; `validate` runs none.
 
 So a workspace `validate` passes can still be refused by `start`.
