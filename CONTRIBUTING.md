@@ -34,7 +34,7 @@ Write the failing test, run it, and watch it fail before you write the code that
 
 - Test behaviour, not implementation. A test asserting values it just wrote itself cannot fail; the typechecker already covers that claim.
 - The decision engine is pure functions, so its tests are fixtures in and values out, with nothing to mock.
-- A test that touches a tracker, forge or docs site uses the in-memory adapter, `createExternalState` from `landrace/testing`, which implements the same interfaces a real integration does.
+- A test that touches a tracker, forge or docs site uses the in-memory adapter, `createExternalState` from `#testing/index.js`, which implements the same interfaces a real integration does. (`landrace/testing` is the name a project's own workflow tests import it by; in this repository it would load the compiled `dist/`.)
 - Attack a guard with the case it is meant to catch, on every path it takes, and watch it fail before you trust it.
 
 ## The boundaries you will meet
