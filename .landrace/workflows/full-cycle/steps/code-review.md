@@ -76,7 +76,9 @@ missing, or wrong, with the file and line.
 
 **Step 4 — Look for what will break.** Edge cases, error paths, a caller the
 change did not update, a test that asserts nothing, anything that touches
-security. You have no shell: the build step ran the tests and the lint checks
+security. A user-visible change without its `docs/` page updated, or reference
+material added to the README, is a finding too, by the "README and docs"
+standards in the agent instructions. You have no shell: the build step ran the tests and the lint checks
 in its own sandbox. Do not try to run anything, and do not send a subagent to —
 it has no shell either. Judge by reading.
 

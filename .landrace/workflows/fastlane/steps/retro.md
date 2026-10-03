@@ -13,7 +13,8 @@ and if so, to change it.
 Here the code reviewer checks what you change, and then a person merges it:
 every file a lesson goes in is one fastlane never merges by itself, so a
 commit of yours leaves the pull request waiting for them. Make only changes
-you would defend to them.
+you would defend to them. A fix to `README.md` or `docs/` alone is the one
+exception: it merges once the reviewer passes it.
 
 This item had no spec: its own text, below between the two rules, is what the
 work answered to, and wherever this step says the spec, it means this text. It
@@ -70,7 +71,8 @@ bring it back in any form.
 **Step 3 — Decide, for each correction, whether it generalises.** A lesson is a
 mistake a future item would plausibly make again, stated so it would stop
 that. A fact about this one item — its file names, its requirements, a bug
-in its code — is not a lesson. Most items teach nothing that generalises,
+in its code — is not a lesson, but documentation it shows wrong is one (Step
+4). Most items teach nothing that generalises,
 and "nothing" is a good answer: answer it rather than invent a rule. No lesson
 left → skip to Step 8 and answer `nothing`.
 
@@ -87,6 +89,10 @@ would have avoided the mistake:
   `CLAUDE.md` or `AGENTS.md` directly; they are generated from that file. If
   `agsync sync` cannot run or cannot write, say so in your summary.
 * A technique goes in a skill under `.agsync/skills/`.
+* A `README.md` or `docs/` page the corrections show was wrong, missing, or
+  contradicted by the code is fixed in that page, by the "README and docs"
+  standards in the agent instructions, beside any lesson above. A retro that
+  finds documentation drift and leaves it is incomplete.
 
 **Step 5 — Bring the branch up to date with main, then make the edits.**
 `git fetch origin`, then `git merge origin/main`. Resolve any conflict and
@@ -116,7 +122,8 @@ again.
 **Step 8 — Summarise and end with the json block.** Start your final summary with the Progress checklist, each box ticked, or left open with the reason.
 Your final summary becomes this round's comment on the item, and if you
 commit, the code reviewer checks the commit, then a person reads both before
-they merge. If you changed something, list
+they merge — unless it fixes only `README.md` or `docs/`, which merges once
+the reviewer passes it. If you changed something, list
 each file you changed with a one-line reason. If you did not, say in a
 sentence or two why there was nothing to learn. End with a fenced json block:
 either `kind` `learned`, with `changes` a list holding one object per file you

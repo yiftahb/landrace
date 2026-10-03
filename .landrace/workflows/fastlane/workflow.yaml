@@ -5,7 +5,8 @@ description: "Small changes from the item's own text: build, review, CI, then me
 # An item labelled lr:auto and lr:fast is built from its own text — there is no spec —
 # reviewed, put through CI, and merged by Landrace; then the item is closed.
 # A person is needed only at a halt — a change to a protected path, a retro's
-# lessons among them, is one — or when a cap leaves the item `stuck`.
+# lessons outside README.md and docs/ among them, is one — or when a cap leaves
+# the item `stuck`.
 #
 # Nobody reads the change before it reaches the default branch, so the merge
 # is held by the engine, not by a prompt, to three guards (security audit
@@ -34,8 +35,8 @@ description: "Small changes from the item's own text: build, review, CI, then me
 # - A retro's lessons go in a step prompt, `.agsync/` or the instructions it
 #   regenerates, and every one of them is protected (re-review N1): an item
 #   whose retro committed a lesson is refused at the merge and waits at
-#   `blocked` for a person to merge it. Only a retro that learned nothing
-#   merges with no person.
+#   `blocked` for a person to merge it. Only a retro that learned nothing, or
+#   fixed only `README.md` or `docs/` (#63), merges with no person.
 # - Friction — what sends a green pull request to the retro first — is a
 #   second build (a CI fix or a rework), any fix round, or any reply a person
 #   had to write. The retro runs at most once.
