@@ -868,7 +868,7 @@ describe("fastlane, end to end", () => {
     }));
     const root = await mkdtemp(join(tmpdir(), "lr-fastlane-claims-"));
     const runtime = {
-      dir: root, workflows: listed, preflights: [], intervalMs: 60_000, concurrency: 2, converging: 0, stop,
+      dir: root, workflows: listed, preflights: [], intervalMs: 60_000, concurrency: 2, converging: 0, listed: 0, stop,
       running: new Map(), seen: new Map(), log, ctx: runtimeCtx,
     };
     const rows = await tickWorkspace({ runtime, lock: { root } });

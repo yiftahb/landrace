@@ -122,7 +122,7 @@ function world(
         steps: minimal.steps, source, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor, ctx, log, scrub: (t) => t,
       },
     })),
-    preflights: [], intervalMs: 60_000, concurrency, converging: 0, stop, running: new Map(), seen: new Map(), log, ctx,
+    preflights: [], intervalMs: 60_000, concurrency, converging: 0, listed: 0, stop, running: new Map(), seen: new Map(), log, ctx,
   };
   return {
     runtime, events, listings,
@@ -452,6 +452,38 @@ describe("tick.concurrency across overlapping ticks", () => {
     h.all();
     await first;
     expect(a.peak()).toBe(2);
+    expect(w.runtime.converging).toBe(0);
+  });
+
+  /*
+   * Review of #65: a tick whose own run ended took the freed slot for the
+   * next item of its own listing, however stale, before any later tick could
+   * — so an urgent item filed since waited behind the whole of that queue.
+   */
+  it("gives a freed slot to the freshest listing, never to the queue of a tick listed since", async () => {
+    const state = createExternalState({
+      items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:auto"] }, { id: "3", labels: [], priority: 0 }],
+    });
+    const a = agents();
+    const h = holds();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 1);
+    const left = "no free slot of tick.concurrency (1): left for a later tick";
+
+    const first = w.once();
+    await until(() => a.runs.length === 1, "item 1's run to start");
+    state.label("3", "lr:auto");
+    await w.once();
+
+    h.release(0);
+    await finishedOrOver(w, a, 2, 1);
+    expect(a.runs).toHaveLength(1);
+    expect((await first).find((r) => r.item === "2")).toEqual({ item: "2", workflow: "main", outcome: left });
+
+    const third = w.once();
+    await until(() => a.runs.length === 2, "the next tick to start its most urgent item");
+    expect([...w.runtime.running.keys()]).toEqual(["3"]);
+    h.all();
+    await third;
     expect(w.runtime.converging).toBe(0);
   });
 

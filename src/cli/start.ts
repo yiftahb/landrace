@@ -599,6 +599,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     intervalMs: parseInterval(loaded.config.tick.interval),
     concurrency: loaded.config.tick.concurrency,
     converging: 0,
+    listed: 0,
     stop,
     running: new Map(),
     seen: new Map(),

@@ -325,7 +325,8 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<boole
  * workspace, not each workflow and not each tick: the converges in flight
  * over every workflow and every tick still running, counted in
  * `runtime.converging`. Each tick's pool is that size too, so a tick alone
- * works its list as it always did, its own runs queueing the rest.
+ * works its list as it always did, its own runs queueing the rest — until a
+ * later tick lists, which from then on hands out every slot that frees.
  *
  * Items are independent, so one item running a long agent must not hold up
  * the rest: mutual exclusion is per item, and ticks themselves are allowed
@@ -334,8 +335,8 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<boole
  *
  * A busy item is skipped, not queued. It will still be there next tick, and
  * forcing in would mean two invocations resuming the same agent session. So
- * is an item no slot is free for once this tick has no run of its own left
- * to wait on: the runs holding the slots are another tick's.
+ * is what this tick has not started once no slot is free and no run of its
+ * own is left to free one, or once a later tick has listed.
  */
 export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow[]> {
   const { runtime } = opts;
@@ -344,6 +345,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   log("tick.started", {});
 
   const listing = await listWorkspace(runtime);
+  const listed = ++runtime.listed;
 
   // A display must never be able to stop the work it is displaying.
   try {
@@ -418,14 +420,14 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
     await moved.get(item);
     // A slot of the workspace's, taken here in compareWork order before the
     // lock, because a slot taken after an awaited lock goes to whichever lock
-    // came back first. None free: this worker stops, and the item waits for
-    // another of this tick's own workers or a later tick, never for another
-    // tick's runs. An item running in this process takes none, since its run
-    // holds one and its lock turns it away; one another process holds takes
-    // one only until its lock says so.
+    // came back first. None free, or a later tick has listed since: this
+    // worker stops, and the item waits for another of this tick's own workers
+    // or a later tick, never for another tick's runs. An item running in this
+    // process takes none, since its run holds one and its lock turns it away;
+    // one another process holds takes one only until its lock says so.
     let slot = false;
     const take = (): boolean => {
-      if (runtime.converging >= runtime.concurrency) return false;
+      if (runtime.listed !== listed || runtime.converging >= runtime.concurrency) return false;
       runtime.converging += 1;
       return (slot = true);
     };
@@ -491,7 +493,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   });
 
   // Skipped as a busy item is, not queued behind runs another tick started:
-  // by the time one ends, this listing is stale, and a later tick lists anew.
+  // by the time one ends this listing is stale, and a later tick lists anew.
   const reason = `no free slot of tick.concurrency (${runtime.concurrency}): left for a later tick`;
   for (const { node, workflow: w } of left) {
     log("item.skipped", { item: node.id, workflow: w.id, reason });
