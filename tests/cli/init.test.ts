@@ -188,6 +188,28 @@ describe("landrace init's .gitignore entry", () => {
     expect(await readFile(join(cwd, ".gitignore"), "utf8")).toBe("node_modules/\n.landrace/.env\n");
   });
 
+  // .git/info/exclude is this clone's alone, as the global excludes file is.
+  it("writes the entry even when the clone's .git/info/exclude already ignores .env", async () => {
+    const cwd = await fresh();
+    await exec("git", ["init", "-q"], { cwd });
+    await writeFile(join(cwd, ".git/info/exclude"), ".env\n");
+    await writeFile(join(cwd, ".gitignore"), "node_modules/\n");
+    await expect(exec("git", ["check-ignore", "-q", ".landrace/.env"], { cwd })).resolves.toBeDefined();
+
+    await runInit(cwd, "triage");
+    expect(await readFile(join(cwd, ".gitignore"), "utf8")).toBe("node_modules/\n.landrace/.env\n");
+  });
+
+  // A "!" pattern is the one deciding, and it un-ignores the file.
+  it("writes the entry when a .gitignore's last word on .landrace/.env is a negation", async () => {
+    const cwd = await fresh();
+    await exec("git", ["init", "-q"], { cwd });
+    await writeFile(join(cwd, ".gitignore"), ".env\n!.landrace/.env\n");
+
+    await runInit(cwd, "triage");
+    expect(await readFile(join(cwd, ".gitignore"), "utf8")).toBe(".env\n!.landrace/.env\n.landrace/.env\n");
+  });
+
   it("creates no .gitignore in a repository's subfolder when the repository's own already ignores .landrace/.env", async () => {
     const root = await fresh();
     await exec("git", ["init", "-q"], { cwd: root });

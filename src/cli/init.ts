@@ -96,15 +96,18 @@ stages:
 /**
  * Whether the repository already ignores `.landrace/.env`. Git answers where
  * it can, since a pattern such as `.env` covers the file without naming it —
- * a `.gitignore` above this folder's too. Not the person's own excludes file,
- * which `validate` counts: that ignores it on this machine only, and the
- * entry is for every clone. Outside a repository, or without git, the file's
- * own lines are all there is to read.
+ * a `.gitignore` above this folder's too. Only a `.gitignore`'s pattern
+ * counts: the person's own excludes file, which `validate` counts, and the
+ * clone's `.git/info/exclude` ignore it in this clone only, and the entry is
+ * for every clone. Outside a repository, or without git, the file's own lines
+ * are all there is to read.
  */
 async function ignored(cwd: string, text: string | null): Promise<boolean> {
   try {
-    await execFileAsync("git", ["-c", "core.excludesFile=/dev/null", "check-ignore", "-q", ENV_ENTRY], { cwd });
-    return true;
+    // The excludes file off too, since one may itself be named ~/.gitignore.
+    const { stdout } = await execFileAsync("git", ["-c", "core.excludesFile=/dev/null", "check-ignore", "-v", ENV_ENTRY], { cwd });
+    // `<source>:<line>:<pattern>\t<path>` for the deciding pattern; a "!" one un-ignores.
+    return /^"?(?:.*\/)?\.gitignore"?:\d+:(?!!)/.test(stdout);
   } catch (e) {
     if ((e as { code?: unknown }).code === 1) return false;
   }
