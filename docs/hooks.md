@@ -21,7 +21,7 @@ Hook modules are imported at runtime with no build step. Which Node that needs, 
 
 ## The define* contracts
 
-Every hook gets a `HookContext` — the item's id, its snapshot, the configuration, the resolved secrets, an abort signal and a logger — or, for the ones that run once per tick or at startup, a `RuntimeContext` with the same configuration, secrets and logger. A hook never reads `process.env`: its secrets arrive as values, which keeps it testable and lets the log redact every one.
+A hook that works on one item gets a `HookContext`: the item's id, its snapshot, the configuration, the resolved secrets, an abort signal and a logger. Every other call gets a `RuntimeContext`, the same without the item and the snapshot: a source's `list()`, `read()` and `remoteHead()`, every operator method, a notifier's `send()` and a preflight's `check()`. A source's `read()` is what the snapshot is built from, so it never gets one. A hook never reads `process.env`: its secrets arrive as values, which keeps it testable and lets the log redact every one.
 
 | Helper | Kind | What it does |
 |---|---|---|
@@ -40,7 +40,7 @@ Every hook gets a `HookContext` — the item's id, its snapshot, the configurati
 
 ## Pre hooks and path coverage
 
-A pre hook declares the snapshot paths it fills (`provides`), and a source declares its relationship types. `validate`'s `path-coverage` rule is answered from both, together with what the engine always provides — `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every declared type (only `out` for an outward-only one) — so a condition can only read what something actually provides.
+A pre hook declares the snapshot paths it fills (`provides`), and a source declares its relationship types. `validate`'s `path-coverage` rule is answered from both, together with what the engine always provides — `now`, `hash`, `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every declared type (only `out` for an outward-only one) — so a condition can only read what something provides. The rule needs every declaration: if any pre hook leaves `provides` out, or the hooks load no pre hook and no source, `path-coverage` checks nothing in that workflow.
 
 The composed GitHub pre hook provides `item` (`item.body`, `item.comments`), `entries` and `tracker.bot` from the tracker, and `git` (`git.local`, `git.remote`, the branch heads) from the forge; the in-memory tracker in `landrace/testing` provides the portable subset (no `tracker.bot`). An item's identity, labels and assignees are not among them: they live on the `node` the source reads, not on something a pre hook fetches a second time.
 

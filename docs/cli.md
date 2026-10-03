@@ -162,7 +162,7 @@ The generated files are gitignored, so run it after cloning. Then ask your clien
 | Tool | What it does |
 |---|---|
 | `landrace_workflows` | Lists the workspace's workflows: `id`, `name`, `description`, `claimed`, `needsYou`, and `creates` — whether `landrace_create_item` can start an item in it |
-| `landrace_items` | Lists every open item a workflow claims, with its workflow, stage and lane, and every item no one workflow may work, with why. `workflow` narrows it to one workflow's items and the halts it is party to |
+| `landrace_items` | Lists every open item a workflow claims, with its workflow, stage and lane, and every item no one workflow may work because two claim it or two trackers report it, with why. An item every workflow turned away is not listed. `workflow` narrows it to one workflow's items and the halts it is party to |
 | `landrace_waiting` | Lists the board's Needs you: items at a `waits: person` stage, and the halts — blocked, screened, a conflict, a clash. A closed item is never waiting. Takes `workflow` like `landrace_items` |
 | `landrace_status` | Shows an item's workflow, its position, which rounds have run, and whose turn it is (`waitingOnYou`, by the same rule). An item no one workflow claims is shown with `workflow: null` and why |
 | `landrace_create_item` | Opens an item: `title`, `body`, `labels`, `start`, `relate`, and `workflow` — required when more than one workflow can create items. By default it adds the workflow's `admit` labels, so the next tick starts work; `start: false` files it without starting anything |

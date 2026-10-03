@@ -126,7 +126,7 @@ interface Graph { nodes: Node[]; relationships: Relationship[] }
 
 A node is **closed** as `done` (finished — an issue completed, a pull request merged) or `dropped` (closed without being done — not planned, closed unmerged), or not closed (`null`). Its **origin** says which stage and round created it, when a step did. A source marks a node it reports only as the other end of a relationship with `placeholder: true`; without it, the node is treated as an item. [Writing an integration](hooks.md#relationships) says when to set each.
 
-An **item id** is 1–64 letters, digits, `.`, `_` or `-`. MCP clients may still pass a number.
+An **item id** is 1–64 letters, digits, `.`, `_` or `-`, starting with a letter or digit. `__proto__`, `constructor` and `prototype` are refused. MCP clients may still pass a number.
 
 ### Sources: list and read
 

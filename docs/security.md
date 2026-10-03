@@ -65,7 +65,7 @@ Every agent that can act is screened first: every step declaring a capability, a
 - An `ok` counts only when it carries the nonce that screening's prompt was marked with, so a verdict planted in the screened text, or the template restated, fails closed.
 - A reply that fails closed is logged whole in `screen.blocked` (its last 2,000 characters, redacted like any log line) and never posted: the item shows the reason alone.
 - A step the screener refuses is recorded as a refusal, not a broken contract, and lands at `screened` for a person to read.
-- A step declaring no capability is not screened (`screen.skipped`): it runs with no tool and no repository. The one shipped, `triage`, answers from a closed set a comment could already argue for in plain words. Screening it only refused people's approvals over the judge template's own wording (#39, #41).
+- A step declaring no capability is not screened (`screen.skipped`). It still holds something: `capabilities: []` counts as a declaration, so the step runs at the read-only tier. It runs in a worktree of the repository, it gets every `agent.mcp` server, and under Claude it keeps Read, Grep and Glob. Only the screener's own run gets no tool at all. The one shipped, `triage`, answers from a closed set a comment could already argue for in plain words, and that answer is posted on the item. Screening it only refused people's approvals over the judge template's own wording (#39, #41).
 
 ### Clearing a refused step
 

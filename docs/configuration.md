@@ -22,7 +22,7 @@ Every key, with its default:
 | `security.model` | none | The model the screening run asks for. Absent, the screening executor's own default decides |
 | `log.redact` | `[]` | Names of secrets whose values are cut from every log line and event. Each must name a declared secret whose value is 8 characters or longer, or `landrace start` refuses. A secret not named here is not redacted from the log |
 | `secrets.*` | `{}` | Values handed to hooks, usually `$VAR` references resolved from [`.env`](#env) |
-| `workflows` | by each workflow's `name`, then folder id | The order workflows are listed in, on the board and by the MCP. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
+| `workflows` | by each workflow's `name`, then folder id | The order the MCP lists workflows in. The board's sidebar is always sorted by name. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
 | `vars.*` | `{}` | Values substituted into the workflow files — see [vars](#vars) |
 | `notify.on` | none | The events to tell a person about. There is one: `needs-you` |
 | `notify.via` | none | Notifier ids, each registered by a hook with `defineNotifier`. The shipped one is `slack` |
@@ -148,7 +148,7 @@ The reference is resolved at load, from `.env` first and then your shell — a p
 Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to an OpenTelemetry collector as a **log record**, the way Claude Code exports its own events.
 
 - The record's body and its `event.name` attribute are the event's name.
-- Every other field becomes an attribute prefixed `landrace.` (`landrace.item`, and the agent's output in `landrace.raw`), JSON-encoded unless it is a string, number or boolean.
+- Every other field becomes an attribute prefixed `landrace.` (`landrace.item`; an agent's parsed output in `landrace.event`, and a line of it that was not JSON in `landrace.raw`), JSON-encoded unless it is a string, number or boolean.
 - `*.failed`, `*.denied`, `*.blocked` and `lock.stolen` are `WARN`; everything else is `INFO`.
 - Records carry the same redaction as the console. Traces and metrics are not exported.
 
