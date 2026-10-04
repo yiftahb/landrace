@@ -42,7 +42,7 @@ log:
 - Built with no client, each role builds one from `tracker.repo`, the `githubToken` secret and `tracker.bot` — one per configuration, shared by all three, so one `GET /user` resolves the login they post as.
 - The forge runs git in the repository of the file that constructs it, never the directory the process was started from.
 - `closingRefs` says the tracker beside the forge is GitHub's own issues. On, a pull request it opens says `Closes #n`, so the merge closes the issue. Off — beside another vendor's tracker, where `#7` would be somebody else's GitHub issue — it writes none. Either way it reads none: the `landrace/{item}` branch is the only tie between a pull request and an item.
-- `reviewers` and `pull` are the [forge options](#forge-options) both forges take. With `reviewers` named, the checks are read from the head's check runs (one page of 100) and commit statuses instead of GitHub's rollup, which would count a reviewer's. A list GitHub did not give whole never reads as `success`.
+- `reviewers` and `pull` are the [forge options](#forge-options) both forges take. With `reviewers` named, the checks are read from the head's check runs (one page of 100) and commit statuses instead of GitHub's rollup, which would count a reviewer's. A list GitHub did not give whole never reads as `success`, and a reviewer missing from one is refused, never read as not posted.
 
 ### What it reads
 
@@ -140,7 +140,7 @@ GitLab puts every commit status that tools post on the head, such as a security 
 new GitLab({ project: "group/app", reviewers: [{ status: "CodeRabbit" }] })
 ```
 
-On GitLab a reviewer is a commit status by its name. With `reviewers` set, the external pipeline is read status by status, and a named status never counts. A head whose only status is a reviewer's reads as pending. A failed status reaches `{brief.project.ci}` with its tool's description and link, unless it is a reviewer's or its tool allowed it to fail. `reviewPending` reads the latest status of each name on the head's commit, from one page of 100.
+On GitLab a reviewer is a commit status by its name. With `reviewers` set, the external pipeline is read status by status, and a named status never counts. A head whose only status is a reviewer's reads as pending. A failed status reaches `{brief.project.ci}` with its tool's description and link, unless it is a reviewer's or its tool allowed it to fail. `reviewPending` asks for each reviewer's latest status on the head's commit by its name. More than 100 of one name is refused, never read as not posted.
 
 **Limits.** CI/CD must be enabled on the project. The forge needs GitLab 16.4 or later, for a finding on a file.
 
@@ -176,25 +176,38 @@ new GitLab({ project: "group/app", reviewers: [{ status: "CodeRabbit" }] })
 - A named status is left out of the checks and out of the CI failures a prompt reads, so it neither passes nor blocks CI.
 - `landrace start` refuses a reviewer with no status, and `reviewers` on a forge that cannot read one.
 
-`reviewPending` sums like `ciPending`. A fastlane without a review step of its own can wait for the reviewer and then route on its threads. Three stages' triggers, each in its own stage:
+`reviewPending` sums like `ciPending`. A fastlane without a review step of its own can wait for the reviewer and then route on its threads. Below, `reviewing` is a stage with no step that every push lands in, and each trigger is limited to the stages it leaves. No two fire together: the review routes differ on `awaitingFix` and both need `ciFailed` at `0`, which `build` needs above it. Both review routes need a pull request, since a sum over none is `0`:
 
 ```yaml
+- id: reviewing
+  triggers:
+    - name: a push landed
+      when:
+        "run.stage": { $in: [publish, fix-review, build] }
+        "run.lastOutputValid": null
 - id: fix-review
   triggers:
     - name: the reviewer finished and left threads to fix
       when:
+        "run.stage": { $in: [reviewing, human-review] }
+        "rel.implements.in.total": { $gt: 0 }
         "rel.implements.in.sum.reviewPending": 0
+        "rel.implements.in.sum.ciFailed": { $not: { $gt: 0 } }
         "rel.implements.in.sum.awaitingFix": { $gt: 0 }
 - id: human-review
   triggers:
     - name: the reviewer finished and nothing awaits a fix
       when:
+        "run.stage": reviewing
+        "rel.implements.in.total": { $gt: 0 }
         "rel.implements.in.sum.reviewPending": 0
+        "rel.implements.in.sum.ciFailed": { $not: { $gt: 0 } }
         "rel.implements.in.sum.awaitingFix": 0
 - id: build
   triggers:
     - name: the checks failed
       when:
+        "run.stage": { $in: [reviewing, human-review] }
         "rel.implements.in.sum.ciFailed": { $gt: 0 }
 ```
 
