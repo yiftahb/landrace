@@ -11,6 +11,7 @@
  *
  * It makes a scratch git repository with a marker planted in each place
  * instructions could come from: the root `CLAUDE.md`, a link to `AGENTS.md`;
+ * `docs/more.md`, which `AGENTS.md` imports;
  * `sub2/CLAUDE.md`, a link to `sub2/AGENTS.md`; `sub1/AGENTS.md` with no
  * `CLAUDE.md` beside it; and a skill under `.claude/skills`, a link to
  * `.agents/skills`, whose `references/ref.md` holds a marker too. Its
@@ -18,10 +19,11 @@
  * A write step and a read-only step each use the skill, read
  * `sub1/notes.txt` and `sub2/notes.txt`, and name the markers they were
  * given. What each must see is what docs/workflows.md says loads: the root
- * instructions, and the skill as `project:probe-skill` only (from the `init`
- * event's skills, not the model's answer), its references read through the
- * plugin; and neither nested file, nor the hook's file. A last check needs no
- * model: a skill declaring hooks is refused before the agent starts.
+ * instructions and what they import, and the skill as `project:probe-skill`
+ * only (from the `init` event's skills, not the model's answer), its
+ * references read through the plugin; and neither nested file, nor the hook's
+ * file. The last checks need no model: a skill declaring hooks, and a
+ * `CLAUDE.md` importing a key, are each refused before the agent starts.
  *
  * Each check prints `ok` or `FAIL` with what it saw. Exits 1 on any failure,
  * and when nothing passed: nothing checked is not a pass.
@@ -37,7 +39,7 @@ const model = process.env.CLAUDE_CHECK_MODEL || "haiku";
 const bin = process.env.CLAUDE_BIN || "claude";
 const stamp = Date.now();
 const MARKERS = {
-  root: `MARKER-ROOT-${stamp}`, sub1: `MARKER-SUBONE-${stamp}`, sub2: `MARKER-SUBTWO-${stamp}`, ref: `MARKER-REF-${stamp}`,
+  root: `MARKER-ROOT-${stamp}`, imported: `MARKER-IMPORTED-${stamp}`, sub1: `MARKER-SUBONE-${stamp}`, sub2: `MARKER-SUBTWO-${stamp}`, ref: `MARKER-REF-${stamp}`,
 };
 /** What the worktree's own SessionStart hook would make, had it run. */
 const escaped = join(tmpdir(), `landrace-claude-check-hook-${stamp}`);
@@ -77,7 +79,8 @@ function repo(files, links = {}) {
 }
 
 const probe = repo({
-  "AGENTS.md": `# Probe\n\nThe marker for this repository is ${MARKERS.root}.\n`,
+  "AGENTS.md": `# Probe\n\nThe marker for this repository is ${MARKERS.root}.\n\n@docs/more.md\n`,
+  "docs/more.md": `The imported marker is ${MARKERS.imported}.\n`,
   "sub1/AGENTS.md": `The marker for sub1 is ${MARKERS.sub1}.\n`,
   "sub1/notes.txt": "Nothing to see here.\n",
   "sub2/AGENTS.md": `The marker for sub2 is ${MARKERS.sub2}.\n`,
@@ -121,6 +124,8 @@ try {
     if (seen === undefined) continue;
     await check(`${tier} step: the root CLAUDE.md, a link to AGENTS.md, loads`, async () =>
       expect(seen.text.includes(MARKERS.root), `${MARKERS.root} was not in its answer`));
+    await check(`${tier} step: docs/more.md, which AGENTS.md imports, loads`, async () =>
+      expect(seen.text.includes(MARKERS.imported), `${MARKERS.imported} was not in its answer`));
     await check(`${tier} step: the skill loads as project:probe-skill, its folder a link, and only from the plugin`, async () => {
       expect(seen.skills.includes("project:probe-skill"), `init listed ${JSON.stringify(seen.skills)}`);
       // Loaded from the worktree too, the unchecked SKILL.md would be beside the checked copy.
@@ -147,6 +152,19 @@ try {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       expect(/hooked\/SKILL\.md declares hooks/.test(message), `refused for another reason: ${message}`);
+      return "refused";
+    }
+    throw new Error("the step ran");
+  });
+
+  await check("a CLAUDE.md importing a key is refused before the agent starts", async () => {
+    const importing = repo({ "CLAUDE.md": "@~/.aws/credentials\n" });
+    const executor = new Claude({ bin }).build({ model, servers: {}, tools: {}, plugins: [], sandbox: { hosts: [], deny: [...DEFAULT_DENY] } });
+    try {
+      await executor.run(PROMPT, { round: 1, cwd: importing, capabilities: ["repo:read"], signal: AbortSignal.timeout(60_000) });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      expect(/CLAUDE\.md imports ~\/\.aws\/credentials, which is outside the worktree/.test(message), `refused for another reason: ${message}`);
       return "refused";
     }
     throw new Error("the step ran");
