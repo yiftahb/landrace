@@ -285,7 +285,7 @@ Declared but empty (`JIRA_ASSIGNEE=`), the tracker lists everyone's issues, as i
 
 - An issue already in the mapped status is left as it is.
 - A stage with no mapping moves no status.
-- A transition the issue does not offer is skipped, not a halt. It is logged as `jira.status.unoffered` once per item and status for as long as Landrace runs.
+- A transition the issue does not offer is skipped, not a halt. It is logged as `jira.status.unoffered` once per item and status for as long as Landrace runs. So is a transition Jira refuses when it is taken — a validator, or a screen with a required field — logged as `jira.status.refused`; the stage label has moved by then, and stays.
 - Two transitions into the mapped status halt the item, naming both: which one to take is not a guess.
 - Closing stays opt-in. A workflow that should not close an issue on merge (QA, a release train) can leave `tracker.close` out of its last stage and map `done` to whatever status the team uses.
 

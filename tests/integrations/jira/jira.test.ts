@@ -675,6 +675,23 @@ describe("the status follows the stage, by statuses", () => {
     expect(fake.writes()).toEqual([]);
   });
 
+  // The label has moved by the time Jira refuses the POST — a validator, a
+  // screen's required field — so a throw here would lose the stage's
+  // on_enter effects for good, where the status is only display.
+  it("logs a transition Jira refuses once per item and status, keeps the label moved, and does not halt", async () => {
+    const { fake, jira, ctx } = setup({ statuses: { build: "In Progress" } });
+    fake.failOn = (method, path) => (method === "POST" && path.endsWith("/transitions") ? 400 : null);
+    const events: Array<Record<string, unknown>> = [];
+    const logged: RuntimeContext = { ...ctx, log: (event, data) => { if (event === "jira.status.refused") events.push(data ?? {}); } };
+    const { key } = fake.add({ labels: [LABELS.stage("triage")] });
+    await move(jira, logged, key, "build");
+    await move(jira, logged, key, "build");
+    expect(fake.issue(key).labels).toEqual([LABELS.stage("build")]);
+    expect(fake.issue(key).status).toBe("To Do");
+    expect(fake.calls.filter((c) => c.method === "POST" && c.path.endsWith("/transitions"))).toHaveLength(2);
+    expect(events).toEqual([expect.objectContaining({ item: key, status: "In Progress", transition: "In Progress" })]);
+  });
+
   it("is satisfied by the label alone for a stage with no mapping, and by the label and the status for one with", () => {
     const { jira } = setup({ statuses: { build: "In Progress" } });
     const satisfied = jira.effects()[STATUS]?.satisfied;

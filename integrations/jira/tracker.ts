@@ -353,8 +353,8 @@ export class Jira extends BaseTracker {
   /** Each client's project priorities, highest first, read once. */
   private readonly priorities = new WeakMap<Client, string[]>();
   private readonly statuses: ReadonlyMap<string, string>;
-  /** Each item and status already logged as not offered: once a process, since a board's status is not worth a flood. */
-  private readonly unofferedSaid = new Set<string>();
+  /** Each item and status already logged as not offered or refused: once a process, since a board's status is not worth a flood. */
+  private readonly statusSaid = new Set<string>();
   /** The unreadable blockers already logged this tick: a listing begins each one, and clears it. */
   private readonly unreadableSaid = new Set<string>();
 
@@ -872,13 +872,22 @@ export class Jira extends BaseTracker {
           return typeof status === "string" && same(status, wanted);
         },
         // The transition is resolved before the label moves, and taken after it: a
-        // refusal after the label would place the item in its new stage next tick,
+        // throw after the label would place the item in its new stage next tick,
         // where this effect, and every on_enter effect after it, is never planned again.
+        // So a POST Jira refuses — a validator, a screen's required field — is
+        // logged and skipped like an unoffered one: the status is display.
         apply: async (effect, ctx) => {
           const wanted = this.statuses.get(String(effect.value));
           const into = wanted === undefined ? null : await this.transitionInto(ctx.item, wanted, ctx);
           await label.apply(effect, ctx);
-          if (into) await this.transition(this.jira(ctx), this.keyOf(ctx.item), into);
+          if (!into || wanted === undefined) return;
+          const key = this.keyOf(ctx.item);
+          try {
+            await this.transition(this.jira(ctx), key, into);
+          } catch (err) {
+            if (!this.sayOnce(key, wanted)) return;
+            ctx.log("jira.status.refused", { item: key, status: wanted, transition: into.name, error: (err as Error).message });
+          }
         },
       },
     };
@@ -899,9 +908,7 @@ export class Jira extends BaseTracker {
     const into = offered.filter((t) => same(t.to?.name, wanted));
     const [only] = into;
     if (!only) {
-      const said = JSON.stringify([key, wanted.trim().toLowerCase()]);
-      if (this.unofferedSaid.has(said)) return null;
-      this.unofferedSaid.add(said);
+      if (!this.sayOnce(key, wanted)) return null;
       ctx.log("jira.status.unoffered", { item: key, status: wanted, from: status, offered: offeredList(offered) });
       return null;
     }
@@ -909,6 +916,14 @@ export class Jira extends BaseTracker {
       throw new Error(`${key} offers ${into.length} transitions into "${wanted}": ${into.map((t) => `"${t.name}"`).join(", ")}; which one moves it is not a guess`);
     }
     return only;
+  }
+
+  /** True the first time a process is told of an item and status it cannot move into, so a refusal is logged once. */
+  private sayOnce(key: string, wanted: string): boolean {
+    const said = JSON.stringify([key, wanted.trim().toLowerCase()]);
+    if (this.statusSaid.has(said)) return false;
+    this.statusSaid.add(said);
+    return true;
   }
 
   /** Jira's issue links of `blockedByLinkType`, read off each issue's own `issuelinks`. */
