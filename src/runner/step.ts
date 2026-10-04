@@ -689,17 +689,11 @@ export function settleOutput(opts: {
    * OUTPUT_KIND and a route may override it, but `output` goes on last: it is
    * the one field the workflow does not get to write, being what the step
    * actually produced, already cut to the declared shape.
-   *
-   * The record's own marker when the route names none: a step's effects are
-   * reconciled before they are applied, and a comment with no marker cannot
-   * be.
    */
   if (destination.type === RECORD_EFFECT) {
     return {
       ok: true,
-      effects: [{
-        marker: record.marker, ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session, ...sent, ...by, ...started,
-      }],
+      effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session, ...sent, ...by, ...started }],
       sessionId,
     };
   }
