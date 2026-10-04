@@ -664,11 +664,15 @@ describe("the status follows the stage, by statuses", () => {
     ]);
   });
 
-  it("halts on two transitions into the mapped status rather than pick one", async () => {
+  // The halt has to outlast the tick: a label already moved places the item in
+  // the new stage next tick, and the status, and every on_enter effect after it, is never planned again.
+  it("halts on two transitions into the mapped status rather than pick one, before the label moves", async () => {
     const { fake, jira, ctx } = setup({ statuses: { build: "In Progress" } });
     fake.transitions.push({ id: "22", name: "Start", to: "In Progress" });
-    const { key } = fake.add();
+    const { key } = fake.add({ labels: [LABELS.stage("triage")] });
     await expect(move(jira, ctx, key, "build")).rejects.toThrow(/2 transitions into "In Progress".*"In Progress".*"Start"/);
+    expect(fake.issue(key).labels).toEqual([LABELS.stage("triage")]);
+    expect(fake.writes()).toEqual([]);
   });
 
   it("is satisfied by the label alone for a stage with no mapping, and by the label and the status for one with", () => {

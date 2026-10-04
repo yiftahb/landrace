@@ -871,40 +871,44 @@ export class Jira extends BaseTracker {
           const status = (snapshot.tracker as { status?: unknown } | undefined)?.status;
           return typeof status === "string" && same(status, wanted);
         },
+        // The transition is resolved before the label moves, and taken after it: a
+        // refusal after the label would place the item in its new stage next tick,
+        // where this effect, and every on_enter effect after it, is never planned again.
         apply: async (effect, ctx) => {
-          await label.apply(effect, ctx);
           const wanted = this.statuses.get(String(effect.value));
-          if (wanted !== undefined) await this.moveStatus(ctx.item, wanted, ctx);
+          const into = wanted === undefined ? null : await this.transitionInto(ctx.item, wanted, ctx);
+          await label.apply(effect, ctx);
+          if (into) await this.transition(this.jira(ctx), this.keyOf(ctx.item), into);
         },
       },
     };
   }
 
   /**
-   * Through the one transition into `wanted`, unless the issue is in it
+   * The one transition into `wanted`, or none when the issue is in it
    * already. Two into it halt rather than pick one. None offered is logged
    * once per item and status a process and skipped: the status is display,
    * and an item does not stop for it.
    */
-  private async moveStatus(id: string, wanted: string, ctx: RuntimeContext): Promise<void> {
+  private async transitionInto(id: string, wanted: string, ctx: RuntimeContext): Promise<Transition | null> {
     const key = this.keyOf(id);
     const jira = this.jira(ctx);
     const status = await this.statusOf(jira, key);
-    if (same(status, wanted)) return;
+    if (same(status, wanted)) return null;
     const offered = await this.offered(jira, key);
     const into = offered.filter((t) => same(t.to?.name, wanted));
     const [only] = into;
     if (!only) {
       const said = JSON.stringify([key, wanted.trim().toLowerCase()]);
-      if (this.unofferedSaid.has(said)) return;
+      if (this.unofferedSaid.has(said)) return null;
       this.unofferedSaid.add(said);
       ctx.log("jira.status.unoffered", { item: key, status: wanted, from: status, offered: offeredList(offered) });
-      return;
+      return null;
     }
     if (into.length > 1) {
       throw new Error(`${key} offers ${into.length} transitions into "${wanted}": ${into.map((t) => `"${t.name}"`).join(", ")}; which one moves it is not a guess`);
     }
-    await this.transition(jira, key, only);
+    return only;
   }
 
   /** Jira's issue links of `blockedByLinkType`, read off each issue's own `issuelinks`. */
