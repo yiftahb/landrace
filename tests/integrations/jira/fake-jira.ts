@@ -9,12 +9,16 @@
  * rather than quietly matching everything.
  */
 
-export interface FakeUser { accountId: string; displayName: string }
+export interface FakeUser { accountId: string; displayName: string; emailAddress?: string }
 
 /** The account the token belongs to: who landrace posts as. */
 export const BOT: FakeUser = { accountId: "5b10ac8d82e05b22cc7d4ef5", displayName: "landrace" };
 /** A person on the project. */
-export const PERSON: FakeUser = { accountId: "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077", displayName: "Mia Krystof" };
+export const PERSON: FakeUser = {
+  accountId: "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077", displayName: "Mia Krystof", emailAddress: "mia@acme.example",
+};
+/** Another person on the project, whose email Jira keeps private. */
+export const OTHER: FakeUser = { accountId: "557058:0b6c1e2a-9d4f-4c8e-a1b2-3c4d5e6f7a8b", displayName: "Noa Levi" };
 
 export const SITE = "https://acme.atlassian.net";
 export const EMAIL = "landrace@acme.example";
@@ -123,6 +127,9 @@ const PERMISSION_NAMES: Record<string, string> = {
   TRANSITION_ISSUES: "Transition Issues",
   ADD_COMMENTS: "Add Comments",
   LINK_ISSUES: "Link Issues",
+  ASSIGN_ISSUES: "Assign Issues",
+  // Global, not the project's: without it user search answers an empty list and a user read a 404, never a refusal.
+  USER_PICKER: "Browse users and groups",
 };
 
 /** One ADF paragraph of plain text, the way a person's comment arrives. */
@@ -161,8 +168,8 @@ export function createFakeJira(project = "KEY") {
     indexLag: false,
     permissions: Object.fromEntries(Object.keys(PERMISSION_NAMES).map((k) => [k, true])) as Record<string, boolean>,
     issueTypes: [
-      { id: "10001", name: "Task", subtask: false, fields: ["summary", "issuetype", "project", "description", "labels", "priority"] },
-      { id: "10002", name: "Subtask", subtask: true, fields: ["summary", "issuetype", "project", "parent", "description", "labels", "priority"] },
+      { id: "10001", name: "Task", subtask: false, fields: ["summary", "issuetype", "project", "description", "labels", "priority", "assignee"] },
+      { id: "10002", name: "Subtask", subtask: true, fields: ["summary", "issuetype", "project", "parent", "description", "labels", "priority", "assignee"] },
       { id: "10003", name: "Bug", subtask: false, fields: ["summary", "issuetype", "project", "description"] },
     ] as FakeIssueType[],
     priorities: [
@@ -184,6 +191,10 @@ export function createFakeJira(project = "KEY") {
       { id: "10003", name: "Relates", inward: "relates to", outward: "relates to" },
     ] as FakeLinkType[],
     links: [] as FakeLink[],
+    /** The site's users, as user search finds them: by a prefix of the display name or the email, private or not. */
+    users: [BOT, PERSON, OTHER] as FakeUser[],
+    /** Users the project cannot assign issues to — no access to it, or deactivated — though a user read still finds them. */
+    unassignable: new Set<string>(),
     /** Off, the site has issue linking disabled: every issueLink endpoint answers 404, as Jira documents. */
     linking: true,
     /**
@@ -388,6 +399,9 @@ export function createFakeJira(project = "KEY") {
       } else if ((m = /^updated >= -([0-9]+)m$/.exec(clause))) {
         const since = Date.now() - Number(m[1]) * MINUTE;
         tests.push((i) => Date.parse(i.updated) >= since);
+      } else if ((m = /^assignee = "([^"\\]+)"$/.exec(clause))) {
+        const id = m[1] as string;
+        tests.push((i) => i.assignee?.accountId === id);
       } else if ((m = /^parent = "([A-Z][A-Z0-9_]*-[0-9]+)"$/.exec(clause))) {
         const parent = m[1] as string;
         tests.push((i) => i.parent === parent);
@@ -416,6 +430,28 @@ export function createFakeJira(project = "KEY") {
 
     if (method === "GET" && path === "/rest/api/3/myself") {
       return json({ ...user(fake.me as FakeUser), emailAddress: EMAIL, locale: "en_US", groups: { size: 1, items: [] } });
+    }
+
+    // Documented: an array, matching a prefix of the display name or the email; the email shown only when its owner allows.
+    if (method === "GET" && path === "/rest/api/3/user/search") {
+      const query = (q.get("query") ?? "").toLowerCase();
+      if (!query) return errors(400, ["One of 'accountId' or 'query' must be specified"]);
+      if (fake.permissions.USER_PICKER !== true) return json([]);
+      return json(fake.users
+        .filter((u) => u.displayName.toLowerCase().startsWith(query) || u.emailAddress?.toLowerCase().startsWith(query))
+        .map((u) => ({ ...user(u), ...(u.emailAddress === undefined ? {} : { emailAddress: u.emailAddress }) })));
+    }
+
+    if (method === "GET" && path === "/rest/api/3/user") {
+      const found = fake.users.find((u) => u.accountId === q.get("accountId"));
+      return found && fake.permissions.USER_PICKER === true ? json(user(found)) : errors(404, [`Specified user does not exist or you do not have required permissions`]);
+    }
+
+    // Documented: an array of the users who may be assigned the project's issues, narrowed to one by accountId.
+    if (method === "GET" && path === "/rest/api/3/user/assignable/search") {
+      if (q.get("project") !== project) return errors(404, [`No project could be found with key '${q.get("project") ?? ""}'.`]);
+      const id = q.get("accountId");
+      return json(fake.users.filter((u) => !fake.unassignable.has(u.accountId) && (id === null || u.accountId === id)).map(user));
     }
 
     if (method === "GET" && path === "/rest/api/3/mypermissions") {
@@ -545,6 +581,9 @@ export function createFakeJira(project = "KEY") {
       if (problem) return errors(400, [], { description: problem });
       const priority = (f.priority as { id?: string } | undefined)?.id;
       if (priority !== undefined && !fake.priorities.some((p) => p.id === priority)) return errors(400, [], { priority: "Specify a valid priority" });
+      const assigneeId = (f.assignee as { accountId?: string } | undefined)?.accountId;
+      const assignee = assigneeId === undefined ? null : fake.users.find((u) => u.accountId === assigneeId);
+      if (assignee === undefined || (assignee !== null && fake.unassignable.has(assignee.accountId))) return errors(400, [], { assignee: `User '${String(assigneeId)}' cannot be assigned issues.` });
       const me = fake.me as FakeUser;
       const issue = fake.add({
         summary: String(f.summary ?? ""),
@@ -554,6 +593,7 @@ export function createFakeJira(project = "KEY") {
         issuetype: type.name,
         parent: parent ?? null,
         priority: priority ?? "3",
+        assignee,
       });
       if (fake.indexLag) unindexed.add(issue.key);
       return json({ id: issue.id, key: issue.key, self: `${SITE}/rest/api/3/issue/${issue.id}` }, 201);

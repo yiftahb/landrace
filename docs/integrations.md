@@ -180,6 +180,7 @@ secrets:
   jiraBaseUrl: $JIRA_BASE_URL   # https://<site>.atlassian.net, and nothing else
   jiraEmail: $JIRA_EMAIL        # the account Landrace posts as
   jiraToken: $JIRA_TOKEN        # that account's API token
+  jiraAssignee: $JIRA_ASSIGNEE  # optional: an account id or an email; see "One developer's issues"
 ```
 
 | Option | Default | What it is |
@@ -195,9 +196,21 @@ secrets:
 
 **Reading.** A tick lists the project's open issues, and, for the board's Done lane, those carrying an `lr:stage:*` label that closed inside the window. Position is a stage label, as on any tracker. An issue is closed once its status is in Jira's done category: dropped if the status or the resolution is named `transitions.dropped`, done otherwise, so a closure nobody named still counts. Times are read as UTC.
 
+**One developer's issues.** A list stops at 10 pages of 100 issues, so a project with more than 1,000 open issues cannot be listed whole. An `eligible` rule on the assignee does not help, because it is answered after the list. Set `jiraAssignee` instead, and each developer's instance lists that developer's issues alone:
+
+- Each developer sets `JIRA_ASSIGNEE` in their own `.env`, to their Atlassian account id or their email. The hook file and `landrace.yaml` stay the same for everyone.
+- Every search the tracker runs gains `AND assignee = "<accountId>"`: the open list, the Done lane and the cycle walk. A breakdown's children are read whole, whoever they are assigned to.
+- Every issue Landrace creates, a child too, is assigned to that account.
+- An email is resolved to an account once, at startup. Start is refused when it matches no user, or several, and the refusal names them. An account id Jira has no user for is refused too. Looking a user up takes the global "Browse users and groups" permission: Jira answers an account without it with nobody, so the refusal names the permission instead.
+- An issue reassigned to somebody else drops out of the list, and this instance starts no more steps on it. That is the hand-off: the new assignee's instance picks it up.
+- Reassigning does not stop a step already running. An item its tracker no longer lists is left running, so the old instance's step finishes and writes its result to the issue, while the new assignee's instance may start the same step on another machine. Locks are per machine and do not prevent this. Reassign an issue while no step runs on it.
+- A cycle through an issue assigned to somebody else goes undetected, as one through another project does.
+
+Declared but empty (`JIRA_ASSIGNEE=`), the tracker lists everyone's issues, as it does without the secret. Declared and not set at all, `start` refuses, as for any secret.
+
 **Writing.** Jira's status moves only to close an item, through the named transition, or to reopen one, through the first transition into a To Do status; a transition the issue does not offer fails, naming the ones it does. Comments and descriptions are ADF, never v2's wiki markup. A body's Markdown is written as rich text: headings, bullet and ordered lists, fenced code blocks with their language, inline code, bold, italic, http, https and mailto links, and paragraphs, a hard break per line. Anything else is written as its text. Reading turns the same set back into Markdown, a person's edits in Jira's editor included; any other node reads as its text. The `<!-- landrace … -->` marker is written as its own plain-text paragraph, never read as Markdown, so it reads back exactly. A body whose rich ADF is over Jira's 32,767 characters is written as plain paragraphs instead, its Markdown shown as written and read back exactly; one over the bound even as plain paragraphs is refused before the request, and the round is recorded as a failed round — `malformed`, headed "Could not record <stage>'s answer" — rather than run again, so `run.lastOutputValid` is `false` and `run.lastRefused` stays `false`. A new issue's priority is the project's own, Landrace's 0–9 as an index into its list.
 
-**Preflight.** It names each permission the account lacks on the project (`BROWSE_PROJECTS`, `CREATE_ISSUES`, `EDIT_ISSUES`, `TRANSITION_ISSUES`, `ADD_COMMENTS`, `LINK_ISSUES`), each issue type the project does not have and each without a labels field, a site with no link type named `blockedByLinkType` (naming the ones it has), a type that reads the same both ways (such as Relates, where which end blocks cannot be told), and a site with issue linking turned off. It logs the type's wording once, as `jira.blocked-by.link-type`, and writes nothing.
+**Preflight.** It names each permission the account lacks on the project (`BROWSE_PROJECTS`, `CREATE_ISSUES`, `EDIT_ISSUES`, `TRANSITION_ISSUES`, `ADD_COMMENTS`, `LINK_ISSUES`), each issue type the project does not have and each without a labels field, a site with no link type named `blockedByLinkType` (naming the ones it has), a type that reads the same both ways (such as Relates, where which end blocks cannot be told), and a site with issue linking turned off. With `jiraAssignee` set, it also names an assignee that matches no user or several, an account that cannot look it up for want of the global `USER_PICKER` permission, an account the project cannot assign issues to (no access to it, or deactivated), a missing `ASSIGN_ISSUES` permission, and each issue type without an assignee field. It logs the type's wording once, as `jira.blocked-by.link-type`, and writes nothing.
 
 **Blocked-by.** `blocked-by` is Jira's own issue links of `blockedByLinkType`, visible and editable in Jira's UI; Landrace stores nothing of its own.
 
@@ -205,7 +218,7 @@ secrets:
 - The link carries the blocker's status but not its resolution: a status outside Jira's done category is open, a done one named `transitions.dropped` is dropped, and any other done one is judged by its resolution — from the listing when it holds the blocker, otherwise by `issue/bulkfetch`, a hundred issues a request.
 - A blocker Jira does not return, or returns with no status, is unreadable, never done, and logged once a tick as `jira.blocker.unreadable`; so is a link entry with no type, no key, or no status for its other end. The item's relationships then read as not all read. Any other failure, `issueErrors` included, fails the read, and the next tick reads it again. A read's children are read without their links, which a read never draws.
 - A blocker in another project on the same site is read and written by its own key. Jira leaves out of `issuelinks` a link to an issue the account may not browse, so such a blocker is unseen, not unreadable: give the account "Browse projects" on every project whose issues may block this one's.
-- The cycle walk covers the configured project only, over one search of its open issues' links, so a cycle through another project goes undetected. Search lags a link just written by a moment: the walk sees it on the next tick.
+- The cycle walk covers the configured project only, over one search of its open issues' links, so a cycle through another project goes undetected. With `jiraAssignee` set, it covers that account's open issues only. Search lags a link just written by a moment: the walk sees it on the next tick.
 - A relationship is written as Jira's own link — `POST /rest/api/3/issueLink`, the blocker as `inwardIssue` — after the blocked issue's links are read, so a link already there is not asked for again. `unrelate` finds the link by type and other end and deletes it by id. Both ends are read first. A write takes the "Link issues" permission, and Jira refuses an account without it with a 404; the refusal names the permission, and, for a blocker in another project, both projects. The blocked issue is always the project's own.
 
 **Checking it live.** The script creates an item and a child in the project, comments, labels, drops the child and closes the item, printing each check. It exits 1 on any failed check, and when none passed.
@@ -215,7 +228,7 @@ pnpm build && JIRA_BASE_URL=https://your-site.atlassian.net JIRA_EMAIL=… JIRA_
   node scripts/jira-check.mjs
 ```
 
-`JIRA_OPTIONS` takes the options above as JSON, such as `{"transitions":{"dropped":"Cancelled"}}`. `JIRA_CHECK_LINKS=1` adds a `blocked-by` round trip on two scratch issues it creates and drops afterwards; `JIRA_LINK_KEYS=KEY-12,OTHER-3` uses two issues you name instead, not already linked — the first, the project's own, to be blocked by the second — and leaves both open with the link removed. It relates them, reads back that the first is blocked by the second, confirms the change in the blocked issue's own history, then unrelates them and reads back none. A run that fails partway names the link it left behind.
+`JIRA_OPTIONS` takes the options above as JSON, such as `{"transitions":{"dropped":"Cancelled"}}`. `JIRA_ASSIGNEE` is the `jiraAssignee` secret. Set, the item and child it creates are assigned to that account, and two more checks find them in the scoped open listing and the closed item in the scoped Done lane, each assigned to that account: an email the script looks up itself, an account id it compares as given. `JIRA_CHECK_LINKS=1` adds a `blocked-by` round trip on two scratch issues it creates and drops afterwards; `JIRA_LINK_KEYS=KEY-12,OTHER-3` uses two issues you name instead, not already linked — the first, the project's own, to be blocked by the second — and leaves both open with the link removed. It relates them, reads back that the first is blocked by the second, confirms the change in the blocked issue's own history, then unrelates them and reads back none. A run that fails partway names the link it left behind.
 
 ## Notion
 
