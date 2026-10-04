@@ -2,8 +2,9 @@
  * Every shape of run the Claude integration builds a command line for, each
  * named: the executor's own settings, and the run's options. The command lines
  * `.landrace/hooks/claude.ts` built for these before the kit existed are kept
- * in `tests/fixtures/claude-argv.json`, and `tests/integrations/claude-argv.test.ts`
- * holds `new Claude()` to them element by element.
+ * in `tests/fixtures/claude-argv.json`, with those added since, and
+ * `tests/integrations/claude-argv.test.ts` holds `new Claude()` to them
+ * element by element.
  */
 const PLUGIN = "superpowers@claude-plugins-official";
 const MEMORY = { command: "codebase-memory-mcp", args: [], env: { MEMORY_HOME: "/var/memory" } };
@@ -23,7 +24,15 @@ const EVERYTHING = {
   sandbox: { hosts: ["github.com", "registry.npmjs.org"], deny: ["~/.ssh", "~/Library/Application Support/x"] },
 };
 
-export const ARGV_CASES: Record<string, { executor: Record<string, unknown>; run: Record<string, unknown> }> = {
+/** A worktree holding one project skill. */
+const SKILLS = { ".claude/skills/probe/SKILL.md": "---\nname: probe\ndescription: A probe skill.\n---\n" };
+
+export const ARGV_CASES: Record<string, {
+  executor: Record<string, unknown>;
+  run: Record<string, unknown>;
+  /** Files in the directory the run happens in, by path under it. */
+  worktree?: Record<string, string>;
+}> = {
   "screener, bare": { executor: {}, run: {} },
   "screener, configured with everything a step gets": { executor: EVERYTHING, run: {} },
   "screener, the run's model": { executor: EVERYTHING, run: { model: "haiku" } },
@@ -41,4 +50,7 @@ export const ARGV_CASES: Record<string, { executor: Record<string, unknown>; run
     run: { capabilities: ["repo:read", "repo:write", "items:create"], child: CHILD, effort: "max", resume: "sid-9", fork: true },
   },
   "write, nothing denied": { executor: { sandbox: { hosts: [], deny: [] } }, run: { capabilities: ["repo:write"] } },
+  "screener, with skills in its directory": { executor: {}, run: {}, worktree: SKILLS },
+  "read, with skills": { executor: {}, run: { capabilities: ["repo:read"] }, worktree: SKILLS },
+  "write, with skills": { executor: {}, run: { capabilities: ["repo:read", "repo:write"] }, worktree: SKILLS },
 };

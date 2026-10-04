@@ -457,7 +457,11 @@ describe("buildMcpTools and the servers a turn is handed", () => {
     expect(JSON.parse(after("--mcp-config"))).toEqual({ mcpServers: { "codebase-memory-mcp": MEMORY } });
     expect(argv).toContain("--strict-mcp-config");
     expect(argv.slice(argv.indexOf("--allowedTools") + 1)).toEqual(["mcp__codebase-memory-mcp"]);
-    expect(JSON.parse(after("--settings"))).toEqual({ enabledPlugins: { "superpowers@claude-plugins-official": true } });
+    // And, like the step, the setting that loads the CLAUDE.md of the worktree it runs in.
+    expect(JSON.parse(after("--settings"))).toEqual({
+      enabledPlugins: { "superpowers@claude-plugins-official": true },
+      env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" },
+    });
     // The step's own declaration still decides the rest: read-only, manual,
     // on the model the step asked for.
     expect(after("--permission-mode")).toBe("manual");
