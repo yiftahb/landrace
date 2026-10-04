@@ -71,6 +71,7 @@ stages:
 | `goto` | The stages a person may send an item back to from here — see [Sending an item back](#sending-an-item-back-goto-and-retry) |
 | `branch` | The branch the step works on — see [The item's branch](#the-items-branch) |
 | `note` | What the board says about an item resting here — see below |
+| `closed` | `run` for the one kind of stage a closed item enters and runs its step at, such as a retro — see [A stage that runs after close](#a-stage-that-runs-after-close) |
 
 **Entry stages.** A workflow may have one `entry: true` stage or several. With one, a new item enters it unconditionally. With several, a new item enters the one whose `"run.stage": null` trigger matches it; none, or more than one, halts. A workflow may have none when every open stage is placed by state — see [Read-only workflows](#read-only-workflows).
 
@@ -168,6 +169,32 @@ If, besides, none of its stages runs a step, has a trigger, has an `on_enter` or
 
 [`tests/fixtures/review`](../tests/fixtures/review/workflow.yaml) is the shape of a "merge requests waiting for my review" workflow: `eligible` admits items labelled `review-requested`, `reviewing` (`waits: person`) places those not yet `approved`, and the terminal `approved` places the rest. An item comes into Needs you and leaves it by its own labels alone.
 
+## A stage that runs after close
+
+A closed item is left where it is, with one exception: a stage marked `closed: run`. A closed item may enter that stage and run its step there. A retro after a ticket is resolved is the usual case:
+
+```yaml
+  - id: retro
+    step: steps/retro.md
+    closed: run
+    triggers:
+      - name: resolved
+        when: { "node.closed": done }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}" }
+      - { type: tracker.status, value: retro }
+```
+
+- **Moving.** A closed item's triggers are matched as an open item's are, and two matches halt. One match moves the item only when it leads into a `closed: run` stage. Any other match leaves the item where it is.
+- **Running.** A step runs on a closed item only at a `closed: run` stage. An item closed with its round at `build` still owed does not run `build`.
+- **Resting.** Nothing leaves a `closed: run` stage while the item stays closed, so the step runs once, until the item leaves the stage. Reopened, the item follows the ordinary rules again: a trigger must take it out of the stage, or it stays there with its round done, and closing it again runs no step. `validate` does not check for that trigger, because the stage is exempt from `dead-end`. So give a reopened item a trigger out, for example one into your entry stage reading `{ "run.stage": retro, "node.closed": null }`.
+- **Claims.** A closed item is claimed only by a workflow with a `closed: run` stage, through its `eligible` rules. Two such workflows halt it, as for an open item. If none claims it, it is not admitted, and no row says so.
+- **Stopping.** Closing an item stops a step running on it, unless the step started on an item that was already closed. A retro runs on.
+- **Which closed items are read.** Each tick reads only a closed item that is at a `closed: run` stage, or that a trigger into one could take, judged from its listed labels and fields. Any other closed item costs no reads.
+- **Adding the stage to a running workflow.** A tracker lists the items closed in the last 30 days: on GitHub, those closed in that window that carry an `lr:stage:*` label; on Jira, those in a Done status updated in that window. On the first tick after you add a `closed: run` stage, every listed item the workflow claims and a trigger takes enters the stage and runs its step. On a busy project, that is one paid run per item. To limit it, narrow `eligible` or the trigger, for example to a label you add only to new items.
+
+`validate`'s `closed-run` rule refuses a `closed: run` stage that names a `branch` or plans a `branch.push` or `pull.*` effect: the item's work is already merged or dropped. It also refuses the stage as an entry stage, and a trigger into it that can hold while `node.closed` is null. Naming `node.closed` is not enough: `{ "node.closed": { $ne: dropped } }` holds on an open item too. The rule accepts a `node.closed` term that fails on null, alone, under `$and`, or in every arm of an `$or`. A term only under `$not` proves nothing, so the rule refuses it rather than guess. It also refuses a stage `goto` entry or a route `goto` that targets it, since a goto would send an open item there. Such a stage needs no way out (`dead-end`), and its outputs need no trigger leading away (`shape-edge`).
+
 ## When a round fails
 
 A step whose round fails is never retried on its own: the item halts. A round fails in one of two ways, and the shipped workflows give each its own halt stage:
@@ -243,7 +270,7 @@ The step's worktree is checked out on that branch: the branch itself for a step 
 
 ## Effects
 
-A stage's `on_enter` lists the effects of being in it, and a step's routes name the effect each output goes to. Each effect has a `type`, and a hook claims each type. On every pass the engine plans the effects of the current stage and drops each one already satisfied — see [Architecture](architecture.md#effects-and-satisfied).
+A stage's `on_enter` lists the effects of being in it, and a step's routes name the effects each output goes to. Each effect has a `type`, and a hook claims each type. On every pass the engine plans the effects of the current stage and drops each one already satisfied — see [Architecture](architecture.md#effects-and-satisfied).
 
 Effect fields may use `{item}`, `{stage}` and `{round}`, and nothing from the snapshot: an effect is structure, and a field assembled from an item's text would let whoever wrote it forge a marker.
 
@@ -254,6 +281,7 @@ Effect fields may use `{item}`, `{stage}` and `{round}`, and nothing from the sn
 | `tracker.label` | `add`, `remove`; on a route, `addFrom` and `allowed` | Adds and removes labels. `addFrom` takes the labels from the answer — see [Fields from the answer](#fields-from-the-answer) | the labels already match |
 | `tracker.worklog` | `spentFrom`, `max`, `marker` (all required), `skipIfLogged` | Route only, Jira only. Logs the time the answer's `spentFrom` field names against the item. With `skipIfLogged: true`, logs nothing on an item that has any worklog, a person's included | a worklog Landrace wrote carries that marker; with `skipIfLogged`, any worklog is on the item |
 | `tracker.close` | `how`: `done` (default) or `dropped` | Closes the item | the item is closed, either way — a person who closed it as not planned decided that |
+| `tracker.create` | `project`, `title`, `body` (required: `project`, `title`) | Files an issue in another project of the tracker, linked to the item and unlabelled, so no workflow works it. Then posts a `created` record on the item naming the new issue's key. The title and body are escaped. Only a tracker that opts in does this, and only in the projects it names (Jira's [`createIn`](integrations.md#jira)). If a crash comes between filing and recording, the next apply reuses the issue that carries the effect's marker, so no second issue is filed. Put it in a route's `effects`, which marks it; anywhere else it needs a `marker` of its own | the item already carries the `created` record for this effect's marker |
 | `nodes.close` | `follow`: relationship types | Closes the nodes a superseded round of this stage created, following those types — see [Splitting work into sub-items](#splitting-work-into-sub-items) | none of them is open |
 | `artifact.publish` | `artifact` | Publishes a step's output as an artifact, such as the spec page | the published copy already matches |
 | `branch.push` | `branch` | Pushes the branch to `origin`, fast-forward only — never forced | the checkout's branch head equals `origin`'s as last fetched or pushed, or the checkout has no such branch |
@@ -262,7 +290,7 @@ Effect fields may use `{item}`, `{stage}` and `{round}`, and nothing from the sn
 | `pull.merge` | `branch`, `reviewedBy`, `refuse` | Merges the one open pull request from the branch, by the forge's own method, at the head the item was read at, held to [three guards](#the-merges-three-guards) | no pull request from the branch is open, and one is merged |
 | `pull.close` | `branch` | Closes every open pull request from the branch without merging it — what a workflow that drops an item does to the work it proposed. It asks the forge again first, so one merged since the read is never touched | no pull request from the branch is open |
 
-An effect no hook handles fails when it is applied, and two hooks claiming one type is an ambiguity that halts. An `on_enter` effect is applied as its stage is entered, and a route effect once, right after its step; neither is planned again while the item stays where it is. No effect may carry a `goto`, `from` or `head` field — those are the engine's to write.
+An effect no hook handles fails when it is applied, and two hooks claiming one type is an ambiguity that halts. An `on_enter` effect is applied as its stage is entered. A route's effects are applied right after their step, and each one already satisfied is dropped first; the record that settles the round is always applied. Neither kind is planned again while the item stays where it is. No effect may carry a `goto`, `from` or `head` field — those are the engine's to write. The one exception is `from` in a route's `effects`, which names an output field (see [A route with several effects](#a-route-with-several-effects)).
 
 ### Fields from the answer
 
@@ -342,7 +370,7 @@ Write the spec for #{node.id}: {node.title}…
 | `plugins` | The agent's plugins for this step and its turns, in place of `agent.plugins`; `[]`, none |
 | `output.discriminator` | The field of the answer whose value picks the shape |
 | `output.shapes` | The values the discriminator may take, each with the fields that shape may carry. An answer whose discriminator names no shape fails the round, and is never retried. Only the discriminator is checked, and the fields a route's `addFrom` or `spentFrom` reads ([Fields from the answer](#fields-from-the-answer)): any other declared field the answer omits is absent, and one it mistypes is kept as written. Neither fails the round; each shows up as a trigger that never matches. A field the shape does not declare is dropped |
-| `output.routes` | Where each shape goes: a `when` over the answer, one `effect`, and an optional `goto`. Two routes matching one answer is ambiguity, and halts |
+| `output.routes` | Where each shape goes: a `when` over the answer, then either one `effect` or a list of `effects` (exactly one of the two), and an optional `goto`. Two routes matching one answer is ambiguity, and halts |
 
 The agent ends its answer with a fenced JSON block, which the engine reads as its output. The schema is strict: an unknown key fails to load.
 
@@ -355,6 +383,34 @@ mcp:
     tools: [search_graph, get_code_snippet]
 plugins: []
 ```
+
+### A route with several effects
+
+A route with one `effect` sends the step's prose to one place. A route with `effects` sends one answer to several. Here a support desk's diagnosis posts a reply and a note, and files an engineering bug, all in one round. Both are ordinary comments, visible to whoever can see the item: no tracker here posts an internal comment.
+
+```yaml
+output:
+  discriminator: kind
+  shapes:
+    answered: { reply: string, note: string }
+    bug: { reply: string, note: string, report: string }
+  routes:
+    - when: { kind: answered }
+      effects:
+        - { type: tracker.comment, from: reply }
+        - { type: tracker.comment, from: note }
+    - when: { kind: bug }
+      effects:
+        - { type: tracker.comment, from: reply }
+        - { type: tracker.create, project: ENG, title: "Bug from {item}", from: report }
+```
+
+- **`from`** names a field of the answer. That field's text is the effect's body; without `from`, the body is the step's prose. The engine removes `from` before the effect is applied. If the field is missing or is not a string, the round fails as a broken contract and is not retried. `validate`'s `route-from` rule refuses a `from` that names no field of the shape its route takes. The body is escaped when it is applied.
+- **Order.** The effects are applied in the order listed. The record that settles the round comes last.
+- **Markers.** Each effect is marked `part:{stage}:{round}:{index}`, counting from 0. The engine counts no `part` record, so the round settles once, on the record.
+- **A crash partway.** The step runs again, because the round has no record yet. Each effect whose marker is already on the item is skipped, so only the rest are applied.
+
+A route takes `effect` or `effects`, never both and never neither; either mistake fails to load.
 
 ### Placeholders
 
@@ -407,7 +463,7 @@ A rule the tick cannot answer — one reading a path the listed item does not ca
 
 One `landrace start` runs every workflow: each workflow's source is listed, each open item is **claimed** by one workflow, and that workflow works it.
 
-- **Claims.** A workflow claims an item its `eligible` rules accept. Exactly one claim is the rule: an item two workflows accept is a **conflict**, and an id two different sources report is a **clash**. Either halts, naming both workflows. An item no workflow accepts is unclaimed, and shows as Not admitted with each workflow's reason.
+- **Claims.** A workflow claims an item its `eligible` rules accept. Exactly one claim is the rule: an item two workflows accept is a **conflict**, and an id two different sources report is a **clash**. Either halts, naming both workflows. An item no workflow accepts is unclaimed, and shows as Not admitted with each workflow's reason. A closed item is claimed only by a workflow with a [`closed: run`](#a-stage-that-runs-after-close) stage.
 - **Keeping claims apart.** Give each workflow `admit` labels and `eligible` rules the other turns away — here `full-cycle` admits `lr:auto` and refuses `lr:fast`, and fastlane needs both. `validate` reports, and `start` refuses, two workflows over one source where what one admits the other certainly accepts (the `claims` rule).
 - **One pool.** `tick.concurrency` bounds the agents running at once across the whole workspace, overlapping ticks and every workflow included, not each workflow or each tick: items of every workflow share its slots, most urgent first. [Configuration](configuration.md#landraceyaml) says when a tick leaves an item for a later one.
 - **A failing source.** With several sources, one that cannot list leaves every clash unjudged, so that tick no other source's items are worked, and the board refuses writes while any source is failing. Runs already in flight are not stopped. With one source, its own items are simply absent.

@@ -79,6 +79,8 @@ export interface FakeIssue {
   custom: Record<string, unknown>;
   /** Description changes, oldest first: what `changelog/bulkfetch` answers from. */
   history: Array<{ id: string; author: FakeUser; created: string }>;
+  /** Entity properties by key, as `properties` on a create set them. */
+  properties?: Record<string, unknown>;
 }
 
 /** `fields`: the ids on its create screen, and on its edit screen too. */
@@ -236,6 +238,19 @@ export function createFakeJira(project = "KEY") {
     unreturned: new Set<string>(),
     /** Issues `issue/bulkfetch` names in `issueErrors` instead: a retriable failure, or a payload limit. */
     retriable: new Set<string>(),
+
+    /** The site's other projects, each with what the account may do there: issues are filed there, never listed. */
+    others: new Map<string, Record<string, boolean>>(),
+
+    /** Another project on the site, where the account may do everything until a test says otherwise. */
+    addProject(key: string): void {
+      fake.others.set(key, Object.fromEntries(Object.keys(PERMISSION_NAMES).map((k) => [k, true])));
+    },
+
+    /** What the account may do in another project, beside what it may by default. */
+    projectPermissions(key: string, permissions: Record<string, boolean>): void {
+      fake.others.set(key, { ...(fake.others.get(key) ?? {}), ...permissions });
+    },
 
     /** A link a person made in Jira's UI, its ends in the slots `POST /issueLink` takes them in. */
     link(type: string, inward: string, outward: string): FakeLink {
@@ -510,7 +525,7 @@ export function createFakeJira(project = "KEY") {
 
     // Documented: an array of the users who may be assigned the project's issues, narrowed to one by accountId.
     if (method === "GET" && path === "/rest/api/3/user/assignable/search") {
-      if (q.get("project") !== project) return errors(404, [`No project could be found with key '${q.get("project") ?? ""}'.`]);
+      if (q.get("project") !== project && !fake.others.has(q.get("project") ?? "")) return errors(404, [`No project could be found with key '${q.get("project") ?? ""}'.`]);
       const id = q.get("accountId");
       return json(fake.users.filter((u) => !fake.unassignable.has(u.accountId) && (id === null || u.accountId === id)).map(user));
     }
@@ -519,18 +534,19 @@ export function createFakeJira(project = "KEY") {
       const keys = (q.get("permissions") ?? "").split(",").filter(Boolean);
       if (keys.length === 0) return errors(400, ["The permissions parameter is required."]);
       const permissions: Record<string, unknown> = {};
+      const there = fake.others.get(q.get("projectKey") ?? "") ?? fake.permissions;
       for (const key of keys) {
         if (!(key in PERMISSION_NAMES)) return errors(400, [`Invalid permission key: ${key}`]);
         permissions[key] = {
           id: String(Object.keys(PERMISSION_NAMES).indexOf(key) + 10), key, name: PERMISSION_NAMES[key],
-          type: "PROJECT", description: "", havePermission: fake.permissions[key] === true,
+          type: "PROJECT", description: "", havePermission: there[key] === true,
         };
       }
       return json({ permissions });
     }
 
     if (method === "GET" && (m = /^\/rest\/api\/3\/issue\/createmeta\/([^/]+)\/issuetypes(?:\/([^/]+))?$/.exec(path))) {
-      if (m[1] !== project) return errors(404, ["No project could be found with key or id '" + m[1] + "'."]);
+      if (m[1] !== project && !fake.others.has(m[1] ?? "")) return errors(404, ["No project could be found with key or id '" + m[1] + "'."]);
       const startAt = Number(q.get("startAt") ?? 0);
       const maxResults = Math.min(Number(q.get("maxResults") ?? 50), fake.pageSize);
       if (m[2] === undefined) {
@@ -650,7 +666,10 @@ export function createFakeJira(project = "KEY") {
 
     if (method === "POST" && path === "/rest/api/3/issue") {
       const f = (b.fields ?? {}) as Record<string, { key?: string; name?: string; id?: string } | string | Adf | undefined>;
-      if ((f.project as { key?: string } | undefined)?.key !== project) return errors(400, [], { project: "Specify a valid project ID or key" });
+      const into = (f.project as { key?: string } | undefined)?.key ?? "";
+      const elsewhere = fake.others.get(into);
+      if (into !== project && elsewhere === undefined) return errors(400, [], { project: "Specify a valid project ID or key" });
+      if (elsewhere !== undefined && elsewhere.CREATE_ISSUES !== true) return errors(403, ["You do not have permission to create issues in this project."]);
       const type = fake.issueTypes.find((t) => t.name === (f.issuetype as { name?: string } | undefined)?.name);
       if (!type) return errors(400, [], { issuetype: "Specify an issue type" });
       for (const field of Object.keys(f)) {
@@ -666,8 +685,19 @@ export function createFakeJira(project = "KEY") {
       const assigneeId = (f.assignee as { accountId?: string } | undefined)?.accountId;
       const assignee = assigneeId === undefined ? null : fake.users.find((u) => u.accountId === assigneeId);
       if (assignee === undefined || (assignee !== null && fake.unassignable.has(assignee.accountId))) return errors(400, [], { assignee: `User '${String(assigneeId)}' cannot be assigned issues.` });
+      // Documented on create: `update.issuelinks` adds links with the new issue
+      // in the slot left empty, and `properties` sets entity properties — both
+      // in the one request, so a refused link files nothing.
+      const adds = ((b.update ?? {}) as { issuelinks?: Array<{ add?: { type?: { name?: string }; inwardIssue?: { key?: string }; outwardIssue?: { key?: string } } }> }).issuelinks ?? [];
+      for (const { add } of adds) {
+        if (!fake.linkTypes.some((t) => t.name === add?.type?.name)) return errors(400, [], { issuelinks: `No issue link type with name '${String(add?.type?.name)}' found.` });
+        const other = add?.outwardIssue?.key ?? add?.inwardIssue?.key;
+        if (other === undefined || !visible(other)) return errors(400, [], { issuelinks: "Issue does not exist or you do not have permission to see it." });
+        if (!fake.canLink || elsewhere?.LINK_ISSUES === false) return errors(400, [], { issuelinks: "You do not have the permission to link issues." });
+      }
       const me = fake.me as FakeUser;
       const issue = fake.add({
+        ...(elsewhere === undefined ? {} : { key: `${into}-${[...issues.keys()].filter((k) => k.startsWith(`${into}-`)).length + 1}` }),
         summary: String(f.summary ?? ""),
         description: (f.description as Adf | undefined) ?? null,
         creator: me,
@@ -676,9 +706,25 @@ export function createFakeJira(project = "KEY") {
         parent: parent ?? null,
         priority: priority ?? "3",
         assignee,
+        ...(Array.isArray(b.properties)
+          ? { properties: Object.fromEntries((b.properties as Array<{ key: string; value: unknown }>).map((p) => [p.key, p.value])) }
+          : {}),
       });
+      for (const { add } of adds) {
+        if (add?.outwardIssue?.key !== undefined) fake.link(String(add.type?.name), issue.key, add.outwardIssue.key);
+        else if (add?.inwardIssue?.key !== undefined) fake.link(String(add.type?.name), add.inwardIssue.key, issue.key);
+      }
       if (fake.indexLag) unindexed.add(issue.key);
       return json({ id: issue.id, key: issue.key, self: `${SITE}/rest/api/3/issue/${issue.id}` }, 201);
+    }
+
+    // Documented: one entity property of an issue, `{ key, value }`, or a 404 when the issue has none of that key.
+    if (method === "GET" && (m = /^\/rest\/api\/3\/issue\/([^/]+)\/properties\/([^/]+)$/.exec(path))) {
+      const issue = visible(decodeURIComponent(m[1] as string));
+      if (!issue) return errors(404, ["Issue does not exist or you do not have permission to see it."]);
+      const key = decodeURIComponent(m[2] as string);
+      if (!issue.properties || !Object.hasOwn(issue.properties, key)) return errors(404, [`The property with key '${key}' does not exist.`]);
+      return json({ key, value: issue.properties[key] });
     }
 
     if ((m = /^\/rest\/api\/3\/issue\/([^/]+)(\/comment|\/transitions|\/editmeta|\/worklog)?$/.exec(path))) {

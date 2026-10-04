@@ -2,7 +2,7 @@ import {
   ensureWorktree, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead,
 } from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
-import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
+import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, OUTPUT_KIND, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
   AgentActivity, ConvergeDeps, ConvergeResult, Decision, Dispatcher, Effect, Snapshot, StepResult, WorktreeBranch,
 } from "#namespace.js";
@@ -461,27 +461,25 @@ async function converging(
         return { passes: pass, settled: "halt", why: result.reason };
       }
 
-      // No reconcile-before-apply here, on purpose. `satisfied` asks whether
-      // the *world* already shows an effect as landed; after a crash between
-      // "the step succeeded" and "the effect posted", the world shows
-      // nothing, because the crash happened before the post ever went out —
-      // so the check would find "not satisfied" and apply anyway, having
-      // spent an extra read for a check that could never have said otherwise.
-      // A guard downstream of the invocation cannot prevent the invocation:
-      // the money for this round is already spent by the time control
-      // reaches this line. Closing that window needs a marker written
-      // *before* the agent runs, which is its own brief.
+      // Reconciled before they are applied: a route's `effects` are several
+      // writes, and a crash between two of them leaves the first on the item.
+      // The step runs again, and the part that already landed is skipped by
+      // its marker rather than posted twice. A guard downstream of the
+      // invocation cannot prevent the invocation; the round is paid for again.
       //
-      // This reasoning holds only because the sole effect on this path is
-      // the step's own fresh output for *this* round — something that, by
-      // construction, cannot have already landed (assess() would not have
-      // said "pending" otherwise). It does not generalise to "never
-      // reconcile before applying": a route whose effect is something
-      // legitimately already satisfied elsewhere — an idempotent artifact
-      // publish, say — would need reconciling here, because for that effect
-      // "already satisfied" is a real, checkable fact about the world, not
-      // a question this same round's own output could ever have answered.
-      const applied = await tryApply(result.effects, item, snapshot, deps);
+      // All but the record that settles the round, which cannot have landed —
+      // assess() would not have said "pending" — and whose marker a route
+      // names: one step file serving two stages under `spec:{round}` would
+      // otherwise read the first stage's record as the second's, and never
+      // settle it.
+      const settles = (e: Effect): boolean => e.type === RECORD_EFFECT && e.kind === OUTPUT_KIND;
+      const stepReconciled = reconcileLogged(result.effects.filter((e) => !settles(e)), item, snapshot, deps);
+      if (!stepReconciled.ok) {
+        deps.log("effect.failed", { item, reason: stepReconciled.reason });
+        return { passes: pass, settled: "halt", why: stepReconciled.reason };
+      }
+      const surviving = new Set(stepReconciled.surviving);
+      const applied = await tryApply(result.effects.filter((e) => settles(e) || surviving.has(e)), item, snapshot, deps);
       if (!applied.ok) {
         deps.log("effect.failed", { item, reason: applied.reason, refused: applied.refused });
         // An answer the forge or the tracker refuses to take is this round

@@ -62,7 +62,7 @@ import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
-import { admitProblems, branchIsolationProblems, claimProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, createProblems, validate } from "#workflow/validate.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
@@ -520,7 +520,12 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
      * item, one live repository at a time. `snapshotProvides` abstains — for
      * the whole graph — when any loaded hook declares no `provides` at all.
      */
-    refuseUnsound(dir, [[w.id, validate(w.workflow, w.steps, snapshotProvides(registry.pre, registry.source) ?? undefined)]]);
+    refuseUnsound(dir, [[w.id, [
+      ...validate(w.workflow, w.steps, snapshotProvides(registry.pre, registry.source) ?? undefined),
+      // Where the loaded tracker files issues, as `validate` reports it. A
+      // write, so only where the loop runs, as admission is.
+      ...(opts.readOnly ? [] : createProblems(w.workflow, w.steps, registry.post)),
+    ]]]);
 
     if (!registry.source) {
       throw new Error(

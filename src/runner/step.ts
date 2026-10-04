@@ -1,5 +1,5 @@
 import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
-import type { AgentActivity, Effect, Graph, Logger, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
+import type { AgentActivity, Effect, Graph, Logger, Route, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
 import {
   AGENT_BY,
   CAPABILITIES,
@@ -9,6 +9,7 @@ import {
   mayWriteRepo,
   OUTPUT_KIND,
   outputValueProblem,
+  PART_KIND,
   RECORD_EFFECT,
   recordBodyProblem,
   retiredCapabilityPointers,
@@ -74,6 +75,14 @@ export function renderPrompt(
     return quote(Array.isArray(value) ? value.join(", ") : String(value));
   });
 }
+
+/**
+ * Every effect a route declares, in order: its one `effect`, or its
+ * `effects`. What every rule about a route's effects reads, so none of them
+ * checks the one form and misses the other.
+ */
+export const routeEffects = (route: Route): Effect[] =>
+  route.effects ?? (route.effect === undefined ? [] : [route.effect]);
 
 /**
  * An agent-chosen value is unbounded — a 200,000-character discriminator
@@ -625,15 +634,91 @@ export function settleOutput(opts: {
   const [blockStart, blockEnd] = extracted.span;
   const body = (text.slice(0, blockStart) + text.slice(blockEnd)).trim();
 
-  // One route, one destination — deliberately, not a gap. A route says where
-  // the step's *content* goes; it never gets to say whether the result is
-  // recorded, which is why the record below is not fan-out a workflow can ask
-  // for. Two routes matching one output stays exactly the ambiguity halted
-  // above, and a step that genuinely needs two destinations wants a route
-  // schema change (`effects:` plural), not a second matching route.
+  // Where the answer sends the item, on the record that settles this round
+  // — never a record of its own, which could land without the other and
+  // leave either a judge that re-runs or a goto nobody asked for.
+  const sent = route.goto === undefined ? {} : { goto: route.goto };
+
+  /*
+   * The record of what the step produced, for a route whose content does not
+   * carry it: the engine's own bookkeeping, which core counts to derive the
+   * stage's round and its outputs. Its own marker namespace, so it cannot
+   * collide with one a route named.
+   */
+  const record: Effect = {
+    type: RECORD_EFFECT,
+    kind: OUTPUT_KIND,
+    stage: stageId,
+    round,
+    marker: `${OUTPUT_KIND}:${stageId}:${round}`,
+    body: `Recorded the output of "${stageId}", round ${round}.`,
+    output: value,
+    ...session,
+    ...sent,
+    ...by,
+    ...started,
+  };
+
   // The same rule, and the same code, as an on_enter effect's fields: a route
   // is a workflow-authored template and an effect is structure, not prose.
-  const { head: _named, ...templated } = expandEffectFields(route.effect, vars) as Effect;
+  if (route.effects !== undefined) {
+    const parts: Effect[] = [];
+    for (const [index, declared] of route.effects.entries()) {
+      const { head: _head, from, ...templated } = expandEffectFields(declared, vars) as Effect;
+      void _head;
+      const resolved = resolveOutputFields(templated as Effect, value);
+      if (!resolved.ok) {
+        return { ok: false, kind: "contract", reason: `stage "${stageId}" shape "${shape}": effect ${index}: ${resolved.reason}` };
+      }
+      const expanded = resolved.effect;
+      /*
+       * `from` names the output field this effect's body is, resolved here
+       * and stripped: it is a field a record's marker reads as the stage an
+       * item came from. Only a string the step's own shape let through —
+       * anything else is a broken contract, recorded and never retried, or
+       * the round would be paid for again on every tick.
+       */
+      let fed: string | null = null;
+      if (from !== undefined) {
+        const field = value[String(from)];
+        if (typeof from !== "string" || isReservedId(from) || !Object.hasOwn(value, from) || typeof field !== "string") {
+          return {
+            ok: false,
+            kind: "contract",
+            reason: `stage "${stageId}" shape "${shape}": effect ${index} takes its body from ${describeValue(from)}, ` +
+              "which the output does not carry as a string",
+          };
+        }
+        fed = field;
+      }
+      const part: Effect = {
+        body,
+        ...expanded,
+        ...(fed === null ? {} : { body: fed }),
+        type: declared.type,
+        // The engine's, whatever the route wrote: what reconcile reads to
+        // skip a part that landed before a crash, and a kind core counts as
+        // nothing, so the round settles once, on the record.
+        stage: stageId,
+        round,
+        kind: PART_KIND,
+        marker: `${PART_KIND}:${stageId}:${round}:${index}`,
+        // A comment's content is its body; anything else may be fed the value.
+        ...(declared.type === RECORD_EFFECT ? {} : { output: value }),
+      };
+      const oversize = part.type === RECORD_EFFECT ? recordBodyProblem(String(part.body ?? "")) : null;
+      if (oversize) {
+        return { ok: false, kind: "contract", reason: `stage "${stageId}" shape "${shape}": effect ${index}'s body ${oversize}` };
+      }
+      parts.push(part);
+    }
+    // The record last: every part has landed by the time the round settles,
+    // and a crash before it leaves the round owed, its landed parts skipped.
+    return { ok: true, effects: [...parts, record], sessionId };
+  }
+
+  // One route, one destination: the step's prose goes where the route says.
+  const { head: _named, ...templated } = expandEffectFields(route.effect ?? { type: RECORD_EFFECT }, vars) as Effect;
   void _named;
   const resolved = resolveOutputFields(templated as Effect, value);
   if (!resolved.ok) {
@@ -644,11 +729,6 @@ export function settleOutput(opts: {
   // cut to its shape, which a hook posting structured content (a review's
   // findings) needs and a route must not be able to write over.
   const destination: Effect = { body, stage: stageId, round, ...expanded, output: value };
-
-  // Where the answer sends the item, on the record that settles this round
-  // — never a record of its own, which could land without the other and
-  // leave either a judge that re-runs or a goto nobody asked for.
-  const sent = route.goto === undefined ? {} : { goto: route.goto };
 
   /*
    * The output value's rule, applied to the other half of what a step
@@ -690,21 +770,6 @@ export function settleOutput(opts: {
       sessionId,
     };
   }
-
-  const record: Effect = {
-    type: RECORD_EFFECT,
-    kind: OUTPUT_KIND,
-    stage: stageId,
-    round,
-    // Its own marker namespace, so it cannot collide with one a route named.
-    marker: `${OUTPUT_KIND}:${stageId}:${round}`,
-    body: `Recorded the output of "${stageId}", round ${round}.`,
-    output: value,
-    ...session,
-    ...sent,
-    ...by,
-    ...started,
-  };
 
   // The destination first, and the order is the recovery property. Recorded
   // first, a crash before the content is written leaves a stage that reads as

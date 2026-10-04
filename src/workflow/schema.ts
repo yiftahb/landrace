@@ -36,7 +36,30 @@ export const stageSchema = z.object({
     }).strict(),
   ])).optional(),
   note: z.string().min(1).optional(),
+  /**
+   * `run`: the one stage a closed item may enter and run its step at. The
+   * engine leaves a closed item alone everywhere else (decide.ts).
+   */
+  closed: z.literal("run").optional(),
 }).strict();
+
+/**
+ * One destination for the step's prose, or several, each fed from an output
+ * field or the prose. Both or neither is refused, never read as one of them.
+ */
+const route = z.object({
+  when: condition,
+  effect: effect.optional(),
+  effects: z.array(effect).min(1).optional(),
+  goto: z.string().min(1).optional(),
+}).strict().superRefine((r, ctx) => {
+  if ((r.effect === undefined) === (r.effects === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: r.effect === undefined ? "a route takes effect or effects" : "a route takes effect or effects, not both",
+    });
+  }
+});
 
 export const workflowSchema = z.object({
   version: z.literal(1),
@@ -103,6 +126,6 @@ export const stepFrontMatterSchema = z.object({
   output: z.object({
     discriminator: z.string(),
     shapes: z.record(z.unknown()),
-    routes: z.array(z.object({ when: condition, effect, goto: z.string().min(1).optional() }).strict()),
+    routes: z.array(route),
   }).strict().optional(),
 }).strict();

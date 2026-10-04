@@ -9,15 +9,17 @@ import {
   RECORD_EFFECT,
   RELATIONS,
   stageFromLabels,
+  TRACKER_CREATE_EFFECT,
 } from "#conventions.js";
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
 import { BaseForge, prBranch } from "#kit/forge.js";
-import { BaseTracker, commentSatisfied } from "#kit/tracker.js";
+import { BaseTracker, commentSatisfied, createdSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
   ChangedFiles,
+  CreateRequest,
   CheckCounts,
   CheckState,
   Effect,
@@ -28,6 +30,7 @@ import type {
   ExternalState,
   ExternalItem,
   FailedCheck,
+  FiledIssue,
   ForgeOptions,
   Graph,
   HookContext,
@@ -140,11 +143,35 @@ export class MemoryTracker extends BaseTracker {
   private nextComment = 1000;
   private readonly readOnly: boolean;
   private readonly asked: string[] = [];
+  private readonly projects: string[];
+  /** Every issue filed in another project, by key: never a row, so never listed. */
+  readonly filed = new Map<string, FiledIssue>();
 
-  constructor(seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean } = {}) {
+  /** `createIn`: the other projects its `tracker.create` files issues in. None unless named. */
+  constructor(seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean; createIn?: string[] } = {}) {
     super();
     this.readOnly = seed.readOnly ?? false;
+    this.projects = [...(seed.createIn ?? [])];
     for (const [i, s] of (seed.items ?? []).entries()) this.add(s, s.id ?? String(i + 1));
+  }
+
+  override createsIn(): string[] {
+    return [...this.projects];
+  }
+
+  /** Linked to its item and stamped with its marker in one write, as an issue a tracker files whole. */
+  protected override async createIn(request: CreateRequest): Promise<string> {
+    this.write("create", `an issue in ${request.project} for #${request.item}`);
+    this.row(request.item);
+    const key = `${request.project}-${[...this.filed.values()].filter((f) => f.project === request.project).length + 1}`;
+    this.filed.set(key, { ...request, key, labels: [] });
+    return key;
+  }
+
+  protected override async createdBy(request: CreateRequest): Promise<string | null> {
+    const found = [...this.filed.values()].find((f) =>
+      f.project === request.project && f.item === request.item && f.marker === request.marker);
+    return found?.key ?? null;
   }
 
   /** Every write this tracker was asked for, in order, as `<operation> #<id>`: refused ones too. */
@@ -298,11 +325,13 @@ export class MemoryTracker extends BaseTracker {
   override effects(): EffectTable {
     const effects = super.effects();
     const comment = effects[RECORD_EFFECT] as EffectHandler;
-    // The kit's own check — ours, by login, and the marker parsed whole —
+    const create = effects[TRACKER_CREATE_EFFECT] as EffectHandler;
+    // The kit's own checks — ours, by login, and the marker parsed whole —
     // against the login this tracker posts as, which its snapshot does not carry.
     return {
       ...effects,
       [RECORD_EFFECT]: { apply: comment.apply, satisfied: (snapshot, effect) => commentSatisfied({ ...snapshot, tracker: { bot: BOT } }, effect) },
+      [TRACKER_CREATE_EFFECT]: { apply: create.apply, satisfied: (snapshot, effect) => createdSatisfied({ ...snapshot, tracker: { bot: BOT } }, effect) },
     };
   }
 }
@@ -644,7 +673,9 @@ export class MemoryDocs extends BaseDocs {
  * effect name and every `satisfied()` is the kit's own rather than a copy.
  * `readOnly` makes the tracker refuse every write (see `MemoryTracker`).
  */
-export function createExternalState(seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean } = {}): ExternalState {
+export function createExternalState(
+  seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean; createIn?: string[] } = {},
+): ExternalState {
   const tracker = new MemoryTracker(seed);
   const forge = new MemoryForge();
   const docs = new MemoryDocs();
@@ -672,5 +703,6 @@ export function createExternalState(seed: { items?: Array<Partial<ExternalItem>>
     },
     say: (n, text) => tracker.post(n, PERSON, text),
     writes: () => tracker.writes(),
+    filed: () => [...tracker.filed.values()],
   };
 }

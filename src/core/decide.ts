@@ -3,6 +3,7 @@ import { assess } from "#core/assess.js";
 import { checkEligible } from "#core/eligible.js";
 import { nextRound as roundOf } from "#core/derive.js";
 import { gotoDeclined, gotoNotListed } from "#core/goto.js";
+import { CLOSED_WHY } from "#core/closed.js";
 import { cannotPlace, locate, UNPLACED } from "#core/locate.js";
 import { compile } from "#core/predicate.js";
 import type { Decision, Run, Snapshot, Stage, Workflow } from "#namespace.js";
@@ -60,6 +61,20 @@ function pickEntry(entries: Stage[], s: Snapshot): { to: Stage; trigger: string 
   return only;
 }
 
+/** Every other stage's trigger that holds, in declaration order: more than one is ambiguous. */
+function triggerMatches(w: Workflow, s: Snapshot, stage: Stage): Array<{ to: Stage; trigger: string }> {
+  return w.stages.flatMap((candidate) =>
+    candidate.id === stage.id
+      ? []
+      : (candidate.triggers ?? [])
+          .filter((t) => compile(t.when)(s))
+          .map((t) => ({ to: candidate, trigger: t.name ?? candidate.id })),
+  );
+}
+
+const ambiguous = (matches: Array<{ to: Stage; trigger: string }>): string =>
+  `ambiguous triggers: ${matches.map((m) => `${m.to.id} (${m.trigger})`).join(", ")}`;
+
 export function decide(w: Workflow, s: Snapshot): Decision {
   const eligibility = checkEligible(w, s);
   if (!eligibility.eligible) return { action: "skip", why: eligibility.reason };
@@ -78,10 +93,20 @@ export function decide(w: Workflow, s: Snapshot): Decision {
    */
   const nextRound = (stage: string): number => roundOf(run, stage);
 
+  /*
+   * A closed item is left where it is, but for one thing: a `closed: run`
+   * stage — a retro after a ticket is resolved — which it may enter by one
+   * trigger, and run its step at. Nothing leaves that stage while the item is
+   * closed, so its step runs once per closure.
+   */
+  const closed = ((s.node as { closed?: unknown } | undefined)?.closed ?? null) !== null;
+
   const where = locate(w, s);
   if (where.kind === "ambiguous") {
     return { action: "halt", why: cannotPlace(where.ids) };
   }
+  // Never entered: a closed item with no position is not a new one.
+  if (where.kind === "none" && closed) return { action: "skip", why: CLOSED_WHY };
   if (where.kind === "none") {
     const entries = w.stages.filter((x) => x.entry);
     // What happened, not what the workflow lacks: one placed by the item's
@@ -122,6 +147,21 @@ export function decide(w: Workflow, s: Snapshot): Decision {
   }
 
   const subState = assess(s, stage);
+
+  if (closed && stage.closed === "run" && subState !== "pending") {
+    return { action: "skip", stage, subState, why: `${CLOSED_WHY}, and rests at "${stage.id}"` };
+  }
+  if (closed && stage.closed !== "run") {
+    // Triggers match as on an open item, and two halt. One match moves the
+    // item only into a stage it may run at; any other is not a closed item's.
+    const matches = triggerMatches(w, s, stage);
+    if (matches.length > 1) return { action: "halt", stage, subState, why: ambiguous(matches) };
+    const [only] = matches;
+    if (only?.to.closed === "run") {
+      return { action: "transition", stage, subState, to: only.to, trigger: only.trigger, round: nextRound(only.to.id) };
+    }
+    return { action: "skip", stage, subState, why: CLOSED_WHY };
+  }
 
   // A rejected output is routed by a trigger like any other fact, so the
   // workflow decides where it goes. It is never retried.
@@ -173,17 +213,10 @@ export function decide(w: Workflow, s: Snapshot): Decision {
     }
   }
 
-  const matches = w.stages.flatMap((candidate) =>
-    candidate.id === stage.id
-      ? []
-      : (candidate.triggers ?? [])
-          .filter((t) => compile(t.when)(s))
-          .map((t) => ({ to: candidate, trigger: t.name ?? candidate.id })),
-  );
+  const matches = triggerMatches(w, s, stage);
 
   if (matches.length > 1) {
-    const listed = matches.map((m) => `${m.to.id} (${m.trigger})`).join(", ");
-    const why = `ambiguous triggers: ${listed}`;
+    const why = ambiguous(matches);
     return { action: "halt", stage, subState, why: declined ? `${why}; ${declined}` : why };
   }
 

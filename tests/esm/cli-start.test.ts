@@ -386,6 +386,17 @@ describe("buildWorkspaceRuntime", () => {
     await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
   });
 
+  // `validate` names it in the same words.
+  it("refuses an issue filed in a project the loaded tracker does not create in", async () => {
+    const { dir } = await fixture();
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW.concat(
+      '      - { type: tracker.create, project: ENG, title: Bug, marker: "bug:{round}" }\n',
+    ));
+    await expect(buildMain(dir, {})).rejects.toThrow(/tracker-create: stage "spec" files an issue in "ENG", but its tracker files issues in no other project/);
+    // Reading files nothing, so `status` still works on it.
+    await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
+  });
+
   // `validate` names it, and `start` refuses it before the first step runs.
   it("refuses a step whose effort the executor does not take", async () => {
     const { dir } = await fixture();
