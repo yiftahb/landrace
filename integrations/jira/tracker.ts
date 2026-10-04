@@ -208,6 +208,94 @@ function blockersIn(issuelinks: unknown, type: string): { blockers: Blocker[]; w
   return { blockers, whole };
 }
 
+/** Each client's assignee, resolved once: its account id, or null when the tracker is not scoped. */
+const assignees = new WeakMap<Client, string | null>();
+
+/**
+ * The `jiraAssignee` secret as an account id, or null when it is unset or
+ * empty. An email is looked up once, and refused when it matches no user or
+ * several: Jira keeps most emails private, so a user search answers with
+ * none shown, and one of those may be the one meant — two are not a guess.
+ * An account id is asked after too, so a typo refuses to start rather than
+ * list nobody's issues. Resolved by the preflight and by whatever reads
+ * first, never skipped: an unscoped list of everybody's issues is the
+ * failure the secret is there to prevent.
+ */
+export async function assigneeOf(jira: Client, ctx: RuntimeContext): Promise<string | null> {
+  const known = assignees.get(jira);
+  if (known !== undefined) return known;
+  const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
+  let id: string | null = null;
+  if (value !== "") {
+    if (!value.includes("@") && !ACCOUNT_ID.test(value)) {
+      throw new Error(`jiraAssignee "${value}" is neither an email nor a Jira account id`);
+    }
+    let users: User[];
+    if (value.includes("@")) {
+      const found = await jira.call<User[] | null>("GET", `/rest/api/3/user/search?query=${encodeURIComponent(value)}&maxResults=${USER_PAGE}`) ?? [];
+      // A full page may not be all of them, and the one meant may be past it.
+      if (found.length >= USER_PAGE) throw new Error(`jiraAssignee "${value}" matches more Jira users than one search returns; name one by its account id`);
+      users = found.filter((u) => u.emailAddress === undefined || same(u.emailAddress, value));
+    } else {
+      users = await jira.call<User | null>("GET", `/rest/api/3/user?accountId=${encodeURIComponent(value)}`)
+        .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
+    }
+    const [only] = users;
+    if (!only) {
+      // Jira answers an account without "Browse users and groups" with nobody, not a refusal: asked, so the
+      // refusal names the cause that applied.
+      const { permissions = {} } = await jira.call<{ permissions?: Record<string, { havePermission?: boolean }> }>(
+        "GET", "/rest/api/3/mypermissions?permissions=USER_PICKER",
+      );
+      if (permissions.USER_PICKER?.havePermission !== true) {
+        throw new Error(
+          `jiraAssignee "${value}" cannot be looked up: the account lacks the global "Browse users and groups" permission (USER_PICKER), ` +
+          "without which Jira finds no user; grant it",
+        );
+      }
+      throw new Error(`jiraAssignee "${value}" matches no Jira user`);
+    }
+    if (users.length > 1) {
+      throw new Error(`jiraAssignee "${value}" matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
+    }
+    if (typeof only.accountId !== "string" || !ACCOUNT_ID.test(only.accountId)) {
+      throw new Error(`Jira answered jiraAssignee "${value}" with no usable account id`);
+    }
+    id = only.accountId;
+  }
+  assignees.set(jira, id);
+  return id;
+}
+
+/** The clause every listing query ends its conditions with: the assignee's, or nothing. */
+export async function scopeOf(jira: Client, ctx: RuntimeContext): Promise<string> {
+  const id = await assigneeOf(jira, ctx);
+  return id === null ? "" : ` AND assignee = "${id}"`;
+}
+
+/**
+ * Every issue a query finds, page by page — and whether the pages ran out
+ * before it did. Search is eventually consistent; the ids in `reconcile`
+ * (at most 50) are read as they are now rather than as the index has them.
+ */
+export async function search(
+  jira: Client, jql: string, { reconcile = [], fields = FIELDS }: { reconcile?: number[]; fields?: string[] } = {},
+): Promise<{ issues: Issue[]; complete: boolean }> {
+  const issues: Issue[] = [];
+  let nextPageToken: string | undefined;
+  for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
+    const res = await jira.call<{ issues?: Issue[]; nextPageToken?: string | null }>("POST", "/rest/api/3/search/jql", {
+      jql, fields, maxResults: ISSUE_PAGE,
+      ...(reconcile.length === 0 ? {} : { reconcileIssues: reconcile }),
+      ...(nextPageToken === undefined ? {} : { nextPageToken }),
+    });
+    issues.push(...(res.issues ?? []));
+    if (!res.nextPageToken) return { issues, complete: true };
+    nextPageToken = res.nextPageToken;
+  }
+  return { issues, complete: false };
+}
+
 /**
  * The closed blockers' own fields, for their resolutions: those the answer
  * holds, by key, and those fetched, by issue id — or by key, for one whose
@@ -236,8 +324,6 @@ export class Jira extends BaseTracker {
   private readonly linkType: string;
   /** Each client's project priorities, highest first, read once. */
   private readonly priorities = new WeakMap<Client, string[]>();
-  /** Each client's assignee, resolved once: its account id, or null when the tracker is not scoped. */
-  private readonly assignees = new WeakMap<Client, string | null>();
   /** The unreadable blockers already logged this tick: a listing begins each one, and clears it. */
   private readonly unreadableSaid = new Set<string>();
 
@@ -288,91 +374,6 @@ export class Jira extends BaseTracker {
 
   async login(ctx: RuntimeContext): Promise<string> {
     return this.jira(ctx).myself();
-  }
-
-  /**
-   * The `jiraAssignee` secret as an account id, or null when it is unset or
-   * empty. An email is looked up once, and refused when it matches no user or
-   * several: Jira keeps most emails private, so a user search answers with
-   * none shown, and one of those may be the one meant — two are not a guess.
-   * An account id is asked after too, so a typo refuses to start rather than
-   * list nobody's issues. Resolved by the preflight and by whatever reads
-   * first, never skipped: an unscoped list of everybody's issues is the
-   * failure the secret is there to prevent.
-   */
-  private async assignee(jira: Client, ctx: RuntimeContext): Promise<string | null> {
-    const known = this.assignees.get(jira);
-    if (known !== undefined) return known;
-    const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
-    let id: string | null = null;
-    if (value !== "") {
-      if (!value.includes("@") && !ACCOUNT_ID.test(value)) {
-        throw new Error(`jiraAssignee "${value}" is neither an email nor a Jira account id`);
-      }
-      let users: User[];
-      if (value.includes("@")) {
-        const found = await jira.call<User[] | null>("GET", `/rest/api/3/user/search?query=${encodeURIComponent(value)}&maxResults=${USER_PAGE}`) ?? [];
-        // A full page may not be all of them, and the one meant may be past it.
-        if (found.length >= USER_PAGE) throw new Error(`jiraAssignee "${value}" matches more Jira users than one search returns; name one by its account id`);
-        users = found.filter((u) => u.emailAddress === undefined || same(u.emailAddress, value));
-      } else {
-        users = await jira.call<User | null>("GET", `/rest/api/3/user?accountId=${encodeURIComponent(value)}`)
-          .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
-      }
-      const [only] = users;
-      if (!only) {
-        // Jira answers an account without "Browse users and groups" with nobody, not a refusal: asked, so the
-        // refusal names the cause that applied.
-        const { permissions = {} } = await jira.call<{ permissions?: Record<string, { havePermission?: boolean }> }>(
-          "GET", "/rest/api/3/mypermissions?permissions=USER_PICKER",
-        );
-        if (permissions.USER_PICKER?.havePermission !== true) {
-          throw new Error(
-            `jiraAssignee "${value}" cannot be looked up: the account lacks the global "Browse users and groups" permission (USER_PICKER), ` +
-            "without which Jira finds no user; grant it",
-          );
-        }
-        throw new Error(`jiraAssignee "${value}" matches no Jira user`);
-      }
-      if (users.length > 1) {
-        throw new Error(`jiraAssignee "${value}" matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
-      }
-      if (typeof only.accountId !== "string" || !ACCOUNT_ID.test(only.accountId)) {
-        throw new Error(`Jira answered jiraAssignee "${value}" with no usable account id`);
-      }
-      id = only.accountId;
-    }
-    this.assignees.set(jira, id);
-    return id;
-  }
-
-  /** The clause every listing query ends its conditions with: the assignee's, or nothing. */
-  private async mine(jira: Client, ctx: RuntimeContext): Promise<string> {
-    const id = await this.assignee(jira, ctx);
-    return id === null ? "" : ` AND assignee = "${id}"`;
-  }
-
-  /**
-   * Every issue a query finds, page by page — and whether the pages ran out
-   * before it did. Search is eventually consistent; the ids in `reconcile`
-   * (at most 50) are read as they are now rather than as the index has them.
-   */
-  private async search(
-    jira: Client, jql: string, { reconcile = [], fields = FIELDS }: { reconcile?: number[]; fields?: string[] } = {},
-  ): Promise<{ issues: Issue[]; complete: boolean }> {
-    const issues: Issue[] = [];
-    let nextPageToken: string | undefined;
-    for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
-      const res = await jira.call<{ issues?: Issue[]; nextPageToken?: string | null }>("POST", "/rest/api/3/search/jql", {
-        jql, fields, maxResults: ISSUE_PAGE,
-        ...(reconcile.length === 0 ? {} : { reconcileIssues: reconcile }),
-        ...(nextPageToken === undefined ? {} : { nextPageToken }),
-      });
-      issues.push(...(res.issues ?? []));
-      if (!res.nextPageToken) return { issues, complete: true };
-      nextPageToken = res.nextPageToken;
-    }
-    return { issues, complete: false };
   }
 
   /**
@@ -579,11 +580,11 @@ export class Jira extends BaseTracker {
   async items(ctx: RuntimeContext): Promise<ItemRecord[]> {
     this.unreadableSaid.clear();
     const jira = this.jira(ctx);
-    const mine = await this.mine(jira, ctx);
-    const open = await this.search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`);
+    const mine = await scopeOf(jira, ctx);
+    const open = await search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`);
     if (!open.complete) throw new Error(`${this.project} has more open issues${mine ? " assigned to jiraAssignee" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
     const since = Date.now() - DONE_WINDOW_MS;
-    const closed = await this.search(
+    const closed = await search(
       jira,
       `project = "${this.project}" AND statusCategory = Done AND updated >= -${Math.ceil(DONE_WINDOW_MS / 60_000)}m${mine} ORDER BY updated DESC`,
     );
@@ -631,7 +632,7 @@ export class Jira extends BaseTracker {
     const parent = await jira.call<{ fields?: { subtasks?: Array<{ id?: string }> } }>("GET", `/rest/api/3/issue/${key}?fields=subtasks`);
     const subtasks = (parent.fields?.subtasks ?? []).flatMap((s) => (s.id === undefined ? [] : [Number(s.id)]));
     if (subtasks.length > ITEM_PAGE) throw new Error(`${key} has more than the ${ITEM_PAGE} children one read carries`);
-    const found = await this.search(
+    const found = await search(
       jira, `project = "${this.project}" AND parent = "${key}" ORDER BY created ASC`, { reconcile: subtasks, fields: CHILD_FIELDS },
     );
     if (!found.complete || found.issues.length > ITEM_PAGE) {
@@ -661,8 +662,8 @@ export class Jira extends BaseTracker {
   protected override async openRelations(type: string, ctx: RuntimeContext): Promise<OpenRelations> {
     if (type !== RELATIONS.blockedBy) return super.openRelations(type, ctx);
     const jira = this.jira(ctx);
-    const mine = await this.mine(jira, ctx);
-    const found = await this.search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`, {
+    const mine = await scopeOf(jira, ctx);
+    const found = await search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`, {
       fields: ["issuelinks"],
     });
     if (!found.complete) throw new Error(`${this.project} has more open issues${mine ? " assigned to jiraAssignee" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
@@ -775,7 +776,7 @@ export class Jira extends BaseTracker {
       priorityId = ids[Math.min(Math.max(priority, 0), ids.length - 1)];
       if (priorityId === undefined) throw new Error(`${this.project} has no priorities to give a new issue`);
     }
-    const assignee = await this.assignee(jira, ctx);
+    const assignee = await assigneeOf(jira, ctx);
     const created = await jira.call<{ key?: unknown } | null>("POST", "/rest/api/3/issue", {
       fields: {
         project: { key: this.project },
@@ -965,7 +966,7 @@ export class Jira extends BaseTracker {
     const scoped = value !== "";
     let assignee: string | null = null;
     try {
-      assignee = await this.assignee(jira, ctx);
+      assignee = await assigneeOf(jira, ctx);
     } catch (e) {
       problems.push(messageOf(e));
     }
