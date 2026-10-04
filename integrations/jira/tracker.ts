@@ -2,13 +2,16 @@
  * Jira Cloud issues as a project's tracker: the JQL, the changelog that says
  * who last edited a body, the workflow's transitions, the "Blocks" issue
  * links as `blocked-by`, and the account's permissions. Everything else a
- * tracker does is `BaseTracker`'s — position is still an `lr:stage:*` label,
- * and Jira's status moves only to close an item or reopen it.
+ * tracker does is `BaseTracker`'s — position is still an `lr:stage:*` label;
+ * Jira's status follows it only where `statuses` maps the stage, and
+ * otherwise moves only to close an item or reopen it.
  */
-import { type Closed, type ItemPatch, RELATIONS, type RuntimeContext, STAGE_LABEL_PREFIX } from "landrace/hooks";
 import {
-  BaseTracker, DONE_WINDOW_MS, EffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
-  type ItemRecord, type OpenRelations, type RelatedRecord, type TrackerComment,
+  type Closed, type HookContext, type ItemPatch, RELATIONS, type RuntimeContext, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
+} from "landrace/hooks";
+import {
+  BaseTracker, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
+  type ItemRecord, type OpenRelations, type RelatedRecord, statusSatisfied, type TrackerComment,
 } from "landrace/kit";
 import { type AdfDoc, fromAdf, plainAdf, toAdf } from "./adf.js";
 import { type Client, clientFor, isMissing } from "./client.js";
@@ -36,6 +39,13 @@ export interface JiraOptions {
    * blocker may be.
    */
   blockedByLinkType?: string | undefined;
+  /**
+   * A Jira status for a stage, by the stage's `tracker.status` value: after
+   * the label, the issue moves through the transition into it. Display only —
+   * position stays the label — so a stage with none moves no status, and a
+   * transition the issue does not offer is logged and skipped.
+   */
+  statuses?: Record<string, string> | undefined;
   fetchImpl?: typeof fetch | undefined;
 }
 
@@ -324,10 +334,13 @@ export class Jira extends BaseTracker {
   private readonly linkType: string;
   /** Each client's project priorities, highest first, read once. */
   private readonly priorities = new WeakMap<Client, string[]>();
+  private readonly statuses: ReadonlyMap<string, string>;
+  /** Each item and status already logged as not offered: once a process, since a board's status is not worth a flood. */
+  private readonly unofferedSaid = new Set<string>();
   /** The unreadable blockers already logged this tick: a listing begins each one, and clears it. */
   private readonly unreadableSaid = new Set<string>();
 
-  constructor({ project, issueType, childType, transitions, blockedByLinkType, fetchImpl }: JiraOptions) {
+  constructor({ project, issueType, childType, transitions, blockedByLinkType, statuses, fetchImpl }: JiraOptions) {
     super();
     // Spelled into every JQL query and URL, so nothing but a key's own characters.
     if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error(`project must be a Jira project key such as "KEY", got "${project}"`);
@@ -339,6 +352,10 @@ export class Jira extends BaseTracker {
     this.fetchImpl = fetchImpl;
     this.keyPattern = new RegExp(`^${project}-[1-9][0-9]*$`);
     this.linkType = blockedByLinkType ?? "Blocks";
+    for (const [stage, status] of Object.entries(statuses ?? {})) {
+      if (typeof status !== "string" || !status.trim()) throw new Error(`statuses.${stage} must name a Jira status, got ${JSON.stringify(status)}`);
+    }
+    this.statuses = new Map(Object.entries(statuses ?? {}));
   }
 
   private jira(ctx: RuntimeContext): Client {
@@ -817,6 +834,78 @@ export class Jira extends BaseTracker {
     await this.transition(jira, key, reopen);
   }
 
+  /** `tracker.status` too, the issue's status by name, when a stage maps one: what the status effect is judged by. */
+  override provides(): string[] {
+    return this.statuses.size === 0 ? super.provides() : [...super.provides(), "tracker.status"];
+  }
+
+  override async observe(ctx: HookContext): Promise<Record<string, unknown>> {
+    const observed = await super.observe(ctx);
+    if (this.statuses.size === 0) return observed;
+    const status = await this.statusOf(this.jira(ctx), this.keyOf(ctx.item));
+    return { ...observed, tracker: { ...(observed.tracker as Record<string, unknown>), status } };
+  }
+
+  /** The issue's status by name, read off the issue rather than search, which lags a transition just made. */
+  private async statusOf(jira: Client, key: string): Promise<string | undefined> {
+    return (await jira.call<Issue>("GET", `/rest/api/3/issue/${key}?fields=status`)).fields?.status?.name;
+  }
+
+  /**
+   * `tracker.status` as the base moves it — the stage label — and then, for a
+   * mapped stage, the issue's status: satisfied once the label is there and
+   * the issue is in the mapped status, whatever its case.
+   */
+  override effects(): EffectTable {
+    const base = super.effects();
+    const label = base[STATUS_EFFECT];
+    if (!label) return base;
+    return {
+      ...base,
+      [STATUS_EFFECT]: {
+        satisfied: (snapshot: Snapshot, effect) => {
+          if (!statusSatisfied(snapshot, effect)) return false;
+          const wanted = this.statuses.get(String(effect.value));
+          if (wanted === undefined) return true;
+          const status = (snapshot.tracker as { status?: unknown } | undefined)?.status;
+          return typeof status === "string" && same(status, wanted);
+        },
+        apply: async (effect, ctx) => {
+          await label.apply(effect, ctx);
+          const wanted = this.statuses.get(String(effect.value));
+          if (wanted !== undefined) await this.moveStatus(ctx.item, wanted, ctx);
+        },
+      },
+    };
+  }
+
+  /**
+   * Through the one transition into `wanted`, unless the issue is in it
+   * already. Two into it halt rather than pick one. None offered is logged
+   * once per item and status a process and skipped: the status is display,
+   * and an item does not stop for it.
+   */
+  private async moveStatus(id: string, wanted: string, ctx: RuntimeContext): Promise<void> {
+    const key = this.keyOf(id);
+    const jira = this.jira(ctx);
+    const status = await this.statusOf(jira, key);
+    if (same(status, wanted)) return;
+    const offered = await this.offered(jira, key);
+    const into = offered.filter((t) => same(t.to?.name, wanted));
+    const [only] = into;
+    if (!only) {
+      const said = JSON.stringify([key, wanted.trim().toLowerCase()]);
+      if (this.unofferedSaid.has(said)) return;
+      this.unofferedSaid.add(said);
+      ctx.log("jira.status.unoffered", { item: key, status: wanted, from: status, offered: offeredList(offered) });
+      return;
+    }
+    if (into.length > 1) {
+      throw new Error(`${key} offers ${into.length} transitions into "${wanted}": ${into.map((t) => `"${t.name}"`).join(", ")}; which one moves it is not a guess`);
+    }
+    await this.transition(jira, key, only);
+  }
+
   /** Jira's issue links of `blockedByLinkType`, read off each issue's own `issuelinks`. */
   protected override readRelations(): string[] {
     return [RELATIONS.blockedBy];
@@ -1005,6 +1094,16 @@ export class Jira extends BaseTracker {
         }
         if (scoped && !fields.some((f) => f.fieldId === "assignee")) {
           problems.push(`${this.project}'s "${wanted}" issues have no assignee field, and jiraAssignee assigns each one created`);
+        }
+      }
+    }
+    // A mapped status the workflow lacks would be logged as not offered on every item, and never reached.
+    if (this.statuses.size > 0 && permissions.BROWSE_PROJECTS?.havePermission === true) {
+      const types = await jira.call<Array<{ statuses?: Status[] }> | null>("GET", `/rest/api/3/project/${this.project}/statuses`) ?? [];
+      const known = [...new Set(types.flatMap((t) => t.statuses ?? []).flatMap((st) => (st.name === undefined ? [] : [st.name])))];
+      for (const [stage, status] of this.statuses) {
+        if (!known.some((name) => same(name, status))) {
+          problems.push(`statuses.${stage} "${status}" is no status of ${this.project}'s workflow; it has ${known.map((n) => `"${n}"`).join(", ") || "none"}`);
         }
       }
     }

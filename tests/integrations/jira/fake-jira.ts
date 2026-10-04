@@ -35,6 +35,8 @@ interface Status { id: string; name: string; category: "new" | "indeterminate" |
 export const STATUSES: Record<string, Status> = {
   "To Do": { id: "10000", name: "To Do", category: "new" },
   "In Progress": { id: "3", name: "In Progress", category: "indeterminate" },
+  // In the workflow, and no transition leads into it.
+  "In Review": { id: "10003", name: "In Review", category: "indeterminate" },
   Done: { id: "10001", name: "Done", category: "done" },
   "Won't Do": { id: "10002", name: "Won't Do", category: "done" },
 };
@@ -487,6 +489,14 @@ export function createFakeJira(project = "KEY") {
         name: id[0]?.toUpperCase() + id.slice(1), key: id, fieldId: id, hasDefaultValue: false, operations: ["set"],
       }));
       return json({ maxResults, startAt, total: type.fields.length, fields });
+    }
+
+    // Documented: each issue type of the project, with every status its workflow has.
+    if (method === "GET" && path === `/rest/api/3/project/${project}/statuses`) {
+      return json(fake.issueTypes.map((t) => ({
+        self: `${SITE}/rest/api/3/issuetype/${t.id}`, id: t.id, name: t.name, subtask: t.subtask,
+        statuses: Object.keys(STATUSES).map(statusJson),
+      })));
     }
 
     if (method === "GET" && path === `/rest/api/3/project/${project}`) {
