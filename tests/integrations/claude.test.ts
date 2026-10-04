@@ -1030,6 +1030,32 @@ describe("a step's own instructions and skills", () => {
     expect(flag(await stepIn(cwd, ["repo:read", "repo:write"]), "--add-dir")).toBe(realpathSync(cwd));
   });
 
+  /*
+   * `--add-dir` has the CLI read these in its own process, outside the
+   * sandbox, following a link wherever it leads: a step that linked one to a
+   * key would hand every later run in the worktree the key.
+   */
+  it.each(["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"])(
+    "refuses a worktree whose %s leads outside it, or nowhere, naming it", async (path) => {
+      const out = withCfg({});
+      writeFileSync(join(out, "credentials"), "aws_secret_access_key = x\n");
+      const cwd = worktree({ "fake.json": JSON.stringify({ exit: 1, stderr: "ran" }) });
+      mkdirSync(dirname(join(cwd, path)), { recursive: true });
+      for (const target of [join(out, "credentials"), join(out, "missing")]) {
+        rmSync(join(cwd, path), { force: true });
+        symlinkSync(target, join(cwd, path));
+        for (const capabilities of [["repo:read", "repo:write"], ["repo:read"]]) {
+          await expect(stepIn(cwd, capabilities)).rejects.toThrow(`refused to run claude where ${path} would load: it leads outside the worktree`);
+        }
+      }
+    });
+
+  it("loads a CLAUDE.md that is a link to AGENTS.md beside it", async () => {
+    const cwd = worktree({ "AGENTS.md": "x" });
+    symlinkSync("AGENTS.md", join(cwd, "CLAUDE.md"));
+    expect(flag(await stepIn(cwd, ["repo:read"]), "--add-dir")).toBe(realpathSync(cwd));
+  });
+
   it("runs the screener beside them, since it loads nothing of the worktree", async () => {
     const cwd = worktree({ ".claude/settings.json": JSON.stringify({ enabledPlugins: { "x@y": true } }) });
     expect(await stepIn(cwd)).not.toContain("--add-dir");

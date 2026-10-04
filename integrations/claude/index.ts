@@ -112,6 +112,15 @@ async function leadsOut(tree: string, path: string): Promise<boolean> {
 }
 
 /**
+ * The instructions `--add-dir` has the CLI read in its own process, outside
+ * the sandbox, following a link wherever it leads (2.1.289's own source;
+ * `CLAUDE.local.md` only with local settings on). A step could link one to a
+ * key, and every later run in the worktree would read the key into its
+ * instructions. The CLI itself skips a `.claude/rules` entry that leads out.
+ */
+const INSTRUCTION_FILES = ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"];
+
+/**
  * What `--add-dir` loads from a directory's own `.claude/settings.json` and
  * `.claude/settings.local.json` beside its `CLAUDE.md`, whatever
  * `--setting-sources` says: the plugins it enables and the marketplaces they
@@ -278,6 +287,13 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
   protected async prepare({ tier, resume, cwd }: RunPlan<ClaudeExtras>): Promise<void> {
     if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, projectDir(this.home, cwd));
     if (tier === "screen" || cwd === undefined) return;
+    const tree = await realpath(cwd);
+    for (const file of INSTRUCTION_FILES) {
+      if (await leadsOut(tree, join(cwd, file))) {
+        throw new Error(`refused to run claude where ${file} would load: it leads outside the worktree, and claude would read ` +
+          "what it leads to into the step's instructions. Make it a file, or a link inside the worktree, on the branch");
+      }
+    }
     await refuseAddDirSettings(cwd);
     if (existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd);
   }
@@ -290,8 +306,9 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // So the worktree is added as a directory of its own, which loads its
     // root `CLAUDE.md` only with the setting below, and its skills come as a
     // plugin `prepare` made of them. `prepare` has refused the settings
-    // `--add-dir` is known to load beside it, and any skill whose front
-    // matter it cannot vouch for. Never the screener's.
+    // `--add-dir` is known to load beside it, an instruction file or skill
+    // that leads outside the worktree, and any skill whose front matter it
+    // cannot vouch for. Never the screener's.
     const instructions = declared && cwd !== undefined;
     const mayWrite = tier === "write";
     // Not plan mode, which is what a read-only step and the screener ran in
