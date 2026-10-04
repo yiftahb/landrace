@@ -319,8 +319,8 @@ export interface Stage {
   step?: string;
   /**
    * The branch this stage's step works on, as a template over `{item}`,
-   * `{stage}` and `{round}`. Absent, the step gets a detached checkout of HEAD
-   * and nothing it commits outlives the worktree.
+   * `{stage}` and `{round}`. Absent, the step gets a detached checkout of
+   * origin's default branch, freshly fetched, and nothing it commits outlives the worktree.
    */
   branch?: string;
   entry?: boolean;

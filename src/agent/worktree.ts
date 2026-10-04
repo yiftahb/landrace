@@ -151,6 +151,55 @@ async function caughtUp(branch: string, local: string, repoRoot: string, what: s
   return theirs;
 }
 
+/**
+ * Origin's default branch, as `refs/remotes/origin/HEAD` names it, asked of
+ * origin once when nothing has set it yet — a clone sets it, a `remote add`
+ * and a push do not.
+ */
+async function defaultBranch(repoRoot: string, what: string): Promise<string> {
+  const named = async (): Promise<string | null> => {
+    const ref = await exec("git", ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd: repoRoot }).then(
+      ({ stdout }) => stdout.trim(),
+      (e: unknown) => {
+        // `-q` makes an unset ref exit 1 and say nothing; anything else is a failure, not an absence.
+        const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
+        if ((e as { code?: unknown }).code === 1 && stderr === "") return null;
+        throw new Error(`${what}: ${stderr || messageOf(e)}`);
+      },
+    );
+    return ref?.startsWith("refs/remotes/origin/") ? ref.slice("refs/remotes/origin/".length) : null;
+  };
+  const known = await named();
+  if (known !== null) return known;
+  const fix = "run `git remote set-head origin --auto` in the repository, or `git remote set-head origin <branch>` to name it";
+  await git(["remote", "set-head", "origin", "--auto"], repoRoot, `${what}: origin's default branch is unknown, and asking origin failed; ${fix}`);
+  const asked = await named();
+  if (asked === null) throw new Error(`${what}: origin's default branch is unknown; ${fix}`);
+  return asked;
+}
+
+/**
+ * The commit a worktree with nothing of its own starts at — a stage with no
+ * branch, or an item branch not yet made: origin's default branch, fetched
+ * now. The operator's `HEAD` was this, and it is whatever their checkout has
+ * out, however long ago it was pulled: an item specced there was specced on
+ * stale code, and one built there carried their branch into its pull request.
+ *
+ * A fetch that fails fails the round with git's words, never a quiet fall back
+ * to an older commit. Only a repository with no origin at all keeps `HEAD`.
+ * The operator's checkout is never touched: only origin's ref moves.
+ */
+async function baseCommit(repoRoot: string, what: string): Promise<string | null> {
+  const remotes = (await git(["remote"], repoRoot, what)).split("\n");
+  if (!remotes.includes("origin")) return commitOf("HEAD", repoRoot, what);
+  const branch = await defaultBranch(repoRoot, what);
+  const tracking = `refs/remotes/origin/${branch}`;
+  await git(["fetch", "-q", "origin", `+refs/heads/${branch}:${tracking}`], repoRoot, `${what}: fetching origin's ${branch} failed`);
+  const commit = await commitOf(tracking, repoRoot, what);
+  if (commit === null) throw new Error(`${what}: origin's default branch ${branch} has no commit after fetching it`);
+  return commit;
+}
+
 /** `git worktree list --porcelain`, one entry per worktree: where, at which commit, on which branch (null when detached). */
 function registered(porcelain: string): Array<{ path: string; head: string | null; branch: string | null }> {
   return porcelain.split("\n\n").flatMap((block) => {
@@ -165,10 +214,11 @@ function registered(porcelain: string): Array<{ path: string; head: string | nul
 /**
  * A worktree for one item, checked out on what its stage names.
  *
- * With no branch — a stage that names none — a detached HEAD: the agent sees
- * committed state only, cannot read the operator's work in progress and
- * cannot damage it, and nothing it commits outlives the worktree. With one, a
- * step that may write gets the branch itself, created at HEAD the first time,
+ * With no branch — a stage that names none — origin's default branch,
+ * detached: the agent sees committed state only, cannot read the operator's
+ * work in progress and cannot damage it, and nothing it commits outlives the
+ * worktree. With one, a step that may write gets the branch itself, created
+ * at origin's default branch the first time (see `baseCommit`),
  * so its commits are kept when the worktree goes; a read-only step gets the
  * branch's commit detached — the item's code, not main's, and no branch for
  * a commit it should never have made to land on.
@@ -206,7 +256,8 @@ export async function ensureWorktree(
   const local = on === undefined ? null : await commitOf(`refs/heads/${on.branch}`, repoRoot, what);
   const tip = on === undefined || local === null || holder ? local : await caughtUp(on.branch, local, repoRoot, what);
   const attach = on?.write ? on.branch : null;
-  const detach = attach === null ? (tip ?? (await commitOf("HEAD", repoRoot, what))) : null;
+  const base = tip === null ? await baseCommit(repoRoot, what) : null;
+  const detach = attach === null ? (tip ?? base) : null;
 
   if (attach !== null) {
     // git checks a branch out in one place at a time, and the other place is
@@ -256,8 +307,11 @@ export async function ensureWorktree(
   if (mine) await git(["worktree", "remove", "--force", path], repoRoot, what);
   await rm(path, { recursive: true, force: true });
   let add: string[];
-  if (attach !== null) add = tip === null ? ["-b", attach, path, "HEAD"] : [path, attach];
-  else if (detach !== null) add = ["--detach", path, detach];
+  if (attach !== null && tip !== null) add = [path, attach];
+  // The commit, not origin's ref: a branch started from a remote-tracking ref
+  // would be set to track origin's default branch.
+  else if (attach !== null && base !== null) add = ["-b", attach, path, base];
+  else if (attach === null && detach !== null) add = ["--detach", path, detach];
   else throw new Error(`${what}: the repository has no commit to check out`);
   await git(["worktree", "add", ...add], repoRoot, what);
   return path;

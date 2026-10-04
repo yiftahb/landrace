@@ -63,7 +63,7 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
   // repository's own record rather than ours.
   //
   // Asked again at every invoke, because the next step's stage may need the
-  // worktree on something else: triage reads HEAD, then build writes its
+  // worktree on something else: triage reads origin's default branch, then build writes its
   // branch, then code-review reads that branch detached. Marked entered before
   // the call, so a worktree half-made by a call that threw is removed too.
   //
