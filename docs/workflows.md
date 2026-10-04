@@ -325,7 +325,7 @@ Write the spec for #{node.id}: {node.title}…
 
 The agent ends its answer with a fenced JSON block, which the engine reads as its output. The schema is strict: an unknown key fails to load.
 
-`skills` and `plugins` are enforced by Claude Code alone; Codex refuses a step that lists either, at startup. A step that names neither, nor `mcp`, gets what the workspace gives every step:
+`skills` and `plugins` are enforced by Claude Code alone; Codex refuses a step that lists either, at startup. A step without any of the three gets what the workspace gives every step, as the table says. This step narrows all three: two project skills, two of one server's tools, and no plugins:
 
 ```yaml
 skills: [developer, backend-unit-testing]
