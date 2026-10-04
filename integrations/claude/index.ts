@@ -9,9 +9,9 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
 import type {
   AgentSettings, EventReading, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings,
@@ -98,6 +98,17 @@ async function bringSession(home: string, session: string, here: string): Promis
   await mkdir(here, { recursive: true });
   await copyFile(only, join(here, file));
   return true;
+}
+
+/**
+ * Whether `path`, every link in it followed, leads out of the worktree whose
+ * realpath is `tree`. One that is not there does not; a link that leads
+ * nowhere does, since what it will lead to cannot be told.
+ */
+async function leadsOut(tree: string, path: string): Promise<boolean> {
+  const real = await realpath(path).catch(() => undefined);
+  if (real === undefined) return lstat(path).then(() => true, () => false);
+  return real !== tree && !real.startsWith(tree + sep);
 }
 
 /**
@@ -197,9 +208,20 @@ const pluginDirOf = (cwd: string): string =>
  * folder: the CLI reloads skills mid-run, and a link to the worktree's file
  * would load whatever a step wrote there since. The plugin loads them as
  * `project:<name>`.
+ *
+ * Landrace reads each SKILL.md outside the sandbox, so the skills folder, a
+ * skill's folder or its SKILL.md leading out of the worktree is refused, by
+ * name, before anything is read: a link to a key would hand the agent the key.
  */
 async function buildPluginDir(cwd: string): Promise<void> {
   const root = join(cwd, ".claude", "skills");
+  const tree = await realpath(cwd);
+  const refuseOut = async (path: string): Promise<void> => {
+    if (await leadsOut(tree, join(cwd, path))) {
+      throw new Error(`refused to load the project's skills: ${path} leads outside the worktree. Remove it from the branch`);
+    }
+  };
+  await refuseOut(".claude/skills");
   const dir = pluginDirOf(cwd);
   await rm(dir, { recursive: true, force: true });
   await mkdir(join(dir, ".claude-plugin"), { recursive: true });
@@ -208,6 +230,8 @@ async function buildPluginDir(cwd: string): Promise<void> {
   // As the CLI's plugin loader reads a skills folder: one SKILL.md per entry.
   for (const name of await readdir(root)) {
     const from = join(root, name);
+    await refuseOut(`.claude/skills/${name}`);
+    await refuseOut(`.claude/skills/${name}/SKILL.md`);
     const text = await readFile(join(from, "SKILL.md"), "utf8").catch(() => undefined);
     if (text === undefined) continue;
     const problem = skillProblem(text);

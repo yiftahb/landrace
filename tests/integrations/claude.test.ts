@@ -1063,6 +1063,25 @@ describe("a step's own instructions and skills", () => {
     expect(readFileSync(join(dir, "skills", "probe", "SKILL.md"), "utf8")).toBe(SKILL);
   });
 
+  /*
+   * Landrace reads each SKILL.md in its own process, outside the sandbox, and
+   * copies it into the plugin: one linked out of the worktree would hand the
+   * agent a file its sandbox and Read rules deny it — a key, which has no
+   * front matter to refuse. Refused before anything is read or started.
+   */
+  it.each([".claude/skills/probe/SKILL.md", ".claude/skills/probe", ".claude/skills"])(
+    "refuses %s linked outside the worktree, naming it", async (path) => {
+      const out = withCfg({});
+      mkdirSync(join(out, "skills", "probe"), { recursive: true });
+      writeFileSync(join(out, "skills", "probe", "SKILL.md"), "-----BEGIN OPENSSH PRIVATE KEY-----\n");
+      const cwd = worktree({ "fake.json": JSON.stringify({ exit: 1, stderr: "ran" }) });
+      mkdirSync(dirname(join(cwd, path)), { recursive: true });
+      symlinkSync(join(out, path.slice(".claude/".length)), join(cwd, path));
+      for (const capabilities of [["repo:read", "repo:write"], ["repo:read"]]) {
+        await expect(stepIn(cwd, capabilities)).rejects.toThrow(`refused to load the project's skills: ${path} leads outside the worktree`);
+      }
+    });
+
   it("passes no --plugin-dir when the worktree has no skills, nor to the screener when it has", async () => {
     expect(await stepIn(worktree({}), ["repo:read"])).not.toContain("--plugin-dir");
     expect(await stepIn(worktree({ ".claude/skills/probe/SKILL.md": SKILL }))).not.toContain("--plugin-dir");
