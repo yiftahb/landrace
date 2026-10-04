@@ -249,9 +249,10 @@ Effect fields may use `{item}`, `{stage}` and `{round}`, and nothing from the sn
 
 | Effect | Fields | Applies | Satisfied when |
 |---|---|---|---|
-| `tracker.comment` | `kind`, `marker` (required), `body` | Posts a record on the item. `kind: enter` with `marker: "enter:{stage}:{round}"` is a stage's **entry record**, from which rounds are counted | a comment Landrace wrote already carries exactly that marker |
+| `tracker.comment` | `kind`, `marker` (required), `body`, `visibility` | Posts a record on the item. `kind: enter` with `marker: "enter:{stage}:{round}"` is a stage's **entry record**, from which rounds are counted. `visibility` is `internal` (the default) or `public`, and only a tracker that tells the two apart reads it: on a Jira service desk, `public` answers the requester ([Jira](integrations.md#jira)) | a comment Landrace wrote already carries exactly that marker |
 | `tracker.status` | `value` | Sets the item's position — on a tracker with no status field, the label `lr:stage:<value>`. `value` is the stage's own id | the item already carries `lr:stage:<value>` |
-| `tracker.label` | `add`, `remove` | Adds and removes labels | the labels already match |
+| `tracker.label` | `add`, `remove`; on a route, `addFrom` and `allowed` | Adds and removes labels. `addFrom` takes the labels from the answer — see [Fields from the answer](#fields-from-the-answer) | the labels already match |
+| `tracker.worklog` | `spentFrom`, `max`, `marker` (all required), `skipIfLogged` | Route only, Jira only. Logs the time the answer's `spentFrom` field names against the item. With `skipIfLogged: true`, logs nothing on an item that has any worklog, a person's included | a worklog Landrace wrote carries that marker; with `skipIfLogged`, any worklog is on the item |
 | `tracker.close` | `how`: `done` (default) or `dropped` | Closes the item | the item is closed, either way — a person who closed it as not planned decided that |
 | `nodes.close` | `follow`: relationship types | Closes the nodes a superseded round of this stage created, following those types — see [Splitting work into sub-items](#splitting-work-into-sub-items) | none of them is open |
 | `artifact.publish` | `artifact` | Publishes a step's output as an artifact, such as the spec page | the published copy already matches |
@@ -262,6 +263,26 @@ Effect fields may use `{item}`, `{stage}` and `{round}`, and nothing from the sn
 | `pull.close` | `branch` | Closes every open pull request from the branch without merging it — what a workflow that drops an item does to the work it proposed. It asks the forge again first, so one merged since the read is never touched | no pull request from the branch is open |
 
 An effect no hook handles fails when it is applied, and two hooks claiming one type is an ambiguity that halts. An `on_enter` effect is applied as its stage is entered, and a route effect once, right after its step; neither is planned again while the item stays where it is. No effect may carry a `goto`, `from` or `head` field — those are the engine's to write.
+
+### Fields from the answer
+
+Two route fields name a field of the step's answer, and the engine reads it, so no hook parses what an agent wrote:
+
+```yaml
+    - when: { kind: diagnosed }
+      effect:
+        type: tracker.label
+        addFrom: [class, areas]
+        allowed: [bug, question, feature, billing, login]
+        remove: [bug, question, feature]
+    - when: { kind: logged }
+      effect: { type: tracker.worklog, spentFrom: spent, max: 4h, marker: "work:{stage}:{round}", skipIfLogged: true }
+```
+
+- `addFrom` names one answer field, or a list of them. Each holds a label or a list of labels, and they are added beside any `add`. Each must be in `allowed`, and none may start with `lr:`. The labels added are taken out of `remove`, so removing a whole set and adding one of it back leaves exactly that one, and the next pass writes nothing.
+- `spentFrom` names the answer field holding the time spent, as hours and minutes: `45m`, `2h`, `1h30m`. It becomes the worklog's seconds.
+- An answer field that is missing, a label outside `allowed`, or a time that is not a duration, is zero, or is over `max` fails the round as a broken contract. Nothing is trimmed to fit, nothing is written, and the round is not run again.
+- `addFrom` and `spentFrom` are route fields: `on_enter` has no answer to read them from.
 
 ### The merge's three guards
 
@@ -320,7 +341,7 @@ Write the spec for #{node.id}: {node.title}…
 | `mcp` | The `agent.mcp` servers this step and its turns get, in `agent.mcp`'s own form: a server name, or `{ name, tools }`. It narrows `agent.mcp` and never widens it: a server or tool outside it is refused at startup and by `validate`. Absent, every `agent.mcp` server; `[]`, none |
 | `plugins` | The agent's plugins for this step and its turns, in place of `agent.plugins`; `[]`, none |
 | `output.discriminator` | The field of the answer whose value picks the shape |
-| `output.shapes` | The values the discriminator may take, each with the fields that shape may carry. An answer whose discriminator names no shape fails the round, and is never retried. Only the discriminator is checked, never the fields: a declared field the answer omits is absent, and one it mistypes is kept as written. Neither fails the round; each shows up as a trigger that never matches. A field the shape does not declare is dropped |
+| `output.shapes` | The values the discriminator may take, each with the fields that shape may carry. An answer whose discriminator names no shape fails the round, and is never retried. Only the discriminator is checked, and the fields a route's `addFrom` or `spentFrom` reads ([Fields from the answer](#fields-from-the-answer)): any other declared field the answer omits is absent, and one it mistypes is kept as written. Neither fails the round; each shows up as a trigger that never matches. A field the shape does not declare is dropped |
 | `output.routes` | Where each shape goes: a `when` over the answer, one `effect`, and an optional `goto`. Two routes matching one answer is ambiguity, and halts |
 
 The agent ends its answer with a fenced JSON block, which the engine reads as its output. The schema is strict: an unknown key fails to load.
