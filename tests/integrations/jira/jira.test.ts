@@ -986,6 +986,56 @@ describe("scoped to one assignee by jiraAssignee", () => {
   });
 });
 
+/*
+ * A narrower scope than the assignee's — only what was filed after the
+ * workflow was turned on, say. `eligible` cannot say it: it is answered after
+ * the listing, which a backlog would already have filled.
+ */
+describe("scoped by a jql clause", () => {
+  const since = new Date(Date.now() - 5 * DAY).toISOString().slice(0, 10);
+  const jql = `created >= "${since}"`;
+  const queries = (fake: FakeJira) => fake.calls.filter((c) => c.path === "/rest/api/3/search/jql").map((c) => c.body as { jql: string; maxResults: number });
+
+  it("ANDs the clause into the open list, the Done lane and the cycle walk, beside the assignee", async () => {
+    const { fake, jira, ctx } = setup({ jql }, { ...SECRETS, jiraAssignee: PERSON.accountId });
+    const recent = jiraTime(Date.now() - DAY);
+    const stage = LABELS.stage("build");
+    fake.add({ assignee: PERSON, created: jiraTime(Date.now() - 30 * DAY) });
+    const fresh = fake.add({ assignee: PERSON });
+    const closed = fake.add({ assignee: PERSON, status: "Done", labels: [stage], updated: recent, statusChanged: recent });
+    fake.add({ assignee: PERSON, status: "Done", labels: [stage], created: jiraTime(Date.now() - 30 * DAY), updated: recent, statusChanged: recent });
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([fresh.key, closed.key]);
+    // A blocker, so the read walks for cycles.
+    fake.link("Blocks", fake.add({ assignee: PERSON }).key, fresh.key);
+    await compose({ tracker: jira, forge: new MemoryForge(), docs: new MemoryDocs() }).source.read(fresh.key, ctx);
+    // The open list, the Done lane and the walk; a read's children are the parent's, whatever the clause says.
+    const [children, ...scoped] = [...queries(fake)].sort((a, b) => Number(b.jql.includes("parent =")) - Number(a.jql.includes("parent =")));
+    expect(children?.jql).toBe(`project = "KEY" AND parent = "${fresh.key}" ORDER BY created ASC`);
+    expect(scoped).toHaveLength(3);
+    for (const { jql: q } of scoped) expect(q).toContain(`AND assignee = "${PERSON.accountId}" AND (${jql}) ORDER BY`);
+  });
+
+  // A child is the parent's whatever its date: read without it, "every child closed" closes the parent early.
+  it("reads a breakdown's children whatever the clause says", async () => {
+    const { fake, jira, ctx } = setup({ jql });
+    const parent = fake.add();
+    const child = fake.add({ parent: parent.key, issuetype: "Subtask", created: jiraTime(Date.now() - 30 * DAY) });
+    expect((await jira.children(parent.key, ctx)).map((c) => c.id)).toEqual([child.key]);
+  });
+
+  it("runs the clause once at start, asking for no issues, and refuses one Jira cannot parse with Jira's own words", async () => {
+    const good = setup({ jql });
+    await good.jira.check(good.ctx);
+    expect(queries(good.fake)).toContainEqual(expect.objectContaining({ jql: `project = "KEY" AND (${jql})`, maxResults: 0 }));
+    const bad = setup({ jql: "created >>> soon" });
+    await expect(bad.jira.check(bad.ctx)).rejects.toThrow(/jql "created >>> soon" does not run in KEY[\s\S]*Error in the JQL Query/);
+  });
+
+  it("refuses an empty clause when it is built", () => {
+    expect(() => new Jira({ project: "KEY", jql: "  " })).toThrow(/jql must be a JQL clause/);
+  });
+});
+
 describe("composed with a forge and docs", () => {
   const hooksOver = (jira: Jira) => compose({ tracker: jira, forge: new MemoryForge(), docs: new MemoryDocs() });
   const snapshotOf = async (hooks: ReturnType<typeof hooksOver>, ctx: RuntimeContext, id: string): Promise<Snapshot> => {

@@ -47,6 +47,15 @@ export interface JiraOptions {
    * transition the issue does not offer is logged and skipped.
    */
   statuses?: Record<string, string> | undefined;
+  /**
+   * A JQL clause ANDed into every search the tracker runs — the open list,
+   * the Done lane, the cycle walk — and `JiraField`'s listing, beside
+   * `jiraAssignee`: `created >= "2026-10-05"`, say, so a first start does not
+   * work a backlog that was handled by hand. From this file only, never from
+   * item text. Run once at start, and refused with Jira's own error when it
+   * does not parse. A breakdown's children are read whatever it says.
+   */
+  jql?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
 }
 
@@ -295,10 +304,13 @@ export async function assigneeOf(jira: Client, ctx: RuntimeContext): Promise<str
   return id;
 }
 
-/** The clause every listing query ends its conditions with: the assignee's, or nothing. */
-export async function scopeOf(jira: Client, ctx: RuntimeContext): Promise<string> {
+/**
+ * The clauses every listing query ends its conditions with: the assignee's,
+ * and the tracker's own `jql` in parentheses, so an OR in it stays inside.
+ */
+export async function scopeOf(jira: Client, ctx: RuntimeContext, jql: string | undefined): Promise<string> {
   const id = await assigneeOf(jira, ctx);
-  return id === null ? "" : ` AND assignee = "${id}"`;
+  return `${id === null ? "" : ` AND assignee = "${id}"`}${jql === undefined ? "" : ` AND (${jql})`}`;
 }
 
 /**
@@ -344,8 +356,11 @@ interface Resolutions { held: Map<string, Issue["fields"]>; fetched: Map<string,
 export class Jira extends BaseTracker {
   /** Read by `JiraField`, so a spec is kept on this tracker's issues and no other project's. */
   readonly project: string;
-  private readonly issueType: string;
-  private readonly childType: string;
+  /** Read by `JiraField` too, whose listing is scoped as this tracker's is. */
+  readonly jql: string | undefined;
+  /** Read by `JiraField`, whose preflight checks the types an item can be. */
+  readonly issueType: string;
+  readonly childType: string;
   private readonly done: string;
   private readonly dropped: string;
   private readonly fetchImpl: typeof fetch | undefined;
@@ -359,11 +374,15 @@ export class Jira extends BaseTracker {
   /** The unreadable blockers already logged this tick: a listing begins each one, and clears it. */
   private readonly unreadableSaid = new Set<string>();
 
-  constructor({ project, issueType, childType, transitions, blockedByLinkType, statuses, fetchImpl }: JiraOptions) {
+  constructor({ project, issueType, childType, transitions, blockedByLinkType, statuses, jql, fetchImpl }: JiraOptions) {
     super();
     // Spelled into every JQL query and URL, so nothing but a key's own characters.
     if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error(`project must be a Jira project key such as "KEY", got "${project}"`);
+    if (jql !== undefined && (typeof jql !== "string" || jql.trim() === "")) {
+      throw new Error(`jql must be a JQL clause such as 'created >= "2026-10-05"', got ${JSON.stringify(jql)}`);
+    }
     this.project = project;
+    this.jql = jql?.trim();
     this.issueType = issueType ?? "Task";
     this.childType = childType ?? "Subtask";
     this.done = transitions?.done ?? "Done";
@@ -590,8 +609,8 @@ export class Jira extends BaseTracker {
    * Every open issue in the project, and the Done lane's: issues landrace
    * moved — an `lr:stage:*` label says so — that closed inside the window.
    * That second list is for the board, not the loop, so past its bound it
-   * stops quietly rather than failing the tick. Scoped, both are the
-   * assignee's alone: an issue reassigned to somebody else drops out, and
+   * stops quietly rather than failing the tick. Both are inside `jql`, and,
+   * scoped, the assignee's alone: an issue reassigned to somebody else drops out, and
    * this instance starts nothing more on it. A step already running is not
    * stopped — an item its source stops listing is left running — so it
    * finishes and writes while the new assignee's instance may start it too.
@@ -599,9 +618,9 @@ export class Jira extends BaseTracker {
   async items(ctx: RuntimeContext): Promise<ItemRecord[]> {
     this.unreadableSaid.clear();
     const jira = this.jira(ctx);
-    const mine = await scopeOf(jira, ctx);
+    const mine = await scopeOf(jira, ctx, this.jql);
     const open = await search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`);
-    if (!open.complete) throw new Error(`${this.project} has more open issues${mine ? " assigned to jiraAssignee" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
+    if (!open.complete) throw new Error(`${this.project} has more open issues${mine ? " in its scope (jiraAssignee, jql)" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
     const since = Date.now() - DONE_WINDOW_MS;
     const closed = await search(
       jira,
@@ -675,17 +694,17 @@ export class Jira extends BaseTracker {
    * walk needs none of a closed blocker's state and counts them whole. The
    * engine decides from a read, so only the board's fact differs.
    *
-   * Scoped, it walks the assignee's open issues alone, as the list lists
-   * them: a cycle through somebody else's issue goes unseen.
+   * Scoped, it walks the assignee's open issues alone, inside `jql`, as the
+   * list lists them: a cycle through an issue outside goes unseen.
    */
   protected override async openRelations(type: string, ctx: RuntimeContext): Promise<OpenRelations> {
     if (type !== RELATIONS.blockedBy) return super.openRelations(type, ctx);
     const jira = this.jira(ctx);
-    const mine = await scopeOf(jira, ctx);
+    const mine = await scopeOf(jira, ctx, this.jql);
     const found = await search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`, {
       fields: ["issuelinks"],
     });
-    if (!found.complete) throw new Error(`${this.project} has more open issues${mine ? " assigned to jiraAssignee" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
+    if (!found.complete) throw new Error(`${this.project} has more open issues${mine ? " in its scope (jiraAssignee, jql)" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
     const answer: OpenRelations = { open: [], edges: [], partial: [] };
     for (const { key, fields } of found.issues) {
       const { blockers, whole } = blockersIn(fields?.issuelinks, this.linkType);
@@ -1119,6 +1138,14 @@ export class Jira extends BaseTracker {
         if (scoped && !fields.some((f) => f.fieldId === "assignee")) {
           problems.push(`${this.project}'s "${wanted}" issues have no assignee field, and jiraAssignee assigns each one created`);
         }
+      }
+    }
+    // A clause Jira cannot parse would fail every tick's list: asked once, for no issues, it fails here instead.
+    if (this.jql !== undefined) {
+      try {
+        await jira.call("POST", "/rest/api/3/search/jql", { jql: `project = "${this.project}" AND (${this.jql})`, fields: ["id"], maxResults: 0 });
+      } catch (e) {
+        problems.push(`jql ${JSON.stringify(this.jql)} does not run in ${this.project}: ${messageOf(e)}`);
       }
     }
     // A mapped status the workflow lacks would be logged as not offered on every item, and never reached.
