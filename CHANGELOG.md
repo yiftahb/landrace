@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A write step's worktree gets your untracked files and an install.** `agent.worktree.copy` copies untracked or ignored files, such as `.npmrc` and `.env`, from your checkout by glob; `agent.worktree.setup` runs commands such as `pnpm install` in the worktree before the agent, outside its sandbox, and stops the item with the command's output when one fails or outlasts `agent.worktree.setupTimeout` (15m). The worktree is kept between the item's write steps, so setup runs again only when the root lockfiles change. See [Configuration](docs/configuration.md#a-write-steps-worktree) and [Security](docs/security.md#copied-files-and-setup).
+
 ### Fixed
 
 - **GitLab checks combine every pipeline on the merge request's head.** The pipeline GitLab makes of tools' commit statuses — a scanner's, an AI reviewer's — no longer stands in for the head's other pipelines by being the newest: it counts beside them. Any failed pipeline is `failure`, any still running is `pending`, and a page of 100 the head's pipelines fill never reads `success`. The CI failures a prompt reads list the failed jobs and failed commit statuses of every pipeline on the head. Tools' commit statuses count as CI unless the new `reviewers` option names them.

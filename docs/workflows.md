@@ -234,7 +234,7 @@ The step's worktree is checked out on that branch: the branch itself for a step 
 - A stage with no `branch` gets a detached `HEAD`, and nothing its step commits is kept.
 - A branch needs `agent.isolation: worktree`.
 - A template git would refuse is refused at load. An item id that makes an invalid name (`a..b`) halts that item before its step runs. A branch already checked out elsewhere — your own checkout, say — halts the item, saying where, and is never taken.
-- The worktree is rebuilt whenever the next step needs it on something else, so only what was committed carries over.
+- A write step's worktree is kept for the item's next write step on the same branch, and removed when the item reaches a terminal stage. On reuse it is reset to the branch's commit, so of what a step did only its commits and what git ignores, such as `node_modules`, carry over. Every other worktree is rebuilt whenever the next step needs it on something else. See [Configuration](configuration.md#a-write-steps-worktree).
 
 ## Effects
 

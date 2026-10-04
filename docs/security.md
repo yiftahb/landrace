@@ -52,6 +52,14 @@ What it does not do:
 
 Codex's sandbox is different and keeps less — see [Integrations](integrations.md#codex).
 
+### Copied files and setup
+
+`agent.worktree` ([Configuration](configuration.md#a-write-steps-worktree)) prepares a write step's worktree before the agent starts. Both of its halves widen what a step can reach:
+
+- **Copied files can hold credentials, and the agent can read them.** A `.npmrc` with a registry token or a `.env` copied into the worktree is a file inside it, and `agent.sandbox.deny` covers only paths under your home, never files inside the worktree. Copy only what a step may read.
+- **A copied file git does not ignore can be committed.** It shows in the worktree as untracked, and a step that commits everything commits it, and pushes it. Ignore what you copy.
+- **Setup runs outside the sandbox.** It is your own configuration, so it runs with the network and the files your user has. It gets the same minimal environment the agent gets, never Landrace's own secrets: an install script never sees the forge token. It runs on the item's branch, which earlier steps wrote: a step can commit a package script that the next setup runs outside the sandbox. Prefer an install that runs no scripts, such as `pnpm install --frozen-lockfile --ignore-scripts`, where your project allows it.
+
 ## A step's instructions and skills
 
 Every step and turn loads the instructions and skills of the branch it runs on: under Claude Code, its worktree's root `CLAUDE.md` and `.claude/skills` (see [Integrations](integrations.md#claude-code)). The screener loads neither.
