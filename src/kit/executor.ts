@@ -403,7 +403,13 @@ function narrowMcp(entries: readonly McpEntry[], known: Readonly<AllowedTools>):
     } else if (listed?.length === 0) {
       problems.push(`names MCP server "${name}" with no tools; leave it out to give the step none of it`);
     } else {
-      const outside = has === null ? [] : (listed ?? []).filter((tool) => !has.includes(tool));
+      // A server agent.mcp names bare allows every tool, so the step's names
+      // meet no list there; they still reach argv, where "x Bash" would allow
+      // a tool nobody listed.
+      const badShape = (listed ?? []).filter((tool) => !ARG_SHAPE.test(tool));
+      problems.push(...badShape.map((tool) =>
+        `asks for tool ${JSON.stringify(tool)} on MCP server "${name}", which does not match the allowed shape for a command-line argument`));
+      const outside = has === null ? [] : (listed ?? []).filter((tool) => ARG_SHAPE.test(tool) && !has.includes(tool));
       problems.push(...outside.map((tool) => `asks for tool "${tool}" on MCP server "${name}", which agent.mcp does not allow on it`));
       allowed[name] = listed === undefined ? has : [...new Set(listed)];
     }

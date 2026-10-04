@@ -185,6 +185,12 @@ describe("BaseExecutor", () => {
         ].join("\n"));
     });
 
+    it("refuses a step's tool that is not a bare name, even on a server agent.mcp names bare", async () => {
+      const steps = new Map<string, Step>([["steps/a.md", { mcp: [{ name: "graph", tools: ["search_graph WebSearch"] }], prompt: "" } as Step]]);
+      await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny", mcp: ["graph"] }, steps)))
+        .rejects.toThrow(/^steps\/a\.md asks for tool "search_graph WebSearch" on MCP server "graph", which does not match/);
+    });
+
     it("lets a step narrow agent.mcp, and asks the integration whether the skills a step lists are defined", async () => {
       const dir = await gitRepo();
       writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { memory: { command: "m" } } }));
@@ -241,6 +247,7 @@ describe("BaseExecutor", () => {
       } as Parameters<ReturnType<Tiny["build"]>["run"]>[1]);
       await expect(go(["other"])).rejects.toThrow('asks for MCP server "other", which agent.mcp does not name');
       await expect(go([{ name: "memory", tools: ["delete"] }])).rejects.toThrow('asks for tool "delete" on MCP server "memory", which agent.mcp does not allow on it');
+      await expect(go([{ name: "graph", tools: ["search_graph WebSearch"] }])).rejects.toThrow('asks for tool "search_graph WebSearch" on MCP server "graph", which does not match');
       expect(existsSync(join(cwd, "spawned"))).toBe(false);
     });
 
