@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Wait for an external reviewer.** Both forges take `reviewers: [{ status: "<name>" }]`, the status an AI reviewer such as CodeRabbit posts on the head: a commit status on GitLab, a check run or a commit status on GitHub. The pull request node gains `reviewPending`, `1` until every named reviewer has finished on the current head, summable as `rel.implements.in.sum.reviewPending`. A named status is left out of the checks.
+- **The pull request's title and description.** Both forges take `pull: { title, description }`: a title formatted from `{item}` and `{title}`, and a template file under `.landrace/` filled with `{item}`, `{link}` and `{spec}`. Set when the pull request opens and never rewritten. Another placeholder is refused at start.
+
 ### Fixed
 
 - **GitLab checks combine every pipeline on the merge request's head.** The pipeline GitLab makes of tools' commit statuses — a scanner's, an AI reviewer's — no longer stands in for the head's other pipelines by being the newest: it counts beside them. Any failed pipeline is `failure`, any still running is `pending`, and a page of 100 the head's pipelines fill never reads `success`. The CI failures a prompt reads list the failed jobs and failed commit statuses of every pipeline on the head. Tools' commit statuses count as CI unless the new `reviewers` option names them.

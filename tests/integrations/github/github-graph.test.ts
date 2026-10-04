@@ -495,7 +495,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     gh.openPull({ head: "landrace/1", number: 42, headSha: "abc123", threads: threads([false, true, false]), checks: "PENDING" });
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({
-      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2, awaitingBehaviourFix: 2, checks: "pending", ciPending: 1, ciFailed: 0,
+      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 2, awaitingFix: 2, awaitingBehaviourFix: 2, checks: "pending", ciPending: 1, ciFailed: 0, reviewPending: 0,
     });
   });
 
@@ -546,7 +546,7 @@ describe("the review loop's gate is a count of unresolved threads", () => {
     });
     const g = await sourceOf(gh).read("1", ctx(gh));
     expect(g.nodes.find((n) => n.id === "pr-42")?.state).toEqual({
-      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 5, awaitingFix: 4, awaitingBehaviourFix: 4, checks: "none", ciPending: 0, ciFailed: 0,
+      merged: false, headSha: "abc123", branch: "landrace/1", openThreads: 5, awaitingFix: 4, awaitingBehaviourFix: 4, checks: "none", ciPending: 0, ciFailed: 0, reviewPending: 0,
     });
     expect(gate({ "rel.implements.in.sum.awaitingFix": 4 }, g, "1")).toBe(true);
   });
@@ -605,7 +605,7 @@ describe("untrusted thread text does not reach the graph", () => {
     expect(JSON.stringify(g)).not.toContain("landrace:");
     expect(JSON.stringify(g)).not.toContain("rm -rf");
     expect(g.nodes.find((n) => n.kind === "pull-request")?.state).toEqual({
-      merged: false, headSha: "sha-100", branch: "landrace/1", openThreads: 2, awaitingFix: 2, awaitingBehaviourFix: 2, checks: "none", ciPending: 0, ciFailed: 0,
+      merged: false, headSha: "sha-100", branch: "landrace/1", openThreads: 2, awaitingFix: 2, awaitingBehaviourFix: 2, checks: "none", ciPending: 0, ciFailed: 0, reviewPending: 0,
     });
   });
 
