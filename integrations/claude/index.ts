@@ -8,8 +8,8 @@
  * that overrides one piece.
  */
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
+import { copyFile, lstat, mkdir, open, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
@@ -121,6 +121,24 @@ async function leadsOut(tree: string, path: string): Promise<boolean> {
 const INSTRUCTION_FILES = ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"];
 
 /**
+ * The text of the worktree's `path`, or undefined when it cannot be opened.
+ * Anything there but a regular file — a named pipe, a device — is refused,
+ * naming it, after `refused`: reading one could wait forever, and `prepare`
+ * runs before the step's timeout and abort exist. Opened without blocking and
+ * checked on the open file, so nothing can be swapped in between.
+ */
+async function readRegular(cwd: string, path: string, refused: string): Promise<string | undefined> {
+  const file = await open(join(cwd, path), constants.O_RDONLY | constants.O_NONBLOCK).catch(() => undefined);
+  if (file === undefined) return undefined;
+  try {
+    if (!(await file.stat()).isFile()) throw new Error(`${refused}: ${path} is not a regular file. Make it one, or remove it, on the branch`);
+    return await file.readFile("utf8");
+  } finally {
+    await file.close();
+  }
+}
+
+/**
  * What `--add-dir` loads from a directory's own `.claude/settings.json` and
  * `.claude/settings.local.json` beside its `CLAUDE.md`, whatever
  * `--setting-sources` says: the plugins it enables and the marketplaces they
@@ -129,7 +147,7 @@ const INSTRUCTION_FILES = ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"];
  */
 async function refuseAddDirSettings(cwd: string): Promise<void> {
   for (const file of [".claude/settings.json", ".claude/settings.local.json"]) {
-    const text = await readFile(join(cwd, file), "utf8").catch(() => undefined);
+    const text = await readRegular(cwd, file, `refused to run claude where ${file} would load beside it`);
     if (text === undefined) continue;
     let keys: string[];
     try {
@@ -241,7 +259,7 @@ async function buildPluginDir(cwd: string): Promise<void> {
     const from = join(root, name);
     await refuseOut(`.claude/skills/${name}`);
     await refuseOut(`.claude/skills/${name}/SKILL.md`);
-    const text = await readFile(join(from, "SKILL.md"), "utf8").catch(() => undefined);
+    const text = await readRegular(cwd, `.claude/skills/${name}/SKILL.md`, "refused to load the project's skills");
     if (text === undefined) continue;
     const problem = skillProblem(text);
     if (problem !== undefined) {

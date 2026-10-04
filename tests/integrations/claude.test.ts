@@ -1,6 +1,7 @@
 import {
   chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1105,6 +1106,21 @@ describe("a step's own instructions and skills", () => {
       symlinkSync(join(out, path.slice(".claude/".length)), join(cwd, path));
       for (const capabilities of [["repo:read", "repo:write"], ["repo:read"]]) {
         await expect(stepIn(cwd, capabilities)).rejects.toThrow(`refused to load the project's skills: ${path} leads outside the worktree`);
+      }
+    });
+
+  /*
+   * Landrace reads these before the step's timeout and abort exist: a named
+   * pipe there, opened to read, would wait for a writer forever. Refused,
+   * naming it, under both tiers.
+   */
+  it.each([".claude/settings.json", ".claude/settings.local.json", ".claude/skills/probe/SKILL.md"])(
+    "refuses a %s that is a named pipe rather than wait on it", async (path) => {
+      const cwd = worktree({ "fake.json": JSON.stringify({ exit: 1, stderr: "ran" }) });
+      mkdirSync(dirname(join(cwd, path)), { recursive: true });
+      execFileSync("mkfifo", [join(cwd, path)]);
+      for (const capabilities of [["repo:read", "repo:write"], ["repo:read"]]) {
+        await expect(stepIn(cwd, capabilities)).rejects.toThrow(`${path} is not a regular file`);
       }
     });
 
