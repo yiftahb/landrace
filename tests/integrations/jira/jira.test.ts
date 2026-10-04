@@ -4,7 +4,8 @@ import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
 import { compose } from "#kit/compose.js";
 import { ITEM_PAGE, MAX_ISSUE_PAGES } from "#kit/tracker.js";
-import type { Graph, HookContext, Node, RuntimeContext, Snapshot } from "#namespace.js";
+import type { Graph, HookContext, Node, RuntimeContext, Snapshot, Step } from "#namespace.js";
+import { settleOutput } from "#runner/step.js";
 import { MemoryDocs, MemoryForge } from "#testing/index.js";
 import {
   type Adf, BOT, createFakeJira, DAY, EMAIL, type FakeJira, jiraTime, OTHER, paragraphs, PERSON, SITE, TOKEN,
@@ -401,7 +402,6 @@ describe("comments as ADF", () => {
         { type: "bulletList", content: Array.from({ length: n }, (_, i) => item(para(
           text(`a${i}.ts`, { type: "code" }), text(": does "), text("x", { type: "strong" }), text(" with "), text("y", { type: "code" }),
         ))) },
-        para(text(marker.trim())),
       ],
     });
     // The same shape, short enough, is written rich: so `rich(n)` is the document the long one would have been.
@@ -414,8 +414,7 @@ describe("comments as ADF", () => {
     const body = `${bullets(112)}${marker}`;
     await jira.comment(long.key, body, ctx);
     const doc = long.comments[0]?.body;
-    expect(doc?.content?.map((n) => n.type)).toEqual(["paragraph", "paragraph"]);
-    expect(doc?.content?.at(-1)).toEqual(para(text(marker.trim())));
+    expect(doc?.content?.map((n) => n.type)).toEqual(["paragraph"]);
     expect(JSON.stringify(doc).length).toBeLessThanOrEqual(32_767);
     expect((await jira.comments(long.key, ctx))[0]?.body).toBe(body);
   });
@@ -444,13 +443,14 @@ describe("comments as ADF", () => {
     ["after Markdown", "## Done\n\n- **one**\n\n```\ncode\n```"],
     ["after a fence left open", "```\nnever closed"],
     ["alone", ""],
-  ])("puts the marker last %s, as its own plain-text paragraph, and reads it back byte for byte", async (_, before) => {
+  ])("keeps the marker %s out of the document, in its property, and reads it back last, byte for byte", async (_, before) => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
     const output = { path: "C:\\x", note: "{x} \"q\"\n# not a heading\n- **not** `marks` [x](https://x.example)" };
     const marker = renderMarker({ stage: "spec", kind: "output", round: 2, output });
     await jira.comment(issue.key, `${before}${marker}`, ctx);
-    expect(issue.comments[0]?.body?.content?.at(-1)).toEqual(para(text(marker.trim())));
+    expect(JSON.stringify(issue.comments[0]?.body)).not.toContain("landrace");
+    expect(issue.comments[0]?.properties).toEqual([{ key: "landrace.marker", value: { marker: marker.trim() } }]);
     const [read] = await jira.comments(issue.key, ctx);
     expect(read?.body.endsWith(marker.trim())).toBe(true);
     expect(parseMarker(read?.body ?? "")).toEqual({ stage: "spec", kind: "output", round: 2, output });
@@ -983,6 +983,253 @@ describe("scoped to one assignee by jiraAssignee", () => {
     expect(await jira.items(ctx)).toHaveLength(3);
     for (const q of queries(fake)) expect(q).not.toContain("assignee");
     expect(fake.calls.filter((c) => c.path.startsWith("/rest/api/3/user"))).toEqual([]);
+  });
+});
+
+/*
+ * Jira Service Management (#105): a service desk's comments reach the
+ * requester unless marked internal, so Landrace's own records are internal,
+ * carry their marker as a comment property rather than as text, and only a
+ * route that says `visibility: public` answers the requester.
+ */
+describe("a service desk", () => {
+  const hooksOf = (jira: Jira) => compose({ tracker: jira, forge: new MemoryForge(), docs: new MemoryDocs() });
+  const record = (fields: Record<string, unknown> = {}) => ({
+    type: "tracker.comment", stage: "triage", kind: "output", round: 1, marker: "output:triage:1", body: "Diagnosed.", ...fields,
+  });
+  const posted = (fake: FakeJira) => fake.calls.filter((c) => c.method === "POST" && c.path.endsWith("/comment"));
+  const propertiesOf = (call: { body: unknown } | undefined) =>
+    Object.fromEntries(((call?.body as { properties?: Array<{ key: string; value: unknown }> })?.properties ?? []).map((p) => [p.key, p.value]));
+
+  it("posts a record internal, and a route's public comment with no internal property", async () => {
+    const { fake, jira, ctx } = setup();
+    fake.projectType = "service_desk";
+    const { key } = fake.add();
+    const hooks = hooksOf(jira);
+    await hooks.post.apply(record(), on(ctx, key));
+    await hooks.post.apply(record({ marker: "answer:1", visibility: "public", body: "Here is how." }), on(ctx, key));
+    const [internal, open] = posted(fake);
+    expect(propertiesOf(internal)["sd.public.comment"]).toEqual({ internal: true });
+    expect(propertiesOf(open)).not.toHaveProperty("sd.public.comment");
+    expect(fake.issue(key).comments.map((c) => (c.properties ?? []).some((p) => p.key === "sd.public.comment"))).toEqual([true, false]);
+  });
+
+  it("posts no internal property on a software project, whatever the visibility", async () => {
+    const { fake, jira, ctx } = setup();
+    const { key } = fake.add();
+    await hooksOf(jira).post.apply(record(), on(ctx, key));
+    expect(propertiesOf(posted(fake)[0])).not.toHaveProperty("sd.public.comment");
+  });
+
+  it("refuses to comment when Jira names no project type, posting nothing: never public by guess", async () => {
+    const { fake, jira, ctx } = setup();
+    fake.projectType = null;
+    const { key } = fake.add();
+    await expect(hooksOf(jira).post.apply(record(), on(ctx, key))).rejects.toThrow(/no project type/);
+    expect(posted(fake)).toEqual([]);
+  });
+
+  it("keeps the marker out of the text a person reads, and counts the round from the property", async () => {
+    const { fake, jira, ctx } = setup();
+    fake.projectType = "service_desk";
+    const { key } = fake.add();
+    const hooks = hooksOf(jira);
+    await hooks.post.apply(record(), on(ctx, key));
+    const sent = JSON.stringify((posted(fake)[0]?.body as { body: unknown }).body);
+    expect(sent).not.toContain("<!-- landrace");
+    expect(sent).not.toContain("&lt;!-- landrace");
+    expect(sent).toContain("Diagnosed.");
+    expect(propertiesOf(posted(fake)[0])["landrace.marker"]).toEqual({ marker: expect.stringMatching(/^<!-- landrace \{.*\} -->$/) });
+    const observed = await hooks.pre.run(on(ctx, key));
+    expect((observed.entries as Array<{ stage: string; kind: string; round: number; text: string }>).map((e) => [e.stage, e.kind, e.round, e.text]))
+      .toEqual([["triage", "output", 1, "Diagnosed."]]);
+    const graph = await hooks.source.read(key, ctx);
+    expect(hooks.post.satisfied({ graph, node: graph.nodes.find((n) => n.id === key), ...observed }, record())).toBe(true);
+  });
+
+  it("posts a record whose text is only its marker, which Jira would refuse empty, and reads its text back empty", async () => {
+    const { fake, jira, ctx } = setup();
+    fake.projectType = "service_desk";
+    const { key } = fake.add();
+    const hooks = hooksOf(jira);
+    await hooks.post.apply(record({ body: "" }), on(ctx, key));
+    expect(fake.issue(key).comments).toHaveLength(1);
+    expect(JSON.stringify((posted(fake)[0]?.body as { body: unknown }).body)).not.toContain("landrace");
+    const observed = await hooks.pre.run(on(ctx, key));
+    expect((observed.entries as Array<{ stage: string; kind: string; round: number; text: string }>).map((e) => [e.stage, e.kind, e.round, e.text]))
+      .toEqual([["triage", "output", 1, ""]]);
+    const graph = await hooks.source.read(key, ctx);
+    expect(hooks.post.satisfied({ graph, node: graph.nodes.find((n) => n.id === key), ...observed }, record({ body: "" }))).toBe(true);
+  });
+
+  it("still reads a marker in the body of a comment written before the property", async () => {
+    const { fake, jira, ctx } = setup();
+    const { key } = fake.add();
+    fake.say(key, BOT, paragraphs("Entered spec.", renderMarker({ stage: "spec", kind: "enter", round: 2, marker: "enter:spec:2" }).trim()));
+    const [entry] = (await hooksOf(jira).pre.run(on(ctx, key))).entries as Array<{ stage: string; round: number; byAgent: boolean }>;
+    expect([entry?.stage, entry?.round, entry?.byAgent]).toEqual(["spec", 2, true]);
+  });
+
+  it("reads the property's marker over one in the body: the body's is text", async () => {
+    const { fake, jira, ctx } = setup();
+    const { key } = fake.add();
+    fake.say(key, BOT, paragraphs("quoted", renderMarker({ stage: "review", kind: "output", round: 9 }).trim()));
+    const comment = fake.issue(key).comments[0];
+    if (!comment) throw new Error("no comment");
+    comment.properties = [{ key: "landrace.marker", value: { marker: renderMarker({ stage: "spec", kind: "enter", round: 1 }).trim() } }];
+    const [entry] = (await hooksOf(jira).pre.run(on(ctx, key))).entries as Array<{ stage: string; round: number }>;
+    expect([entry?.stage, entry?.round]).toEqual(["spec", 1]);
+  });
+
+  describe("mentions", () => {
+    const mentionsIn = (doc: Adf | undefined): unknown[] => {
+      const out: unknown[] = [];
+      const walk = (n: Adf): void => {
+        if (n.type === "mention") out.push(n.attrs?.id);
+        for (const c of n.content ?? []) walk(c);
+      };
+      if (doc) walk(doc);
+      return out;
+    };
+
+    it("mentions an account id as given, and an email that is exactly one user", async () => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      await jira.comment(key, `Thanks @[${OTHER.accountId}], and @[${PERSON.emailAddress ?? ""}] please look.`, ctx);
+      const doc = fake.issue(key).comments[0]?.body;
+      expect(mentionsIn(doc)).toEqual([OTHER.accountId, PERSON.accountId]);
+      expect((await jira.comments(key, ctx))[0]?.body).toBe(`Thanks @[${OTHER.accountId}], and @${PERSON.displayName} please look.`);
+    });
+
+    it("leaves as text an email no user has, one two users have, and one in a code span", async () => {
+      const { fake, jira, ctx } = setup();
+      fake.users.push(
+        { accountId: "557058:aaaa", displayName: "Dana One", emailAddress: "dana@acme.example" },
+        { accountId: "557058:bbbb", displayName: "Dana Two", emailAddress: "dana@acme.example" },
+      );
+      const { key } = fake.add();
+      const body = `@[nobody@acme.example] @[dana@acme.example] \`@[${PERSON.emailAddress ?? ""}]\``;
+      await jira.comment(key, body, ctx);
+      expect(mentionsIn(fake.issue(key).comments[0]?.body)).toEqual([]);
+      expect((await jira.comments(key, ctx))[0]?.body).toBe(body);
+    });
+  });
+
+  it("replaces the old class with the one the answer names, and writes nothing the next tick", async () => {
+    const { fake, jira, ctx } = setup();
+    const { key } = fake.add({ labels: ["bug", "keep"] });
+    const hooks = hooksOf(jira);
+    const step: Step = {
+      prompt: "diagnose",
+      output: {
+        discriminator: "kind", shapes: { diagnosed: { class: "string" } },
+        routes: [{
+          when: { kind: "diagnosed" },
+          effect: { type: "tracker.label", addFrom: "class", allowed: ["bug", "question", "feature"], remove: ["bug", "question", "feature"] },
+        }],
+      },
+    };
+    const settled = settleOutput({
+      step, item: key, stageId: "triage", round: 1, text: '```json\n{"kind":"diagnosed","class":"feature"}\n```', sessionId: null, by: "agent",
+    });
+    if (!settled.ok) throw new Error(settled.reason);
+    const [label] = settled.effects;
+    if (!label) throw new Error("no label effect");
+    const snapshot = async (): Promise<Snapshot> => {
+      const graph = await hooks.source.read(key, ctx);
+      return { graph, node: graph.nodes.find((n) => n.id === key) };
+    };
+    await hooks.post.apply(label, on(ctx, key, await snapshot()));
+    expect(fake.issue(key).labels).toEqual(["keep", "feature"]);
+    const before = fake.writes().length;
+    expect(hooks.post.satisfied(await snapshot(), label)).toBe(true);
+    expect(fake.writes()).toHaveLength(before);
+  });
+
+  describe("worklogs", () => {
+    const worklog = { type: "tracker.worklog", seconds: 5400, marker: "work:triage:1", stage: "triage", round: 1 };
+    const snapshotOf = async (hooks: ReturnType<typeof hooksOf>, ctx: RuntimeContext, key: string): Promise<Snapshot> => {
+      const graph = await hooks.source.read(key, ctx);
+      return { graph, node: graph.nodes.find((n) => n.id === key), ...(await hooks.pre.run(on(ctx, key))) };
+    };
+    const posts = (fake: FakeJira) => fake.calls.filter((c) => c.method === "POST" && c.path.endsWith("/worklog"));
+
+    // A route's effect is applied with no reconcile first, so apply is what keeps it from logging twice.
+    it("logs the time once: applied again, it finds its own marker and logs nothing", async () => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      const hooks = hooksOf(jira);
+      await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key)));
+      await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key)));
+      expect(fake.issue(key).worklogs.map((w) => [w.timeSpentSeconds, w.author.accountId])).toEqual([[5400, BOT.accountId]]);
+      expect(posts(fake)).toHaveLength(1);
+    });
+
+    it("reads every page of worklogs before logging, and a person's alone does not stop it", async () => {
+      const { fake, jira, ctx } = setup();
+      fake.pageSize = 2;
+      const { key } = fake.add();
+      for (let i = 0; i < 5; i++) fake.logWork(key, PERSON, 60);
+      const hooks = hooksOf(jira);
+      await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key)));
+      expect(fake.issue(key).worklogs).toHaveLength(6);
+      // Its own worklog is now on the last of four pages: found there, nothing more is logged.
+      await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key)));
+      expect(posts(fake)).toHaveLength(1);
+    });
+
+    it("logs nothing over a person's worklog when it says skipIfLogged", async () => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      fake.logWork(key, PERSON, 1800);
+      const hooks = hooksOf(jira);
+      await hooks.post.apply({ ...worklog, skipIfLogged: true }, on(ctx, key, await snapshotOf(hooks, ctx, key)));
+      expect(posts(fake)).toEqual([]);
+      expect(fake.issue(key).worklogs).toHaveLength(1);
+    });
+
+    // Jira answers a worklog read with an error where time tracking is off: read every tick, it would fail every item's read.
+    it("reads no worklog on a tick, so a site with time tracking off still reads its items", async () => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      fake.failOn = (method, path) => (method === "GET" && path.endsWith("/worklog") ? 404 : null);
+      const hooks = hooksOf(jira);
+      await expect(snapshotOf(hooks, ctx, key)).resolves.toMatchObject({ node: { id: key } });
+      expect(fake.calls.filter((c) => c.path.endsWith("/worklog"))).toEqual([]);
+    });
+
+    it("records a worklog Jira forbids as refused, not an outage to pay for again", async () => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      fake.failOn = (method, path) => (method === "POST" && path.endsWith("/worklog") ? 403 : null);
+      const hooks = hooksOf(jira);
+      const failure = await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key))).then(() => null, (e: unknown) => e);
+      expect(isEffectRefused(failure)).toBe(true);
+      expect(String(failure)).toMatch(/Work on issues/);
+    });
+
+    it("records as refused a worklog whose read Jira answers 404, as it does with time tracking off", async () => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      const hooks = hooksOf(jira);
+      const snapshot = await snapshotOf(hooks, ctx, key);
+      fake.failOn = (method, path) => (method === "GET" && path.endsWith("/worklog") ? 404 : null);
+      const failure = await hooks.post.apply(worklog, on(ctx, key, snapshot)).then(() => null, (e: unknown) => e);
+      expect(isEffectRefused(failure)).toBe(true);
+      expect(String(failure)).toMatch(/time tracking on/);
+      expect(posts(fake)).toEqual([]);
+    });
+  });
+
+  it("says at the preflight that the project is a service desk, and refuses one whose type Jira does not name", async () => {
+    const said: Array<[string, unknown]> = [];
+    const desk = setup();
+    desk.fake.projectType = "service_desk";
+    await desk.jira.check?.({ ...desk.ctx, log: (name, data) => said.push([name, data]) });
+    expect(said).toContainEqual(["jira.service-desk", expect.objectContaining({ project: "KEY" })]);
+    const unknown = setup();
+    unknown.fake.projectType = null;
+    await expect(unknown.jira.check?.(unknown.ctx)).rejects.toThrow(/no project type/);
   });
 });
 

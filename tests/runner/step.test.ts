@@ -1435,3 +1435,69 @@ describe("the head a step started at", () => {
     expect(r.effects[0]).not.toHaveProperty("head");
   });
 });
+
+/*
+ * Labels and time from a step's answer (#105): the route names the output
+ * fields, and the engine resolves them onto the effect, so no hook ever reads
+ * an agent's text. Anything it cannot resolve whole is a broken contract.
+ */
+describe("fields a route resolves from the answer", () => {
+  const labelRoute = (effect: Record<string, unknown>) => ({ when: { kind: "diagnosed" }, effect: { type: "tracker.label", ...effect } });
+  const worklogRoute = {
+    when: { kind: "spent" }, effect: { type: "tracker.worklog", spentFrom: "spent", max: "4h", marker: "work:{stage}:{round}" },
+  };
+  const diagnose = (label: Record<string, unknown>): Step => ({
+    prompt: "go",
+    output: {
+      discriminator: "kind",
+      shapes: { diagnosed: { class: "string", areas: "string[]" }, spent: { spent: "string" } },
+      routes: [labelRoute(label), worklogRoute],
+    },
+  });
+  const BOTH = {
+    addFrom: ["class", "areas"], allowed: ["bug", "question", "feature", "billing", "login"], remove: ["bug", "question", "feature"],
+  };
+  const settle = (answer: Record<string, unknown>, label: Record<string, unknown> = BOTH) =>
+    settleOutput({
+      step: diagnose(label), item: "1", stageId: "triage", round: 1,
+      text: `done\n\n${"```"}json\n${JSON.stringify(answer)}\n${"```"}`, sessionId: null, by: "agent",
+    });
+
+  it("adds the labels the answer names, and leaves them out of what it removes", () => {
+    const r = settle({ kind: "diagnosed", class: "feature", areas: ["billing", "login"] }) as Ok;
+    expect(r.effects[0]).toMatchObject({ type: "tracker.label", add: ["feature", "billing", "login"], remove: ["bug", "question"] });
+    expect(r.effects[1]).toMatchObject({ type: "tracker.comment", kind: "output" });
+  });
+
+  it("takes one field as well as a list", () => {
+    const r = settle({ kind: "diagnosed", class: "bug" }, { ...BOTH, addFrom: "class" }) as Ok;
+    expect(r.effects[0]).toMatchObject({ add: ["bug"], remove: ["question", "feature"] });
+  });
+
+  it.each([
+    [{ kind: "diagnosed", areas: ["login"] }, /"class".*missing/],
+    [{ kind: "diagnosed", class: "urgent", areas: [] }, /"urgent".*not one of/],
+    [{ kind: "diagnosed", class: "bug", areas: "login, billing" }, /"login, billing".*not one of/],
+    [{ kind: "diagnosed", class: 7, areas: [] }, /"class".*a label or a list of labels/],
+    [{ kind: "spent", spent: "0m" }, /zero/],
+    [{ kind: "spent", spent: "soon" }, /"soon".*not a duration/],
+    [{ kind: "spent", spent: "5h" }, /over the 4h/],
+    [{ kind: "spent" }, /"spent".*missing/],
+  ])("refuses %j as a broken contract", (answer, reason) => {
+    const r = settle(answer) as Fail;
+    expect(r).toMatchObject({ ok: false, kind: "contract" });
+    expect(r.reason).toMatch(reason);
+  });
+
+  it("resolves the time spent into seconds", () => {
+    const r = settle({ kind: "spent", spent: "1h30m" }) as Ok;
+    expect(r.effects[0]).toMatchObject({ type: "tracker.worklog", seconds: 5400, marker: "work:triage:1" });
+    expect(r.effects[1]).toMatchObject({ type: "tracker.comment", kind: "output" });
+  });
+
+  it("refuses any label when the route allows none, and an lr: label even when it is allowed", () => {
+    expect(settle({ kind: "diagnosed", class: "bug" }, { addFrom: "class" })).toMatchObject({ ok: false, kind: "contract" });
+    const r = settle({ kind: "diagnosed", class: "lr:stage:done" }, { addFrom: "class", allowed: ["lr:stage:done"] }) as Fail;
+    expect(r.reason).toMatch(/lr:/);
+  });
+});

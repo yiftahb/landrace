@@ -370,6 +370,17 @@ export function durationMs(text: string): number | null {
 }
 
 /**
+ * "45m", "2h", "1h30m" in milliseconds, or null for anything else: time a
+ * step says it spent, as a worklog's `spentFrom` field and its `max` spell
+ * it. Zero reads as zero, so the step can say that is what it refused.
+ */
+export function workDurationMs(text: string): number | null {
+  const m = /^(?:(\d+)h)?\s*(?:(\d+)m)?$/.exec(text.trim());
+  if (!m || (m[1] === undefined && m[2] === undefined)) return null;
+  return Number(m[1] ?? 0) * 3_600_000 + Number(m[2] ?? 0) * 60_000;
+}
+
+/**
  * The kind of the record a person's explicit goto is written under — the
  * board's Retry and "Go to step…", and `landrace_goto`. A judge's goto rides
  * on its own output record instead, because that record is what settles the
@@ -452,6 +463,20 @@ export function isEffectRefused(e: unknown): boolean {
  */
 export const STATUS_EFFECT = "tracker.status";
 export const LABEL_EFFECT = "tracker.label";
+
+/**
+ * Who a `tracker.comment` is for, as its `visibility` field says: the team
+ * alone, or the person who asked too, on a tracker that tells the two apart.
+ * Absent is internal: a record nobody chose to show is never shown by guess.
+ */
+export const COMMENT_VISIBILITIES: readonly string[] = ["internal", "public"];
+
+/**
+ * Time logged against the item, from what a step answered: `spentFrom` names
+ * the output field, which the runner resolves into the effect's `seconds`.
+ * Only a tracker that keeps worklogs handles it.
+ */
+export const WORKLOG_EFFECT = "tracker.worklog";
 
 /**
  * The kind a conversation turn is recorded under: what a person asked a

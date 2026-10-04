@@ -23,7 +23,8 @@
  *
  * It writes, so point it at a project that may hold test issues: one item
  * and one child, created, commented on, labelled and closed — the child as
- * dropped, the item as done. Each check prints `ok` or `FAIL` with what it
+ * dropped, the item as done — and a minute of work logged on the item, which
+ * needs "Work on issues" and time tracking on. Each check prints `ok` or `FAIL` with what it
  * saw; a check whose item was never created is not run. Exits 1 on any
  * failure, and when nothing passed: nothing checked is not a pass.
  *
@@ -111,7 +112,7 @@ const raw = async (path) => {
 };
 const assignee = JIRA_ASSIGNEE?.trim() ?? "";
 // This script's own requests carry the token too: to the same sites the integration's client takes, and no other.
-const siteOk = Boolean(JIRA_CHECK_LINKS || JIRA_LINK_KEYS || assignee.includes("@") || options.statuses) && await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
+const siteOk = await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
   expect(/^https:\/\/[a-z0-9][a-z0-9-]*\.atlassian\.net$/i.test(site), `got ${JSON.stringify(site)}`);
 });
 /** The account `JIRA_ASSIGNEE` names, looked up by this script rather than the integration, so the two are compared, not one read twice. */
@@ -182,6 +183,16 @@ if (item) {
     expect(entry.text.includes("&lt;!-- landrace") && !entry.text.includes("<!--"), `text ${JSON.stringify(entry.text)}`);
     expect(hooks.post.satisfied({ ...(await snapshotOf(item.id)), ...observed }, record), "the comment effect does not read as landed");
     return `entry ${entry.stage}/${entry.kind}/${entry.round} as ${observed.tracker.bot}`;
+  });
+
+  const worklog = { type: "tracker.worklog", stage: "check", round: 1, marker: "work:check:1", seconds: 60 };
+  const observedOf = async (id) => ({ ...(await snapshotOf(id)), ...(await hooks.pre.run(on(id))) });
+  if (siteOk) await check("log a minute of work once, applied twice, its marker read back off Jira's own answer", async () => {
+    await hooks.post.apply(worklog, on(item.id, await observedOf(item.id)));
+    await hooks.post.apply(worklog, on(item.id, await observedOf(item.id)));
+    const { worklogs = [] } = await raw(`/rest/api/3/issue/${item.id}/worklog?expand=properties`);
+    const ours = worklogs.filter((w) => (w.properties ?? []).some((p) => p.key === "landrace.marker" && p.value?.marker === worklog.marker));
+    expect(ours.length === 1 && ours[0].timeSpentSeconds === 60, `worklogs read back as ${JSON.stringify(worklogs)}`);
   });
 
   if (field) {

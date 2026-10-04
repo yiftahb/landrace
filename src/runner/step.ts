@@ -14,6 +14,7 @@ import {
   recordBodyProblem,
   retiredCapabilityPointers,
   unknownCapabilities,
+  workDurationMs,
 } from "#conventions.js";
 import type { Executor, Screener } from "#namespace.js";
 import { screenPrompt } from "#agent/screen.js";
@@ -416,6 +417,68 @@ export async function runStep(opts: {
   return settleOutput({ step, item: opts.item, stageId, round, text, sessionId, by: AGENT_BY, ...(opts.head === undefined ? {} : { head: opts.head }) });
 }
 
+/** A label a workflow writes from an answer is the project's, never one of Landrace's own. */
+const LANDRACE_LABEL = /^\s*lr:/i;
+
+/**
+ * A route effect's fields that name output fields, resolved from the answer
+ * onto the fields its hook reads: `addFrom` into `add`, `spentFrom` into
+ * `seconds`. Here, so a hook never parses an agent's text, and whole or not
+ * at all: a field missing, a label outside `allowed`, a duration that is not
+ * one or is zero or over `max` is a broken contract, never trimmed to fit.
+ *
+ * The labels added leave `remove`, so a route that removes the whole set and
+ * adds one back of it is satisfied once the item carries exactly that one.
+ */
+export function resolveOutputFields(
+  effect: Effect, value: Record<string, unknown>,
+): { ok: true; effect: Effect } | { ok: false; reason: string } {
+  const out: Effect = { ...effect };
+  const answered = (field: string): unknown => (Object.hasOwn(value, field) ? value[field] : undefined);
+
+  if (effect.addFrom !== undefined) {
+    const fields = typeof effect.addFrom === "string" ? [effect.addFrom] : effect.addFrom;
+    if (!Array.isArray(fields) || !fields.every((f): f is string => typeof f === "string")) {
+      return { ok: false, reason: "addFrom must name an output field or a list of them" };
+    }
+    const allowed = Array.isArray(effect.allowed) ? effect.allowed.filter((l): l is string => typeof l === "string") : [];
+    const labels: string[] = [];
+    for (const field of fields) {
+      const got = answered(field);
+      if (got === undefined) return { ok: false, reason: `the answer's "${field}", which addFrom names, is missing` };
+      const named = typeof got === "string" ? [got] : got;
+      if (!Array.isArray(named) || !named.every((l): l is string => typeof l === "string")) {
+        return { ok: false, reason: `the answer's "${field}" must be a label or a list of labels, got ${describeValue(got)}` };
+      }
+      for (const label of named) {
+        if (LANDRACE_LABEL.test(label)) return { ok: false, reason: `the answer's "${field}" names ${describeValue(label)}; an lr: label is Landrace's own` };
+        if (!allowed.includes(label)) {
+          return { ok: false, reason: `the answer's "${field}" names ${describeValue(label)}, which is not one of the route's allowed labels (${allowed.join(", ") || "none"})` };
+        }
+        if (!labels.includes(label)) labels.push(label);
+      }
+    }
+    const add = [...(Array.isArray(effect.add) ? effect.add.filter((l): l is string => typeof l === "string") : []), ...labels];
+    out.add = [...new Set(add)];
+    if (Array.isArray(effect.remove)) out.remove = effect.remove.filter((l) => typeof l === "string" && !add.includes(l));
+  }
+
+  if (effect.spentFrom !== undefined) {
+    const field = String(effect.spentFrom);
+    const got = answered(field);
+    if (got === undefined) return { ok: false, reason: `the answer's "${field}", which spentFrom names, is missing` };
+    const ms = typeof got === "string" ? workDurationMs(got) : null;
+    if (ms === null) return { ok: false, reason: `the answer's "${field}" is ${describeValue(got)}, not a duration such as 45m or 1h30m` };
+    if (ms === 0) return { ok: false, reason: `the answer's "${field}" is zero, and no time is logged as none` };
+    const max = typeof effect.max === "string" ? workDurationMs(effect.max) : null;
+    if (max === null) return { ok: false, reason: `the route's max is ${describeValue(effect.max)}, not a duration such as 4h` };
+    if (ms > max) return { ok: false, reason: `the answer's "${field}" is ${String(got)}, over the ${String(effect.max)} the route allows` };
+    out.seconds = ms / 1000;
+  }
+
+  return { ok: true, effect: out };
+}
+
 /**
  * What an agent's answer amounts to: the step's output contract applied to
  * the text, and the effects that record it — or the reason it is refused.
@@ -601,8 +664,13 @@ export function settleOutput(opts: {
   if (route.effects !== undefined) {
     const parts: Effect[] = [];
     for (const [index, declared] of route.effects.entries()) {
-      const { head: _head, from, ...expanded } = expandEffectFields(declared, vars) as Effect;
+      const { head: _head, from, ...templated } = expandEffectFields(declared, vars) as Effect;
       void _head;
+      const resolved = resolveOutputFields(templated as Effect, value);
+      if (!resolved.ok) {
+        return { ok: false, kind: "contract", reason: `stage "${stageId}" shape "${shape}": effect ${index}: ${resolved.reason}` };
+      }
+      const expanded = resolved.effect;
       /*
        * `from` names the output field this effect's body is, resolved here
        * and stripped: it is a field a record's marker reads as the stage an
@@ -650,8 +718,13 @@ export function settleOutput(opts: {
   }
 
   // One route, one destination: the step's prose goes where the route says.
-  const { head: _named, ...expanded } = expandEffectFields(route.effect ?? { type: RECORD_EFFECT }, vars) as Effect;
+  const { head: _named, ...templated } = expandEffectFields(route.effect ?? { type: RECORD_EFFECT }, vars) as Effect;
   void _named;
+  const resolved = resolveOutputFields(templated as Effect, value);
+  if (!resolved.ok) {
+    return { ok: false, kind: "contract", reason: `stage "${stageId}" shape "${shape}": ${resolved.reason}` };
+  }
+  const expanded = resolved.effect;
   // `output` last, as on the record below: the value the step produced, already
   // cut to its shape, which a hook posting structured content (a review's
   // findings) needs and a route must not be able to write over.

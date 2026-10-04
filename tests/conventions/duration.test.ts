@@ -1,4 +1,4 @@
-import { durationMs } from "#conventions.js";
+import { durationMs, workDurationMs } from "#conventions.js";
 
 /*
  * One spelling of a duration for every file an operator writes — tick.interval,
@@ -23,5 +23,24 @@ describe("durationMs", () => {
 
   it("reads nothing else, rather than guessing a unit", () => {
     for (const bad of ["60", "", "2 m", "0.5m", "2d", "-1s", "s"]) expect(durationMs(bad)).toBeNull();
+  });
+});
+
+/*
+ * Time a step says it spent, as a worklog takes it: hours and minutes, the
+ * way a person types it into Jira's own "Log work" box.
+ */
+describe("workDurationMs", () => {
+  it("reads hours, minutes, and both", () => {
+    expect([workDurationMs("45m"), workDurationMs("2h"), workDurationMs("1h30m"), workDurationMs(" 1h 30m ")])
+      .toEqual([2_700_000, 7_200_000, 5_400_000, 5_400_000]);
+  });
+
+  it("reads zero as zero, for the caller to refuse in its own words", () => {
+    expect(workDurationMs("0m")).toBe(0);
+  });
+
+  it("reads nothing else, rather than guessing", () => {
+    for (const bad of ["soon", "", "90", "1.5h", "30s", "1d", "-1h", "m", "1h1h", "30m1h"]) expect(workDurationMs(bad)).toBeNull();
   });
 });

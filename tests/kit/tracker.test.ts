@@ -257,6 +257,41 @@ describe("tracker.close", () => {
 });
 
 /*
+ * `tracker.comment`'s `visibility`, handed to the integration as it is, for a
+ * tracker that tells the team's notes from what the requester reads. Absent
+ * stays absent: the integration's default is internal, never a guess here.
+ */
+describe("tracker.comment's visibility", () => {
+  const ctx: RuntimeContext = { config: {} as never, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
+  class Seen extends MemoryTracker {
+    visibilities: unknown[] = [];
+    override async comment(id: string, body: string, _ctx?: RuntimeContext, opts?: { visibility?: unknown }): Promise<void> {
+      this.visibilities.push(opts?.visibility);
+      await super.comment(id, body);
+    }
+  }
+  const post = async (effect: Effect): Promise<Seen> => {
+    const tracker = new Seen({ items: [{ id: "7" }] });
+    await compose({ tracker }).post.apply(effect, { ...ctx, item: "7", snapshot: {} });
+    return tracker;
+  };
+
+  it("passes public and internal through, and none when the effect names none", async () => {
+    for (const visibility of ["public", "internal", undefined]) {
+      const effect = { type: "tracker.comment", kind: "output", marker: "m", body: "b", ...(visibility ? { visibility } : {}) };
+      expect((await post(effect)).visibilities).toEqual([visibility]);
+    }
+  });
+
+  it("refuses a visibility it does not know, posting nothing", async () => {
+    const tracker = new Seen({ items: [{ id: "7" }] });
+    const apply = compose({ tracker }).post.apply({ type: "tracker.comment", kind: "output", marker: "m", body: "b", visibility: "loud" }, { ...ctx, item: "7", snapshot: {} });
+    await expect(apply).rejects.toThrow(/"internal" or "public", not "loud"/);
+    expect(tracker.row("7").comments).toEqual([]);
+  });
+});
+
+/*
  * Relationships between items, as the base reads them off `ItemRecord.related`
  * and writes them through the two calls an integration supplies. The engine
  * gives no type a meaning; the base inspects `blocked-by` only to report a
