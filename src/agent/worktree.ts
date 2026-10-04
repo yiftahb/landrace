@@ -118,9 +118,11 @@ async function gitRemote(args: string[], cwd: string, what: string, guard: Remot
     });
     return stdout;
   } catch (e) {
-    if (guard.signal?.aborted) throw new Error(`${what}: git ${args[0] ?? ""} was aborted`);
+    // The subcommand, past any `-c key=value` before it.
+    const command = args.find((arg, i) => !arg.startsWith("-") && args[i - 1] !== "-c") ?? "";
+    if (guard.signal?.aborted) throw new Error(`${what}: git ${command} was aborted`);
     if ((e as { killed?: unknown }).killed === true) {
-      throw new Error(`${what}: git ${args[0] ?? ""} did not finish within ${Math.round(guard.timeoutMs / 1000)}s and was stopped`);
+      throw new Error(`${what}: git ${command} did not finish within ${Math.round(guard.timeoutMs / 1000)}s and was stopped`);
     }
     const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
     throw new Error(`${what}: ${stderr || messageOf(e)}`);
@@ -228,7 +230,15 @@ async function baseCommit(repoRoot: string, what: string, guard: RemoteGuard): P
   if (!remotes.includes("origin")) return commitOf("HEAD", repoRoot, what);
   const branch = await defaultBranch(repoRoot, what, guard);
   const tracking = `refs/remotes/origin/${branch}`;
-  await gitRemote(["fetch", "-q", "origin", `+refs/heads/${branch}:${tracking}`], repoRoot, `${what}: fetching origin's ${branch} failed`, guard);
+  // The operator's repository, so only that one ref, as the forge's fetch of
+  // the same origin takes it: their FETCH_HEAD and tags untouched, none of
+  // their hooks run, and no submodule's remote asked, which can fail the round
+  // whenever origin's new commits move an initialised one.
+  await gitRemote(
+    ["-c", "core.hooksPath=/dev/null", "-c", "fetch.recurseSubmodules=false",
+      "fetch", "-q", "--no-tags", "--no-write-fetch-head", "origin", `+refs/heads/${branch}:${tracking}`],
+    repoRoot, `${what}: fetching origin's ${branch} failed`, guard,
+  );
   const commit = await commitOf(tracking, repoRoot, what);
   if (commit === null) throw new Error(`${what}: origin's default branch ${branch} has no commit after fetching it`);
   return commit;
