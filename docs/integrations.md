@@ -131,6 +131,8 @@ agent:
 
 **Token.** Personal, project or group, with the `api` scope, and its user given Developer access to the project — direct, inherited or through a group the project is shared with. `landrace start` refuses one without either, naming which, and names a missing `gitlabToken` too. The same scope and role read a merge request's pipelines and failed jobs' traces; `start` also probes the pipeline read. Merging depends on the target branch: a default protected branch lets only Maintainers merge, so a Developer token merges only where that branch's "Allowed to merge" includes Developers, which is not the default — otherwise the item halts saying the token's user may not merge into its target branch.
 
+**Checks.** A merge request's checks are its newest pipeline's, when that pipeline ran on the head. A branch or merge request pipeline runs at the head's sha. A [merged results pipeline](https://docs.gitlab.com/ci/pipelines/merged_results_pipelines/) runs at a merge commit, and counts when the head is one of that commit's parents. A pipeline on an older head reads as pending.
+
 **Limits.** CI/CD must be enabled on the project. The forge needs GitLab 16.4 or later, for a finding on a file.
 
 **What it writes.**
