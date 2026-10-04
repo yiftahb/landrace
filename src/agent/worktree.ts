@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { INHERITED_ENV_KEYS } from "#conventions.js";
-import type { WorktreeBranch, WorktreePreparation, WorktreeState } from "#namespace.js";
+import type { WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
 import { messageOf } from "#runner/errors.js";
@@ -25,8 +25,8 @@ export async function keptItems(repoRoot: string): Promise<string[]> {
   return names.filter((n) => n.endsWith(".write")).map((n) => n.slice(0, -".write".length));
 }
 
-/** The files whose change means what `setup` installs has changed: the lockfiles at the repository root. */
-const LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"];
+/** The files whose change means what `setup` installs has changed, unless `agent.worktree.lockfiles` names others: the lockfiles at the repository root. */
+export const DEFAULT_LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"];
 
 /** How much of a failed setup command's output its reason carries. */
 const SETUP_TAIL = 2000;
@@ -363,9 +363,21 @@ export function changedSince(before: WorktreeState, after: WorktreeState): strin
 }
 
 /** The files `glob` matches in the checkout at `root`, among those `flags` select for `git ls-files`. */
-async function filesMatching(root: string, glob: string, flags: string[]): Promise<string[]> {
-  const out = await git(["ls-files", "-z", ...flags, "--", `:(glob)${glob}`], root, `could not read the files agent.worktree.copy "${glob}" matches`);
+async function filesMatching(root: string, glob: string, flags: string[], key = "copy"): Promise<string[]> {
+  const out = await git(["ls-files", "-z", ...flags, "--", `:(glob)${glob}`], root, `could not read the files agent.worktree.${key} "${glob}" matches`);
   return out.split("\0").filter((f) => f.length > 0);
+}
+
+/** Why a glob of `agent.worktree.<key>` cannot be read from the repository root, or null. */
+function globProblem(key: string, glob: string): string | null {
+  if (isAbsolute(glob) || glob.startsWith("/")) return `agent.worktree.${key} "${glob}" is an absolute path; a glob is read from the repository root`;
+  if (glob.split(/[\\/]/).includes("..")) return `agent.worktree.${key} "${glob}" climbs out of the repository with ".."`;
+  return null;
+}
+
+/** What is wrong with `agent.worktree.lockfiles`, one line per glob: one that is absolute or climbs out with `..`. */
+export function lockfileProblems(globs: readonly string[]): string[] {
+  return globs.flatMap((glob) => globProblem("lockfiles", glob) ?? []);
 }
 
 /**
@@ -378,10 +390,9 @@ async function filesMatching(root: string, glob: string, flags: string[]): Promi
 export async function copyProblems(root: string, globs: readonly string[]): Promise<string[]> {
   const problems: string[] = [];
   for (const glob of globs) {
-    if (isAbsolute(glob) || glob.startsWith("/")) {
-      problems.push(`agent.worktree.copy "${glob}" is an absolute path; a glob is read from the repository root`);
-    } else if (glob.split(/[\\/]/).includes("..")) {
-      problems.push(`agent.worktree.copy "${glob}" climbs out of the repository with ".."`);
+    const problem = globProblem("copy", glob);
+    if (problem !== null) {
+      problems.push(problem);
     } else {
       for (const file of await filesMatching(root, glob, [])) {
         problems.push(`agent.worktree.copy "${glob}" matches ${file}, which git tracks; only untracked or ignored files are copied`);
@@ -431,10 +442,18 @@ async function copyInto(path: string, root: string, globs: readonly string[]): P
   }
 }
 
-/** What setup's last run was for: its commands and the root lockfiles, as the worktree holds them now. */
-async function setupHash(path: string, commands: readonly string[]): Promise<string> {
-  const hash = createHash("sha256").update(JSON.stringify(commands));
-  for (const file of LOCKFILES) {
+/**
+ * What setup's last run was for: its commands, and each lockfile the globs
+ * match as the worktree holds it now — tracked, or added and not yet
+ * committed — by its path, so one added or removed counts as a change too.
+ */
+async function setupHash(path: string, { setup, lockfiles }: WorktreeSetup): Promise<string> {
+  const hash = createHash("sha256").update(JSON.stringify(setup));
+  const files = new Set<string>();
+  for (const glob of lockfiles) {
+    for (const file of await filesMatching(path, glob, ["--cached", "--others", "--exclude-standard"], "lockfiles")) files.add(file);
+  }
+  for (const file of [...files].sort()) {
     hash.update(`\0${file}\0`);
     hash.update(await readFile(join(path, file)).catch(() => "\0absent"));
   }
@@ -490,7 +509,7 @@ function runSetup(command: string, cwd: string, timeoutMs: number, signal?: Abor
 
 /**
  * A write step's worktree made ready for its agent: `copy`, then `setup` when
- * its commands or the root lockfiles have changed since it last passed here.
+ * its commands or its lockfiles have changed since it last passed here.
  *
  * What it last passed for is recorded in the worktree's own git folder, so a
  * rebuilt worktree has none and runs setup again, and a record that is
@@ -502,7 +521,7 @@ export async function prepareWorktree({ item, path, root, setup, log, signal }: 
   if (setup.setup.length === 0) return;
   const what = `could not set up #${item}'s worktree`;
   const record = resolve(path, (await git(["rev-parse", "--git-path", "landrace-setup"], path, what)).trim());
-  if ((await readFile(record, "utf8").catch(() => null)) === (await setupHash(path, setup.setup))) return;
+  if ((await readFile(record, "utf8").catch(() => null)) === (await setupHash(path, setup))) return;
   await rm(record, { force: true });
   for (const command of setup.setup) {
     log("worktree.setup.started", { item, command });
@@ -515,5 +534,5 @@ export async function prepareWorktree({ item, path, root, setup, log, signal }: 
     log("worktree.setup.finished", { item, command, ms: Date.now() - started });
   }
   // Hashed after, so a setup that rewrites a lockfile is not run again for its own change.
-  await writeFile(record, await setupHash(path, setup.setup));
+  await writeFile(record, await setupHash(path, setup));
 }

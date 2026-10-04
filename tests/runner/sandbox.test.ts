@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
+import { DEFAULT_LOCKFILES, ensureWorktree, removeWorktree } from "#agent/worktree.js";
 import { labelsOf } from "#conventions.js";
 import { fetchBranch, gitIn } from "#kit/git.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
@@ -830,7 +830,7 @@ describe("converge and a stage's branch", () => {
         return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
       },
     };
-    const worktree = { copy: ["*.env"], setup: ["cat local.env > ready.txt"], timeoutMs: 60_000 };
+    const worktree = { copy: ["*.env"], setup: ["cat local.env > ready.txt"], timeoutMs: 60_000, lockfiles: [...DEFAULT_LOCKFILES] };
 
     const ok = await converge("1", deps(world(), {
       workflow: branched("landrace/{item}"),
@@ -871,7 +871,7 @@ describe("converge and a stage's branch", () => {
     const r = await converge("1", deps(world(), {
       steps: new Map<string, Step>([["spec", writing]]),
       executor: looker,
-      sandbox: { root, worktree: { copy: ["*.env"], setup: ["cat local.env > ready.txt"], timeoutMs: 60_000 } },
+      sandbox: { root, worktree: { copy: ["*.env"], setup: ["cat local.env > ready.txt"], timeoutMs: 60_000, lockfiles: [...DEFAULT_LOCKFILES] } },
     }));
     expect(r.settled).toBe("terminal");
     expect(seen).toEqual(["TOKEN=1\n"]);
@@ -893,7 +893,7 @@ describe("converge and a stage's branch", () => {
     await converge("1", deps(world(), {
       workflow: branched("landrace/{item}"),
       executor: looker,
-      sandbox: { root, worktree: { copy: ["*.env"], setup: ["touch ready.txt"], timeoutMs: 60_000 } },
+      sandbox: { root, worktree: { copy: ["*.env"], setup: ["touch ready.txt"], timeoutMs: 60_000, lockfiles: [...DEFAULT_LOCKFILES] } },
     }));
     expect(seen).toEqual([false]);
   });

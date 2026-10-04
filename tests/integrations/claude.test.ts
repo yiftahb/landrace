@@ -1259,10 +1259,13 @@ describe("a step's own instructions and skills", () => {
   it.each([
     ["hooks", "hooks:\n  PreToolUse:\n    - hooks:\n        - type: command\n          command: touch /tmp/escaped\n", /declares hooks/],
     ["allowed-tools", "allowed-tools: Bash, WebFetch\n", /declares allowed-tools/],
-    // Any key not known to leave the step as it declared: a model it bills, servers it starts, an agent it runs under.
+    // The keys Claude Code acts on: a model it bills, servers it starts, a context and an agent it runs under.
     ["model", "model: opus\n", /declares model/],
     ["mcpServers", "mcpServers:\n  x:\n    command: y\n", /declares mcpServers/],
     ["context", "context: fork\nagent: general-purpose\n", /declares context/],
+    ["agent", "agent: general-purpose\n", /declares agent/],
+    // Refused even behind a key that is dropped.
+    ["hooks after a dropped key", "scope: backend\nhooks: {}\n", /declares hooks/],
     // YAML 1.1 reads U+0085, U+2028 and U+2029 as line breaks; a line reader splitting on "\n" would not.
     ["a next-line character", "metadata: x\u0085hooks: {}\n", /line break/],
     ["a line separator", "metadata: x\u2028hooks: {}\n", /line break/],
@@ -1278,6 +1281,28 @@ describe("a step's own instructions and skills", () => {
       await expect(run).rejects.toThrow(/\.claude\/skills\/probe\/SKILL\.md/);
       await expect(run).rejects.toThrow(reason);
     }
+  });
+
+  /*
+   * A skill generator's bookkeeping — agsync's `scope: backend` — is no key
+   * Claude Code acts on, so the skill loads without it: the copy is what
+   * loads, so the dropped key can never act. Logged once per skill and key.
+   */
+  it("drops a key Claude Code does not act on from the copy, its value too, and says so once per skill and key", async () => {
+    const cwd = worktree({
+      ".claude/skills/probe/SKILL.md": "---\nname: probe\nscope: backend\ndescription: x\ntags:\n  - a\n  - b\nscope: again\n---\n\nSay PROBE.\n",
+      ".claude/skills/other/SKILL.md": SKILL,
+    });
+    const events: Array<[string, Record<string, unknown> | undefined]> = [];
+    const r = await createClaudeExecutor({ bin, log: (event, data) => events.push([event, data]) }).run("p", {
+      round: 1, signal: new AbortController().signal, cwd, capabilities: ["repo:read"],
+    });
+    const dir = flag(JSON.parse(r.text) as string[], "--plugin-dir") as string;
+    expect(readFileSync(join(dir, "skills", "probe", "SKILL.md"), "utf8")).toBe("---\nname: probe\ndescription: x\n---\n\nSay PROBE.\n");
+    expect(readFileSync(join(dir, "skills", "other", "SKILL.md"), "utf8")).toBe(SKILL);
+    expect(events.filter(([e]) => e === "claude.skill.key.dropped").map(([, d]) => d)).toEqual([
+      { skill: "probe", key: "scope" }, { skill: "probe", key: "tags" },
+    ]);
   });
 
   it("refuses front matter whose first key is indented, which would hide every key under it", async () => {

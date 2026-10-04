@@ -763,6 +763,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
         ...(chosenEffort === undefined ? {} : { effort: chosenEffort }),
         ...(resume === undefined ? {} : { resume }),
         ...(resolvedCwd === undefined ? {} : { cwd: resolvedCwd }),
+        ...(log === undefined ? {} : { log }),
       };
       await this.prepare?.(plan);
       // Again past the last await: an abort that landed during them fired with

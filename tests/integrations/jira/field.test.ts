@@ -3,7 +3,7 @@ import { isEffectRefused } from "#conventions.js";
 import { compose, hashOf, PUBLISH, SPEC } from "#kit/index.js";
 import type { HookContext, RuntimeContext, Snapshot } from "#namespace.js";
 import {
-  createFakeJira, DESIGN, EMAIL, paragraphs, PERSON, SITE, TEXTFIELD, TOKEN,
+  createFakeJira, DAY, DESIGN, EMAIL, jiraTime, OTHER, paragraphs, PERSON, SITE, TEXTFIELD, TOKEN,
 } from "#tests/integrations/jira/fake-jira.js";
 
 /*
@@ -110,6 +110,17 @@ describe("an issue field as the docs role", () => {
     expect(fake.writes()).toHaveLength(writes);
   });
 
+  // One Epic never stops the workspace: its item is refused, naming why.
+  it("refuses the item whose issue type has no field on its edit screen, naming the type, writing nothing", async () => {
+    const { fake, docs, ctx } = setup();
+    fake.issueTypes.push({ id: "10004", name: "Epic", subtask: false, fields: ["summary", "issuetype", "project", "labels"] });
+    const { key } = fake.add({ issuetype: "Epic" });
+    const error: unknown = await docs.publish(key, SPEC_TEXT, ctx).catch((e: unknown) => e);
+    expect(isEffectRefused(error)).toBe(true);
+    expect(String(error)).toContain(`${key} is a "Epic" issue, whose edit screen has no ${DESIGN}`);
+    expect(fake.issue(key).custom[DESIGN]).toBeUndefined();
+  });
+
   it("links to the issue itself", async () => {
     const { fake, docs, ctx } = setup();
     const { key } = fake.add();
@@ -174,33 +185,66 @@ describe("the field's preflight", () => {
     await expect(docs.check(ctx)).rejects.toThrow(/"Team" \(customfield_10051\) is a .*select field/);
   });
 
-  it("names each issue type whose edit screen lacks the field", async () => {
-    const { fake, docs, ctx } = setup();
-    for (const type of fake.issueTypes) if (type.name !== "Task") type.fields = type.fields.filter((f) => f !== DESIGN);
+  /*
+   * A project's Epics, or its own design-doc type, may not carry the field,
+   * and no item of theirs is ever specced: only the types an item can be are
+   * checked, and one without the field is logged, never a refused start.
+   */
+  it("checks only the types of the open issues in the tracker's scope, and those it creates, logging each without the field", async () => {
+    const { fake, docs, ctx, events } = setup({}, { ...SECRETS, jiraAssignee: PERSON.accountId });
+    fake.issueTypes.push({ id: "10004", name: "Epic", subtask: false, fields: ["summary", "issuetype", "project", "labels", "assignee"] });
+    fake.issueTypes.push({ id: "10005", name: "Design doc", subtask: false, fields: ["summary", "issuetype", "project", "labels"] });
+    const bug = fake.issueTypes.find((t) => t.name === "Bug");
+    if (bug) bug.fields = bug.fields.filter((f) => f !== DESIGN);
+    fake.add({ issuetype: "Task", assignee: PERSON });
+    fake.add({ issuetype: "Bug", assignee: PERSON });
+    fake.add({ issuetype: "Epic", assignee: PERSON });
+    // Somebody else's: outside the scope, so its type is no item's.
+    const elsewhere = fake.add({ issuetype: "Design doc", assignee: OTHER });
+    await expect(docs.check(ctx)).resolves.toBeUndefined();
+    expect(events.filter((e) => e.event === "jira.field.missing").map((e) => e.data?.type)).toEqual(["Bug", "Epic"]);
+    expect(fake.calls.some((c) => c.path === `/rest/api/3/issue/${elsewhere.key}/editmeta`)).toBe(false);
+    const listing = fake.calls.find((c) => c.path === "/rest/api/3/search/jql" && (c.body as { fields: string[] }).fields.join() === "issuetype");
+    expect((listing?.body as { jql: string }).jql).toContain(`AND assignee = "${PERSON.accountId}"`);
+  });
+
+  it("lists the types an item can be, and the items whose field is filled, inside the tracker's jql too", async () => {
+    const fake = createFakeJira();
+    const since = new Date(Date.now() - 5 * DAY).toISOString().slice(0, 10);
+    const tracker = new Jira({ project: "KEY", jql: `created >= "${since}"`, fetchImpl: fake.fetchImpl });
+    const docs = new JiraField({ tracker, field: DESIGN, fetchImpl: fake.fetchImpl });
+    const events: string[] = [];
+    const ctx: RuntimeContext = {
+      config: {} as never, secrets: new Map(Object.entries(SECRETS)), signal: new AbortController().signal, log: (event) => { events.push(event); },
+    };
+    const bug = fake.issueTypes.find((t) => t.name === "Bug");
+    if (bug) bug.fields = bug.fields.filter((f) => f !== DESIGN);
     fake.add({ issuetype: "Task" });
-    fake.add({ issuetype: "Bug" });
-    fake.add({ issuetype: "Subtask", parent: "KEY-1" });
-    await expect(docs.check(ctx)).rejects.toThrow(/not on the edit screen of KEY's "Subtask", "Bug" issues/);
+    fake.add({ issuetype: "Bug", created: jiraTime(Date.now() - 30 * DAY) });
+    await docs.check(ctx);
+    expect(events).not.toContain("jira.field.missing");
+    const filled = fake.add({ custom: { [DESIGN]: paragraphs("Spec") } });
+    fake.add({ custom: { [DESIGN]: paragraphs("Old") }, created: jiraTime(Date.now() - 30 * DAY) });
+    expect(await docs.published(ctx)).toEqual(new Set([filled.key]));
   });
 
   it("counts an issue type with no issue to look at as unchecked, and says so", async () => {
     const { fake, docs, ctx, events } = setup();
     fake.add({ issuetype: "Task" });
     await expect(docs.check(ctx)).resolves.toBeUndefined();
-    expect(events).toContainEqual({ event: "jira.field.unchecked", data: expect.objectContaining({ types: ["Subtask", "Bug"] }) });
+    expect(events).toContainEqual({ event: "jira.field.unchecked", data: expect.objectContaining({ types: ["Subtask"] }) });
   });
 
   it("reads an edit screen off an open issue, and counts a type with only closed ones as unchecked", async () => {
     const { fake, docs, ctx, events } = setup();
-    fake.add({ issuetype: "Task", status: "Done" });
     fake.add({ issuetype: "Task" });
-    fake.add({ issuetype: "Bug", status: "Won't Do" });
+    fake.add({ issuetype: "Subtask", parent: "KEY-1", status: "Done" });
     await expect(docs.check(ctx)).resolves.toBeUndefined();
-    expect(events).toContainEqual({ event: "jira.field.unchecked", data: expect.objectContaining({ types: ["Subtask", "Bug"] }) });
+    expect(events).toContainEqual({ event: "jira.field.unchecked", data: expect.objectContaining({ types: ["Subtask"] }) });
   });
 
   it("fails when no issue type could be checked at all", async () => {
     const { docs, ctx } = setup();
-    await expect(docs.check(ctx)).rejects.toThrow(/no open issue of any of KEY's issue types/);
+    await expect(docs.check(ctx)).rejects.toThrow(/no open issue of any issue type an item of KEY can be/);
   });
 });

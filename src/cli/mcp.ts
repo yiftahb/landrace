@@ -8,7 +8,7 @@ import { createTools } from "#mcp/tools.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createChild } from "#runner/children.js";
 import { createLogger, scrubberOf } from "#runner/events.js";
-import { runPreflights } from "#runner/preflight.js";
+import { declaredCapabilities, runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { loadWorkspace, workflowById } from "#workflow/workspace.js";
@@ -85,7 +85,10 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
   // source works, connects over stdio, or lets an agent run — not after the
   // first paid step 403s with nothing durable recorded to show for it. Each
   // once, by identity, as `landrace start` runs them.
-  await runPreflights([...new Set(hooked.flatMap(({ registry }) => registry.preflights))], ctx);
+  await runPreflights(
+    [...new Set(hooked.flatMap(({ registry }) => registry.preflights))],
+    { ...ctx, capabilities: declaredCapabilities(hooked.map(({ w }) => w.steps)) },
+  );
 
   /*
    * Prove the integration works before telling a client we are ready — each

@@ -142,7 +142,7 @@ const body = `Created by scripts/jira-check.mjs at ${stamp}.\nA second line, {br
 let item;
 let child;
 
-await check(`preflight: permissions, issue types, labels field${field ? `, ${JIRA_FIELD} on every edit screen` : ""}`, async () => {
+await check(`preflight: permissions, issue types, labels field${field ? `, ${JIRA_FIELD} on the edit screen of each type an item can be` : ""}`, async () => {
   await hooks.preflight.check(ctx);
 });
 

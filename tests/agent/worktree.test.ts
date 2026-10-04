@@ -719,7 +719,8 @@ describe("preparing a write step's worktree", () => {
     return root;
   }
 
-  const setup = (over: Partial<WorktreeSetup> = {}): WorktreeSetup => ({ copy: [], setup: [], timeoutMs: 60_000, ...over });
+  const setup = (over: Partial<WorktreeSetup> = {}): WorktreeSetup =>
+    ({ copy: [], setup: [], timeoutMs: 60_000, lockfiles: ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"], ...over });
 
   async function prepared(item: string, root: string, s: WorktreeSetup, events: Array<[string, Record<string, unknown>]> = []) {
     const path = await ensureWorktree(item, root, { branch: `landrace/${item}`, write: true }, keptSlot(item));
@@ -828,6 +829,45 @@ describe("preparing a write step's worktree", () => {
     await prepared("84", root, setup({ setup: [...s.setup, "true"] }));
     expect(await runs()).toBe(4);
     await removeWorktree("84", root, keptSlot("84"));
+  });
+
+  /*
+   * A monorepo's workspaces each lock their own dependencies: the root
+   * lockfile is not the one a step changes, and a kept worktree would keep
+   * stale node_modules.
+   */
+  it("runs setup again when any lockfile the globs match changes, and not for one they leave out", async () => {
+    const root = await project();
+    await mkdir(join(root, "backend"));
+    await writeFile(join(root, "backend", "pnpm-lock.yaml"), "lockfileVersion: 1\n");
+    await mkdir(join(root, "docs"));
+    await writeFile(join(root, "docs", "notes.lock"), "a\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "workspaces");
+    const counter = join(await mkdtemp(join(tmpdir(), "lr-wt-count-")), "runs");
+    roots.push(dirname(counter));
+    const s = setup({ setup: [`echo run >> '${counter}'`], lockfiles: ["**/pnpm-lock.yaml"] });
+    const runs = async (): Promise<number> => (await readFile(counter, "utf8")).split("\n").filter(Boolean).length;
+
+    const path = await prepared("88", root, s);
+    await writeFile(join(path, "docs", "notes.lock"), "b\n");
+    await git(path, "commit", "-qam", "notes");
+    await prepared("88", root, s);
+    expect(await runs()).toBe(1);
+
+    await writeFile(join(path, "backend", "pnpm-lock.yaml"), "lockfileVersion: 2\n");
+    await git(path, "commit", "-qam", "bump backend");
+    await prepared("88", root, s);
+    expect(await runs()).toBe(2);
+
+    // A lockfile a step added is one the globs match too.
+    await mkdir(join(path, "frontend"));
+    await writeFile(join(path, "frontend", "pnpm-lock.yaml"), "lockfileVersion: 1\n");
+    await git(path, "add", "-A");
+    await git(path, "commit", "-qm", "frontend");
+    await prepared("88", root, s);
+    expect(await runs()).toBe(3);
+    await removeWorktree("88", root, keptSlot("88"));
   });
 
   it("fails with the tail of the command's output, runs nothing after it, and runs it again next time", async () => {
