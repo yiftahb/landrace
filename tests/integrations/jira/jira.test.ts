@@ -610,6 +610,122 @@ describe("writing", () => {
   });
 });
 
+describe("the status follows the stage, by statuses", () => {
+  const STATUS = "tracker.status";
+  const move = async (jira: Jira, ctx: RuntimeContext, key: string, value: string): Promise<void> => {
+    const handler = jira.effects()[STATUS];
+    if (!handler) throw new Error("no tracker.status handler");
+    await handler.apply({ type: STATUS, value }, on(ctx, key));
+  };
+  const node = (labels: string[]): Node => ({
+    id: "KEY-1", kind: "item", title: "", link: "", closed: null, priority: null, origin: null, state: { labels },
+  });
+
+  it("moves the label, then the status through the transition into the mapped one, its name in any case", async () => {
+    const { fake, jira, ctx } = setup({ statuses: { build: "in progress" } });
+    const { key } = fake.add();
+    await move(jira, ctx, key, "build");
+    expect(fake.issue(key).labels).toEqual([LABELS.stage("build")]);
+    expect(fake.issue(key).status).toBe("In Progress");
+    const writes = fake.writes().map((c) => `${c.method} ${c.path}`);
+    expect(writes.at(-1)).toBe(`POST /rest/api/3/issue/${key}/transitions`);
+    expect(writes.slice(0, -1).every((w) => w.startsWith("PUT "))).toBe(true);
+  });
+
+  it("asks for no transition when the issue is already in the mapped status", async () => {
+    const { fake, jira, ctx } = setup({ statuses: { build: "In Progress" } });
+    const { key } = fake.add({ status: "In Progress" });
+    await move(jira, ctx, key, "build");
+    expect(fake.calls.some((c) => c.path.endsWith("/transitions"))).toBe(false);
+  });
+
+  it("moves no status for a stage with no mapping", async () => {
+    const { fake, jira, ctx } = setup({ statuses: { build: "In Progress" } });
+    const { key } = fake.add();
+    await move(jira, ctx, key, "triage");
+    expect(fake.issue(key).labels).toEqual([LABELS.stage("triage")]);
+    expect(fake.calls.some((c) => c.path.includes("/transitions") || c.path.includes("fields=status"))).toBe(false);
+  });
+
+  it("logs a status the issue offers no transition into once per item and status, and does not halt", async () => {
+    const { fake, jira, ctx } = setup({ statuses: { review: "In Review" } });
+    const events: Array<Record<string, unknown>> = [];
+    const logged: RuntimeContext = { ...ctx, log: (event, data) => { if (event === "jira.status.unoffered") events.push(data ?? {}); } };
+    const one = fake.add();
+    const two = fake.add();
+    await move(jira, logged, one.key, "review");
+    await move(jira, logged, one.key, "review");
+    await move(jira, logged, two.key, "review");
+    expect(one.labels).toEqual([LABELS.stage("review")]);
+    expect(one.status).toBe("To Do");
+    expect(events).toEqual([
+      expect.objectContaining({ item: one.key, status: "In Review" }),
+      expect.objectContaining({ item: two.key, status: "In Review" }),
+    ]);
+  });
+
+  // The halt has to outlast the tick: a label already moved places the item in
+  // the new stage next tick, and the status, and every on_enter effect after it, is never planned again.
+  it("halts on two transitions into the mapped status rather than pick one, before the label moves", async () => {
+    const { fake, jira, ctx } = setup({ statuses: { build: "In Progress" } });
+    fake.transitions.push({ id: "22", name: "Start", to: "In Progress" });
+    const { key } = fake.add({ labels: [LABELS.stage("triage")] });
+    await expect(move(jira, ctx, key, "build")).rejects.toThrow(/2 transitions into "In Progress".*"In Progress".*"Start"/);
+    expect(fake.issue(key).labels).toEqual([LABELS.stage("triage")]);
+    expect(fake.writes()).toEqual([]);
+  });
+
+  // The label has moved by the time Jira refuses the POST — a validator, a
+  // screen's required field — so a throw here would lose the stage's
+  // on_enter effects for good, where the status is only display.
+  it("logs a transition Jira refuses once per item and status, keeps the label moved, and does not halt", async () => {
+    const { fake, jira, ctx } = setup({ statuses: { build: "In Progress" } });
+    fake.failOn = (method, path) => (method === "POST" && path.endsWith("/transitions") ? 400 : null);
+    const events: Array<Record<string, unknown>> = [];
+    const logged: RuntimeContext = { ...ctx, log: (event, data) => { if (event === "jira.status.refused") events.push(data ?? {}); } };
+    const { key } = fake.add({ labels: [LABELS.stage("triage")] });
+    await move(jira, logged, key, "build");
+    await move(jira, logged, key, "build");
+    expect(fake.issue(key).labels).toEqual([LABELS.stage("build")]);
+    expect(fake.issue(key).status).toBe("To Do");
+    expect(fake.calls.filter((c) => c.method === "POST" && c.path.endsWith("/transitions"))).toHaveLength(2);
+    expect(events).toEqual([expect.objectContaining({ item: key, status: "In Progress", transition: "In Progress" })]);
+  });
+
+  it("is satisfied by the label alone for a stage with no mapping, and by the label and the status for one with", () => {
+    const { jira } = setup({ statuses: { build: "In Progress" } });
+    const satisfied = jira.effects()[STATUS]?.satisfied;
+    if (!satisfied) throw new Error("no tracker.status handler");
+    const at = (labels: string[], status?: string): Snapshot => ({ node: node(labels), tracker: { bot: BOT.accountId, status } });
+    expect(satisfied(at([LABELS.stage("triage")]), { type: STATUS, value: "triage" })).toBe(true);
+    expect(satisfied(at([LABELS.stage("build")], "To Do"), { type: STATUS, value: "build" })).toBe(false);
+    expect(satisfied(at([LABELS.stage("build")], "in progress"), { type: STATUS, value: "build" })).toBe(true);
+    expect(satisfied(at([], "In Progress"), { type: STATUS, value: "build" })).toBe(false);
+  });
+
+  it("reads the issue's status into the snapshot only when a status is mapped", async () => {
+    const mapped = setup({ statuses: { build: "In Progress" } });
+    const { key } = mapped.fake.add({ status: "In Progress" });
+    expect(mapped.jira.provides()).toContain("tracker.status");
+    expect(await mapped.jira.observe(on(mapped.ctx, key))).toMatchObject({ tracker: { bot: BOT.accountId, status: "In Progress" } });
+    const plain = setup();
+    plain.fake.add();
+    expect(plain.jira.provides()).not.toContain("tracker.status");
+    expect((await plain.jira.observe(on(plain.ctx, "KEY-1"))).tracker).toEqual({ bot: BOT.accountId });
+  });
+
+  it("refuses a mapping to an empty status name", () => {
+    expect(() => new Jira({ project: "KEY", statuses: { build: " " } })).toThrow(/statuses\.build/);
+  });
+
+  it("names, at the preflight, every mapped status the project's workflow does not have", async () => {
+    const { jira, ctx } = setup({ statuses: { build: "In Progress", review: "QA", done: "Released" } });
+    await expect(jira.check(ctx)).rejects.toThrow(/statuses\.review "QA".*statuses\.done "Released"/);
+    const fine = setup({ statuses: { build: "in progress", review: "In Review" } });
+    await expect(fine.jira.check(fine.ctx)).resolves.toBeUndefined();
+  });
+});
+
 describe("the preflight", () => {
   it("passes an account that can do everything, writing nothing", async () => {
     const { fake, jira, ctx } = setup();

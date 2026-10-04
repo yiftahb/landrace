@@ -1,13 +1,17 @@
 /*
  * Jira Cloud, as landrace ships it (`landrace/integrations/jira`): one
- * project's issues as a tracker, on the kit's base. A project's hook file
- * composes it beside whatever forge and docs it has:
+ * project's issues as a tracker, and one of their fields as its docs, on the
+ * kit's bases. A project's hook file composes them beside whatever forge it
+ * has:
  *
- *   export const { preflight, source, operator, pre, post } = compose({
- *     tracker: new Jira({ project: "KEY" }),
+ *   const tracker = new Jira({ project: "KEY" });
+ *   export const { preflight, source, operator, pre, post, spec } = compose({
+ *     tracker,
+ *     docs: new JiraField({ tracker, field: "customfield_10050" }),
  *   });
  *
  * Configured by the `jiraBaseUrl`, `jiraEmail` and `jiraToken` secrets, and
  * scoped to one developer's issues by the optional `jiraAssignee`.
  */
+export { JiraField, type JiraFieldOptions } from "./field.js";
 export { Jira, type JiraOptions } from "./tracker.js";

@@ -35,6 +35,8 @@ interface Status { id: string; name: string; category: "new" | "indeterminate" |
 export const STATUSES: Record<string, Status> = {
   "To Do": { id: "10000", name: "To Do", category: "new" },
   "In Progress": { id: "3", name: "In Progress", category: "indeterminate" },
+  // In the workflow, and no transition leads into it.
+  "In Review": { id: "10003", name: "In Review", category: "indeterminate" },
   Done: { id: "10001", name: "Done", category: "done" },
   "Won't Do": { id: "10002", name: "Won't Do", category: "done" },
 };
@@ -67,11 +69,21 @@ export interface FakeIssue {
   priority: string | null;
   issuetype: string;
   comments: FakeComment[];
+  /** Custom fields by id, as `PUT /issue` wrote them or a person filled them: a string or ADF. */
+  custom: Record<string, unknown>;
   /** Description changes, oldest first: what `changelog/bulkfetch` answers from. */
   history: Array<{ id: string; author: FakeUser; created: string }>;
 }
 
+/** `fields`: the ids on its create screen, and on its edit screen too. */
 export interface FakeIssueType { id: string; name: string; subtask: boolean; fields: string[] }
+
+/** A field as `GET /field` lists it. */
+export interface FakeField { id: string; name: string; custom: boolean; schema: { type: string; custom?: string; customId?: number } }
+
+export const DESIGN = "customfield_10050";
+export const TEXTAREA = "com.atlassian.jira.plugin.system.customfieldtypes:textarea";
+export const TEXTFIELD = "com.atlassian.jira.plugin.system.customfieldtypes:textfield";
 
 export interface FakeLinkType { id: string; name: string; inward: string; outward: string }
 
@@ -168,10 +180,17 @@ export function createFakeJira(project = "KEY") {
     indexLag: false,
     permissions: Object.fromEntries(Object.keys(PERMISSION_NAMES).map((k) => [k, true])) as Record<string, boolean>,
     issueTypes: [
-      { id: "10001", name: "Task", subtask: false, fields: ["summary", "issuetype", "project", "description", "labels", "priority", "assignee"] },
-      { id: "10002", name: "Subtask", subtask: true, fields: ["summary", "issuetype", "project", "parent", "description", "labels", "priority", "assignee"] },
-      { id: "10003", name: "Bug", subtask: false, fields: ["summary", "issuetype", "project", "description"] },
+      { id: "10001", name: "Task", subtask: false, fields: ["summary", "issuetype", "project", "description", "labels", "priority", "assignee", DESIGN] },
+      { id: "10002", name: "Subtask", subtask: true, fields: ["summary", "issuetype", "project", "parent", "description", "labels", "priority", "assignee", DESIGN] },
+      { id: "10003", name: "Bug", subtask: false, fields: ["summary", "issuetype", "project", "description", DESIGN] },
     ] as FakeIssueType[],
+    /** The site's fields beside the system ones, as `GET /field` lists them. */
+    fields: [
+      { id: DESIGN, name: "Technical design", custom: true, schema: { type: "string", custom: TEXTAREA, customId: 10050 } },
+      { id: "customfield_10051", name: "Team", custom: true, schema: { type: "option", custom: "com.atlassian.jira.plugin.system.customfieldtypes:select", customId: 10051 } },
+    ] as FakeField[],
+    /** Textareas with the plain-text renderer: REST v3 answers and takes them as strings, not ADF, and `GET /field` does not say which. */
+    plainText: new Set<string>(),
     priorities: [
       { id: "1", name: "Highest" }, { id: "2", name: "High" }, { id: "3", name: "Medium" },
       { id: "4", name: "Low" }, { id: "5", name: "Lowest" },
@@ -237,6 +256,7 @@ export function createFakeJira(project = "KEY") {
         priority: "3",
         issuetype: "Task",
         comments: [],
+        custom: {},
         history: [],
         ...seed,
       };
@@ -357,6 +377,7 @@ export function createFakeJira(project = "KEY") {
       },
       issuetype: { id: "10001", name: issue.issuetype, subtask: issue.issuetype === "Subtask" },
       issuelinks: linksJson(issue),
+      ...issue.custom,
       // Read off the issue itself, so never behind the way search can be.
       subtasks: [...issues.values()]
         .filter((s) => s.parent === issue.key && fake.issueTypes.some((t) => t.name === s.issuetype && t.subtask))
@@ -402,6 +423,12 @@ export function createFakeJira(project = "KEY") {
       } else if ((m = /^assignee = "([^"\\]+)"$/.exec(clause))) {
         const id = m[1] as string;
         tests.push((i) => i.assignee?.accountId === id);
+      } else if ((m = /^cf\[([0-9]+)\] is not EMPTY$/.exec(clause))) {
+        const id = `customfield_${m[1] as string}`;
+        tests.push((i) => i.custom[id] !== undefined && i.custom[id] !== null && i.custom[id] !== "");
+      } else if ((m = /^issuetype = ([0-9]+)$/.exec(clause))) {
+        const name = fake.issueTypes.find((t) => t.id === m?.[1])?.name;
+        tests.push((i) => i.issuetype === name);
       } else if ((m = /^parent = "([A-Z][A-Z0-9_]*-[0-9]+)"$/.exec(clause))) {
         const parent = m[1] as string;
         tests.push((i) => i.parent === parent);
@@ -489,8 +516,28 @@ export function createFakeJira(project = "KEY") {
       return json({ maxResults, startAt, total: type.fields.length, fields });
     }
 
+    // Documented: each issue type of the project, with every status its workflow has.
+    if (method === "GET" && path === `/rest/api/3/project/${project}/statuses`) {
+      return json(fake.issueTypes.map((t) => ({
+        self: `${SITE}/rest/api/3/issuetype/${t.id}`, id: t.id, name: t.name, subtask: t.subtask,
+        statuses: Object.keys(STATUSES).map(statusJson),
+      })));
+    }
+
     if (method === "GET" && path === `/rest/api/3/project/${project}`) {
-      return json({ self: `${SITE}/rest/api/3/project/10000`, id: "10000", key: project, name: "Acme", projectTypeKey: "software", simplified: false, style: "classic" });
+      return json({
+        self: `${SITE}/rest/api/3/project/10000`, id: "10000", key: project, name: "Acme", projectTypeKey: "software", simplified: false, style: "classic",
+        issueTypes: fake.issueTypes.map((t) => ({ self: `${SITE}/rest/api/3/issuetype/${t.id}`, id: t.id, name: t.name, subtask: t.subtask })),
+      });
+    }
+
+    // Documented: every field on the site, system and custom, in one unpaged array.
+    if (method === "GET" && path === "/rest/api/3/field") {
+      return json([
+        { id: "summary", key: "summary", name: "Summary", custom: false, schema: { type: "string", system: "summary" } },
+        { id: "description", key: "description", name: "Description", custom: false, schema: { type: "string", system: "description" } },
+        ...fake.fields.map((f) => ({ ...f, key: f.id, clauseNames: [`cf[${f.schema.customId ?? 0}]`, f.name] })),
+      ]);
     }
 
     if (method === "GET" && path === "/rest/api/3/priority/search") {
@@ -599,7 +646,7 @@ export function createFakeJira(project = "KEY") {
       return json({ id: issue.id, key: issue.key, self: `${SITE}/rest/api/3/issue/${issue.id}` }, 201);
     }
 
-    if ((m = /^\/rest\/api\/3\/issue\/([^/]+)(\/comment|\/transitions)?$/.exec(path))) {
+    if ((m = /^\/rest\/api\/3\/issue\/([^/]+)(\/comment|\/transitions|\/editmeta)?$/.exec(path))) {
       const issue = visible(decodeURIComponent(m[1] as string));
       if (!issue) return errors(404, ["Issue does not exist or you do not have permission to see it."]);
       const me = fake.me as FakeUser;
@@ -608,10 +655,40 @@ export function createFakeJira(project = "KEY") {
         return json(issueJson(issue, (q.get("fields") ?? "").split(",")));
       }
 
+      // Documented: the fields the account may edit on this issue, its edit screen's.
+      // A closed issue answers none, as classic Jira's "Closed" does by its
+      // workflow's `jira.issue.editable = false`.
+      if (m[2] === "/editmeta" && method === "GET") {
+        if (STATUSES[issue.status]?.category === "done") return json({ fields: {} });
+        const type = fake.issueTypes.find((t) => t.name === issue.issuetype);
+        return json({ fields: Object.fromEntries((type?.fields ?? []).map((id) => [id, { required: false, key: id, name: id, operations: ["set"] }])) });
+      }
+
       if (m[2] === undefined && method === "PUT") {
         const f = (b.fields ?? {}) as Record<string, unknown>;
+        const type = fake.issueTypes.find((t) => t.name === issue.issuetype);
         for (const field of Object.keys(f)) {
-          if (field !== "summary" && field !== "description") return errors(400, [], { [field]: `Field '${field}' cannot be set.` });
+          const custom = fake.fields.find((c) => c.id === field);
+          if (custom !== undefined && type?.fields.includes(field)) {
+            const value = f[field];
+            if (custom.schema.custom === TEXTAREA && fake.plainText.has(field)) {
+              if (typeof value !== "string") return errors(400, [], { [field]: "Operation value must be a string" });
+              if (value.length > 32_767) return errors(400, [], { [field]: "The entered text is too long. It exceeds the allowed limit of 32,767 characters." });
+            } else if (custom.schema.custom === TEXTAREA) {
+              if (typeof value === "string") return errors(400, [], { [field]: "Operation value must be an Atlassian Document (see the Atlassian Document Format)" });
+              const problem = adfProblem(value as Adf);
+              if (problem) return errors(400, [], { [field]: `Operation value must be an Atlassian Document (see the Atlassian Document Format): ${problem}` });
+              if (JSON.stringify(value).length > 32_767) return errors(400, [], { [field]: "The entered text is too long. It exceeds the allowed limit of 32,767 characters." });
+            } else if (custom.schema.custom === TEXTFIELD) {
+              if (typeof value !== "string") return errors(400, [], { [field]: "Operation value must be a string" });
+              if (value.length > 255) return errors(400, [], { [field]: "The entered text is too long. It exceeds the allowed limit of 255 characters." });
+            } else {
+              return errors(400, [], { [field]: "Specify a valid value" });
+            }
+            issue.custom[field] = value;
+            continue;
+          }
+          if (field !== "summary" && field !== "description") return errors(400, [], { [field]: `Field '${field}' cannot be set. It is not on the appropriate screen, or unknown.` });
         }
         if (typeof f.summary === "string") issue.summary = f.summary;
         if (f.description !== undefined) {

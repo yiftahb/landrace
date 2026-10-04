@@ -2,13 +2,16 @@
  * Jira Cloud issues as a project's tracker: the JQL, the changelog that says
  * who last edited a body, the workflow's transitions, the "Blocks" issue
  * links as `blocked-by`, and the account's permissions. Everything else a
- * tracker does is `BaseTracker`'s — position is still an `lr:stage:*` label,
- * and Jira's status moves only to close an item or reopen it.
+ * tracker does is `BaseTracker`'s — position is still an `lr:stage:*` label;
+ * Jira's status follows it only where `statuses` maps the stage, and
+ * otherwise moves only to close an item or reopen it.
  */
-import { type Closed, type ItemPatch, RELATIONS, type RuntimeContext, STAGE_LABEL_PREFIX } from "landrace/hooks";
 import {
-  BaseTracker, DONE_WINDOW_MS, EffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
-  type ItemRecord, type OpenRelations, type RelatedRecord, type TrackerComment,
+  type Closed, type HookContext, type ItemPatch, RELATIONS, type RuntimeContext, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
+} from "landrace/hooks";
+import {
+  BaseTracker, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
+  type ItemRecord, type OpenRelations, type RelatedRecord, statusSatisfied, type TrackerComment,
 } from "landrace/kit";
 import { type AdfDoc, fromAdf, plainAdf, toAdf } from "./adf.js";
 import { type Client, clientFor, isMissing } from "./client.js";
@@ -36,11 +39,35 @@ export interface JiraOptions {
    * blocker may be.
    */
   blockedByLinkType?: string | undefined;
+  /**
+   * A Jira status for a stage, by the stage's `tracker.status` value: after
+   * the label, the issue moves through the transition into it. Display only —
+   * position stays the label — so a stage with none moves no status, and a
+   * transition the issue does not offer is logged and skipped.
+   */
+  statuses?: Record<string, string> | undefined;
   fetchImpl?: typeof fetch | undefined;
 }
 
 /** Jira's own bound on a comment or a description, counted on the document it is sent as. */
 const MAX_ADF_CHARS = 32_767;
+
+/**
+ * A body as the document Jira takes. Rich ADF runs several times its
+ * Markdown's size, so a body the engine admits can be past Jira's bound
+ * rich and well inside it plain: then it is sent plain, raw Markdown on
+ * the ticket rather than no answer at all. Past the bound even plain it is
+ * refused here, rather than by a 400 after the fact, and as a refusal: no
+ * retry makes it fit, so the round is recorded rather than paid for again.
+ */
+export function adfOf(text: string, what: string): AdfDoc {
+  const rich = toAdf(text);
+  if (JSON.stringify(rich).length <= MAX_ADF_CHARS) return rich;
+  const plain = plainAdf(text);
+  const size = JSON.stringify(plain).length;
+  if (size > MAX_ADF_CHARS) throw new EffectRefused(`refusing to send a ${size}-character ${what}: Jira takes at most ${MAX_ADF_CHARS}`);
+  return plain;
+}
 
 /**
  * Every field an item is read from, asked for by name: a search returns ids
@@ -124,7 +151,7 @@ interface Issue {
 interface Transition { id: string; name: string; to?: Status }
 
 /** Jira answers names however they were typed; a status or transition is one name whatever its case. */
-const same = (a: string | undefined, b: string): boolean => a?.trim().toLowerCase() === b.trim().toLowerCase();
+export const same = (a: string | undefined, b: string): boolean => a?.trim().toLowerCase() === b.trim().toLowerCase();
 
 /**
  * Every page of a create-metadata list: an issue type or a labels field past
@@ -208,6 +235,94 @@ function blockersIn(issuelinks: unknown, type: string): { blockers: Blocker[]; w
   return { blockers, whole };
 }
 
+/** Each client's assignee, resolved once: its account id, or null when the tracker is not scoped. */
+const assignees = new WeakMap<Client, string | null>();
+
+/**
+ * The `jiraAssignee` secret as an account id, or null when it is unset or
+ * empty. An email is looked up once, and refused when it matches no user or
+ * several: Jira keeps most emails private, so a user search answers with
+ * none shown, and one of those may be the one meant — two are not a guess.
+ * An account id is asked after too, so a typo refuses to start rather than
+ * list nobody's issues. Resolved by the preflight and by whatever reads
+ * first, never skipped: an unscoped list of everybody's issues is the
+ * failure the secret is there to prevent.
+ */
+export async function assigneeOf(jira: Client, ctx: RuntimeContext): Promise<string | null> {
+  const known = assignees.get(jira);
+  if (known !== undefined) return known;
+  const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
+  let id: string | null = null;
+  if (value !== "") {
+    if (!value.includes("@") && !ACCOUNT_ID.test(value)) {
+      throw new Error(`jiraAssignee "${value}" is neither an email nor a Jira account id`);
+    }
+    let users: User[];
+    if (value.includes("@")) {
+      const found = await jira.call<User[] | null>("GET", `/rest/api/3/user/search?query=${encodeURIComponent(value)}&maxResults=${USER_PAGE}`) ?? [];
+      // A full page may not be all of them, and the one meant may be past it.
+      if (found.length >= USER_PAGE) throw new Error(`jiraAssignee "${value}" matches more Jira users than one search returns; name one by its account id`);
+      users = found.filter((u) => u.emailAddress === undefined || same(u.emailAddress, value));
+    } else {
+      users = await jira.call<User | null>("GET", `/rest/api/3/user?accountId=${encodeURIComponent(value)}`)
+        .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
+    }
+    const [only] = users;
+    if (!only) {
+      // Jira answers an account without "Browse users and groups" with nobody, not a refusal: asked, so the
+      // refusal names the cause that applied.
+      const { permissions = {} } = await jira.call<{ permissions?: Record<string, { havePermission?: boolean }> }>(
+        "GET", "/rest/api/3/mypermissions?permissions=USER_PICKER",
+      );
+      if (permissions.USER_PICKER?.havePermission !== true) {
+        throw new Error(
+          `jiraAssignee "${value}" cannot be looked up: the account lacks the global "Browse users and groups" permission (USER_PICKER), ` +
+          "without which Jira finds no user; grant it",
+        );
+      }
+      throw new Error(`jiraAssignee "${value}" matches no Jira user`);
+    }
+    if (users.length > 1) {
+      throw new Error(`jiraAssignee "${value}" matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
+    }
+    if (typeof only.accountId !== "string" || !ACCOUNT_ID.test(only.accountId)) {
+      throw new Error(`Jira answered jiraAssignee "${value}" with no usable account id`);
+    }
+    id = only.accountId;
+  }
+  assignees.set(jira, id);
+  return id;
+}
+
+/** The clause every listing query ends its conditions with: the assignee's, or nothing. */
+export async function scopeOf(jira: Client, ctx: RuntimeContext): Promise<string> {
+  const id = await assigneeOf(jira, ctx);
+  return id === null ? "" : ` AND assignee = "${id}"`;
+}
+
+/**
+ * Every issue a query finds, page by page — and whether the pages ran out
+ * before it did. Search is eventually consistent; the ids in `reconcile`
+ * (at most 50) are read as they are now rather than as the index has them.
+ */
+export async function search(
+  jira: Client, jql: string, { reconcile = [], fields = FIELDS }: { reconcile?: number[]; fields?: string[] } = {},
+): Promise<{ issues: Issue[]; complete: boolean }> {
+  const issues: Issue[] = [];
+  let nextPageToken: string | undefined;
+  for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
+    const res = await jira.call<{ issues?: Issue[]; nextPageToken?: string | null }>("POST", "/rest/api/3/search/jql", {
+      jql, fields, maxResults: ISSUE_PAGE,
+      ...(reconcile.length === 0 ? {} : { reconcileIssues: reconcile }),
+      ...(nextPageToken === undefined ? {} : { nextPageToken }),
+    });
+    issues.push(...(res.issues ?? []));
+    if (!res.nextPageToken) return { issues, complete: true };
+    nextPageToken = res.nextPageToken;
+  }
+  return { issues, complete: false };
+}
+
 /**
  * The closed blockers' own fields, for their resolutions: those the answer
  * holds, by key, and those fetched, by issue id — or by key, for one whose
@@ -226,7 +341,8 @@ interface Resolutions { held: Map<string, Issue["fields"]>; fetched: Map<string,
  * instance creates is assigned to them. Unset or empty, it lists everyone's.
  */
 export class Jira extends BaseTracker {
-  private readonly project: string;
+  /** Read by `JiraField`, so a spec is kept on this tracker's issues and no other project's. */
+  readonly project: string;
   private readonly issueType: string;
   private readonly childType: string;
   private readonly done: string;
@@ -236,12 +352,13 @@ export class Jira extends BaseTracker {
   private readonly linkType: string;
   /** Each client's project priorities, highest first, read once. */
   private readonly priorities = new WeakMap<Client, string[]>();
-  /** Each client's assignee, resolved once: its account id, or null when the tracker is not scoped. */
-  private readonly assignees = new WeakMap<Client, string | null>();
+  private readonly statuses: ReadonlyMap<string, string>;
+  /** Each item and status already logged as not offered or refused: once a process, since a board's status is not worth a flood. */
+  private readonly statusSaid = new Set<string>();
   /** The unreadable blockers already logged this tick: a listing begins each one, and clears it. */
   private readonly unreadableSaid = new Set<string>();
 
-  constructor({ project, issueType, childType, transitions, blockedByLinkType, fetchImpl }: JiraOptions) {
+  constructor({ project, issueType, childType, transitions, blockedByLinkType, statuses, fetchImpl }: JiraOptions) {
     super();
     // Spelled into every JQL query and URL, so nothing but a key's own characters.
     if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error(`project must be a Jira project key such as "KEY", got "${project}"`);
@@ -253,6 +370,10 @@ export class Jira extends BaseTracker {
     this.fetchImpl = fetchImpl;
     this.keyPattern = new RegExp(`^${project}-[1-9][0-9]*$`);
     this.linkType = blockedByLinkType ?? "Blocks";
+    for (const [stage, status] of Object.entries(statuses ?? {})) {
+      if (typeof status !== "string" || !status.trim()) throw new Error(`statuses.${stage} must name a Jira status, got ${JSON.stringify(status)}`);
+    }
+    this.statuses = new Map(Object.entries(statuses ?? {}));
   }
 
   private jira(ctx: RuntimeContext): Client {
@@ -269,110 +390,8 @@ export class Jira extends BaseTracker {
     return id;
   }
 
-  /**
-   * A body as the document Jira takes. Rich ADF runs several times its
-   * Markdown's size, so a body the engine admits can be past Jira's bound
-   * rich and well inside it plain: then it is sent plain, raw Markdown on
-   * the ticket rather than no answer at all. Past the bound even plain it is
-   * refused here, rather than by a 400 after the fact, and as a refusal: no
-   * retry makes it fit, so the round is recorded rather than paid for again.
-   */
-  private adf(text: string, what: string): AdfDoc {
-    const rich = toAdf(text);
-    if (JSON.stringify(rich).length <= MAX_ADF_CHARS) return rich;
-    const plain = plainAdf(text);
-    const size = JSON.stringify(plain).length;
-    if (size > MAX_ADF_CHARS) throw new EffectRefused(`refusing to send a ${size}-character ${what}: Jira takes at most ${MAX_ADF_CHARS}`);
-    return plain;
-  }
-
   async login(ctx: RuntimeContext): Promise<string> {
     return this.jira(ctx).myself();
-  }
-
-  /**
-   * The `jiraAssignee` secret as an account id, or null when it is unset or
-   * empty. An email is looked up once, and refused when it matches no user or
-   * several: Jira keeps most emails private, so a user search answers with
-   * none shown, and one of those may be the one meant — two are not a guess.
-   * An account id is asked after too, so a typo refuses to start rather than
-   * list nobody's issues. Resolved by the preflight and by whatever reads
-   * first, never skipped: an unscoped list of everybody's issues is the
-   * failure the secret is there to prevent.
-   */
-  private async assignee(jira: Client, ctx: RuntimeContext): Promise<string | null> {
-    const known = this.assignees.get(jira);
-    if (known !== undefined) return known;
-    const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
-    let id: string | null = null;
-    if (value !== "") {
-      if (!value.includes("@") && !ACCOUNT_ID.test(value)) {
-        throw new Error(`jiraAssignee "${value}" is neither an email nor a Jira account id`);
-      }
-      let users: User[];
-      if (value.includes("@")) {
-        const found = await jira.call<User[] | null>("GET", `/rest/api/3/user/search?query=${encodeURIComponent(value)}&maxResults=${USER_PAGE}`) ?? [];
-        // A full page may not be all of them, and the one meant may be past it.
-        if (found.length >= USER_PAGE) throw new Error(`jiraAssignee "${value}" matches more Jira users than one search returns; name one by its account id`);
-        users = found.filter((u) => u.emailAddress === undefined || same(u.emailAddress, value));
-      } else {
-        users = await jira.call<User | null>("GET", `/rest/api/3/user?accountId=${encodeURIComponent(value)}`)
-          .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
-      }
-      const [only] = users;
-      if (!only) {
-        // Jira answers an account without "Browse users and groups" with nobody, not a refusal: asked, so the
-        // refusal names the cause that applied.
-        const { permissions = {} } = await jira.call<{ permissions?: Record<string, { havePermission?: boolean }> }>(
-          "GET", "/rest/api/3/mypermissions?permissions=USER_PICKER",
-        );
-        if (permissions.USER_PICKER?.havePermission !== true) {
-          throw new Error(
-            `jiraAssignee "${value}" cannot be looked up: the account lacks the global "Browse users and groups" permission (USER_PICKER), ` +
-            "without which Jira finds no user; grant it",
-          );
-        }
-        throw new Error(`jiraAssignee "${value}" matches no Jira user`);
-      }
-      if (users.length > 1) {
-        throw new Error(`jiraAssignee "${value}" matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
-      }
-      if (typeof only.accountId !== "string" || !ACCOUNT_ID.test(only.accountId)) {
-        throw new Error(`Jira answered jiraAssignee "${value}" with no usable account id`);
-      }
-      id = only.accountId;
-    }
-    this.assignees.set(jira, id);
-    return id;
-  }
-
-  /** The clause every listing query ends its conditions with: the assignee's, or nothing. */
-  private async mine(jira: Client, ctx: RuntimeContext): Promise<string> {
-    const id = await this.assignee(jira, ctx);
-    return id === null ? "" : ` AND assignee = "${id}"`;
-  }
-
-  /**
-   * Every issue a query finds, page by page — and whether the pages ran out
-   * before it did. Search is eventually consistent; the ids in `reconcile`
-   * (at most 50) are read as they are now rather than as the index has them.
-   */
-  private async search(
-    jira: Client, jql: string, { reconcile = [], fields = FIELDS }: { reconcile?: number[]; fields?: string[] } = {},
-  ): Promise<{ issues: Issue[]; complete: boolean }> {
-    const issues: Issue[] = [];
-    let nextPageToken: string | undefined;
-    for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
-      const res = await jira.call<{ issues?: Issue[]; nextPageToken?: string | null }>("POST", "/rest/api/3/search/jql", {
-        jql, fields, maxResults: ISSUE_PAGE,
-        ...(reconcile.length === 0 ? {} : { reconcileIssues: reconcile }),
-        ...(nextPageToken === undefined ? {} : { nextPageToken }),
-      });
-      issues.push(...(res.issues ?? []));
-      if (!res.nextPageToken) return { issues, complete: true };
-      nextPageToken = res.nextPageToken;
-    }
-    return { issues, complete: false };
   }
 
   /**
@@ -579,11 +598,11 @@ export class Jira extends BaseTracker {
   async items(ctx: RuntimeContext): Promise<ItemRecord[]> {
     this.unreadableSaid.clear();
     const jira = this.jira(ctx);
-    const mine = await this.mine(jira, ctx);
-    const open = await this.search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`);
+    const mine = await scopeOf(jira, ctx);
+    const open = await search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`);
     if (!open.complete) throw new Error(`${this.project} has more open issues${mine ? " assigned to jiraAssignee" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
     const since = Date.now() - DONE_WINDOW_MS;
-    const closed = await this.search(
+    const closed = await search(
       jira,
       `project = "${this.project}" AND statusCategory = Done AND updated >= -${Math.ceil(DONE_WINDOW_MS / 60_000)}m${mine} ORDER BY updated DESC`,
     );
@@ -631,7 +650,7 @@ export class Jira extends BaseTracker {
     const parent = await jira.call<{ fields?: { subtasks?: Array<{ id?: string }> } }>("GET", `/rest/api/3/issue/${key}?fields=subtasks`);
     const subtasks = (parent.fields?.subtasks ?? []).flatMap((s) => (s.id === undefined ? [] : [Number(s.id)]));
     if (subtasks.length > ITEM_PAGE) throw new Error(`${key} has more than the ${ITEM_PAGE} children one read carries`);
-    const found = await this.search(
+    const found = await search(
       jira, `project = "${this.project}" AND parent = "${key}" ORDER BY created ASC`, { reconcile: subtasks, fields: CHILD_FIELDS },
     );
     if (!found.complete || found.issues.length > ITEM_PAGE) {
@@ -661,8 +680,8 @@ export class Jira extends BaseTracker {
   protected override async openRelations(type: string, ctx: RuntimeContext): Promise<OpenRelations> {
     if (type !== RELATIONS.blockedBy) return super.openRelations(type, ctx);
     const jira = this.jira(ctx);
-    const mine = await this.mine(jira, ctx);
-    const found = await this.search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`, {
+    const mine = await scopeOf(jira, ctx);
+    const found = await search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`, {
       fields: ["issuelinks"],
     });
     if (!found.complete) throw new Error(`${this.project} has more open issues${mine ? " assigned to jiraAssignee" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
@@ -700,7 +719,7 @@ export class Jira extends BaseTracker {
 
   async comment(id: string, body: string, ctx: RuntimeContext): Promise<void> {
     const key = this.keyOf(id);
-    await this.jira(ctx).call("POST", `/rest/api/3/issue/${key}/comment`, { body: this.adf(body, `comment on ${key}`) });
+    await this.jira(ctx).call("POST", `/rest/api/3/issue/${key}/comment`, { body: adfOf(body, `comment on ${key}`) });
   }
 
   async addLabels(id: string, labels: string[], ctx: RuntimeContext): Promise<void> {
@@ -767,7 +786,7 @@ export class Jira extends BaseTracker {
   ): Promise<string> {
     // Checked before anything is created, so a bad parent leaves nothing behind.
     const under = parent === undefined ? undefined : this.keyOf(parent);
-    const description = this.adf(body, `description for a new ${this.project} issue`);
+    const description = adfOf(body, `description for a new ${this.project} issue`);
     const jira = this.jira(ctx);
     let priorityId: string | undefined;
     if (priority !== undefined) {
@@ -775,7 +794,7 @@ export class Jira extends BaseTracker {
       priorityId = ids[Math.min(Math.max(priority, 0), ids.length - 1)];
       if (priorityId === undefined) throw new Error(`${this.project} has no priorities to give a new issue`);
     }
-    const assignee = await this.assignee(jira, ctx);
+    const assignee = await assigneeOf(jira, ctx);
     const created = await jira.call<{ key?: unknown } | null>("POST", "/rest/api/3/issue", {
       fields: {
         project: { key: this.project },
@@ -803,7 +822,7 @@ export class Jira extends BaseTracker {
     const key = this.keyOf(id);
     const fields = {
       ...(title === undefined ? {} : { summary: title }),
-      ...(body === undefined ? {} : { description: this.adf(body, `description for ${key}`) }),
+      ...(body === undefined ? {} : { description: adfOf(body, `description for ${key}`) }),
     };
     const jira = this.jira(ctx);
     if (Object.keys(fields).length > 0) await jira.call("PUT", `/rest/api/3/issue/${key}`, { fields });
@@ -814,6 +833,97 @@ export class Jira extends BaseTracker {
     const reopen = offered.find((t) => t.to?.statusCategory?.key === "new");
     if (!reopen) throw new Error(`${key} offers no transition into a To Do status; it offers ${offeredList(offered)}`);
     await this.transition(jira, key, reopen);
+  }
+
+  /** `tracker.status` too, the issue's status by name, when a stage maps one: what the status effect is judged by. */
+  override provides(): string[] {
+    return this.statuses.size === 0 ? super.provides() : [...super.provides(), "tracker.status"];
+  }
+
+  override async observe(ctx: HookContext): Promise<Record<string, unknown>> {
+    const observed = await super.observe(ctx);
+    if (this.statuses.size === 0) return observed;
+    const status = await this.statusOf(this.jira(ctx), this.keyOf(ctx.item));
+    return { ...observed, tracker: { ...(observed.tracker as Record<string, unknown>), status } };
+  }
+
+  /** The issue's status by name, read off the issue rather than search, which lags a transition just made. */
+  private async statusOf(jira: Client, key: string): Promise<string | undefined> {
+    return (await jira.call<Issue>("GET", `/rest/api/3/issue/${key}?fields=status`)).fields?.status?.name;
+  }
+
+  /**
+   * `tracker.status` as the base moves it — the stage label — and then, for a
+   * mapped stage, the issue's status: satisfied once the label is there and
+   * the issue is in the mapped status, whatever its case.
+   */
+  override effects(): EffectTable {
+    const base = super.effects();
+    const label = base[STATUS_EFFECT];
+    if (!label) return base;
+    return {
+      ...base,
+      [STATUS_EFFECT]: {
+        satisfied: (snapshot: Snapshot, effect) => {
+          if (!statusSatisfied(snapshot, effect)) return false;
+          const wanted = this.statuses.get(String(effect.value));
+          if (wanted === undefined) return true;
+          const status = (snapshot.tracker as { status?: unknown } | undefined)?.status;
+          return typeof status === "string" && same(status, wanted);
+        },
+        // The transition is resolved before the label moves, and taken after it: a
+        // throw after the label would place the item in its new stage next tick,
+        // where this effect, and every on_enter effect after it, is never planned again.
+        // So a POST Jira refuses — a validator, a screen's required field — is
+        // logged and skipped like an unoffered one: the status is display.
+        apply: async (effect, ctx) => {
+          const wanted = this.statuses.get(String(effect.value));
+          const into = wanted === undefined ? null : await this.transitionInto(ctx.item, wanted, ctx);
+          await label.apply(effect, ctx);
+          if (!into || wanted === undefined) return;
+          const key = this.keyOf(ctx.item);
+          try {
+            await this.transition(this.jira(ctx), key, into);
+          } catch (err) {
+            if (!this.sayOnce(key, wanted)) return;
+            ctx.log("jira.status.refused", { item: key, status: wanted, transition: into.name, error: (err as Error).message });
+          }
+        },
+      },
+    };
+  }
+
+  /**
+   * The one transition into `wanted`, or none when the issue is in it
+   * already. Two into it halt rather than pick one. None offered is logged
+   * once per item and status a process and skipped: the status is display,
+   * and an item does not stop for it.
+   */
+  private async transitionInto(id: string, wanted: string, ctx: RuntimeContext): Promise<Transition | null> {
+    const key = this.keyOf(id);
+    const jira = this.jira(ctx);
+    const status = await this.statusOf(jira, key);
+    if (same(status, wanted)) return null;
+    const offered = await this.offered(jira, key);
+    const into = offered.filter((t) => same(t.to?.name, wanted));
+    const [only] = into;
+    if (!only) {
+      if (!this.sayOnce(key, wanted)) return null;
+      ctx.log("jira.status.unoffered", { item: key, status: wanted, from: status, offered: offeredList(offered) });
+      return null;
+    }
+    if (into.length > 1) {
+      throw new Error(`${key} offers ${into.length} transitions into "${wanted}": ${into.map((t) => `"${t.name}"`).join(", ")}; which one moves it is not a guess`);
+    }
+    return only;
+  }
+
+  /** True the first time a process is told of an item and status it cannot move into, so a refusal is logged once. */
+  private sayOnce(key: string, wanted: string): boolean {
+    const said = JSON.stringify([key, wanted.trim().toLowerCase()]);
+    if (this.statusSaid.has(said)) return false;
+    this.statusSaid.add(said);
+    return true;
   }
 
   /** Jira's issue links of `blockedByLinkType`, read off each issue's own `issuelinks`. */
@@ -965,7 +1075,7 @@ export class Jira extends BaseTracker {
     const scoped = value !== "";
     let assignee: string | null = null;
     try {
-      assignee = await this.assignee(jira, ctx);
+      assignee = await assigneeOf(jira, ctx);
     } catch (e) {
       problems.push(messageOf(e));
     }
@@ -1004,6 +1114,16 @@ export class Jira extends BaseTracker {
         }
         if (scoped && !fields.some((f) => f.fieldId === "assignee")) {
           problems.push(`${this.project}'s "${wanted}" issues have no assignee field, and jiraAssignee assigns each one created`);
+        }
+      }
+    }
+    // A mapped status the workflow lacks would be logged as not offered on every item, and never reached.
+    if (this.statuses.size > 0 && permissions.BROWSE_PROJECTS?.havePermission === true) {
+      const types = await jira.call<Array<{ statuses?: Status[] }> | null>("GET", `/rest/api/3/project/${this.project}/statuses`) ?? [];
+      const known = [...new Set(types.flatMap((t) => t.statuses ?? []).flatMap((st) => (st.name === undefined ? [] : [st.name])))];
+      for (const [stage, status] of this.statuses) {
+        if (!known.some((name) => same(name, status))) {
+          problems.push(`statuses.${stage} "${status}" is no status of ${this.project}'s workflow; it has ${known.map((n) => `"${n}"`).join(", ") || "none"}`);
         }
       }
     }

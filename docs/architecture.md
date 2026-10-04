@@ -43,8 +43,8 @@ src/sandbox.ts       repository identity; the temporary folder locks and worktre
 
 integrations/        the integrations Landrace ships, each `landrace/integrations/<vendor>`:
                      claude/ and codex/ on the kit; github/ on its tracker, forge and docs
-                     bases; gitlab/ on the forge base; jira/ on the tracker base; notion/ on
-                     the docs base; slack/, the notifier. Not part of the engine
+                     bases; gitlab/ on the forge base; jira/ on the tracker and docs bases;
+                     notion/ on the docs base; slack/, the notifier. Not part of the engine
 
 .landrace/           a project's workspace
   landrace.yaml      runtime settings — how agents run, where items live

@@ -15,6 +15,12 @@
  * queries and find each there, assigned to that account: an email the script
  * looks up on its own, an account id it compares as given.
  *
+ * `JIRA_FIELD`, optional, is a custom field's id, `customfield_10050`: the
+ * docs role is then `JiraField` over it rather than an in-memory one, and the
+ * item's spec is published to the field, read back, and found by the field's
+ * listing. With `statuses` in `JIRA_OPTIONS`, the item is moved to the first
+ * mapped stage and its Jira status read back.
+ *
  * It writes, so point it at a project that may hold test issues: one item
  * and one child, created, commented on, labelled and closed — the child as
  * dropped, the item as done. Each check prints `ok` or `FAIL` with what it
@@ -32,11 +38,11 @@
  * own history, in Jira's words, against them; then it unrelates them and
  * reads back none. A run that fails partway names the link it left.
  */
-import { Jira } from "landrace/integrations/jira";
+import { Jira, JiraField } from "landrace/integrations/jira";
 import { compose } from "landrace/kit";
 import { MemoryDocs, MemoryForge } from "landrace/testing";
 
-const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT, JIRA_OPTIONS, JIRA_CHECK_LINKS, JIRA_LINK_KEYS, JIRA_ASSIGNEE } = process.env;
+const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT, JIRA_OPTIONS, JIRA_CHECK_LINKS, JIRA_LINK_KEYS, JIRA_ASSIGNEE, JIRA_FIELD } = process.env;
 const unset = Object.entries({ JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT }).filter(([, v]) => !v).map(([k]) => k);
 if (unset.length > 0) {
   console.error(`jira-check: set ${unset.join(", ")}`);
@@ -59,7 +65,9 @@ const ctx = {
   signal: new AbortController().signal,
   log: (event, data) => console.error(`${event} ${JSON.stringify(data ?? {})}`),
 };
-const hooks = compose({ tracker: new Jira({ ...options, project: JIRA_PROJECT }), forge: new MemoryForge(), docs: new MemoryDocs() });
+const tracker = new Jira({ ...options, project: JIRA_PROJECT });
+const field = JIRA_FIELD ? new JiraField({ tracker, field: JIRA_FIELD }) : null;
+const hooks = compose({ tracker, forge: new MemoryForge(), docs: field ?? new MemoryDocs() });
 
 let passed = 0;
 let failed = 0;
@@ -103,7 +111,7 @@ const raw = async (path) => {
 };
 const assignee = JIRA_ASSIGNEE?.trim() ?? "";
 // This script's own requests carry the token too: to the same sites the integration's client takes, and no other.
-const siteOk = Boolean(JIRA_CHECK_LINKS || JIRA_LINK_KEYS || assignee.includes("@")) && await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
+const siteOk = Boolean(JIRA_CHECK_LINKS || JIRA_LINK_KEYS || assignee.includes("@") || options.statuses) && await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
   expect(/^https:\/\/[a-z0-9][a-z0-9-]*\.atlassian\.net$/i.test(site), `got ${JSON.stringify(site)}`);
 });
 /** The account `JIRA_ASSIGNEE` names, looked up by this script rather than the integration, so the two are compared, not one read twice. */
@@ -133,7 +141,7 @@ const body = `Created by scripts/jira-check.mjs at ${stamp}.\nA second line, {br
 let item;
 let child;
 
-await check("preflight: permissions, issue types, labels field", async () => {
+await check(`preflight: permissions, issue types, labels field${field ? `, ${JIRA_FIELD} on every edit screen` : ""}`, async () => {
   await hooks.preflight.check(ctx);
 });
 
@@ -175,6 +183,31 @@ if (item) {
     expect(hooks.post.satisfied({ ...(await snapshotOf(item.id)), ...observed }, record), "the comment effect does not read as landed");
     return `entry ${entry.stage}/${entry.kind}/${entry.round} as ${observed.tracker.bot}`;
   });
+
+  if (field) {
+    const spec = `## Spec from jira-check\n\n- a list item with \`code\`\n\n\`\`\`js\nconst at = "${stamp}";\n\`\`\``;
+    await check(`publish its spec to ${JIRA_FIELD}, and read it back`, async () => {
+      const publish = { type: "artifact.publish", artifact: "spec", body: spec };
+      await hooks.spec.apply(publish, on(item.id));
+      const state = await hooks.spec.read(on(item.id));
+      expect(state.exists === true, `${JIRA_FIELD} reads back empty`);
+      expect(await field.page(item.id, ctx) === spec, `read back ${JSON.stringify(await field.page(item.id, ctx))}`);
+      return state.url;
+    });
+    await check(`${JIRA_FIELD}'s listing finds ${item.id}`, () =>
+      eventually(async () => expect((await field.published(ctx)).has(item.id), `${item.id} is not listed`)));
+  }
+
+  const [mapped] = Object.entries(options.statuses ?? {});
+  if (mapped && siteOk) {
+    const [stage, status] = mapped;
+    await check(`move it to ${stage}: its status is "${status}"`, async () => {
+      await hooks.post.apply({ type: "tracker.status", value: stage }, on(item.id, await snapshotOf(item.id)));
+      const now = (await raw(`/rest/api/3/issue/${encodeURIComponent(item.id)}?fields=status`)).fields?.status?.name;
+      expect(now?.toLowerCase() === status.toLowerCase(), `its status reads back as ${JSON.stringify(now)}`);
+      return now;
+    });
+  }
 
   await check("move its stage label", async () => {
     const label = { type: "tracker.label", add: ["lr:stage:check"], remove: ["landrace-check"] };
