@@ -114,6 +114,24 @@ describe("claimItems, for a closed item", () => {
     expect([...c.owner, ...c.closed, ...c.conflicts, ...c.unclaimed, ...c.clashes]).toEqual([]);
   });
 
+  it("halts an id one source lists open and another lists closed for a closed: run workflow", () => {
+    const c = claimItems(
+      [{ id: "open", workflow: eligible("lr:auto", false), source: 0 }, { id: "retro", workflow: eligible("lr:auto", true), source: 1, closedRun: true }],
+      [graph(node("1", ["lr:auto"])), graph(node("1", ["lr:auto"], "done"))],
+    );
+    expect(c.clashes.get("1")).toEqual(["open", "retro"]);
+    expect([...c.owner, ...c.closed]).toEqual([]);
+  });
+
+  it("is no clash when no closed: run workflow reads the source listing it closed", () => {
+    const c = claimItems(
+      [{ id: "open", workflow: eligible("lr:auto", false), source: 0 }, { id: "other", workflow: eligible("lr:auto", false), source: 1 }],
+      [graph(node("1", ["lr:auto"])), graph(node("1", ["lr:auto"], "done"))],
+    );
+    expect([...c.owner]).toEqual([["1", "open"]]);
+    expect(c.clashes.size).toBe(0);
+  });
+
   it("is no workflow's without a closed: run stage, as it always was", () => {
     const c = claimItems(
       [{ id: "main", workflow: eligible("lr:auto", false), source: 0 }, { id: "retro", workflow: eligible("lr:auto", true), source: 0, closedRun: true }],

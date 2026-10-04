@@ -26,6 +26,18 @@ export function claimItems(workflows: ClaimInput[], graphs: Graph[]): Claims {
     }
   }
 
+  const running = workflows.filter((w) => w.closedRun === true);
+  // id -> the sources a `closed: run` workflow reads that list it closed: one of
+  // those beside a source listing it open is two sources reporting one id.
+  const closedBy = new Map<string, Set<number>>();
+  for (const [index, graph] of graphs.entries()) {
+    if (!running.some((w) => w.source === index)) continue;
+    for (const node of graph.nodes) {
+      if (!isItemNode(node) || node.closed === null) continue;
+      closedBy.set(node.id, (closedBy.get(node.id) ?? new Set<number>()).add(index));
+    }
+  }
+
   for (const id of [...listed.keys()].sort(byId)) {
     const bySource = listed.get(id) ?? new Map<number, Node>();
     const seen: { w: ClaimInput; node: Node }[] = [];
@@ -33,8 +45,10 @@ export function claimItems(workflows: ClaimInput[], graphs: Graph[]): Claims {
       const node = bySource.get(w.source);
       if (node) seen.push({ w, node });
     }
-    if (bySource.size > 1) {
-      claims.clashes.set(id, seen.map((s) => s.w.id).sort(byId));
+    const closedElsewhere = [...(closedBy.get(id) ?? [])].filter((index) => !bySource.has(index));
+    if (bySource.size > 1 || closedElsewhere.length > 0) {
+      const closing = running.filter((w) => closedElsewhere.includes(w.source)).map((w) => w.id);
+      claims.clashes.set(id, [...seen.map((s) => s.w.id), ...closing].sort(byId));
       continue;
     }
     const eligible: string[] = [];
@@ -66,7 +80,6 @@ export function claimItems(workflows: ClaimInput[], graphs: Graph[]): Claims {
       closedListed.set(node.id, bySource);
     }
   }
-  const running = workflows.filter((w) => w.closedRun === true);
   for (const id of [...closedListed.keys()].sort(byId)) {
     const bySource = closedListed.get(id) ?? new Map<number, Node>();
     const seen = running.flatMap((w) => {
