@@ -189,7 +189,7 @@ Landrace develops itself on GitHub, Claude Code and Slack. The others pass their
 |---|---|---|
 | [GitHub](docs/integrations.md#github) | Tracker (issues), forge (pull requests), docs (Pages) | Runs this repository. Blockers in another repository are not checked live yet |
 | [GitLab](docs/integrations.md#gitlab) | Forge (merge requests) | Tested offline. Not checked live yet |
-| [Jira](docs/integrations.md#jira) | Tracker (Jira Cloud issues) | Tested offline. Not checked live yet |
+| [Jira](docs/integrations.md#jira) | Tracker (Jira Cloud issues) and docs (an issue field) | Tested offline. Not checked live yet |
 | [Notion](docs/integrations.md#notion) | Docs (spec pages) | Tested offline. Not checked live yet |
 | [Slack](docs/integrations.md#slack) | Notifications | Runs this repository |
 | [Claude Code](docs/integrations.md#claude-code) | Coding agent | Runs this repository |

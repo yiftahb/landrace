@@ -6,7 +6,7 @@ The engine has no vendor in it. Each tracker, forge, docs site, notifier and cod
 |---|---|
 | [GitHub](#github) | tracker (issues), forge (pull requests) and docs (Pages) |
 | [GitLab](#gitlab) | forge (merge requests) |
-| [Jira](#jira) | tracker (issues) |
+| [Jira](#jira) | tracker (issues) and docs (an issue field) |
 | [Notion](#notion) | docs (spec pages) |
 | [Slack](#slack) | notifier |
 | [Claude Code](#claude-code) | executor (coding agent) |
@@ -161,7 +161,7 @@ Off gitlab.com, set `GITLAB_BASE_URL` too.
 
 ## Jira
 
-`landrace/integrations/jira` is one Jira Cloud project's issues as the tracker, over REST v3. A hook file composes it beside whatever forge and docs the project has:
+`landrace/integrations/jira` is one Jira Cloud project's issues as the tracker, over REST v3, and, optionally, one of their fields as the docs role (see [The spec on the ticket](#the-spec-on-the-ticket)). A hook file composes it beside whatever forge and docs the project has:
 
 ```ts
 // .landrace/hooks/project.ts
@@ -191,6 +191,7 @@ secrets:
 | `transitions.done` | `"Done"` | The transition that closes an item as done |
 | `transitions.dropped` | `"Won't Do"` | The transition that closes one as dropped; a closed issue whose status or resolution has this name reads as dropped |
 | `blockedByLinkType` | `"Blocks"` | The issue link type read and written as `blocked-by`, by its exact name. Its inward side must read "is blocked by", as Jira's "Blocks" does |
+| `statuses` | none | A Jira status for each stage that has one, keyed by the stage's `tracker.status` value, such as `{ build: "In Progress", "mr-human-review": "In Review" }`. See [Status follows the stage](#status-follows-the-stage) |
 
 **Accounts and ids.** Basic auth carries the account's own token, so `jiraBaseUrl` must be an `https://<site>.atlassian.net` site, and nothing is asked of it before `GET /myself` says who the account is. Logins are `accountId`s. An item's author is its creator (the reporter can be edited), and its editor is whoever last changed the description, read from the changelog. An id is the project's `KEY-<n>` or it is refused before any request; an issue Jira answers under another key has moved, and is refused too.
 
@@ -208,9 +209,44 @@ secrets:
 
 Declared but empty (`JIRA_ASSIGNEE=`), the tracker lists everyone's issues, as it does without the secret. Declared and not set at all, `start` refuses, as for any secret.
 
-**Writing.** Jira's status moves only to close an item, through the named transition, or to reopen one, through the first transition into a To Do status; a transition the issue does not offer fails, naming the ones it does. Comments and descriptions are ADF, never v2's wiki markup. A body's Markdown is written as rich text: headings, bullet and ordered lists, fenced code blocks with their language, inline code, bold, italic, http, https and mailto links, and paragraphs, a hard break per line. Anything else is written as its text. Reading turns the same set back into Markdown, a person's edits in Jira's editor included; any other node reads as its text. The `<!-- landrace … -->` marker is written as its own plain-text paragraph, never read as Markdown, so it reads back exactly. A body whose rich ADF is over Jira's 32,767 characters is written as plain paragraphs instead, its Markdown shown as written and read back exactly; one over the bound even as plain paragraphs is refused before the request, and the round is recorded as a failed round — `malformed`, headed "Could not record <stage>'s answer" — rather than run again ([An answer refused](workflows.md#an-answer-refused)). A new issue's priority is the project's own, Landrace's 0–9 as an index into its list.
+**Writing.** Without `statuses`, Jira's status moves only to close an item, through the named transition, or to reopen one, through the first transition into a To Do status; a transition the issue does not offer fails, naming the ones it does. Comments and descriptions are ADF, never v2's wiki markup. A body's Markdown is written as rich text: headings, bullet and ordered lists, fenced code blocks with their language, inline code, bold, italic, http, https and mailto links, and paragraphs, a hard break per line. Anything else is written as its text. Reading turns the same set back into Markdown, a person's edits in Jira's editor included; any other node reads as its text. The `<!-- landrace … -->` marker is written as its own plain-text paragraph, never read as Markdown, so it reads back exactly. A body whose rich ADF is over Jira's 32,767 characters is written as plain paragraphs instead, its Markdown shown as written and read back exactly; one over the bound even as plain paragraphs is refused before the request, and the round is recorded as a failed round — `malformed`, headed "Could not record <stage>'s answer" — rather than run again ([An answer refused](workflows.md#an-answer-refused)). A new issue's priority is the project's own, Landrace's 0–9 as an index into its list.
 
-**Preflight.** It names each permission the account lacks on the project (`BROWSE_PROJECTS`, `CREATE_ISSUES`, `EDIT_ISSUES`, `TRANSITION_ISSUES`, `ADD_COMMENTS`, `LINK_ISSUES`), each issue type the project does not have and each without a labels field, a site with no link type named `blockedByLinkType` (naming the ones it has), a type that reads the same both ways (such as Relates, where which end blocks cannot be told), and a site with issue linking turned off. With `jiraAssignee` set, it also names an assignee that matches no user or several, an account that cannot look it up for want of the global `USER_PICKER` permission, an account the project cannot assign issues to (no access to it, or deactivated), a missing `ASSIGN_ISSUES` permission, and each issue type without an assignee field. It logs the type's wording once, as `jira.blocked-by.link-type`, and writes nothing.
+**Preflight.** It names each permission the account lacks on the project (`BROWSE_PROJECTS`, `CREATE_ISSUES`, `EDIT_ISSUES`, `TRANSITION_ISSUES`, `ADD_COMMENTS`, `LINK_ISSUES`), each issue type the project does not have and each without a labels field, a site with no link type named `blockedByLinkType` (naming the ones it has), a type that reads the same both ways (such as Relates, where which end blocks cannot be told), and a site with issue linking turned off. With `jiraAssignee` set, it also names an assignee that matches no user or several, an account that cannot look it up for want of the global `USER_PICKER` permission, an account the project cannot assign issues to (no access to it, or deactivated), a missing `ASSIGN_ISSUES` permission, and each issue type without an assignee field. With `statuses` set, it names every mapped status the project's workflow does not have. It logs the type's wording once, as `jira.blocked-by.link-type`, and writes nothing.
+
+**Status follows the stage.** Team boards run on status, so `statuses` can move an issue's status as Landrace moves it. When a stage's `on_enter` runs `tracker.status`, the tracker first moves the `lr:stage:*` label, then moves the issue through the transition whose target status has the mapped name, in any case. The label stays the item's position; the status is for people.
+
+- An issue already in the mapped status is left as it is.
+- A stage with no mapping moves no status.
+- A transition the issue does not offer is skipped, not a halt. It is logged as `jira.status.unoffered` once per item and status for as long as Landrace runs.
+- Two transitions into the mapped status halt the item, naming both: which one to take is not a guess.
+- Closing stays opt-in. A workflow that should not close an issue on merge (QA, a release train) can leave `tracker.close` out of its last stage and map `done` to whatever status the team uses.
+
+```ts
+new Jira({ project: "KEY", statuses: { build: "In Progress", "mr-human-review": "In Review" } })
+```
+
+**The spec on the ticket.** Many teams keep the technical design on the ticket, in a multi-line custom field. `JiraField` makes that field the docs role, so the spec is where the team already reads and writes it. It shares the tracker's site, secrets and `jiraAssignee` scope:
+
+```ts
+// .landrace/hooks/project.ts
+import { compose } from "landrace/kit";
+import { Jira, JiraField } from "landrace/integrations/jira";
+import { GitLab } from "landrace/integrations/gitlab";
+export const { preflight, source, operator, pre, post, spec } = compose({
+  tracker: new Jira({ project: "KEY" }),
+  forge: new GitLab({ project: "group/app" }),
+  docs: new JiraField({ project: "KEY", field: "customfield_10050" }),
+});
+```
+
+`field` is the custom field's id. Find it in Jira's field settings (Settings → Work items → Fields: the id is the number in the field's URL), or in the answer to `GET /rest/api/3/field`.
+
+- The spec is the field's text, and an empty field is no spec. A field a person filled counts as a spec, so `artifacts.spec.exists` can send an item that already has a design straight to `build`, and an empty one to a `spec` step. `{brief.spec.content}` hands the field's text to a step.
+- A textarea field answers in ADF or as a plain string, depending on its renderer. Both are read: ADF as Markdown, in the set the tracker reads, and a string as it is.
+- `artifact.publish` writes the field with `PUT /rest/api/3/issue/{key}`, in the shape the field's metadata says it takes: a textarea as ADF, with the tracker's bound and plain fallback for a long body; a single-line text field as a string of at most 255 characters. A spec over the bound is refused before the request. Markdown outside the common set does not read back exactly, so such a spec is written again the next time it is published.
+- The link is the issue's own page, `https://<site>.atlassian.net/browse/KEY-<n>`.
+- The board's document nodes come from one JQL query, `cf[<n>] is not EMPTY`, inside the project and the `jiraAssignee` scope.
+- The preflight names a field the site does not have, a field that is neither a text nor a textarea field, and each issue type whose edit screen lacks it. Jira says what an edit screen holds only for an issue, so each type is checked on one of its issues. A type with no issue yet is logged as `jira.field.unchecked`, and a project where no type has an issue fails.
 
 **Blocked-by.** `blocked-by` is Jira's own issue links of `blockedByLinkType`, visible and editable in Jira's UI; Landrace stores nothing of its own.
 
@@ -228,7 +264,7 @@ pnpm build && JIRA_BASE_URL=https://your-site.atlassian.net JIRA_EMAIL=… JIRA_
   node scripts/jira-check.mjs
 ```
 
-`JIRA_OPTIONS` takes the options above as JSON, such as `{"transitions":{"dropped":"Cancelled"}}`. `JIRA_ASSIGNEE` is the `jiraAssignee` secret. Set, the item and child it creates are assigned to that account, and two more checks find them in the scoped open listing and the closed item in the scoped Done lane, each assigned to that account: an email the script looks up itself, an account id it compares as given. `JIRA_CHECK_LINKS=1` adds a `blocked-by` round trip on two scratch issues it creates and drops afterwards; `JIRA_LINK_KEYS=KEY-12,OTHER-3` uses two issues you name instead, not already linked — the first, the project's own, to be blocked by the second — and leaves both open with the link removed. It relates them, reads back that the first is blocked by the second, confirms the change in the blocked issue's own history, then unrelates them and reads back none. A run that fails partway names the link it left behind.
+`JIRA_OPTIONS` takes the options above as JSON, such as `{"transitions":{"dropped":"Cancelled"}}`. With `statuses` in it, the script moves the item to the first mapped stage and reads its Jira status back. `JIRA_FIELD=customfield_10050` makes `JiraField` over that field the docs role: the preflight checks the field, and the script publishes the item's spec to it, reads it back, and finds it in the field's listing. `JIRA_ASSIGNEE` is the `jiraAssignee` secret. Set, the item and child it creates are assigned to that account, and two more checks find them in the scoped open listing and the closed item in the scoped Done lane, each assigned to that account: an email the script looks up itself, an account id it compares as given. `JIRA_CHECK_LINKS=1` adds a `blocked-by` round trip on two scratch issues it creates and drops afterwards; `JIRA_LINK_KEYS=KEY-12,OTHER-3` uses two issues you name instead, not already linked — the first, the project's own, to be blocked by the second — and leaves both open with the link removed. It relates them, reads back that the first is blocked by the second, confirms the change in the blocked issue's own history, then unrelates them and reads back none. A run that fails partway names the link it left behind.
 
 ## Notion
 
