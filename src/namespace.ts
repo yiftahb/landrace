@@ -1201,11 +1201,33 @@ export interface FailedCheck {
   log: string | null;
 }
 
-/** A pull-request node's CI state: the state for reading, and the two counts relationships sum. */
+/**
+ * A pull-request node's CI state: the state for reading, and the two counts
+ * relationships sum — and, read beside them on the same head, whether a named
+ * external reviewer has still to finish.
+ */
 export interface CheckCounts {
   checks: CheckState;
   ciPending: number;
   ciFailed: number;
+  reviewPending?: number;
+}
+
+/**
+ * What every forge on the kit's base takes, beside its vendor's own options.
+ *
+ * `reviewers`: the external reviewers a workflow waits on, each by the
+ * status it posts on the head — a commit status's name, or a check run's.
+ * Each is left out of `checks`, and the pull request node's `reviewPending`
+ * is 1 while any of them is missing or still running on the head.
+ *
+ * `pull`: the text a pull request opens with. `title` formats `{item}` and
+ * `{title}`; `description` is a template file under `.landrace/`, filled with
+ * `{item}`, `{link}` and `{spec}`. Set on open only, never rewritten.
+ */
+export interface ForgeOptions {
+  reviewers?: Array<{ status: string }> | undefined;
+  pull?: { title?: string | undefined; description?: string | undefined } | undefined;
 }
 
 /** What a merge guarded by a head SHA answered: merged (now or already), or refused because the head moved. */
@@ -1930,13 +1952,17 @@ export interface ExternalPull {
   files?: ChangedFile[];
   /** False: the forge's list of `files` stopped before its end, as a vendor's cap stops one. */
   filesComplete?: false;
+  /** The named reviewers' statuses on the head, by name: absent is not posted yet. */
+  reviewerStatuses?: Record<string, "running" | "finished">;
+  /** The title and description `pull.open` opened it with, when it did. */
+  opened?: { title: string; description: string | undefined };
 }
 
 /** What a test may set on a pull request it opens in memory; everything else is defaulted. */
 export type ExternalPullSeed = Partial<Pick<
   ExternalPull,
   "merged" | "openThreads" | "awaitingFix" | "awaitingWordingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable" |
-  "files" | "filesComplete"
+  "files" | "filesComplete" | "reviewerStatuses" | "opened"
 >>;
 
 /**

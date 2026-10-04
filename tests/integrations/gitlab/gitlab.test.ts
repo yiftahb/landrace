@@ -327,6 +327,15 @@ describe("openPull and closePull", () => {
     expect([...gl.mrs.values()]).toEqual([expect.objectContaining({ source_branch: "landrace/7", target_branch: "trunk", title: "Add a thing", state: "opened" })]);
   });
 
+  it("sends a description only when it has one, inert to GitLab's quick actions", async () => {
+    const gl = createFakeGitLab();
+    await forgeOver(gl).openPull({ item: "7", branch: "landrace/7", title: "t", description: "For #7.\n/close\n  /merge" }, gl.ctx());
+    await forgeOver(gl).openPull({ item: "8", branch: "landrace/8", title: "t" }, gl.ctx());
+    const posted = gl.requests.filter((r) => r.method === "POST" && r.path.endsWith("/merge_requests")).map((r) => r.body);
+    expect(posted[0]?.description).toBe("For #7.\n\\/close\n  \\/merge");
+    expect(posted[1]).not.toHaveProperty("description");
+  });
+
   /* A crash between the request and the next read re-runs the effect; GitLab answers the second with a 409. */
   it("counts GitLab's 'already exists' as opened", async () => {
     const gl = createFakeGitLab();

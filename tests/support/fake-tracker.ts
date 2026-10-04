@@ -127,8 +127,12 @@ export interface FakePull {
   reviews?: Array<{ body: string; event: string }>;
   /** The head commit's `statusCheckRollup.state`; absent or null is a commit with no rollup at all. */
   checks?: "SUCCESS" | "FAILURE" | "ERROR" | "PENDING" | "EXPECTED" | null;
-  /** What `GET /commits/{sha}/check-runs` answers. `app` is the app's slug, "github-actions" unless said. */
-  checkRuns?: Array<{ id: number; name: string; conclusion: string | null; app?: string; output?: { text?: string | null; summary?: string | null } }>;
+  /** What `GET /commits/{sha}/check-runs` answers. `app` is the app's slug, "github-actions" unless said; `status` "completed" unless said. */
+  checkRuns?: Array<{
+    id: number; name: string; conclusion: string | null; status?: string; app?: string; output?: { text?: string | null; summary?: string | null };
+  }>;
+  /** The check runs' `total_count`, when a test says GitHub has more than it listed. */
+  checkRunsTotal?: number;
   /** What `GET /commits/{sha}/status` answers. */
   statuses?: Array<{ context: string; state: string; description?: string | null }>;
   /** What `GET /actions/jobs/{id}/logs` answers, by job id; a job not here is a 404. */
@@ -1083,10 +1087,10 @@ export function createFakeTracker(
       const pull = [...pulls.values()].find((p) => p.headSha === onChecks[1]);
       if (onChecks[2] === "status") return json({ state: "failure", statuses: pull?.statuses ?? [] });
       const runs = (pull?.checkRuns ?? []).map((r) => ({
-        id: r.id, name: r.name, status: "completed", conclusion: r.conclusion,
+        id: r.id, name: r.name, status: r.status ?? "completed", conclusion: r.conclusion,
         app: { slug: r.app ?? "github-actions" }, output: { text: r.output?.text ?? null, summary: r.output?.summary ?? null },
       }));
-      return json({ total_count: runs.length, check_runs: runs });
+      return json({ total_count: pull?.checkRunsTotal ?? runs.length, check_runs: runs });
     }
 
     const onJobLog = /^\/actions\/jobs\/(\d+)\/logs$/.exec(path);
@@ -1182,6 +1186,7 @@ export function createFakeTracker(
         ...(pull.files === undefined ? {} : { files: pull.files }),
         ...(pull.checks === undefined ? {} : { checks: pull.checks }),
         ...(pull.checkRuns === undefined ? {} : { checkRuns: pull.checkRuns }),
+        ...(pull.checkRunsTotal === undefined ? {} : { checkRunsTotal: pull.checkRunsTotal }),
         ...(pull.statuses === undefined ? {} : { statuses: pull.statuses }),
         ...(pull.jobLogs === undefined ? {} : { jobLogs: pull.jobLogs }),
         ...(pull.mergeable === undefined ? {} : { mergeable: pull.mergeable }),

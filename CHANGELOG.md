@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **A write step's worktree gets your untracked files and an install.** `agent.worktree.copy` copies untracked or ignored files, such as `.npmrc` and `.env`, from your checkout by glob; `agent.worktree.setup` runs commands such as `pnpm install` in the worktree before the agent, outside its sandbox, and stops the item with the command's output when one fails or outlasts `agent.worktree.setupTimeout` (15m). The worktree is kept between the item's write steps, so setup runs again only when the root lockfiles change. See [Configuration](docs/configuration.md#a-write-steps-worktree) and [Security](docs/security.md#copied-files-and-setup).
+- **Wait for an external reviewer.** Both forges take `reviewers: [{ status: "<name>" }]`, the status an AI reviewer such as CodeRabbit posts on the head: a commit status on GitLab, a check run or a commit status on GitHub. The pull request node gains `reviewPending`, `1` until every named reviewer has finished on the current head, summable as `rel.implements.in.sum.reviewPending`. A named status is left out of the checks.
+- **The pull request's title and description.** Both forges take `pull: { title, description }`: a title formatted from `{item}` and `{title}`, and a template file under `.landrace/` filled with `{item}`, `{link}` and `{spec}`. Set when the pull request opens and never rewritten. Another placeholder is refused at start.
 
 ### Fixed
 
