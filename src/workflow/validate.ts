@@ -438,6 +438,27 @@ export function createProblems(w: Workflow, steps: Map<string, Step>, post: read
 }
 
 /**
+ * Whether a condition cannot hold on an open item, whose `node.closed` is
+ * null. Naming the path is not enough: `{ $ne: dropped }` holds on null too.
+ * Proven only structurally — a `node.closed` term that fails on null, inside
+ * a conjunction, or in every arm of an `$or`. Anything else, `$not` included,
+ * is not proven, and the trigger is refused rather than guessed at.
+ */
+function holdsOnlyClosed(c: Condition): boolean {
+  return Object.entries(c).some(([key, value]) => {
+    if (key === "node.closed") {
+      // An operator outside the allowlist is another rule's to report; here it proves nothing.
+      try { return !compile({ [key]: value })({ node: { closed: null } } as never); } catch { return false; }
+    }
+    if (key === "$and") return Array.isArray(value) && value.some((sub) => isCondition(sub) && holdsOnlyClosed(sub));
+    if (key === "$or") return Array.isArray(value) && value.length > 0 && value.every((sub) => isCondition(sub) && holdsOnlyClosed(sub));
+    return false;
+  });
+}
+
+const isCondition = (v: unknown): v is Condition => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/**
  * `closed-run`: a stage a closed item enters and runs its step at. The item's
  * work is over, so it works on no branch and touches no forge — a closed
  * item's pull request is merged or dropped already — and only a closed item
@@ -458,12 +479,17 @@ function closedRunProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
         message: `stage "${stage.id}" runs on a closed item and plans ${type}; a closed item's work is merged or dropped already`,
       });
     }
+    // A sole entry stage is entered by every new open item, its triggers unread.
+    if (stage.entry) {
+      problems.push({ rule: "closed-run", message: `stage "${stage.id}" runs on a closed item, so it cannot be an entry stage` });
+    }
     for (const [index, t] of (stage.triggers ?? []).entries()) {
-      if (pathsIn(t.when).includes("node.closed")) continue;
+      if (holdsOnlyClosed(t.when)) continue;
+      const reads = pathsIn(t.when).includes("node.closed");
       problems.push({
         rule: "closed-run",
         message: `stage "${stage.id}" runs on a closed item, but its trigger ${t.name ? `"${t.name}"` : String(index)} ` +
-          "does not read node.closed, so an open item could enter it too",
+          (reads ? "can hold while node.closed is null" : "does not read node.closed") + ", so an open item could enter it too",
       });
     }
   }

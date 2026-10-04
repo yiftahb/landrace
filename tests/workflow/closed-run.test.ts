@@ -62,6 +62,40 @@ describe("closed-run", () => {
     expect(closedRun(flow(loose))).toEqual([expect.stringMatching(/stage "retro" runs on a closed item, but its trigger "any" does not read node.closed/)]);
   });
 
+  // Naming node.closed is not enough: an open item's is null, so a condition
+  // that holds on null moves every open item into the retro.
+  it("refuses a trigger whose node.closed condition holds on an open item", () => {
+    for (const when of [
+      { "node.closed": { $ne: "dropped" } },
+      { "node.closed": null },
+      { "node.closed": { $nin: ["dropped"] } },
+      { $or: [{ "node.closed": "done" }, { "run.stage": "done" }] },
+      { $not: { "node.closed": "dropped" } },
+    ]) {
+      expect(closedRun(flow(retro({ triggers: [{ name: "loose", when }] })))).toEqual([
+        expect.stringMatching(/stage "retro" runs on a closed item, but its trigger "loose" can hold while node.closed is null/),
+      ]);
+    }
+  });
+
+  it("passes a trigger that holds only on a closed item, however it is written", () => {
+    for (const when of [
+      { "node.closed": { $in: ["done", "dropped"] } },
+      { "node.closed": { $ne: null } },
+      { $and: [{ "run.stage": "done" }, { "node.closed": "done" }] },
+      { $or: [{ "node.closed": "done" }, { "node.closed": "dropped", "run.stage": "work" }] },
+    ]) {
+      expect(closedRun(flow(retro({ triggers: [{ name: "resolved", when }] })))).toEqual([]);
+    }
+  });
+
+  // A sole entry stage is entered by every new open item, its triggers unread.
+  it("refuses one that is an entry stage", () => {
+    expect(closedRun(flow(retro({ entry: true })))).toEqual([
+      expect.stringMatching(/stage "retro" runs on a closed item, so it cannot be an entry stage/),
+    ]);
+  });
+
   // A goto takes no trigger: an open item sent there would run the step and
   // rest with no way out, dead-end and shape-edge being waived for the stage.
   it("refuses a stage goto entry, or a route goto, into it", () => {
