@@ -123,6 +123,15 @@ describe("claimItems, for a closed item", () => {
     expect([...c.owner, ...c.closed]).toEqual([]);
   });
 
+  it("names every workflow whose source lists a closed id two sources report", () => {
+    const c = claimItems(
+      [{ id: "retro", workflow: eligible("lr:auto", true), source: 0, closedRun: true }, { id: "other", workflow: eligible("lr:auto", false), source: 1 }],
+      [graph(node("12", ["lr:auto"], "done")), graph(node("12", ["lr:auto"], "done"))],
+    );
+    expect(c.clashes.get("12")).toEqual(["other", "retro"]);
+    expect(c.closed.size).toBe(0);
+  });
+
   it("is no clash when no closed: run workflow reads the source listing it closed", () => {
     const c = claimItems(
       [{ id: "open", workflow: eligible("lr:auto", false), source: 0 }, { id: "other", workflow: eligible("lr:auto", false), source: 1 }],

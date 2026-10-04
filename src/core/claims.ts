@@ -88,7 +88,9 @@ export function claimItems(workflows: ClaimInput[], graphs: Graph[]): Claims {
     });
     if (seen.length === 0) continue;
     if (bySource.size > 1) {
-      claims.clashes.set(id, seen.map((s) => s.w.id).sort(byId));
+      // Every workflow whose source lists it, as an open clash names them: a
+      // `closed: run` workflow alone would name one side of a two-sided clash.
+      claims.clashes.set(id, workflows.filter((w) => bySource.has(w.source)).map((w) => w.id).sort(byId));
       continue;
     }
     const eligible = seen.filter(({ w, node }) => eligibilityOfNode(w.workflow, node).eligible).map(({ w }) => w.id);
