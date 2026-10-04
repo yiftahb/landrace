@@ -370,6 +370,28 @@ describe("comments as ADF", () => {
     expect((await jira.comments(issue.key, ctx))[0]?.body).toBe("see\n`npm install`\nthen run it\n\n- a list after");
   });
 
+  it.each([
+    ["an unpaired `*` before it", "Format *.md files with `prettier docs/*.md`", [text("Format *.md files with "), text("prettier docs/*.md", { type: "code" })]],
+    ["`**` before it", "pass **kwargs to `f(*args, **kwargs)`", [text("pass **kwargs to "), text("f(*args, **kwargs)", { type: "code" })]],
+    ["`_` either side of its edge", "a _b `c_ d`", [text("a _b "), text("c_ d", { type: "code" })]],
+    ["a link's brackets inside it", "`[a](https://x.example)` here", [text("[a](https://x.example)", { type: "code" }), text(" here")]],
+  ])("lets no emphasis or link open or close inside a code span: %s", async (_, markdown, content) => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.comment(issue.key, markdown, ctx);
+    expect(issue.comments[0]?.body?.content).toEqual([para(...content)]);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(markdown);
+  });
+
+  it("still lets emphasis hold a whole code span", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.comment(issue.key, "**run `make *` now**", ctx);
+    expect(issue.comments[0]?.body?.content).toEqual([
+      para(text("run ", { type: "strong" }), text("make *", { type: "code" }), text(" now", { type: "strong" })),
+    ]);
+  });
+
   it("writes a body whose rich document is past Jira's bound as plain paragraphs, and reads it back as it was posted", async () => {
     const { fake, jira, ctx } = setup();
     const marker = renderMarker({ stage: "spec", kind: "output", round: 1 });

@@ -48,8 +48,18 @@ const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
  * a name, not emphasis. Emphasis opens and closes on a non-space, so
  * `3 * 4 * 5` is arithmetic.
  */
-const INLINE =
-  /(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)|\[([^\]\n]+)\]\(([^()\s]+)\)|\*\*(\S(?:.*?\S)?)\*\*|\*([^\s*](?:.*?[^\s*])?)\*|(?<!\w)_([^\s_](?:.*?[^\s_])?)_(?!\w)/g;
+const CODE = /(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g;
+const INLINE = new RegExp(
+  `${CODE.source}|\\[([^\\]\\n]+)\\]\\(([^()\\s]+)\\)|\\*\\*(\\S(?:.*?\\S)?)\\*\\*|\\*([^\\s*](?:.*?[^\\s*])?)\\*|(?<!\\w)_([^\\s_](?:.*?[^\\s_])?)_(?!\\w)`,
+  "dg",
+);
+
+/**
+ * The line with each code span's text blanked to a character no other syntax
+ * reads, its length kept: as CommonMark, a code span binds before emphasis or
+ * a link, so `*.md` before `` `docs/*.md` `` does not close on the `*` inside.
+ */
+const masked = (line: string): string => line.replace(CODE, (_, ticks: string, code: string) => ticks + "\u0001".repeat(code.length) + ticks);
 
 const text = (value: string, marks: AdfMark[]): AdfNode =>
   marks.length ? { type: "text", text: value, marks } : { type: "text", text: value };
@@ -66,8 +76,12 @@ function inline(line: string, marks: AdfMark[] = []): AdfNode[] {
   const plain = (s: string): void => {
     if (s) out.push(text(s, marks));
   };
-  for (const m of line.matchAll(INLINE)) {
-    const [whole, , code, label, url, strong, star, under] = m;
+  for (const m of masked(line).matchAll(INLINE)) {
+    const group = (k: number): string | undefined => {
+      const span = m.indices?.[k];
+      return span ? line.slice(...span) : undefined;
+    };
+    const [whole, code, label, url, strong, star, under] = [0, 2, 3, 4, 5, 6, 7].map(group) as [string, ...Array<string | undefined>];
     if (label !== undefined && url !== undefined && !linkable(url)) continue;
     plain(line.slice(at, m.index));
     at = m.index + whole.length;
