@@ -8,10 +8,10 @@
  * that overrides one piece.
  */
 import { createHash } from "node:crypto";
-import { constants, existsSync } from "node:fs";
-import { copyFile, lstat, mkdir, open, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { constants, existsSync, realpathSync } from "node:fs";
+import { copyFile, mkdir, open, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { dirname, join, posix, sep } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
 import type {
   AgentSettings, EventReading, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings,
@@ -49,7 +49,7 @@ const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as co
  * a Read rule too — itself and everything under it, since which of the two it
  * is cannot be told without reading the operator's home.
  */
-function sandboxSettings({ hosts, deny }: SandboxSettings): Record<string, unknown> {
+function sandboxSettings({ hosts, deny }: SandboxSettings, built: string | undefined): Record<string, unknown> {
   return {
     sandbox: {
       enabled: true,
@@ -57,9 +57,12 @@ function sandboxSettings({ hosts, deny }: SandboxSettings): Record<string, unkno
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       network: { allowedDomains: hosts, strictAllowlist: true },
-      filesystem: { denyRead: deny },
+      filesystem: { denyRead: deny, ...(built === undefined ? {} : { denyWrite: [built] }) },
     },
-    permissions: { deny: deny.flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]) },
+    // `//` is an absolute path in a permission rule, where `/` is the settings' own root.
+    permissions: {
+      deny: [...deny.flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]), ...(built === undefined ? [] : [`Edit(/${built}/**)`])],
+    },
   };
 }
 
@@ -102,36 +105,31 @@ async function bringSession(home: string, session: string, here: string): Promis
 
 /**
  * Whether `path`, every link in it followed, leads out of the worktree whose
- * realpath is `tree`. One that is not there does not; a link that leads
- * nowhere does, since what it will lead to cannot be told.
+ * realpath is `tree`. One that is not there does not, and nor does a link
+ * that leads nowhere: Landrace copies what it reads before the agent starts,
+ * so a target made later is never read, and there is nothing to copy.
  */
 async function leadsOut(tree: string, path: string): Promise<boolean> {
   const real = await realpath(path).catch(() => undefined);
-  if (real === undefined) return lstat(path).then(() => true, () => false);
-  return real !== tree && !real.startsWith(tree + sep);
+  return real !== undefined && real !== tree && !real.startsWith(tree + sep);
 }
-
-/**
- * The instructions `--add-dir` has the CLI read in its own process, outside
- * the sandbox, following a link wherever it leads (2.1.289's own source;
- * `CLAUDE.local.md` only with local settings on). A step could link one to a
- * key, and every later run in the worktree would read the key into its
- * instructions. The CLI itself skips a `.claude/rules` entry that leads out.
- */
-const INSTRUCTION_FILES = ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"];
 
 /**
  * The text of the worktree's `path`, or undefined when it cannot be opened.
  * Anything there but a regular file — a named pipe, a device — is refused,
- * naming it, after `refused`: reading one could wait forever, and `prepare`
- * runs before the step's timeout and abort exist. Opened without blocking and
- * checked on the open file, so nothing can be swapped in between.
+ * naming it, after `refused`, or read as undefined without one: reading one
+ * could wait forever, and `prepare` runs before the step's timeout and abort
+ * exist. Opened without blocking and checked on the open file, so nothing
+ * can be swapped in between.
  */
-async function readRegular(cwd: string, path: string, refused: string): Promise<string | undefined> {
+async function readRegular(cwd: string, path: string, refused?: string): Promise<string | undefined> {
   const file = await open(join(cwd, path), constants.O_RDONLY | constants.O_NONBLOCK).catch(() => undefined);
   if (file === undefined) return undefined;
   try {
-    if (!(await file.stat()).isFile()) throw new Error(`${refused}: ${path} is not a regular file. Make it one, or remove it, on the branch`);
+    if (!(await file.stat()).isFile()) {
+      if (refused === undefined) return undefined;
+      throw new Error(`${refused}: ${path} is not a regular file. Make it one, or remove it, on the branch`);
+    }
     return await file.readFile("utf8");
   } finally {
     await file.close();
@@ -139,27 +137,51 @@ async function readRegular(cwd: string, path: string, refused: string): Promise<
 }
 
 /**
- * What `--add-dir` loads from a directory's own `.claude/settings.json` and
- * `.claude/settings.local.json` beside its `CLAUDE.md`, whatever
- * `--setting-sources` says: the plugins it enables and the marketplaces they
- * come from (2.1.289's own source). A step could commit either, and a
- * plugin's hooks run outside the sandbox. Refused, never loaded.
+ * Each `@path` a CLAUDE.md imports, as the CLI finds them (2.1.289's own
+ * source): after a line's start or a space, `\ ` for a space, a `#` ending
+ * it. The CLI skips code, comments and what cannot be a path; this reads them
+ * all, never fewer.
  */
-async function refuseAddDirSettings(cwd: string): Promise<void> {
-  for (const file of [".claude/settings.json", ".claude/settings.local.json"]) {
-    const text = await readRegular(cwd, file, `refused to run claude where ${file} would load beside it`);
-    if (text === undefined) continue;
-    let keys: string[];
-    try {
-      const value: unknown = JSON.parse(text);
-      keys = value !== null && typeof value === "object" ? Object.keys(value) : [];
-    } catch {
-      throw new Error(`refused to run claude where ${file} would load beside it: it is not JSON, so what it enables cannot be told. Fix or remove it on the branch`);
+const importsOf = (text: string): string[] =>
+  [...text.matchAll(/(?:^|\s)@((?:[^\s\\]|\\ )+)/g)]
+    .map((m) => (m[1] as string).split("#")[0]!.replaceAll("\\ ", " "))
+    .filter((path) => path !== "");
+
+/**
+ * The worktree's root `CLAUDE.md` for `--add-dir`, since neither tier's flags
+ * load a project's instructions: a copy, outside the worktree, beside a copy
+ * of each file it imports at the same place, so the CLI resolves an import
+ * among the copies. The CLI rereads its instructions mid-run, after
+ * compacting, and a copy holds what was checked, where the worktree's file is
+ * whatever a step has made it since. Nothing of `.claude/` comes along, so
+ * neither its settings nor anything else the CLI reads beside a `CLAUDE.md`
+ * loads: an import there loads nothing.
+ *
+ * Landrace reads these outside the sandbox, and the CLI resolves an import
+ * outside it too, so a file that leads outside the worktree, or an import of
+ * `~/`, an absolute path or a path above the worktree, is refused, naming it,
+ * before anything is read.
+ */
+async function buildInstructions(cwd: string, dir: string): Promise<void> {
+  const tree = await realpath(cwd);
+  await mkdir(dir, { recursive: true });
+  const importer = new Map([["CLAUDE.md", ""]]);
+  for (const [file, from] of importer) {
+    if (await leadsOut(tree, join(cwd, file))) {
+      throw new Error(`refused to load the step's instructions: ${from ? `${from} imports ${file}, which` : file} leads outside the worktree. ` +
+        "Make it a file, or a link inside the worktree, on the branch");
     }
-    const loaded = keys.filter((k) => k === "enabledPlugins" || k === "extraKnownMarketplaces");
-    if (loaded.length) {
-      throw new Error(`refused to run claude where ${file} would load beside it: the --add-dir that loads the step's CLAUDE.md ` +
-        `also loads its ${loaded.join(" and ")}, and a step could commit them. Name the plugins in agent.plugins and remove them from the branch`);
+    const text = await readRegular(cwd, file);
+    if (text === undefined) continue;
+    await mkdir(join(dir, dirname(file)), { recursive: true });
+    await writeFile(join(dir, file), text);
+    for (const path of importsOf(text)) {
+      const rel = posix.normalize(posix.join(posix.dirname(file), path));
+      if (path.startsWith("/") || path.startsWith("~/") || rel === ".." || rel.startsWith("../")) {
+        throw new Error(`refused to load the step's instructions: ${file} imports ${path}, which is outside the worktree. Remove the import from the branch`);
+      }
+      // In any case: macOS's filesystem would put `.CLAUDE/` in `.claude/`.
+      if (!/^\.claude(\/|$)/i.test(rel) && !importer.has(rel)) importer.set(rel, file);
     }
   }
 }
@@ -220,12 +242,13 @@ function skillProblem(text: string): string | undefined {
 }
 
 /**
- * Where a worktree's skills load from: outside it, so a step cannot shadow
- * the plugin, at a path derived from it, so a run after a crash rebuilds the
- * same one rather than leave another.
+ * Where a worktree's instructions and skills load from, `instructions/` and
+ * `plugin/`: outside it, so a step cannot shadow them, at a path derived from
+ * it, so a run after a crash rebuilds the same one rather than leave another.
+ * Resolved, so the path a write step is denied is the one the CLI sees.
  */
-const pluginDirOf = (cwd: string): string =>
-  join(tmpdir(), "landrace-claude", createHash("sha256").update(cwd).digest("hex").slice(0, 16));
+const builtOf = (cwd: string): string =>
+  join(realpathSync(tmpdir()), "landrace-claude", createHash("sha256").update(cwd).digest("hex").slice(0, 16));
 
 /**
  * The worktree's `.claude/skills` as a plugin of its own for `--plugin-dir`,
@@ -240,7 +263,7 @@ const pluginDirOf = (cwd: string): string =>
  * skill's folder or its SKILL.md leading out of the worktree is refused, by
  * name, before anything is read: a link to a key would hand the agent the key.
  */
-async function buildPluginDir(cwd: string): Promise<void> {
+async function buildPluginDir(cwd: string, dir: string): Promise<void> {
   const root = join(cwd, ".claude", "skills");
   const tree = await realpath(cwd);
   const refuseOut = async (path: string): Promise<void> => {
@@ -249,8 +272,6 @@ async function buildPluginDir(cwd: string): Promise<void> {
     }
   };
   await refuseOut(".claude/skills");
-  const dir = pluginDirOf(cwd);
-  await rm(dir, { recursive: true, force: true });
   await mkdir(join(dir, ".claude-plugin"), { recursive: true });
   await writeFile(join(dir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "project" }));
   await mkdir(join(dir, "skills"));
@@ -299,21 +320,16 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * pairing's checkout, and a later turn resumes it from the item's. Not
    * found, the `--resume` fails as it always did.
    *
-   * A step's own directory is checked before it is added, and its skills made
-   * into the plugin `argv` names: the screener gets neither.
+   * A step's own instructions and skills are checked and copied into the
+   * directories `argv` names, rebuilt on every run: the screener gets neither.
    */
   protected async prepare({ tier, resume, cwd }: RunPlan<ClaudeExtras>): Promise<void> {
     if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, projectDir(this.home, cwd));
     if (tier === "screen" || cwd === undefined) return;
-    const tree = await realpath(cwd);
-    for (const file of INSTRUCTION_FILES) {
-      if (await leadsOut(tree, join(cwd, file))) {
-        throw new Error(`refused to run claude where ${file} would load: it leads outside the worktree, and claude would read ` +
-          "what it leads to into the step's instructions. Make it a file, or a link inside the worktree, on the branch");
-      }
-    }
-    await refuseAddDirSettings(cwd);
-    if (existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd);
+    const built = builtOf(cwd);
+    await rm(built, { recursive: true, force: true });
+    await buildInstructions(cwd, join(built, "instructions"));
+    if (existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd, join(built, "plugin"));
   }
 
   protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras }: RunPlan<ClaudeExtras>): string[] {
@@ -321,13 +337,14 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // A step's own instructions and skills: `--setting-sources user` and
     // `--restricted` each keep the CLI from reading the worktree's
     // `CLAUDE.md` and `.claude/skills` as the project's (live on 2.1.289).
-    // So the worktree is added as a directory of its own, which loads its
-    // root `CLAUDE.md` only with the setting below, and its skills come as a
-    // plugin `prepare` made of them. `prepare` has refused the settings
-    // `--add-dir` is known to load beside it, an instruction file or skill
-    // that leads outside the worktree, and any skill whose front matter it
-    // cannot vouch for. Never the screener's.
-    const instructions = declared && cwd !== undefined;
+    // So they come from copies `prepare` checked and made outside the
+    // worktree: its root `CLAUDE.md` and what that imports, in a directory
+    // added as one of the run's own, which loads it only with the setting
+    // below, and its skills as a plugin. A directory added is one a write
+    // step may edit, so its sandbox and Edit rules deny it them, or the step
+    // could write a CLAUDE.md the CLI rereads after compacting. Never the
+    // screener's.
+    const built = declared && cwd !== undefined ? builtOf(cwd) : undefined;
     const mayWrite = tier === "write";
     // Not plan mode, which is what a read-only step and the screener ran in
     // until a live check against the real CLI (2.1.282) showed what it
@@ -378,13 +395,13 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // at all. The sandbox is for a run that may write: the only one with Bash.
     const settings = {
       ...(declared && extras.plugins.length ? { enabledPlugins: Object.fromEntries(extras.plugins.map((id) => [id, true])) } : {}),
-      ...(mayWrite ? sandboxSettings(sandbox) : {}),
-      ...(instructions ? { env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" } } : {}),
+      ...(mayWrite ? sandboxSettings(sandbox, built) : {}),
+      ...(built !== undefined ? { env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" } } : {}),
     };
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     // Variadic, both: `--mcp-config`, always pushed below, ends them.
-    if (instructions) args.push("--add-dir", cwd);
-    if (instructions && existsSync(join(cwd, ".claude", "skills"))) args.push("--plugin-dir", pluginDirOf(cwd));
+    if (built !== undefined) args.push("--add-dir", join(built, "instructions"));
+    if (built !== undefined && existsSync(join(built, "plugin"))) args.push("--plugin-dir", join(built, "plugin"));
     // Inline JSON rather than a config file: there is no path for the
     // agent's worktree to shadow and nothing to clean up after a crash.
     // Strict always, for every run and with nothing to allow as much as with

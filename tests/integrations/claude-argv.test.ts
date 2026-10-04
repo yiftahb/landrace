@@ -9,9 +9,10 @@ import { ARGV_CASES } from "#tests/support/claude-argv-cases.js";
  * for each case, element for element, for every tier. It began as what
  * `.landrace/hooks/claude.ts` built before the kit existed, recorded through
  * the fake agent, and changes only where a tier's flags do: since #89 a step
- * gets `--add-dir` over its own directory, written `<cwd>` here, and the
- * setting that loads its `CLAUDE.md` — and, beside skills, `--plugin-dir`
- * over the plugin made of them, written `<plugin-dir>`.
+ * gets `--add-dir` over the copy of its instructions made outside its
+ * directory, under a path written `<built>` here, and the setting that loads
+ * its `CLAUDE.md` — beside skills, `--plugin-dir` over the plugin made of
+ * them — and a write step is denied writing there.
  */
 const bin = join(__dirname, "..", "agent", "fake-agent.mjs");
 const recorded = JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "claude-argv.json"), "utf8")) as Record<string, string[]>;
@@ -36,8 +37,9 @@ describe("the Claude integration's command lines", () => {
       c.executor as Record<string, never>;
     const executor = new Claude({ bin, home }).build({ ...rest, servers: mcpServers, tools: mcpTools, plugins, sandbox });
     const r = await executor.run("p", { round: 1, signal: new AbortController().signal, cwd, ...c.run });
-    const real = realpathSync(cwd);
     const argv = JSON.parse(r.text) as string[];
-    expect(argv.map((a, i) => (a === real ? "<cwd>" : argv[i - 1] === "--plugin-dir" ? "<plugin-dir>" : a))).toEqual(recorded[name]);
+    const built = argv.includes("--add-dir") ? dirname(argv[argv.indexOf("--add-dir") + 1] as string) : undefined;
+    expect(built === undefined || !built.startsWith(realpathSync(cwd))).toBe(true);
+    expect(argv.map((a) => (built === undefined ? a : a.replaceAll(built, "<built>")))).toEqual(recorded[name]);
   });
 });

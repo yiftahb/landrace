@@ -89,9 +89,9 @@ const list = (argv: string[], name: string): string[] => {
 const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
 /** What a step's `--settings` carries so `--add-dir` loads its `CLAUDE.md`. */
 const INSTRUCTIONS = { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" };
-/** The directory a step ran in, which `--add-dir` names, written `<cwd>` so a whole argv can be compared. */
-const atCwd = (argv: string[]): string[] =>
-  argv.map((a, i) => (argv[i - 1] === "--add-dir" ? "<cwd>" : a));
+/** The copy of a step's instructions that `--add-dir` names, written `<instructions>` so a whole argv can be compared. */
+const atInstructions = (argv: string[]): string[] =>
+  argv.map((a, i) => (argv[i - 1] === "--add-dir" ? "<instructions>" : a));
 const PLUGIN = "superpowers@claude-plugins-official";
 const MEMORY = { command: "codebase-memory-mcp", args: [], env: { MEMORY_HOME: "/var/memory" } };
 const BINDING = { parent: "12", stage: "breakdown", round: 2 };
@@ -896,13 +896,13 @@ describe("the create_child tool", () => {
   it("keeps a read-only step without the binding on exactly the flags any read-only step gets", async () => {
     const readOnly = [
       "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
-      "--disallowedTools", ...WRITE_TOOLS, "--settings", JSON.stringify({ env: INSTRUCTIONS }), "--add-dir", "<cwd>",
+      "--disallowedTools", ...WRITE_TOOLS, "--settings", JSON.stringify({ env: INSTRUCTIONS }), "--add-dir", "<instructions>",
       "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ];
     const declaring = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["items:create", "repo:read"] });
-    expect(atCwd(declaring)).toEqual(readOnly);
+    expect(atInstructions(declaring)).toEqual(readOnly);
     const unbound = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"], child: { ...binding, server: SERVER } });
-    expect(atCwd(unbound)).toEqual(readOnly);
+    expect(atInstructions(unbound)).toEqual(readOnly);
   });
 
   it("offers nothing to a step that did not declare it, even with a binding", async () => {
@@ -975,12 +975,13 @@ describe("the create_child tool", () => {
 });
 
 /*
- * A step's own instructions and skills, from the worktree it runs in (#89),
- * and nothing else of the project's: `--add-dir` also reads the directory's
- * own `.claude/settings.json` and `.claude/settings.local.json` for the
- * plugins and marketplaces they name (2.1.289's own source), whatever
- * `--setting-sources` says — a plugin a step could commit, whose hooks run
- * outside the sandbox.
+ * A step's own instructions and skills, from the worktree it runs in (#89):
+ * copies Landrace checked and made outside the worktree, and nothing else of
+ * the project's. The CLI rereads its instructions mid-run, after compacting,
+ * and a step can change its worktree by then; it reads them, and what they
+ * import, in its own process, outside the sandbox; and `--add-dir` also reads
+ * the plugins a directory's own `.claude/settings.json` enables (2.1.289's
+ * own source), whose hooks run outside the sandbox.
  */
 describe("a step's own instructions and skills", () => {
   /** A worktree holding these files, under `.claude/` and beside it. */
@@ -998,68 +999,138 @@ describe("a step's own instructions and skills", () => {
     });
     return JSON.parse(r.text) as string[];
   };
+  /** What each file in a directory holds, by its path in it. */
+  const contents = (dir: string): Record<string, string> =>
+    Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => [join(e.parentPath, e.name).slice(dir.length + 1), readFileSync(join(e.parentPath, e.name), "utf8")]));
+  const TIERS = [["write", ["repo:read", "repo:write"]], ["read-only", ["repo:read"]]] as const;
+  /** A worktree whose fake agent fails the run with "ran", had it started. */
+  const refusing = (files: Record<string, string>): string =>
+    worktree({ ...files, "fake.json": JSON.stringify({ exit: 1, stderr: "ran" }) });
 
-  it.each([
-    ["write", ["repo:read", "repo:write"]],
-    ["read-only", ["repo:read"]],
-  ])("refuses a %s step whose worktree's settings enable a plugin, naming the file and the key", async (_, capabilities) => {
-    const cwd = worktree({ ".claude/settings.json": JSON.stringify({ enabledPlugins: { "x@y": true } }) });
-    await expect(stepIn(cwd, capabilities)).rejects.toThrow(/\.claude\/settings\.json[\s\S]*enabledPlugins/);
-  });
-
-  it("refuses a worktree whose local settings name a marketplace", async () => {
-    const cwd = worktree({ ".claude/settings.local.json": JSON.stringify({ extraKnownMarketplaces: { m: {} } }) });
-    await expect(stepIn(cwd, ["repo:read"])).rejects.toThrow(/\.claude\/settings\.local\.json[\s\S]*extraKnownMarketplaces/);
-  });
-
-  // JSON.parse reads `enabledPlugins` as the key the CLI reads; a text search would not.
-  it("reads the settings as JSON, escapes and all", async () => {
-    const cwd = worktree({ ".claude/settings.json": '{"\\u0065nabledPlugins": {"x@y": true}}' });
-    await expect(stepIn(cwd, ["repo:read"])).rejects.toThrow(/enabledPlugins/);
-  });
-
-  it("refuses settings it cannot read as JSON, since it cannot tell what they enable", async () => {
-    const cwd = worktree({ ".claude/settings.json": "{ // a comment\n}" });
-    await expect(stepIn(cwd, ["repo:read"])).rejects.toThrow(/\.claude\/settings\.json[\s\S]*JSON/);
-  });
-
-  // Hooks and permissions in a project's settings never load, under either tier's flags.
-  it("runs beside settings that hold only what never loads", async () => {
+  it.each(TIERS)("hands a %s step a copy of its CLAUDE.md, made outside the worktree, and none of its settings", async (_, capabilities) => {
     const cwd = worktree({
-      ".claude/settings.json": JSON.stringify({ hooks: { SessionStart: [] }, permissions: { allow: ["Bash"] } }),
+      "CLAUDE.md": "Say PROBE.\n",
+      ".claude/settings.json": JSON.stringify({ enabledPlugins: { "x@y": true }, hooks: { SessionStart: [] } }),
+      ".claude/CLAUDE.md": "x", "CLAUDE.local.md": "x",
     });
-    expect(flag(await stepIn(cwd, ["repo:read", "repo:write"]), "--add-dir")).toBe(realpathSync(cwd));
+    const dir = flag(await stepIn(cwd, capabilities), "--add-dir") as string;
+    expect(dir.startsWith(`${realpathSync(cwd)}/`)).toBe(false);
+    expect(contents(dir)).toEqual({ "CLAUDE.md": "Say PROBE.\n" });
+  });
+
+  it("copies a CLAUDE.md that is a link to AGENTS.md beside it", async () => {
+    const cwd = worktree({ "AGENTS.md": "x" });
+    symlinkSync("AGENTS.md", join(cwd, "CLAUDE.md"));
+    const dir = flag(await stepIn(cwd, ["repo:read"]), "--add-dir") as string;
+    expect(lstatSync(join(dir, "CLAUDE.md")).isFile()).toBe(true);
+    expect(contents(dir)).toEqual({ "CLAUDE.md": "x" });
+  });
+
+  // A step could relink its CLAUDE.md to a key mid-run; the CLI rereads the copy.
+  it("keeps the CLAUDE.md it checked when the worktree's changes after", async () => {
+    const out = withCfg({});
+    writeFileSync(join(out, "credentials"), "aws_secret_access_key = x\n");
+    const cwd = worktree({ "CLAUDE.md": "Say PROBE.\n" });
+    const dir = flag(await stepIn(cwd, ["repo:read", "repo:write"]), "--add-dir") as string;
+    rmSync(join(cwd, "CLAUDE.md"));
+    symlinkSync(join(out, "credentials"), join(cwd, "CLAUDE.md"));
+    expect(contents(dir)).toEqual({ "CLAUDE.md": "Say PROBE.\n" });
+  });
+
+  // A directory added is one the run may edit: a write step is denied the copies, by its sandbox and its Edit rules.
+  it("denies a write step writing the copies it loads", async () => {
+    const argv = await stepIn(worktree({ "CLAUDE.md": "x" }), ["repo:read", "repo:write"]);
+    const built = dirname(flag(argv, "--add-dir") as string);
+    const settings = JSON.parse(flag(argv, "--settings") as string);
+    expect(settings.sandbox.filesystem.denyWrite).toEqual([built]);
+    expect(settings.permissions.deny).toContain(`Edit(/${built}/**)`);
   });
 
   /*
-   * `--add-dir` has the CLI read these in its own process, outside the
-   * sandbox, following a link wherever it leads: a step that linked one to a
-   * key would hand every later run in the worktree the key.
+   * The CLI follows `@path` imports in the CLAUDE.md it loads, among the
+   * copies: each file imported is copied at the same place, its own imports
+   * too. What it imports from `.claude/` would load beside more than
+   * instructions, and is not copied; one that is not a file is not either.
    */
-  it.each(["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"])(
-    "refuses a worktree whose %s leads outside it, or nowhere, naming it", async (path) => {
-      const out = withCfg({});
-      writeFileSync(join(out, "credentials"), "aws_secret_access_key = x\n");
-      const cwd = worktree({ "fake.json": JSON.stringify({ exit: 1, stderr: "ran" }) });
-      mkdirSync(dirname(join(cwd, path)), { recursive: true });
-      for (const target of [join(out, "credentials"), join(out, "missing")]) {
-        rmSync(join(cwd, path), { force: true });
-        symlinkSync(target, join(cwd, path));
-        for (const capabilities of [["repo:read", "repo:write"], ["repo:read"]]) {
-          await expect(stepIn(cwd, capabilities)).rejects.toThrow(`refused to run claude where ${path} would load: it leads outside the worktree`);
-        }
-      }
+  it("copies what CLAUDE.md imports beside it, and nothing under .claude/", async () => {
+    const root = "@AGENTS.md\nSee @docs/style.md#tone and @docs, not @missing.md; mail a@b.c.\n@.claude/settings.json\n@.CLAUDE/settings.local.json\n";
+    const cwd = worktree({
+      "CLAUDE.md": root,
+      "AGENTS.md": "agents\n",
+      "docs/style.md": "style, and @../AGENTS.md again\n",
+      ".claude/settings.json": JSON.stringify({ enabledPlugins: { "x@y": true } }),
+      ".CLAUDE/settings.local.json": JSON.stringify({ enabledPlugins: { "x@y": true } }),
     });
-
-  it("loads a CLAUDE.md that is a link to AGENTS.md beside it", async () => {
-    const cwd = worktree({ "AGENTS.md": "x" });
-    symlinkSync("AGENTS.md", join(cwd, "CLAUDE.md"));
-    expect(flag(await stepIn(cwd, ["repo:read"]), "--add-dir")).toBe(realpathSync(cwd));
+    const dir = flag(await stepIn(cwd, ["repo:read"]), "--add-dir") as string;
+    expect(contents(dir)).toEqual({ "CLAUDE.md": root, "AGENTS.md": "agents\n", "docs/style.md": "style, and @../AGENTS.md again\n" });
   });
 
-  it("runs the screener beside them, since it loads nothing of the worktree", async () => {
-    const cwd = worktree({ ".claude/settings.json": JSON.stringify({ enabledPlugins: { "x@y": true } }) });
-    expect(await stepIn(cwd)).not.toContain("--add-dir");
+  /*
+   * The CLI reads an import outside the sandbox, so one of `~/`, an absolute
+   * path or a path above the worktree — anywhere, code included — is refused
+   * before the agent starts, naming the file and the import.
+   */
+  it.each([
+    ["@~/.aws/credentials", "~/.aws/credentials"],
+    ["@/etc/passwd", "/etc/passwd"],
+    ["@../outside.md", "../outside.md"],
+    ["```\n@~/.ssh/id_ed25519\n```", "~/.ssh/id_ed25519"],
+  ])("refuses a CLAUDE.md importing %j, under both tiers", async (line, path) => {
+    const cwd = refusing({ "AGENTS.md": `# Probe\n\n${line}\n` });
+    symlinkSync("AGENTS.md", join(cwd, "CLAUDE.md"));
+    for (const [, capabilities] of TIERS) {
+      await expect(stepIn(cwd, capabilities)).rejects.toThrow(
+        `refused to load the step's instructions: CLAUDE.md imports ${path}, which is outside the worktree`);
+    }
+  });
+
+  it("refuses an import that leads above the worktree from a file it imports, naming that file", async () => {
+    const cwd = refusing({ "CLAUDE.md": "@docs/a.md\n", "docs/a.md": "@../../outside.md\n" });
+    await expect(stepIn(cwd, ["repo:read"])).rejects.toThrow("docs/a.md imports ../../outside.md, which is outside the worktree");
+  });
+
+  /*
+   * Landrace reads what it copies outside the sandbox: a CLAUDE.md, or a file
+   * it imports, that leads outside the worktree would put the file in every
+   * later run's instructions, past the sandbox's deny list and the Read rules.
+   * A link that leads nowhere has nothing to copy, and loads nothing.
+   */
+  it("refuses a CLAUDE.md, or a file it imports, that leads outside the worktree, naming it", async () => {
+    const out = withCfg({});
+    writeFileSync(join(out, "credentials"), "aws_secret_access_key = x\n");
+    const linked = refusing({});
+    symlinkSync(join(out, "credentials"), join(linked, "CLAUDE.md"));
+    const imported = refusing({ "CLAUDE.md": "@notes.md\n" });
+    symlinkSync(join(out, "credentials"), join(imported, "notes.md"));
+    for (const [, capabilities] of TIERS) {
+      await expect(stepIn(linked, capabilities)).rejects.toThrow(
+        "refused to load the step's instructions: CLAUDE.md leads outside the worktree");
+      await expect(stepIn(imported, capabilities)).rejects.toThrow(
+        "refused to load the step's instructions: CLAUDE.md imports notes.md, which leads outside the worktree");
+    }
+  });
+
+  // agsync's `CLAUDE.md -> AGENTS.md`, on a branch that removed AGENTS.md.
+  it("runs a step whose CLAUDE.md leads nowhere, loading nothing", async () => {
+    const cwd = worktree({});
+    symlinkSync("AGENTS.md", join(cwd, "CLAUDE.md"));
+    for (const [, capabilities] of TIERS) expect(contents(flag(await stepIn(cwd, capabilities), "--add-dir") as string)).toEqual({});
+  });
+
+  // Landrace reads it before the step's timeout and abort exist; the CLI skips one too.
+  it("loads nothing from a CLAUDE.md that is a named pipe, rather than wait on it", async () => {
+    const cwd = worktree({});
+    execFileSync("mkfifo", [join(cwd, "CLAUDE.md")]);
+    expect(contents(flag(await stepIn(cwd, ["repo:read"]), "--add-dir") as string)).toEqual({});
+  });
+
+  it("gives the screener neither, since it loads nothing of the worktree", async () => {
+    const cwd = worktree({ "CLAUDE.md": "x", ".claude/skills/probe/SKILL.md": "---\nname: probe\n---\n" });
+    const argv = await stepIn(cwd);
+    expect(argv).not.toContain("--add-dir");
+    expect(argv).not.toContain("--plugin-dir");
   });
 
   const SKILL = "---\nname: probe\ndescription: A probe skill.\n---\n\nSay PROBE.\n";
@@ -1110,19 +1181,26 @@ describe("a step's own instructions and skills", () => {
     });
 
   /*
-   * Landrace reads these before the step's timeout and abort exist: a named
+   * Landrace reads it before the step's timeout and abort exist: a named
    * pipe there, opened to read, would wait for a writer forever. Refused,
    * naming it, under both tiers.
    */
-  it.each([".claude/settings.json", ".claude/settings.local.json", ".claude/skills/probe/SKILL.md"])(
-    "refuses a %s that is a named pipe rather than wait on it", async (path) => {
-      const cwd = worktree({ "fake.json": JSON.stringify({ exit: 1, stderr: "ran" }) });
-      mkdirSync(dirname(join(cwd, path)), { recursive: true });
-      execFileSync("mkfifo", [join(cwd, path)]);
-      for (const capabilities of [["repo:read", "repo:write"], ["repo:read"]]) {
-        await expect(stepIn(cwd, capabilities)).rejects.toThrow(`${path} is not a regular file`);
-      }
-    });
+  it("refuses a SKILL.md that is a named pipe rather than wait on it", async () => {
+    const cwd = refusing({});
+    mkdirSync(join(cwd, ".claude", "skills", "probe"), { recursive: true });
+    execFileSync("mkfifo", [join(cwd, ".claude", "skills", "probe", "SKILL.md")]);
+    for (const [, capabilities] of TIERS) {
+      await expect(stepIn(cwd, capabilities)).rejects.toThrow(".claude/skills/probe/SKILL.md is not a regular file");
+    }
+  });
+
+  // A skill folder left dangling by a branch that removed what it led to: nothing to copy.
+  it("runs a step whose skill folder leads nowhere, loading no skill from it", async () => {
+    const cwd = worktree({ ".claude/skills/probe/SKILL.md": SKILL });
+    symlinkSync("../../missing", join(cwd, ".claude", "skills", "gone"));
+    const dir = flag(await stepIn(cwd, ["repo:read"]), "--plugin-dir") as string;
+    expect(readdirSync(join(dir, "skills"))).toEqual(["probe"]);
+  });
 
   it("passes no --plugin-dir when the worktree has no skills, nor to the screener when it has", async () => {
     expect(await stepIn(worktree({}), ["repo:read"])).not.toContain("--plugin-dir");
@@ -1224,10 +1302,18 @@ describe("a writing step's sandbox", () => {
       ],
     },
   };
+  /** CONFINED for the step that printed `argv`, denied writing the copies of its instructions and skills. */
+  const confined = (argv: string[]) => {
+    const built = dirname(flag(argv, "--add-dir") as string);
+    return {
+      sandbox: { ...CONFINED.sandbox, filesystem: { ...CONFINED.sandbox.filesystem, denyWrite: [built] } },
+      permissions: { deny: [...CONFINED.permissions.deny, `Edit(/${built}/**)`] },
+    };
+  };
 
   it("confines a writing step with no network and the default deny list when it was given no sandbox", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read", "repo:write"] });
-    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ ...CONFINED, env: INSTRUCTIONS });
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ ...confined(argv), env: INSTRUCTIONS });
     expect(flag(argv, "--permission-mode")).toBe("acceptEdits");
   });
 
@@ -1258,9 +1344,9 @@ describe("a writing step's sandbox", () => {
       sandbox: {
         ...CONFINED.sandbox,
         network: { allowedDomains: ["github.com", "registry.npmjs.org"], strictAllowlist: true },
-        filesystem: { denyRead: ["~/.ssh"] },
+        filesystem: { denyRead: ["~/.ssh"], denyWrite: [dirname(flag(argv, "--add-dir") as string)] },
       },
-      permissions: { deny: ["Read(~/.ssh)", "Read(~/.ssh/**)"] },
+      permissions: { deny: ["Read(~/.ssh)", "Read(~/.ssh/**)", `Edit(/${dirname(flag(argv, "--add-dir") as string)}/**)`] },
       env: INSTRUCTIONS,
     });
   });
@@ -1269,7 +1355,7 @@ describe("a writing step's sandbox", () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), {
       capabilities: ["items:create", "repo:write"], child: { ...BINDING, server: SERVER },
     });
-    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ ...CONFINED, env: INSTRUCTIONS });
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ ...confined(argv), env: INSTRUCTIONS });
     expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers)).toEqual(["landrace"]);
     expect(list(argv, "--allowedTools")).toEqual(["mcp__landrace__landrace_create_child"]);
   });
@@ -1281,10 +1367,10 @@ describe("a writing step's sandbox", () => {
    */
   it("gives a read-only step and the screener nothing of the sandbox", async () => {
     const executor = createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com"], deny: ["~/.ssh"] } });
-    expect(atCwd(await argvOf(executor, { capabilities: ["repo:read"] }))).toEqual([
+    expect(atInstructions(await argvOf(executor, { capabilities: ["repo:read"] }))).toEqual([
       "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
       "--disallowedTools", ...WRITE_TOOLS,
-      "--settings", JSON.stringify({ enabledPlugins: { [PLUGIN]: true }, env: INSTRUCTIONS }), "--add-dir", "<cwd>",
+      "--settings", JSON.stringify({ enabledPlugins: { [PLUGIN]: true }, env: INSTRUCTIONS }), "--add-dir", "<instructions>",
       "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ]);
     expect(await argvOf(executor, {})).toEqual([
@@ -1351,7 +1437,7 @@ describe("the factory's wiring, end to end", () => {
       const write = JSON.parse(flag(await argvOf(executor, { capabilities: ["repo:read", "repo:write"] }), "--settings") as string);
       expect(write.enabledPlugins).toEqual({ "p@m": true });
       expect(write.sandbox.network).toEqual({ allowedDomains: ["github.com"], strictAllowlist: true });
-      expect(write.sandbox.filesystem).toEqual({ denyRead: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] });
+      expect(write.sandbox.filesystem.denyRead).toEqual(["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"]);
     } finally {
       process.env.PATH = savedPath;
     }
