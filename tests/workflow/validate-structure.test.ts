@@ -809,6 +809,38 @@ describe("effect-fields", () => {
     expect(routed(effect)).toEqual([expect.stringMatching(message)]);
   });
 
+  /*
+   * The answer reaches the route cut down to the matched shape's fields, so a
+   * field no such shape declares is never there: every round would fail as
+   * missing, after the agent was paid.
+   */
+  it("refuses a field the route's shape does not declare", () => {
+    expect(routed({ ...LABEL, addFrom: ["class", "area"] })).toEqual([expect.stringMatching(/"area".*"done"/)]);
+    expect(routed({ ...WORKLOG, spentFrom: "spnt" })).toEqual([expect.stringMatching(/"spnt".*"done"/)]);
+    expect(routed({ ...LABEL, addFrom: "kind", allowed: ["done"] })).toEqual([]);
+  });
+
+  it("judges the field against the shape the route matches, or any shape where the route names none", () => {
+    const fields = (when: Record<string, unknown>) => {
+      const steps = new Map<string, Step>([["s.md", {
+        prompt: "",
+        output: {
+          discriminator: "kind", shapes: { done: { class: "string" }, logged: { spent: "string" } },
+          routes: [{ when, effect: { type: "tracker.worklog", spentFrom: "spent", max: "4h", marker: "w" } }],
+        },
+      }]]);
+      const w = wf([
+        { id: "a", entry: true, step: "s.md", triggers: [{ when: { "run.stage": null } }] },
+        { id: "b", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+      ]);
+      return validateStructure(w, steps).filter((p) => p.rule === "effect-fields").map((p) => p.message);
+    };
+    expect(fields({ kind: "done" })).toEqual([expect.stringMatching(/"spent".*"done"/)]);
+    expect(fields({ kind: "logged" })).toEqual([]);
+    expect(fields({})).toEqual([]);
+    expect(fields({ kind: { $in: ["done", "logged"] } })).toEqual([]);
+  });
+
   it("refuses addFrom and spentFrom in on_enter, where there is no answer to read", () => {
     expect(routed(NOTE, [LABEL])).toEqual([expect.stringMatching(/addFrom.*on_enter/)]);
     expect(routed(NOTE, [WORKLOG])).toEqual([expect.stringMatching(/spentFrom.*on_enter/)]);

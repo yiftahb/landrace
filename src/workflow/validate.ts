@@ -378,13 +378,33 @@ function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
   const problems: Problem[] = [];
   for (const stage of w.stages) {
     const step = stage.step ? steps.get(stage.step) : undefined;
+    const output = step?.output;
     const placed = [
-      ...(stage.on_enter ?? []).map((effect) => ({ effect, where: `stage "${stage.id}"'s on_enter`, route: false })),
-      ...(step?.output?.routes ?? []).map((r) => ({ effect: r.effect, where: `step ${stage.step}'s route for ${JSON.stringify(r.when)}`, route: true })),
+      ...(stage.on_enter ?? []).map((effect) => ({ effect, where: `stage "${stage.id}"'s on_enter`, route: false, shapes: [] as string[] })),
+      ...(output?.routes ?? []).map((r) => {
+        // A route naming one declared shape only ever sees that shape's fields; one naming none, or an operator, may see any.
+        const named = r.when[output?.discriminator ?? ""];
+        const all = Object.keys(output?.shapes ?? {});
+        const shapes = typeof named === "string" && all.includes(named) ? [named] : all;
+        return { effect: r.effect, where: `step ${stage.step}'s route for ${JSON.stringify(r.when)}`, route: true, shapes };
+      }),
     ];
-    for (const { effect, where, route } of placed) {
+    for (const { effect, where, route, shapes } of placed) {
       const say = (message: string): void => {
         problems.push({ rule: "effect-fields", message: `${where}: ${message}` });
+      };
+      /*
+       * settleOutput cuts the answer down to the matched shape's fields before
+       * addFrom or spentFrom is read, so a field no shape declares never
+       * arrives and every round fails as missing, after the agent was paid.
+       */
+      const undeclared = (field: string): void => {
+        if (!output || field === output.discriminator) return;
+        const declares = !isReservedId(field) && shapes.some((s) => {
+          const declared = output.shapes[s];
+          return declared !== null && typeof declared === "object" && !Array.isArray(declared) && Object.hasOwn(declared, field);
+        });
+        if (!declares) say(`"${field}" is not a field of ${shapes.map((s) => `"${s}"`).join(" or ")}, so the answer never carries it`);
       };
       if (effect.visibility !== undefined) {
         if (effect.type !== RECORD_EFFECT) say(`a ${effect.type} has a visibility; only a ${RECORD_EFFECT} has one`);
@@ -401,6 +421,7 @@ function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
         else {
           const ours = effect.allowed.filter((l) => /^\s*lr:/i.test(l));
           if (ours.length > 0) say(`allowed holds ${ours.map((l) => `"${l}"`).join(", ")}; an lr: label is Landrace's own, never one an answer adds`);
+          fields.forEach(undeclared);
         }
       }
       if (effect.type === WORKLOG_EFFECT && !route && effect.spentFrom === undefined) {
@@ -412,6 +433,7 @@ function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
       }
       if (effect.type === WORKLOG_EFFECT && route) {
         if (typeof effect.spentFrom !== "string" || effect.spentFrom === "") say(`a ${WORKLOG_EFFECT} needs spentFrom, the output field its time is read from`);
+        else undeclared(effect.spentFrom);
         if (typeof effect.marker !== "string" || effect.marker === "") say(`a ${WORKLOG_EFFECT} needs a marker, or nothing would say it was logged already`);
         const max = typeof effect.max === "string" ? workDurationMs(effect.max) : null;
         if (max === null || max === 0) say(`a ${WORKLOG_EFFECT} needs a max above zero such as "4h", and has ${JSON.stringify(effect.max)}`);
