@@ -311,7 +311,20 @@ export class Jira extends BaseTracker {
           .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
       }
       const [only] = users;
-      if (!only) throw new Error(`jiraAssignee "${value}" matches no Jira user`);
+      if (!only) {
+        // Jira answers an account without "Browse users and groups" with nobody, not a refusal: asked, so the
+        // refusal names the cause that applied.
+        const { permissions = {} } = await jira.call<{ permissions?: Record<string, { havePermission?: boolean }> }>(
+          "GET", "/rest/api/3/mypermissions?permissions=USER_PICKER",
+        );
+        if (permissions.USER_PICKER?.havePermission !== true) {
+          throw new Error(
+            `jiraAssignee "${value}" cannot be looked up: the account lacks the global "Browse users and groups" permission (USER_PICKER), ` +
+            "without which Jira finds no user; grant it",
+          );
+        }
+        throw new Error(`jiraAssignee "${value}" matches no Jira user`);
+      }
       if (users.length > 1) {
         throw new Error(`jiraAssignee "${value}" matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
       }
@@ -929,8 +942,9 @@ export class Jira extends BaseTracker {
    * Startup, before anything is paid for: each permission the account lacks
    * on the project, each issue type it does not have, and each type without a
    * labels field — an item's position is a label. Scoped by `jiraAssignee`,
-   * an assignee that resolves to no one user, "Assign Issues", and each type
-   * without an assignee field too. Reads only: every write shows in the
+   * an assignee that resolves to no one user, or that cannot be looked up for
+   * want of "Browse users and groups", "Assign Issues", and each type without
+   * an assignee field too. Reads only: every write shows in the
    * project's history, so the preflight makes none.
    */
   async check(ctx: RuntimeContext): Promise<void> {

@@ -125,6 +125,8 @@ const PERMISSION_NAMES: Record<string, string> = {
   ADD_COMMENTS: "Add Comments",
   LINK_ISSUES: "Link Issues",
   ASSIGN_ISSUES: "Assign Issues",
+  // Global, not the project's: without it user search answers an empty list and a user read a 404, never a refusal.
+  USER_PICKER: "Browse users and groups",
 };
 
 /** One ADF paragraph of plain text, the way a person's comment arrives. */
@@ -429,6 +431,7 @@ export function createFakeJira(project = "KEY") {
     if (method === "GET" && path === "/rest/api/3/user/search") {
       const query = (q.get("query") ?? "").toLowerCase();
       if (!query) return errors(400, ["One of 'accountId' or 'query' must be specified"]);
+      if (fake.permissions.USER_PICKER !== true) return json([]);
       return json(fake.users
         .filter((u) => u.displayName.toLowerCase().startsWith(query) || u.emailAddress?.toLowerCase().startsWith(query))
         .map((u) => ({ ...user(u), ...(u.emailAddress === undefined ? {} : { emailAddress: u.emailAddress }) })));
@@ -436,7 +439,7 @@ export function createFakeJira(project = "KEY") {
 
     if (method === "GET" && path === "/rest/api/3/user") {
       const found = fake.users.find((u) => u.accountId === q.get("accountId"));
-      return found ? json(user(found)) : errors(404, [`Specified user does not exist or you do not have required permissions`]);
+      return found && fake.permissions.USER_PICKER === true ? json(user(found)) : errors(404, [`Specified user does not exist or you do not have required permissions`]);
     }
 
     if (method === "GET" && path === "/rest/api/3/mypermissions") {
