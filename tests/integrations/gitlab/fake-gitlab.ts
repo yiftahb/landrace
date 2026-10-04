@@ -369,7 +369,7 @@ export function createFakeGitLab(): FakeGitLab {
       return json(shown(mr));
     }
     if (sub === "/pipelines" && method === "GET") {
-      const listed = [...(mr.pipelines ?? [])].sort((a, b) => b.id - a.id).map(({ statuses: _, ...p }) => ({ ref: mr.source_branch, source: "merge_request_event", ...p }));
+      const listed = [...(mr.pipelines ?? [])].sort((a, b) => b.id - a.id).map(({ statuses, ...p }) => (void statuses, { ref: mr.source_branch, source: "merge_request_event", ...p }));
       return page(listed, url.searchParams);
     }
     if (sub === "/merge" && method === "PUT") {
