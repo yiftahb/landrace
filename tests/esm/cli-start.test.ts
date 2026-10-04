@@ -673,7 +673,76 @@ describe("the startup preflight", () => {
       { item: ITEM, type: "tracker.comment" },
     ]);
   });
+
+  /**
+   * A preflight skips what no loaded step asks for — the tracker's `childType`
+   * is checked only when one may create children — so what runStart hands it
+   * has to be the loaded steps' own capabilities. Absent, the check comes
+   * back and refuses a project that names its child type differently.
+   */
+  it("hands the preflights the capabilities the loaded steps declare", async () => {
+    const capabilities = async (declared: string): Promise<unknown[]> => {
+      // No item to work, so the one tick runs no step.
+      const { dir, record } = await fixture({ items: [], workflow: stepped(declared.includes("items:create")), hookExtra: CAPABILITIES });
+      await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+      await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), breakdownStep(declared));
+      await runStart(dir, { once: true });
+      return await applied(record);
+    };
+    expect(await capabilities("repo:read, items:create")).toEqual([{ capabilities: ["items:create", "repo:read"] }]);
+    expect(await capabilities("repo:read")).toEqual([{ capabilities: ["repo:read"] }]);
+  });
 });
+
+/** A stage that runs a step, `steps/breakdown.md`, written by the test; one that `creates` children closes the last round's. */
+const stepped = (creates: boolean): string => `version: 1
+name: e2e
+description: test
+hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]
+eligible:
+  - when: { "node.state.labels": { $in: ["lr:auto"] } }
+    else: "no lr:auto label"
+stages:
+  - id: breakdown
+    entry: true
+    step: steps/breakdown.md
+    triggers:
+      - name: fresh item
+        when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Breaking it down, round {round}." }
+${creates ? "      - { type: nodes.close, follow: [child-of] }\n" : ""}  - id: done
+    terminal: true
+    triggers:
+      - name: broken down
+        when: { "run.stage": breakdown, "run.outputs.breakdown.kind": done }
+`;
+
+/** The step `stepped` runs, declaring `capabilities`. */
+const breakdownStep = (capabilities: string): string => `---
+capabilities: [${capabilities}]
+model: opus
+output:
+  discriminator: kind
+  shapes:
+    done: {}
+  routes:
+    - when: { kind: done }
+      effect: { type: tracker.comment, marker: "done:{round}" }
+---
+
+Break it down.
+`;
+
+/** A preflight that writes down the capabilities it was handed, or that it was handed none. */
+const CAPABILITIES = `
+export const capabilities = brand("preflight", {
+  id: "capabilities",
+  check: async (ctx: Ctx & { capabilities?: Set<string> }): Promise<void> => {
+    await appendFile(ctx.config.tracker.record, JSON.stringify({ capabilities: ctx.capabilities ? [...ctx.capabilities].sort() : null }) + "\\n");
+  },
+});
+`;
 
 /** A second workflow, `fast`, beside the fixture's `main`: the same hook modules, so the same source and preflight objects, and its own label. */
 async function withFast(dir: string): Promise<void> {
