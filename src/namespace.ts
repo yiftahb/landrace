@@ -2374,6 +2374,8 @@ export interface WorktreeSetup {
   /** Commands run in the worktree, in order, when the lockfiles or the commands have changed since they last passed. */
   setup: string[];
   timeoutMs: number;
+  /** Globs, from the repository root, of the lockfiles whose change runs `setup` again. */
+  lockfiles: string[];
 }
 
 /** Where steps' worktrees are cut from, and what a write step's is given. */
