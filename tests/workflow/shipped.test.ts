@@ -727,12 +727,18 @@ it.each([
 });
 
 // Every step that does real work thinks hard; the spec hardest, since every
-// later step answers to it. Triage is a quick classifier on haiku and
-// declares no capability, so it is handed no effort at all.
-it("runs the spec at max effort, every other step but triage at extra-high", async () => {
-  const { steps } = await loadShipped();
+// later step answers to it. Build thinks one level lower: it was the slowest
+// step in a run, and code review and CI after it catch what a build misses.
+// Fastlane's build extends this one, so it runs at high too. Triage is a
+// quick classifier on haiku and declares no capability, so it is handed no
+// effort at all.
+it("runs the spec at max effort, build at high, every other step but triage at extra-high", async () => {
+  const { steps, workspace } = await loadShipped();
   expect(steps.get("steps/spec.md")?.effort).toBe("max");
-  for (const id of ["build", "code-review", "fix-review", "retro"]) {
+  expect(steps.get("steps/build.md")?.effort).toBe("high");
+  const fastlane = workspace.workflows.find((w) => w.id === "fastlane");
+  expect(fastlane?.steps.get("steps/build.md")?.effort).toBe("high");
+  for (const id of ["code-review", "fix-review", "retro"]) {
     expect([id, steps.get(`steps/${id}.md`)?.effort]).toEqual([id, "xhigh"]);
   }
   expect(steps.get("steps/triage.md")?.effort).toBeUndefined();
