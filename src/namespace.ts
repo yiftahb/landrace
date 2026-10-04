@@ -615,6 +615,11 @@ export interface PreHook {
 export interface PostHook {
   id: string;
   handles: string[];
+  /**
+   * The projects its `tracker.create` files issues in. `validate` refuses a
+   * workflow filing one anywhere else; absent or empty, nowhere.
+   */
+  creates?: string[] | undefined;
   satisfied(snapshot: Snapshot, effect: Effect): boolean;
   apply(effect: Effect, ctx: HookContext): Promise<void>;
 }
@@ -1175,6 +1180,20 @@ export interface PullRecord {
 export interface HistoryItem {
   at: string;
   text: string;
+}
+
+/**
+ * What a `tracker.create` asks a tracker to file: an issue in another of its
+ * projects, linked to the item it is filed for. The title and body are
+ * already escaped; `marker` is the effect's, stamped on the issue as who
+ * created it, so a crash between filing it and recording it never files two.
+ */
+export interface CreateRequest {
+  project: string;
+  title: string;
+  body: string;
+  item: string;
+  marker: string;
 }
 
 /** One effect type's two halves, side by side, as a role's `effects()` table carries them. */
@@ -2036,6 +2055,14 @@ export interface ExternalState extends ComposedHooks {
    * helpers above are the world changing, and are not in it.
    */
   writes(): string[];
+  /** Every issue a `tracker.create` filed in another project, in order. */
+  filed(): FiledIssue[];
+}
+
+/** An issue the in-memory tracker filed in another project: never one of its items, and unlabelled. */
+export interface FiledIssue extends CreateRequest {
+  key: string;
+  labels: string[];
 }
 
 /* ----------------------------------------------------------------- agent -- */

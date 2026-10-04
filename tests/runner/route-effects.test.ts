@@ -59,6 +59,42 @@ describe("a route with effects, run", () => {
     expect(state.stage("1")).toBe("answered");
   });
 
+  it("files a linked issue in another project from an output field, and records it once", async () => {
+    const state = createExternalState({ items: [{ id: "1" }], createIn: ["ENG"] });
+    const filing: Step = {
+      ...diagnose,
+      output: {
+        ...diagnose.output!,
+        routes: [{
+          when: { kind: "answered" },
+          effects: [
+            { type: "tracker.comment", from: "reply" },
+            { type: "tracker.create", project: "ENG", title: "Bug from #{item}", from: "note" },
+          ],
+        }],
+      },
+    };
+    let alive = true;
+    const run = createHarness({
+      workflow, steps: new Map([["steps/diagnose.md", filing]]),
+      source: state.source, pre: [state.pre], post: [state.post],
+      answers: { diagnose: ANSWER },
+      // Dies at the record, after the issue and its own record landed.
+      interrupt: (e) => {
+        if (alive && e.kind === "output") {
+          alive = false;
+          return true;
+        }
+        return false;
+      },
+    });
+    expect((await run.converge()).result.settled).toBe("halt");
+    expect((await run.converge()).result.settled).toBe("terminal");
+
+    expect(state.filed()).toEqual([expect.objectContaining({ key: "ENG-1", title: "Bug from #1", body: "Known bug in 4.2", item: "1", labels: [] })]);
+    expect(markers(state)).toEqual(["enter:1", "part:1", "created:1", "output:1"]);
+  });
+
   it("after a crash past the first part, posts the second alone when the step runs again", async () => {
     const state = createExternalState({ items: [{ id: "1" }] });
     let alive = true;
