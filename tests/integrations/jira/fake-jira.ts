@@ -656,7 +656,10 @@ export function createFakeJira(project = "KEY") {
       }
 
       // Documented: the fields the account may edit on this issue, its edit screen's.
+      // A closed issue answers none, as classic Jira's "Closed" does by its
+      // workflow's `jira.issue.editable = false`.
       if (m[2] === "/editmeta" && method === "GET") {
+        if (STATUSES[issue.status]?.category === "done") return json({ fields: {} });
         const type = fake.issueTypes.find((t) => t.name === issue.issuetype);
         return json({ fields: Object.fromEntries((type?.fields ?? []).map((id) => [id, { required: false, key: id, name: id, operations: ["set"] }])) });
       }

@@ -168,9 +168,10 @@ export class JiraField extends BaseDocs {
 
   /**
    * The field exists, is a text or textarea field, and is on the edit screen
-   * of each of the project's issue types — read off one issue of each, the
-   * only way Jira says what an issue's edit screen holds. A type with no issue
-   * to look at is unchecked, logged as `jira.field.unchecked`, and a project
+   * of each of the project's issue types — read off one open issue of each, the
+   * only way Jira says what an issue's edit screen holds. Open, because a spec
+   * is written to one, and a closed status may make issues non-editable, which
+   * answers an empty edit screen. A type with no open issue to look at is unchecked, logged as `jira.field.unchecked`, and a project
    * where no type could be checked fails: nothing compared is not a pass.
    * Reads only.
    */
@@ -186,7 +187,7 @@ export class JiraField extends BaseDocs {
     const unchecked: string[] = [];
     for (const type of types) {
       const { issues = [] } = await jira.call<{ issues?: Array<{ key?: unknown }> }>("POST", "/rest/api/3/search/jql", {
-        jql: `project = "${this.project}" AND issuetype = ${type.id}`, fields: ["id"], maxResults: 1,
+        jql: `project = "${this.project}" AND issuetype = ${type.id} AND statusCategory != Done`, fields: ["id"], maxResults: 1,
       });
       const key = issues[0]?.key;
       if (typeof key !== "string" || !this.keyPattern.test(key)) {
@@ -207,8 +208,8 @@ export class JiraField extends BaseDocs {
       );
     }
     if (unchecked.length === types.length) {
-      throw new Error(`there is no issue of any of ${this.project}'s issue types to read an edit screen from, so whether ${this.field} is on one cannot be told`);
+      throw new Error(`there is no open issue of any of ${this.project}'s issue types to read an edit screen from, so whether ${this.field} is on one cannot be told`);
     }
-    if (unchecked.length > 0) ctx.log("jira.field.unchecked", { field: this.field, types: unchecked, reason: "no issue of the type to read its edit screen from" });
+    if (unchecked.length > 0) ctx.log("jira.field.unchecked", { field: this.field, types: unchecked, reason: "no open issue of the type to read its edit screen from" });
   }
 }

@@ -190,8 +190,17 @@ describe("the field's preflight", () => {
     expect(events).toContainEqual({ event: "jira.field.unchecked", data: expect.objectContaining({ types: ["Subtask", "Bug"] }) });
   });
 
+  it("reads an edit screen off an open issue, and counts a type with only closed ones as unchecked", async () => {
+    const { fake, docs, ctx, events } = setup();
+    fake.add({ issuetype: "Task", status: "Done" });
+    fake.add({ issuetype: "Task" });
+    fake.add({ issuetype: "Bug", status: "Won't Do" });
+    await expect(docs.check(ctx)).resolves.toBeUndefined();
+    expect(events).toContainEqual({ event: "jira.field.unchecked", data: expect.objectContaining({ types: ["Subtask", "Bug"] }) });
+  });
+
   it("fails when no issue type could be checked at all", async () => {
     const { docs, ctx } = setup();
-    await expect(docs.check(ctx)).rejects.toThrow(/no issue of any of KEY's issue types/);
+    await expect(docs.check(ctx)).rejects.toThrow(/no open issue of any of KEY's issue types/);
   });
 });
