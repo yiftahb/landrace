@@ -546,6 +546,16 @@ describe("scoped to one assignee by jiraAssignee", () => {
     expect((walk[0]?.body as { jql: string }).jql).toContain(mine);
   });
 
+  // A child handed to somebody else is still the parent's: read without it, "every child closed" closes the parent early.
+  it("reads a breakdown's children whoever they are assigned to", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const parent = fake.add({ assignee: PERSON });
+    const child = fake.add({ assignee: OTHER, parent: parent.key, issuetype: "Subtask" });
+    expect((await jira.children(parent.key, ctx)).map((c) => c.id)).toEqual([child.key]);
+    const graph = await compose({ tracker: jira, forge: new MemoryForge(), docs: new MemoryDocs() }).source.read(parent.key, ctx);
+    expect(graph.nodes.map((n) => n.id)).toContain(child.key);
+  });
+
   it("creates an item and a child assigned to the assignee", async () => {
     const { fake, jira, ctx } = scoped(PERSON.accountId);
     const top = await jira.create({ title: "Top", body: "", parent: undefined, priority: undefined }, ctx);
@@ -579,6 +589,18 @@ describe("scoped to one assignee by jiraAssignee", () => {
     await expect(jira.items(ctx)).rejects.toThrow(/matches no Jira user/);
     expect(queries(fake)).toEqual([]);
   });
+
+  // Jira answers an account without "Browse users and groups" with nobody, not a refusal: that is not "no such user".
+  it.each([["an email", PERSON.emailAddress as string], ["an account id", PERSON.accountId]])(
+    "names a missing \"Browse users and groups\" permission when %s finds nobody, not a missing user",
+    async (_, value) => {
+      const { fake, jira, ctx } = scoped(value);
+      fake.permissions.USER_PICKER = false;
+      const refused = await jira.check?.(ctx).then(() => "", (e: unknown) => String(e));
+      expect(refused).toMatch(/the account lacks the global "Browse users and groups" permission \(USER_PICKER\)/);
+      expect(refused).not.toMatch(/matches no Jira user/);
+    },
+  );
 
   // Jira hides most emails from search, so a user with a private email may be the one: neither is picked.
   it("refuses to start on an email that matches several users, naming them", async () => {
