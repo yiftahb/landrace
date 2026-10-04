@@ -12,8 +12,8 @@
  * `JIRA_ASSIGNEE`, optional, is the `jiraAssignee` secret: an account id or
  * an email. Set, the item and child are created assigned to that account,
  * and two more checks list the project through the scoped open and Done
- * queries and find each there, assigned to the account the script looks up
- * on its own.
+ * queries and find each there, assigned to that account: an email the script
+ * looks up on its own, an account id it compares as given.
  *
  * It writes, so point it at a project that may hold test issues: one item
  * and one child, created, commented on, labelled and closed — the child as
