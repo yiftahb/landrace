@@ -347,6 +347,10 @@ export async function runStep(opts: {
       // exactOptionalPropertyTypes than no key at all.
       ...(step.model === undefined ? {} : { model: step.model }),
       ...(step.effort === undefined ? {} : { effort: step.effort }),
+      // What it may use, each the same way: absent is the workspace's own.
+      ...(step.mcp === undefined ? {} : { mcp: step.mcp }),
+      ...(step.skills === undefined ? {} : { skills: step.skills }),
+      ...(step.plugins === undefined ? {} : { plugins: step.plugins }),
       timeoutMs,
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
       ...childOpt,

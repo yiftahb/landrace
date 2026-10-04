@@ -341,6 +341,9 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
         capabilities: step.capabilities ?? [],
         ...(step.model === undefined ? {} : { model: step.model }),
         ...(step.effort === undefined ? {} : { effort: step.effort }),
+        ...(step.mcp === undefined ? {} : { mcp: step.mcp }),
+        ...(step.skills === undefined ? {} : { skills: step.skills }),
+        ...(step.plugins === undefined ? {} : { plugins: step.plugins }),
         timeoutMs,
         ...(mayCreateItems(step.capabilities) && deps.childServer
           ? { child: { parent: item, stage: stage.id, round, server: childServerFor(deps.childServer, { parent: item, stage: stage.id, round }) } }

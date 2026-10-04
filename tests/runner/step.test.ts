@@ -159,6 +159,13 @@ describe("the effort a step declares", () => {
     expect(seen[0]).not.toHaveProperty("effort");
   });
 
+  it("travels with the step's own mcp, skills and plugins, each only when it names it", async () => {
+    await run("", { step: { ...step, mcp: [{ name: "memory", tools: ["search"] }], skills: [], plugins: ["x@y"] }, executor: watcher });
+    expect(seen[0]).toMatchObject({ mcp: [{ name: "memory", tools: ["search"] }], skills: [], plugins: ["x@y"] });
+    await run("", { executor: watcher });
+    for (const key of ["mcp", "skills", "plugins"]) expect(seen[1]).not.toHaveProperty(key);
+  });
+
   it("is on step.invoked, as null when the step named none", async () => {
     const invoked = async (s: Step): Promise<Record<string, unknown>> => {
       const events: Array<{ name: string; data: Record<string, unknown> }> = [];
