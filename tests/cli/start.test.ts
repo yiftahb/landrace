@@ -101,7 +101,20 @@ describe("agent.worktree", () => {
 
   it("defaults to nothing to copy or set up, with a 15 minute setup timeout", async () => {
     const root = await gitRepo();
-    expect(await sandboxFor(config({}), root)).toMatchObject({ worktree: { copy: [], setup: [], timeoutMs: 900_000 } });
+    expect(await sandboxFor(config({}), root)).toMatchObject({
+      worktree: { copy: [], setup: [], timeoutMs: 900_000, lockfiles: ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"] },
+    });
+  });
+
+  it("takes the lockfiles setup runs again for, and refuses one absolute or climbing out, naming it", async () => {
+    const root = await gitRepo();
+    const lockfiles = ["backend/pnpm-lock.yaml", "**/yarn.lock"];
+    expect(await sandboxFor(config({ worktree: { lockfiles } }), root)).toMatchObject({ worktree: { lockfiles } });
+    await expect(sandboxFor(config({ worktree: { lockfiles: ["/etc/hosts", "ok"] } }), root))
+      .rejects.toThrow(/agent\.worktree\.lockfiles "\/etc\/hosts" is an absolute path/);
+    await expect(sandboxFor(config({ worktree: { lockfiles: ["../x/pnpm-lock.yaml"] } }), root))
+      .rejects.toThrow(/agent\.worktree\.lockfiles "\.\.\/x\/pnpm-lock\.yaml" climbs out/);
+    await expect(sandboxFor(config({ isolation: "none", worktree: { lockfiles } }), root)).rejects.toThrow(/lockfiles[\s\S]*agent\.isolation: worktree/);
   });
 
   it("is refused at start when a copy glob matches a tracked file, naming it", async () => {

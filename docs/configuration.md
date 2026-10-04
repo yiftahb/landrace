@@ -15,6 +15,7 @@ Every key, with its default:
 | `agent.isolation` | `worktree` | How the engine prepares the folder a step runs in: `worktree`, or `none` to run the agent in this checkout. A stage that names a `branch` needs `worktree`. The schema also accepts `container`, but it is not implemented: `landrace start` and `landrace mcp` refuse it |
 | `agent.worktree.copy` | `[]` | Untracked or ignored files copied from your checkout into a write step's worktree, as globs from the repository root — see [A write step's worktree](#a-write-steps-worktree) |
 | `agent.worktree.setup` | `[]` | Commands run in a write step's worktree before its agent, when the lockfiles have changed — see [A write step's worktree](#a-write-steps-worktree) |
+| `agent.worktree.lockfiles` | the three root lockfiles | Globs, from the repository root, of the lockfiles whose change runs `setup` again — see [A write step's worktree](#a-write-steps-worktree) |
 | `agent.worktree.setupTimeout` | `15m` | How long each setup command may run, as a [duration](#durations) |
 | `agent.*` (any other key) | — | Passed unread to the executor `agent.adapter` names. The shipped executors' keys are below |
 | `tracker.*` | `{}` | Passed unread to the hooks. The GitHub integration reads `tracker.repo` and `tracker.bot` — see [Integrations](integrations.md#github) |
@@ -66,16 +67,18 @@ agent:
   worktree:
     copy: ["**/.npmrc", "**/.env"]
     setup: ["pnpm install --frozen-lockfile --prefer-offline"]
+    lockfiles: ["pnpm-lock.yaml", "*/pnpm-lock.yaml"]
     setupTimeout: 15m
 ```
 
 - **`copy`** copies the files each glob matches from your checkout into the worktree, at the same paths, before every write step. Only untracked or ignored files are copied. A glob that matches a tracked file, an absolute path or one with `..` is refused at start, naming the file. A file the item's branch tracks is refused before the step, too, so the branch's own version is never replaced. A link that leads outside the repository is not followed.
 - **`setup`** runs each command, in order, in the worktree, after `copy` and before the agent. It runs through your shell, outside the agent and its sandbox, with the same minimal environment the agent gets. A private registry's token reaches it through a copied file such as `.npmrc`.
+- **`lockfiles`** decides when `setup` runs again in a kept worktree: globs, from the repository root, of the lockfiles hashed together with the commands. The default is the three root lockfiles, `pnpm-lock.yaml`, `package-lock.json` and `yarn.lock`. A monorepo whose workspaces lock their own dependencies, such as `backend/pnpm-lock.yaml`, lists those too, or `**/pnpm-lock.yaml`. A glob matches the worktree's files that git tracks or does not ignore, so a lockfile a step adds or removes counts as a change. An absolute glob, or one with `..`, is refused at start.
 - **A failure or a timeout** stops the item before the agent runs, with the end of the command's output as the reason. Nothing is recorded, so the next tick tries again.
 - **Events:** `worktree.setup.started`, `worktree.setup.finished` and `worktree.setup.failed`, each naming the item and the command.
-- `copy` and `setup` need `agent.isolation: worktree`; `landrace start` refuses them otherwise.
+- `copy`, `setup` and `lockfiles` need `agent.isolation: worktree`; `landrace start` refuses them otherwise.
 
-A write step's worktree is kept between the item's write steps on the same branch, and removed when the item reaches a terminal stage. The next tick also removes it once the item is closed, for example by its merged pull request. A write step on a stage that names no `branch` gets `copy` and `setup` too, in a worktree removed when the run ends. Between runs the kept worktree is detached from the branch, so you can check the item's branch out in your own checkout while the item waits; switch back off it before the item's next write step, which halts while the branch is checked out elsewhere. On reuse it is put back on the branch and reset to the branch's commit: what a step left uncommitted is removed, and what git ignores, such as `node_modules`, stays. `setup` runs again only when its commands, or the lockfiles at the repository root (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`), have changed since it last passed. A worktree that is missing, or on another branch, is rebuilt, and setup runs again.
+A write step's worktree is kept between the item's write steps on the same branch, and removed when the item reaches a terminal stage. The next tick also removes it once the item is closed, for example by its merged pull request. A write step on a stage that names no `branch` gets `copy` and `setup` too, in a worktree removed when the run ends. Between runs the kept worktree is detached from the branch, so you can check the item's branch out in your own checkout while the item waits; switch back off it before the item's next write step, which halts while the branch is checked out elsewhere. On reuse it is put back on the branch and reset to the branch's commit: what a step left uncommitted is removed, and what git ignores, such as `node_modules`, stays. `setup` runs again only when its commands, or the files `lockfiles` matches, have changed since it last passed. A worktree that is missing, or on another branch, is rebuilt, and setup runs again.
 
 What this exposes to a step is in [Security](security.md#copied-files-and-setup).
 

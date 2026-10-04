@@ -985,6 +985,8 @@ export interface RunPlan<E = unknown> {
   sandbox: SandboxSettings;
   /** The integration's own settings. */
   extras: E;
+  /** Where `prepare` says what it changed on the way, such as a key it dropped. */
+  log?: HookLog;
 }
 
 /** A pairing's command, decided and checked by the kit, for an integration to write out. */
@@ -1307,8 +1309,19 @@ export interface ChangedFiles {
  */
 export interface Preflight {
   id: string;
-  check(ctx: RuntimeContext): Promise<void>;
+  check(ctx: PreflightContext): Promise<void>;
 }
+
+/**
+ * A preflight's context: the runtime's, and what the loaded workflows' steps
+ * declare, so a check can skip what nothing asks for — a child's issue type
+ * where no step may create one. Absent when the caller cannot say, which a
+ * check reads as anything declared.
+ */
+export type PreflightContext = RuntimeContext & {
+  /** Every capability any step of a loaded workflow declares. */
+  capabilities?: ReadonlySet<string> | undefined;
+};
 
 /**
  * Where the work comes from. A tick has to enumerate items before it has one
@@ -2372,6 +2385,8 @@ export interface WorktreeSetup {
   /** Commands run in the worktree, in order, when the lockfiles or the commands have changed since they last passed. */
   setup: string[];
   timeoutMs: number;
+  /** Globs, from the repository root, of the lockfiles whose change runs `setup` again. */
+  lockfiles: string[];
 }
 
 /** Where steps' worktrees are cut from, and what a write step's is given. */

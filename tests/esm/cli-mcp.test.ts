@@ -127,6 +127,16 @@ export const preflight = brand("preflight", {
 });
 `}`;
 
+/** A preflight that writes down the capabilities it was handed, or that it was handed none. */
+const CAPABILITIES = `
+export const capabilities = brand("preflight", {
+  id: "capabilities",
+  check: async (ctx: { config: { tracker: { order: string } }; capabilities?: Set<string> }): Promise<void> => {
+    await appendFile(ctx.config.tracker.order, JSON.stringify({ capabilities: ctx.capabilities ? [...ctx.capabilities].sort() : null }) + "\\n");
+  },
+});
+`;
+
 interface Fixture { root: string; dir: string; record: string; invocations: string; order: string }
 
 /**
@@ -151,6 +161,10 @@ async function fixture(opts: {
   mcpJson?: unknown;
   /** A second workflow, `fast`, on the same hooks and eligible on `lr:fast`. */
   fast?: boolean;
+  /** What the `spec` step declares, inside its brackets; `repo:read` by default. */
+  capabilities?: string;
+  /** More of the fake hook module, after everything else in it. */
+  hookExtra?: string;
 }): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "lr-mcp-"));
   const dir = join(root, ".landrace");
@@ -163,7 +177,7 @@ async function fixture(opts: {
 
   await writeFile(
     join(dir, "hooks", "fake.ts"),
-    hookSource(opts.verdict ?? "suspicious", JSON.stringify(invocations), opts.preflight),
+    hookSource(opts.verdict ?? "suspicious", JSON.stringify(invocations), opts.preflight) + (opts.hookExtra ?? ""),
   );
   // The project's own coding agent, by the path this repository's workflow
   // loads it from: the engine ships none. A dynamic import with a computed
@@ -182,7 +196,7 @@ export const { claude } = await import(pathToFileURL(${JSON.stringify(join(proce
   await writeFile(
     join(main, "steps", "spec.md"),
     `---
-capabilities: [repo:read]
+capabilities: [${opts.capabilities ?? "repo:read"}]
 model: haiku
 ---
 
@@ -301,6 +315,22 @@ describe("buildMcpTools and the startup preflight", () => {
     const { dir, order } = await fixture({ screen: false, preflight: "pass" });
     await buildMcpTools(dir);
     expect(await posted(order)).toEqual([{ preflight: true }, { list: true }]);
+  });
+
+  /**
+   * A preflight skips what no loaded step asks for — the tracker's `childType`
+   * is checked only when one may create children — so what it is handed has
+   * to be the loaded steps' own capabilities. Absent, the check comes back
+   * and refuses a project that names its child type differently.
+   */
+  it("hands the preflights the capabilities the loaded steps declare", async () => {
+    const capabilities = async (declared: string): Promise<unknown[]> => {
+      const { dir, order } = await fixture({ screen: false, capabilities: declared, hookExtra: CAPABILITIES });
+      await buildMcpTools(dir);
+      return (await posted(order)).filter((line) => typeof line === "object" && line !== null && "capabilities" in line);
+    };
+    expect(await capabilities("repo:read, items:create")).toEqual([{ capabilities: ["items:create", "repo:read"] }]);
+    expect(await capabilities("repo:read")).toEqual([{ capabilities: ["repo:read"] }]);
   });
 });
 

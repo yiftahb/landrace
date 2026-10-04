@@ -44,6 +44,9 @@ const messageOf = (e: unknown): string => (e instanceof Error ? e.message : Stri
  */
 export class JiraField extends BaseDocs {
   private readonly project: string;
+  /** The tracker's own scope and issue types: the items a spec can be written for. */
+  private readonly jql: string | undefined;
+  private readonly itemTypes: string[];
   private readonly field: string;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly keyPattern: RegExp;
@@ -56,6 +59,8 @@ export class JiraField extends BaseDocs {
     const { project } = tracker;
     if (!/^customfield_[1-9][0-9]*$/.test(field)) throw new Error(`field must be a custom field's id, customfield_<n>, got "${field}"`);
     this.project = project;
+    this.jql = tracker.jql;
+    this.itemTypes = [tracker.issueType, tracker.childType];
     this.field = field;
     this.fetchImpl = fetchImpl;
     this.keyPattern = new RegExp(`^${project}-[1-9][0-9]*$`);
@@ -122,7 +127,9 @@ export class JiraField extends BaseDocs {
    * renderer a textarea has is in its field configuration, which only an
    * account with "Administer Jira" may read, so Jira's own answer says it: a
    * document the field refuses by name is written again as a string, and a
-   * string it refuses too names both refusals.
+   * string it refuses too names both refusals. A refusal by name from an
+   * issue whose edit screen lacks the field — an Epic, say — refuses the
+   * item, naming its type: no retry puts the field there.
    */
   async publish(item: string, content: string, ctx: RuntimeContext): Promise<void> {
     const key = this.keyOf(item);
@@ -134,7 +141,14 @@ export class JiraField extends BaseDocs {
     if (shape === "string" && content.length > MAX_TEXTFIELD) {
       throw new EffectRefused(`refusing to write a ${content.length}-character spec to ${this.field}: a text field holds at most ${MAX_TEXTFIELD}`);
     }
-    const put = (value: unknown) => jira.call("PUT", `/rest/api/3/issue/${key}`, { fields: { [this.field]: value } });
+    const put = async (value: unknown): Promise<void> => {
+      try {
+        await jira.call("PUT", `/rest/api/3/issue/${key}`, { fields: { [this.field]: value } });
+      } catch (e) {
+        if (refusesField(e, this.field)) await this.refuseOffScreen(jira, key);
+        throw e;
+      }
+    };
     if (shape === "string") {
       await put(content);
       return;
@@ -151,15 +165,26 @@ export class JiraField extends BaseDocs {
     }
   }
 
+  /** Nothing when the field is on the issue's edit screen; the item refused, naming its type, when it is not. */
+  private async refuseOffScreen(jira: Client, key: string): Promise<void> {
+    const { fields = {} } = await jira.call<{ fields?: Record<string, unknown> } | null>("GET", `/rest/api/3/issue/${key}/editmeta`) ?? {};
+    if (this.field in fields) return;
+    const issue = await jira.call<{ fields?: { issuetype?: { name?: unknown } | null } } | null>("GET", `/rest/api/3/issue/${key}?fields=issuetype`);
+    throw new EffectRefused(
+      `${key} is a "${String(issue?.fields?.issuetype?.name)}" issue, whose edit screen has no ${this.field} ` +
+      "(or the account may not edit it), so its spec cannot be written there",
+    );
+  }
+
   async link(item: string, ctx: RuntimeContext): Promise<string> {
     return `${this.jira(ctx).baseUrl}/browse/${this.keyOf(item)}`;
   }
 
-  /** The project's issues whose field is filled, by one query inside the tracker's scope. */
+  /** The project's issues whose field is filled, by one query inside the tracker's scope, `jiraAssignee` and `jql`. */
   async published(ctx: RuntimeContext): Promise<Set<string>> {
     const jira = this.jira(ctx);
     const id = this.field.slice("customfield_".length);
-    const found = await search(jira, `project = "${this.project}" AND cf[${id}] is not EMPTY${await scopeOf(jira, ctx)} ORDER BY created ASC`, {
+    const found = await search(jira, `project = "${this.project}" AND cf[${id}] is not EMPTY${await scopeOf(jira, ctx, this.jql)} ORDER BY created ASC`, {
       fields: ["id"],
     });
     if (!found.complete) throw new Error(`${this.project} has more issues with ${this.field} filled than one listing carries`);
@@ -168,11 +193,17 @@ export class JiraField extends BaseDocs {
 
   /**
    * The field exists, is a text or textarea field, and is on the edit screen
-   * of each of the project's issue types — read off one open issue of each, the
-   * only way Jira says what an issue's edit screen holds. Open, because a spec
-   * is written to one, and a closed status may make issues non-editable, which
-   * answers an empty edit screen. A type with no open issue to look at is unchecked, logged as `jira.field.unchecked`, and a project
-   * where no type could be checked fails: nothing compared is not a pass.
+   * of each issue type an item can be: the types of the open issues in the
+   * tracker's scope, read by one search under `jiraAssignee` and `jql`, and
+   * the tracker's `issueType` and `childType`. A project's Epics, say, are no
+   * item's, and are not looked at. Each type is read off one open issue of
+   * it, the only way Jira says what an issue's edit screen holds. Open,
+   * because a spec is written to one, and a closed status may make issues
+   * non-editable, which answers an empty edit screen. A type without the
+   * field is logged as `jira.field.missing` and does not refuse start: its
+   * items are refused when their spec is published. A type with no open issue
+   * to look at is unchecked, logged as `jira.field.unchecked`, and a check
+   * where no type could be looked at fails: nothing compared is not a pass.
    * Reads only.
    */
   async check(ctx: RuntimeContext): Promise<void> {
@@ -181,8 +212,22 @@ export class JiraField extends BaseDocs {
     if (field === null) throw new Error(`the site has no field ${this.field}, which the spec is kept in (JiraField's field)`);
     const shape = JiraField.shapeOf(field);
     if (shape !== "adf" && shape !== "string") throw new Error(shape);
+    const scoped = await search(
+      jira, `project = "${this.project}" AND statusCategory != Done${await scopeOf(jira, ctx, this.jql)} ORDER BY created ASC`, { fields: ["issuetype"] },
+    );
+    // A type past the last page read may be one of them: not found is not missing.
+    if (!scoped.complete) throw new Error(`${this.project} has more open issues in the tracker's scope than one listing carries, so which types its items are cannot be told`);
+    const names = new Set([
+      ...scoped.issues.flatMap((i) => {
+        const name = (i.fields as { issuetype?: { name?: unknown } | null }).issuetype?.name;
+        return typeof name === "string" ? [name] : [];
+      }),
+      ...this.itemTypes,
+    ]);
     const project = await jira.call<{ issueTypes?: Array<{ id?: unknown; name?: unknown }> } | null>("GET", `/rest/api/3/project/${this.project}`);
-    const types = (project?.issueTypes ?? []).flatMap((t) => (typeof t.id === "string" && /^[0-9]+$/.test(t.id) ? [{ id: t.id, name: String(t.name) }] : []));
+    // A type the tracker names that the project lacks is the tracker's preflight to refuse.
+    const types = (project?.issueTypes ?? []).flatMap((t) =>
+      (typeof t.id === "string" && /^[0-9]+$/.test(t.id) && names.has(String(t.name)) ? [{ id: t.id, name: String(t.name) }] : []));
     const missing: string[] = [];
     const unchecked: string[] = [];
     for (const type of types) {
@@ -201,14 +246,13 @@ export class JiraField extends BaseDocs {
         throw new Error(`cannot read ${key}'s edit screen, for its "${type.name}" issues: ${messageOf(e)}`);
       }
     }
-    if (missing.length > 0) {
-      throw new Error(
-        `${this.field} ("${String(field.name)}") is not on the edit screen of ${this.project}'s ${missing.map((n) => `"${n}"`).join(", ")} issues ` +
-        "(or the account may not edit them), so a spec cannot be written there",
-      );
+    for (const type of missing) {
+      ctx.log("jira.field.missing", {
+        field: this.field, type, reason: "not on the type's edit screen, or the account may not edit it: its items' specs are refused when published",
+      });
     }
     if (unchecked.length === types.length) {
-      throw new Error(`there is no open issue of any of ${this.project}'s issue types to read an edit screen from, so whether ${this.field} is on one cannot be told`);
+      throw new Error(`there is no open issue of any issue type an item of ${this.project} can be to read an edit screen from, so whether ${this.field} is on one cannot be told`);
     }
     if (unchecked.length > 0) ctx.log("jira.field.unchecked", { field: this.field, types: unchecked, reason: "no open issue of the type to read its edit screen from" });
   }
