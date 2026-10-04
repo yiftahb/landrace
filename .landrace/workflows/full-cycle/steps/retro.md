@@ -1,7 +1,7 @@
 ---
 capabilities: [repo:read, repo:write]
 model: opus
-effort: xhigh
+effort: medium
 timeout: 120m
 output:
   discriminator: kind

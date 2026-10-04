@@ -726,20 +726,19 @@ it.each([
   expect(prose).toContain(`"README and docs"`);
 });
 
-// Every step that does real work thinks hard; the spec hardest, since every
-// later step answers to it. Build thinks one level lower: it was the slowest
-// step in a run, and code review and CI after it catch what a build misses.
-// Fastlane's build extends this one, so it runs at high too. Triage is a
-// quick classifier on haiku and declares no capability, so it is handed no
-// effort at all.
-it("runs the spec at max effort, build at high, every other step but triage at extra-high", async () => {
+// A step thinks at medium unless a miss there costs the most: code review,
+// fastlane's last check before it merges, and the spec, which every later
+// step answers to, run at high. At extra-high and max a run spent most of its
+// wall time thinking. Fastlane's steps extend these, so they run at the same
+// levels. Triage is a quick classifier on haiku and declares no capability,
+// so it is handed no effort at all.
+it("runs code review and the spec at high effort, every other step but triage at medium", async () => {
   const { steps, workspace } = await loadShipped();
-  expect(steps.get("steps/spec.md")?.effort).toBe("max");
-  expect(steps.get("steps/build.md")?.effort).toBe("high");
   const fastlane = workspace.workflows.find((w) => w.id === "fastlane");
-  expect(fastlane?.steps.get("steps/build.md")?.effort).toBe("high");
-  for (const id of ["code-review", "fix-review", "retro"]) {
-    expect([id, steps.get(`steps/${id}.md`)?.effort]).toEqual([id, "xhigh"]);
+  const levels = { "code-review": "high", spec: "high", build: "medium", "fix-review": "medium", retro: "medium" };
+  for (const [id, effort] of Object.entries(levels)) {
+    expect([id, steps.get(`steps/${id}.md`)?.effort]).toEqual([id, effort]);
+    if (id !== "spec") expect([id, fastlane?.steps.get(`steps/${id}.md`)?.effort]).toEqual([id, effort]);
   }
   expect(steps.get("steps/triage.md")?.effort).toBeUndefined();
 });
