@@ -168,9 +168,11 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
       id: PROJECT,
       check: async (ctx) => {
         for (const [role, integration] of present) {
-          if (!integration.check) continue;
           try {
-            await integration.check(ctx);
+            // The forge base's own options first: nothing the vendor's check
+            // proves helps a template that cannot be read.
+            if (integration === forge) await forge.checkOptions(ctx);
+            await integration.check?.(ctx);
           } catch (e) {
             throw new Error(`${role}: ${messageOf(e)}`);
           }

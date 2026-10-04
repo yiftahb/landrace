@@ -28,6 +28,7 @@ import type {
   ExternalState,
   ExternalItem,
   FailedCheck,
+  ForgeOptions,
   Graph,
   HookContext,
   MergeAnswer,
@@ -346,6 +347,13 @@ export class MemoryForge extends BaseForge {
   private readonly pushed: string[] = [];
   /** How many times a pull request's checks were asked for: a closed one's never should be. */
   checkCalls = 0;
+  /** The directory `pull.description` is a path from: none unless a test says, so the option is refused. */
+  private readonly projectRoot: string | undefined;
+
+  constructor({ root, ...options }: ForgeOptions & { root?: string } = {}) {
+    super(options);
+    this.projectRoot = root;
+  }
 
   /**
    * Open a pull request for `item`, numbered from 1 in creation order, from
@@ -417,8 +425,21 @@ export class MemoryForge extends BaseForge {
     throw countsOnly();
   }
 
-  async openPull({ item, branch }: { item: string; branch: string }): Promise<void> {
-    this.add(item, { branch });
+  async openPull(
+    { item, branch, title, description }: { item: string; branch: string; title: string; description?: string | undefined },
+  ): Promise<void> {
+    this.add(item, { branch, opened: { title, description } });
+  }
+
+  /** Whichever of the named reviewers a test set finished on the pull request. */
+  override async finishedReviewers(pull: PullRecord): Promise<ReadonlySet<string>> {
+    const statuses = this.pull(`pr-${pull.number}`).reviewerStatuses ?? {};
+    return new Set([...this.reviewers].filter((name) => statuses[name] === "finished"));
+  }
+
+  protected override async root(): Promise<string> {
+    if (this.projectRoot === undefined) throw new Error("the in-memory forge has no project root unless a test hands it one");
+    return this.projectRoot;
   }
 
   async closePull(pull: number): Promise<void> {
@@ -523,7 +544,7 @@ export class MemoryForge extends BaseForge {
       // No checkout to ask whether the branch has anything on it.
       [PULL_OPEN_EFFECT]: {
         satisfied: (effects[PULL_OPEN_EFFECT] as EffectHandler).satisfied,
-        apply: (effect, { item }) => this.openPull({ item, branch: effectBranch(effect) }),
+        apply: async (effect, ctx) => this.openPull({ item: ctx.item, branch: effectBranch(effect), ...(await this.opening(ctx)) }),
       },
       [PULL_REVIEW_EFFECT]: {
         satisfied: (effects[PULL_REVIEW_EFFECT] as EffectHandler).satisfied,
