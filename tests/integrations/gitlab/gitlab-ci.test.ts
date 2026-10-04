@@ -171,6 +171,87 @@ describe("a merge request's failed checks", () => {
   });
 });
 
+describe("a merged results pipeline", () => {
+  /** !7 at `head`, whose newest pipeline ran on the merge of `parent` into main: a merge-result commit, never the head. */
+  const merged = (gl: FakeGitLab, status: string, parent = "head") => {
+    gl.commits.set("merge-result", ["main-tip", parent]);
+    return gl.open({
+      source_branch: "landrace/1", iid: 7, sha: "head",
+      pipelines: [{ id: 3, sha: "merge-result", status, ref: "refs/merge-requests/7/merge" }],
+      failedJobs: new Map([[3, [{ id: 30, name: "unit" }]]]),
+      traces: new Map([[30, "FAIL b.test.ts"]]),
+    });
+  };
+  const commitReads = (gl: FakeGitLab) => gl.requests.filter((r) => r.path.includes("/repository/commits/"));
+
+  it.each([["success", "success"], ["failed", "failure"], ["running", "pending"]] as const)(
+    "on the head settles checks: %s reads %s", async (status, expected) => {
+      const gl = createFakeGitLab();
+      const mr = merged(gl, status);
+      expect(await forgeOver(gl).checks(recordOf(mr), gl.ctx())).toBe(expected);
+      expect(commitReads(gl).map((r) => r.path.split("/").at(-1))).toEqual(["merge-result"]);
+    },
+  );
+
+  it("on the head lists its failed jobs", async () => {
+    const gl = createFakeGitLab();
+    const mr = merged(gl, "failed");
+    expect(await forgeOver(gl).failedChecks(recordOf(mr), gl.ctx())).toEqual([{ name: "unit", log: "FAIL b.test.ts" }]);
+  });
+
+  it("on an older head stays pending, and lists nothing", async () => {
+    const gl = createFakeGitLab();
+    const mr = merged(gl, "failed", "older");
+    expect(await forgeOver(gl).checks(recordOf(mr), gl.ctx())).toBe("pending");
+    expect(await forgeOver(gl).failedChecks(recordOf(mr), gl.ctx())).toEqual([]);
+    expect(gl.requests.some((r) => r.path.includes("/jobs"))).toBe(false);
+  });
+
+  it.each(["landrace/1", "refs/merge-requests/7/head", "refs/merge-requests/8/merge"])(
+    "is not counted off a ref of %s whose sha is not the head, and reads no commit", async (ref) => {
+      const gl = createFakeGitLab();
+      gl.commits.set("other", ["main-tip", "head"]);
+      const mr = gl.open({ source_branch: "landrace/1", iid: 7, sha: "head", pipelines: [{ id: 3, sha: "other", status: "success", ref }] });
+      expect(await forgeOver(gl).checks(recordOf(mr), gl.ctx())).toBe("pending");
+      expect(commitReads(gl)).toEqual([]);
+    },
+  );
+
+  it("reads its commit once for both checks and failed checks", async () => {
+    const gl = createFakeGitLab();
+    const mr = merged(gl, "failed");
+    const forge = forgeOver(gl);
+    await forge.checks(recordOf(mr), gl.ctx());
+    await forge.failedChecks(recordOf(mr), gl.ctx());
+    await forge.checks(recordOf(mr), gl.ctx());
+    expect(commitReads(gl)).toHaveLength(1);
+  });
+
+  it("never answers green when its commit cannot be read", async () => {
+    const gl = createFakeGitLab();
+    const mr = merged(gl, "success");
+    gl.breakNext(({ path }) => path.includes("/repository/commits/"), 500);
+    await expect(forgeOver(gl).checks(recordOf(mr), gl.ctx())).rejects.toThrow(/500/);
+    gl.commits.clear();
+    await expect(forgeOver(gl).checks(recordOf(mr), gl.ctx())).rejects.toThrow(/404/);
+  });
+
+  it("names the api scope when GitLab refuses its commit", async () => {
+    const gl = createFakeGitLab();
+    const mr = merged(gl, "success");
+    gl.breakNext(({ path }) => path.includes("/repository/commits/"), 403);
+    await expect(forgeOver(gl).checks(recordOf(mr), gl.ctx())).rejects.toThrow(/token needs the "api" scope/);
+  });
+
+  it("routes through compose: ci is no longer pending, and a failure counts", async () => {
+    const gl = createFakeGitLab();
+    merged(gl, "failed");
+    const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "1", title: "t" }] }), forge: forgeOver(gl) });
+    const graph = await hooks.source.read("1", gl.ctx());
+    expect(graph.nodes.find((n) => n.id === "pr-7")?.state).toMatchObject({ checks: "failure", ciPending: 0, ciFailed: 1 });
+  });
+});
+
 describe("merging a merge request at its head", () => {
   it("merges guarded by the head it was asked at", async () => {
     const gl = createFakeGitLab();

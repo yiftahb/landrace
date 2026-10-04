@@ -37,10 +37,11 @@ interface MergeRequest {
   updated_at?: string | null;
 }
 
-/** A pipeline as REST lists one: the commit it ran on, and where it stands. */
+/** A pipeline as REST lists one: the commit and ref it ran on, and where it stands. */
 interface Pipeline {
   id: number;
   sha: string;
+  ref: string;
   status: string;
 }
 
@@ -280,6 +281,12 @@ export class GitLab extends BaseForge {
   private readonly fetchImpl: typeof fetch | undefined;
   /** Discussion id → the merge request it is on, as `threads` last read it. */
   private readonly discussions = new Map<string, number>();
+  /**
+   * A merge-result commit's parents, by sha: a commit never changes them, so
+   * each is read once and checks and failed checks share the read.
+   * ponytail: dropped whole past 1000 shas, an LRU if one engine ever watches that many heads.
+   */
+  private readonly parents = new Map<string, string[]>();
 
   constructor({ project, git, fetchImpl }: GitLabOptions) {
     super();
@@ -416,14 +423,17 @@ export class GitLab extends BaseForge {
   /**
    * The merge request's newest pipeline, on its head. A pipeline of an older
    * commit says nothing of this head — the head's has not started — so that
-   * reads `pending`, never the old verdict. No pipeline at all is nothing
+   * reads `pending`, never the old verdict. A merged results pipeline runs on
+   * the merge of the head into its target, a commit that is never the head:
+   * it is the head's when it is on this merge request's merge ref and the
+   * head is one of that commit's parents. No pipeline at all is nothing
    * configured to check it, or nothing registered yet: `none`. A status this
    * does not know is not read, and so is not green.
    */
   async checks(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState> {
     const newest = await this.newestPipeline(pull, ctx);
     if (newest === null) return "none";
-    if (newest.sha !== pull.headSha) return "pending";
+    if (!(await this.onHead(newest, pull, ctx))) return "pending";
     const known = PIPELINE_STATES[newest.status];
     if (known === undefined) throw new Error(`GitLab answered a pipeline status "${newest.status}" for !${pull.number}, which landrace does not know how to read`);
     return known;
@@ -439,7 +449,7 @@ export class GitLab extends BaseForge {
   async failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]> {
     const gl = this.gl(ctx);
     const newest = await this.newestPipeline(pull, ctx);
-    if (newest === null || newest.sha !== pull.headSha) return [];
+    if (newest === null || !(await this.onHead(newest, pull, ctx))) return [];
     let jobs: Array<{ id: number; name: string }>;
     try {
       jobs = await gl.get(`/pipelines/${newest.id}/jobs?scope[]=failed&per_page=${PER_PAGE}`);
@@ -458,6 +468,22 @@ export class GitLab extends BaseForge {
     } catch (e) {
       throw this.tokenRefusal(e, true);
     }
+  }
+
+  private async onHead(pipeline: Pipeline, pull: PullRecord, ctx: RuntimeContext): Promise<boolean> {
+    if (pipeline.sha === pull.headSha) return true;
+    if (pipeline.ref !== `refs/merge-requests/${pull.number}/merge`) return false;
+    let parents = this.parents.get(pipeline.sha);
+    if (parents === undefined) {
+      try {
+        ({ parent_ids: parents } = await this.gl(ctx).get<{ parent_ids: string[] }>(`/repository/commits/${encodeURIComponent(pipeline.sha)}`));
+      } catch (e) {
+        throw this.tokenRefusal(e, true);
+      }
+      if (this.parents.size >= 1000) this.parents.clear();
+      this.parents.set(pipeline.sha, parents);
+    }
+    return parents.includes(pull.headSha);
   }
 
   /**

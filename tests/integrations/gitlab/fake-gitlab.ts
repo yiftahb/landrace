@@ -69,8 +69,13 @@ export interface FakeMr {
   updated_at: string;
   diffs: FakeDiff[];
   discussions: FakeDiscussion[];
-  /** Its pipelines, in the order they were run; the API answers newest first. */
-  pipelines?: Array<{ id: number; sha: string; status: string }>;
+  /**
+   * Its pipelines, in the order they were run; the API answers newest first.
+   * `ref` is the merge request's source branch unless said: a merged results
+   * pipeline's is `refs/merge-requests/<iid>/merge`, and its `sha` the
+   * merge-result commit, whose parents `commits` holds.
+   */
+  pipelines?: Array<{ id: number; sha: string; status: string; ref?: string }>;
   /** The failed jobs of a pipeline, by its id. */
   failedJobs?: Map<number, Array<{ id: number; name: string }>>;
   /** A job's trace, by its id; a job with none answers 404. */
@@ -108,6 +113,8 @@ export interface FakeGitLab {
   fetchImpl: typeof fetch;
   settings: FakeSettings;
   mrs: Map<number, FakeMr>;
+  /** The project's commits GitLab can read, by sha: each one's `parent_ids`. Any other sha answers 404. */
+  commits: Map<string, string[]>;
   /** Every request that reached the boundary: method, path below `/api/v4`, query and JSON body. */
   requests: Array<{ method: string; path: string; query: URLSearchParams; body: Record<string, unknown> }>;
   /** A merge request, the way a person or a forge UI opens one. */
@@ -159,6 +166,7 @@ export function createFakeGitLab(): FakeGitLab {
   const settings: FakeSettings = { scopes: ["api"], access: 30, visible: true, defaultBranch: "main", admin: false };
   let broken: { match: (r: { method: string; path: string }) => boolean; status: number } | null = null;
   const mrs = new Map<number, FakeMr>();
+  const commits = new Map<string, string[]>();
   const branchDiffs = new Map<string, FakeDiff[]>();
   const requests: FakeGitLab["requests"] = [];
   let nextIid = 1;
@@ -296,6 +304,12 @@ export function createFakeGitLab(): FakeGitLab {
       const failed = url.searchParams.get("scope[]") === "failed" ? owner?.failedJobs?.get(Number(jobs[1])) ?? [] : [];
       return page(failed.map((j) => ({ ...j, status: "failed" })), url.searchParams);
     }
+    const commit = /^\/repository\/commits\/([^/]+)$/.exec(rest);
+    if (commit && method === "GET") {
+      const sha = decodeURIComponent(commit[1] ?? "");
+      const parents = commits.get(sha);
+      return parents === undefined ? json({ message: "404 Commit Not Found" }, 404) : json({ id: sha, parent_ids: parents });
+    }
     const trace = /^\/jobs\/(\d+)\/trace$/.exec(rest);
     if (trace && method === "GET") {
       const text = [...mrs.values()].map((m) => m.traces?.get(Number(trace[1]))).find((t) => t !== undefined);
@@ -336,7 +350,9 @@ export function createFakeGitLab(): FakeGitLab {
       mr.updated_at = now();
       return json(shown(mr));
     }
-    if (sub === "/pipelines" && method === "GET") return page([...(mr.pipelines ?? [])].sort((a, b) => b.id - a.id), url.searchParams);
+    if (sub === "/pipelines" && method === "GET") {
+      return page([...(mr.pipelines ?? [])].sort((a, b) => b.id - a.id).map((p) => ({ ref: mr.source_branch, ...p })), url.searchParams);
+    }
     if (sub === "/merge" && method === "PUT") {
       // GitLab's own order: who may merge, then mergeability — "pipelines
       // must succeed" included — then the branch, and the head only last.
@@ -389,6 +405,7 @@ export function createFakeGitLab(): FakeGitLab {
     fetchImpl,
     settings,
     mrs,
+    commits,
     requests,
     open,
     discuss,
