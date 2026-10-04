@@ -37,7 +37,8 @@ export interface AdfDoc {
 /** One line, as `renderMarker` writes it: its JSON escapes every newline. */
 const MARKER = /(?:^|\n)(<!--[ \t]*landrace[ \t][^\n]*-->)\s*$/;
 
-const FENCE = /^(\s*)(`{3,}|~{3,})\s*([^\s`]*)/;
+/** As CommonMark: a backtick fence's info string holds no backtick, so ```` ```npm install``` ```` is a code span. */
+const FENCE = /^(\s*)(`{3,}(?=[^`]*$)|~{3,})\s*([^\s`]*)/;
 const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*$/;
 const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 
@@ -203,6 +204,23 @@ export function toAdf(markdown: string): AdfDoc {
   if (marker?.[1]) content.push({ type: "paragraph", content: [{ type: "text", text: marker[1] }] });
   return { type: "doc", version: 1, content: content.length ? content : [{ type: "paragraph", content: [] }] };
 }
+
+/**
+ * Text as it was written, a paragraph per `\n\n` block and a `hardBreak` per
+ * `\n` inside one, no Markdown read: several times smaller than `toAdf`'s
+ * document, and `fromAdf` reads it back exactly, marker and all.
+ */
+export const plainAdf = (text: string): AdfDoc => ({
+  type: "doc",
+  version: 1,
+  content: text.split("\n\n").map((block) => ({
+    type: "paragraph",
+    content: block.split("\n").flatMap((line, i): AdfNode[] => [
+      ...(i > 0 ? [{ type: "hardBreak" }] : []),
+      ...(line === "" ? [] : [{ type: "text", text: line }]),
+    ]),
+  })),
+});
 
 /** The node types that sit inside a line of text, rather than being a block of their own. */
 const INLINE_TYPES = new Set(["text", "hardBreak", "mention", "emoji", "inlineCard", "date", "status", "mediaInline", "placeholder"]);

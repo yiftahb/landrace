@@ -7,10 +7,10 @@
  */
 import { type Closed, type ItemPatch, RELATIONS, type RuntimeContext, STAGE_LABEL_PREFIX } from "landrace/hooks";
 import {
-  BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
+  BaseTracker, DONE_WINDOW_MS, EffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
   type ItemRecord, type OpenRelations, type RelatedRecord, type TrackerComment,
 } from "landrace/kit";
-import { type AdfDoc, fromAdf, toAdf } from "./adf.js";
+import { type AdfDoc, fromAdf, plainAdf, toAdf } from "./adf.js";
 import { type Client, clientFor, isMissing } from "./client.js";
 
 export interface JiraOptions {
@@ -251,12 +251,21 @@ export class Jira extends BaseTracker {
     return id;
   }
 
-  /** A body as the document Jira takes — refused here, past Jira's bound, rather than by a 400 after the fact. */
+  /**
+   * A body as the document Jira takes. Rich ADF runs several times its
+   * Markdown's size, so a body the engine admits can be past Jira's bound
+   * rich and well inside it plain: then it is sent plain, raw Markdown on
+   * the ticket rather than no answer at all. Past the bound even plain it is
+   * refused here, rather than by a 400 after the fact, and as a refusal: no
+   * retry makes it fit, so the round is recorded rather than paid for again.
+   */
   private adf(text: string, what: string): AdfDoc {
-    const doc = toAdf(text);
-    const size = JSON.stringify(doc).length;
-    if (size > MAX_ADF_CHARS) throw new Error(`refusing to send a ${size}-character ${what}: Jira takes at most ${MAX_ADF_CHARS}`);
-    return doc;
+    const rich = toAdf(text);
+    if (JSON.stringify(rich).length <= MAX_ADF_CHARS) return rich;
+    const plain = plainAdf(text);
+    const size = JSON.stringify(plain).length;
+    if (size > MAX_ADF_CHARS) throw new EffectRefused(`refusing to send a ${size}-character ${what}: Jira takes at most ${MAX_ADF_CHARS}`);
+    return plain;
   }
 
   async login(ctx: RuntimeContext): Promise<string> {

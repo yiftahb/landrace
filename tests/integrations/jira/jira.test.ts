@@ -1,5 +1,5 @@
 import { Jira, type JiraOptions } from "landrace/integrations/jira";
-import { LABELS, parseMarker, renderMarker } from "#conventions.js";
+import { isEffectRefused, LABELS, parseMarker, renderMarker } from "#conventions.js";
 import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
 import { compose } from "#kit/compose.js";
@@ -324,7 +324,6 @@ describe("comments as ADF", () => {
   it.each([
     ["a paragraph", "plain {x} \\ text", "paragraph/text"],
     ["a hard break", "one\ntwo", "paragraph/hardBreak"],
-    ["each heading level", "# 1\n\n## 2\n\n### 3\n\n#### 4\n\n##### 5\n\n###### 6", "heading/text"],
     ["a bullet list", "- one\n- two", "bulletList/listItem/paragraph/text"],
     ["an ordered list", "1. one\n2. two", "orderedList/listItem/paragraph/text"],
     ["an ordered list from 9", "9. nine\n10. ten", "orderedList/listItem/paragraph/text"],
@@ -349,6 +348,54 @@ describe("comments as ADF", () => {
     await jira.comment(issue.key, markdown, ctx);
     expect(shapes(issue.comments[0]?.body as Adf)).toContain(shape);
     expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(markdown);
+  });
+
+  it("writes each heading level, 1 to 6, as a heading of that level, and a seventh `#` as text", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    const markdown = "# 1\n\n## 2\n\n### 3\n\n#### 4\n\n##### 5\n\n###### 6\n\n####### 7";
+    await jira.comment(issue.key, markdown, ctx);
+    expect(issue.comments[0]?.body?.content?.map((n) => (n.type === "heading" ? n.attrs?.level : n.type))).toEqual([1, 2, 3, 4, 5, 6, "paragraph"]);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(markdown);
+  });
+
+  it("reads a backtick fence whose info string holds a backtick as inline code in a paragraph, not as a fence", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.comment(issue.key, "see\n```npm install```\nthen run it\n\n- a list after", ctx);
+    expect(issue.comments[0]?.body?.content).toEqual([
+      para(text("see"), { type: "hardBreak" }, text("npm install", { type: "code" }), { type: "hardBreak" }, text("then run it")),
+      { type: "bulletList", content: [item(para(text("a list after")))] },
+    ]);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe("see\n`npm install`\nthen run it\n\n- a list after");
+  });
+
+  it("writes a body whose rich document is past Jira's bound as plain paragraphs, and reads it back as it was posted", async () => {
+    const { fake, jira, ctx } = setup();
+    const marker = renderMarker({ stage: "spec", kind: "output", round: 1 });
+    const bullets = (n: number): string => Array.from({ length: n }, (_, i) => `- \`a${i}.ts\`: does **x** with \`y\``).join("\n");
+    const rich = (n: number) => ({
+      type: "doc", version: 1, content: [
+        { type: "bulletList", content: Array.from({ length: n }, (_, i) => item(para(
+          text(`a${i}.ts`, { type: "code" }), text(": does "), text("x", { type: "strong" }), text(" with "), text("y", { type: "code" }),
+        ))) },
+        para(text(marker.trim())),
+      ],
+    });
+    // The same shape, short enough, is written rich: so `rich(n)` is the document the long one would have been.
+    const short = fake.add();
+    await jira.comment(short.key, `${bullets(10)}${marker}`, ctx);
+    expect(short.comments[0]?.body).toEqual(rich(10));
+    expect(JSON.stringify(rich(112)).length).toBeGreaterThan(32_767);
+
+    const long = fake.add();
+    const body = `${bullets(112)}${marker}`;
+    await jira.comment(long.key, body, ctx);
+    const doc = long.comments[0]?.body;
+    expect(doc?.content?.map((n) => n.type)).toEqual(["paragraph", "paragraph"]);
+    expect(doc?.content?.at(-1)).toEqual(para(text(marker.trim())));
+    expect(JSON.stringify(doc).length).toBeLessThanOrEqual(32_767);
+    expect((await jira.comments(long.key, ctx))[0]?.body).toBe(body);
   });
 
   it("writes text that is not Markdown as one plain paragraph, and reads it back as it was posted", async () => {
@@ -403,12 +450,19 @@ describe("comments as ADF", () => {
     expect((await jira.item(issue.key, ctx)).body).toBe("# Title\n\n- item");
   });
 
-  it("refuses a body past Jira's 32,767 characters before the request", async () => {
+  it("refuses a body past Jira's 32,767 characters even as plain paragraphs, before the request, as a refusal and not an outage", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
-    await expect(jira.comment(issue.key, "x".repeat(32_767), ctx)).rejects.toThrow(/32767/);
-    await expect(jira.create({ title: "t", body: "y".repeat(40_000), parent: undefined, priority: undefined }, ctx)).rejects.toThrow(/32767/);
-    await expect(jira.update(issue.key, { body: "z".repeat(40_000) }, ctx)).rejects.toThrow(/32767/);
+    const refusal = (p: Promise<unknown>): Promise<unknown> => p.then(() => "posted", (e: unknown) => e);
+    const refused = [
+      await refusal(jira.comment(issue.key, "x".repeat(32_767), ctx)),
+      await refusal(jira.create({ title: "t", body: "y".repeat(40_000), parent: undefined, priority: undefined }, ctx)),
+      await refusal(jira.update(issue.key, { body: "z".repeat(40_000) }, ctx)),
+    ];
+    for (const e of refused) {
+      expect(String(e)).toMatch(/32767/);
+      expect(isEffectRefused(e)).toBe(true);
+    }
     expect(fake.writes()).toEqual([]);
   });
 });
