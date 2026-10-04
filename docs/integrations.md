@@ -194,7 +194,8 @@ secrets:
 - Every search the tracker runs gains `AND assignee = "<accountId>"`: the open list, the Done lane and the cycle walk. A breakdown's children are read whole, whoever they are assigned to.
 - Every issue Landrace creates, a child too, is assigned to that account.
 - An email is resolved to an account once, at startup. Start is refused when it matches no user, or several, and the refusal names them. An account id Jira has no user for is refused too. Looking a user up takes the global "Browse users and groups" permission: Jira answers an account without it with nobody, so the refusal names the permission instead.
-- An issue reassigned to somebody else drops out of the list, and this instance stops touching it. That is the hand-off: the new assignee's instance picks it up.
+- An issue reassigned to somebody else drops out of the list, and this instance starts no more steps on it. That is the hand-off: the new assignee's instance picks it up.
+- Reassigning does not stop a step already running. An item its tracker no longer lists is left running, so the old instance's step finishes and writes its result to the issue, while the new assignee's instance may start the same step on another machine. Locks are per machine and do not prevent this. Reassign an issue while no step runs on it.
 - A cycle through an issue assigned to somebody else goes undetected, as one through another project does.
 
 Declared but empty (`JIRA_ASSIGNEE=`), the tracker lists everyone's issues, as it does without the secret. Declared and not set at all, `start` refuses, as for any secret.

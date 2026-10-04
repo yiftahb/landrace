@@ -563,7 +563,9 @@ export class Jira extends BaseTracker {
    * That second list is for the board, not the loop, so past its bound it
    * stops quietly rather than failing the tick. Scoped, both are the
    * assignee's alone: an issue reassigned to somebody else drops out, and
-   * this instance stops touching it.
+   * this instance starts nothing more on it. A step already running is not
+   * stopped — an item its source stops listing is left running — so it
+   * finishes and writes while the new assignee's instance may start it too.
    */
   async items(ctx: RuntimeContext): Promise<ItemRecord[]> {
     this.unreadableSaid.clear();
