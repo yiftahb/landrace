@@ -192,7 +192,7 @@ A closed item is left where it is, with one exception: a stage marked `closed: r
 - **Stopping.** Closing an item stops a step running on it, unless the step started on an item that was already closed. A retro runs on.
 - **Which closed items are read.** Each tick reads only a closed item that is at a `closed: run` stage, or that a trigger into one could take, judged from its listed labels and fields. Any other closed item costs no reads.
 
-`validate`'s `closed-run` rule refuses a `closed: run` stage that names a `branch` or plans a `branch.push` or `pull.*` effect: the item's work is already merged or dropped. It also refuses a trigger into the stage that does not read `node.closed`. Such a stage needs no way out (`dead-end`), and its outputs need no trigger leading away (`shape-edge`).
+`validate`'s `closed-run` rule refuses a `closed: run` stage that names a `branch` or plans a `branch.push` or `pull.*` effect: the item's work is already merged or dropped. It also refuses a trigger into the stage that does not read `node.closed`, and a stage `goto` entry or a route `goto` that targets it, since a goto would send an open item there. Such a stage needs no way out (`dead-end`), and its outputs need no trigger leading away (`shape-edge`).
 
 ## When a round fails
 

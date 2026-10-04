@@ -62,6 +62,24 @@ describe("closed-run", () => {
     expect(closedRun(flow(loose))).toEqual([expect.stringMatching(/stage "retro" runs on a closed item, but its trigger "any" does not read node.closed/)]);
   });
 
+  // A goto takes no trigger: an open item sent there would run the step and
+  // rest with no way out, dead-end and shape-edge being waived for the stage.
+  it("refuses a stage goto entry, or a route goto, into it", () => {
+    const sent = flow(retro());
+    const work = sent.w.stages[0];
+    if (!work) throw new Error("no work stage");
+    work.step = "work";
+    work.goto = [{ stage: "retro", when: { "run.round": 1 } }];
+    sent.steps.set("work", {
+      prompt: "work",
+      output: { discriminator: "kind", shapes: { over: {} }, routes: [{ when: { kind: "over" }, goto: "retro" }] },
+    });
+    expect(closedRun(sent)).toEqual([
+      expect.stringMatching(/stage "work" lists "retro" in its goto, but "retro" runs on a closed item/),
+      expect.stringMatching(/step work's route for \{"kind":"over"\} sends items to "retro", but "retro" runs on a closed item/),
+    ]);
+  });
+
   it("leaves a stage without the key alone", () => {
     const plain = retro({ closed: undefined });
     expect(rules(flow(plain))).not.toContain("closed-run");

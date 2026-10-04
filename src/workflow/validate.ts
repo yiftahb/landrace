@@ -441,7 +441,7 @@ export function createProblems(w: Workflow, steps: Map<string, Step>, post: read
  * `closed-run`: a stage a closed item enters and runs its step at. The item's
  * work is over, so it works on no branch and touches no forge — a closed
  * item's pull request is merged or dropped already — and only a closed item
- * reaches it, so every trigger into it reads `node.closed`.
+ * reaches it, so every trigger into it reads `node.closed` and no goto names it.
  */
 function closedRunProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
   const problems: Problem[] = [];
@@ -464,6 +464,28 @@ function closedRunProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
         rule: "closed-run",
         message: `stage "${stage.id}" runs on a closed item, but its trigger ${t.name ? `"${t.name}"` : String(index)} ` +
           "does not read node.closed, so an open item could enter it too",
+      });
+    }
+  }
+  // A goto takes no trigger, so it would send an open item there, to run the
+  // step and rest with no way out: dead-end and shape-edge are waived here.
+  const closing = new Set(w.stages.filter((s) => s.closed === "run").map((s) => s.id));
+  for (const stage of w.stages) {
+    for (const g of gotoTargetsOf(stage)) {
+      if (!closing.has(g.stage)) continue;
+      problems.push({
+        rule: "closed-run",
+        message: `stage "${stage.id}" lists "${g.stage}" in its goto, but "${g.stage}" runs on a closed item, ` +
+          "which only a trigger reading node.closed may send there",
+      });
+    }
+    const step = stage.step ? steps.get(stage.step) : undefined;
+    for (const route of step?.output?.routes ?? []) {
+      if (route.goto === undefined || !closing.has(route.goto)) continue;
+      problems.push({
+        rule: "closed-run",
+        message: `step ${stage.step}'s route for ${JSON.stringify(route.when)} sends items to "${route.goto}", ` +
+          `but "${route.goto}" runs on a closed item, which only a trigger reading node.closed may send there`,
       });
     }
   }
