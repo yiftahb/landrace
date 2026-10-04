@@ -481,9 +481,13 @@ describe("claude executor", () => {
     const controller = new AbortController();
     const started = createClaudeExecutor({ bin }).run("x", { round: 1, cwd: dir, signal: controller.signal, timeoutMs: 5_000 });
 
+    // A read can land between the file's truncation and its write: "" is
+    // pid 0, and `kill(0, 0)` signals this test's own group, so it never
+    // "dies" — which is how this failed on CI.
     const pid = await until(() => {
       try {
-        return Number(readFileSync(join(dir, "grandchild.pid"), "utf8"));
+        const got = Number(readFileSync(join(dir, "grandchild.pid"), "utf8"));
+        return Number.isInteger(got) && got > 0 ? got : null;
       } catch {
         return null;
       }
