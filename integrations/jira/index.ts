@@ -7,6 +7,7 @@
  *     tracker: new Jira({ project: "KEY" }),
  *   });
  *
- * Configured by the `jiraBaseUrl`, `jiraEmail` and `jiraToken` secrets.
+ * Configured by the `jiraBaseUrl`, `jiraEmail` and `jiraToken` secrets, and
+ * scoped to one developer's issues by the optional `jiraAssignee`.
  */
 export { Jira, type JiraOptions } from "./tracker.js";

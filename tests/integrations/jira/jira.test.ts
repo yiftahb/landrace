@@ -1,5 +1,5 @@
 import { Jira, type JiraOptions } from "landrace/integrations/jira";
-import { LABELS, parseMarker, renderMarker } from "#conventions.js";
+import { isEffectRefused, LABELS, parseMarker, renderMarker } from "#conventions.js";
 import { compile } from "#core/predicate.js";
 import { deriveRel } from "#core/rel.js";
 import { compose } from "#kit/compose.js";
@@ -7,7 +7,7 @@ import { ITEM_PAGE, MAX_ISSUE_PAGES } from "#kit/tracker.js";
 import type { Graph, HookContext, Node, RuntimeContext, Snapshot } from "#namespace.js";
 import { MemoryDocs, MemoryForge } from "#testing/index.js";
 import {
-  type Adf, BOT, createFakeJira, DAY, EMAIL, type FakeJira, jiraTime, paragraphs, PERSON, SITE, TOKEN,
+  type Adf, BOT, createFakeJira, DAY, EMAIL, type FakeJira, jiraTime, OTHER, paragraphs, PERSON, SITE, TOKEN,
 } from "#tests/integrations/jira/fake-jira.js";
 import { loadShipped } from "#tests/support/shipped.js";
 
@@ -244,7 +244,7 @@ describe("reading items", () => {
     expect(Date.parse(comments[0]?.created_at ?? "")).toBe(Date.parse(issue.comments[0]?.created ?? ""));
   });
 
-  it("reads a person's formatted comment as its text", async () => {
+  it("reads a person's formatted comment as Markdown, and any other node as its text", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
     fake.say(issue.key, PERSON, {
@@ -257,52 +257,234 @@ describe("reading items", () => {
           ] }] },
         ] },
         { type: "paragraph", content: [{ type: "text", text: "see " }, { type: "inlineCard", attrs: { url: "https://x.example/1" } }] },
+        { type: "panel", attrs: { panelType: "info" }, content: [
+          { type: "paragraph", content: [{ type: "text", text: "struck", marks: [{ type: "strike" }] }, { type: "text", text: " out" }] },
+        ] },
+        { type: "codeBlock", attrs: { language: "ts" }, content: [{ type: "text", text: "const x = 1;\nconst y = 2;" }] },
       ],
     });
-    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe("Findings\n\none\n\n@landrace two\n\nsee https://x.example/1");
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(
+      "## Findings\n\n- one\n- @landrace two\n\nsee https://x.example/1\n\nstruck out\n\n```ts\nconst x = 1;\nconst y = 2;\n```",
+    );
+  });
+
+  it("reads a person's description as Markdown, its code block whole", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    fake.edit(issue.key, PERSON, {
+      type: "doc", version: 1, content: [
+        { type: "paragraph", content: [{ type: "text", text: "Run " }, { type: "text", text: "make", marks: [{ type: "code" }] }] },
+        { type: "codeBlock", attrs: { language: "sh" }, content: [{ type: "text", text: "make\n\nmake test" }] },
+      ],
+    });
+    expect((await jira.item(issue.key, ctx)).body).toBe("Run `make`\n\n```sh\nmake\n\nmake test\n```");
   });
 });
 
 describe("comments as ADF", () => {
-  it("posts a paragraph per blank-line block and a hard break per line, text verbatim", async () => {
+  const text = (t: string, ...marks: Array<Record<string, unknown>>) => (marks.length ? { type: "text", text: t, marks } : { type: "text", text: t });
+  const para = (...content: unknown[]) => ({ type: "paragraph", content });
+  const item = (...content: unknown[]) => ({ type: "listItem", content });
+
+  it("posts Markdown as rich ADF: headings, lists, code, marks and links", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
-    await jira.comment(issue.key, "one\ntwo\n\nthree {x} \\ *not bold*", ctx);
-    const doc = issue.comments[0]?.body as Adf;
-    expect(doc).toEqual({
+    await jira.comment(issue.key, [
+      "## Plan", "",
+      "Do **this**, then *that*,\nwith `pnpm test` and [the docs](https://example.com/d).", "",
+      "- one\n  - nested\n- two", "",
+      "3. three\n4. four", "",
+      "```ts\nconst a = 1;\n\nconst b = 2;\n```",
+    ].join("\n"), ctx);
+    expect(issue.comments[0]?.body).toEqual({
       type: "doc", version: 1, content: [
-        { type: "paragraph", content: [{ type: "text", text: "one" }, { type: "hardBreak" }, { type: "text", text: "two" }] },
-        { type: "paragraph", content: [{ type: "text", text: "three {x} \\ *not bold*" }] },
+        { type: "heading", attrs: { level: 2 }, content: [text("Plan")] },
+        para(
+          text("Do "), text("this", { type: "strong" }), text(", then "), text("that", { type: "em" }), text(","),
+          { type: "hardBreak" },
+          text("with "), text("pnpm test", { type: "code" }), text(" and "),
+          text("the docs", { type: "link", attrs: { href: "https://example.com/d" } }), text("."),
+        ),
+        { type: "bulletList", content: [
+          item(para(text("one")), { type: "bulletList", content: [item(para(text("nested")))] }),
+          item(para(text("two"))),
+        ] },
+        { type: "orderedList", attrs: { order: 3 }, content: [item(para(text("three"))), item(para(text("four")))] },
+        { type: "codeBlock", attrs: { language: "ts" }, content: [text("const a = 1;\n\nconst b = 2;")] },
       ],
     });
   });
 
+  /** Every node and mark type in a document, each written as its path from the root: `bulletList/listItem/paragraph/text+strong`. */
+  const shapes = (node: Adf, path = ""): string[] => {
+    const here = `${path}${node.type}${(node.marks ?? []).map((m) => `+${m.type}`).join("")}`;
+    return [here, ...(node.content ?? []).flatMap((c) => shapes(c, node.type === "doc" ? "" : `${here}/`))];
+  };
+
   it.each([
-    "", "a", "a\nb", "a\n\n\nb", "a\n\n\n\nb", "\n\nx\n", "x\n\n", "  indented\n\ttab",
-    `report${renderMarker({ stage: "spec", kind: "output", round: 2, output: { path: "C:\\x", note: "{x} \"q\"\n" } })}`,
-  ])("reads %j back exactly as it was posted", async (text) => {
+    ["a paragraph", "plain {x} \\ text", "paragraph/text"],
+    ["a hard break", "one\ntwo", "paragraph/hardBreak"],
+    ["a bullet list", "- one\n- two", "bulletList/listItem/paragraph/text"],
+    ["an ordered list", "1. one\n2. two", "orderedList/listItem/paragraph/text"],
+    ["an ordered list from 9", "9. nine\n10. ten", "orderedList/listItem/paragraph/text"],
+    ["nested lists", "- outer\n  1. inner\n  2. more\n- next", "bulletList/listItem/orderedList/listItem/paragraph/text"],
+    ["a list item of two lines", "- one\n  more", "bulletList/listItem/paragraph/hardBreak"],
+    ["a code block in a list item", "- run\n\n  ```sh\n  make\n  ```", "bulletList/listItem/codeBlock/text"],
+    ["a fenced code block with its language", "```ts\nconst a = 1;\n\n  indented\n```", "codeBlock/text"],
+    ["a fenced code block without one", "```\nplain\n```", "codeBlock/text"],
+    ["a fence inside a code block", "````md\n```js\nx\n```\n````", "codeBlock/text"],
+    ["inline code", "use `pnpm test` now", "paragraph/text+code"],
+    ["inline code holding a backtick", "the `` a`b `` tick", "paragraph/text+code"],
+    ["bold", "**bold** text", "paragraph/text+strong"],
+    ["italic", "_italic_ text", "paragraph/text+em"],
+    ["bold italic", "**_both_** text", "paragraph/text+strong+em"],
+    ["a link", "[the docs](https://example.com/a?b=c)", "paragraph/text+link"],
+    ["a bold link", "[**bold**](https://example.com)", "paragraph/text+link+strong"],
+    ["a coded link", "[`code`](https://example.com)", "paragraph/text+link+code"],
+    ["a mix", "## Title\n\nSome **bold** text.\n\n- a\n- b\n\n```\nx\n```\n\nend", "codeBlock/text"],
+  ])("writes %s as ADF and reads it back as it was posted", async (_, markdown, shape) => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
-    await jira.comment(issue.key, text, ctx);
-    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(text);
+    await jira.comment(issue.key, markdown, ctx);
+    expect(shapes(issue.comments[0]?.body as Adf)).toContain(shape);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(markdown);
   });
 
-  it("puts the marker last, as its own visible paragraph, and reads it back verbatim", async () => {
+  it("writes each heading level, 1 to 6, as a heading of that level, and a seventh `#` as text", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
-    const marker = renderMarker({ stage: "spec", kind: "output", round: 1, output: { a: "\\{b}" } });
-    await jira.comment(issue.key, `done${marker}`, ctx);
-    expect(paragraphTexts(issue.comments[0]?.body ?? null).at(-1)).toBe(marker.trim());
+    const markdown = "# 1\n\n## 2\n\n### 3\n\n#### 4\n\n##### 5\n\n###### 6\n\n####### 7";
+    await jira.comment(issue.key, markdown, ctx);
+    expect(issue.comments[0]?.body?.content?.map((n) => (n.type === "heading" ? n.attrs?.level : n.type))).toEqual([1, 2, 3, 4, 5, 6, "paragraph"]);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(markdown);
+  });
+
+  it("reads a backtick fence whose info string holds a backtick as inline code in a paragraph, not as a fence", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.comment(issue.key, "see\n```npm install```\nthen run it\n\n- a list after", ctx);
+    expect(issue.comments[0]?.body?.content).toEqual([
+      para(text("see"), { type: "hardBreak" }, text("npm install", { type: "code" }), { type: "hardBreak" }, text("then run it")),
+      { type: "bulletList", content: [item(para(text("a list after")))] },
+    ]);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe("see\n`npm install`\nthen run it\n\n- a list after");
+  });
+
+  it.each([
+    ["an unpaired `*` before it", "Format *.md files with `prettier docs/*.md`", [text("Format *.md files with "), text("prettier docs/*.md", { type: "code" })]],
+    ["`**` before it", "pass **kwargs to `f(*args, **kwargs)`", [text("pass **kwargs to "), text("f(*args, **kwargs)", { type: "code" })]],
+    ["`_` either side of its edge", "a _b `c_ d`", [text("a _b "), text("c_ d", { type: "code" })]],
+    ["a link's brackets inside it", "`[a](https://x.example)` here", [text("[a](https://x.example)", { type: "code" }), text(" here")]],
+  ])("lets no emphasis or link open or close inside a code span: %s", async (_, markdown, content) => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.comment(issue.key, markdown, ctx);
+    expect(issue.comments[0]?.body?.content).toEqual([para(...content)]);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(markdown);
+  });
+
+  it("still lets emphasis hold a whole code span", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.comment(issue.key, "**run `make *` now**", ctx);
+    expect(issue.comments[0]?.body?.content).toEqual([
+      para(text("run ", { type: "strong" }), text("make *", { type: "code" }), text(" now", { type: "strong" })),
+    ]);
+  });
+
+  it("writes a body whose rich document is past Jira's bound as plain paragraphs, and reads it back as it was posted", async () => {
+    const { fake, jira, ctx } = setup();
+    const marker = renderMarker({ stage: "spec", kind: "output", round: 1 });
+    const bullets = (n: number): string => Array.from({ length: n }, (_, i) => `- \`a${i}.ts\`: does **x** with \`y\``).join("\n");
+    const rich = (n: number) => ({
+      type: "doc", version: 1, content: [
+        { type: "bulletList", content: Array.from({ length: n }, (_, i) => item(para(
+          text(`a${i}.ts`, { type: "code" }), text(": does "), text("x", { type: "strong" }), text(" with "), text("y", { type: "code" }),
+        ))) },
+        para(text(marker.trim())),
+      ],
+    });
+    // The same shape, short enough, is written rich: so `rich(n)` is the document the long one would have been.
+    const short = fake.add();
+    await jira.comment(short.key, `${bullets(10)}${marker}`, ctx);
+    expect(short.comments[0]?.body).toEqual(rich(10));
+    expect(JSON.stringify(rich(112)).length).toBeGreaterThan(32_767);
+
+    const long = fake.add();
+    const body = `${bullets(112)}${marker}`;
+    await jira.comment(long.key, body, ctx);
+    const doc = long.comments[0]?.body;
+    expect(doc?.content?.map((n) => n.type)).toEqual(["paragraph", "paragraph"]);
+    expect(doc?.content?.at(-1)).toEqual(para(text(marker.trim())));
+    expect(JSON.stringify(doc).length).toBeLessThanOrEqual(32_767);
+    expect((await jira.comments(long.key, ctx))[0]?.body).toBe(body);
+  });
+
+  it("writes text that is not Markdown as one plain paragraph, and reads it back as it was posted", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    const plain = "3 * 4 * 5, a_b_c, [not](a link), ** spaced **, # no";
+    await jira.comment(issue.key, plain, ctx);
+    expect(issue.comments[0]?.body?.content).toEqual([para(text(plain))]);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(plain);
+  });
+
+  it("makes no link of a URL that is not http, https or mailto", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.comment(issue.key, "[click](javascript:alert%281%29) [**file**](file:///etc/passwd) [mail](mailto:a@b.example)", ctx);
+    expect(issue.comments[0]?.body?.content?.[0]?.content).toEqual([
+      text("[click](javascript:alert%281%29) [**file**](file:///etc/passwd) "),
+      text("mail", { type: "link", attrs: { href: "mailto:a@b.example" } }),
+    ]);
+  });
+
+  it.each([
+    ["after prose", "report"],
+    ["after Markdown", "## Done\n\n- **one**\n\n```\ncode\n```"],
+    ["after a fence left open", "```\nnever closed"],
+    ["alone", ""],
+  ])("puts the marker last %s, as its own plain-text paragraph, and reads it back byte for byte", async (_, before) => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    const output = { path: "C:\\x", note: "{x} \"q\"\n# not a heading\n- **not** `marks` [x](https://x.example)" };
+    const marker = renderMarker({ stage: "spec", kind: "output", round: 2, output });
+    await jira.comment(issue.key, `${before}${marker}`, ctx);
+    expect(issue.comments[0]?.body?.content?.at(-1)).toEqual(para(text(marker.trim())));
     const [read] = await jira.comments(issue.key, ctx);
-    expect(parseMarker(read?.body ?? "")).toEqual({ stage: "spec", kind: "output", round: 1, output: { a: "\\{b}" } });
+    expect(read?.body.endsWith(marker.trim())).toBe(true);
+    expect(parseMarker(read?.body ?? "")).toEqual({ stage: "spec", kind: "output", round: 2, output });
   });
 
-  it("refuses a body past Jira's 32,767 characters before the request", async () => {
+  it("reads a Markdown body with its marker back exactly as it was posted", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
-    await expect(jira.comment(issue.key, "x".repeat(32_767), ctx)).rejects.toThrow(/32767/);
-    await expect(jira.create({ title: "t", body: "y".repeat(40_000), parent: undefined, priority: undefined }, ctx)).rejects.toThrow(/32767/);
-    await expect(jira.update(issue.key, { body: "z".repeat(40_000) }, ctx)).rejects.toThrow(/32767/);
+    const body = `## Spec\n\n- one${renderMarker({ stage: "spec", kind: "output", round: 1 })}`;
+    await jira.comment(issue.key, body, ctx);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(body);
+  });
+
+  it("writes a description as the same rich ADF", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.update(issue.key, { body: "# Title\n\n- item" }, ctx);
+    expect(issue.description?.content?.map((n) => n.type)).toEqual(["heading", "bulletList"]);
+    expect((await jira.item(issue.key, ctx)).body).toBe("# Title\n\n- item");
+  });
+
+  it("refuses a body past Jira's 32,767 characters even as plain paragraphs, before the request, as a refusal and not an outage", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    const refusal = (p: Promise<unknown>): Promise<unknown> => p.then(() => "posted", (e: unknown) => e);
+    const refused = [
+      await refusal(jira.comment(issue.key, "x".repeat(32_767), ctx)),
+      await refusal(jira.create({ title: "t", body: "y".repeat(40_000), parent: undefined, priority: undefined }, ctx)),
+      await refusal(jira.update(issue.key, { body: "z".repeat(40_000) }, ctx)),
+    ];
+    for (const e of refused) {
+      expect(String(e)).toMatch(/32767/);
+      expect(isEffectRefused(e)).toBe(true);
+    }
     expect(fake.writes()).toEqual([]);
   });
 });
@@ -503,6 +685,175 @@ describe("the preflight", () => {
     fake.pageSize = 2;
     fake.issueTypes.find((t) => t.name === "Bug")?.fields.push("labels");
     await jira.check?.(ctx);
+  });
+});
+
+describe("scoped to one assignee by jiraAssignee", () => {
+  const scoped = (assignee: string) => setup({}, { ...SECRETS, jiraAssignee: assignee });
+  const queries = (fake: FakeJira) => fake.calls.filter((c) => c.path === "/rest/api/3/search/jql").map((c) => (c.body as { jql: string }).jql);
+  const mine = `AND assignee = "${PERSON.accountId}"`;
+
+  it("lists only the assignee's open and recently closed issues, every query saying so", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const recent = jiraTime(Date.now() - DAY);
+    const stage = LABELS.stage("build");
+    const open = fake.add({ assignee: PERSON });
+    fake.add({ assignee: OTHER });
+    fake.add();
+    const closed = fake.add({ assignee: PERSON, status: "Done", labels: [stage], updated: recent, statusChanged: recent });
+    fake.add({ assignee: OTHER, status: "Done", labels: [stage], updated: recent, statusChanged: recent });
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([open.key, closed.key]);
+    const jql = queries(fake);
+    expect(jql).toHaveLength(2);
+    for (const q of jql) expect(q).toContain(mine);
+  });
+
+  // That is the hand-off: whoever it is reassigned to lists it from their own instance.
+  it("drops an issue reassigned to somebody else from the list", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const issue = fake.add({ assignee: PERSON });
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([issue.key]);
+    issue.assignee = OTHER;
+    expect(await jira.items(ctx)).toEqual([]);
+  });
+
+  it("walks the assignee's open issues alone for cycles", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const item = fake.add({ assignee: PERSON });
+    const blocker = fake.add({ assignee: OTHER });
+    fake.link("Blocks", blocker.key, item.key);
+    await compose({ tracker: jira, forge: new MemoryForge(), docs: new MemoryDocs() }).source.read(item.key, ctx);
+    const walk = fake.calls.filter((c) => c.path === "/rest/api/3/search/jql" && (c.body as { fields: string[] }).fields.join() === "issuelinks");
+    expect(walk).toHaveLength(1);
+    expect((walk[0]?.body as { jql: string }).jql).toContain(mine);
+  });
+
+  // A child handed to somebody else is still the parent's: read without it, "every child closed" closes the parent early.
+  it("reads a breakdown's children whoever they are assigned to", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const parent = fake.add({ assignee: PERSON });
+    const child = fake.add({ assignee: OTHER, parent: parent.key, issuetype: "Subtask" });
+    expect((await jira.children(parent.key, ctx)).map((c) => c.id)).toEqual([child.key]);
+    const graph = await compose({ tracker: jira, forge: new MemoryForge(), docs: new MemoryDocs() }).source.read(parent.key, ctx);
+    expect(graph.nodes.map((n) => n.id)).toContain(child.key);
+  });
+
+  it("creates an item and a child assigned to the assignee", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const top = await jira.create({ title: "Top", body: "", parent: undefined, priority: undefined }, ctx);
+    const child = await jira.create({ title: "Child", body: "", parent: top, priority: undefined }, ctx);
+    expect([fake.issue(top).assignee, fake.issue(child).assignee]).toEqual([PERSON, PERSON]);
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([top, child]);
+  });
+
+  it("resolves an email to its account once, at the preflight, and scopes by the account", async () => {
+    const { fake, jira, ctx } = scoped(" MIA@acme.example ");
+    const issue = fake.add({ assignee: PERSON });
+    fake.add({ assignee: OTHER });
+    await jira.check?.(ctx);
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([issue.key]);
+    await jira.items(ctx);
+    expect(fake.calls.filter((c) => c.path.startsWith("/rest/api/3/user/search"))).toHaveLength(1);
+    for (const q of queries(fake)) expect(q).toContain(mine);
+  });
+
+  // Never unscoped for want of a preflight: `status` lists without one, and a list of everybody's issues is the failure this prevents.
+  it("resolves the email before the first list when no preflight ran", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.emailAddress as string);
+    fake.add({ assignee: OTHER });
+    expect(await jira.items(ctx)).toEqual([]);
+    for (const q of queries(fake)) expect(q).toContain(mine);
+  });
+
+  it("refuses to start on an email that matches no user", async () => {
+    const { fake, jira, ctx } = scoped("nobody@acme.example");
+    await expect(jira.check?.(ctx)).rejects.toThrow(/jiraAssignee "nobody@acme\.example" matches no Jira user/);
+    await expect(jira.items(ctx)).rejects.toThrow(/matches no Jira user/);
+    expect(queries(fake)).toEqual([]);
+  });
+
+  // Jira answers an account without "Browse users and groups" with nobody, not a refusal: that is not "no such user".
+  it.each([["an email", PERSON.emailAddress as string], ["an account id", PERSON.accountId]])(
+    "names a missing \"Browse users and groups\" permission when %s finds nobody, not a missing user",
+    async (_, value) => {
+      const { fake, jira, ctx } = scoped(value);
+      fake.permissions.USER_PICKER = false;
+      const refused = await jira.check?.(ctx).then(() => "", (e: unknown) => String(e));
+      expect(refused).toMatch(/the account lacks the global "Browse users and groups" permission \(USER_PICKER\)/);
+      expect(refused).not.toMatch(/matches no Jira user/);
+    },
+  );
+
+  // Jira hides most emails from search, so a user with a private email may be the one: neither is picked.
+  it("refuses to start on an email that matches several users, naming them", async () => {
+    const { fake, jira, ctx } = scoped("mia@acme.example");
+    fake.users.push({ accountId: "557058:aaaa", displayName: "mia@acme.example (old)" });
+    await expect(jira.check?.(ctx)).rejects.toThrow(/jiraAssignee "mia@acme\.example" matches 2 Jira users: Mia Krystof, mia@acme\.example \(old\)/);
+  });
+
+  it("leaves out a user whose email Jira shows as another", async () => {
+    const { fake, jira, ctx } = scoped("mia@acme.example");
+    fake.users.push({ accountId: "557058:bbbb", displayName: "Mia Two", emailAddress: "mia@acme.example.org" });
+    await jira.check?.(ctx);
+  });
+
+  // The one meant may be past the page: not found is not missing.
+  it("refuses an email whose search fills a page, rather than judge it from that page", async () => {
+    const { fake, jira, ctx } = scoped("mia@acme.example");
+    for (let i = 0; i < 99; i++) fake.users.push({ accountId: `557058:p${i}`, displayName: `mia@acme.example ${i}` });
+    await expect(jira.check?.(ctx)).rejects.toThrow(/matches more Jira users than one search returns/);
+    fake.users.pop();
+    const again = setup({}, { ...SECRETS, jiraAssignee: "mia@acme.example" });
+    again.fake.users = fake.users;
+    await expect(again.jira.check?.(again.ctx)).rejects.toThrow(/matches 99 Jira users/);
+  });
+
+  it("refuses to start on an account id Jira has no user for", async () => {
+    const { jira, ctx } = scoped("557058:no-such-user");
+    await expect(jira.check?.(ctx)).rejects.toThrow(/jiraAssignee "557058:no-such-user" matches no Jira user/);
+  });
+
+  // A user read finds an account with no access to the project, or a deactivated one: the first create would fail, after a step is paid for.
+  it.each([["an email", PERSON.emailAddress as string], ["an account id", PERSON.accountId]])(
+    "refuses to start on %s whose account the project cannot assign issues to, naming it",
+    async (_, value) => {
+      const { fake, jira, ctx } = scoped(value);
+      fake.unassignable.add(PERSON.accountId);
+      await expect(jira.check?.(ctx)).rejects.toThrow(
+        `jiraAssignee "${value}" is account ${PERSON.accountId}, which KEY cannot assign issues to`,
+      );
+      fake.unassignable.clear();
+      const again = scoped(value);
+      await again.jira.check?.(again.ctx);
+    },
+  );
+
+  it("refuses an account id that would rewrite the query it is spelled into, before any request about it", async () => {
+    const { fake, jira, ctx } = scoped('x" OR project = "OTHER');
+    await expect(jira.items(ctx)).rejects.toThrow(/jiraAssignee .* is neither an email nor a Jira account id/);
+    expect(queries(fake)).toEqual([]);
+  });
+
+  it("names a missing \"Assign Issues\" permission and a type with no assignee field, only when scoped", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    fake.permissions.ASSIGN_ISSUES = false;
+    fake.issueTypes = fake.issueTypes.map((t) => (t.name === "Subtask" ? { ...t, fields: t.fields.filter((f) => f !== "assignee") } : t));
+    await expect(jira.check?.(ctx)).rejects.toThrow(/"Assign Issues" \(ASSIGN_ISSUES\) on KEY[\s\S]*"Subtask" issues have no assignee field/);
+    const unscoped = setup();
+    unscoped.fake.permissions.ASSIGN_ISSUES = false;
+    unscoped.fake.issueTypes = fake.issueTypes;
+    await unscoped.jira.check?.(unscoped.ctx);
+  });
+
+  it.each([["unset", undefined], ["empty", "  "]])("lists every open issue when the secret is %s, as before", async (_, value) => {
+    const { fake, jira, ctx } = setup({}, value === undefined ? SECRETS : { ...SECRETS, jiraAssignee: value });
+    fake.add({ assignee: PERSON });
+    fake.add({ assignee: OTHER });
+    const top = await jira.create({ title: "Top", body: "", parent: undefined, priority: undefined }, ctx);
+    expect(fake.issue(top).assignee).toBeNull();
+    expect(await jira.items(ctx)).toHaveLength(3);
+    for (const q of queries(fake)) expect(q).not.toContain("assignee");
+    expect(fake.calls.filter((c) => c.path.startsWith("/rest/api/3/user"))).toEqual([]);
   });
 });
 

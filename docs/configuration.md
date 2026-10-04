@@ -139,7 +139,7 @@ eligible:
     else: "assigned to somebody else"
 ```
 
-An item assigned to somebody else is skipped, with that `else` as the reason `landrace status` prints, and nothing is written to it. An item assigned to nobody is skipped by everybody rather than worked by everybody, because `node.state.assignees` is an empty list, never absent. The skip costs nothing per item: `list()` already carries every item's assignees, so the rule is answered before any item is read and before any lock is taken.
+An item assigned to somebody else is skipped, with that `else` as the reason `landrace status` prints, and nothing is written to it. An item assigned to nobody is skipped by everybody rather than worked by everybody, because `node.state.assignees` is an empty list, never absent. The skip costs nothing per item: `list()` already carries every item's assignees, so the rule is answered before any item is read and before any lock is taken. It is still answered after the list, though, so it cannot keep a list under its bound. On a Jira project too large to list whole, scope the tracker itself with the `jiraAssignee` secret; see [One developer's issues](integrations.md#jira).
 
 ### Durations
 

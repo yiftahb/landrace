@@ -7,10 +7,10 @@
  */
 import { type Closed, type ItemPatch, RELATIONS, type RuntimeContext, STAGE_LABEL_PREFIX } from "landrace/hooks";
 import {
-  BaseTracker, DONE_WINDOW_MS, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
+  BaseTracker, DONE_WINDOW_MS, EffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
   type ItemRecord, type OpenRelations, type RelatedRecord, type TrackerComment,
 } from "landrace/kit";
-import { type AdfDoc, fromAdf, toAdf } from "./adf.js";
+import { type AdfDoc, fromAdf, plainAdf, toAdf } from "./adf.js";
 import { type Client, clientFor, isMissing } from "./client.js";
 
 export interface JiraOptions {
@@ -68,13 +68,23 @@ const SITE_KEY = /^[A-Z][A-Z0-9_]+-[1-9][0-9]*$/;
  */
 const PERMISSIONS = ["BROWSE_PROJECTS", "CREATE_ISSUES", "EDIT_ISSUES", "TRANSITION_ISSUES", "ADD_COMMENTS", "LINK_ISSUES"];
 
+/**
+ * An Atlassian account id: hex, or a prefix and a colon before a UUID. It is
+ * spelled into every query as `assignee = "<id>"`, so nothing a quote or a
+ * space could rewrite the query with.
+ */
+const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]*$/;
+
+/** Users one search for an email is read to. */
+const USER_PAGE = 100;
+
 /** Issues one `issue/bulkfetch` returns whatever fields it asks for: up to 1000 only when they are named, and this stays inside both. */
 const BULK_BATCH = 100;
 
 /** Bulk changelog takes a thousand issues a request. */
 const CHANGELOG_BATCH = 1000;
 
-interface User { accountId?: string }
+interface User { accountId?: string; displayName?: string; emailAddress?: string }
 interface Status { name?: string; statusCategory?: { key?: string } }
 
 /** The issue at a link's other end, as an issue's `issuelinks` names it: its key, and a few of its fields — never its resolution. */
@@ -208,6 +218,12 @@ interface Resolutions { held: Map<string, Issue["fields"]>; fetched: Map<string,
 /**
  * Jira Cloud issues, in one project, over one client per configuration —
  * built from the `jiraBaseUrl`, `jiraEmail` and `jiraToken` secrets.
+ *
+ * With the optional `jiraAssignee` secret — an account id or an email, from
+ * each developer's own `.env`, since every developer shares the hook file —
+ * only that account's issues are items: a project of thousands lists one
+ * developer's share, under the bound a list may carry, and what this
+ * instance creates is assigned to them. Unset or empty, it lists everyone's.
  */
 export class Jira extends BaseTracker {
   private readonly project: string;
@@ -220,6 +236,8 @@ export class Jira extends BaseTracker {
   private readonly linkType: string;
   /** Each client's project priorities, highest first, read once. */
   private readonly priorities = new WeakMap<Client, string[]>();
+  /** Each client's assignee, resolved once: its account id, or null when the tracker is not scoped. */
+  private readonly assignees = new WeakMap<Client, string | null>();
   /** The unreadable blockers already logged this tick: a listing begins each one, and clears it. */
   private readonly unreadableSaid = new Set<string>();
 
@@ -251,16 +269,87 @@ export class Jira extends BaseTracker {
     return id;
   }
 
-  /** A body as the document Jira takes — refused here, past Jira's bound, rather than by a 400 after the fact. */
+  /**
+   * A body as the document Jira takes. Rich ADF runs several times its
+   * Markdown's size, so a body the engine admits can be past Jira's bound
+   * rich and well inside it plain: then it is sent plain, raw Markdown on
+   * the ticket rather than no answer at all. Past the bound even plain it is
+   * refused here, rather than by a 400 after the fact, and as a refusal: no
+   * retry makes it fit, so the round is recorded rather than paid for again.
+   */
   private adf(text: string, what: string): AdfDoc {
-    const doc = toAdf(text);
-    const size = JSON.stringify(doc).length;
-    if (size > MAX_ADF_CHARS) throw new Error(`refusing to send a ${size}-character ${what}: Jira takes at most ${MAX_ADF_CHARS}`);
-    return doc;
+    const rich = toAdf(text);
+    if (JSON.stringify(rich).length <= MAX_ADF_CHARS) return rich;
+    const plain = plainAdf(text);
+    const size = JSON.stringify(plain).length;
+    if (size > MAX_ADF_CHARS) throw new EffectRefused(`refusing to send a ${size}-character ${what}: Jira takes at most ${MAX_ADF_CHARS}`);
+    return plain;
   }
 
   async login(ctx: RuntimeContext): Promise<string> {
     return this.jira(ctx).myself();
+  }
+
+  /**
+   * The `jiraAssignee` secret as an account id, or null when it is unset or
+   * empty. An email is looked up once, and refused when it matches no user or
+   * several: Jira keeps most emails private, so a user search answers with
+   * none shown, and one of those may be the one meant — two are not a guess.
+   * An account id is asked after too, so a typo refuses to start rather than
+   * list nobody's issues. Resolved by the preflight and by whatever reads
+   * first, never skipped: an unscoped list of everybody's issues is the
+   * failure the secret is there to prevent.
+   */
+  private async assignee(jira: Client, ctx: RuntimeContext): Promise<string | null> {
+    const known = this.assignees.get(jira);
+    if (known !== undefined) return known;
+    const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
+    let id: string | null = null;
+    if (value !== "") {
+      if (!value.includes("@") && !ACCOUNT_ID.test(value)) {
+        throw new Error(`jiraAssignee "${value}" is neither an email nor a Jira account id`);
+      }
+      let users: User[];
+      if (value.includes("@")) {
+        const found = await jira.call<User[] | null>("GET", `/rest/api/3/user/search?query=${encodeURIComponent(value)}&maxResults=${USER_PAGE}`) ?? [];
+        // A full page may not be all of them, and the one meant may be past it.
+        if (found.length >= USER_PAGE) throw new Error(`jiraAssignee "${value}" matches more Jira users than one search returns; name one by its account id`);
+        users = found.filter((u) => u.emailAddress === undefined || same(u.emailAddress, value));
+      } else {
+        users = await jira.call<User | null>("GET", `/rest/api/3/user?accountId=${encodeURIComponent(value)}`)
+          .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
+      }
+      const [only] = users;
+      if (!only) {
+        // Jira answers an account without "Browse users and groups" with nobody, not a refusal: asked, so the
+        // refusal names the cause that applied.
+        const { permissions = {} } = await jira.call<{ permissions?: Record<string, { havePermission?: boolean }> }>(
+          "GET", "/rest/api/3/mypermissions?permissions=USER_PICKER",
+        );
+        if (permissions.USER_PICKER?.havePermission !== true) {
+          throw new Error(
+            `jiraAssignee "${value}" cannot be looked up: the account lacks the global "Browse users and groups" permission (USER_PICKER), ` +
+            "without which Jira finds no user; grant it",
+          );
+        }
+        throw new Error(`jiraAssignee "${value}" matches no Jira user`);
+      }
+      if (users.length > 1) {
+        throw new Error(`jiraAssignee "${value}" matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
+      }
+      if (typeof only.accountId !== "string" || !ACCOUNT_ID.test(only.accountId)) {
+        throw new Error(`Jira answered jiraAssignee "${value}" with no usable account id`);
+      }
+      id = only.accountId;
+    }
+    this.assignees.set(jira, id);
+    return id;
+  }
+
+  /** The clause every listing query ends its conditions with: the assignee's, or nothing. */
+  private async mine(jira: Client, ctx: RuntimeContext): Promise<string> {
+    const id = await this.assignee(jira, ctx);
+    return id === null ? "" : ` AND assignee = "${id}"`;
   }
 
   /**
@@ -481,17 +570,22 @@ export class Jira extends BaseTracker {
    * Every open issue in the project, and the Done lane's: issues landrace
    * moved — an `lr:stage:*` label says so — that closed inside the window.
    * That second list is for the board, not the loop, so past its bound it
-   * stops quietly rather than failing the tick.
+   * stops quietly rather than failing the tick. Scoped, both are the
+   * assignee's alone: an issue reassigned to somebody else drops out, and
+   * this instance starts nothing more on it. A step already running is not
+   * stopped — an item its source stops listing is left running — so it
+   * finishes and writes while the new assignee's instance may start it too.
    */
   async items(ctx: RuntimeContext): Promise<ItemRecord[]> {
     this.unreadableSaid.clear();
     const jira = this.jira(ctx);
-    const open = await this.search(jira, `project = "${this.project}" AND statusCategory != Done ORDER BY created ASC`);
-    if (!open.complete) throw new Error(`${this.project} has more open issues than ${MAX_ISSUE_PAGES} pages carry`);
+    const mine = await this.mine(jira, ctx);
+    const open = await this.search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`);
+    if (!open.complete) throw new Error(`${this.project} has more open issues${mine ? " assigned to jiraAssignee" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
     const since = Date.now() - DONE_WINDOW_MS;
     const closed = await this.search(
       jira,
-      `project = "${this.project}" AND statusCategory = Done AND updated >= -${Math.ceil(DONE_WINDOW_MS / 60_000)}m ORDER BY updated DESC`,
+      `project = "${this.project}" AND statusCategory = Done AND updated >= -${Math.ceil(DONE_WINDOW_MS / 60_000)}m${mine} ORDER BY updated DESC`,
     );
     const done = closed.issues.filter((i) =>
       Date.parse(i.fields.statuscategorychangedate ?? "") >= since &&
@@ -526,6 +620,10 @@ export class Jira extends BaseTracker {
    * may not have them yet — a graph short a child routes as if the split
    * never happened. The parent's own sub-tasks, read off the issue, are
    * never behind, so the search is asked to reconcile them.
+   *
+   * Never scoped to `jiraAssignee`: a child handed to somebody else is still
+   * the parent's, and "every child closed" read without it would close the
+   * parent early. One read's worth is bounded already.
    */
   async children(id: string, ctx: RuntimeContext): Promise<ItemRecord[]> {
     const key = this.keyOf(id);
@@ -556,13 +654,18 @@ export class Jira extends BaseTracker {
    * full record, counts that blocker's relationships as not all read; this
    * walk needs none of a closed blocker's state and counts them whole. The
    * engine decides from a read, so only the board's fact differs.
+   *
+   * Scoped, it walks the assignee's open issues alone, as the list lists
+   * them: a cycle through somebody else's issue goes unseen.
    */
   protected override async openRelations(type: string, ctx: RuntimeContext): Promise<OpenRelations> {
     if (type !== RELATIONS.blockedBy) return super.openRelations(type, ctx);
-    const found = await this.search(this.jira(ctx), `project = "${this.project}" AND statusCategory != Done ORDER BY created ASC`, {
+    const jira = this.jira(ctx);
+    const mine = await this.mine(jira, ctx);
+    const found = await this.search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`, {
       fields: ["issuelinks"],
     });
-    if (!found.complete) throw new Error(`${this.project} has more open issues than ${MAX_ISSUE_PAGES} pages carry`);
+    if (!found.complete) throw new Error(`${this.project} has more open issues${mine ? " assigned to jiraAssignee" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
     const answer: OpenRelations = { open: [], edges: [], partial: [] };
     for (const { key, fields } of found.issues) {
       const { blockers, whole } = blockersIn(fields?.issuelinks, this.linkType);
@@ -655,6 +758,8 @@ export class Jira extends BaseTracker {
    * the link with the issue, so there is nothing to undo when it fails.
    * Priority is the project's own, landrace's index into its list: landrace
    * has ten levels and a project usually five, so past its last, its lowest.
+   * Scoped, it is assigned to `jiraAssignee`, a child too: unassigned, the
+   * list would never see it.
    */
   async create(
     { title, body, parent, priority }: { title: string; body: string; parent: string | undefined; priority: number | undefined },
@@ -670,6 +775,7 @@ export class Jira extends BaseTracker {
       priorityId = ids[Math.min(Math.max(priority, 0), ids.length - 1)];
       if (priorityId === undefined) throw new Error(`${this.project} has no priorities to give a new issue`);
     }
+    const assignee = await this.assignee(jira, ctx);
     const created = await jira.call<{ key?: unknown } | null>("POST", "/rest/api/3/issue", {
       fields: {
         project: { key: this.project },
@@ -678,6 +784,7 @@ export class Jira extends BaseTracker {
         description,
         ...(under === undefined ? {} : { parent: { key: under } }),
         ...(priorityId === undefined ? {} : { priority: { id: priorityId } }),
+        ...(assignee === null ? {} : { assignee: { accountId: assignee } }),
       },
     });
     const key = created?.key;
@@ -845,18 +952,40 @@ export class Jira extends BaseTracker {
   /**
    * Startup, before anything is paid for: each permission the account lacks
    * on the project, each issue type it does not have, and each type without a
-   * labels field — an item's position is a label. Reads only: every write
-   * shows in the project's history, so the preflight makes none.
+   * labels field — an item's position is a label. Scoped by `jiraAssignee`,
+   * an assignee that resolves to no one user, or that cannot be looked up for
+   * want of "Browse users and groups", or that the project cannot assign
+   * issues to, "Assign Issues", and each type without an assignee field too. Reads only: every write shows in the
+   * project's history, so the preflight makes none.
    */
   async check(ctx: RuntimeContext): Promise<void> {
     const jira = this.jira(ctx);
     const problems: string[] = [];
+    const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
+    const scoped = value !== "";
+    let assignee: string | null = null;
+    try {
+      assignee = await this.assignee(jira, ctx);
+    } catch (e) {
+      problems.push(messageOf(e));
+    }
+    const asked = scoped ? [...PERMISSIONS, "ASSIGN_ISSUES"] : PERMISSIONS;
     const { permissions = {} } = await jira.call<{ permissions?: Record<string, { name?: string; havePermission?: boolean }> }>(
-      "GET", `/rest/api/3/mypermissions?projectKey=${this.project}&permissions=${PERMISSIONS.join(",")}`,
+      "GET", `/rest/api/3/mypermissions?projectKey=${this.project}&permissions=${asked.join(",")}`,
     );
-    for (const key of PERMISSIONS) {
+    for (const key of asked) {
       if (permissions[key]?.havePermission !== true) {
         problems.push(`the account lacks "${permissions[key]?.name ?? key}" (${key}) on ${this.project}`);
+      }
+    }
+    // A user read finds an account with no access to the project, or a deactivated one, too: it would list
+    // nothing, and the first create would fail with "cannot be assigned issues" after a step is paid for.
+    if (assignee !== null && permissions.BROWSE_PROJECTS?.havePermission === true) {
+      const assignable = await jira.call<User[] | null>(
+        "GET", `/rest/api/3/user/assignable/search?project=${this.project}&accountId=${encodeURIComponent(assignee)}`,
+      ) ?? [];
+      if (!assignable.some((u) => u.accountId === assignee)) {
+        problems.push(`jiraAssignee "${value}" is account ${assignee}, which ${this.project} cannot assign issues to`);
       }
     }
     // Create metadata answers only an account that may browse the project and create in it.
@@ -872,6 +1001,9 @@ export class Jira extends BaseTracker {
         const fields = await everyPage<{ fieldId?: string }>(jira, `${path}/${encodeURIComponent(type.id)}`);
         if (!fields.some((f) => f.fieldId === "labels")) {
           problems.push(`${this.project}'s "${wanted}" issues have no labels field, and an item's position is a label`);
+        }
+        if (scoped && !fields.some((f) => f.fieldId === "assignee")) {
+          problems.push(`${this.project}'s "${wanted}" issues have no assignee field, and jiraAssignee assigns each one created`);
         }
       }
     }
