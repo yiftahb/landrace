@@ -12,7 +12,7 @@ The engine has no vendor in it. Each tracker, forge, docs site, notifier and cod
 | [Claude Code](#claude-code) | executor (coding agent) |
 | [Codex](#codex) | executor (coding agent) |
 
-A tracker, a forge and a docs role are combined into one project's hooks by the kit's `compose`, and an executor is a hook on its own. How that works, and how to write a new integration, is in [Writing an integration](hooks.md). GitHub, GitLab, Jira and Notion each have a script that checks the integration against a live account; those scripts need `pnpm build` first.
+A tracker, a forge and a docs role are combined into one project's hooks by the kit's `compose`, and an executor is a hook on its own. How that works, and how to write a new integration, is in [Writing an integration](hooks.md). GitHub, GitLab, Jira, Notion and Claude Code each have a script that checks the integration against a live account; those scripts need `pnpm build` first.
 
 ## GitHub
 
@@ -306,7 +306,18 @@ Neither read-only steps nor the screener run in plan mode. Checked against the C
 - **Plugins.** `--restricted` ignores your own Claude settings, and every plugin you enabled there, so a read-only step has none unless `agent.plugins` names it. The list goes to the agent as one inline `--settings` document. A plugin's hooks still run under `--restricted`, so enable only plugins you would let run in read-only steps.
 - **MCP servers.** Every step and turn runs with `--strict-mcp-config`: it gets exactly the servers `agent.mcp` names, as the repository root's `.mcp.json` defines them, and nothing from a `.mcp.json` committed to the repository or from your user config. A step holding `items:create` gets its bound child server beside them. See [Security](security.md#mcp-servers-a-step-may-hold).
 - **Write steps** pass `--setting-sources user`, loading your own user-level Claude settings and never a worktree's `.claude/settings.json`.
+- **Instructions and skills.** Neither tier's flags load the project's `CLAUDE.md` or skills, so every step and turn gets them another way, from the worktree it runs in. `--add-dir` over the worktree, with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` set in the `--settings` document, loads its root `CLAUDE.md`. When the worktree has `.claude/skills`, `--plugin-dir` loads them as a plugin named `project`, so a skill is `project:<name>`. Landrace makes that plugin outside the worktree and rebuilds it on every run: a manifest, and for each skill the `SKILL.md` it read and checked, beside links to the rest of the skill's folder. The screener gets neither. Which files load is in [Workflows](workflows.md#the-retro).
+- **What it refuses.** A step is refused before the agent starts, with the file named, when:
+  - a skill's front matter declares `hooks`, which would run outside the sandbox, or `allowed-tools`, which would let the agent use a tool its step did not declare;
+  - a skill's front matter has a line Landrace cannot read as a plain `key:`, such as a quoted or explicit key, so it cannot tell whether the skill declares either;
+  - the worktree's `.claude/settings.json` or `.claude/settings.local.json` names `enabledPlugins` or `extraKnownMarketplaces`, or is not JSON. `--add-dir` loads both keys, whatever `--setting-sources` says. Name the plugins in `agent.plugins` instead.
 - **Pairing.** A person can take a step over in their own terminal (`landrace_pair`): Claude can start a fresh session under the id Landrace gives the pairing, continue the agent's session, or fork it for `landrace_finish`.
+
+**Checking it live.** The script makes a scratch git repository with a marker in the root `CLAUDE.md` (a link to `AGENTS.md`), in `sub2/CLAUDE.md` (a link), in `sub1/AGENTS.md` with no `CLAUDE.md` beside it, and a skill under `.claude/skills` (a link to `.agents/skills`). It runs a write step and a read-only step, two paid turns with your own login, and checks each saw the root marker and the skill (from the `init` event's skills) and neither nested marker. Then it checks that a skill declaring hooks is refused before the agent starts. It prints each check, and exits 1 when one failed or none passed. `CLAUDE_CHECK_MODEL` picks the model, `haiku` when unset:
+
+```bash
+pnpm build && node scripts/claude-check.mjs
+```
 
 ## Codex
 

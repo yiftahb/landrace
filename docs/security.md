@@ -52,6 +52,14 @@ What it does not do:
 
 Codex's sandbox is different and keeps less — see [Integrations](integrations.md#codex).
 
+## A step's instructions and skills
+
+Every step and turn loads the instructions and skills of the branch it runs on: under Claude Code, its worktree's root `CLAUDE.md` and `.claude/skills` (see [Integrations](integrations.md#claude-code)). The screener loads neither.
+
+- **A read-only step reads the branch's own instructions.** A review step reads the instructions and skills of the branch it reviews, so a branch that changes them can steer its own review. Fastlane's merge refuses such a branch, since `CLAUDE.md` and `AGENTS.md` in any directory, `.claude/**`, `.agents/**` and `.agsync/**` are protected paths, and a person merges it.
+- **A skill brings its text and nothing more.** A skill whose front matter declares `hooks`, which Claude Code runs outside the sandbox, or `allowed-tools`, which approves tools its step did not declare, is refused, and so is front matter Landrace cannot read. Skills load from a plugin Landrace makes outside the worktree, holding the `SKILL.md` files it checked, so a step cannot change what loads after the check.
+- **No project settings.** The `--add-dir` that loads `CLAUDE.md` would also load the plugins and marketplaces named in the worktree's `.claude/settings.json` or `.claude/settings.local.json`, so a step whose worktree names either is refused. The rest of those files, hooks and permissions included, never loads.
+
 ## Untrusted text
 
 **Markers.** Everything Landrace writes ends in a marker, and only the **last** marker in a body counts, and only when nothing follows it — a document about this system will quote the format, and reading the first match would find the example. Text Landrace did not write is escaped before posting, so neither an agent nor a commenter can emit Landrace's own control tokens. An effect's fields are filled only with the item's id, the stage and the round, never with snapshot text.
