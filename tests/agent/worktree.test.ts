@@ -10,6 +10,7 @@ import {
   ensureWorktree,
   keptSlot,
   prepareWorktree,
+  releaseWorktree,
   removeWorktree,
   repositoryRoot,
   worktreeOf,
@@ -352,6 +353,39 @@ describe("a stage's branch", () => {
     expect(existsSync(join(first, "leftover.ts"))).toBe(false);
     expect(await git(first, "status", "--porcelain")).toBe("");
     await removeWorktree("47", root);
+  });
+
+  /*
+   * A kept worktree is released between steps — detached, so a person can
+   * check the branch out — and re-attached by the next write step, with what
+   * git ignores still there and the commits a person added on the branch in
+   * the meantime.
+   */
+  it("releases a kept worktree's branch, and re-attaches it on reuse at the branch's commit", async () => {
+    const root = await repo();
+    await writeFile(join(root, ".gitignore"), "node_modules/\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "ignore");
+    const on = { branch: "landrace/53", write: true };
+    const kept = await ensureWorktree("53", root, on, keptSlot("53"));
+    await mkdir(join(kept, "node_modules"));
+    await writeFile(join(kept, "node_modules", "dep.js"), "1\n");
+
+    await releaseWorktree("53", root);
+    expect(await attached(kept)).toBeNull();
+    await git(root, "switch", "-q", "landrace/53");
+    const theirs = await commitIn(root, "person.ts");
+    await git(root, "switch", "-q", "main");
+
+    expect(await ensureWorktree("53", root, on, keptSlot("53"))).toBe(kept);
+    expect(await attached(kept)).toBe("landrace/53");
+    expect(await sha(kept, "HEAD")).toBe(theirs);
+    expect(existsSync(join(kept, "node_modules", "dep.js"))).toBe(true);
+    expect(await git(kept, "status", "--porcelain")).toBe("");
+    await releaseWorktree("53", root);
+    await releaseWorktree("53", root);
+    await removeWorktree("53", root, keptSlot("53"));
+    await releaseWorktree("53", root);
   });
 
   it("takes the branch from the item's kept worktree when another of its slots needs it", async () => {

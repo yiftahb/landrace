@@ -1,4 +1,6 @@
-import { ensureWorktree, keptSlot, prepareWorktree, removeWorktree, worktreeHead } from "#agent/worktree.js";
+import {
+  ensureWorktree, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead,
+} from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
 import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
@@ -70,14 +72,18 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
   // the item's next write step needs, and a review between the two reads the
   // branch in the item's own slot rather than rebuilding this one. Kept is
   // not stored state: it is reset onto the branch whenever it is reused, and
-  // rebuilt when it is missing or on anything else. A write step on no branch
-  // is prepared too, in the item's own slot, which goes when this call ends.
+  // rebuilt when it is missing or on anything else. It is detached when this
+  // call ends, so the branch is free for a person while the item waits. A
+  // write step on no branch is prepared too, in the item's own slot, which
+  // goes when this call ends.
+  let kept = false;
   const enter = root === undefined
     ? null
     : async (on: WorktreeBranch | undefined, write: boolean): Promise<string> => {
-        const kept = on?.write === true;
-        if (!kept) entered = true;
-        const path = await ensureWorktree(item, root, on, kept ? keptSlot(item) : item);
+        const keep = on?.write === true;
+        if (keep) kept = true;
+        else entered = true;
+        const path = await ensureWorktree(item, root, on, keep ? keptSlot(item) : item);
         const setup = deps.sandbox?.worktree;
         if (write && setup) await prepareWorktree({ item, path, root, setup, log: deps.log, signal: deps.ctx.signal });
         return path;
@@ -89,6 +95,7 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
     return result;
   } finally {
     if (entered && root !== undefined) await removeWorktree(item, root);
+    if (kept && root !== undefined) await releaseWorktree(item, root);
   }
 }
 

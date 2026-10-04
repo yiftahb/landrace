@@ -234,10 +234,13 @@ export async function ensureWorktree(
   // branch, it is reset to the commit the branch names now — one moved forward
   // under it, by origin or by a read-only step's catch-up — and what a
   // previous step left uncommitted is cleaned away, as a rebuild would; what
-  // git ignores, `node_modules` and the copied files, stays. Detached, as it
-  // stands, at the commit it needs.
+  // git ignores, `node_modules` and the copied files, stays. The kept one is
+  // found detached, released when its last step ended, and is attached to the
+  // branch again first. Detached, as it stands, at the commit it needs.
   const mine = all.find((w) => w.path === path);
-  if (mine && attach !== null && mine.branch === attach) {
+  const released = mine !== undefined && path === kept && attach !== null && mine.branch === null && tip !== null;
+  if (released) await git(["checkout", "-q", "--force", attach], path, what);
+  if (mine && attach !== null && (mine.branch === attach || released)) {
     await git(["reset", "--hard", "-q", tip ?? "HEAD"], path, what);
     await git(["clean", "-fdq"], path, what);
     return path;
@@ -258,6 +261,23 @@ export async function ensureWorktree(
   else throw new Error(`${what}: the repository has no commit to check out`);
   await git(["worktree", "add", ...add], repoRoot, what);
   return path;
+}
+
+/**
+ * The item's kept worktree, detached where it stands, so the branch is free
+ * while the item waits: git checks a branch out in one place at a time, and
+ * a person trying the item or pushing a fix from their own checkout needs it.
+ * `ensureWorktree` attaches it again for the next write step.
+ *
+ * Quiet on failure, as `removeWorktree` is: it runs as a converge unwinds, and
+ * a branch left held is refused by name when a person switches to it.
+ */
+export async function releaseWorktree(item: string, repoRoot: string): Promise<void> {
+  // Only a registered worktree: git run in a directory that is not one would
+  // act on whichever repository encloses it.
+  const path = await worktreeOf(keptSlot(item), repoRoot).catch(() => null);
+  if (path === null) return;
+  await exec("git", ["checkout", "-q", "--detach"], { cwd: path }).catch(() => undefined);
 }
 
 /**

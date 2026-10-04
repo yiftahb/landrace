@@ -809,7 +809,13 @@ describe("converge and a stage's branch", () => {
     expect(r.settled).toBe("wait");
     const kept = (await sandboxes(root)).map((line) => line.slice("worktree ".length));
     expect(kept.map((p) => p.split("/").pop())).toEqual(["1.write"]);
-    expect(await git(kept[0] as string, "symbolic-ref", "--short", "HEAD")).toBe("landrace/1");
+    // Kept detached, at the branch's commit: the branch is free while the item
+    // waits, so a person can check it out in their own checkout.
+    expect(await git(kept[0] as string, "rev-parse", "HEAD")).toBe(made[0]);
+    expect(await git(kept[0] as string, "status", "--porcelain", "--branch")).toMatch(/^## HEAD \(no branch\)/);
+    await git(root, "switch", "-q", "landrace/1");
+    expect(await git(root, "rev-parse", "HEAD")).toBe(made[0]);
+    await git(root, "switch", "-q", "main");
     await removeWorktree("1", root, "1.write");
   });
 
