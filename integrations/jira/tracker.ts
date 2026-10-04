@@ -53,6 +53,23 @@ export interface JiraOptions {
 const MAX_ADF_CHARS = 32_767;
 
 /**
+ * A body as the document Jira takes. Rich ADF runs several times its
+ * Markdown's size, so a body the engine admits can be past Jira's bound
+ * rich and well inside it plain: then it is sent plain, raw Markdown on
+ * the ticket rather than no answer at all. Past the bound even plain it is
+ * refused here, rather than by a 400 after the fact, and as a refusal: no
+ * retry makes it fit, so the round is recorded rather than paid for again.
+ */
+export function adfOf(text: string, what: string): AdfDoc {
+  const rich = toAdf(text);
+  if (JSON.stringify(rich).length <= MAX_ADF_CHARS) return rich;
+  const plain = plainAdf(text);
+  const size = JSON.stringify(plain).length;
+  if (size > MAX_ADF_CHARS) throw new EffectRefused(`refusing to send a ${size}-character ${what}: Jira takes at most ${MAX_ADF_CHARS}`);
+  return plain;
+}
+
+/**
  * Every field an item is read from, asked for by name: a search returns ids
  * alone unless told. A read's children are asked for all but their links,
  * which a read never draws.
@@ -134,7 +151,7 @@ interface Issue {
 interface Transition { id: string; name: string; to?: Status }
 
 /** Jira answers names however they were typed; a status or transition is one name whatever its case. */
-const same = (a: string | undefined, b: string): boolean => a?.trim().toLowerCase() === b.trim().toLowerCase();
+export const same = (a: string | undefined, b: string): boolean => a?.trim().toLowerCase() === b.trim().toLowerCase();
 
 /**
  * Every page of a create-metadata list: an issue type or a labels field past
@@ -370,23 +387,6 @@ export class Jira extends BaseTracker {
   private keyOf(id: string): string {
     if (!this.keyPattern.test(id)) throw new Error(`"${id}" is not an issue of ${this.project}: only ${this.project}-<n> is`);
     return id;
-  }
-
-  /**
-   * A body as the document Jira takes. Rich ADF runs several times its
-   * Markdown's size, so a body the engine admits can be past Jira's bound
-   * rich and well inside it plain: then it is sent plain, raw Markdown on
-   * the ticket rather than no answer at all. Past the bound even plain it is
-   * refused here, rather than by a 400 after the fact, and as a refusal: no
-   * retry makes it fit, so the round is recorded rather than paid for again.
-   */
-  private adf(text: string, what: string): AdfDoc {
-    const rich = toAdf(text);
-    if (JSON.stringify(rich).length <= MAX_ADF_CHARS) return rich;
-    const plain = plainAdf(text);
-    const size = JSON.stringify(plain).length;
-    if (size > MAX_ADF_CHARS) throw new EffectRefused(`refusing to send a ${size}-character ${what}: Jira takes at most ${MAX_ADF_CHARS}`);
-    return plain;
   }
 
   async login(ctx: RuntimeContext): Promise<string> {
@@ -718,7 +718,7 @@ export class Jira extends BaseTracker {
 
   async comment(id: string, body: string, ctx: RuntimeContext): Promise<void> {
     const key = this.keyOf(id);
-    await this.jira(ctx).call("POST", `/rest/api/3/issue/${key}/comment`, { body: this.adf(body, `comment on ${key}`) });
+    await this.jira(ctx).call("POST", `/rest/api/3/issue/${key}/comment`, { body: adfOf(body, `comment on ${key}`) });
   }
 
   async addLabels(id: string, labels: string[], ctx: RuntimeContext): Promise<void> {
@@ -785,7 +785,7 @@ export class Jira extends BaseTracker {
   ): Promise<string> {
     // Checked before anything is created, so a bad parent leaves nothing behind.
     const under = parent === undefined ? undefined : this.keyOf(parent);
-    const description = this.adf(body, `description for a new ${this.project} issue`);
+    const description = adfOf(body, `description for a new ${this.project} issue`);
     const jira = this.jira(ctx);
     let priorityId: string | undefined;
     if (priority !== undefined) {
@@ -821,7 +821,7 @@ export class Jira extends BaseTracker {
     const key = this.keyOf(id);
     const fields = {
       ...(title === undefined ? {} : { summary: title }),
-      ...(body === undefined ? {} : { description: this.adf(body, `description for ${key}`) }),
+      ...(body === undefined ? {} : { description: adfOf(body, `description for ${key}`) }),
     };
     const jira = this.jira(ctx);
     if (Object.keys(fields).length > 0) await jira.call("PUT", `/rest/api/3/issue/${key}`, { fields });
