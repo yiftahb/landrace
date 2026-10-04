@@ -65,7 +65,10 @@ the form an example or an aside in the spec describes, and its test tries each
 form. It also means every place that still states what the change replaces, in
 code, a comment, `README.md` or `docs/` — a list or pattern of the old set
 written out by hand, a sentence on how it used to work — found by searching
-for the old, not only by reading what you edit.
+for the old, not only by reading what you edit. And it means the code that
+already does what you are adding — the same git command, a call to the same
+remote or host — found by searching for it: call it, or give yours every guard
+and flag it sets, each with its test.
 
 **Step 2 — Bring the branch up to date with main.** `git fetch origin`, then
 `git merge origin/main`. Resolve any conflict and commit the merge. Done when
