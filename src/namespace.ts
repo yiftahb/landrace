@@ -1787,6 +1787,8 @@ export interface RunningItem {
   controller: AbortController;
   /** The workflow it runs under, so the next listing can tell whether that is still the item's owner. */
   workflow: string;
+  /** Whether it started on a closed item: a close stops a run, unless the item was closed when it started. */
+  closed?: boolean | undefined;
   /**
    * Settles once the converge has unwound and let go of the item's lock. A
    * tick that moved the item to another workflow waits on it, so the new
@@ -1833,11 +1835,23 @@ export interface TickRow {
 export type Eligibility = { eligible: true } | { eligible: false; reason: string };
 
 /** One workflow of a workspace, and which of the listed graphs is its source's. */
-export interface ClaimInput { id: string; workflow: Workflow; source: number }
+export interface ClaimInput {
+  id: string;
+  workflow: Workflow;
+  source: number;
+  /** Whether it has a `closed: run` stage: only such a workflow claims a closed item. */
+  closedRun?: boolean | undefined;
+}
 
 /** Which workflow owns each open item; every other outcome is named, never picked. */
 export interface Claims {
   owner: Map<string, string>;
+  /**
+   * Which workflow owns each closed item one claims — one with a `closed: run`
+   * stage, by its eligibility. Two halt in `conflicts`, as an open item's do;
+   * one no such workflow claims is in no map at all.
+   */
+  closed: Map<string, string>;
   conflicts: Map<string, string[]>;
   clashes: Map<string, string[]>;
   unclaimed: Map<string, string[]>;
