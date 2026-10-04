@@ -754,3 +754,64 @@ describe("the item's one branch", () => {
       .toEqual([expect.stringMatching(/stage "a" has a pull\.review on branch "review\/\{item\}"/)]);
   });
 });
+
+/*
+ * `effect-fields` (#105): the fields that send a comment to the requester,
+ * resolve labels and time from an answer, and log time, each where it can
+ * work and nowhere else — so a typo fails here, not on an item in flight.
+ */
+describe("effect-fields", () => {
+  const enter = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
+  const routed = (effect: Record<string, unknown>, onEnter: Array<Record<string, unknown>> = []) => {
+    const steps = new Map<string, Step>([["s.md", {
+      prompt: "",
+      output: {
+        discriminator: "kind", shapes: { done: { class: "string", spent: "string" } },
+        routes: [{ when: { kind: "done" }, effect: { type: "x", ...effect } }],
+      },
+    }]]);
+    const w = wf([
+      {
+        id: "a", entry: true, step: "s.md", on_enter: [enter, ...onEnter.map((e) => ({ type: "x", ...e }))],
+        triggers: [{ when: { "run.stage": null } }],
+      },
+      { id: "b", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+    ]);
+    return validateStructure(w, steps).filter((p) => p.rule === "effect-fields").map((p) => p.message);
+  };
+  const LABEL = { type: "tracker.label", addFrom: ["class"], allowed: ["bug", "feature"], remove: ["bug", "feature"] };
+  const WORKLOG = { type: "tracker.worklog", spentFrom: "spent", max: "4h", marker: "work:{round}", skipIfLogged: true };
+  const NOTE = { type: "tracker.comment", marker: "m:{round}" };
+
+  it("accepts the fields where they work", () => {
+    expect(routed(LABEL)).toEqual([]);
+    expect(routed({ ...LABEL, addFrom: "class" })).toEqual([]);
+    expect(routed(WORKLOG)).toEqual([]);
+    expect(routed({ ...NOTE, visibility: "public" })).toEqual([]);
+    expect(routed(NOTE, [{ type: "tracker.comment", kind: "x", marker: "x:{round}", visibility: "internal" }])).toEqual([]);
+  });
+
+  it.each([
+    ["a visibility that is neither", { ...NOTE, visibility: "loud" }, /"loud"/],
+    ["a visibility on another effect", { type: "tracker.label", add: ["a"], visibility: "public" }, /visibility.*tracker\.comment/],
+    ["an lr: label in allowed", { ...LABEL, allowed: ["bug", "lr:blocked"] }, /lr:blocked/],
+    ["no allowed list", { type: "tracker.label", addFrom: "class" }, /allowed/],
+    ["an empty allowed list", { ...LABEL, allowed: [] }, /allowed/],
+    ["addFrom naming nothing", { ...LABEL, addFrom: [] }, /addFrom/],
+    ["addFrom on another effect", { ...NOTE, addFrom: "class", allowed: ["a"] }, /addFrom.*tracker\.label/],
+    ["a worklog with no spentFrom", { type: "tracker.worklog", max: "4h", marker: "w" }, /spentFrom/],
+    ["a worklog with no marker", { type: "tracker.worklog", spentFrom: "spent", max: "4h" }, /marker/],
+    ["a worklog with no max", { type: "tracker.worklog", spentFrom: "spent", marker: "w" }, /max/],
+    ["a worklog whose max is not a duration", { ...WORKLOG, max: "4 hours" }, /max/],
+    ["a worklog whose max is zero", { ...WORKLOG, max: "0h" }, /max/],
+    ["spentFrom on another effect", { type: "tracker.label", add: ["a"], spentFrom: "spent" }, /spentFrom.*tracker\.worklog/],
+  ])("refuses %s on a route", (_, effect, message) => {
+    expect(routed(effect)).toEqual([expect.stringMatching(message)]);
+  });
+
+  it("refuses addFrom and spentFrom in on_enter, where there is no answer to read", () => {
+    expect(routed(NOTE, [LABEL])).toEqual([expect.stringMatching(/addFrom.*on_enter/)]);
+    expect(routed(NOTE, [WORKLOG])).toEqual([expect.stringMatching(/spentFrom.*on_enter/)]);
+    expect(routed(NOTE, [{ type: "tracker.worklog", marker: "w", max: "1h" }])).toEqual([expect.stringMatching(/worklog.*on_enter/)]);
+  });
+});

@@ -1,6 +1,7 @@
 import {
   BRANCH_PUSH_EFFECT,
   CAPABILITIES,
+  COMMENT_VISIBILITIES,
   ENTRY_KIND,
   GOTO_TRIGGER,
   isReservedId,
@@ -20,6 +21,8 @@ import {
   retiredCapabilityPointers,
   retiredPlaceholder,
   unknownCapabilities,
+  WORKLOG_EFFECT,
+  workDurationMs,
 } from "#conventions.js";
 import { isEngineLabel } from "#conventions.js";
 import { gotoTargetsOf } from "#core/goto.js";
@@ -321,6 +324,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   problems.push(...entryFirstProblems(w));
   problems.push(...itemBranchProblems(w, steps));
   problems.push(...mergePlacementProblems(w, steps));
+  problems.push(...effectFieldProblems(w, steps));
 
   return dedupe(problems);
 }
@@ -353,6 +357,64 @@ function mergePlacementProblems(w: Workflow, steps: Map<string, Step>): Problem[
           rule: "merge-placement",
           message: `${which} sends items to "${route.goto}", which merges a pull request as it is entered; a merge is reached by the workflow's triggers, never by what a step answers`,
         });
+      }
+    }
+  }
+  return problems;
+}
+
+const nonEmptyStrings = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" && v.trim() !== "");
+
+/**
+ * `effect-fields`: the fields #105 added, each where it can work. `visibility`
+ * is a `tracker.comment`'s, internal or public. `addFrom` and `spentFrom`
+ * name output fields, so only a route has an answer to read them from:
+ * `addFrom` on a `tracker.label` with a non-empty `allowed` list holding no
+ * `lr:` label, `spentFrom` on a `tracker.worklog` — which needs it, a marker,
+ * and a `max` that is a duration above zero.
+ */
+function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+  const problems: Problem[] = [];
+  for (const stage of w.stages) {
+    const step = stage.step ? steps.get(stage.step) : undefined;
+    const placed = [
+      ...(stage.on_enter ?? []).map((effect) => ({ effect, where: `stage "${stage.id}"'s on_enter`, route: false })),
+      ...(step?.output?.routes ?? []).map((r) => ({ effect: r.effect, where: `step ${stage.step}'s route for ${JSON.stringify(r.when)}`, route: true })),
+    ];
+    for (const { effect, where, route } of placed) {
+      const say = (message: string): void => {
+        problems.push({ rule: "effect-fields", message: `${where}: ${message}` });
+      };
+      if (effect.visibility !== undefined) {
+        if (effect.type !== RECORD_EFFECT) say(`a ${effect.type} has a visibility; only a ${RECORD_EFFECT} has one`);
+        else if (typeof effect.visibility !== "string" || !COMMENT_VISIBILITIES.includes(effect.visibility)) {
+          say(`visibility is ${JSON.stringify(effect.visibility)}; it is ${COMMENT_VISIBILITIES.map((v) => `"${v}"`).join(" or ")}`);
+        }
+      }
+      if (effect.addFrom !== undefined) {
+        const fields = typeof effect.addFrom === "string" ? [effect.addFrom] : effect.addFrom;
+        if (!route) say("addFrom names an output field, and on_enter has no answer to read it from; it belongs on a step's route");
+        else if (effect.type !== LABEL_EFFECT) say(`a ${effect.type} has addFrom; only a ${LABEL_EFFECT} takes labels from an answer`);
+        else if (!nonEmptyStrings(fields)) say("addFrom must name an output field, or a list of them");
+        else if (!nonEmptyStrings(effect.allowed)) say("addFrom needs an allowed list of the labels an answer may add, and this one has none");
+        else {
+          const ours = effect.allowed.filter((l) => /^\s*lr:/i.test(l));
+          if (ours.length > 0) say(`allowed holds ${ours.map((l) => `"${l}"`).join(", ")}; an lr: label is Landrace's own, never one an answer adds`);
+        }
+      }
+      if (effect.type === WORKLOG_EFFECT && !route && effect.spentFrom === undefined) {
+        say(`a ${WORKLOG_EFFECT} logs the time an answer says, and on_enter has no answer; it belongs on a step's route`);
+      }
+      if (effect.spentFrom !== undefined) {
+        if (!route) say("spentFrom names an output field, and on_enter has no answer to read it from; it belongs on a step's route");
+        else if (effect.type !== WORKLOG_EFFECT) say(`a ${effect.type} has spentFrom; only a ${WORKLOG_EFFECT} logs time`);
+      }
+      if (effect.type === WORKLOG_EFFECT && route) {
+        if (typeof effect.spentFrom !== "string" || effect.spentFrom === "") say(`a ${WORKLOG_EFFECT} needs spentFrom, the output field its time is read from`);
+        if (typeof effect.marker !== "string" || effect.marker === "") say(`a ${WORKLOG_EFFECT} needs a marker, or nothing would say it was logged already`);
+        const max = typeof effect.max === "string" ? workDurationMs(effect.max) : null;
+        if (max === null || max === 0) say(`a ${WORKLOG_EFFECT} needs a max above zero such as "4h", and has ${JSON.stringify(effect.max)}`);
       }
     }
   }
