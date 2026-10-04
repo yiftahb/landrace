@@ -149,7 +149,7 @@ The kit starts the agent with no shell, and with only a few basic variables of L
 | `argv(plan)` | The command line for a run the kit has decided and checked: its tier (`screen`, `read` or `write`), model, effort, session, servers and the tools allowed on each, and the step's own `skills` and `plugins` when it lists them |
 | `readEvent(event, cwd)` | What one line of the agent's JSON output means: a message or a tool call for the board's panel, the session id, the answer, the end, or a failure |
 | `handoffArgv(plan)` | The command a person runs to pair |
-| `prepare(plan)` | Optional. Whatever must be in place before the agent starts — Claude brings a resumed session into the folder it runs in |
+| `prepare(plan)` | Optional. Whatever must be in place before the agent starts — Claude brings a resumed session into the folder it runs in. `plan.log`, when set, is where it says what it changed on the way |
 | `readExtras(agent)` | Optional. The integration's own `agent:` keys — Claude's `plugins` |
 | `sandboxProblems(sandbox)` | Optional. The `agent.sandbox` settings its agent cannot keep, refused at startup |
 | `skillProblems(root, listed)` | Optional. The skills a step lists that the repository does not define, refused at startup — Claude's are the folders of `.claude/skills` holding a `SKILL.md` |

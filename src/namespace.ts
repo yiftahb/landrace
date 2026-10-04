@@ -985,6 +985,8 @@ export interface RunPlan<E = unknown> {
   sandbox: SandboxSettings;
   /** The integration's own settings. */
   extras: E;
+  /** Where `prepare` says what it changed on the way, such as a key it dropped. */
+  log?: HookLog;
 }
 
 /** A pairing's command, decided and checked by the kit, for an integration to write out. */

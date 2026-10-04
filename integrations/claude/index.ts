@@ -188,34 +188,46 @@ async function buildInstructions(cwd: string, dir: string): Promise<void> {
 
 /**
  * The front-matter keys a project skill may hold: what it says, when it
- * applies, and tools it gives up. Any other is refused, by name, since the
- * CLI reads many that change what its step may do — a skill's hooks run as
- * the CLI's own hooks do, outside the sandbox (what `--setting-sources ""`
- * exists to keep from a committed settings file); its allowed-tools approve
- * a tool the step never declared; and `model`, `context`, `agent`,
- * `mcpServers` and the rest bill, run or start what the step did not ask for.
+ * applies, and tools it gives up. Kept, as written, in the copy that loads.
  */
 const SKILL_KEYS = new Set([
   "name", "description", "when_to_use", "argument-hint", "arguments", "version", "license", "metadata",
   "user-invocable", "disable-model-invocation", "disallowed-tools", "paths",
 ]);
+
+/**
+ * The keys Claude Code acts on that change what a step may do, refused by
+ * name: a skill's hooks run as the CLI's own hooks do, outside the sandbox
+ * (what `--setting-sources ""` exists to keep from a committed settings
+ * file); its allowed-tools approve a tool the step never declared; and
+ * `model`, `context`, `agent` and `mcpServers` bill, run or start what the
+ * step did not ask for. Any other key — a skill generator's bookkeeping, such
+ * as agsync's `scope:` — is dropped from the copy, which is what loads, so
+ * it can never act.
+ */
 const REFUSED_WHY = new Map([
   ["hooks", "which would run outside the sandbox"],
   ["allowed-tools", "which would let the agent use a tool its step did not declare"],
+  ["model", "which would bill a model the step did not ask for"],
+  ["context", "which would run the skill in a context the step did not ask for"],
+  ["agent", "which would run the skill under an agent the step did not ask for"],
+  ["mcpServers", "which would start servers the step did not ask for"],
 ]);
 
 /**
- * Why a SKILL.md cannot load, or undefined. The CLI reads its front matter as
- * YAML, where a key can be quoted, escaped, explicit or merged in; this reads
- * only the plain `key:` at the start of a line that a skill writes, and
- * refuses any other line at that level rather than guess what it spells. The
- * block runs to the first line that is `---`, or to the end: never shorter
- * than the CLI's own, which ends at the first `---` anywhere.
+ * A SKILL.md as it loads — each key outside `SKILL_KEYS` dropped with its
+ * value, and which those were — or why it cannot load. The CLI reads its
+ * front matter as YAML, where a key can be quoted, escaped, explicit or
+ * merged in; this reads only the plain `key:` at the start of a line that a
+ * skill writes, and refuses any other line at that level rather than guess
+ * what it spells. The block runs to the first line that is `---`, or to the
+ * end: never shorter than the CLI's own, which ends at the first `---`
+ * anywhere. With nothing dropped, the text is the file's own.
  */
-function skillProblem(text: string): string | undefined {
+function skillCopy(text: string): { problem: string } | { text: string; dropped: string[] } {
   const body = text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const open = /^\s*---\s*\n/.exec(body);
-  if (open === null) return undefined;
+  if (open === null) return { text, dropped: [] };
   const rest = body.slice(open[0].length);
   const end = rest.search(/^---[ \t]*$/m);
   const block = end < 0 ? rest : rest.slice(0, end);
@@ -223,22 +235,37 @@ function skillProblem(text: string): string | undefined {
   // on "\n" would read one line and miss the key after the break.
   // eslint-disable-next-line no-control-regex -- finding control characters is the point
   if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x85\u2028\u2029]/.test(block)) {
-    return "has front matter holding a control character or a line break other than a newline, so whether it declares hooks or allowed-tools cannot be told";
+    return { problem: "has front matter holding a control character or a line break other than a newline, so whether it declares hooks or allowed-tools cannot be told" };
   }
+  const kept: string[] = [];
+  const dropped: string[] = [];
   let first = true;
-  for (const [i, line] of block.split("\n").entries()) {
-    if (/^\s*(#.*)?$/.test(line)) continue;
+  // Inside a dropped key: every line up to the next key is its value, and goes with it.
+  let dropping = false;
+  const lines = block.split("\n");
+  // What follows the block's last newline is no line of it: the closing `---` begins there.
+  const ended = block.endsWith("\n") ? lines.pop() : undefined;
+  for (const [i, line] of lines.entries()) {
     // Indented under a key: its value. Before any key, it would make every
     // key below it the indented one.
-    if (!first && line.startsWith(" ")) continue;
+    if (/^\s*(#.*)?$/.test(line) || (!first && line.startsWith(" "))) {
+      if (!dropping) kept.push(line);
+      continue;
+    }
     const key = /^([A-Za-z0-9_-]+)[ \t]*:(?:[ \t]|$)/.exec(line)?.[1];
     if (key === undefined) {
-      return `has front matter whose line ${i + 1}, ${JSON.stringify(line)}, is not a plain key, so whether it declares hooks or allowed-tools cannot be told`;
+      return { problem: `has front matter whose line ${i + 1}, ${JSON.stringify(line)}, is not a plain key, so whether it declares hooks or allowed-tools cannot be told` };
     }
-    if (!SKILL_KEYS.has(key)) return `declares ${key}, ${REFUSED_WHY.get(key) ?? "which may change what its step does"}`;
+    const why = REFUSED_WHY.get(key);
+    if (why !== undefined) return { problem: `declares ${key}, ${why}` };
     first = false;
+    dropping = !SKILL_KEYS.has(key);
+    if (!dropping) kept.push(line);
+    else if (!dropped.includes(key)) dropped.push(key);
   }
-  return undefined;
+  if (dropped.length === 0) return { text, dropped };
+  if (ended !== undefined) kept.push(ended);
+  return { text: `${body.slice(0, open[0].length)}${kept.join("\n")}${rest.slice(block.length)}`, dropped };
 }
 
 /**
@@ -266,7 +293,7 @@ const builtOf = (cwd: string): string =>
  * Given `only`, the step's own `skills:`, a skill it does not name is never
  * read or copied, so never loads.
  */
-async function buildPluginDir(cwd: string, dir: string, only: readonly string[] | undefined): Promise<void> {
+async function buildPluginDir(cwd: string, dir: string, only: readonly string[] | undefined, log: HookLog | undefined): Promise<void> {
   const root = join(cwd, ".claude", "skills");
   const tree = await realpath(cwd);
   const refuseOut = async (path: string): Promise<void> => {
@@ -286,13 +313,14 @@ async function buildPluginDir(cwd: string, dir: string, only: readonly string[] 
     await refuseOut(`.claude/skills/${name}/SKILL.md`);
     const text = await readRegular(cwd, `.claude/skills/${name}/SKILL.md`, "refused to load the project's skills");
     if (text === undefined) continue;
-    const problem = skillProblem(text);
-    if (problem !== undefined) {
-      throw new Error(`refused to load the project's skills: .claude/skills/${name}/SKILL.md ${problem}. Remove it from the branch`);
+    const copy = skillCopy(text);
+    if ("problem" in copy) {
+      throw new Error(`refused to load the project's skills: .claude/skills/${name}/SKILL.md ${copy.problem}. Remove it from the branch`);
     }
+    for (const key of copy.dropped) log?.("claude.skill.key.dropped", { skill: name, key });
     const to = join(dir, "skills", name);
     await mkdir(to);
-    await writeFile(join(to, "SKILL.md"), text);
+    await writeFile(join(to, "SKILL.md"), copy.text);
     for (const entry of await readdir(from)) if (entry !== "SKILL.md") await symlink(join(from, entry), join(to, entry));
   }
 }
@@ -339,14 +367,14 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * A step's own instructions and skills are checked and copied into the
    * directories `argv` names, rebuilt on every run: the screener gets neither.
    */
-  protected async prepare({ tier, resume, cwd, skills }: RunPlan<ClaudeExtras>): Promise<void> {
+  protected async prepare({ tier, resume, cwd, skills, log }: RunPlan<ClaudeExtras>): Promise<void> {
     if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, projectDir(this.home, cwd));
     if (tier === "screen" || cwd === undefined) return;
     const built = builtOf(cwd);
     await rm(built, { recursive: true, force: true });
     await buildInstructions(cwd, join(built, "instructions"));
     // A step that lists no skill gets no plugin at all.
-    if (skills?.length !== 0 && existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd, join(built, "plugin"), skills);
+    if (skills?.length !== 0 && existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd, join(built, "plugin"), skills, log);
   }
 
   protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras, plugins: own }: RunPlan<ClaudeExtras>): string[] {
