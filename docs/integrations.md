@@ -220,7 +220,7 @@ pnpm build && JIRA_BASE_URL=https://your-site.atlassian.net JIRA_EMAIL=… JIRA_
   node scripts/jira-check.mjs
 ```
 
-`JIRA_OPTIONS` takes the options above as JSON, such as `{"transitions":{"dropped":"Cancelled"}}`. `JIRA_ASSIGNEE` is the `jiraAssignee` secret, and scopes the run to that account. `JIRA_CHECK_LINKS=1` adds a `blocked-by` round trip on two scratch issues it creates and drops afterwards; `JIRA_LINK_KEYS=KEY-12,OTHER-3` uses two issues you name instead, not already linked — the first, the project's own, to be blocked by the second — and leaves both open with the link removed. It relates them, reads back that the first is blocked by the second, confirms the change in the blocked issue's own history, then unrelates them and reads back none. A run that fails partway names the link it left behind.
+`JIRA_OPTIONS` takes the options above as JSON, such as `{"transitions":{"dropped":"Cancelled"}}`. `JIRA_ASSIGNEE` is the `jiraAssignee` secret. Set, the item and child it creates are assigned to that account, and two more checks find them in the scoped open listing and the closed item in the scoped Done lane, each assigned to the account the script looks up itself. `JIRA_CHECK_LINKS=1` adds a `blocked-by` round trip on two scratch issues it creates and drops afterwards; `JIRA_LINK_KEYS=KEY-12,OTHER-3` uses two issues you name instead, not already linked — the first, the project's own, to be blocked by the second — and leaves both open with the link removed. It relates them, reads back that the first is blocked by the second, confirms the change in the blocked issue's own history, then unrelates them and reads back none. A run that fails partway names the link it left behind.
 
 ## Notion
 
