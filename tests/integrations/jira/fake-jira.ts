@@ -189,6 +189,8 @@ export function createFakeJira(project = "KEY") {
       { id: DESIGN, name: "Technical design", custom: true, schema: { type: "string", custom: TEXTAREA, customId: 10050 } },
       { id: "customfield_10051", name: "Team", custom: true, schema: { type: "option", custom: "com.atlassian.jira.plugin.system.customfieldtypes:select", customId: 10051 } },
     ] as FakeField[],
+    /** Textareas with the plain-text renderer: REST v3 answers and takes them as strings, not ADF, and `GET /field` does not say which. */
+    plainText: new Set<string>(),
     priorities: [
       { id: "1", name: "Highest" }, { id: "2", name: "High" }, { id: "3", name: "Medium" },
       { id: "4", name: "Low" }, { id: "5", name: "Lowest" },
@@ -666,7 +668,11 @@ export function createFakeJira(project = "KEY") {
           const custom = fake.fields.find((c) => c.id === field);
           if (custom !== undefined && type?.fields.includes(field)) {
             const value = f[field];
-            if (custom.schema.custom === TEXTAREA) {
+            if (custom.schema.custom === TEXTAREA && fake.plainText.has(field)) {
+              if (typeof value !== "string") return errors(400, [], { [field]: "Operation value must be a string" });
+              if (value.length > 32_767) return errors(400, [], { [field]: "The entered text is too long. It exceeds the allowed limit of 32,767 characters." });
+            } else if (custom.schema.custom === TEXTAREA) {
+              if (typeof value === "string") return errors(400, [], { [field]: "Operation value must be an Atlassian Document (see the Atlassian Document Format)" });
               const problem = adfProblem(value as Adf);
               if (problem) return errors(400, [], { [field]: `Operation value must be an Atlassian Document (see the Atlassian Document Format): ${problem}` });
               if (JSON.stringify(value).length > 32_767) return errors(400, [], { [field]: "The entered text is too long. It exceeds the allowed limit of 32,767 characters." });

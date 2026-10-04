@@ -15,7 +15,7 @@ const SECRETS = { jiraBaseUrl: SITE, jiraEmail: EMAIL, jiraToken: TOKEN };
 
 function setup(options: Partial<JiraFieldOptions> = {}, secrets: Record<string, string> = SECRETS) {
   const fake = createFakeJira();
-  const docs = new JiraField({ project: "KEY", field: DESIGN, fetchImpl: fake.fetchImpl, ...options });
+  const docs = new JiraField({ tracker: new Jira({ project: "KEY", fetchImpl: fake.fetchImpl }), field: DESIGN, fetchImpl: fake.fetchImpl, ...options });
   const events: Array<{ event: string; data: Record<string, unknown> | undefined }> = [];
   const ctx: RuntimeContext = {
     config: {} as never, secrets: new Map(Object.entries(secrets)), signal: new AbortController().signal,
@@ -29,10 +29,17 @@ const on = (ctx: RuntimeContext, item: string, snapshot: Snapshot = {}): HookCon
 const SPEC_TEXT = "## Design\n\n- one\n- two\n\n```ts\nconst x = 1;\n```";
 
 describe("an issue field as the docs role", () => {
-  it("refuses a field that is not a custom field's id, and a project that is not a key", () => {
-    expect(() => new JiraField({ project: "KEY", field: "description" })).toThrow(/customfield_<n>/);
-    expect(() => new JiraField({ project: "KEY", field: "customfield_1 OR x" })).toThrow(/customfield_<n>/);
-    expect(() => new JiraField({ project: "key", field: DESIGN })).toThrow(/project key/);
+  it("refuses a field that is not a custom field's id", () => {
+    const tracker = new Jira({ project: "KEY" });
+    expect(() => new JiraField({ tracker, field: "description" })).toThrow(/customfield_<n>/);
+    expect(() => new JiraField({ tracker, field: "customfield_1 OR x" })).toThrow(/customfield_<n>/);
+  });
+
+  it("takes its project from the tracker, so the two cannot disagree", async () => {
+    const { ctx } = setup();
+    const docs = new JiraField({ tracker: new Jira({ project: "APP" }), field: DESIGN });
+    expect(await docs.link("APP-1", ctx)).toBe(`${SITE}/browse/APP-1`);
+    await expect(docs.link("KEY-1", ctx)).rejects.toThrow(/not an issue of APP/);
   });
 
   it("reads an empty, absent or blank field as no page", async () => {
@@ -77,6 +84,15 @@ describe("an issue field as the docs role", () => {
     const error: unknown = await docs.publish(key, "x".repeat(40_000), ctx).catch((e: unknown) => e);
     expect(isEffectRefused(error)).toBe(true);
     expect(fake.writes()).toHaveLength(writes);
+  });
+
+  it("writes a textarea with the plain-text renderer as a string, the shape Jira takes for it", async () => {
+    const { fake, docs, ctx } = setup();
+    fake.plainText.add(DESIGN);
+    const { key } = fake.add();
+    await docs.publish(key, SPEC_TEXT, ctx);
+    expect(fake.issue(key).custom[DESIGN]).toBe(SPEC_TEXT);
+    expect(await docs.page(key, ctx)).toBe(SPEC_TEXT);
   });
 
   it("writes a single-line text field as a string, and refuses one past 255 characters before the request", async () => {
@@ -127,8 +143,9 @@ describe("an issue field as the docs role", () => {
   });
 
   it("composes beside the Jira tracker, its spec read and published through the composed hook", async () => {
-    const { fake, docs, ctx } = setup();
-    const hooks = compose({ tracker: new Jira({ project: "KEY", fetchImpl: fake.fetchImpl }), docs });
+    const { fake, ctx } = setup();
+    const tracker = new Jira({ project: "KEY", fetchImpl: fake.fetchImpl });
+    const hooks = compose({ tracker, docs: new JiraField({ tracker, field: DESIGN, fetchImpl: fake.fetchImpl }) });
     const { key } = fake.add({ custom: { [DESIGN]: "Written by a person" } });
     const state = await hooks.spec?.read(on(ctx, key));
     expect(state).toEqual({ exists: true, hash: hashOf("Written by a person"), url: `${SITE}/browse/${key}` });

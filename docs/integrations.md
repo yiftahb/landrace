@@ -300,18 +300,19 @@ new Jira({ project: "KEY", statuses: { build: "In Progress", "mr-human-review": 
 import { compose } from "landrace/kit";
 import { Jira, JiraField } from "landrace/integrations/jira";
 import { GitLab } from "landrace/integrations/gitlab";
+const tracker = new Jira({ project: "KEY" });
 export const { preflight, source, operator, pre, post, spec } = compose({
-  tracker: new Jira({ project: "KEY" }),
+  tracker,
   forge: new GitLab({ project: "group/app" }),
-  docs: new JiraField({ project: "KEY", field: "customfield_10050" }),
+  docs: new JiraField({ tracker, field: "customfield_10050" }),
 });
 ```
 
-`field` is the custom field's id. Find it in Jira's field settings (Settings → Work items → Fields: the id is the number in the field's URL), or in the answer to `GET /rest/api/3/field`.
+`tracker` is the `Jira` tracker beside it. `JiraField` takes its project from it, so the two cannot name different projects. `field` is the custom field's id. Find it in Jira's field settings (Settings → Work items → Fields: the id is the number in the field's URL), or in the answer to `GET /rest/api/3/field`.
 
 - The spec is the field's text, and an empty field is no spec. A field a person filled counts as a spec, so `artifacts.spec.exists` can send an item that already has a design straight to `build`, and an empty one to a `spec` step. `{brief.spec.content}` hands the field's text to a step.
 - A textarea field answers in ADF or as a plain string, depending on its renderer. Both are read: ADF as Markdown, in the set the tracker reads, and a string as it is.
-- `artifact.publish` writes the field with `PUT /rest/api/3/issue/{key}`, in the shape the field's metadata says it takes: a textarea as ADF, with the tracker's bound and plain fallback for a long body; a single-line text field as a string of at most 255 characters. A spec over the bound is refused before the request. Markdown outside the common set does not read back exactly, so such a spec is written again the next time it is published.
+- `artifact.publish` writes the field with `PUT /rest/api/3/issue/{key}`, in the shape the field takes. A single-line text field takes a string of at most 255 characters. A textarea takes ADF, with the tracker's bound and plain fallback for a long body, or a string when it has the plain-text renderer. The renderer is in the field configuration, which only an account with "Administer Jira" can read. So the textarea is written as ADF first, and when Jira refuses that for the field, as a string. A spec over the bound is refused before the request. Markdown outside the common set does not read back exactly, so such a spec is written again the next time it is published.
 - The link is the issue's own page, `https://<site>.atlassian.net/browse/KEY-<n>`.
 - The board's document nodes come from one JQL query, `cf[<n>] is not EMPTY`, inside the project and the `jiraAssignee` scope.
 - The preflight names a field the site does not have, a field that is neither a text nor a textarea field, and each issue type whose edit screen lacks it. Jira says what an edit screen holds only for an issue, so each type is checked on one of its issues. A type with no issue yet is logged as `jira.field.unchecked`, and a project where no type has an issue fails.

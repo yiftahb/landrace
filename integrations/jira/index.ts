@@ -4,9 +4,10 @@
  * kit's bases. A project's hook file composes them beside whatever forge it
  * has:
  *
+ *   const tracker = new Jira({ project: "KEY" });
  *   export const { preflight, source, operator, pre, post, spec } = compose({
- *     tracker: new Jira({ project: "KEY" }),
- *     docs: new JiraField({ project: "KEY", field: "customfield_10050" }),
+ *     tracker,
+ *     docs: new JiraField({ tracker, field: "customfield_10050" }),
  *   });
  *
  * Configured by the `jiraBaseUrl`, `jiraEmail` and `jiraToken` secrets, and

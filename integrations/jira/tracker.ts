@@ -341,7 +341,8 @@ interface Resolutions { held: Map<string, Issue["fields"]>; fetched: Map<string,
  * instance creates is assigned to them. Unset or empty, it lists everyone's.
  */
 export class Jira extends BaseTracker {
-  private readonly project: string;
+  /** Read by `JiraField`, so a spec is kept on this tracker's issues and no other project's. */
+  readonly project: string;
   private readonly issueType: string;
   private readonly childType: string;
   private readonly done: string;

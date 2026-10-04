@@ -65,8 +65,9 @@ const ctx = {
   signal: new AbortController().signal,
   log: (event, data) => console.error(`${event} ${JSON.stringify(data ?? {})}`),
 };
-const field = JIRA_FIELD ? new JiraField({ project: JIRA_PROJECT, field: JIRA_FIELD }) : null;
-const hooks = compose({ tracker: new Jira({ ...options, project: JIRA_PROJECT }), forge: new MemoryForge(), docs: field ?? new MemoryDocs() });
+const tracker = new Jira({ ...options, project: JIRA_PROJECT });
+const field = JIRA_FIELD ? new JiraField({ tracker, field: JIRA_FIELD }) : null;
+const hooks = compose({ tracker, forge: new MemoryForge(), docs: field ?? new MemoryDocs() });
 
 let passed = 0;
 let failed = 0;

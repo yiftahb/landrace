@@ -27,6 +27,17 @@ const SECRETS = ["jiraBaseUrl", "jiraEmail", "jiraToken"] as const;
 /** A 404 from Jira, told apart from every other failure by its status rather than by its text. */
 export const isMissing = (e: unknown): boolean => (e as { status?: unknown } | null)?.status === 404;
 
+/** A 400 that refuses this one field's value, as Jira's `errors` map names it. */
+export function refusesField(e: unknown, field: string): boolean {
+  const { status, body } = (e ?? {}) as { status?: unknown; body?: unknown };
+  if (status !== 400 || typeof body !== "string") return false;
+  try {
+    return typeof (JSON.parse(body) as { errors?: Record<string, unknown> } | null)?.errors?.[field] === "string";
+  } catch {
+    return false;
+  }
+}
+
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export function createClient(opts: ClientOptions) {
@@ -52,7 +63,7 @@ export function createClient(opts: ClientOptions) {
         new Error(res.status === 401
           ? "Jira rejected jiraEmail and jiraToken (401): check both, and that the token has not expired"
           : `${method} ${path} → ${res.status} ${text}`),
-        { status: res.status },
+        { status: res.status, body: text },
       );
     }
     // 204 for an edit or a transition: nothing to read.

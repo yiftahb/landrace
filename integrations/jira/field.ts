@@ -9,12 +9,16 @@
 import type { RuntimeContext } from "landrace/hooks";
 import { BaseDocs, EffectRefused } from "landrace/kit";
 import { fromAdf } from "./adf.js";
-import { type Client, clientFor, isMissing } from "./client.js";
-import { adfOf, scopeOf, search } from "./tracker.js";
+import { type Client, clientFor, isMissing, refusesField } from "./client.js";
+import { adfOf, type Jira, scopeOf, search } from "./tracker.js";
 
 export interface JiraFieldOptions {
-  /** The project's key: `KEY` in `KEY-12`. Only its issues have a spec. */
-  project: string;
+  /**
+   * The tracker this sits beside: its project's issues, and only theirs, have
+   * a spec. Taken from it rather than spelled again, so a typo cannot pass
+   * the preflight against one project and fail every item of the other.
+   */
+  tracker: Jira;
   /** The custom field the spec is kept in, by its id: `customfield_10050`. A text or a textarea field. */
   field: string;
   fetchImpl?: typeof fetch | undefined;
@@ -29,7 +33,7 @@ const MAX_TEXTFIELD = 255;
 /** A field as `GET /field` lists it. */
 interface Field { id?: unknown; name?: unknown; schema?: { type?: unknown; custom?: unknown } | null }
 
-/** What the field takes: a document, or a string, by its type's metadata. */
+/** What the field takes by its type: a textarea a document unless its renderer says a string, a text field a string. */
 type Shape = "adf" | "string";
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -46,10 +50,10 @@ export class JiraField extends BaseDocs {
   /** Each client's reading of the field's metadata, once: a field's type does not change under a running process. */
   private readonly fields = new WeakMap<Client, Promise<Field | null>>();
 
-  constructor({ project, field, fetchImpl }: JiraFieldOptions) {
+  constructor({ tracker, field, fetchImpl }: JiraFieldOptions) {
     super();
-    // Both are spelled into a URL or a JQL query, so nothing but their own characters.
-    if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error(`project must be a Jira project key such as "KEY", got "${project}"`);
+    // The project is the tracker's, checked there; the field is spelled into a URL and a JQL query, so nothing but its own characters.
+    const { project } = tracker;
     if (!/^customfield_[1-9][0-9]*$/.test(field)) throw new Error(`field must be a custom field's id, customfield_<n>, got "${field}"`);
     this.project = project;
     this.field = field;
@@ -111,10 +115,14 @@ export class JiraField extends BaseDocs {
   }
 
   /**
-   * The field, in the shape its metadata says it takes: a textarea a
-   * document — plain paragraphs past Jira's bound rich, refused past it even
-   * so — and a text field a string of at most 255 characters. Refused before
-   * the request either way: no retry makes it fit.
+   * The field, in the shape it takes: a text field a string of at most 255
+   * characters, refused before the request since no retry makes it fit; a
+   * textarea a document — plain paragraphs past Jira's bound rich, refused
+   * past it even so — or, with the plain-text renderer, a string. Which
+   * renderer a textarea has is in its field configuration, which only an
+   * account with "Administer Jira" may read, so Jira's own answer says it: a
+   * document the field refuses by name is written again as a string, and a
+   * string it refuses too names both refusals.
    */
   async publish(item: string, content: string, ctx: RuntimeContext): Promise<void> {
     const key = this.keyOf(item);
@@ -126,8 +134,21 @@ export class JiraField extends BaseDocs {
     if (shape === "string" && content.length > MAX_TEXTFIELD) {
       throw new EffectRefused(`refusing to write a ${content.length}-character spec to ${this.field}: a text field holds at most ${MAX_TEXTFIELD}`);
     }
-    const value = shape === "adf" ? adfOf(content, `spec for ${key}`) : content;
-    await jira.call("PUT", `/rest/api/3/issue/${key}`, { fields: { [this.field]: value } });
+    const put = (value: unknown) => jira.call("PUT", `/rest/api/3/issue/${key}`, { fields: { [this.field]: value } });
+    if (shape === "string") {
+      await put(content);
+      return;
+    }
+    try {
+      await put(adfOf(content, `spec for ${key}`));
+    } catch (asDoc) {
+      if (!refusesField(asDoc, this.field)) throw asDoc;
+      try {
+        await put(content);
+      } catch (asString) {
+        throw new Error(`${this.field} took the spec neither as a document (${messageOf(asDoc)}) nor as a string (${messageOf(asString)})`);
+      }
+    }
   }
 
   async link(item: string, ctx: RuntimeContext): Promise<string> {
