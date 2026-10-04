@@ -171,7 +171,7 @@ If, besides, none of its stages runs a step, has a trigger, has an `on_enter` or
 
 A step whose round fails is never retried on its own: the item halts. A round fails in one of two ways, and the shipped workflows give each its own halt stage:
 
-- **A broken contract.** The output has no JSON block, matches no declared shape, or is too long to record. The round is recorded as `malformed`, and the item goes to `blocked` (label `lr:blocked`).
+- **A broken contract.** The output has no JSON block, matches no declared shape, or is too long to record, or the tracker or forge refused to record it ([An answer refused](#an-answer-refused)). The round is recorded as `malformed`, and the item goes to `blocked` (label `lr:blocked`).
 - **A security refusal.** The prompt screener said no or could not run, or the agent changed its worktree or created an item without declaring it could. The round is recorded as `refused`, headed "Step refused by a security check" with the reason, and the item goes to `screened`, which wears `lr:screened` beside `lr:blocked`. See [Security](security.md#screening-prompts).
 
 `run.lastRefused` tells the two apart: `false` for a broken contract, `true` for a refusal, `null` when the current stage has not failed. So exactly one of the two halts' triggers takes any failure. Every other trigger leaving a stage that runs a step reads `"run.lastOutputValid": null`, so a failed round is only ever the halts' to route. `validate`'s `halt-labels` rule holds a stage entered on a failure to add `lr:blocked`, and one entered on a refusal to add `lr:screened` too: the board's Retry and Clear, Needs you's note and the MCP know a halt only by them.
@@ -188,7 +188,11 @@ Anything else that fails — a network error, a 5xx, a rate limit, a token the f
 
 Every visit to a stage is a round of its own, with its own `enter` record. A stage with no step settles a round only when it is refused, so its rounds are not its counter; a refused round counts toward its stage's rounds like any other. Every trigger leaving a stage with no step therefore reads `"run.lastOutputValid": null` too, unless it waits on a person's own message.
 
-A step's answer the forge refuses to take — a review it will not let the reviewer post — fails that round the same way, so the paid step is never run again on its own.
+### An answer refused
+
+A step's answer is written by effects too: a comment, a review, a description. When an integration refuses one with `EffectRefused` — a review the forge will not let the reviewer post, a body past the vendor's size limit — the engine records the round as `malformed`, headed "Could not record <stage>'s answer", with the refusal's sentence. So `run.lastOutputValid` is `false`, `run.lastRefused` stays `false`, and the item goes to `blocked`, as for any broken contract. The paid step is never run again on its own; the halt's Retry runs it once more, at a new round.
+
+Anything else that fails while writing the answer is an outage: nothing is recorded, the round reads as owed, and the step runs again, and is paid for again, on the next tick. An integration that throws a plain error for what asking again cannot change makes that loop, which is why [hooks](hooks.md) throw `EffectRefused` for it.
 
 ## Sending an item back: goto and Retry
 

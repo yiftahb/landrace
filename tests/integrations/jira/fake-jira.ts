@@ -25,7 +25,10 @@ export const EMAIL = "landrace@acme.example";
 export const TOKEN = "ATATT3xFfGF0-fake-api-token-0123456789";
 
 /** An ADF node, as loosely as Jira itself accepts one. */
-export interface Adf { type: string; text?: string; attrs?: Record<string, unknown>; content?: Adf[]; version?: number }
+export interface Adf {
+  type: string; text?: string; attrs?: Record<string, unknown>; content?: Adf[]; version?: number;
+  marks?: Array<{ type: string; attrs?: Record<string, unknown> }>;
+}
 
 interface Status { id: string; name: string; category: "new" | "indeterminate" | "done" }
 
@@ -574,6 +577,8 @@ export function createFakeJira(project = "KEY") {
       const parent = (f.parent as { key?: string } | undefined)?.key;
       if (type.subtask && parent === undefined) return errors(400, [], { parent: "Given parent work item does not belong to appropriate hierarchy." });
       if (parent !== undefined && !issues.has(parent)) return errors(400, [], { parent: "Parent not found" });
+      const problem = f.description === undefined ? null : adfProblem(f.description as Adf);
+      if (problem) return errors(400, [], { description: problem });
       const priority = (f.priority as { id?: string } | undefined)?.id;
       if (priority !== undefined && !fake.priorities.some((p) => p.id === priority)) return errors(400, [], { priority: "Specify a valid priority" });
       const assigneeId = (f.assignee as { accountId?: string } | undefined)?.accountId;
@@ -610,6 +615,8 @@ export function createFakeJira(project = "KEY") {
         }
         if (typeof f.summary === "string") issue.summary = f.summary;
         if (f.description !== undefined) {
+          const problem = adfProblem(f.description as Adf);
+          if (problem) return errors(400, [], { description: problem });
           issue.description = f.description as Adf;
           issue.history.push({ id: String(nextHistory++), author: me, created: tick() });
         }
@@ -710,15 +717,47 @@ export function createFakeJira(project = "KEY") {
 
 export type FakeJira = ReturnType<typeof createFakeJira>;
 
-/** What Jira refuses in a document it is sent: a non-doc root, an empty text node, a block inside a paragraph. */
+/** The children each node Landrace writes may hold, as Jira's ADF schema has them. */
+const CHILDREN: Record<string, string[]> = {
+  doc: ["paragraph", "heading", "bulletList", "orderedList", "codeBlock"],
+  paragraph: ["text", "hardBreak"],
+  heading: ["text", "hardBreak"],
+  bulletList: ["listItem"],
+  orderedList: ["listItem"],
+  listItem: ["paragraph", "bulletList", "orderedList", "codeBlock"],
+  codeBlock: ["text"],
+};
+const MARKS = new Set(["code", "strong", "em", "link"]);
+
+/**
+ * What Jira refuses in a document it is sent: a non-doc root, a node where
+ * its parent may not hold it, an empty text node, a list item not opening
+ * with a paragraph or code, a mark it does not know or code beside any mark
+ * but a link, a heading level outside 1–6.
+ */
 function adfProblem(doc: Adf | undefined): string | null {
   if (doc?.type !== "doc" || doc.version !== 1 || !Array.isArray(doc.content)) return "Comment body is not valid ADF";
-  for (const block of doc.content) {
-    if (block.type !== "paragraph") continue;
-    for (const inline of block.content ?? []) {
-      if (inline.type === "text" && !inline.text) return "INVALID_INPUT: text nodes must not be empty";
-      if (inline.type !== "text" && inline.type !== "hardBreak") return `INVALID_INPUT: ${inline.type} in a paragraph`;
+  const check = (node: Adf): string | null => {
+    const allowed = CHILDREN[node.type] ?? [];
+    if (node.type === "heading" && ![1, 2, 3, 4, 5, 6].includes(node.attrs?.level as number)) return "INVALID_INPUT: heading level";
+    if (node.type === "listItem" && !["paragraph", "codeBlock"].includes(node.content?.[0]?.type ?? "")) {
+      return "INVALID_INPUT: a listItem opens with a paragraph or a codeBlock";
     }
-  }
-  return null;
+    for (const child of node.content ?? []) {
+      if (!allowed.includes(child.type)) return `INVALID_INPUT: ${child.type} in a ${node.type}`;
+      if (child.type === "text") {
+        if (!child.text) return "INVALID_INPUT: text nodes must not be empty";
+        const marks = (child.marks ?? []).map((m) => m.type);
+        if (node.type === "codeBlock" && marks.length) return "INVALID_INPUT: marks in a codeBlock";
+        if (marks.some((m) => !MARKS.has(m)) || new Set(marks).size !== marks.length) return `INVALID_INPUT: marks ${marks.join(",")}`;
+        if (marks.includes("code") && marks.some((m) => m !== "code" && m !== "link")) return "INVALID_INPUT: code beside another mark";
+        const link = child.marks?.find((m) => m.type === "link");
+        if (link && typeof link.attrs?.href !== "string") return "INVALID_INPUT: a link without an href";
+      }
+      const problem = check(child);
+      if (problem) return problem;
+    }
+    return null;
+  };
+  return check(doc);
 }
