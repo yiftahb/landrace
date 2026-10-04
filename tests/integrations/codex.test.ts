@@ -374,10 +374,19 @@ describe("the Codex integration", () => {
         .rejects.toThrow(/agent\.plugins is not a setting the codex executor reads/);
     });
 
-    it("names the shipped spec step's max, which codex has no level for", async () => {
+    it("takes every shipped step's effort", async () => {
       const loaded = await loadConfig(".landrace");
       const { steps } = await loadShipped(loaded.vars);
-      await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }, steps)))
+      await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }, steps))).resolves.toBeDefined();
+    });
+
+    it("names a step's max, which codex has no level for", async () => {
+      const loaded = await loadConfig(".landrace");
+      const { steps } = await loadShipped(loaded.vars);
+      const spec = steps.get("steps/spec.md");
+      if (!spec) throw new Error("the shipped workflow has no steps/spec.md");
+      const asking = new Map([...steps, ["steps/spec.md", { ...spec, effort: "max" }]]);
+      await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }, asking)))
         .rejects.toThrow(/steps\/spec\.md asks for effort "max", which the codex executor does not take: none, low, medium, high, xhigh/);
     });
 
