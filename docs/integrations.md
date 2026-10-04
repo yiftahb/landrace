@@ -131,7 +131,15 @@ agent:
 
 **Token.** Personal, project or group, with the `api` scope, and its user given Developer access to the project — direct, inherited or through a group the project is shared with. `landrace start` refuses one without either, naming which, and names a missing `gitlabToken` too. The same scope and role read a merge request's pipelines and failed jobs' traces; `start` also probes the pipeline read. Merging depends on the target branch: a default protected branch lets only Maintainers merge, so a Developer token merges only where that branch's "Allowed to merge" includes Developers, which is not the default — otherwise the item halts saying the token's user may not merge into its target branch.
 
-**Checks.** A merge request's checks are its newest pipeline's, when that pipeline ran on the head. A branch or merge request pipeline runs at the head's sha. A [merged results pipeline](https://docs.gitlab.com/ci/pipelines/merged_results_pipelines/) runs at a merge commit, and counts when the head is one of that commit's parents. A pipeline on an older head reads as pending.
+**Checks.** A merge request's checks combine every pipeline on its head, read from one page of 100 of its pipelines, newest first. A branch or merge request pipeline runs at the head's sha. A [merged results pipeline](https://docs.gitlab.com/ci/pipelines/merged_results_pipelines/) runs at a merge commit, and counts when the head is one of that commit's parents. Any failed pipeline makes the checks `failure`. Otherwise any pipeline still running or pending makes them `pending`, and the rest is `success`. A head with no pipeline yet reads as pending, never as an older head's result. A merge request with no pipeline at all has no checks. A page that fills with the head's pipelines was not read to its end, so it never reads as `success`. The CI failures a prompt reads, `{brief.project.ci}`, list the failed jobs of every pipeline on the head.
+
+GitLab puts every commit status that tools post on the head, such as a security scanner's or an AI reviewer's, into one `external` pipeline. Those statuses count as CI. To leave a reviewer's status out, name it:
+
+```ts
+new GitLab({ project: "group/app", reviewers: ["ai-review"] })
+```
+
+With `reviewers` set, the external pipeline is read status by status, and a named status never counts. A head whose only status is a reviewer's reads as pending. A failed status reaches `{brief.project.ci}` with its tool's description and link, unless it is a reviewer's or its tool allowed it to fail.
 
 **Limits.** CI/CD must be enabled on the project. The forge needs GitLab 16.4 or later, for a finding on a file.
 

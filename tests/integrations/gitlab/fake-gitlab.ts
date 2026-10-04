@@ -55,6 +55,15 @@ export interface FakeDiff {
   deleted_file: boolean;
 }
 
+/** A commit status a tool posted — a scanner's, a reviewer's — the latest of its name. */
+export interface FakeStatus {
+  name: string;
+  status: string;
+  allow_failure?: boolean;
+  description?: string | null;
+  target_url?: string | null;
+}
+
 export interface FakeMr {
   iid: number;
   title: string;
@@ -73,9 +82,10 @@ export interface FakeMr {
    * Its pipelines, in the order they were run; the API answers newest first.
    * `ref` is the merge request's source branch unless said: a merged results
    * pipeline's is `refs/merge-requests/<iid>/merge`, and its `sha` the
-   * merge-result commit, whose parents `commits` holds.
+   * merge-result commit, whose parents `commits` holds. A `source: external`
+   * pipeline is the commit statuses tools posted on its sha, `statuses`.
    */
-  pipelines?: Array<{ id: number; sha: string; status: string; ref?: string }>;
+  pipelines?: Array<{ id: number; sha: string; status: string; ref?: string; source?: string; statuses?: FakeStatus[] }>;
   /** The failed jobs of a pipeline, by its id. */
   failedJobs?: Map<number, Array<{ id: number; name: string }>>;
   /** A job's trace, by its id; a job with none answers 404. */
@@ -304,6 +314,14 @@ export function createFakeGitLab(): FakeGitLab {
       const failed = url.searchParams.get("scope[]") === "failed" ? owner?.failedJobs?.get(Number(jobs[1])) ?? [] : [];
       return page(failed.map((j) => ({ ...j, status: "failed" })), url.searchParams);
     }
+    // A commit's statuses, the latest of each name, narrowed to one pipeline by `pipeline_id`.
+    const statuses = /^\/repository\/commits\/([^/]+)\/statuses$/.exec(rest);
+    if (statuses && method === "GET") {
+      const sha = decodeURIComponent(statuses[1] ?? "");
+      const id = url.searchParams.get("pipeline_id");
+      const on = newest([...mrs.values()]).filter((p) => p.sha === sha && (id === null || p.id === Number(id)));
+      return page(on.flatMap((p) => (p.statuses ?? []).map((s) => ({ allow_failure: false, description: null, target_url: null, ...s, sha }))), url.searchParams);
+    }
     const commit = /^\/repository\/commits\/([^/]+)$/.exec(rest);
     if (commit && method === "GET") {
       const sha = decodeURIComponent(commit[1] ?? "");
@@ -351,7 +369,8 @@ export function createFakeGitLab(): FakeGitLab {
       return json(shown(mr));
     }
     if (sub === "/pipelines" && method === "GET") {
-      return page([...(mr.pipelines ?? [])].sort((a, b) => b.id - a.id).map((p) => ({ ref: mr.source_branch, ...p })), url.searchParams);
+      const listed = [...(mr.pipelines ?? [])].sort((a, b) => b.id - a.id).map(({ statuses: _, ...p }) => ({ ref: mr.source_branch, source: "merge_request_event", ...p }));
+      return page(listed, url.searchParams);
     }
     if (sub === "/merge" && method === "PUT") {
       // GitLab's own order: who may merge, then mergeability — "pipelines
