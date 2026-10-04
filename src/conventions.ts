@@ -329,6 +329,27 @@ export function shellLine(argv: readonly HandoffArg[]): string {
   return argv.map((a) => (typeof a === "string" ? quoted(a) : read(a.file))).join(" ");
 }
 
+/**
+ * The env vars a subprocess needs to run at all (locate its own binary, find
+ * $HOME for its own credential store, resolve a temp dir) — never the
+ * parent's full environment. `spawn` inherits `process.env` wholesale by
+ * default, and this project's own secrets arrive as resolved values handed to
+ * hooks (see HookContext), not as environment variables — so the one way a
+ * credential could reach the agent's subprocess is exactly this default,
+ * which is why it is never used for one. USER/LOGNAME/SHELL were missing from
+ * the first cut: a real agent's credential lookup needs USER, and its own
+ * shell tool needs SHELL — without them every real invocation failed closed
+ * as "Not logged in", which is safe but useless.
+ *
+ * Shared by the kit's agent process and a worktree's setup commands, which
+ * get the same environment: an install script must not see the forge token.
+ */
+export const INHERITED_ENV_KEYS: readonly string[] = [
+  "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP",
+  "USER", "LOGNAME", "SHELL",
+  "SystemRoot", "SystemDrive",
+];
+
 const DURATION_UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
 /** The longest delay setTimeout holds; past it Node fires after about a millisecond. */
 const LONGEST_TIMER_MS = 2 ** 31 - 1;

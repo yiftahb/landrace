@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { durationMs } from "#conventions.js";
+
 export const runtimeConfigSchema = z.object({
   version: z.literal(1),
   /**
@@ -14,6 +16,18 @@ export const runtimeConfigSchema = z.object({
     .object({
       adapter: z.string().min(1),
       isolation: z.enum(["none", "worktree", "container"]).default("worktree"),
+      /** What a write step's worktree is given before its agent runs: see `WorktreeSetup`. */
+      worktree: z
+        .object({
+          copy: z.array(z.string().min(1)).default([]),
+          setup: z.array(z.string().min(1)).default([]),
+          setupTimeout: z
+            .string()
+            .refine((t) => (durationMs(t) ?? 0) > 0, { message: 'must be a duration like "15m", above zero' })
+            .default("15m"),
+        })
+        .strict()
+        .default({}),
     })
     .passthrough(),
   /**

@@ -16,7 +16,7 @@ import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { CAPABILITIES, CHILD_SERVER_NAME, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
+import { CAPABILITIES, CHILD_SERVER_NAME, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import type {
   AgentSettings,
@@ -114,24 +114,7 @@ async function repositoryRoot(dir: string): Promise<string> {
   }
 }
 
-/**
- * The env vars a subprocess needs to run at all (locate its own binary, find
- * $HOME for its own credential store, resolve a temp dir) — never the
- * parent's full environment. `spawn` inherits `process.env` wholesale by
- * default, and this project's own secrets arrive as resolved values handed to
- * hooks (see HookContext), not as environment variables — so the one way a
- * credential could reach the agent's subprocess is exactly this default,
- * which is why it is never used here. USER/LOGNAME/SHELL were missing from
- * the first cut: a real agent's credential lookup needs USER, and its own
- * shell tool needs SHELL — without them every real invocation failed closed
- * as "Not logged in", which is safe but useless.
- */
-const INHERITED_ENV_KEYS = [
-  "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP",
-  "USER", "LOGNAME", "SHELL",
-  "SystemRoot", "SystemDrive",
-];
-
+/** The agent's environment, never the engine's: `INHERITED_ENV_KEYS` and `extra`, from this process. */
 function childEnv(extra: readonly string[]): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of [...INHERITED_ENV_KEYS, ...extra]) {
@@ -417,8 +400,8 @@ function narrowMcp(entries: readonly McpEntry[], known: Readonly<AllowedTools>):
   return { allowed, problems };
 }
 
-/** The keys of `agent:` the kit reads for every integration, the engine's own two among them. */
-const KIT_KEYS = ["adapter", "isolation", "model", "effort", "mcp", "sandbox"];
+/** The keys of `agent:` the kit reads for every integration, the engine's own three among them. */
+const KIT_KEYS = ["adapter", "isolation", "worktree", "model", "effort", "mcp", "sandbox"];
 /** The keys of `agent.sandbox`. */
 const SANDBOX_KEYS = new Set(["hosts", "deny"]);
 

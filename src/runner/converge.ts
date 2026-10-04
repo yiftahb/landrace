@@ -1,4 +1,6 @@
-import { ensureWorktree, removeWorktree, worktreeHead } from "#agent/worktree.js";
+import {
+  ensureWorktree, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead,
+} from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
 import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
@@ -64,24 +66,43 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
   // worktree on something else: triage reads HEAD, then build writes its
   // branch, then code-review reads that branch detached. Marked entered before
   // the call, so a worktree half-made by a call that threw is removed too.
+  //
+  // Except a write step's on a branch, which is kept in a slot of its own
+  // until the item ends: what `agent.worktree.setup` installed there is what
+  // the item's next write step needs, and a review between the two reads the
+  // branch in the item's own slot rather than rebuilding this one. Kept is
+  // not stored state: it is reset onto the branch whenever it is reused, and
+  // rebuilt when it is missing or on anything else. It is detached when this
+  // call ends, so the branch is free for a person while the item waits. A
+  // write step on no branch is prepared too, in the item's own slot, which
+  // goes when this call ends.
+  let kept = false;
   const enter = root === undefined
     ? null
-    : async (on?: WorktreeBranch): Promise<string> => {
-        entered = true;
-        return ensureWorktree(item, root, on);
+    : async (on: WorktreeBranch | undefined, write: boolean): Promise<string> => {
+        const keep = on?.write === true;
+        if (keep) kept = true;
+        else entered = true;
+        const path = await ensureWorktree(item, root, on, keep ? keptSlot(item) : item);
+        const setup = deps.sandbox?.worktree;
+        if (write && setup) await prepareWorktree({ item, path, root, setup, log: deps.log, signal: deps.ctx.signal });
+        return path;
       };
 
   try {
-    return await converging(item, deps, enter);
+    const result = await converging(item, deps, enter);
+    if (result.settled === "terminal" && root !== undefined) await removeWorktree(item, root, keptSlot(item));
+    return result;
   } finally {
     if (entered && root !== undefined) await removeWorktree(item, root);
+    if (kept && root !== undefined) await releaseWorktree(item, root);
   }
 }
 
 async function converging(
   item: string,
   deps: ConvergeDeps,
-  enterSandbox: ((on?: WorktreeBranch) => Promise<string>) | null,
+  enterSandbox: ((on: WorktreeBranch | undefined, write: boolean) => Promise<string>) | null,
 ): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
   const scrub = scrubberFor(deps);
@@ -348,9 +369,8 @@ async function converging(
         try {
           if (branch.branch !== null) await deps.source.remoteHead?.(branch.branch, deps.ctx);
           if (enterSandbox) {
-            const path = await enterSandbox(
-              branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) },
-            );
+            const write = mayWriteRepo(step.capabilities);
+            const path = await enterSandbox(branch.branch === null ? undefined : { branch: branch.branch, write }, write);
             sandbox = { path };
             if (branch.branch !== null) head = await worktreeHead(path);
           } else if (branch.branch !== null) {

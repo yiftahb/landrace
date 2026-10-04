@@ -6,12 +6,17 @@ import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   changedSince,
+  copyProblems,
   ensureWorktree,
+  keptSlot,
+  prepareWorktree,
+  releaseWorktree,
   removeWorktree,
   repositoryRoot,
   worktreeOf,
   worktreeState,
 } from "#agent/worktree.js";
+import type { WorktreeSetup } from "#namespace.js";
 
 /*
  * Every test here starts real processes — git worktree operations, child
@@ -327,14 +332,71 @@ describe("a stage's branch", () => {
     await removeWorktree("46", root);
   });
 
-  it("reuses a worktree that is already on what the step needs, as it stands", async () => {
+  /*
+   * Reused for what git ignores — an install's `node_modules` — and only that:
+   * what a previous step left uncommitted does not carry over, any more than
+   * it does when the worktree is rebuilt.
+   */
+  it("reuses a worktree on the branch, keeping what git ignores and dropping what was left uncommitted", async () => {
     const root = await repo();
+    await writeFile(join(root, ".gitignore"), "node_modules/\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "ignore");
     const first = await ensureWorktree("47", root, { branch: "landrace/47", write: true });
+    await mkdir(join(first, "node_modules"));
+    await writeFile(join(first, "node_modules", "dep.js"), "1\n");
     await writeFile(join(first, "leftover.ts"), "export const leftover = 1;\n");
+    await writeFile(join(first, "src", "a.ts"), "export const a = 2;\n");
 
     expect(await ensureWorktree("47", root, { branch: "landrace/47", write: true })).toBe(first);
-    expect(existsSync(join(first, "leftover.ts"))).toBe(true);
+    expect(existsSync(join(first, "node_modules", "dep.js"))).toBe(true);
+    expect(existsSync(join(first, "leftover.ts"))).toBe(false);
+    expect(await git(first, "status", "--porcelain")).toBe("");
     await removeWorktree("47", root);
+  });
+
+  /*
+   * A kept worktree is released between steps — detached, so a person can
+   * check the branch out — and re-attached by the next write step, with what
+   * git ignores still there and the commits a person added on the branch in
+   * the meantime.
+   */
+  it("releases a kept worktree's branch, and re-attaches it on reuse at the branch's commit", async () => {
+    const root = await repo();
+    await writeFile(join(root, ".gitignore"), "node_modules/\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "ignore");
+    const on = { branch: "landrace/53", write: true };
+    const kept = await ensureWorktree("53", root, on, keptSlot("53"));
+    await mkdir(join(kept, "node_modules"));
+    await writeFile(join(kept, "node_modules", "dep.js"), "1\n");
+
+    await releaseWorktree("53", root);
+    expect(await attached(kept)).toBeNull();
+    await git(root, "switch", "-q", "landrace/53");
+    const theirs = await commitIn(root, "person.ts");
+    await git(root, "switch", "-q", "main");
+
+    expect(await ensureWorktree("53", root, on, keptSlot("53"))).toBe(kept);
+    expect(await attached(kept)).toBe("landrace/53");
+    expect(await sha(kept, "HEAD")).toBe(theirs);
+    expect(existsSync(join(kept, "node_modules", "dep.js"))).toBe(true);
+    expect(await git(kept, "status", "--porcelain")).toBe("");
+    await releaseWorktree("53", root);
+    await releaseWorktree("53", root);
+    await removeWorktree("53", root, keptSlot("53"));
+    await releaseWorktree("53", root);
+  });
+
+  it("takes the branch from the item's kept worktree when another of its slots needs it", async () => {
+    const root = await repo();
+    const kept = await ensureWorktree("52", root, { branch: "landrace/52", write: true }, keptSlot("52"));
+
+    const paired = await ensureWorktree("52", root, { branch: "landrace/52", write: true }, "52.pair");
+
+    expect(await attached(paired)).toBe("landrace/52");
+    expect(existsSync(kept)).toBe(false);
+    await removeWorktree("52", root, "52.pair");
   });
 
   /*
@@ -631,5 +693,164 @@ describe("a worktree in its own slot", () => {
     expect(await worktreeOf("6.pair", root)).toBeNull();
     const paired = await ensureWorktree("6", root, undefined, "6.pair");
     expect(await worktreeOf("6.pair", root)).toBe(paired);
+  });
+});
+
+/*
+ * What a write step's worktree is given before its agent runs: the
+ * operator's untracked files, copied in by glob, and the setup commands, run
+ * outside the agent and its sandbox — once per worktree, and again only when
+ * the lockfiles or the commands change.
+ */
+describe("preparing a write step's worktree", () => {
+  const git = async (cwd: string, ...args: string[]): Promise<string> =>
+    (await run("git", args, { cwd })).stdout.trim();
+
+  /** A repository that ignores `.env`, with one `.env` and an untracked `pkg/.npmrc` in the operator's checkout. */
+  async function project(): Promise<string> {
+    const root = await repo();
+    await writeFile(join(root, ".gitignore"), ".env\nnode_modules/\n");
+    await writeFile(join(root, "pnpm-lock.yaml"), "lockfileVersion: 1\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "project");
+    await writeFile(join(root, ".env"), "TOKEN=from-env\n");
+    await mkdir(join(root, "pkg"));
+    await writeFile(join(root, "pkg", ".npmrc"), "//registry/:_authToken=t\n");
+    return root;
+  }
+
+  const setup = (over: Partial<WorktreeSetup> = {}): WorktreeSetup => ({ copy: [], setup: [], timeoutMs: 60_000, ...over });
+
+  async function prepared(item: string, root: string, s: WorktreeSetup, events: Array<[string, Record<string, unknown>]> = []) {
+    const path = await ensureWorktree(item, root, { branch: `landrace/${item}`, write: true }, keptSlot(item));
+    await prepareWorktree({ item, path, root, setup: s, log: (event, data = {}) => events.push([event, data]) });
+    return path;
+  }
+
+  it("copies the ignored and untracked files the globs match, from anywhere in the repository", async () => {
+    const root = await project();
+    const path = await prepared("80", root, setup({ copy: ["**/.env", "**/.npmrc"] }));
+
+    expect(await readFile(join(path, ".env"), "utf8")).toBe("TOKEN=from-env\n");
+    expect(await readFile(join(path, "pkg", ".npmrc"), "utf8")).toBe("//registry/:_authToken=t\n");
+    await removeWorktree("80", root, keptSlot("80"));
+  });
+
+  it("refuses a glob that matches a tracked file, naming the file", async () => {
+    const root = await project();
+    expect(await copyProblems(root, ["src/*.ts"])).toEqual([expect.stringMatching(/src\/a\.ts/)]);
+    await expect(prepared("81", root, setup({ copy: ["src/*.ts"] }))).rejects.toThrow(/src\/a\.ts.*tracked/);
+    await removeWorktree("81", root, keptSlot("81"));
+  });
+
+  /*
+   * Untracked in the checkout is not untracked on the item's branch: a step
+   * that committed pkg/.npmrc would see the operator's token copied over it,
+   * and its next `git commit -a` would push the token.
+   */
+  it("refuses a glob that matches a file the item's branch tracks, leaving the branch's file as it is", async () => {
+    const root = await project();
+    const path = await ensureWorktree("87", root, { branch: "landrace/87", write: true }, keptSlot("87"));
+    await mkdir(join(path, "pkg"), { recursive: true });
+    await writeFile(join(path, "pkg", ".npmrc"), "registry=branch\n");
+    await git(path, "add", "pkg/.npmrc");
+    await git(path, "commit", "-qm", "branch npmrc");
+
+    await expect(prepareWorktree({ item: "87", path, root, setup: setup({ copy: ["**/.npmrc"] }), log: () => undefined }))
+      .rejects.toThrow(/pkg\/\.npmrc.*landrace\/87/);
+    expect(await readFile(join(path, "pkg", ".npmrc"), "utf8")).toBe("registry=branch\n");
+    await removeWorktree("87", root, keptSlot("87"));
+  });
+
+  it("refuses an absolute glob and one that climbs out of the repository", async () => {
+    const root = await project();
+    const problems = await copyProblems(root, ["/etc/hosts", "../x/.env", "ok/../../.env"]);
+    expect(problems).toHaveLength(3);
+    expect(problems[0]).toMatch(/\/etc\/hosts/);
+    expect(problems[1]).toMatch(/\.\.\/x\/\.env/);
+    expect(await copyProblems(root, ["**/.env"])).toEqual([]);
+  });
+
+  it("does not follow a link that leads outside the repository", async () => {
+    const root = await project();
+    const outside = await mkdtemp(join(tmpdir(), "lr-wt-outside-"));
+    roots.push(outside);
+    await writeFile(join(outside, "key"), "secret\n");
+    await symlink(join(outside, "key"), join(root, "leak.env"));
+    await writeFile(join(root, "inside.env"), "fine\n");
+
+    const path = await prepared("82", root, setup({ copy: ["*.env"] }));
+
+    expect(existsSync(join(path, "leak.env"))).toBe(false);
+    expect(await readFile(join(path, "inside.env"), "utf8")).toBe("fine\n");
+    await removeWorktree("82", root, keptSlot("82"));
+  });
+
+  it("runs setup in the worktree, after the copy, without the engine's environment", async () => {
+    const root = await project();
+    process.env["LANDRACE_TEST_SECRET"] = "engine-only";
+    try {
+      const events: Array<[string, Record<string, unknown>]> = [];
+      const path = await prepared("83", root, setup({
+        copy: ["**/.env"],
+        setup: ['printf "%s|%s" "$LANDRACE_TEST_SECRET" "$(cat .env)" > seen.txt'],
+      }), events);
+
+      expect(await readFile(join(path, "seen.txt"), "utf8")).toBe("|TOKEN=from-env");
+      expect(events.map(([e]) => e)).toEqual(["worktree.setup.started", "worktree.setup.finished"]);
+      expect(events[0]?.[1]).toMatchObject({ item: "83", command: expect.stringContaining("printf") });
+      await removeWorktree("83", root, keptSlot("83"));
+    } finally {
+      delete process.env["LANDRACE_TEST_SECRET"];
+    }
+  });
+
+  it("runs setup once while the lockfile is unchanged, and again when it changes or the worktree is rebuilt", async () => {
+    const root = await project();
+    const counter = join(await mkdtemp(join(tmpdir(), "lr-wt-count-")), "runs");
+    roots.push(dirname(counter));
+    const s = setup({ setup: [`echo run >> '${counter}'`] });
+    const runs = async (): Promise<number> => (await readFile(counter, "utf8")).split("\n").filter(Boolean).length;
+
+    const path = await prepared("84", root, s);
+    await prepared("84", root, s);
+    expect(await runs()).toBe(1);
+
+    await writeFile(join(path, "pnpm-lock.yaml"), "lockfileVersion: 2\n");
+    await git(path, "commit", "-qam", "bump");
+    await prepared("84", root, s);
+    expect(await runs()).toBe(2);
+
+    await prepared("84", root, setup({ setup: [...s.setup, "true"] }));
+    expect(await runs()).toBe(3);
+
+    await removeWorktree("84", root, keptSlot("84"));
+    await prepared("84", root, setup({ setup: [...s.setup, "true"] }));
+    expect(await runs()).toBe(4);
+    await removeWorktree("84", root, keptSlot("84"));
+  });
+
+  it("fails with the tail of the command's output, runs nothing after it, and runs it again next time", async () => {
+    const root = await project();
+    const events: Array<[string, Record<string, unknown>]> = [];
+    const s = setup({ setup: ["echo first; echo 'ERR_PNPM_FETCH registry.example' >&2; exit 3", "touch after.txt"] });
+
+    const path = await ensureWorktree("85", root, { branch: "landrace/85", write: true }, keptSlot("85"));
+    await expect(prepareWorktree({ item: "85", path, root, setup: s, log: (event, data = {}) => events.push([event, data]) }))
+      .rejects.toThrow(/exit[^\n]*3[\s\S]*ERR_PNPM_FETCH registry\.example/);
+    expect(events.map(([e]) => e)).toEqual(["worktree.setup.started", "worktree.setup.failed"]);
+    expect(existsSync(join(path, "after.txt"))).toBe(false);
+
+    await expect(prepared("85", root, s)).rejects.toThrow(/ERR_PNPM_FETCH/);
+    await removeWorktree("85", root, keptSlot("85"));
+  });
+
+  it("stops a command that outlasts setupTimeout, and says so", async () => {
+    const root = await project();
+    const started = Date.now();
+    await expect(prepared("86", root, setup({ setup: ["echo waiting; sleep 30"], timeoutMs: 300 })))
+      .rejects.toThrow(/timed out after 300ms[\s\S]*waiting/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    await removeWorktree("86", root, keptSlot("86"));
   });
 });
