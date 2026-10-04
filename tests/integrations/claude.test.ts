@@ -84,6 +84,11 @@ const list = (argv: string[], name: string): string[] => {
 };
 
 const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
+/** What a step's `--settings` carries so `--add-dir` loads its `CLAUDE.md`. */
+const INSTRUCTIONS = { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" };
+/** The directory a step ran in, which `--add-dir` names, written `<cwd>` so a whole argv can be compared. */
+const atCwd = (argv: string[]): string[] =>
+  argv.map((a, i) => (argv[i - 1] === "--add-dir" ? "<cwd>" : a));
 const PLUGIN = "superpowers@claude-plugins-official";
 const MEMORY = { command: "codebase-memory-mcp", args: [], env: { MEMORY_HOME: "/var/memory" } };
 const BINDING = { parent: "12", stage: "breakdown", round: 2 };
@@ -746,14 +751,14 @@ describe("plugins and MCP servers", () => {
   it("enables the operator's plugins through one --settings element holding the JSON", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), { capabilities: ["repo:read"] });
     expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({
-      enabledPlugins: { [PLUGIN]: true, "other@market": true },
+      enabledPlugins: { [PLUGIN]: true, "other@market": true }, env: INSTRUCTIONS,
     });
     expect(argv.filter((a) => a === "--settings")).toHaveLength(1);
   });
 
-  it("passes no --settings when no plugin is configured", async () => {
+  it("passes only the setting that loads the step's CLAUDE.md when no plugin is configured", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
-    expect(argv).not.toContain("--settings");
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ env: INSTRUCTIONS });
   });
 
   it("hands the step only the allowlisted servers, as defined, strictly, and allows them by name", async () => {
@@ -872,8 +877,7 @@ describe("the create_child tool", () => {
       capabilities: ["items:create", "repo:read"], child: { ...binding, server: SERVER },
     });
     expect(argv.slice(0, 8)).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted", "--disallowedTools"]);
-    const denied = argv.slice(8, argv.indexOf("--mcp-config"));
-    expect([...denied].sort()).toEqual(["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"]);
+    expect(list(argv, "--disallowedTools").sort()).toEqual(["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"]);
     expect(argv).not.toContain("plan");
   });
 
@@ -889,12 +893,13 @@ describe("the create_child tool", () => {
   it("keeps a read-only step without the binding on exactly the flags any read-only step gets", async () => {
     const readOnly = [
       "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
-      "--disallowedTools", ...WRITE_TOOLS, "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
+      "--disallowedTools", ...WRITE_TOOLS, "--settings", JSON.stringify({ env: INSTRUCTIONS }), "--add-dir", "<cwd>",
+      "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ];
     const declaring = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["items:create", "repo:read"] });
-    expect(declaring).toEqual(readOnly);
+    expect(atCwd(declaring)).toEqual(readOnly);
     const unbound = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"], child: { ...binding, server: SERVER } });
-    expect(unbound).toEqual(readOnly);
+    expect(atCwd(unbound)).toEqual(readOnly);
   });
 
   it("offers nothing to a step that did not declare it, even with a binding", async () => {
@@ -961,7 +966,7 @@ describe("the create_child tool", () => {
     const servers = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string).mcpServers;
     expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
     expect(JSON.parse(argv[argv.indexOf("--settings") + 1] as string)).toEqual({
-      enabledPlugins: { "superpowers@claude-plugins-official": true },
+      enabledPlugins: { "superpowers@claude-plugins-official": true }, env: INSTRUCTIONS,
     });
   });
 });
@@ -993,7 +998,7 @@ describe("a writing step's sandbox", () => {
 
   it("confines a writing step with no network and the default deny list when it was given no sandbox", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read", "repo:write"] });
-    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual(CONFINED);
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ ...CONFINED, env: INSTRUCTIONS });
     expect(flag(argv, "--permission-mode")).toBe("acceptEdits");
   });
 
@@ -1027,6 +1032,7 @@ describe("a writing step's sandbox", () => {
         filesystem: { denyRead: ["~/.ssh"] },
       },
       permissions: { deny: ["Read(~/.ssh)", "Read(~/.ssh/**)"] },
+      env: INSTRUCTIONS,
     });
   });
 
@@ -1034,22 +1040,22 @@ describe("a writing step's sandbox", () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), {
       capabilities: ["items:create", "repo:write"], child: { ...BINDING, server: SERVER },
     });
-    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual(CONFINED);
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ ...CONFINED, env: INSTRUCTIONS });
     expect(Object.keys(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers)).toEqual(["landrace"]);
     expect(list(argv, "--allowedTools")).toEqual(["mcp__landrace__landrace_create_child"]);
   });
 
   /*
    * Only a run that may write has Bash to confine. A read-only step and the
-   * screener keep, element for element, the command line they had before this
-   * existed, however the executor's sandbox is configured.
+   * screener get nothing of the sandbox, element for element, however the
+   * executor's sandbox is configured.
    */
-  it("hands a read-only step and the screener exactly the argv they had before", async () => {
+  it("gives a read-only step and the screener nothing of the sandbox", async () => {
     const executor = createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com"], deny: ["~/.ssh"] } });
-    expect(await argvOf(executor, { capabilities: ["repo:read"] })).toEqual([
+    expect(atCwd(await argvOf(executor, { capabilities: ["repo:read"] }))).toEqual([
       "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
       "--disallowedTools", ...WRITE_TOOLS,
-      "--settings", JSON.stringify({ enabledPlugins: { [PLUGIN]: true } }),
+      "--settings", JSON.stringify({ enabledPlugins: { [PLUGIN]: true }, env: INSTRUCTIONS }), "--add-dir", "<cwd>",
       "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ]);
     expect(await argvOf(executor, {})).toEqual([
@@ -1104,7 +1110,7 @@ describe("the factory's wiring, end to end", () => {
       const argv = await argvOf(executor, { capabilities: ["repo:read"] });
       expect(flag(argv, "--model")).toBe("opus");
       expect(flag(argv, "--effort")).toBe("high");
-      expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ enabledPlugins: { "p@m": true } });
+      expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ enabledPlugins: { "p@m": true }, env: INSTRUCTIONS });
       expect(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers).toEqual({
         memory: { command: "codebase-memory-mcp", args: [] },
       });

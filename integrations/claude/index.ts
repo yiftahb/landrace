@@ -130,8 +130,13 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, projectDir(this.home, cwd));
   }
 
-  protected argv({ tier, model, effort, resume, fork, servers, allowed, sandbox, extras }: RunPlan<ClaudeExtras>): string[] {
+  protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras }: RunPlan<ClaudeExtras>): string[] {
     const declared = tier !== "screen";
+    // A step's own instructions: `--setting-sources user` and `--restricted`
+    // each keep the CLI from reading the worktree's `CLAUDE.md` as the
+    // project's (live on 2.1.289), so it is added as a directory of its own,
+    // which loads one only with the setting below. Never the screener's.
+    const instructions = declared && cwd !== undefined;
     const mayWrite = tier === "write";
     // Not plan mode, which is what a read-only step and the screener ran in
     // until a live check against the real CLI (2.1.282) showed what it
@@ -183,8 +188,11 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     const settings = {
       ...(declared && extras.plugins.length ? { enabledPlugins: Object.fromEntries(extras.plugins.map((id) => [id, true])) } : {}),
       ...(mayWrite ? sandboxSettings(sandbox) : {}),
+      ...(instructions ? { env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" } } : {}),
     };
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
+    // Variadic: `--mcp-config`, always pushed below, ends it.
+    if (instructions) args.push("--add-dir", cwd);
     // Inline JSON rather than a config file: there is no path for the
     // agent's worktree to shadow and nothing to clean up after a crash.
     // Strict always, for every run and with nothing to allow as much as with
