@@ -515,18 +515,25 @@ export class GitLab extends BaseForge {
 
   /**
    * The named reviewers whose commit status on the head is over — the latest
-   * of each name, whichever pipeline holds it. One the page does not reach is
-   * read as not posted, which is waiting, never finished.
+   * of each name, whichever pipeline holds it. Each is asked for by name: the
+   * head's every status is every CI job too, and a reviewer past their first
+   * page would read as not posted. A page of one name's that is not its end
+   * is refused, never read as missing.
    */
   override async finishedReviewers(pull: PullRecord, ctx: RuntimeContext): Promise<ReadonlySet<string>> {
     if (pull.headSha === "") throw new Error(`!${pull.number} has no head commit to read its reviewers' statuses on`);
-    let items: Status[];
-    try {
-      ({ items } = await this.gl(ctx).pages<Status>(`/repository/commits/${encodeURIComponent(pull.headSha)}/statuses`, 1));
-    } catch (e) {
-      throw this.tokenRefusal(e, true);
+    const finished = new Set<string>();
+    for (const name of this.reviewers) {
+      let page: { items: Status[]; more: boolean };
+      try {
+        page = await this.gl(ctx).pages<Status>(`/repository/commits/${encodeURIComponent(pull.headSha)}/statuses?name=${encodeURIComponent(name)}`, 1);
+      } catch (e) {
+        throw this.tokenRefusal(e, true);
+      }
+      if (page.more) throw tooMany(`!${pull.number}'s head has more than ${PER_PAGE} commit statuses named "${name}"`);
+      if (page.items.some((s) => s.name === name && FINISHED.has(s.status))) finished.add(name);
     }
-    return new Set(items.filter((s) => this.reviewers.has(s.name) && FINISHED.has(s.status)).map((s) => s.name));
+    return finished;
   }
 
   protected override async root(): Promise<string> {

@@ -241,6 +241,28 @@ describe("every pipeline on the head, combined", () => {
     expect(read.map((r) => r.path.split("/").at(-2))).toEqual(["head"]);
   });
 
+  it("finds a reviewer's status past a page of every other status on the head, asking for it by name", async () => {
+    const gl = createFakeGitLab();
+    const others = Array.from({ length: 120 }, (_, i) => ({ name: `job-${i}`, status: "success" }));
+    gl.open({ source_branch: "landrace/1", iid: 9, sha: "head", pipelines: [
+      { id: 2, sha: "head", source: "external", status: "success", statuses: [...others, { name: "CodeRabbit", status: "success" }] },
+    ] });
+    const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "1", title: "t" }] }), forge: named(gl, ["CodeRabbit"]) });
+    const graph = await hooks.source.read("1", gl.ctx());
+    expect(graph.nodes.find((n) => n.id === "pr-9")?.state).toMatchObject({ reviewPending: 0 });
+    const read = gl.requests.filter((r) => r.path.endsWith("/statuses") && !r.query.has("pipeline_id"));
+    expect(read.map((r) => r.query.get("name"))).toEqual(["CodeRabbit"]);
+  });
+
+  it("refuses, rather than call a reviewer missing, when its statuses run past the page", async () => {
+    const gl = createFakeGitLab();
+    const own = Array.from({ length: 100 }, () => ({ name: "CodeRabbit", status: "running" }));
+    gl.open({ source_branch: "landrace/1", iid: 9, sha: "head", pipelines: [
+      { id: 2, sha: "head", source: "external", status: "running", statuses: [...own, { name: "CodeRabbit", status: "success" }] },
+    ] });
+    await expect(named(gl, ["CodeRabbit"]).finishedReviewers({ number: 9, headSha: "head" } as PullRecord, gl.ctx())).rejects.toThrow(/CodeRabbit/);
+  });
+
   it("asks nothing of a reviewer's status when none is named", async () => {
     const gl = createFakeGitLab();
     gl.open({ source_branch: "landrace/1", iid: 9, sha: "head", pipelines: [{ id: 1, sha: "head", status: "success" }] });
