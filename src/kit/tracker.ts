@@ -11,13 +11,13 @@
  * mapping what they answer into the plain fields `itemNode` takes.
  */
 import {
-  allClosed, CLOSE_EFFECT, distinctRelations, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES,
+  allClosed, CLOSE_EFFECT, COMMENT_VISIBILITIES, distinctRelations, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES,
   neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATED_FACTS, RELATIONS, renderMarker,
   renderOrigin, sameLogin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND,
 } from "#conventions.js";
 import { commentLine } from "#kit/forge.js";
 import type {
-  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, OpenRelations, RelatedRecord, RelationDecl, Relationship,
+  BriefTable, CommentVisibility, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, OpenRelations, RelatedRecord, RelationDecl, Relationship,
   RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
 } from "#namespace.js";
 
@@ -170,6 +170,18 @@ export function closeHow(effect: Effect): "done" | "dropped" {
   const how = effect.how ?? "done";
   if (how === "done" || how === "dropped") return how;
   throw new Error(`a tracker.close effect closes an item as "done" or "dropped", not ${JSON.stringify(how)}`);
+}
+
+/**
+ * Who a `tracker.comment` is for, as it says, or undefined when it says
+ * nothing. A value it does not know is refused, never read as either: a note
+ * meant for the team posted where the requester reads it cannot be unsaid.
+ */
+export function visibilityOf(effect: Effect): CommentVisibility | undefined {
+  const { visibility } = effect;
+  if (visibility === undefined) return undefined;
+  if (typeof visibility === "string" && COMMENT_VISIBILITIES.includes(visibility)) return visibility as CommentVisibility;
+  throw new Error(`a tracker.comment effect is ${COMMENT_VISIBILITIES.map((v) => `"${v}"`).join(" or ")}, not ${JSON.stringify(visibility)}`);
 }
 
 /**
@@ -439,8 +451,13 @@ export abstract class BaseTracker {
   abstract children(id: string, ctx: RuntimeContext): Promise<ItemRecord[]>;
   /** Every comment on an item, oldest first, every page — or a refusal, never a short list. */
   abstract comments(id: string, ctx: RuntimeContext): Promise<TrackerComment[]>;
-  /** Post a comment exactly as given: the base has already escaped it and stamped its marker. */
-  abstract comment(id: string, body: string, ctx: RuntimeContext): Promise<void>;
+  /**
+   * Post a comment exactly as given: the base has already escaped it and
+   * stamped its marker. `visibility` is the effect's own, absent when it names
+   * none; a tracker that cannot tell the team's notes from what a requester
+   * reads ignores it.
+   */
+  abstract comment(id: string, body: string, ctx: RuntimeContext, opts?: { visibility?: CommentVisibility }): Promise<void>;
   abstract addLabels(id: string, labels: string[], ctx: RuntimeContext): Promise<void>;
   abstract removeLabel(id: string, label: string, ctx: RuntimeContext): Promise<void>;
   /** Close an item as done (completed) or dropped (not planned). */
@@ -619,9 +636,13 @@ export abstract class BaseTracker {
         satisfied: commentSatisfied,
         apply: async (effect, ctx) => {
           const body = neutraliseMarkers(String(effect.body ?? ""));
+          const visibility = visibilityOf(effect);
           // No kind, no marker: an operator's reply is genuinely a human turn,
           // and stamping it would read a person's words as our own record.
-          await this.comment(ctx.item, effect.kind === undefined ? body : body + renderMarker(recordMarker(effect)), ctx);
+          await this.comment(
+            ctx.item, effect.kind === undefined ? body : body + renderMarker(recordMarker(effect)), ctx,
+            visibility === undefined ? {} : { visibility },
+          );
         },
       },
       [CLOSE_EFFECT]: {

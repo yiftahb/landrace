@@ -464,6 +464,20 @@ export interface TrackerComment {
   user?: { login?: string } | null;
 }
 
+/** Who a comment is for: one of `COMMENT_VISIBILITIES`. */
+export type CommentVisibility = "internal" | "public";
+
+/**
+ * One worklog on an item, as `tracker.worklogs` holds it: who logged it, how
+ * long, and the marker Landrace stamped on one it wrote — null on a person's.
+ */
+export interface WorklogRecord {
+  id: string;
+  author: string | null;
+  seconds: number;
+  marker: string | null;
+}
+
 /* ---------------------------------------------------------------- config -- */
 
 /**
