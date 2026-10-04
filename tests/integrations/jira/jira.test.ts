@@ -7,7 +7,7 @@ import { ITEM_PAGE, MAX_ISSUE_PAGES } from "#kit/tracker.js";
 import type { Graph, HookContext, Node, RuntimeContext, Snapshot } from "#namespace.js";
 import { MemoryDocs, MemoryForge } from "#testing/index.js";
 import {
-  type Adf, BOT, createFakeJira, DAY, EMAIL, type FakeJira, jiraTime, paragraphs, PERSON, SITE, TOKEN,
+  type Adf, BOT, createFakeJira, DAY, EMAIL, type FakeJira, jiraTime, OTHER, paragraphs, PERSON, SITE, TOKEN,
 } from "#tests/integrations/jira/fake-jira.js";
 import { loadShipped } from "#tests/support/shipped.js";
 
@@ -503,6 +503,175 @@ describe("the preflight", () => {
     fake.pageSize = 2;
     fake.issueTypes.find((t) => t.name === "Bug")?.fields.push("labels");
     await jira.check?.(ctx);
+  });
+});
+
+describe("scoped to one assignee by jiraAssignee", () => {
+  const scoped = (assignee: string) => setup({}, { ...SECRETS, jiraAssignee: assignee });
+  const queries = (fake: FakeJira) => fake.calls.filter((c) => c.path === "/rest/api/3/search/jql").map((c) => (c.body as { jql: string }).jql);
+  const mine = `AND assignee = "${PERSON.accountId}"`;
+
+  it("lists only the assignee's open and recently closed issues, every query saying so", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const recent = jiraTime(Date.now() - DAY);
+    const stage = LABELS.stage("build");
+    const open = fake.add({ assignee: PERSON });
+    fake.add({ assignee: OTHER });
+    fake.add();
+    const closed = fake.add({ assignee: PERSON, status: "Done", labels: [stage], updated: recent, statusChanged: recent });
+    fake.add({ assignee: OTHER, status: "Done", labels: [stage], updated: recent, statusChanged: recent });
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([open.key, closed.key]);
+    const jql = queries(fake);
+    expect(jql).toHaveLength(2);
+    for (const q of jql) expect(q).toContain(mine);
+  });
+
+  // That is the hand-off: whoever it is reassigned to lists it from their own instance.
+  it("drops an issue reassigned to somebody else from the list", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const issue = fake.add({ assignee: PERSON });
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([issue.key]);
+    issue.assignee = OTHER;
+    expect(await jira.items(ctx)).toEqual([]);
+  });
+
+  it("walks the assignee's open issues alone for cycles", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const item = fake.add({ assignee: PERSON });
+    const blocker = fake.add({ assignee: OTHER });
+    fake.link("Blocks", blocker.key, item.key);
+    await compose({ tracker: jira, forge: new MemoryForge(), docs: new MemoryDocs() }).source.read(item.key, ctx);
+    const walk = fake.calls.filter((c) => c.path === "/rest/api/3/search/jql" && (c.body as { fields: string[] }).fields.join() === "issuelinks");
+    expect(walk).toHaveLength(1);
+    expect((walk[0]?.body as { jql: string }).jql).toContain(mine);
+  });
+
+  // A child handed to somebody else is still the parent's: read without it, "every child closed" closes the parent early.
+  it("reads a breakdown's children whoever they are assigned to", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const parent = fake.add({ assignee: PERSON });
+    const child = fake.add({ assignee: OTHER, parent: parent.key, issuetype: "Subtask" });
+    expect((await jira.children(parent.key, ctx)).map((c) => c.id)).toEqual([child.key]);
+    const graph = await compose({ tracker: jira, forge: new MemoryForge(), docs: new MemoryDocs() }).source.read(parent.key, ctx);
+    expect(graph.nodes.map((n) => n.id)).toContain(child.key);
+  });
+
+  it("creates an item and a child assigned to the assignee", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    const top = await jira.create({ title: "Top", body: "", parent: undefined, priority: undefined }, ctx);
+    const child = await jira.create({ title: "Child", body: "", parent: top, priority: undefined }, ctx);
+    expect([fake.issue(top).assignee, fake.issue(child).assignee]).toEqual([PERSON, PERSON]);
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([top, child]);
+  });
+
+  it("resolves an email to its account once, at the preflight, and scopes by the account", async () => {
+    const { fake, jira, ctx } = scoped(" MIA@acme.example ");
+    const issue = fake.add({ assignee: PERSON });
+    fake.add({ assignee: OTHER });
+    await jira.check?.(ctx);
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([issue.key]);
+    await jira.items(ctx);
+    expect(fake.calls.filter((c) => c.path.startsWith("/rest/api/3/user/search"))).toHaveLength(1);
+    for (const q of queries(fake)) expect(q).toContain(mine);
+  });
+
+  // Never unscoped for want of a preflight: `status` lists without one, and a list of everybody's issues is the failure this prevents.
+  it("resolves the email before the first list when no preflight ran", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.emailAddress as string);
+    fake.add({ assignee: OTHER });
+    expect(await jira.items(ctx)).toEqual([]);
+    for (const q of queries(fake)) expect(q).toContain(mine);
+  });
+
+  it("refuses to start on an email that matches no user", async () => {
+    const { fake, jira, ctx } = scoped("nobody@acme.example");
+    await expect(jira.check?.(ctx)).rejects.toThrow(/jiraAssignee "nobody@acme\.example" matches no Jira user/);
+    await expect(jira.items(ctx)).rejects.toThrow(/matches no Jira user/);
+    expect(queries(fake)).toEqual([]);
+  });
+
+  // Jira answers an account without "Browse users and groups" with nobody, not a refusal: that is not "no such user".
+  it.each([["an email", PERSON.emailAddress as string], ["an account id", PERSON.accountId]])(
+    "names a missing \"Browse users and groups\" permission when %s finds nobody, not a missing user",
+    async (_, value) => {
+      const { fake, jira, ctx } = scoped(value);
+      fake.permissions.USER_PICKER = false;
+      const refused = await jira.check?.(ctx).then(() => "", (e: unknown) => String(e));
+      expect(refused).toMatch(/the account lacks the global "Browse users and groups" permission \(USER_PICKER\)/);
+      expect(refused).not.toMatch(/matches no Jira user/);
+    },
+  );
+
+  // Jira hides most emails from search, so a user with a private email may be the one: neither is picked.
+  it("refuses to start on an email that matches several users, naming them", async () => {
+    const { fake, jira, ctx } = scoped("mia@acme.example");
+    fake.users.push({ accountId: "557058:aaaa", displayName: "mia@acme.example (old)" });
+    await expect(jira.check?.(ctx)).rejects.toThrow(/jiraAssignee "mia@acme\.example" matches 2 Jira users: Mia Krystof, mia@acme\.example \(old\)/);
+  });
+
+  it("leaves out a user whose email Jira shows as another", async () => {
+    const { fake, jira, ctx } = scoped("mia@acme.example");
+    fake.users.push({ accountId: "557058:bbbb", displayName: "Mia Two", emailAddress: "mia@acme.example.org" });
+    await jira.check?.(ctx);
+  });
+
+  // The one meant may be past the page: not found is not missing.
+  it("refuses an email whose search fills a page, rather than judge it from that page", async () => {
+    const { fake, jira, ctx } = scoped("mia@acme.example");
+    for (let i = 0; i < 99; i++) fake.users.push({ accountId: `557058:p${i}`, displayName: `mia@acme.example ${i}` });
+    await expect(jira.check?.(ctx)).rejects.toThrow(/matches more Jira users than one search returns/);
+    fake.users.pop();
+    const again = setup({}, { ...SECRETS, jiraAssignee: "mia@acme.example" });
+    again.fake.users = fake.users;
+    await expect(again.jira.check?.(again.ctx)).rejects.toThrow(/matches 99 Jira users/);
+  });
+
+  it("refuses to start on an account id Jira has no user for", async () => {
+    const { jira, ctx } = scoped("557058:no-such-user");
+    await expect(jira.check?.(ctx)).rejects.toThrow(/jiraAssignee "557058:no-such-user" matches no Jira user/);
+  });
+
+  // A user read finds an account with no access to the project, or a deactivated one: the first create would fail, after a step is paid for.
+  it.each([["an email", PERSON.emailAddress as string], ["an account id", PERSON.accountId]])(
+    "refuses to start on %s whose account the project cannot assign issues to, naming it",
+    async (_, value) => {
+      const { fake, jira, ctx } = scoped(value);
+      fake.unassignable.add(PERSON.accountId);
+      await expect(jira.check?.(ctx)).rejects.toThrow(
+        `jiraAssignee "${value}" is account ${PERSON.accountId}, which KEY cannot assign issues to`,
+      );
+      fake.unassignable.clear();
+      const again = scoped(value);
+      await again.jira.check?.(again.ctx);
+    },
+  );
+
+  it("refuses an account id that would rewrite the query it is spelled into, before any request about it", async () => {
+    const { fake, jira, ctx } = scoped('x" OR project = "OTHER');
+    await expect(jira.items(ctx)).rejects.toThrow(/jiraAssignee .* is neither an email nor a Jira account id/);
+    expect(queries(fake)).toEqual([]);
+  });
+
+  it("names a missing \"Assign Issues\" permission and a type with no assignee field, only when scoped", async () => {
+    const { fake, jira, ctx } = scoped(PERSON.accountId);
+    fake.permissions.ASSIGN_ISSUES = false;
+    fake.issueTypes = fake.issueTypes.map((t) => (t.name === "Subtask" ? { ...t, fields: t.fields.filter((f) => f !== "assignee") } : t));
+    await expect(jira.check?.(ctx)).rejects.toThrow(/"Assign Issues" \(ASSIGN_ISSUES\) on KEY[\s\S]*"Subtask" issues have no assignee field/);
+    const unscoped = setup();
+    unscoped.fake.permissions.ASSIGN_ISSUES = false;
+    unscoped.fake.issueTypes = fake.issueTypes;
+    await unscoped.jira.check?.(unscoped.ctx);
+  });
+
+  it.each([["unset", undefined], ["empty", "  "]])("lists every open issue when the secret is %s, as before", async (_, value) => {
+    const { fake, jira, ctx } = setup({}, value === undefined ? SECRETS : { ...SECRETS, jiraAssignee: value });
+    fake.add({ assignee: PERSON });
+    fake.add({ assignee: OTHER });
+    const top = await jira.create({ title: "Top", body: "", parent: undefined, priority: undefined }, ctx);
+    expect(fake.issue(top).assignee).toBeNull();
+    expect(await jira.items(ctx)).toHaveLength(3);
+    for (const q of queries(fake)) expect(q).not.toContain("assignee");
+    expect(fake.calls.filter((c) => c.path.startsWith("/rest/api/3/user"))).toEqual([]);
   });
 });
 
