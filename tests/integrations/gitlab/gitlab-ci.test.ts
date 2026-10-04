@@ -177,10 +177,10 @@ describe("every pipeline on the head, combined", () => {
   type Seed = NonNullable<FakeMr["pipelines"]>[number];
   const onHead = (gl: FakeGitLab, pipelines: Seed[], extra: Partial<FakeMr> = {}) =>
     gl.open({ source_branch: "landrace/1", iid: 9, sha: "head", pipelines, ...extra });
-  const checks = (gl: FakeGitLab, mr: FakeMr, reviewers?: string[]) =>
-    new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git: noGit, reviewers }).checks(recordOf(mr), gl.ctx());
-  const failedChecks = (gl: FakeGitLab, mr: FakeMr, reviewers?: string[]) =>
-    new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git: noGit, reviewers }).failedChecks(recordOf(mr), gl.ctx());
+  const named = (gl: FakeGitLab, reviewers?: string[]) =>
+    new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git: noGit, reviewers: reviewers?.map((status) => ({ status })) });
+  const checks = (gl: FakeGitLab, mr: FakeMr, reviewers?: string[]) => named(gl, reviewers).checks(recordOf(mr), gl.ctx());
+  const failedChecks = (gl: FakeGitLab, mr: FakeMr, reviewers?: string[]) => named(gl, reviewers).failedChecks(recordOf(mr), gl.ctx());
 
   /** What a real project's head carries: its own two-hour pipeline, and one external pipeline of every status posted on the head. */
   const scanned = (merge: string, scanner: string, reviewer: string): Seed[] => [

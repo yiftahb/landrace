@@ -8,7 +8,7 @@ import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "l
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
   repositoryOf, ITEM_PAGE,
-  type BranchHeads, type ChangedFile, type ChangedFiles, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
+  type BranchHeads, type ChangedFile, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, PER_PAGE, statusOf, tokenRejected } from "./client.js";
@@ -279,19 +279,22 @@ function constructedIn(): string | null {
 const tooMany = (what: string): Error =>
   new Error(`${what}, more than one read carries — reporting what was read would be reporting a number known to be short`);
 
-export interface GitLabOptions {
+/**
+ * `reviewers` and `pull` are the kit's `ForgeOptions`: on GitLab a reviewer
+ * is a commit status by name — an AI reviewer's "review in progress /
+ * complete" — and every other status a tool posts on the head, a security
+ * scanner's, counts as CI.
+ */
+export interface GitLabOptions extends ForgeOptions {
   /** The project's full path: "group/app". */
   project: string;
   /** git in the operator's checkout; the repository of the file that constructs this when absent. */
   git?: Git | undefined;
   fetchImpl?: typeof fetch | undefined;
-  /**
-   * The names of commit statuses that are a reviewer's verdict, not CI — an
-   * AI reviewer's "review in progress / complete". Every other status a tool
-   * posts on the head, a security scanner's, counts as CI.
-   */
-  reviewers?: string[] | undefined;
 }
+
+/** A commit status's states that are over, whatever they say: a reviewer whose status reads one of these has finished. */
+const FINISHED = new Set(["success", "failed", "canceled", "skipped"]);
 
 export class GitLab extends BaseForge {
   /** GitLab's bound on a note, a discussion's included: a million characters. */
@@ -308,13 +311,10 @@ export class GitLab extends BaseForge {
    */
   private readonly parents = new Map<string, string[]>();
 
-  private readonly reviewers: Set<string>;
-
-  constructor({ project, git, fetchImpl, reviewers }: GitLabOptions) {
-    super();
+  constructor({ project, git, fetchImpl, reviewers, pull }: GitLabOptions) {
+    super({ reviewers, pull });
     this.project = project;
     this.fetchImpl = fetchImpl;
-    this.reviewers = new Set(reviewers);
     if (git) {
       this.git = git;
     } else {
@@ -417,7 +417,10 @@ export class GitLab extends BaseForge {
     return items;
   }
 
-  async openPull({ branch, title }: { item: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void> {
+  /** A description runs GitLab's quick actions on create, as a note does, so it goes inert too. */
+  async openPull(
+    { branch, title, description }: { item: string; branch: string; title: string; description?: string }, ctx: RuntimeContext,
+  ): Promise<void> {
     const gl = this.gl(ctx);
     // The project's own default branch, never an assumed "main".
     const info = await gl.get<{ default_branch?: unknown }>("");
@@ -425,7 +428,9 @@ export class GitLab extends BaseForge {
       throw new Error(`${this.project} did not say what its default branch is`);
     }
     try {
-      await gl.post("/merge_requests", { source_branch: branch, target_branch: info.default_branch, title });
+      await gl.post("/merge_requests", {
+        source_branch: branch, target_branch: info.default_branch, title, ...(description === undefined ? {} : { description: inert(description) }),
+      });
     } catch (e) {
       // "Another open merge request already exists for this source branch":
       // the effect landed, most likely on an attempt a crash cut off before
@@ -506,6 +511,26 @@ export class GitLab extends BaseForge {
       for (const job of jobs) failed.push({ name: job.name, log: await gl.text(`/jobs/${job.id}/trace`).catch(() => null) });
     }
     return failed;
+  }
+
+  /**
+   * The named reviewers whose commit status on the head is over — the latest
+   * of each name, whichever pipeline holds it. One the page does not reach is
+   * read as not posted, which is waiting, never finished.
+   */
+  override async finishedReviewers(pull: PullRecord, ctx: RuntimeContext): Promise<ReadonlySet<string>> {
+    if (pull.headSha === "") throw new Error(`!${pull.number} has no head commit to read its reviewers' statuses on`);
+    let items: Status[];
+    try {
+      ({ items } = await this.gl(ctx).pages<Status>(`/repository/commits/${encodeURIComponent(pull.headSha)}/statuses`, 1));
+    } catch (e) {
+      throw this.tokenRefusal(e, true);
+    }
+    return new Set(items.filter((s) => this.reviewers.has(s.name) && FINISHED.has(s.status)).map((s) => s.name));
+  }
+
+  protected override async root(): Promise<string> {
+    return (await this.git(["rev-parse", "--show-toplevel"])).trim();
   }
 
   private stateOf(status: string, pull: PullRecord): CheckState {
