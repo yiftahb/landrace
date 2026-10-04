@@ -11,6 +11,8 @@
  * the requests that post, reply and resolve, and every word said in the
  * forge's own name.
  */
+import { readFile, realpath } from "node:fs/promises";
+import { isAbsolute, join, sep } from "node:path";
 import {
   BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, hasPullFrom, ITEM_BRANCH, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT,
   PULL_MERGE_EFFECT,
@@ -19,12 +21,12 @@ import {
 import { headIn, headsOf } from "#kit/git.js";
 import { createdAtOf, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
 import type {
-  BranchHeads, BriefTable, ChangedFile, ChangedFiles, CheckCounts, CheckState, Effect, EffectTable, FailedCheck, Finding, Graph, HistoryItem,
+  BranchHeads, BriefTable, ChangedFile, ChangedFiles, CheckCounts, CheckState, Effect, EffectTable, FailedCheck, Finding, ForgeOptions, Graph, HistoryItem,
   HookContext, MergeAnswer, Node, PullRecord, RelationDecl, Relationship, Reply, ReviewThread, RuntimeContext, Snapshot,
   SnapshotComment, ThreadComment, ThreadCounts,
 } from "#namespace.js";
 
-export type { ChangedFile, ChangedFiles, Finding, Reply, ReviewThread, ThreadComment, ThreadCounts } from "#namespace.js";
+export type { ChangedFile, ChangedFiles, Finding, ForgeOptions, Reply, ReviewThread, ThreadComment, ThreadCounts } from "#namespace.js";
 
 /** The marker kind a finding's thread ends with: how a reviewer's own thread is told from a person's. */
 export const FINDING_KIND = "finding";
@@ -190,6 +192,33 @@ export function pullNode(pull: Omit<PullRecord, "items">, threads?: ThreadCounts
  */
 export const checkCounts = (checks: CheckState): CheckCounts =>
   ({ checks, ciPending: checks === "pending" ? 1 : 0, ciFailed: checks === "failure" ? 1 : 0 });
+
+/** What `pull.title` may name, and what `pull.description`'s template may. */
+export const PULL_TITLE_FIELDS: readonly string[] = ["item", "title"];
+export const PULL_DESCRIPTION_FIELDS: readonly string[] = ["item", "link", "spec"];
+
+const PLACEHOLDER = /\{(\w+)\}/g;
+
+/** Every `{name}` in `text` that `known` does not list, each once. */
+export const unknownPlaceholders = (text: string, known: readonly string[]): string[] =>
+  [...new Set([...text.matchAll(PLACEHOLDER)].map((m) => m[1] as string))].filter((name) => !known.includes(name));
+
+/**
+ * `text` with each `{name}` filled from `values`, in one pass: an item title
+ * that itself reads `{item}` is put in as it is, never filled again.
+ */
+export const fillPlaceholders = (text: string, values: Readonly<Record<string, string>>): string =>
+  text.replace(PLACEHOLDER, (whole, name: string) => (Object.hasOwn(values, name) ? (values[name] as string) : whole));
+
+const placeholderList = (names: readonly string[]): string => names.map((n) => `{${n}}`).join(", ");
+
+/**
+ * Whether `path` names a file under the project's `.landrace/`, as written:
+ * relative, and with no `..` to climb out by. Where it really lands — a link
+ * inside `.landrace/` may point anywhere — is checked when it is read.
+ */
+const underLandrace = (path: string): boolean =>
+  !isAbsolute(path) && path.startsWith(".landrace/") && !path.split(/[\\/]/).includes("..");
 
 /**
  * What the `ci` briefing carries: each failed check's log from its end, where
@@ -588,6 +617,39 @@ const reviewedHead = (snapshot: Snapshot, stage: string): string | undefined => 
  */
 export abstract class BaseForge {
   /**
+   * The names of the statuses `reviewers` waits on: an integration leaves
+   * each out of `checks` and `failedChecks`, and `finishedReviewers` says
+   * which have finished on a head.
+   */
+  protected readonly reviewers: ReadonlySet<string>;
+  private readonly pullText: NonNullable<ForgeOptions["pull"]>;
+
+  /**
+   * Refuses, at load, a reviewer with no status, a title naming anything
+   * but its placeholders, and a description that is not a path under
+   * `.landrace/`. The template's own placeholders are read at start, by
+   * `checkOptions`.
+   */
+  constructor({ reviewers = [], pull = {} }: ForgeOptions = {}) {
+    for (const r of reviewers) {
+      if (typeof r?.status !== "string" || r.status.trim() === "") {
+        throw new Error(`each of a forge's reviewers names the status it posts, as { status: "<name>" }; this one is ${JSON.stringify(r)}`);
+      }
+    }
+    this.reviewers = new Set(reviewers.map((r) => r.status));
+    if (pull.title !== undefined) {
+      const unknown = unknownPlaceholders(pull.title, PULL_TITLE_FIELDS);
+      if (unknown.length > 0) {
+        throw new Error(`pull.title "${pull.title}" names ${placeholderList(unknown)}; it may name only ${placeholderList(PULL_TITLE_FIELDS)}`);
+      }
+    }
+    if (pull.description !== undefined && !underLandrace(pull.description)) {
+      throw new Error(`pull.description "${pull.description}" is not a template file under .landrace/, as a path from the project's root: ".landrace/templates/pull.md"`);
+    }
+    this.pullText = pull;
+  }
+
+  /**
    * The most one comment body may carry on this forge — its vendor's bound,
    * which only the integration knows. The base cuts every review, finding
    * and reply it composes a thousand under it, room for the marker, rather
@@ -615,8 +677,13 @@ export abstract class BaseForge {
   abstract changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFiles>;
   /** The body of every review posted on a pull request: its marker is what says a round is already there. */
   abstract reviews(pull: number, ctx: RuntimeContext): Promise<string[]>;
-  /** Propose `branch` for `item`, naming the item in the forge's own way. */
-  abstract openPull(pull: { item: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void>;
+  /**
+   * Propose `branch` for `item`, naming the item in the forge's own way, with
+   * `description` as its text when `pull.description` is set — already
+   * filled and escaped, and still the forge's to make inert to its own
+   * commands.
+   */
+  abstract openPull(pull: { item: string; branch: string; title: string; description?: string }, ctx: RuntimeContext): Promise<void>;
   /** Close a pull request without merging it. */
   abstract closePull(pull: number, ctx: RuntimeContext): Promise<void>;
   /** Its checks on `pull.headSha`, the commit the record was read at and `merge` is guarded by: `none` only when nothing is configured or started. */
@@ -662,6 +729,86 @@ export abstract class BaseForge {
 
   /** Run once at startup, before anything is paid for. */
   check?(ctx: RuntimeContext): Promise<void>;
+
+  /**
+   * Which of `reviewers` have finished on `pull.headSha`: their status there
+   * in a terminal state, whatever it says. One missing or still running is
+   * not. Asked only with `reviewers` set, and only of an open pull request;
+   * a forge without it has `reviewers` refused at start, by `checkOptions`.
+   */
+  finishedReviewers?(pull: PullRecord, ctx: RuntimeContext): Promise<ReadonlySet<string>>;
+
+  /**
+   * The project's root, which `pull.description` is a path from. The shipped
+   * forges answer their checkout's; a forge without it has
+   * `pull.description` refused at start, by `checkOptions`.
+   */
+  protected root?(ctx: RuntimeContext): Promise<string>;
+
+  /**
+   * The base's own options, checked at start, before the integration's
+   * `check`: `reviewers` on a forge that cannot read them, and the
+   * description template — read, inside `.landrace/`, naming no placeholder
+   * it is not filled with.
+   */
+  async checkOptions(ctx: RuntimeContext): Promise<void> {
+    if (this.reviewers.size > 0 && !this.finishedReviewers) throw new Error("reviewers is set, but this forge cannot read a reviewer's status");
+    await this.template(ctx);
+  }
+
+  /** `pull.description`'s template, read where it really is, or a sentence saying why it cannot be used. */
+  private async template(ctx: RuntimeContext): Promise<string | undefined> {
+    const path = this.pullText.description;
+    if (path === undefined) return undefined;
+    if (!this.root) throw new Error(`pull.description ${path} cannot be read: this forge cannot say where the project's root is`);
+    const root = await this.root(ctx);
+    let file: string;
+    let text: string;
+    try {
+      const dir = await realpath(join(root, ".landrace"));
+      file = await realpath(join(root, path));
+      if (!file.startsWith(dir + sep)) throw new Error(`it resolves to ${file}, outside .landrace/`);
+      text = await readFile(file, "utf8");
+    } catch (e) {
+      throw new Error(`pull.description ${path} cannot be read: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    const unknown = unknownPlaceholders(text, PULL_DESCRIPTION_FIELDS);
+    if (unknown.length > 0) {
+      throw new Error(`pull.description ${path} names ${placeholderList(unknown)}; it may name only ${placeholderList(PULL_DESCRIPTION_FIELDS)}`);
+    }
+    return text;
+  }
+
+  /**
+   * The title and description a pull request for the item opens with. With
+   * no `pull` options, the item's title and no description, as before them.
+   * Every value from the item is escaped as everywhere else, so its text
+   * cannot carry our markers; `{spec}` is the link of the page that
+   * documents the item, empty when the snapshot has none.
+   */
+  protected async opening(ctx: HookContext): Promise<{ title: string; description: string | undefined }> {
+    const graph = ctx.snapshot.graph as Graph | undefined;
+    const node = ctx.snapshot.node as Node | undefined;
+    const itemTitle = node?.title ?? `#${ctx.item}`;
+    const format = this.pullText.title;
+    const title = format === undefined
+      ? itemTitle
+      : fillPlaceholders(format, { item: neutraliseMarkers(ctx.item), title: neutraliseMarkers(itemTitle) });
+    let template: string | undefined;
+    try {
+      template = await this.template(ctx);
+    } catch (e) {
+      // The same file read again finds the same fault: a person's to fix.
+      throw new EffectRefused(`cannot open a pull request for #${ctx.item}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (template === undefined) return { title, description: undefined };
+    const documents = graph?.relationships.find((r) => r.type === RELATIONS.documents && r.to === ctx.item);
+    const spec = documents === undefined ? undefined : graph?.nodes.find((n) => n.id === documents.from)?.link;
+    const description = fillPlaceholders(template, {
+      item: neutraliseMarkers(ctx.item), link: neutraliseMarkers(node?.link ?? ""), spec: neutraliseMarkers(spec ?? ""),
+    });
+    return { title, description };
+  }
 
   relations(): RelationDecl[] {
     return [{ type: RELATIONS.implements, singular: true }];
@@ -713,7 +860,7 @@ export abstract class BaseForge {
    * loop the item through review for ever — so a closed one is zero, not
    * absent, which keeps "no thread awaits a fix" readable once all are merged.
    * Its checks likewise: only an open one's are asked for, and a closed one
-   * reads `none` with both counts zero, at no cost.
+   * reads `none` with both counts zero, at no cost — and `reviewPending` 0.
    */
   async read(items: string[], ctx: RuntimeContext, isItem: (id: string) => Promise<boolean>): Promise<Graph> {
     const nodes = new Map<number, Node>();
@@ -734,12 +881,25 @@ export abstract class BaseForge {
         const threads = open
           ? threadCounts(await this.threads(pull.number, ctx), await this.login(ctx))
           : { openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0 };
-        const node = this.node(pull, threads, checkCounts(open ? await this.checks(pull, ctx) : "none"));
+        const ci = checkCounts(open ? await this.checks(pull, ctx) : "none");
+        const node = this.node(pull, threads, { ...ci, reviewPending: open ? await this.reviewPending(pull, ctx) : 0 });
         nodes.set(pull.number, node);
         relationships.push({ from: node.id, to: item, type: RELATIONS.implements });
       }
     }
     return { nodes: [...nodes.values()], relationships };
+  }
+
+  /**
+   * 1 while any named reviewer has not finished on the pull request's head —
+   * its status missing, or still running — and 0 once every one has, or when
+   * none is named. Summed like `ciPending`.
+   */
+  private async reviewPending(pull: PullRecord, ctx: RuntimeContext): Promise<number> {
+    if (this.reviewers.size === 0) return 0;
+    if (!this.finishedReviewers) throw new Error("reviewers is set, but this forge cannot read a reviewer's status");
+    const finished = await this.finishedReviewers(pull, ctx);
+    return [...this.reviewers].every((name) => finished.has(name)) ? 0 : 1;
   }
 
   effects(): EffectTable {
@@ -763,8 +923,8 @@ export abstract class BaseForge {
               "so no step has committed anything to it",
             );
           }
-          const title = (ctx.snapshot.node as Node | undefined)?.title ?? `#${ctx.item}`;
-          await this.openPull({ item: ctx.item, branch, title }, ctx);
+          const { title, description } = await this.opening(ctx);
+          await this.openPull({ item: ctx.item, branch, title, ...(description === undefined ? {} : { description }) }, ctx);
         },
       },
       [PULL_REVIEW_EFFECT]: {

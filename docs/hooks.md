@@ -53,7 +53,7 @@ A source fills every field an `eligible` rule may read — `labels`, and `assign
 `landrace/kit` holds what every integration of a role shares. A new tracker, forge or docs integration extends one of three bases and writes only its vendor's calls, answered in plain neutral shapes — `ItemRecord`, `PullRecord`, `ReviewThread`, `ChangedFile` — that it maps its API's answers into:
 
 - **`BaseTracker`** — list and read items and their children, read and post comments, add and remove labels, close, create and update an item, and add and remove a relationship of a type it lists in `writableRelations()`.
-- **`BaseForge`** — list pull requests and those naming an item, read threads, changed files and posted reviews, open and close a pull request, post a review, reply and resolve, read a pull request's checks and the ones that failed, merge it at a head, read branch heads and push. It declares `commentChars`, its vendor's bound on one comment (GitHub's 65,536, GitLab's 1,000,000), which the base cuts every review, finding and reply under.
+- **`BaseForge`** — list pull requests and those naming an item, read threads, changed files and posted reviews, open and close a pull request, post a review, reply and resolve, read a pull request's checks and the ones that failed, merge it at a head, read branch heads and push. It declares `commentChars`, its vendor's bound on one comment (GitHub's 65,536, GitLab's 1,000,000), which the base cuts every review, finding and reply under. Its constructor takes the [forge options](integrations.md#forge-options) `reviewers` and `pull`. For those, it writes two optional methods: `finishedReviewers`, which named reviewers have finished on a head, and `root`, the project's root that `pull.description` is a path from. A forge without one has the option that needs it refused at start.
 - **`BaseDocs`** — read, publish and link an item's page, and list which items have one.
 
 The base holds everything else: the graph and its bounds, the pre hook's fragment, an `effects()` table with each effect's `satisfied()` beside its `apply()`, a `briefs()` table, the history's entries, and the operator's writes. To change one piece, subclass and override it — an effect by spreading `super.effects()` and replacing or adding an entry.
@@ -73,7 +73,7 @@ That is one preflight, one source, one operator, one pre and one post hook under
 
 - **Clashes halt.** An effect type, a briefing key or a snapshot path two roles claim stops `compose`, naming both; a node id two roles report stops `list` or `read`.
 - **`nodes.close`** is the one effect two roles share: its ids are split by their kind in the snapshot's graph — items to the tracker, pull requests to the forge — and a kind no role closes halts.
-- **Preflight.** Each role's own `check` runs in the preflight, and its failure names the role.
+- **Preflight.** Each role's own `check` runs in the preflight, and its failure names the role. The forge's base options are checked first, by `checkOptions`.
 - **Pull requests.** A forge's pull request implements an item by its `landrace/{item}` branch in the same repository, and by nothing its own text says. `PullRecord.items` is for an integration that ties a pull request to an item some other way; the shipped forges leave it empty, and one tied to two items halts a read.
 
 `createExternalState` in `landrace/testing` is `compose` over `MemoryTracker`, `MemoryForge` and `MemoryDocs`, built exactly this way — see [Development](development.md#testing-a-workflow-of-your-own).

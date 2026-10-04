@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { createClient, GitHubForge } from "landrace/integrations/github";
-import { branchHeads, gitIn } from "landrace/kit";
+import { createClient, GitHubForge, GitHubIssues } from "landrace/integrations/github";
+import { branchHeads, compose, gitIn } from "landrace/kit";
 import type { Effect, Git, HookContext, Snapshot } from "#namespace.js";
 import { createFakeTracker, noBranches, type FakeTracker } from "#tests/support/fake-tracker.js";
 import { commitAt, commitOn, gitRepoWithOrigin, pushedElsewhere, removeRepos } from "#tests/support/repo.js";
@@ -562,6 +562,26 @@ describe("pull.open", () => {
     ]);
     // And the graph now carries it, by branch, which is what satisfied() reads.
     expect(post(gh).satisfied(await snapshotOf(gh), open)).toBe(true);
+  });
+
+  it("opens with the title and description the forge's pull options make, read from the checkout's .landrace/", async () => {
+    const { root } = await checkout();
+    await build(root, "landrace/1");
+    await mkdir(join(root, ".landrace", "templates"), { recursive: true });
+    await writeFile(join(root, ".landrace", "templates", "pull.md"), "Item {item}: {link}\n");
+    const gh = createFakeTracker([{ number: 1, title: "Add CSV export" }], { git: gitIn(root) });
+    const client = createClient({ repo: "acme/widgets", token: TOKEN, fetchImpl: gh.fetchImpl });
+    const forge = new GitHubForge({
+      closingRefs: true, client, git: gitIn(root), pull: { title: "[{item}] {title}", description: ".landrace/templates/pull.md" },
+    });
+    const hooks = compose({ tracker: new GitHubIssues({ client }), forge });
+    await forge.checkOptions(gh.ctx);
+
+    await hooks.post.apply(open, contextOf(gh, await snapshotOf(gh)));
+
+    const [opened] = [...gh.pulls.values()];
+    expect(opened).toMatchObject({ head: "landrace/1", title: "[1] Add CSV export", closes: [1] });
+    expect(opened?.body).toMatch(/^Item 1: https:\/\/\S+\n\n\nCloses #1$/);
   });
 
   /*

@@ -1,4 +1,5 @@
-import { createClient, GitHubForge } from "landrace/integrations/github";
+import { createClient, GitHubForge, GitHubIssues } from "landrace/integrations/github";
+import { compose } from "landrace/kit";
 import { buildBriefing } from "#runner/artifacts.js";
 import { createFakeTracker, githubHooks, noBranches, type FakePull, type FakeTracker } from "#tests/support/fake-tracker.js";
 import type { Effect, Graph, HookContext, PullRecord, Snapshot } from "#namespace.js";
@@ -59,6 +60,78 @@ describe("a pull request's checks", () => {
     expect(state("pr-10")).toMatchObject({ checks: "failure", ciPending: 0, ciFailed: 1 });
     expect(state("pr-11")).toMatchObject({ checks: "none", ciPending: 0, ciFailed: 0 });
     expect(checksQueries(gh).map((q) => q.variables.oid)).toEqual(["red"]);
+  });
+});
+
+describe("named reviewers", () => {
+  const reviewing = (gh: FakeTracker): GitHubForge => new GitHubForge({
+    closingRefs: true, reviewers: [{ status: "CodeRabbit" }],
+    client: createClient({ repo: "acme/widgets", token: "test-token", fetchImpl: gh.fetchImpl }),
+  });
+
+  it.each<[string, Partial<FakePull>, number]>([
+    ["a run still in progress", { checkRuns: [run(1, "CodeRabbit", null, { status: "in_progress" })] }, 1],
+    ["a run queued", { checkRuns: [run(1, "CodeRabbit", null, { status: "queued" })] }, 1],
+    ["a run completed", { checkRuns: [run(1, "CodeRabbit", "neutral")] }, 0],
+    ["a run that failed", { checkRuns: [run(1, "CodeRabbit", "failure")] }, 0],
+    ["a status pending", { statuses: [{ context: "CodeRabbit", state: "pending" }] }, 1],
+    ["a status that succeeded", { statuses: [{ context: "CodeRabbit", state: "success" }] }, 0],
+    ["neither", { statuses: [{ context: "ci/other", state: "success" }] }, 1],
+  ])("reads %s as reviewPending %s", async (_said, seed, pending) => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 10, headSha: "head", checks: "SUCCESS", ...seed });
+    const client = createClient({ repo: "acme/widgets", token: "test-token", fetchImpl: gh.fetchImpl });
+    const hooks = compose({ tracker: new GitHubIssues({ client }), forge: reviewing(gh) });
+    const graph = await hooks.source.read("1", gh.ctx);
+    expect(graph.nodes.find((n) => n.id === "pr-10")?.state).toMatchObject({ reviewPending: pending });
+  });
+
+  it("refuses, rather than call a reviewer missing, when GitHub listed only part of the head's checks", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const pull = gh.openPull({ head: "landrace/1", headSha: "head", checkRuns: [run(1, "unit", "success")], checkRunsTotal: 150 });
+    await expect(reviewing(gh).finishedReviewers(recordOf(pull), gh.ctx)).rejects.toThrow(/CodeRabbit/);
+  });
+
+  it.each([
+    ["finished", "success", ["CodeRabbit"]],
+    ["running", null, []],
+  ] as const)("reads a reviewer %s on the part GitHub listed as it stands", async (_said, conclusion, finished) => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const runs = [run(1, "CodeRabbit", conclusion, conclusion === null ? { status: "in_progress" } : {})];
+    const pull = gh.openPull({ head: "landrace/1", headSha: "head", checkRuns: runs, checkRunsTotal: 150 });
+    expect(await reviewing(gh).finishedReviewers(recordOf(pull), gh.ctx)).toEqual(new Set(finished));
+  });
+
+  it.each([
+    ["CI green beside a running reviewer", [run(1, "unit", "success"), run(2, "CodeRabbit", null, { status: "in_progress" })], "success"],
+    ["CI green beside a failed reviewer", [run(1, "unit", "success"), run(2, "CodeRabbit", "failure")], "success"],
+    ["CI running", [run(1, "unit", null, { status: "in_progress" }), run(2, "CodeRabbit", "success")], "pending"],
+    ["CI red", [run(1, "unit", "failure"), run(2, "CodeRabbit", "success")], "failure"],
+    ["only the reviewer", [run(2, "CodeRabbit", "success")], "none"],
+  ] as const)("leaves the reviewer out of checks: %s reads %s", async (_said, checkRuns, expected) => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    // The rollup folds the reviewer in: never what is read once a reviewer is named.
+    const pull = gh.openPull({ head: "landrace/1", headSha: "head", checks: "FAILURE", checkRuns: [...checkRuns] });
+    expect(await reviewing(gh).checks(recordOf(pull), gh.ctx)).toBe(expected);
+    expect(checksQueries(gh)).toEqual([]);
+  });
+
+  it("leaves a reviewer's status out of checks, and its failure out of the failed checks", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const pull = gh.openPull({
+      head: "landrace/1", headSha: "head",
+      statuses: [{ context: "CodeRabbit", state: "failure" }, { context: "ci/jenkins", state: "success" }],
+      checkRuns: [run(1, "CodeRabbit", "failure")],
+    });
+    expect(await reviewing(gh).checks(recordOf(pull), gh.ctx)).toBe("success");
+    expect(await reviewing(gh).failedChecks(recordOf(pull), gh.ctx)).toEqual([]);
+    expect((await forgeOf(gh).failedChecks(recordOf(pull), gh.ctx)).map((c) => c.name)).toEqual(["CodeRabbit", "CodeRabbit"]);
+  });
+
+  it("never reads a list GitHub did not give whole as green", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const pull = gh.openPull({ head: "landrace/1", headSha: "head", checkRuns: [run(1, "unit", "success")], checkRunsTotal: 101 });
+    expect(await reviewing(gh).checks(recordOf(pull), gh.ctx)).toBe("pending");
   });
 });
 

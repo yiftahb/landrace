@@ -62,6 +62,8 @@ const FILE_PAGES = 30;
 export interface CheckRun {
   id: number;
   name: string;
+  /** "queued", "in_progress", "completed", or another of GitHub's waiting states. */
+  status?: string;
   /** Null until the run completes. */
   conclusion: string | null;
   app?: { slug?: string } | null;
@@ -450,9 +452,10 @@ export function createClient(opts: GitHubOptions) {
     },
     /** One page of a commit's check runs; see the forge for why one is all that is read. */
     checkRuns: (sha: string, perPage: number) =>
-      call<{ check_runs?: CheckRun[] }>("GET", `/commits/${encodeURIComponent(sha)}/check-runs?per_page=${perPage}`),
-    /** A commit's statuses, the older way a service reports on a commit. */
-    commitStatus: (sha: string) => call<{ statuses?: CommitStatus[] }>("GET", `/commits/${encodeURIComponent(sha)}/status`),
+      call<{ total_count?: number; check_runs?: CheckRun[] }>("GET", `/commits/${encodeURIComponent(sha)}/check-runs?per_page=${perPage}`),
+    /** A commit's statuses, the latest of each context, one page of 100 — the older way a service reports on a commit. */
+    commitStatus: (sha: string) =>
+      call<{ total_count?: number; statuses?: CommitStatus[] }>("GET", `/commits/${encodeURIComponent(sha)}/status?per_page=100`),
     /**
      * An Actions job's log as text. GitHub answers with a redirect to where
      * the text lives, which fetch follows — and drops the Authorization header

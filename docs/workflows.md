@@ -144,8 +144,9 @@ A pull request is a node like any other, `kind: "pull-request"`, and its `state`
 | `awaitingBehaviourFix` | Of those, every one but the reviewer's own findings flagged `wording`. A forge that does not report it leaves the path absent, and fastlane reads that as behaviour |
 | `checks` | The checks on its head: `pending`, `success`, `failure`, or `none` when nothing is configured or nothing has started yet |
 | `ciPending`, `ciFailed` | `1` or `0` each, so a workflow can count: `rel.implements.in.sum.ciPending` is how many of the item's pull requests still wait on CI, `sum.ciFailed` how many are red. `none` counts as neither |
+| `reviewPending` | `1` while an external reviewer the forge names in `reviewers` has not finished on its head, `0` otherwise and always `0` with none named — see [Forge options](integrations.md#reviewers) |
 
-Only an open pull request's threads and checks are read. A merged or closed one reports `openThreads: 0`, `awaitingFix: 0`, `awaitingBehaviourFix: 0` and `checks: "none"` with both counts `0`, so a sum stays defined once every pull request is done. A workflow waits for CI with `rel.implements.in.sum.ciPending: 0` and reads a red build as `rel.implements.in.sum.ciFailed: { $gt: 0 }`.
+Only an open pull request's threads and checks are read. A merged or closed one reports `openThreads: 0`, `awaitingFix: 0`, `awaitingBehaviourFix: 0`, `checks: "none"` with both counts `0`, and `reviewPending: 0`, so a sum stays defined once every pull request is done. A workflow waits for CI with `rel.implements.in.sum.ciPending: 0` and reads a red build as `rel.implements.in.sum.ciFailed: { $gt: 0 }`. It waits for an external reviewer with `rel.implements.in.sum.reviewPending: 0`.
 
 Anything else a condition reads must be provided by a hook: `validate`'s `path-coverage` rule refuses a path nothing provides. What the GitHub pre hook adds is in [Writing an integration](hooks.md#pre-hooks-and-path-coverage).
 

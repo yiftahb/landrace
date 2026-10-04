@@ -314,13 +314,15 @@ export function createFakeGitLab(): FakeGitLab {
       const failed = url.searchParams.get("scope[]") === "failed" ? owner?.failedJobs?.get(Number(jobs[1])) ?? [] : [];
       return page(failed.map((j) => ({ ...j, status: "failed" })), url.searchParams);
     }
-    // A commit's statuses, the latest of each name, narrowed to one pipeline by `pipeline_id`.
+    // A commit's statuses, the latest of each name, narrowed to one pipeline by `pipeline_id` and to one name by `name`.
     const statuses = /^\/repository\/commits\/([^/]+)\/statuses$/.exec(rest);
     if (statuses && method === "GET") {
       const sha = decodeURIComponent(statuses[1] ?? "");
       const id = url.searchParams.get("pipeline_id");
+      const name = url.searchParams.get("name");
       const on = newest([...mrs.values()]).filter((p) => p.sha === sha && (id === null || p.id === Number(id)));
-      return page(on.flatMap((p) => (p.statuses ?? []).map((s) => ({ allow_failure: false, description: null, target_url: null, ...s, sha }))), url.searchParams);
+      const all = on.flatMap((p) => (p.statuses ?? []).map((s) => ({ allow_failure: false, description: null, target_url: null, ...s, sha })));
+      return page(all.filter((s) => name === null || s.name === name), url.searchParams);
     }
     const commit = /^\/repository\/commits\/([^/]+)$/.exec(rest);
     if (commit && method === "GET") {
