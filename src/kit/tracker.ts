@@ -11,14 +11,14 @@
  * mapping what they answer into the plain fields `itemNode` takes.
  */
 import {
-  allClosed, CLOSE_EFFECT, distinctRelations, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES,
+  allClosed, CLOSE_EFFECT, CREATED_KIND, distinctRelations, EffectRefused, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS, labelsOf, MAX_SUBGRAPH_NODES,
   neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATED_FACTS, RELATIONS, renderMarker,
-  renderOrigin, sameLogin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND,
+  renderOrigin, sameLogin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND, TRACKER_CREATE_EFFECT,
 } from "#conventions.js";
 import { commentLine } from "#kit/forge.js";
 import type {
-  BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, OpenRelations, RelatedRecord, RelationDecl, Relationship,
-  PreflightContext, RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
+  BriefTable, CreateRequest, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, OpenRelations, RelatedRecord, RelationDecl,
+  Relationship, PreflightContext, RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
 } from "#namespace.js";
 
 export type { SnapshotComment } from "#namespace.js";
@@ -153,6 +153,33 @@ export function commentSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   const bot = botLoginOf(snapshot);
   const marker = String(effect.marker);
   return commentsOf(snapshot).some((c) => wroteIt(c, bot) && parseMarker(c.body ?? "")?.marker === marker);
+}
+
+/**
+ * The marker of the record a `tracker.create` leaves on the item: its own
+ * marker, under `created:`. One with none cannot be reconciled — nothing
+ * would say the issue had been filed — so it halts, as a comment with none
+ * does.
+ */
+export function createdMarker(effect: Effect): string {
+  if (typeof effect.marker !== "string" || effect.marker === "") {
+    throw new Error(
+      "a tracker.create effect with no marker cannot be reconciled: nothing would record that its issue had been filed, " +
+      "so one would be filed on every tick; put it in a route's effects, which marks each one",
+    );
+  }
+  return `${CREATED_KIND}:${effect.marker}`;
+}
+
+/** `tracker.create`: a record we wrote on the item, naming the issue this effect filed. */
+export function createdSatisfied(snapshot: Snapshot, effect: Effect): boolean {
+  const marker = createdMarker(effect);
+  const bot = botLoginOf(snapshot);
+  return commentsOf(snapshot).some((c) => {
+    if (!wroteIt(c, bot)) return false;
+    const m = parseMarker(c.body ?? "");
+    return m?.kind === CREATED_KIND && m.marker === marker;
+  });
 }
 
 /** `nodes.close`: every node named is closed. */
@@ -420,7 +447,7 @@ export function stillOpen(snapshot: Snapshot, effect: Effect): string[] {
  * An integration extends this and writes the abstract methods — each one a
  * request to its tracker, answered in the plain shapes of `src/namespace.ts`.
  * Everything a tracker does that is not its vendor's is here: the item
- * graph and its bounds, the pre hook's fragment, the five tracker effects
+ * graph and its bounds, the pre hook's fragment, the six tracker effects
  * with their `satisfied()`, the history's comments, and the operator's two
  * writes. `compose` makes the hooks out of it.
  *
@@ -457,6 +484,54 @@ export abstract class BaseTracker {
   ): Promise<string>;
   /** Change an item's title, body or state; labels go through `addLabels` and `removeLabel`. */
   abstract update(id: string, fields: Pick<ItemPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void>;
+
+  /**
+   * The projects `tracker.create` files issues in: none, until an
+   * integration opts in. `validate` refuses a workflow filing one elsewhere.
+   */
+  createsIn(): string[] {
+    return [];
+  }
+
+  /**
+   * File `request` as an issue in its project, linked to its item, carrying
+   * its marker as who created it, unlabelled — and answer its key. Asked only
+   * for a project `createsIn()` names; the base has checked it.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the context is what an integration that opts in calls with
+  protected async createIn(request: CreateRequest, ctx: RuntimeContext): Promise<string> {
+    throw new EffectRefused(`this tracker files issues in no other project, not "${request.project}"`);
+  }
+
+  /**
+   * The issue already filed for `request` — in its project, for its item,
+   * carrying its marker — or null: asked first, so a crash between filing an
+   * issue and recording it never files two.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- what an integration that opts in reads
+  protected async createdBy(request: CreateRequest, ctx: RuntimeContext): Promise<string | null> {
+    return null;
+  }
+
+  /** What a `tracker.create` asks for, escaped, or a refusal saying why it cannot be filed. */
+  private createRequest(effect: Effect, item: string): CreateRequest {
+    const projects = this.createsIn();
+    const project = effect.project;
+    if (typeof project !== "string" || !projects.includes(project)) {
+      const where = projects.length === 0 ? "no other project" : projects.map((p) => `"${p}"`).join(", ");
+      throw new EffectRefused(`this tracker files issues in ${where}, not ${JSON.stringify(project ?? null)}`);
+    }
+    if (typeof effect.title !== "string" || effect.title.trim() === "") {
+      throw new EffectRefused(`a tracker.create effect names no title for its issue in ${project}`);
+    }
+    return {
+      project,
+      title: neutraliseMarkers(effect.title),
+      body: neutraliseMarkers(String(effect.body ?? "")),
+      item,
+      marker: createdMarker(effect),
+    };
+  }
 
   /** Run once at startup, before anything is paid for: a permission the workflow needs and the token lacks, say. */
   check?(ctx: PreflightContext): Promise<void>;
@@ -622,6 +697,15 @@ export abstract class BaseTracker {
           // No kind, no marker: an operator's reply is genuinely a human turn,
           // and stamping it would read a person's words as our own record.
           await this.comment(ctx.item, effect.kind === undefined ? body : body + renderMarker(recordMarker(effect)), ctx);
+        },
+      },
+      [TRACKER_CREATE_EFFECT]: {
+        satisfied: createdSatisfied,
+        apply: async (effect, ctx) => {
+          const request = this.createRequest(effect, ctx.item);
+          const key = (await this.createdBy(request, ctx)) ?? (await this.createIn(request, ctx));
+          const record: Effect = { type: RECORD_EFFECT, kind: CREATED_KIND, stage: effect.stage, round: effect.round, marker: request.marker };
+          await this.comment(ctx.item, `Filed ${key}: ${request.title}` + renderMarker(recordMarker(record)), ctx);
         },
       },
       [CLOSE_EFFECT]: {

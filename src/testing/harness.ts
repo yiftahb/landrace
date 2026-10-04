@@ -86,6 +86,7 @@ export function createHarness(options: HarnessOptions): Harness {
   const breaking = (inner: PostHook, applied: () => number): PostHook => ({
     id: inner.id,
     handles: inner.handles,
+    creates: inner.creates,
     satisfied: (s, e) => inner.satisfied(s, e),
     apply: async (effect, ctx) => {
       if (options.interrupt?.(effect, applied())) throw new Error("the process died here");

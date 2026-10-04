@@ -465,6 +465,28 @@ export const CONVERSATION_KIND = "conversation";
  */
 export const CHILD_KIND = "child";
 
+/**
+ * The marker kind on each effect of a route's `effects`, under the marker
+ * `part:{stage}:{round}:{index}`: what reconcile reads to skip a part that
+ * landed before a crash. Core counts no part, so the round settles once, on
+ * the output record that follows them.
+ */
+export const PART_KIND = "part";
+
+/**
+ * File an issue in another project of the tracker, linked to the item and
+ * left unlabelled, so nothing works it here. Only a tracker that opts in
+ * (`createsIn`) does, and only in the projects it names.
+ */
+export const TRACKER_CREATE_EFFECT = "tracker.create";
+
+/**
+ * The record a `tracker.create` leaves on the item, naming the issue it
+ * filed, under the marker `created:<the effect's marker>`: what its
+ * `satisfied()` reads.
+ */
+export const CREATED_KIND = "created";
+
 /** Drop nodes: planned by core from `{ type, follow }` into `{ type, ids }`. */
 export const NODES_CLOSE_EFFECT = "nodes.close";
 

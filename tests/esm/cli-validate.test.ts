@@ -177,6 +177,33 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    * against, and reporting every path in the workflow as uncovered would bury
    * the one problem that is real.
    */
+  /*
+   * `tracker.create` files an issue only where the loaded tracker opts in,
+   * which its post hook reports as `creates`; `start` refuses the same.
+   */
+  it("reports an issue filed in a project the loaded tracker does not create in", async () => {
+    const post = (creates: string) => `const KIND = Symbol.for("landrace.hook.kind");
+export const post = Object.defineProperty(
+  { id: "fixture", handles: ["tracker.create"], creates: ${creates}, satisfied: () => false, apply: async () => {} },
+  KIND, { value: "post", enumerable: false },
+);
+`;
+    const filing = async (creates: string): Promise<string[]> => {
+      const dir = await workflowDir(post(creates));
+      const file = join(workflowIn(dir), "workflow.yaml");
+      const yaml = await readFile(file, "utf8");
+      await writeFile(file, yaml.replace(
+        "    entry: true\n",
+        '    entry: true\n    on_enter:\n      - { type: tracker.create, project: ENG, title: Bug, marker: "bug:{round}" }\n',
+      ));
+      return (await runValidate(dir)).problems.filter((p) => p.rule === "tracker-create").map((p) => p.message);
+    };
+    expect(await filing("[]")).toEqual([
+      'stage "spec" files an issue in "ENG", but its tracker files issues in no other project: set the tracker\'s createIn',
+    ]);
+    expect(await filing('["ENG"]')).toEqual([]);
+  });
+
   it("reports a hook module that will not import, and does not then flag every path", async () => {
     const dir = await workflowDir("throw new Error('this module does not load');\n");
 

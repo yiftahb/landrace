@@ -9,7 +9,7 @@ import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { WorkflowLoadError } from "#workflow/load.js";
-import { admitProblems, branchIsolationProblems, claimProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, createProblems, validate } from "#workflow/validate.js";
 import { readWorkspace } from "#workflow/workspace.js";
 import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workspace, WorkspaceRead } from "#namespace.js";
 
@@ -63,7 +63,14 @@ async function isEnvExposed(dir: string): Promise<boolean> {
 async function coverage(ws: Workspace, { dir, workflow, steps }: LoadedWorkflow): Promise<{ problems: Problem[]; registry: Registry | null }> {
   try {
     const registry = await loadHooks({ dir, modules: workflow.hooks ?? [], workspace: ws.dir });
-    return { problems: validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined), registry };
+    return {
+      problems: [
+        ...validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined),
+        // Where the loaded tracker files issues: `start` refuses the same.
+        ...createProblems(workflow, steps, registry.post),
+      ],
+      registry,
+    };
   } catch (e) {
     // One exception: a node too old to read a TypeScript file is not a broken
     // workflow, and the CLI answers it by re-running itself with the flag —
