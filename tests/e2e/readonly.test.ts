@@ -7,6 +7,7 @@ import { createTools } from "#mcp/tools.js";
 import type {
   Executor, ExternalState, HookContext, NotifyEvent, Registry, RuntimeContext, Source, Step, Workflow, WorkspaceRuntime,
 } from "#namespace.js";
+import { artifactPreHook } from "#runner/artifacts.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { acquire, release } from "#runner/lock.js";
@@ -67,7 +68,7 @@ function workspace(
     workflows: [{
       id, name: workflow.name, description: workflow.description, source,
       deps: {
-        workflow, steps, source, pre: [state.pre], artifacts: [state.spec], dispatcher: createDispatcher([state.post, state.spec]),
+        workflow, steps, source, pre: [state.pre, artifactPreHook(state.spec)], artifacts: [state.spec], dispatcher: createDispatcher([state.post, state.spec]),
         executor, ctx, log, scrub: (t) => t,
         notify: createNotify({
           id, workflow, notify: { on: ["needs-you"], via: ["chat"] }, notifiers: new Map([["chat", chat]]), ctx, log, board: () => null,
@@ -486,7 +487,7 @@ describe("main and a read-only workflow over one tracker", () => {
     const listed = (id: string, { workflow, steps }: { workflow: Workflow; steps: Map<string, Step> }) => ({
       id, name: workflow.name, description: workflow.description, source: state.source,
       deps: {
-        workflow, steps, source: state.source, pre: [state.pre], artifacts: [state.spec], dispatcher: createDispatcher([state.post, state.spec]),
+        workflow, steps, source: state.source, pre: [state.pre, artifactPreHook(state.spec)], artifacts: [state.spec], dispatcher: createDispatcher([state.post, state.spec]),
         executor: agent, ctx, log, scrub: (t: string) => t,
         notify: createNotify({
           id, workflow, notify: { on: ["needs-you"], via: ["chat"] }, notifiers: new Map([["chat", chat]]), ctx, log, board: () => null,
