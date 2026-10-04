@@ -271,7 +271,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
               const on = branch.branch === null
                 ? undefined
                 : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
-              sandbox = { path: await ensureWorktree(item, root, on) };
+              sandbox = { path: await ensureWorktree(item, root, on, item, { signal: turnSignal }) };
             }
 
             // Read before the agent runs, and a failure refuses the turn

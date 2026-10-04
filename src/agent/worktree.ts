@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { INHERITED_ENV_KEYS } from "#conventions.js";
-import type { WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
+import type { RemoteGuard, WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
 import { messageOf } from "#runner/errors.js";
@@ -27,6 +27,13 @@ export async function keptItems(repoRoot: string): Promise<string[]> {
 
 /** The files whose change means what `setup` installs has changed, unless `agent.worktree.lockfiles` names others: the lockfiles at the repository root. */
 export const DEFAULT_LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"];
+
+/**
+ * How long one call to origin may take before it is stopped — the forge's
+ * limit on its own fetch of the same origin: it holds the item's lock and a
+ * `tick.concurrency` slot while it runs.
+ */
+const FETCH_TIMEOUT_MS = 5 * 60_000;
 
 /** How much of a failed setup command's output its reason carries. */
 const SETUP_TAIL = 2000;
@@ -88,6 +95,33 @@ async function git(args: string[], cwd: string, what: string): Promise<string> {
     const { stdout } = await exec("git", args, { cwd });
     return stdout;
   } catch (e) {
+    const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
+    throw new Error(`${what}: ${stderr || messageOf(e)}`);
+  }
+}
+
+/**
+ * `git` for a call that reaches origin, with the forge's guards on its own
+ * fetch of the same origin: prompting off, so one that wants a password fails
+ * and says so rather than waiting on a terminal nobody is watching, and
+ * stopped at the run's abort or its own limit — it holds the item's lock and
+ * a `tick.concurrency` slot while it runs, and a converge stuck on it would
+ * hold both for good.
+ */
+async function gitRemote(args: string[], cwd: string, what: string, guard: RemoteGuard): Promise<string> {
+  try {
+    const { stdout } = await exec("git", args, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      timeout: guard.timeoutMs,
+      ...(guard.signal === undefined ? {} : { signal: guard.signal }),
+    });
+    return stdout;
+  } catch (e) {
+    if (guard.signal?.aborted) throw new Error(`${what}: git ${args[0] ?? ""} was aborted`);
+    if ((e as { killed?: unknown }).killed === true) {
+      throw new Error(`${what}: git ${args[0] ?? ""} did not finish within ${Math.round(guard.timeoutMs / 1000)}s and was stopped`);
+    }
     const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
     throw new Error(`${what}: ${stderr || messageOf(e)}`);
   }
@@ -156,7 +190,7 @@ async function caughtUp(branch: string, local: string, repoRoot: string, what: s
  * origin once when nothing has set it yet — a clone sets it, a `remote add`
  * and a push do not.
  */
-async function defaultBranch(repoRoot: string, what: string): Promise<string> {
+async function defaultBranch(repoRoot: string, what: string, guard: RemoteGuard): Promise<string> {
   const named = async (): Promise<string | null> => {
     const ref = await exec("git", ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd: repoRoot }).then(
       ({ stdout }) => stdout.trim(),
@@ -172,7 +206,7 @@ async function defaultBranch(repoRoot: string, what: string): Promise<string> {
   const known = await named();
   if (known !== null) return known;
   const fix = "run `git remote set-head origin --auto` in the repository, or `git remote set-head origin <branch>` to name it";
-  await git(["remote", "set-head", "origin", "--auto"], repoRoot, `${what}: origin's default branch is unknown, and asking origin failed; ${fix}`);
+  await gitRemote(["remote", "set-head", "origin", "--auto"], repoRoot, `${what}: origin's default branch is unknown, and asking origin failed; ${fix}`, guard);
   const asked = await named();
   if (asked === null) throw new Error(`${what}: origin's default branch is unknown; ${fix}`);
   return asked;
@@ -189,12 +223,12 @@ async function defaultBranch(repoRoot: string, what: string): Promise<string> {
  * to an older commit. Only a repository with no origin at all keeps `HEAD`.
  * The operator's checkout is never touched: only origin's ref moves.
  */
-async function baseCommit(repoRoot: string, what: string): Promise<string | null> {
+async function baseCommit(repoRoot: string, what: string, guard: RemoteGuard): Promise<string | null> {
   const remotes = (await git(["remote"], repoRoot, what)).split("\n");
   if (!remotes.includes("origin")) return commitOf("HEAD", repoRoot, what);
-  const branch = await defaultBranch(repoRoot, what);
+  const branch = await defaultBranch(repoRoot, what, guard);
   const tracking = `refs/remotes/origin/${branch}`;
-  await git(["fetch", "-q", "origin", `+refs/heads/${branch}:${tracking}`], repoRoot, `${what}: fetching origin's ${branch} failed`);
+  await gitRemote(["fetch", "-q", "origin", `+refs/heads/${branch}:${tracking}`], repoRoot, `${what}: fetching origin's ${branch} failed`, guard);
   const commit = await commitOf(tracking, repoRoot, what);
   if (commit === null) throw new Error(`${what}: origin's default branch ${branch} has no commit after fetching it`);
   return commit;
@@ -238,7 +272,9 @@ export async function ensureWorktree(
    * removing `<item>` as they run — never touch.
    */
   slot: string = item,
+  { signal, timeoutMs = FETCH_TIMEOUT_MS }: Partial<RemoteGuard> = {},
 ): Promise<string> {
+  const guard = { signal, timeoutMs };
   const path = await pathFor(slot, repoRoot);
   const what = `could not create a worktree for #${item}`;
   // Pruned first, so a registration whose directory is already gone reads as
@@ -256,7 +292,7 @@ export async function ensureWorktree(
   const local = on === undefined ? null : await commitOf(`refs/heads/${on.branch}`, repoRoot, what);
   const tip = on === undefined || local === null || holder ? local : await caughtUp(on.branch, local, repoRoot, what);
   const attach = on?.write ? on.branch : null;
-  const base = tip === null ? await baseCommit(repoRoot, what) : null;
+  const base = tip === null ? await baseCommit(repoRoot, what, guard) : null;
   const detach = attach === null ? (tip ?? base) : null;
 
   if (attach !== null) {

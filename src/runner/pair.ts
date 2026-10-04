@@ -239,7 +239,7 @@ export function startPair(deps: PairDeps, item: string, stageId: string): Promis
     const on = branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
     // Found before it is cut: the person may already be working in it, and
     // cutting again would rebuild a checkout that has fallen behind.
-    const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item)));
+    const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item), { signal: deps.ctx.signal }));
 
     // The seed holds item text anyone can write, and the command is pasted
     // into a terminal, which acts on control characters before any shell
@@ -307,7 +307,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
     const branch = stageBranch(stage, item, round);
     if (!branch.ok) throw new Error(branch.reason);
     const on = branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
-    const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item)));
+    const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item), { signal: deps.ctx.signal }));
     const sandbox = { path: cwd };
 
     const scrub = scrubberOf(deps.ctx.secrets, deps.scrub);

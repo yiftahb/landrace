@@ -2439,6 +2439,12 @@ export interface WorktreeBranch {
   write: boolean;
 }
 
+/** What stops a worktree's call to origin: the run's abort, and a limit of its own. */
+export interface RemoteGuard {
+  signal?: AbortSignal | undefined;
+  timeoutMs: number;
+}
+
 /**
  * `agent.worktree`, resolved: what a write step's worktree is given before its
  * agent runs. Operator configuration, trusted like the rest of

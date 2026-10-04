@@ -83,7 +83,7 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
         const keep = on?.write === true;
         if (keep) kept = true;
         else entered = true;
-        const path = await ensureWorktree(item, root, on, keep ? keptSlot(item) : item);
+        const path = await ensureWorktree(item, root, on, keep ? keptSlot(item) : item, { signal: deps.ctx.signal });
         const setup = deps.sandbox?.worktree;
         if (write && setup) await prepareWorktree({ item, path, root, setup, log: deps.log, signal: deps.ctx.signal });
         return path;

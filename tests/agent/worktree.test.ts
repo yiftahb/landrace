@@ -686,6 +686,55 @@ describe("a new worktree's base", () => {
     await expect(ensureWorktree("115", root)).rejects.toThrow(/git remote set-head origin --auto/);
   });
 
+  /**
+   * An origin that is `script`, reached through git's `ext::` transport and
+   * run with git's own environment — a stand-in for a remote that asks for a
+   * password or stops answering. Not ssh: a sandbox may set `GIT_SSH_COMMAND`
+   * itself, and jest hands a test a copy of `process.env` that a child never
+   * sees. With `head`, origin's default branch is already known, so the fetch
+   * is what reaches origin; without it, `git remote set-head origin --auto` is.
+   */
+  async function reaching(script: string, head: boolean): Promise<{ root: string; dir: string }> {
+    const root = await repo();
+    const dir = await mkdtemp(join(tmpdir(), "lr-wt-ext-"));
+    roots.push(dir);
+    const remote = join(dir, "remote.sh");
+    await writeFile(remote, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    await git(root, "config", "protocol.ext.allow", "always");
+    await git(root, "remote", "add", "origin", `ext::${remote}`);
+    if (head) {
+      await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+      await git(root, "remote", "set-head", "origin", "main");
+    }
+    return { root, dir };
+  }
+
+  it.each([true, false])("asks origin with git's prompting off (default branch known: %s)", async (head) => {
+    const { root, dir } = await reaching(`printf '%s' "$GIT_TERMINAL_PROMPT" > "$(dirname "$0")/prompt"; exit 1`, head);
+
+    await expect(ensureWorktree("117", root)).rejects.toThrow(/#117/);
+    expect(await readFile(join(dir, "prompt"), "utf8")).toBe("0");
+  });
+
+  it.each([true, false])("stops asking an origin that does not answer, at the timeout (default branch known: %s)", async (head) => {
+    const { root } = await reaching("exec sleep 20", head);
+    const started = Date.now();
+
+    await expect(ensureWorktree("118", root, undefined, "118", { timeoutMs: 500 }))
+      .rejects.toThrow(/#118[\s\S]*did not finish within/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(await worktrees(root)).toHaveLength(1);
+  });
+
+  it.each([true, false])("stops asking an origin that does not answer when the run is aborted (default branch known: %s)", async (head) => {
+    const { root } = await reaching("exec sleep 20", head);
+    const started = Date.now();
+
+    await expect(ensureWorktree("119", root, undefined, "119", { signal: AbortSignal.timeout(500) }))
+      .rejects.toThrow(/#119[\s\S]*aborted/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
   it("keeps an existing item branch where it is, however far origin's default has moved", async () => {
     const { root, origin } = await withOrigin();
     const local = await git(root, "rev-parse", "HEAD");
