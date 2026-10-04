@@ -10,7 +10,7 @@ import {
   type Closed, type HookContext, type ItemPatch, RELATIONS, type RuntimeContext, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
 } from "landrace/hooks";
 import {
-  BaseTracker, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
+  BaseTracker, type CreateRequest, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
   type ItemRecord, type OpenRelations, type RelatedRecord, statusSatisfied, type TrackerComment,
 } from "landrace/kit";
 import { type AdfDoc, fromAdf, plainAdf, toAdf } from "./adf.js";
@@ -46,6 +46,18 @@ export interface JiraOptions {
    * transition the issue does not offer is logged and skipped.
    */
   statuses?: Record<string, string> | undefined;
+  /**
+   * Other projects on the site a `tracker.create` files an issue in — an ENG
+   * bug from a support desk — by key. None unless named. An issue filed
+   * there is linked to the item, assigned to `jiraAssignee` when it is set,
+   * marked as filed by landrace for the item, and never one of this
+   * tracker's items.
+   */
+  createIn?: string[] | undefined;
+  /** What an issue filed in a `createIn` project is created as: "Task" unless named. */
+  createType?: string | undefined;
+  /** The link type between the item and an issue filed for it, by its exact name: "Relates" unless named. Never `blockedByLinkType`. */
+  createLinkType?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
 }
 
@@ -94,6 +106,16 @@ const SITE_KEY = /^[A-Z][A-Z0-9_]+-[1-9][0-9]*$/;
  * again, in the project's history.
  */
 const PERMISSIONS = ["BROWSE_PROJECTS", "CREATE_ISSUES", "EDIT_ISSUES", "TRANSITION_ISSUES", "ADD_COMMENTS", "LINK_ISSUES"];
+
+/**
+ * What filing an issue in a `createIn` project takes there: seeing it — the
+ * link is read back off the item to find an issue already filed — creating
+ * in it, and linking from it.
+ */
+const CREATE_PERMISSIONS = ["BROWSE_PROJECTS", "CREATE_ISSUES", "LINK_ISSUES"];
+
+/** The entity property an issue filed by `tracker.create` carries: the item it was filed for, and the effect's marker. */
+const CREATED_BY = "landrace.created-by";
 
 /**
  * An Atlassian account id: hex, or a prefix and a colon before a UUID. It is
@@ -357,8 +379,13 @@ export class Jira extends BaseTracker {
   private readonly statusSaid = new Set<string>();
   /** The unreadable blockers already logged this tick: a listing begins each one, and clears it. */
   private readonly unreadableSaid = new Set<string>();
+  private readonly createProjects: readonly string[];
+  private readonly createType: string;
+  private readonly createLinkType: string;
 
-  constructor({ project, issueType, childType, transitions, blockedByLinkType, statuses, fetchImpl }: JiraOptions) {
+  constructor({
+    project, issueType, childType, transitions, blockedByLinkType, statuses, createIn, createType, createLinkType, fetchImpl,
+  }: JiraOptions) {
     super();
     // Spelled into every JQL query and URL, so nothing but a key's own characters.
     if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error(`project must be a Jira project key such as "KEY", got "${project}"`);
@@ -374,6 +401,18 @@ export class Jira extends BaseTracker {
       if (typeof status !== "string" || !status.trim()) throw new Error(`statuses.${stage} must name a Jira status, got ${JSON.stringify(status)}`);
     }
     this.statuses = new Map(Object.entries(statuses ?? {}));
+    // Spelled into URLs and a key's prefix, as `project` is.
+    for (const key of createIn ?? []) {
+      if (!/^[A-Z][A-Z0-9_]+$/.test(key)) throw new Error(`createIn must name Jira project keys such as "ENG", got "${key}"`);
+      if (key === project) throw new Error(`createIn names ${key}, this tracker's own project: its issues are items, filed through the operator`);
+    }
+    this.createProjects = [...new Set(createIn ?? [])];
+    this.createType = createType ?? "Task";
+    this.createLinkType = createLinkType ?? "Relates";
+    // Read as blocked-by, a filed issue would hold up the item it was filed for.
+    if (this.createProjects.length > 0 && this.createLinkType === this.linkType) {
+      throw new Error(`createLinkType "${this.createLinkType}" is blockedByLinkType too: an issue filed for an item would read as blocking it`);
+    }
   }
 
   private jira(ctx: RuntimeContext): Client {
@@ -835,6 +874,80 @@ export class Jira extends BaseTracker {
     await this.transition(jira, key, reopen);
   }
 
+  override createsIn(): string[] {
+    return [...this.createProjects];
+  }
+
+  /**
+   * One request: the issue, its link to the item, its assignee and the
+   * property saying landrace filed it for this item — Jira takes all four at
+   * once, so a refused link files nothing. Unlabelled, and in another
+   * project, so it is never one of this tracker's items. A request Jira
+   * refuses is refused here too: no retry makes it fit.
+   */
+  protected override async createIn(request: CreateRequest, ctx: RuntimeContext): Promise<string> {
+    const item = this.keyOf(request.item);
+    const jira = this.jira(ctx);
+    const assignee = await assigneeOf(jira, ctx);
+    let created: { key?: unknown } | null;
+    try {
+      created = await jira.call<{ key?: unknown } | null>("POST", "/rest/api/3/issue", {
+        fields: {
+          project: { key: request.project },
+          summary: request.title,
+          issuetype: { name: this.createType },
+          description: adfOf(request.body, `description for a new ${request.project} issue`),
+          ...(assignee === null ? {} : { assignee: { accountId: assignee } }),
+        },
+        update: { issuelinks: [{ add: { type: { name: this.createLinkType }, outwardIssue: { key: item } } }] },
+        properties: [{ key: CREATED_BY, value: { item, marker: request.marker } }],
+      });
+    } catch (e) {
+      const status = (e as { status?: unknown } | null)?.status;
+      if (status === 400 || isRefused(e)) throw new EffectRefused(`Jira refused to file an issue in ${request.project}: ${messageOf(e)}`);
+      throw e;
+    }
+    const key = created?.key;
+    if (typeof key !== "string" || !new RegExp(`^${request.project}-[1-9][0-9]*$`).test(key)) {
+      throw new Error(`Jira filed an issue but answered no ${request.project} key for it: ${JSON.stringify(created)}`);
+    }
+    return key;
+  }
+
+  /**
+   * The issue already filed for this item and marker: of the item's links of
+   * `createLinkType` into the project, the one whose property says so. Links
+   * that cannot be read refuse rather than answer none — a second issue is
+   * the failure this is here to prevent.
+   */
+  protected override async createdBy(request: CreateRequest, ctx: RuntimeContext): Promise<string | null> {
+    const item = this.keyOf(request.item);
+    const jira = this.jira(ctx);
+    const issue = await jira.call<Issue | null>("GET", `/rest/api/3/issue/${item}?fields=issuelinks`);
+    const links = issue?.fields?.issuelinks;
+    if (!Array.isArray(links)) throw new Error(`${item}'s links could not be read, so whether an issue was already filed for it cannot be told`);
+    const keys = new Set<string>();
+    for (const entry of links as Array<LinkEntry | null>) {
+      if (entry?.type?.name !== this.createLinkType) continue;
+      for (const end of [entry.inwardIssue, entry.outwardIssue]) {
+        if (typeof end?.key === "string" && SITE_KEY.test(end.key) && end.key.startsWith(`${request.project}-`)) keys.add(end.key);
+      }
+    }
+    for (const key of keys) {
+      let property: { value?: { item?: unknown; marker?: unknown } } | null;
+      try {
+        property = await jira.call<{ value?: { item?: unknown; marker?: unknown } } | null>(
+          "GET", `/rest/api/3/issue/${key}/properties/${CREATED_BY}`,
+        );
+      } catch (e) {
+        if (isMissing(e)) continue;
+        throw e;
+      }
+      if (property?.value?.item === item && property.value.marker === request.marker) return key;
+    }
+    return null;
+  }
+
   /** `tracker.status` too, the issue's status by name, when a stage maps one: what the status effect is judged by. */
   override provides(): string[] {
     return this.statuses.size === 0 ? super.provides() : [...super.provides(), "tracker.status"];
@@ -1065,7 +1178,9 @@ export class Jira extends BaseTracker {
    * labels field — an item's position is a label. Scoped by `jiraAssignee`,
    * an assignee that resolves to no one user, or that cannot be looked up for
    * want of "Browse users and groups", or that the project cannot assign
-   * issues to, "Assign Issues", and each type without an assignee field too. Reads only: every write shows in the
+   * issues to, "Assign Issues", and each type without an assignee field too. For each `createIn` project, the
+   * same of filing an issue there: "Browse projects", "Create issues" and "Link issues", the assignee,
+   * `createType`, and `createLinkType` on the site. Reads only: every write shows in the
    * project's history, so the preflight makes none.
    */
   async check(ctx: RuntimeContext): Promise<void> {
@@ -1127,6 +1242,41 @@ export class Jira extends BaseTracker {
         }
       }
     }
+    // Each project `tracker.create` files in, as the project's own: every permission it takes there, the issue
+    // type, and, scoped, that the assignee can be given issues there and the type has an assignee field.
+    for (const there of this.createProjects) {
+      const wanted = scoped ? [...CREATE_PERMISSIONS, "ASSIGN_ISSUES"] : CREATE_PERMISSIONS;
+      const { permissions: granted = {} } = await jira.call<{ permissions?: Record<string, { name?: string; havePermission?: boolean }> }>(
+        "GET", `/rest/api/3/mypermissions?projectKey=${there}&permissions=${wanted.join(",")}`,
+      );
+      for (const key of wanted) {
+        if (granted[key]?.havePermission !== true) {
+          problems.push(`the account lacks "${granted[key]?.name ?? key}" (${key}) on ${there}, where createIn files issues`);
+        }
+      }
+      if (assignee !== null && granted.BROWSE_PROJECTS?.havePermission === true) {
+        const assignable = await jira.call<User[] | null>(
+          "GET", `/rest/api/3/user/assignable/search?project=${there}&accountId=${encodeURIComponent(assignee)}`,
+        ) ?? [];
+        if (!assignable.some((u) => u.accountId === assignee)) {
+          problems.push(`jiraAssignee "${value}" is account ${assignee}, which ${there} cannot assign issues to`);
+        }
+      }
+      if (granted.BROWSE_PROJECTS?.havePermission !== true || granted.CREATE_ISSUES?.havePermission !== true) continue;
+      const path = `/rest/api/3/issue/createmeta/${there}/issuetypes`;
+      const types = await everyPage<{ id?: string; name?: string }>(jira, path);
+      const type = types.find((t) => t.name === this.createType);
+      if (!type?.id) {
+        problems.push(`${there} has no issue type "${this.createType}" (createType); it has ${types.map((t) => `"${t.name}"`).join(", ") || "none"}`);
+        continue;
+      }
+      if (scoped) {
+        const fields = await everyPage<{ fieldId?: string }>(jira, `${path}/${encodeURIComponent(type.id)}`);
+        if (!fields.some((f) => f.fieldId === "assignee")) {
+          problems.push(`${there}'s "${this.createType}" issues have no assignee field, and jiraAssignee assigns each one filed`);
+        }
+      }
+    }
     // blocked-by is read off links of one type: a site without it would read every item as blocked by nothing.
     // The blocker is the link's inward end, so the type's inward side must say so; one that reads the same both ways cannot.
     try {
@@ -1146,6 +1296,12 @@ export class Jira extends BaseTracker {
         );
       } else {
         ctx.log("jira.blocked-by.link-type", { linkType: this.linkType, blocker: "inward", inward: type.inward, outward: type.outward });
+      }
+      if (this.createProjects.length > 0 && !issueLinkTypes.some((t) => t.name === this.createLinkType)) {
+        problems.push(
+          `the site has no issue link type "${this.createLinkType}" (createLinkType), which links an issue createIn files to its item; ` +
+          `it has ${issueLinkTypes.map((t) => `"${t.name}"`).join(", ") || "none"}`,
+        );
       }
     } catch (e) {
       if (!isMissing(e)) throw e;
