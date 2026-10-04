@@ -1309,8 +1309,19 @@ export interface ChangedFiles {
  */
 export interface Preflight {
   id: string;
-  check(ctx: RuntimeContext): Promise<void>;
+  check(ctx: PreflightContext): Promise<void>;
 }
+
+/**
+ * A preflight's context: the runtime's, and what the loaded workflows' steps
+ * declare, so a check can skip what nothing asks for — a child's issue type
+ * where no step may create one. Absent when the caller cannot say, which a
+ * check reads as anything declared.
+ */
+export type PreflightContext = RuntimeContext & {
+  /** Every capability any step of a loaded workflow declares. */
+  capabilities?: ReadonlySet<string> | undefined;
+};
 
 /**
  * Where the work comes from. A tick has to enumerate items before it has one

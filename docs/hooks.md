@@ -23,7 +23,7 @@ A hook's `landrace` imports — `landrace` itself, `landrace/hooks`, `landrace/k
 
 ## The define* contracts
 
-A hook that works on one item gets a `HookContext`: the item's id, its snapshot, the configuration, the resolved secrets, an abort signal and a logger. Every other call gets a `RuntimeContext`, the same without the item and the snapshot: a source's `list()`, `read()` and `remoteHead()`, every operator method, a notifier's `send()` and a preflight's `check()`. A source's `read()` is what the snapshot is built from, so it never gets one. A hook never reads `process.env`: its secrets arrive as values, which keeps it testable and lets the log redact every one.
+A hook that works on one item gets a `HookContext`: the item's id, its snapshot, the configuration, the resolved secrets, an abort signal and a logger. Every other call gets a `RuntimeContext`, the same without the item and the snapshot: a source's `list()`, `read()` and `remoteHead()`, every operator method, a notifier's `send()` and a preflight's `check()`. A preflight's context also carries `capabilities`, every capability a step of a loaded workflow declares, so a check can skip what no step asks for; it is absent when the caller cannot say, and a check then checks everything. A source's `read()` is what the snapshot is built from, so it never gets one. A hook never reads `process.env`: its secrets arrive as values, which keeps it testable and lets the log redact every one.
 
 | Helper | Kind | What it does |
 |---|---|---|

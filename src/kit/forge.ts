@@ -22,7 +22,7 @@ import { headIn, headsOf } from "#kit/git.js";
 import { createdAtOf, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
 import type {
   BranchHeads, BriefTable, ChangedFile, ChangedFiles, CheckCounts, CheckState, Effect, EffectTable, FailedCheck, Finding, ForgeOptions, Graph, HistoryItem,
-  HookContext, MergeAnswer, Node, PullRecord, RelationDecl, Relationship, Reply, ReviewThread, RuntimeContext, Snapshot,
+  HookContext, MergeAnswer, Node, PullRecord, RelationDecl, Relationship, Reply, ReviewThread, PreflightContext, RuntimeContext, Snapshot,
   SnapshotComment, ThreadComment, ThreadCounts,
 } from "#namespace.js";
 
@@ -728,7 +728,7 @@ export abstract class BaseForge {
   abstract remoteHead(branch: string, ctx: RuntimeContext): Promise<string | null>;
 
   /** Run once at startup, before anything is paid for. */
-  check?(ctx: RuntimeContext): Promise<void>;
+  check?(ctx: PreflightContext): Promise<void>;
 
   /**
    * Which of `reviewers` have finished on `pull.headSha`: their status there

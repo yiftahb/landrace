@@ -7,7 +7,8 @@
  * otherwise moves only to close an item or reopen it.
  */
 import {
-  type Closed, type HookContext, type ItemPatch, RELATIONS, type RuntimeContext, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
+  type Closed, type HookContext, type ItemPatch, mayCreateItems, type PreflightContext, RELATIONS, type RuntimeContext, type Snapshot,
+  STAGE_LABEL_PREFIX, STATUS_EFFECT,
 } from "landrace/hooks";
 import {
   BaseTracker, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
@@ -1062,13 +1063,15 @@ export class Jira extends BaseTracker {
   /**
    * Startup, before anything is paid for: each permission the account lacks
    * on the project, each issue type it does not have, and each type without a
-   * labels field — an item's position is a label. Scoped by `jiraAssignee`,
+   * labels field — an item's position is a label. `childType` only when a
+   * loaded step may create children, or the caller cannot say: projects name
+   * it differently, a service desk may have none, and nothing else makes one. Scoped by `jiraAssignee`,
    * an assignee that resolves to no one user, or that cannot be looked up for
    * want of "Browse users and groups", or that the project cannot assign
    * issues to, "Assign Issues", and each type without an assignee field too. Reads only: every write shows in the
    * project's history, so the preflight makes none.
    */
-  async check(ctx: RuntimeContext): Promise<void> {
+  async check(ctx: PreflightContext): Promise<void> {
     const jira = this.jira(ctx);
     const problems: string[] = [];
     const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
@@ -1102,7 +1105,8 @@ export class Jira extends BaseTracker {
     if (permissions.BROWSE_PROJECTS?.havePermission === true && permissions.CREATE_ISSUES?.havePermission === true) {
       const path = `/rest/api/3/issue/createmeta/${this.project}/issuetypes`;
       const types = await everyPage<{ id?: string; name?: string }>(jira, path);
-      for (const wanted of new Set([this.issueType, this.childType])) {
+      const creates = ctx.capabilities === undefined || mayCreateItems([...ctx.capabilities]);
+      for (const wanted of new Set(creates ? [this.issueType, this.childType] : [this.issueType])) {
         const type = types.find((t) => t.name === wanted);
         if (!type?.id) {
           problems.push(`${this.project} has no issue type "${wanted}"; it has ${types.map((t) => `"${t.name}"`).join(", ") || "none"}`);

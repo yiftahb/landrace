@@ -796,6 +796,19 @@ describe("the preflight", () => {
     expect(fake.calls.every((c) => c.method === "GET")).toBe(true);
   });
 
+  /*
+   * Projects name the sub-task type differently, and a service desk may have
+   * none: only a workflow whose step may create children makes one.
+   */
+  it("checks childType only when a loaded step declares items:create, naming the types the project has", async () => {
+    const { jira, ctx } = setup({ childType: "Sub-task" });
+    await jira.check({ ...ctx, capabilities: new Set(["repo:read", "repo:write"]) });
+    await expect(jira.check({ ...ctx, capabilities: new Set(["repo:read", "items:create"]) }))
+      .rejects.toThrow(/no issue type "Sub-task"; it has "Task", "Subtask", "Bug"/);
+    // Unsaid is not none: a caller that cannot tell what is declared gets the check.
+    await expect(jira.check(ctx)).rejects.toThrow(/no issue type "Sub-task"/);
+  });
+
   it("reads every page of issue types and fields before calling one missing", async () => {
     const { fake, jira, ctx } = setup({ issueType: "Bug" });
     fake.pageSize = 2;

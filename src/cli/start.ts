@@ -52,7 +52,7 @@ import { createLogger, scrubberOf } from "#runner/events.js";
 import { createNotify, notifyProblems } from "#runner/notify.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { held } from "#runner/lock.js";
-import { runPreflights } from "#runner/preflight.js";
+import { declaredCapabilities, runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { itemTag, oneLine } from "#runner/status.js";
@@ -922,7 +922,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // recorded to show for it. Run from here rather than from the runtime's
   // build so `landrace status`, which builds one the same way, never makes
   // this write while only trying to read.
-  await runPreflights(rt.preflights, rt.ctx);
+  await runPreflights(rt.preflights, { ...rt.ctx, capabilities: declaredCapabilities(rt.workflows.map((w) => w.deps.steps)) });
 
   // The last listing a tick or a Refresh made. The page is shown what
   // `display` makes of it, and finds an item's workflow there; a write also

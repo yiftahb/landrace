@@ -18,7 +18,7 @@ import {
 import { commentLine } from "#kit/forge.js";
 import type {
   BriefTable, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, OpenRelations, RelatedRecord, RelationDecl, Relationship,
-  RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
+  PreflightContext, RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
 } from "#namespace.js";
 
 export type { SnapshotComment } from "#namespace.js";
@@ -459,7 +459,7 @@ export abstract class BaseTracker {
   abstract update(id: string, fields: Pick<ItemPatch, "title" | "body" | "state">, ctx: RuntimeContext): Promise<void>;
 
   /** Run once at startup, before anything is paid for: a permission the workflow needs and the token lacks, say. */
-  check?(ctx: RuntimeContext): Promise<void>;
+  check?(ctx: PreflightContext): Promise<void>;
 
   /** Relate `item` to `other` as `type`, one of `writableRelations()`; the base has checked the type. */
   protected abstract addRelation(item: string, type: string, other: string, ctx: RuntimeContext): Promise<void>;
