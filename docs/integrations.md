@@ -352,7 +352,7 @@ Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `confi
 
 - **`agent.sandbox.hosts`.** Its sandbox has the network on or off, with no list of hosts, so list none: a write step then has no network, and cannot install or push.
 - **`agent.sandbox.deny`.** It cannot keep a command from reading a path under your home, and every step and turn — read-only ones too, whose answer is posted to the item — has a shell. The default list applies when `deny` is not written, so write `deny: []` to accept that every step and turn can read those paths.
-- **An effort outside `none`, `low`, `medium`, `high`, `xhigh`.** The shipped `spec` step asks for `max`, and `validate` names it.
+- **An effort outside `none`, `low`, `medium`, `high`, `xhigh`.** No shipped step asks for one. A step of yours that asks for Claude's `max` is refused, and `validate` names it.
 - **`agent.plugins`**, which is Claude's.
 
 And before a run starts: a project `.codex/config.toml` or `.codex/hooks.json` anywhere from the run's folder up to the repository root — either would load beside the run, and a step could commit one — and a server, variable or header name a `-c` key path cannot carry (one with a `.`).
