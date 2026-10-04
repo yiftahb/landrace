@@ -752,13 +752,18 @@ export class GitHubForge extends BaseForge {
 
   /**
    * The named reviewers whose check run or commit status on the head is
-   * over, whatever it concluded. One past the page GitHub listed is read as
-   * not posted, which is waiting, never finished.
+   * over, whatever it concluded. One missing from a list GitHub did not give
+   * to its end may be past it, so that is refused, never read as not posted.
    */
   override async finishedReviewers(pull: PullRecord, ctx: RuntimeContext): Promise<ReadonlySet<string>> {
-    const { contexts } = await this.contexts(pull, ctx);
+    const { contexts, complete } = await this.contexts(pull, ctx);
     const running = new Set(contexts.filter((c) => c.state === "pending").map((c) => c.name));
-    return new Set(contexts.filter((c) => this.reviewers.has(c.name) && !running.has(c.name)).map((c) => c.name));
+    const finished = new Set(contexts.filter((c) => this.reviewers.has(c.name) && !running.has(c.name)).map((c) => c.name));
+    const unseen = [...this.reviewers].filter((name) => !contexts.some((c) => c.name === name));
+    if (!complete && unseen.length > 0) {
+      throw new Error(`GitHub listed only part of the checks on ${pull.headSha}, so ${unseen.join(", ")} cannot be read as not posted`);
+    }
+    return finished;
   }
 
   protected override async root(): Promise<string> {

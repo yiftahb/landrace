@@ -86,6 +86,22 @@ describe("named reviewers", () => {
     expect(graph.nodes.find((n) => n.id === "pr-10")?.state).toMatchObject({ reviewPending: pending });
   });
 
+  it("refuses, rather than call a reviewer missing, when GitHub listed only part of the head's checks", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const pull = gh.openPull({ head: "landrace/1", headSha: "head", checkRuns: [run(1, "unit", "success")], checkRunsTotal: 150 });
+    await expect(reviewing(gh).finishedReviewers(recordOf(pull), gh.ctx)).rejects.toThrow(/CodeRabbit/);
+  });
+
+  it.each([
+    ["finished", "success", ["CodeRabbit"]],
+    ["running", null, []],
+  ] as const)("reads a reviewer %s on the part GitHub listed as it stands", async (_said, conclusion, finished) => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const runs = [run(1, "CodeRabbit", conclusion, conclusion === null ? { status: "in_progress" } : {})];
+    const pull = gh.openPull({ head: "landrace/1", headSha: "head", checkRuns: runs, checkRunsTotal: 150 });
+    expect(await reviewing(gh).finishedReviewers(recordOf(pull), gh.ctx)).toEqual(new Set(finished));
+  });
+
   it.each([
     ["CI green beside a running reviewer", [run(1, "unit", "success"), run(2, "CodeRabbit", null, { status: "in_progress" })], "success"],
     ["CI green beside a failed reviewer", [run(1, "unit", "success"), run(2, "CodeRabbit", "failure")], "success"],
