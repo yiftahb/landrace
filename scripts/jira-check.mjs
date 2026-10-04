@@ -9,6 +9,8 @@
  * `JIRA_OPTIONS`, optional, is JSON spread into `new Jira({ project })` —
  * `{"childType":"Sub-task","transitions":{"dropped":"Cancelled"}}`. The
  * imports resolve by package self-reference to dist/, hence the build.
+ * `JIRA_ASSIGNEE`, optional, is the `jiraAssignee` secret: an account id or
+ * an email, scoping every check to that account's issues.
  *
  * It writes, so point it at a project that may hold test issues: one item
  * and one child, created, commented on, labelled and closed — the child as
@@ -31,7 +33,7 @@ import { Jira } from "landrace/integrations/jira";
 import { compose } from "landrace/kit";
 import { MemoryDocs, MemoryForge } from "landrace/testing";
 
-const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT, JIRA_OPTIONS, JIRA_CHECK_LINKS, JIRA_LINK_KEYS } = process.env;
+const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT, JIRA_OPTIONS, JIRA_CHECK_LINKS, JIRA_LINK_KEYS, JIRA_ASSIGNEE } = process.env;
 const unset = Object.entries({ JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT }).filter(([, v]) => !v).map(([k]) => k);
 if (unset.length > 0) {
   console.error(`jira-check: set ${unset.join(", ")}`);
@@ -47,7 +49,10 @@ try {
 
 const ctx = {
   config: {},
-  secrets: new Map([["jiraBaseUrl", JIRA_BASE_URL], ["jiraEmail", JIRA_EMAIL], ["jiraToken", JIRA_TOKEN]]),
+  secrets: new Map([
+    ["jiraBaseUrl", JIRA_BASE_URL], ["jiraEmail", JIRA_EMAIL], ["jiraToken", JIRA_TOKEN],
+    ...(JIRA_ASSIGNEE ? [["jiraAssignee", JIRA_ASSIGNEE]] : []),
+  ]),
   signal: new AbortController().signal,
   log: (event, data) => console.error(`${event} ${JSON.stringify(data ?? {})}`),
 };
