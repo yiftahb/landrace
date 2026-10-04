@@ -93,7 +93,12 @@ Under 400 words. Every path exists. Every Done-when check is observable. No step
 Nothing the item decided is reopened. A trigger or route the spec adds or
 changes is checked against every other way out of its stage, the clean state
 included: exactly one holds of any item, or it halts as ambiguous; a Done-when
-sweep of them varies every count any of them reads. Caveman style throughout.
+sweep of them varies every count any of them reads. A promise about which
+items reach a state, or how often — only closed ones, once — holds on every
+way in and out, and a rule `validate` enforces names each: a trigger, and one
+that holds when its field is null; a route or stage `goto`; `entry`; one id
+two sources list; a reopen; the items already there when it ships. Caveman
+style throughout.
 Fix, recheck, repeat.
 
 **Step 6 — End with the json block.** Either `kind` `spec` with a `title`, or,

@@ -370,6 +370,17 @@ export function durationMs(text: string): number | null {
 }
 
 /**
+ * "45m", "2h", "1h30m" in milliseconds, or null for anything else: time a
+ * step says it spent, as a worklog's `spentFrom` field and its `max` spell
+ * it. Zero reads as zero, so the step can say that is what it refused.
+ */
+export function workDurationMs(text: string): number | null {
+  const m = /^(?:(\d+)h)?\s*(?:(\d+)m)?$/.exec(text.trim());
+  if (!m || (m[1] === undefined && m[2] === undefined)) return null;
+  return Number(m[1] ?? 0) * 3_600_000 + Number(m[2] ?? 0) * 60_000;
+}
+
+/**
  * The kind of the record a person's explicit goto is written under — the
  * board's Retry and "Go to step…", and `landrace_goto`. A judge's goto rides
  * on its own output record instead, because that record is what settles the
@@ -454,6 +465,20 @@ export const STATUS_EFFECT = "tracker.status";
 export const LABEL_EFFECT = "tracker.label";
 
 /**
+ * Who a `tracker.comment` is for, as its `visibility` field says: the team
+ * alone, or the person who asked too, on a tracker that tells the two apart.
+ * Absent is internal: a record nobody chose to show is never shown by guess.
+ */
+export const COMMENT_VISIBILITIES: readonly string[] = ["internal", "public"];
+
+/**
+ * Time logged against the item, from what a step answered: `spentFrom` names
+ * the output field, which the runner resolves into the effect's `seconds`.
+ * Only a tracker that keeps worklogs handles it.
+ */
+export const WORKLOG_EFFECT = "tracker.worklog";
+
+/**
  * The kind a conversation turn is recorded under: what a person asked a
  * running step through the MCP, and what it answered.
  */
@@ -464,6 +489,28 @@ export const CONVERSATION_KIND = "conversation";
  * `round` are the creating stage and round; `parent` rides beside them.
  */
 export const CHILD_KIND = "child";
+
+/**
+ * The marker kind on each effect of a route's `effects`, under the marker
+ * `part:{stage}:{round}:{index}`: what reconcile reads to skip a part that
+ * landed before a crash. Core counts no part, so the round settles once, on
+ * the output record that follows them.
+ */
+export const PART_KIND = "part";
+
+/**
+ * File an issue in another project of the tracker, linked to the item and
+ * left unlabelled, so nothing works it here. Only a tracker that opts in
+ * (`createsIn`) does, and only in the projects it names.
+ */
+export const TRACKER_CREATE_EFFECT = "tracker.create";
+
+/**
+ * The record a `tracker.create` leaves on the item, naming the issue it
+ * filed, under the marker `created:<the effect's marker>`: what its
+ * `satisfied()` reads.
+ */
+export const CREATED_KIND = "created";
 
 /** Drop nodes: planned by core from `{ type, follow }` into `{ type, ids }`. */
 export const NODES_CLOSE_EFFECT = "nodes.close";

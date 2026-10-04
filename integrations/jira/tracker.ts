@@ -7,14 +7,14 @@
  * otherwise moves only to close an item or reopen it.
  */
 import {
-  type Closed, type HookContext, type ItemPatch, mayCreateItems, type PreflightContext, RELATIONS, type RuntimeContext, type Snapshot,
-  STAGE_LABEL_PREFIX, STATUS_EFFECT,
+  type Closed, type Effect, type HookContext, type ItemPatch, mayCreateItems, neutraliseMarkers, type PreflightContext, RELATIONS,
+  type RuntimeContext, sameLogin, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT, WORKLOG_EFFECT,
 } from "landrace/hooks";
 import {
-  BaseTracker, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES, ITEM_PAGE,
-  type ItemRecord, type OpenRelations, type RelatedRecord, statusSatisfied, type TrackerComment,
+  BaseTracker, botLoginOf, type CommentVisibility, type CreateRequest, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES,
+  ITEM_PAGE, type ItemRecord, type OpenRelations, type RelatedRecord, statusSatisfied, type TrackerComment, type WorklogRecord,
 } from "landrace/kit";
-import { type AdfDoc, fromAdf, plainAdf, toAdf } from "./adf.js";
+import { type AdfDoc, type AdfNode, fromAdf, type Mention, mentionsIn, plainAdf, splitMarker, toAdf } from "./adf.js";
 import { type Client, clientFor, isMissing } from "./client.js";
 
 export interface JiraOptions {
@@ -48,6 +48,18 @@ export interface JiraOptions {
    */
   statuses?: Record<string, string> | undefined;
   /**
+   * Other projects on the site a `tracker.create` files an issue in — an ENG
+   * bug from a support desk — by key. None unless named. An issue filed
+   * there is linked to the item, assigned to `jiraAssignee` when it is set,
+   * marked as filed by landrace for the item, and never one of this
+   * tracker's items.
+   */
+  createIn?: string[] | undefined;
+  /** What an issue filed in a `createIn` project is created as: "Task" unless named. */
+  createType?: string | undefined;
+  /** The link type between the item and an issue filed for it, by its exact name: "Relates" unless named. Never `blockedByLinkType`. */
+  createLinkType?: string | undefined;
+  /**
    * A JQL clause ANDed into every search the tracker runs — the open list,
    * the Done lane, the cycle walk — and `JiraField`'s listing, beside
    * `jiraAssignee`: `created >= "2026-10-05"`, say, so a first start does not
@@ -70,8 +82,8 @@ const MAX_ADF_CHARS = 32_767;
  * refused here, rather than by a 400 after the fact, and as a refusal: no
  * retry makes it fit, so the round is recorded rather than paid for again.
  */
-export function adfOf(text: string, what: string): AdfDoc {
-  const rich = toAdf(text);
+export function adfOf(text: string, what: string, mention?: Mention): AdfDoc {
+  const rich = toAdf(text, mention);
   if (JSON.stringify(rich).length <= MAX_ADF_CHARS) return rich;
   const plain = plainAdf(text);
   const size = JSON.stringify(plain).length;
@@ -106,6 +118,16 @@ const SITE_KEY = /^[A-Z][A-Z0-9_]+-[1-9][0-9]*$/;
 const PERMISSIONS = ["BROWSE_PROJECTS", "CREATE_ISSUES", "EDIT_ISSUES", "TRANSITION_ISSUES", "ADD_COMMENTS", "LINK_ISSUES"];
 
 /**
+ * What filing an issue in a `createIn` project takes there: seeing it — the
+ * link is read back off the item to find an issue already filed — creating
+ * in it, and linking from it.
+ */
+const CREATE_PERMISSIONS = ["BROWSE_PROJECTS", "CREATE_ISSUES", "LINK_ISSUES"];
+
+/** The entity property an issue filed by `tracker.create` carries: the item it was filed for, and the effect's marker. */
+const CREATED_BY = "landrace.created-by";
+
+/**
  * An Atlassian account id: hex, or a prefix and a colon before a UUID. It is
  * spelled into every query as `assignee = "<id>"`, so nothing a quote or a
  * space could rewrite the query with.
@@ -114,6 +136,72 @@ const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]*$/;
 
 /** Users one search for an email is read to. */
 const USER_PAGE = 100;
+
+/** Jira Service Management's project type: its comments reach the requester unless marked internal. */
+const SERVICE_DESK = "service_desk";
+
+/**
+ * The comment and worklog property Landrace's marker is kept in, so the text
+ * a requester reads never carries it. Only a comment's author, or an account
+ * that may edit every comment, can set one — the same people who could edit
+ * the body a marker used to live in.
+ */
+const MARKER_PROPERTY = "landrace.marker";
+
+/** Jira Service Management's own property: `{ internal: true }` keeps a comment from the requester. */
+const INTERNAL_PROPERTY = "sd.public.comment";
+
+/**
+ * What a comment says when its marker was its whole body — an agent that
+ * answered with its json block alone. Jira refuses an empty comment with a
+ * 400, which no retry fixes, and the step would be paid for again every
+ * tick; read back beside our marker property, it is read as no text.
+ */
+const NO_TEXT = "(no text)";
+
+/** An entity property as Jira answers one, expanded on a comment or a worklog. */
+interface Property { key?: unknown; value?: unknown }
+
+/** The marker a `landrace.marker` property holds, when it holds one marker and nothing else. */
+function propertyMarker(properties: Property[] | undefined): { found: boolean; marker: string | null } {
+  const property = (properties ?? []).find((p) => p?.key === MARKER_PROPERTY);
+  if (property === undefined) return { found: false, marker: null };
+  const value = (property.value as { marker?: unknown } | null)?.marker;
+  if (typeof value !== "string") return { found: true, marker: null };
+  const { text, marker } = splitMarker(value);
+  return { found: true, marker: text.trim() === "" ? marker : null };
+}
+
+/** A worklog effect's marker: without one, nothing would say it had been logged, and it would be logged again every tick. */
+function worklogMarker(effect: Effect): string {
+  if (typeof effect.marker !== "string" || effect.marker === "") {
+    throw new Error(`a ${WORKLOG_EFFECT} effect with no marker cannot be reconciled: it would be logged again on every tick`);
+  }
+  return effect.marker;
+}
+
+/**
+ * `tracker.worklog` is logged already: a worklog we wrote carrying exactly
+ * this marker — or, with `skipIfLogged`, any worklog at all, a person's
+ * included.
+ */
+function worklogLogged(worklogs: WorklogRecord[], effect: Effect, bot: string): boolean {
+  const marker = worklogMarker(effect);
+  if (effect.skipIfLogged === true && worklogs.length > 0) return true;
+  return worklogs.some((w) => typeof w.author === "string" && sameLogin(w.author, bot) && w.marker === marker);
+}
+
+/**
+ * The users an email may be: those Jira finds for it whose email it shows as
+ * that one, or hides — Jira keeps most emails private, so one shown none may
+ * be the one meant. Null when the search fills a page, and the one meant may
+ * be past it.
+ */
+async function usersWithEmail(jira: Client, email: string): Promise<User[] | null> {
+  const found = await jira.call<User[] | null>("GET", `/rest/api/3/user/search?query=${encodeURIComponent(email)}&maxResults=${USER_PAGE}`) ?? [];
+  if (found.length >= USER_PAGE) return null;
+  return found.filter((u) => u.emailAddress === undefined || same(u.emailAddress, email));
+}
 
 /** Issues one `issue/bulkfetch` returns whatever fields it asks for: up to 1000 only when they are named, and this stays inside both. */
 const BULK_BATCH = 100;
@@ -269,10 +357,9 @@ export async function assigneeOf(jira: Client, ctx: RuntimeContext): Promise<str
     }
     let users: User[];
     if (value.includes("@")) {
-      const found = await jira.call<User[] | null>("GET", `/rest/api/3/user/search?query=${encodeURIComponent(value)}&maxResults=${USER_PAGE}`) ?? [];
-      // A full page may not be all of them, and the one meant may be past it.
-      if (found.length >= USER_PAGE) throw new Error(`jiraAssignee "${value}" matches more Jira users than one search returns; name one by its account id`);
-      users = found.filter((u) => u.emailAddress === undefined || same(u.emailAddress, value));
+      const found = await usersWithEmail(jira, value);
+      if (found === null) throw new Error(`jiraAssignee "${value}" matches more Jira users than one search returns; name one by its account id`);
+      users = found;
     } else {
       users = await jira.call<User | null>("GET", `/rest/api/3/user?accountId=${encodeURIComponent(value)}`)
         .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
@@ -368,13 +455,20 @@ export class Jira extends BaseTracker {
   private readonly linkType: string;
   /** Each client's project priorities, highest first, read once. */
   private readonly priorities = new WeakMap<Client, string[]>();
+  /** Each client's project id and type, once Jira has named both. */
+  private readonly projects = new WeakMap<Client, { id: string; type: string }>();
   private readonly statuses: ReadonlyMap<string, string>;
   /** Each item and status already logged as not offered or refused: once a process, since a board's status is not worth a flood. */
   private readonly statusSaid = new Set<string>();
   /** The unreadable blockers already logged this tick: a listing begins each one, and clears it. */
   private readonly unreadableSaid = new Set<string>();
+  private readonly createProjects: readonly string[];
+  private readonly createType: string;
+  private readonly createLinkType: string;
 
-  constructor({ project, issueType, childType, transitions, blockedByLinkType, statuses, jql, fetchImpl }: JiraOptions) {
+  constructor({
+    project, issueType, childType, transitions, blockedByLinkType, statuses, jql, createIn, createType, createLinkType, fetchImpl,
+  }: JiraOptions) {
     super();
     // Spelled into every JQL query and URL, so nothing but a key's own characters.
     if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error(`project must be a Jira project key such as "KEY", got "${project}"`);
@@ -394,6 +488,18 @@ export class Jira extends BaseTracker {
       if (typeof status !== "string" || !status.trim()) throw new Error(`statuses.${stage} must name a Jira status, got ${JSON.stringify(status)}`);
     }
     this.statuses = new Map(Object.entries(statuses ?? {}));
+    // Spelled into URLs and a key's prefix, as `project` is.
+    for (const key of createIn ?? []) {
+      if (!/^[A-Z][A-Z0-9_]+$/.test(key)) throw new Error(`createIn must name Jira project keys such as "ENG", got "${key}"`);
+      if (key === project) throw new Error(`createIn names ${key}, this tracker's own project: its issues are items, filed through the operator`);
+    }
+    this.createProjects = [...new Set(createIn ?? [])];
+    this.createType = createType ?? "Task";
+    this.createLinkType = createLinkType ?? "Relates";
+    // Read as blocked-by, a filed issue would hold up the item it was filed for.
+    if (this.createProjects.length > 0 && this.createLinkType === this.linkType) {
+      throw new Error(`createLinkType "${this.createLinkType}" is blockedByLinkType too: an issue filed for an item would read as blocking it`);
+    }
   }
 
   private jira(ctx: RuntimeContext): Client {
@@ -450,11 +556,27 @@ export class Jira extends BaseTracker {
     return editors;
   }
 
+  /**
+   * The project's id and type, read once per client — but only once Jira has
+   * named both: a type unread is asked again, never remembered as none.
+   */
+  private async projectOf(jira: Client): Promise<{ id: string | undefined; type: string | undefined }> {
+    const known = this.projects.get(jira);
+    if (known) return known;
+    const { id, projectTypeKey } = await jira.call<{ id?: unknown; projectTypeKey?: unknown }>("GET", `/rest/api/3/project/${this.project}`);
+    const project = {
+      id: typeof id === "string" ? id : undefined,
+      type: typeof projectTypeKey === "string" && projectTypeKey !== "" ? projectTypeKey : undefined,
+    };
+    if (project.id !== undefined && project.type !== undefined) this.projects.set(jira, { id: project.id, type: project.type });
+    return project;
+  }
+
   /** The project's priorities, highest first: what landrace's 0..9 index into. */
   private async priorityIds(jira: Client): Promise<string[]> {
     const known = this.priorities.get(jira);
     if (known) return known;
-    const { id } = await jira.call<{ id?: string }>("GET", `/rest/api/3/project/${this.project}`);
+    const { id } = await this.projectOf(jira);
     const page = await jira.call<{ values?: Array<{ id?: string }>; isLast?: boolean }>(
       "GET", `/rest/api/3/priority/search?projectId=${encodeURIComponent(String(id))}&maxResults=100`,
     );
@@ -716,30 +838,107 @@ export class Jira extends BaseTracker {
     return answer;
   }
 
-  /** Every page of them: a stage whose entry record sat on the second page would read as never entered. */
+  /**
+   * Every page of them: a stage whose entry record sat on the second page
+   * would read as never entered. A comment's `landrace.marker` property is
+   * read back onto the end of its text, where the engine reads a marker;
+   * with one there, a marker in the text is text, escaped. Without one — a
+   * comment written before the property — the text's own is read.
+   */
   async comments(id: string, ctx: RuntimeContext): Promise<TrackerComment[]> {
     const key = this.keyOf(id);
     const jira = this.jira(ctx);
     const all: TrackerComment[] = [];
     for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
-      const res = await jira.call<{ comments?: Array<{ id?: string; author?: User; body?: unknown; created?: string }>; total?: number }>(
-        "GET", `/rest/api/3/issue/${key}/comment?startAt=${all.length}&maxResults=${ISSUE_PAGE}&orderBy=created`,
-      );
+      const res = await jira.call<{
+        comments?: Array<{ id?: string; author?: User; body?: unknown; created?: string; properties?: Property[] }>; total?: number;
+      }>("GET", `/rest/api/3/issue/${key}/comment?startAt=${all.length}&maxResults=${ISSUE_PAGE}&orderBy=created&expand=properties`);
       const batch = res.comments ?? [];
-      all.push(...batch.map((c) => ({
-        id: c.id,
-        body: fromAdf(c.body),
-        created_at: iso(c.created) ?? "",
-        user: c.author?.accountId ? { login: c.author.accountId } : null,
-      })));
+      all.push(...batch.map((c) => {
+        const text = fromAdf(c.body);
+        const { found, marker } = propertyMarker(c.properties);
+        const own = marker !== null && text === NO_TEXT ? "" : text;
+        return {
+          id: c.id,
+          body: !found ? text : `${neutraliseMarkers(own)}${marker === null ? "" : `\n\n${marker}`}`,
+          created_at: iso(c.created) ?? "",
+          user: c.author?.accountId ? { login: c.author.accountId } : null,
+        };
+      }));
       if (batch.length === 0 || all.length >= (res.total ?? 0)) return all;
     }
     throw new Error(`${key} has more comments than ${MAX_ISSUE_PAGES} pages carry`);
   }
 
-  async comment(id: string, body: string, ctx: RuntimeContext): Promise<void> {
+  /**
+   * The text as ADF, its marker as the `landrace.marker` property. On a
+   * service desk, marked internal unless the effect says public: a record or
+   * a note nobody chose to show the requester is never shown them. Elsewhere
+   * every comment is the team's, and visibility is not asked. A project whose
+   * type Jira does not name is refused before anything is posted — public is
+   * never a guess.
+   */
+  async comment(id: string, body: string, ctx: RuntimeContext, { visibility }: { visibility?: CommentVisibility } = {}): Promise<void> {
     const key = this.keyOf(id);
-    await this.jira(ctx).call("POST", `/rest/api/3/issue/${key}/comment`, { body: adfOf(body, `comment on ${key}`) });
+    const jira = this.jira(ctx);
+    const { type } = await this.projectOf(jira);
+    if (type === undefined) {
+      throw new Error(`Jira answered ${this.project} with no project type, so whether a comment on ${key} would reach its requester cannot be told; nothing was posted`);
+    }
+    const split = splitMarker(body);
+    // What the marker was set apart by goes with it, so the text reads back with the marker exactly as it was.
+    const { marker } = split;
+    const trimmed = marker === null ? split.text : split.text.trimEnd();
+    const text = marker !== null && trimmed.trim() === "" ? NO_TEXT : trimmed;
+    const properties = [
+      ...(marker === null ? [] : [{ key: MARKER_PROPERTY, value: { marker } }]),
+      ...(type === SERVICE_DESK && visibility !== "public" ? [{ key: INTERNAL_PROPERTY, value: { internal: true } }] : []),
+    ];
+    await jira.call("POST", `/rest/api/3/issue/${key}/comment`, {
+      body: adfOf(text, `comment on ${key}`, await this.mentions(jira, text)),
+      ...(properties.length === 0 ? {} : { properties }),
+    });
+  }
+
+  /**
+   * Each `@[…]` outside code a comment holds, as a mention: an account id as
+   * written, an email as the one user it is — none or several, and it stays
+   * text, as `jiraAssignee` would refuse it.
+   */
+  private async mentions(jira: Client, text: string): Promise<Mention> {
+    const nodes = new Map<string, AdfNode>();
+    for (const token of mentionsIn(text)) {
+      if (!token.includes("@")) {
+        if (ACCOUNT_ID.test(token)) nodes.set(token, { type: "mention", attrs: { id: token, text: `@[${token}]` } });
+        continue;
+      }
+      const [only, ...more] = (await usersWithEmail(jira, token)) ?? [];
+      if (only === undefined || more.length > 0 || typeof only.accountId !== "string" || !ACCOUNT_ID.test(only.accountId)) continue;
+      nodes.set(token, { type: "mention", attrs: { id: only.accountId, text: `@${only.displayName ?? token}` } });
+    }
+    return (token) => nodes.get(token) ?? null;
+  }
+
+  /** Every worklog on the issue, every page, its marker read off its `landrace.marker` property. */
+  private async worklogs(jira: Client, key: string): Promise<WorklogRecord[]> {
+    const all: WorklogRecord[] = [];
+    for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
+      const res = await jira.call<{
+        worklogs?: Array<{ id?: unknown; author?: User; timeSpentSeconds?: unknown; properties?: Property[] }>; total?: number;
+      }>("GET", `/rest/api/3/issue/${key}/worklog?startAt=${all.length}&maxResults=${ISSUE_PAGE}&expand=properties`);
+      const batch = res.worklogs ?? [];
+      all.push(...batch.map((w) => {
+        const value = (w.properties ?? []).find((p) => p?.key === MARKER_PROPERTY)?.value as { marker?: unknown } | null | undefined;
+        return {
+          id: String(w.id),
+          author: w.author?.accountId ?? null,
+          seconds: typeof w.timeSpentSeconds === "number" ? w.timeSpentSeconds : 0,
+          marker: typeof value?.marker === "string" ? value.marker : null,
+        };
+      }));
+      if (batch.length === 0 || all.length >= (res.total ?? 0)) return all;
+    }
+    throw new Error(`${key} has more worklogs than ${MAX_ISSUE_PAGES} pages carry`);
   }
 
   async addLabels(id: string, labels: string[], ctx: RuntimeContext): Promise<void> {
@@ -855,9 +1054,89 @@ export class Jira extends BaseTracker {
     await this.transition(jira, key, reopen);
   }
 
-  /** `tracker.status` too, the issue's status by name, when a stage maps one: what the status effect is judged by. */
+  override createsIn(): string[] {
+    return [...this.createProjects];
+  }
+
+  /**
+   * One request: the issue, its link to the item, its assignee and the
+   * property saying landrace filed it for this item — Jira takes all four at
+   * once, so a refused link files nothing. Unlabelled, and in another
+   * project, so it is never one of this tracker's items. A request Jira
+   * refuses is refused here too: no retry makes it fit.
+   */
+  protected override async createIn(request: CreateRequest, ctx: RuntimeContext): Promise<string> {
+    const item = this.keyOf(request.item);
+    const jira = this.jira(ctx);
+    const assignee = await assigneeOf(jira, ctx);
+    let created: { key?: unknown } | null;
+    try {
+      created = await jira.call<{ key?: unknown } | null>("POST", "/rest/api/3/issue", {
+        fields: {
+          project: { key: request.project },
+          summary: request.title,
+          issuetype: { name: this.createType },
+          description: adfOf(request.body, `description for a new ${request.project} issue`),
+          ...(assignee === null ? {} : { assignee: { accountId: assignee } }),
+        },
+        update: { issuelinks: [{ add: { type: { name: this.createLinkType }, outwardIssue: { key: item } } }] },
+        properties: [{ key: CREATED_BY, value: { item, marker: request.marker } }],
+      });
+    } catch (e) {
+      const status = (e as { status?: unknown } | null)?.status;
+      if (status === 400 || isRefused(e)) throw new EffectRefused(`Jira refused to file an issue in ${request.project}: ${messageOf(e)}`);
+      throw e;
+    }
+    const key = created?.key;
+    if (typeof key !== "string" || !new RegExp(`^${request.project}-[1-9][0-9]*$`).test(key)) {
+      throw new Error(`Jira filed an issue but answered no ${request.project} key for it: ${JSON.stringify(created)}`);
+    }
+    return key;
+  }
+
+  /**
+   * The issue already filed for this item and marker: of the item's links of
+   * `createLinkType` into the project, the one whose property says so. Links
+   * that cannot be read refuse rather than answer none — a second issue is
+   * the failure this is here to prevent.
+   */
+  protected override async createdBy(request: CreateRequest, ctx: RuntimeContext): Promise<string | null> {
+    const item = this.keyOf(request.item);
+    const jira = this.jira(ctx);
+    const issue = await jira.call<Issue | null>("GET", `/rest/api/3/issue/${item}?fields=issuelinks`);
+    const links = issue?.fields?.issuelinks;
+    if (!Array.isArray(links)) throw new Error(`${item}'s links could not be read, so whether an issue was already filed for it cannot be told`);
+    const keys = new Set<string>();
+    for (const entry of links as Array<LinkEntry | null>) {
+      if (entry?.type?.name !== this.createLinkType) continue;
+      for (const end of [entry.inwardIssue, entry.outwardIssue]) {
+        if (typeof end?.key === "string" && SITE_KEY.test(end.key) && end.key.startsWith(`${request.project}-`)) keys.add(end.key);
+      }
+    }
+    for (const key of keys) {
+      let property: { value?: { item?: unknown; marker?: unknown } } | null;
+      try {
+        property = await jira.call<{ value?: { item?: unknown; marker?: unknown } } | null>(
+          "GET", `/rest/api/3/issue/${key}/properties/${CREATED_BY}`,
+        );
+      } catch (e) {
+        if (isMissing(e)) continue;
+        throw e;
+      }
+      if (property?.value?.item === item && property.value.marker === request.marker) return key;
+    }
+    return null;
+  }
+
+  /**
+   * `tracker.status` too, the issue's status by name, when a stage maps one:
+   * what the status effect is judged by. Worklogs are not observed: Jira
+   * answers their read with an error where time tracking is off, which would
+   * fail every item's read on a site that never logs time.
+   */
   override provides(): string[] {
-    return this.statuses.size === 0 ? super.provides() : [...super.provides(), "tracker.status"];
+    const own = super.provides();
+    return this.statuses.size === 0 ? own : [...own, "tracker.status"];
   }
 
   override async observe(ctx: HookContext): Promise<Record<string, unknown>> {
@@ -883,6 +1162,42 @@ export class Jira extends BaseTracker {
     if (!label) return base;
     return {
       ...base,
+      [WORKLOG_EFFECT]: {
+        // Judged in apply, over the worklogs read there: the snapshot holds
+        // none (see provides), and a route's effect is applied with no
+        // reconcile first, so a check here alone would never stop a POST.
+        satisfied: () => false,
+        // A 403 is the account without "Work on issues", or time tracking
+        // off, and so is a 404 on reading the worklogs of an issue this tick
+        // just read: no retry logs it, so the round is recorded refused
+        // rather than its step paid for again.
+        apply: async (effect, ctx) => {
+          const key = this.keyOf(ctx.item);
+          const { seconds } = effect;
+          if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds <= 0) {
+            throw new Error(`a ${WORKLOG_EFFECT} effect logs a whole number of seconds above zero, not ${JSON.stringify(seconds)}`);
+          }
+          const jira = this.jira(ctx);
+          const refused = (e: unknown, statuses: unknown[]): unknown => (!statuses.includes((e as { status?: unknown } | null)?.status) ? e : new EffectRefused(
+            `Jira refused to log time on ${key}: the account needs "Work on issues" on ${this.project}, with time tracking on (Jira answered: ${messageOf(e)})`,
+          ));
+          let worklogs: WorklogRecord[];
+          try {
+            worklogs = await this.worklogs(jira, key);
+          } catch (e) {
+            throw refused(e, [403, 404]);
+          }
+          if (worklogLogged(worklogs, effect, botLoginOf(ctx.snapshot))) return;
+          try {
+            await jira.call("POST", `/rest/api/3/issue/${key}/worklog`, {
+              timeSpentSeconds: seconds,
+              properties: [{ key: MARKER_PROPERTY, value: { marker: worklogMarker(effect) } }],
+            });
+          } catch (e) {
+            throw refused(e, [403]);
+          }
+        },
+      },
       [STATUS_EFFECT]: {
         satisfied: (snapshot: Snapshot, effect) => {
           if (!statusSatisfied(snapshot, effect)) return false;
@@ -1087,7 +1402,9 @@ export class Jira extends BaseTracker {
    * it differently, a service desk may have none, and nothing else makes one. Scoped by `jiraAssignee`,
    * an assignee that resolves to no one user, or that cannot be looked up for
    * want of "Browse users and groups", or that the project cannot assign
-   * issues to, "Assign Issues", and each type without an assignee field too. Reads only: every write shows in the
+   * issues to, "Assign Issues", and each type without an assignee field too. For each `createIn` project, the
+   * same of filing an issue there: "Browse projects", "Create issues" and "Link issues", the assignee,
+   * `createType`, and `createLinkType` on the site. Reads only: every write shows in the
    * project's history, so the preflight makes none.
    */
   async check(ctx: PreflightContext): Promise<void> {
@@ -1140,6 +1457,16 @@ export class Jira extends BaseTracker {
         }
       }
     }
+    // A service desk's comments reach the requester unless marked internal, so its type decides every comment's
+    // visibility; one Jira does not name would refuse every comment, so it refuses to start instead.
+    if (permissions.BROWSE_PROJECTS?.havePermission === true) {
+      const { type } = await this.projectOf(jira);
+      if (type === undefined) {
+        problems.push(`Jira answered ${this.project} with no project type, so whether a comment would reach its requester cannot be told`);
+      } else if (type === SERVICE_DESK) {
+        ctx.log("jira.service-desk", { project: this.project, comments: "internal, unless a route's tracker.comment says visibility: public" });
+      }
+    }
     // A clause Jira cannot parse would fail every tick's list: asked once, for no issues, it fails here instead.
     if (this.jql !== undefined) {
       try {
@@ -1155,6 +1482,41 @@ export class Jira extends BaseTracker {
       for (const [stage, status] of this.statuses) {
         if (!known.some((name) => same(name, status))) {
           problems.push(`statuses.${stage} "${status}" is no status of ${this.project}'s workflow; it has ${known.map((n) => `"${n}"`).join(", ") || "none"}`);
+        }
+      }
+    }
+    // Each project `tracker.create` files in, as the project's own: every permission it takes there, the issue
+    // type, and, scoped, that the assignee can be given issues there and the type has an assignee field.
+    for (const there of this.createProjects) {
+      const wanted = scoped ? [...CREATE_PERMISSIONS, "ASSIGN_ISSUES"] : CREATE_PERMISSIONS;
+      const { permissions: granted = {} } = await jira.call<{ permissions?: Record<string, { name?: string; havePermission?: boolean }> }>(
+        "GET", `/rest/api/3/mypermissions?projectKey=${there}&permissions=${wanted.join(",")}`,
+      );
+      for (const key of wanted) {
+        if (granted[key]?.havePermission !== true) {
+          problems.push(`the account lacks "${granted[key]?.name ?? key}" (${key}) on ${there}, where createIn files issues`);
+        }
+      }
+      if (assignee !== null && granted.BROWSE_PROJECTS?.havePermission === true) {
+        const assignable = await jira.call<User[] | null>(
+          "GET", `/rest/api/3/user/assignable/search?project=${there}&accountId=${encodeURIComponent(assignee)}`,
+        ) ?? [];
+        if (!assignable.some((u) => u.accountId === assignee)) {
+          problems.push(`jiraAssignee "${value}" is account ${assignee}, which ${there} cannot assign issues to`);
+        }
+      }
+      if (granted.BROWSE_PROJECTS?.havePermission !== true || granted.CREATE_ISSUES?.havePermission !== true) continue;
+      const path = `/rest/api/3/issue/createmeta/${there}/issuetypes`;
+      const types = await everyPage<{ id?: string; name?: string }>(jira, path);
+      const type = types.find((t) => t.name === this.createType);
+      if (!type?.id) {
+        problems.push(`${there} has no issue type "${this.createType}" (createType); it has ${types.map((t) => `"${t.name}"`).join(", ") || "none"}`);
+        continue;
+      }
+      if (scoped) {
+        const fields = await everyPage<{ fieldId?: string }>(jira, `${path}/${encodeURIComponent(type.id)}`);
+        if (!fields.some((f) => f.fieldId === "assignee")) {
+          problems.push(`${there}'s "${this.createType}" issues have no assignee field, and jiraAssignee assigns each one filed`);
         }
       }
     }
@@ -1177,6 +1539,12 @@ export class Jira extends BaseTracker {
         );
       } else {
         ctx.log("jira.blocked-by.link-type", { linkType: this.linkType, blocker: "inward", inward: type.inward, outward: type.outward });
+      }
+      if (this.createProjects.length > 0 && !issueLinkTypes.some((t) => t.name === this.createLinkType)) {
+        problems.push(
+          `the site has no issue link type "${this.createLinkType}" (createLinkType), which links an issue createIn files to its item; ` +
+          `it has ${issueLinkTypes.map((t) => `"${t.name}"`).join(", ") || "none"}`,
+        );
       }
     } catch (e) {
       if (!isMissing(e)) throw e;

@@ -21,7 +21,7 @@ export * from "#kit/tracker.js";
 export { EffectRefused, isEffectRefused } from "#conventions.js";
 
 export type {
-  BranchHeads, BriefTable, ChangedFile, ChangedFiles, CheckCounts, CheckState, ComposedHooks, EffectHandler, EffectTable, FailedCheck, Finding,
+  BranchHeads, BriefTable, ChangedFile, CreateRequest, ChangedFiles, CheckCounts, CheckState, ComposedHooks, EffectHandler, EffectTable, FailedCheck, Finding,
   Git, HistoryItem, MergeAnswer, OpenRelations, PullRecord, RelatedRecord, Reply, ReviewThread, Roles, SnapshotComment, ThreadComment, ThreadCounts,
-  ItemRecord, TrackerComment,
+  ItemRecord, TrackerComment, CommentVisibility, WorklogRecord,
 } from "#namespace.js";

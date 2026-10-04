@@ -1,5 +1,5 @@
 import { keptItems, keptSlot, removeWorktree } from "#agent/worktree.js";
-import { claimItems, eligibilityOfNode, locateNode, placedByState } from "#core/index.js";
+import { claimItems, closedIdle, eligibilityOfNode, locateNode, placedByState } from "#core/index.js";
 import type {
   Claims,
   ConvergeResult,
@@ -9,6 +9,7 @@ import type {
   LockOptions,
   Logger,
   Node,
+  RunningItem,
   RuntimeContext,
   SeenAt,
   Snapshot,
@@ -53,7 +54,10 @@ const workflowsOn = (sourceOf: ReadonlyMap<string, number>, index: number): stri
  * index `sourceOf` gives each workflow.
  */
 export function claimsOf(workflows: readonly ListedWorkflow[], sourceOf: ReadonlyMap<string, number>, graphs: Graph[]): Claims {
-  return claimItems(workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow, source: sourceOf.get(w.id) ?? -1 })), graphs);
+  return claimItems(workflows.map((w) => ({
+    id: w.id, workflow: w.deps.workflow, source: sourceOf.get(w.id) ?? -1,
+    closedRun: w.deps.workflow.stages.some((s) => s.closed === "run"),
+  })), graphs);
 }
 
 /**
@@ -144,17 +148,22 @@ function unworked(claims: Claims, item: string): { reason: string; outcome: stri
  * another workflow, by a second one too, or reported by a second source is
  * the same fact one level up: it is no longer this workflow's alone to work.
  *
+ * Unless the run started on a closed item: a `closed: run` stage's step, a
+ * retro, runs because the item is closed, and its owner is judged as a
+ * closed item's is, for as long as the item stays closed.
+ *
  * An item its own source does not list is left running: a source may drop
  * what it cannot map (the shipped tracker integration does, and says so in
  * its log), and absent is not the same as stopped. The stopped converge
  * halts and writes nothing (see converge), so the round is still owed if the
  * item comes back.
  */
-function whyStop(listing: WorkspaceListing, item: string, workflow: string, index: number): string | null {
+function whyStop(listing: WorkspaceListing, item: string, run: RunningItem, index: number): string | null {
+  const { workflow } = run;
   const node = listing.graphs[index]?.nodes.find((n) => n.id === item && isItemNode(n));
   if (!node) return null;
-  if (node.closed !== null) return "the item was closed";
-  const owner = listing.claims.owner.get(item);
+  if (node.closed !== null && run.closed !== true) return "the item was closed";
+  const owner = (node.closed === null ? listing.claims.owner : listing.claims.closed).get(item);
   if (owner === workflow) return null;
   if (owner !== undefined) return `now claimed by ${owner}`;
   return unworked(listing.claims, item)?.reason ?? null;
@@ -172,11 +181,11 @@ function stopStopped(runtime: WorkspaceRuntime, listing: WorkspaceListing): Map<
     const index = listing.sourceOf.get(run.workflow);
     // Its source could not list: nothing is known about the item this tick.
     if (index === undefined || listing.failed.has(index)) continue;
-    const reason = whyStop(listing, item, run.workflow, index);
+    const reason = whyStop(listing, item, run, index);
     if (reason === null) continue;
     run.controller.abort(new Error(reason));
     runtime.log("item.aborted", { item, workflow: run.workflow, reason });
-    if (listing.claims.owner.has(item)) moved.set(item, run.done);
+    if (listing.claims.owner.has(item) || listing.claims.closed.has(item)) moved.set(item, run.done);
   }
   return moved;
 }
@@ -406,14 +415,25 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   const workflows = new Map(runtime.workflows.map((w) => [w.id, w]));
   const rows: TickRow[] = [];
   const work: Array<{ node: Node; workflow: WorkflowRuntime }> = [];
-  // Open items only: a pull request in the list is context for an item, and
-  // a closed item is there for its parent to count — neither is work. An id
-  // two sources report is one row: claims has already judged it a clash.
+  // Items only: a pull request in the list is context for an item. A closed
+  // item is there for its parent to count, and is work only where a workflow
+  // with a `closed: run` stage claims it, or two halt over it — and then only
+  // when its node shows it could move or run, so a tracker's every recently
+  // closed item is not read again on every tick. Open ones first, so an id
+  // one source reports open is judged as open. An id two sources report is
+  // one row: claims has already judged it a clash.
+  const items = listing.graphs.flatMap((g) => g.nodes).filter(isItemNode);
   const seen = new Set<string>();
-  for (const node of listing.graphs.flatMap((g) => g.nodes)) {
-    if (!isOpenItem(node) || seen.has(node.id)) continue;
+  for (const node of [...items.filter(isOpenItem), ...items.filter((n) => !isOpenItem(n))]) {
+    if (seen.has(node.id)) continue;
     seen.add(node.id);
     const item = node.id;
+    const closed = node.closed !== null;
+    const closedOwner = closed ? listing.claims.closed.get(item) : undefined;
+    if (closed && !listing.claims.conflicts.has(item) && !listing.claims.clashes.has(item)) {
+      const owning = closedOwner === undefined ? undefined : workflows.get(closedOwner);
+      if (owning === undefined || closedIdle(owning.deps.workflow, node)) continue;
+    }
     const problem = itemIdProblem(item);
     if (problem) {
       // A source is a hook, and a hook's output is outside input: this id is
@@ -422,7 +442,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       rows.push({ item, outcome: `error: ${oneLine(problem)}` });
       continue;
     }
-    const owner = listing.claims.owner.get(item);
+    const owner = closed ? closedOwner : listing.claims.owner.get(item);
     const workflow = owner === undefined ? undefined : workflows.get(owner);
     if (workflow && unjudged) {
       const reason = unknownClash(listing, item);
@@ -490,7 +510,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
           // Its own controller, so a later tick can stop this item alone;
           // joined to the loop's, so Ctrl-C still stops every one.
           const own = new AbortController();
-          runtime.running.set(item, { controller: own, workflow: w.id, done });
+          runtime.running.set(item, { controller: own, workflow: w.id, done, closed: node.closed !== null });
           // However the converge ends: the board waits on this before a list
           // may vouch for the labels a step it ran was about to change.
           const notify = noting(runtime, w, item);

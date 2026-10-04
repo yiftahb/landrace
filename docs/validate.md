@@ -44,7 +44,8 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 | `entry` | No entry stage, unless every open stage is placed by the item's own state; with several entry stages, one with no trigger anchored on `"run.stage": null`, or one with a trigger anchored on neither `null` nor a stage, which could fire mid-workflow |
 | `stage-id` | A stage id that is a reserved object key (`__proto__`, `constructor`, …) |
 | `reachability`, `unknown-stage` | A stage nothing leads to; a trigger naming a stage that does not exist |
-| `dead-end`, `self-loop` | A non-terminal stage with no way out; a stage triggering on itself |
+| `dead-end`, `self-loop` | A non-terminal stage with no way out, except a `closed: run` stage, where a closed item rests; a stage triggering on itself |
+| `closed-run` | A `closed: run` stage that names a `branch`, or that plans a `branch.push` or `pull.*` effect in its `on_enter` or its step's routes; a stage marked `entry: true`; a trigger into it that can hold while `node.closed` is null, such as `{ $ne: dropped }`; a stage `goto` entry or a route `goto` that targets it |
 | `cycle-bound` | A loop with no counter bound — an agent that could run forever. An edge whose trigger waits for a person's own message (`run.lastEvent.actor: human`, exactly) bounds it too: every lap needs someone to write |
 | `identity` | An item two stages' identities both place, shown to the engine's own compiler |
 | `waits` | `waits: person` on a stage that runs a step, or on a terminal stage |
@@ -63,7 +64,8 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 | `entry-record` | A stage that runs a step but records no `enter` naming `{round}` in its `on_enter`, so a second round would read as already complete and be skipped |
 | `totality` | A declared output shape with no route |
 | `shape-field` | A shape declaring a field that is a reserved object key, which can never be carried |
-| `shape-edge` | An output shape no trigger leads away from, so an item that produces one stops there for good |
+| `shape-edge` | An output shape no trigger leads away from, so an item that produces one stops there for good. A `closed: run` stage is not asked: a closed item rests there |
+| `route-from` | A `from` in a route's `effects` that names no field of the shape the route takes — or, where the route's shape cannot be read, no field of any shape. Every such answer would fail as a broken contract |
 | `placeholder` | A placeholder retired when "ticket" became "item" — `{ticket…}` — in a prompt or an effect field |
 | `children` | A step declaring `items:create` whose stage has no `nodes.close` or records no entry, so a re-run's children would not supersede the last round's; a `nodes.close` on a stage whose step cannot create items; a `nodes.close` with no `follow` list, or following a type no source declares |
 
@@ -71,9 +73,11 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 
 | Rule | Catches |
 |---|---|
-| `reserved-field` | A `goto`, `from` or `head` field in an `on_enter` effect or a route's effect — fields only the engine writes |
+| `reserved-field` | A `goto`, `from` or `head` field in an `on_enter` effect or a route's effect — fields only the engine writes. A `from` in a route's `effects` names an output field instead, and `route-from` checks it |
+| `tracker-create` | A `tracker.create` with no `project` or no `title`; one outside a route's `effects` with no `marker` of its own; and, once the hooks load, one filing in a project that no post hook handling `tracker.create` lists in its `creates` — a tracker files only where it opts in (Jira's `createIn`). `start` refuses the last one too |
 | `branch` | A stage `branch`, or the `branch` of a `branch.push` or `pull.*` effect, other than `landrace/{item}`; a stage `branch` with `agent.isolation` other than `worktree` |
 | `merge-guard` | A `pull.merge` whose `refuse` is not a non-empty list of non-empty globs, or has a glob that could never match a changed file (a leading `/` or `./`, a trailing `/`, an empty, `.` or `..` segment); a `reviewedBy` naming no stage, or one with no step or no `branch` |
+| `effect-fields` | A `visibility` other than `internal` or `public`, or on any effect but `tracker.comment`; `addFrom` or `spentFrom` in an `on_enter`; `addFrom` on any effect but `tracker.label`, naming no field, or without a non-empty `allowed` list; an `lr:` label in `allowed`; an `addFrom` or `spentFrom` field that no shape the route can match declares; `spentFrom` on any effect but `tracker.worklog`; a `tracker.worklog` in an `on_enter`, or on a route without `spentFrom`, a `marker`, or a `max` that is a duration above zero |
 | `merge-placement` | A `pull.merge` anywhere but a stage's `on_enter`: a step's route effect, or a route's `goto` into a stage that merges as it is entered |
 | `entry-first` | In a stage whose `on_enter` records its `enter`, an effect other than `tracker.status` or `tracker.label` planned before that record. A refusal is recorded as the stage's rejected round only when the record came first |
 | `halt-labels` | A stage entered on a failed round (a trigger reading `run.lastOutputValid: false`) whose `on_enter` does not add `lr:blocked`, or one entered on a refusal (`run.lastRefused: true`) that does not add `lr:screened` beside it |
@@ -109,6 +113,7 @@ The graph rules work from two derived views. An earlier version abstained wherev
 - `validate` fails a `.env` that git does not ignore; `start` does not check it.
 - `validate` passes, and `start` refuses: a `log.redact` name that is not a declared secret of 8 characters or more, `agent.isolation: container`, and a `tick.interval` that is not a [duration](configuration.md#durations). `landrace mcp` refuses the first two too.
 - `validate` passes, and `start` refuses, a workflow whose hooks load no source (`no source hook is configured`). With no pre hook either, `path-coverage` abstains, so `validate` reports such a workflow valid.
+- `landrace status`, which writes nothing, does not refuse a `tracker-create` problem against the hooks; `start` does.
 - `start` and `landrace mcp` run each hook's preflight, such as the GitHub integration's check of the token's permissions; `validate` runs none.
 
 So a workspace `validate` passes can still be refused by `start`.

@@ -49,7 +49,12 @@ const CATEGORIES = {
 
 export interface FakeTransition { id: string; name: string; to: string }
 
-export interface FakeComment { id: string; author: FakeUser; body: Adf; created: string }
+/** An entity property, as Jira keeps one on a comment or a worklog: a key and any JSON value. */
+export interface FakeProperty { key: string; value: unknown }
+
+export interface FakeComment { id: string; author: FakeUser; body: Adf; created: string; properties?: FakeProperty[] }
+
+export interface FakeWorklog { id: string; author: FakeUser; timeSpentSeconds: number; started: string; properties?: FakeProperty[] }
 
 export interface FakeIssue {
   id: string;
@@ -69,10 +74,13 @@ export interface FakeIssue {
   priority: string | null;
   issuetype: string;
   comments: FakeComment[];
+  worklogs: FakeWorklog[];
   /** Custom fields by id, as `PUT /issue` wrote them or a person filled them: a string or ADF. */
   custom: Record<string, unknown>;
   /** Description changes, oldest first: what `changelog/bulkfetch` answers from. */
   history: Array<{ id: string; author: FakeUser; created: string }>;
+  /** Entity properties by key, as `properties` on a create set them. */
+  properties?: Record<string, unknown>;
 }
 
 /** `fields`: the ids on its create screen, and on its edit screen too. */
@@ -159,6 +167,7 @@ export function createFakeJira(project = "KEY") {
   let nextComment = 100_000;
   let nextHistory = 50_000;
   let nextLink = 20_000;
+  let nextWorklog = 30_000;
 
   const issues = new Map<string, FakeIssue>();
   const moved = new Map<string, string>();
@@ -169,6 +178,8 @@ export function createFakeJira(project = "KEY") {
   const fake = {
     calls,
     issues,
+    /** The project's type, as `GET /project` names it: "service_desk" for Jira Service Management; null, Jira answering none. */
+    projectType: "software" as string | null,
     /** Who the token is; set to null to have Jira refuse it. */
     me: BOT as FakeUser | null,
     /** The page Jira cuts every list at, whatever was asked for. */
@@ -228,6 +239,19 @@ export function createFakeJira(project = "KEY") {
     /** Issues `issue/bulkfetch` names in `issueErrors` instead: a retriable failure, or a payload limit. */
     retriable: new Set<string>(),
 
+    /** The site's other projects, each with what the account may do there: issues are filed there, never listed. */
+    others: new Map<string, Record<string, boolean>>(),
+
+    /** Another project on the site, where the account may do everything until a test says otherwise. */
+    addProject(key: string): void {
+      fake.others.set(key, Object.fromEntries(Object.keys(PERMISSION_NAMES).map((k) => [k, true])));
+    },
+
+    /** What the account may do in another project, beside what it may by default. */
+    projectPermissions(key: string, permissions: Record<string, boolean>): void {
+      fake.others.set(key, { ...(fake.others.get(key) ?? {}), ...permissions });
+    },
+
     /** A link a person made in Jira's UI, its ends in the slots `POST /issueLink` takes them in. */
     link(type: string, inward: string, outward: string): FakeLink {
       const made = { id: String(nextLink++), type, inward, outward };
@@ -256,6 +280,7 @@ export function createFakeJira(project = "KEY") {
         priority: "3",
         issuetype: "Task",
         comments: [],
+        worklogs: [],
         custom: {},
         history: [],
         ...seed,
@@ -274,6 +299,11 @@ export function createFakeJira(project = "KEY") {
     say(key: string, author: FakeUser, body: Adf): void {
       const issue = fake.issue(key);
       issue.comments.push({ id: String(nextComment++), author, body, created: tick() });
+    },
+
+    /** Time a person logged in Jira's own "Log work". */
+    logWork(key: string, author: FakeUser, timeSpentSeconds: number): void {
+      fake.issue(key).worklogs.push({ id: String(nextWorklog++), author, timeSpentSeconds, started: tick() });
     },
 
     /** A person rewrites the description in Jira's editor. */
@@ -451,6 +481,21 @@ export function createFakeJira(project = "KEY") {
     return { items, next: start + size < all.length ? `page-${start + size}` : null };
   };
 
+  /** A Jira Service Management comment is public unless its `sd.public.comment` property says internal; any other project's always is. */
+  const isPublic = (c: FakeComment): boolean =>
+    !(c.properties ?? []).some((p) => p.key === "sd.public.comment" && (p.value as { internal?: unknown } | null)?.internal === true);
+
+  /** Entity properties as a create takes them, or what Jira answers a malformed list with. */
+  const propertiesOf = (value: unknown): FakeProperty[] | string => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) return "properties must be a list";
+    for (const p of value as Array<{ key?: unknown; value?: unknown } | null>) {
+      if (typeof p?.key !== "string" || p.key.length > 255 || p.value === undefined) return "each property needs a key of at most 255 characters and a value";
+      if (JSON.stringify(p.value).length > 32_768) return `the value of property ${p.key} is too large`;
+    }
+    return value as FakeProperty[];
+  };
+
   const transitionsOf = (issue: FakeIssue) => fake.transitions.filter((t) => t.to !== issue.status);
 
   function route(method: string, url: URL, body: unknown): Response {
@@ -480,7 +525,7 @@ export function createFakeJira(project = "KEY") {
 
     // Documented: an array of the users who may be assigned the project's issues, narrowed to one by accountId.
     if (method === "GET" && path === "/rest/api/3/user/assignable/search") {
-      if (q.get("project") !== project) return errors(404, [`No project could be found with key '${q.get("project") ?? ""}'.`]);
+      if (q.get("project") !== project && !fake.others.has(q.get("project") ?? "")) return errors(404, [`No project could be found with key '${q.get("project") ?? ""}'.`]);
       const id = q.get("accountId");
       return json(fake.users.filter((u) => !fake.unassignable.has(u.accountId) && (id === null || u.accountId === id)).map(user));
     }
@@ -489,18 +534,19 @@ export function createFakeJira(project = "KEY") {
       const keys = (q.get("permissions") ?? "").split(",").filter(Boolean);
       if (keys.length === 0) return errors(400, ["The permissions parameter is required."]);
       const permissions: Record<string, unknown> = {};
+      const there = fake.others.get(q.get("projectKey") ?? "") ?? fake.permissions;
       for (const key of keys) {
         if (!(key in PERMISSION_NAMES)) return errors(400, [`Invalid permission key: ${key}`]);
         permissions[key] = {
           id: String(Object.keys(PERMISSION_NAMES).indexOf(key) + 10), key, name: PERMISSION_NAMES[key],
-          type: "PROJECT", description: "", havePermission: fake.permissions[key] === true,
+          type: "PROJECT", description: "", havePermission: there[key] === true,
         };
       }
       return json({ permissions });
     }
 
     if (method === "GET" && (m = /^\/rest\/api\/3\/issue\/createmeta\/([^/]+)\/issuetypes(?:\/([^/]+))?$/.exec(path))) {
-      if (m[1] !== project) return errors(404, ["No project could be found with key or id '" + m[1] + "'."]);
+      if (m[1] !== project && !fake.others.has(m[1] ?? "")) return errors(404, ["No project could be found with key or id '" + m[1] + "'."]);
       const startAt = Number(q.get("startAt") ?? 0);
       const maxResults = Math.min(Number(q.get("maxResults") ?? 50), fake.pageSize);
       if (m[2] === undefined) {
@@ -530,7 +576,8 @@ export function createFakeJira(project = "KEY") {
 
     if (method === "GET" && path === `/rest/api/3/project/${project}`) {
       return json({
-        self: `${SITE}/rest/api/3/project/10000`, id: "10000", key: project, name: "Acme", projectTypeKey: "software", simplified: false, style: "classic",
+        self: `${SITE}/rest/api/3/project/10000`, id: "10000", key: project, name: "Acme",
+        ...(fake.projectType === null ? {} : { projectTypeKey: fake.projectType }), simplified: false, style: "classic",
         issueTypes: fake.issueTypes.map((t) => ({ self: `${SITE}/rest/api/3/issuetype/${t.id}`, id: t.id, name: t.name, subtask: t.subtask })),
       });
     }
@@ -619,7 +666,10 @@ export function createFakeJira(project = "KEY") {
 
     if (method === "POST" && path === "/rest/api/3/issue") {
       const f = (b.fields ?? {}) as Record<string, { key?: string; name?: string; id?: string } | string | Adf | undefined>;
-      if ((f.project as { key?: string } | undefined)?.key !== project) return errors(400, [], { project: "Specify a valid project ID or key" });
+      const into = (f.project as { key?: string } | undefined)?.key ?? "";
+      const elsewhere = fake.others.get(into);
+      if (into !== project && elsewhere === undefined) return errors(400, [], { project: "Specify a valid project ID or key" });
+      if (elsewhere !== undefined && elsewhere.CREATE_ISSUES !== true) return errors(403, ["You do not have permission to create issues in this project."]);
       const type = fake.issueTypes.find((t) => t.name === (f.issuetype as { name?: string } | undefined)?.name);
       if (!type) return errors(400, [], { issuetype: "Specify an issue type" });
       for (const field of Object.keys(f)) {
@@ -635,8 +685,19 @@ export function createFakeJira(project = "KEY") {
       const assigneeId = (f.assignee as { accountId?: string } | undefined)?.accountId;
       const assignee = assigneeId === undefined ? null : fake.users.find((u) => u.accountId === assigneeId);
       if (assignee === undefined || (assignee !== null && fake.unassignable.has(assignee.accountId))) return errors(400, [], { assignee: `User '${String(assigneeId)}' cannot be assigned issues.` });
+      // Documented on create: `update.issuelinks` adds links with the new issue
+      // in the slot left empty, and `properties` sets entity properties — both
+      // in the one request, so a refused link files nothing.
+      const adds = ((b.update ?? {}) as { issuelinks?: Array<{ add?: { type?: { name?: string }; inwardIssue?: { key?: string }; outwardIssue?: { key?: string } } }> }).issuelinks ?? [];
+      for (const { add } of adds) {
+        if (!fake.linkTypes.some((t) => t.name === add?.type?.name)) return errors(400, [], { issuelinks: `No issue link type with name '${String(add?.type?.name)}' found.` });
+        const other = add?.outwardIssue?.key ?? add?.inwardIssue?.key;
+        if (other === undefined || !visible(other)) return errors(400, [], { issuelinks: "Issue does not exist or you do not have permission to see it." });
+        if (!fake.canLink || elsewhere?.LINK_ISSUES === false) return errors(400, [], { issuelinks: "You do not have the permission to link issues." });
+      }
       const me = fake.me as FakeUser;
       const issue = fake.add({
+        ...(elsewhere === undefined ? {} : { key: `${into}-${[...issues.keys()].filter((k) => k.startsWith(`${into}-`)).length + 1}` }),
         summary: String(f.summary ?? ""),
         description: (f.description as Adf | undefined) ?? null,
         creator: me,
@@ -645,12 +706,28 @@ export function createFakeJira(project = "KEY") {
         parent: parent ?? null,
         priority: priority ?? "3",
         assignee,
+        ...(Array.isArray(b.properties)
+          ? { properties: Object.fromEntries((b.properties as Array<{ key: string; value: unknown }>).map((p) => [p.key, p.value])) }
+          : {}),
       });
+      for (const { add } of adds) {
+        if (add?.outwardIssue?.key !== undefined) fake.link(String(add.type?.name), issue.key, add.outwardIssue.key);
+        else if (add?.inwardIssue?.key !== undefined) fake.link(String(add.type?.name), add.inwardIssue.key, issue.key);
+      }
       if (fake.indexLag) unindexed.add(issue.key);
       return json({ id: issue.id, key: issue.key, self: `${SITE}/rest/api/3/issue/${issue.id}` }, 201);
     }
 
-    if ((m = /^\/rest\/api\/3\/issue\/([^/]+)(\/comment|\/transitions|\/editmeta)?$/.exec(path))) {
+    // Documented: one entity property of an issue, `{ key, value }`, or a 404 when the issue has none of that key.
+    if (method === "GET" && (m = /^\/rest\/api\/3\/issue\/([^/]+)\/properties\/([^/]+)$/.exec(path))) {
+      const issue = visible(decodeURIComponent(m[1] as string));
+      if (!issue) return errors(404, ["Issue does not exist or you do not have permission to see it."]);
+      const key = decodeURIComponent(m[2] as string);
+      if (!issue.properties || !Object.hasOwn(issue.properties, key)) return errors(404, [`The property with key '${key}' does not exist.`]);
+      return json({ key, value: issue.properties[key] });
+    }
+
+    if ((m = /^\/rest\/api\/3\/issue\/([^/]+)(\/comment|\/transitions|\/editmeta|\/worklog)?$/.exec(path))) {
       const issue = visible(decodeURIComponent(m[1] as string));
       if (!issue) return errors(404, ["Issue does not exist or you do not have permission to see it."]);
       const me = fake.me as FakeUser;
@@ -716,9 +793,12 @@ export function createFakeJira(project = "KEY") {
       if (m[2] === "/comment" && method === "GET") {
         const startAt = Number(q.get("startAt") ?? 0);
         const maxResults = Math.min(Number(q.get("maxResults") ?? 5000), fake.pageSize);
+        // Properties only when asked for, as Jira expands them.
+        const expand = (q.get("expand") ?? "").split(",").includes("properties");
         const comments = issue.comments.slice(startAt, startAt + maxResults).map((c) => ({
           self: `${SITE}/rest/api/3/issue/${issue.id}/comment/${c.id}`, id: c.id, author: user(c.author), body: c.body,
-          updateAuthor: user(c.author), created: c.created, updated: c.created, jsdPublic: true,
+          updateAuthor: user(c.author), created: c.created, updated: c.created, jsdPublic: isPublic(c),
+          ...(expand ? { properties: c.properties ?? [] } : {}),
         }));
         return json({ startAt, maxResults, total: issue.comments.length, comments });
       }
@@ -727,12 +807,46 @@ export function createFakeJira(project = "KEY") {
         const doc = b.body as Adf | undefined;
         const problem = adfProblem(doc);
         if (problem) return errors(400, [], { comment: problem });
+        if (!hasContent(doc)) return errors(400, [], { comment: "Comment body can not be empty!" });
         if (JSON.stringify(doc).length > 32_767) {
           return errors(400, [], { comment: "The entered text is too long. It exceeds the allowed limit of 32,767 characters." });
         }
-        const comment = { id: String(nextComment++), author: me, body: doc as Adf, created: tick() };
+        const properties = propertiesOf(b.properties);
+        if (typeof properties === "string") return errors(400, [properties]);
+        const comment = { id: String(nextComment++), author: me, body: doc as Adf, created: tick(), ...(properties.length > 0 ? { properties } : {}) };
         issue.comments.push(comment);
-        return json({ self: `${SITE}/rest/api/3/issue/${issue.id}/comment/${comment.id}`, id: comment.id, author: user(me), body: comment.body, created: comment.created, updated: comment.created, jsdPublic: true }, 201);
+        return json({
+          self: `${SITE}/rest/api/3/issue/${issue.id}/comment/${comment.id}`, id: comment.id, author: user(me), body: comment.body,
+          created: comment.created, updated: comment.created, jsdPublic: isPublic(comment),
+        }, 201);
+      }
+
+      // Documented: offset-paged, oldest first; properties only when expanded.
+      if (m[2] === "/worklog" && method === "GET") {
+        const startAt = Number(q.get("startAt") ?? 0);
+        const maxResults = Math.min(Number(q.get("maxResults") ?? 5000), fake.pageSize);
+        const expand = (q.get("expand") ?? "").split(",").includes("properties");
+        const worklogs = issue.worklogs.slice(startAt, startAt + maxResults).map((w) => ({
+          self: `${SITE}/rest/api/3/issue/${issue.id}/worklog/${w.id}`, id: w.id, issueId: issue.id, author: user(w.author),
+          updateAuthor: user(w.author), started: w.started, created: w.started, updated: w.started,
+          timeSpentSeconds: w.timeSpentSeconds, timeSpent: `${Math.round(w.timeSpentSeconds / 60)}m`,
+          ...(expand ? { properties: w.properties ?? [] } : {}),
+        }));
+        return json({ startAt, maxResults, total: issue.worklogs.length, worklogs });
+      }
+
+      if (m[2] === "/worklog" && method === "POST") {
+        const seconds = b.timeSpentSeconds;
+        if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds <= 0) {
+          return errors(400, [], { timeLogged: "You must indicate the time spent working." });
+        }
+        const properties = propertiesOf(b.properties);
+        if (typeof properties === "string") return errors(400, [properties]);
+        const worklog = {
+          id: String(nextWorklog++), author: me, timeSpentSeconds: seconds, started: tick(), ...(properties.length > 0 ? { properties } : {}),
+        };
+        issue.worklogs.push(worklog);
+        return json({ id: worklog.id, issueId: issue.id, timeSpentSeconds: seconds, started: worklog.started }, 201);
       }
 
       if (m[2] === "/transitions" && method === "GET") {
@@ -801,8 +915,8 @@ export type FakeJira = ReturnType<typeof createFakeJira>;
 /** The children each node Landrace writes may hold, as Jira's ADF schema has them. */
 const CHILDREN: Record<string, string[]> = {
   doc: ["paragraph", "heading", "bulletList", "orderedList", "codeBlock"],
-  paragraph: ["text", "hardBreak"],
-  heading: ["text", "hardBreak"],
+  paragraph: ["text", "hardBreak", "mention"],
+  heading: ["text", "hardBreak", "mention"],
   bulletList: ["listItem"],
   orderedList: ["listItem"],
   listItem: ["paragraph", "bulletList", "orderedList", "codeBlock"],
@@ -820,6 +934,7 @@ function adfProblem(doc: Adf | undefined): string | null {
   if (doc?.type !== "doc" || doc.version !== 1 || !Array.isArray(doc.content)) return "Comment body is not valid ADF";
   const check = (node: Adf): string | null => {
     const allowed = CHILDREN[node.type] ?? [];
+    if (node.type === "mention" && typeof node.attrs?.id !== "string") return "INVALID_INPUT: a mention without an id";
     if (node.type === "heading" && ![1, 2, 3, 4, 5, 6].includes(node.attrs?.level as number)) return "INVALID_INPUT: heading level";
     if (node.type === "listItem" && !["paragraph", "codeBlock"].includes(node.content?.[0]?.type ?? "")) {
       return "INVALID_INPUT: a listItem opens with a paragraph or a codeBlock";
@@ -842,3 +957,7 @@ function adfProblem(doc: Adf | undefined): string | null {
   };
   return check(doc);
 }
+
+/** Whether a document holds anything a person would read: Jira refuses a comment whose paragraphs are all empty. */
+const hasContent = (node: Adf | undefined): boolean =>
+  node !== undefined && (node.type === "mention" || (node.type === "text" && (node.text ?? "").trim() !== "") || (node.content ?? []).some(hasContent));

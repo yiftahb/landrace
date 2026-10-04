@@ -228,6 +228,8 @@ export function compose({ tracker, forge, docs }: Roles): ComposedHooks {
     post: definePostHook({
       id: PROJECT,
       handles: Object.keys(acts),
+      // Where the tracker's `tracker.create` files issues, for `validate` to hold a workflow to.
+      creates: tracker.createsIn(),
       satisfied: (snapshot, effect) =>
         effect.type === NODES_CLOSE_EFFECT
           ? split(snapshot, effect).every(([handler, part]) => handler.satisfied(snapshot, part))
