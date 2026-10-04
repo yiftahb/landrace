@@ -69,7 +69,7 @@ agent:
     setupTimeout: 15m
 ```
 
-- **`copy`** copies the files each glob matches from your checkout into the worktree, at the same paths, before every write step. Only untracked or ignored files are copied. A glob that matches a tracked file, an absolute path or one with `..` is refused at start, naming the file. A link that leads outside the repository is not followed.
+- **`copy`** copies the files each glob matches from your checkout into the worktree, at the same paths, before every write step. Only untracked or ignored files are copied. A glob that matches a tracked file, an absolute path or one with `..` is refused at start, naming the file. A file the item's branch tracks is refused before the step, too, so the branch's own version is never replaced. A link that leads outside the repository is not followed.
 - **`setup`** runs each command, in order, in the worktree, after `copy` and before the agent. It runs through your shell, outside the agent and its sandbox, with the same minimal environment the agent gets. A private registry's token reaches it through a copied file such as `.npmrc`.
 - **A failure or a timeout** stops the item before the agent runs, with the end of the command's output as the reason. Nothing is recorded, so the next tick tries again.
 - **Events:** `worktree.setup.started`, `worktree.setup.finished` and `worktree.setup.failed`, each naming the item and the command.

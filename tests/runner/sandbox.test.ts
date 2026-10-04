@@ -850,6 +850,28 @@ describe("converge and a stage's branch", () => {
     await removeWorktree("2", root, "2.write");
   });
 
+  it("copies and runs setup for a write step on a stage that names no branch, and keeps nothing", async () => {
+    const root = await repo();
+    await writeFile(join(root, "local.env"), "TOKEN=1\n");
+    const seen: string[] = [];
+    const looker: Executor = {
+      id: "looker",
+      run: async (_p, { cwd }) => {
+        seen.push(await readFile(join(cwd as string, "ready.txt"), "utf8"));
+        return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
+      },
+    };
+
+    const r = await converge("1", deps(world(), {
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: looker,
+      sandbox: { root, worktree: { copy: ["*.env"], setup: ["cat local.env > ready.txt"], timeoutMs: 60_000 } },
+    }));
+    expect(r.settled).toBe("terminal");
+    expect(seen).toEqual(["TOKEN=1\n"]);
+    expect(await sandboxes(root)).toEqual([]);
+  });
+
   it("neither copies nor sets up for a read-only step", async () => {
     const root = await repo();
     await writeFile(join(root, "local.env"), "TOKEN=1\n");

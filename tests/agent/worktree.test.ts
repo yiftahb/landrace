@@ -709,6 +709,25 @@ describe("preparing a write step's worktree", () => {
     await removeWorktree("81", root, keptSlot("81"));
   });
 
+  /*
+   * Untracked in the checkout is not untracked on the item's branch: a step
+   * that committed pkg/.npmrc would see the operator's token copied over it,
+   * and its next `git commit -a` would push the token.
+   */
+  it("refuses a glob that matches a file the item's branch tracks, leaving the branch's file as it is", async () => {
+    const root = await project();
+    const path = await ensureWorktree("87", root, { branch: "landrace/87", write: true }, keptSlot("87"));
+    await mkdir(join(path, "pkg"), { recursive: true });
+    await writeFile(join(path, "pkg", ".npmrc"), "registry=branch\n");
+    await git(path, "add", "pkg/.npmrc");
+    await git(path, "commit", "-qm", "branch npmrc");
+
+    await expect(prepareWorktree({ item: "87", path, root, setup: setup({ copy: ["**/.npmrc"] }), log: () => undefined }))
+      .rejects.toThrow(/pkg\/\.npmrc.*landrace\/87/);
+    expect(await readFile(join(path, "pkg", ".npmrc"), "utf8")).toBe("registry=branch\n");
+    await removeWorktree("87", root, keptSlot("87"));
+  });
+
   it("refuses an absolute glob and one that climbs out of the repository", async () => {
     const root = await project();
     const problems = await copyProblems(root, ["/etc/hosts", "../x/.env", "ok/../../.env"]);

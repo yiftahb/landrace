@@ -374,6 +374,16 @@ export async function copyProblems(root: string, globs: readonly string[]): Prom
  */
 async function copyInto(path: string, root: string, globs: readonly string[]): Promise<void> {
   const problems = await copyProblems(root, globs);
+  // The item's branch too: a file it committed is untracked in the checkout
+  // still, and copying over it would hand the operator's version to the next
+  // `git commit -a`.
+  const branch = (await git(["rev-parse", "--abbrev-ref", "HEAD"], path, "could not read the worktree's branch")).trim();
+  for (const glob of globs) {
+    if (isAbsolute(glob) || glob.split(/[\\/]/).includes("..")) continue;
+    for (const file of await filesMatching(path, glob, [])) {
+      problems.push(`agent.worktree.copy "${glob}" matches ${file}, which ${branch} tracks; only untracked or ignored files are copied`);
+    }
+  }
   if (problems.length) throw new Error(problems.join("; "));
   for (const glob of globs) {
     const files = [

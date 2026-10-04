@@ -70,17 +70,16 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
   // the item's next write step needs, and a review between the two reads the
   // branch in the item's own slot rather than rebuilding this one. Kept is
   // not stored state: it is reset onto the branch whenever it is reused, and
-  // rebuilt when it is missing or on anything else.
+  // rebuilt when it is missing or on anything else. A write step on no branch
+  // is prepared too, in the item's own slot, which goes when this call ends.
   const enter = root === undefined
     ? null
-    : async (on?: WorktreeBranch): Promise<string> => {
-        if (!on?.write) {
-          entered = true;
-          return ensureWorktree(item, root, on);
-        }
-        const path = await ensureWorktree(item, root, on, keptSlot(item));
+    : async (on: WorktreeBranch | undefined, write: boolean): Promise<string> => {
+        const kept = on?.write === true;
+        if (!kept) entered = true;
+        const path = await ensureWorktree(item, root, on, kept ? keptSlot(item) : item);
         const setup = deps.sandbox?.worktree;
-        if (setup) await prepareWorktree({ item, path, root, setup, log: deps.log, signal: deps.ctx.signal });
+        if (write && setup) await prepareWorktree({ item, path, root, setup, log: deps.log, signal: deps.ctx.signal });
         return path;
       };
 
@@ -96,7 +95,7 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
 async function converging(
   item: string,
   deps: ConvergeDeps,
-  enterSandbox: ((on?: WorktreeBranch) => Promise<string>) | null,
+  enterSandbox: ((on: WorktreeBranch | undefined, write: boolean) => Promise<string>) | null,
 ): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
   const scrub = scrubberFor(deps);
@@ -363,9 +362,8 @@ async function converging(
         try {
           if (branch.branch !== null) await deps.source.remoteHead?.(branch.branch, deps.ctx);
           if (enterSandbox) {
-            const path = await enterSandbox(
-              branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) },
-            );
+            const write = mayWriteRepo(step.capabilities);
+            const path = await enterSandbox(branch.branch === null ? undefined : { branch: branch.branch, write }, write);
             sandbox = { path };
             if (branch.branch !== null) head = await worktreeHead(path);
           } else if (branch.branch !== null) {
