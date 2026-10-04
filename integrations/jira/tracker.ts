@@ -945,16 +945,18 @@ export class Jira extends BaseTracker {
    * on the project, each issue type it does not have, and each type without a
    * labels field — an item's position is a label. Scoped by `jiraAssignee`,
    * an assignee that resolves to no one user, or that cannot be looked up for
-   * want of "Browse users and groups", "Assign Issues", and each type without
-   * an assignee field too. Reads only: every write shows in the
+   * want of "Browse users and groups", or that the project cannot assign
+   * issues to, "Assign Issues", and each type without an assignee field too. Reads only: every write shows in the
    * project's history, so the preflight makes none.
    */
   async check(ctx: RuntimeContext): Promise<void> {
     const jira = this.jira(ctx);
     const problems: string[] = [];
-    const scoped = (ctx.secrets.get("jiraAssignee")?.trim() ?? "") !== "";
+    const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
+    const scoped = value !== "";
+    let assignee: string | null = null;
     try {
-      await this.assignee(jira, ctx);
+      assignee = await this.assignee(jira, ctx);
     } catch (e) {
       problems.push(messageOf(e));
     }
@@ -965,6 +967,16 @@ export class Jira extends BaseTracker {
     for (const key of asked) {
       if (permissions[key]?.havePermission !== true) {
         problems.push(`the account lacks "${permissions[key]?.name ?? key}" (${key}) on ${this.project}`);
+      }
+    }
+    // A user read finds an account with no access to the project, or a deactivated one, too: it would list
+    // nothing, and the first create would fail with "cannot be assigned issues" after a step is paid for.
+    if (assignee !== null && permissions.BROWSE_PROJECTS?.havePermission === true) {
+      const assignable = await jira.call<User[] | null>(
+        "GET", `/rest/api/3/user/assignable/search?project=${this.project}&accountId=${encodeURIComponent(assignee)}`,
+      ) ?? [];
+      if (!assignable.some((u) => u.accountId === assignee)) {
+        problems.push(`jiraAssignee "${value}" is account ${assignee}, which ${this.project} cannot assign issues to`);
       }
     }
     // Create metadata answers only an account that may browse the project and create in it.

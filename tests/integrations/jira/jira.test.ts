@@ -631,6 +631,21 @@ describe("scoped to one assignee by jiraAssignee", () => {
     await expect(jira.check?.(ctx)).rejects.toThrow(/jiraAssignee "557058:no-such-user" matches no Jira user/);
   });
 
+  // A user read finds an account with no access to the project, or a deactivated one: the first create would fail, after a step is paid for.
+  it.each([["an email", PERSON.emailAddress as string], ["an account id", PERSON.accountId]])(
+    "refuses to start on %s whose account the project cannot assign issues to, naming it",
+    async (_, value) => {
+      const { fake, jira, ctx } = scoped(value);
+      fake.unassignable.add(PERSON.accountId);
+      await expect(jira.check?.(ctx)).rejects.toThrow(
+        `jiraAssignee "${value}" is account ${PERSON.accountId}, which KEY cannot assign issues to`,
+      );
+      fake.unassignable.clear();
+      const again = scoped(value);
+      await again.jira.check?.(again.ctx);
+    },
+  );
+
   it("refuses an account id that would rewrite the query it is spelled into, before any request about it", async () => {
     const { fake, jira, ctx } = scoped('x" OR project = "OTHER');
     await expect(jira.items(ctx)).rejects.toThrow(/jiraAssignee .* is neither an email nor a Jira account id/);

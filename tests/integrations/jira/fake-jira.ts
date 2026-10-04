@@ -190,6 +190,8 @@ export function createFakeJira(project = "KEY") {
     links: [] as FakeLink[],
     /** The site's users, as user search finds them: by a prefix of the display name or the email, private or not. */
     users: [BOT, PERSON, OTHER] as FakeUser[],
+    /** Users the project cannot assign issues to — no access to it, or deactivated — though a user read still finds them. */
+    unassignable: new Set<string>(),
     /** Off, the site has issue linking disabled: every issueLink endpoint answers 404, as Jira documents. */
     linking: true,
     /**
@@ -442,6 +444,13 @@ export function createFakeJira(project = "KEY") {
       return found && fake.permissions.USER_PICKER === true ? json(user(found)) : errors(404, [`Specified user does not exist or you do not have required permissions`]);
     }
 
+    // Documented: an array of the users who may be assigned the project's issues, narrowed to one by accountId.
+    if (method === "GET" && path === "/rest/api/3/user/assignable/search") {
+      if (q.get("project") !== project) return errors(404, [`No project could be found with key '${q.get("project") ?? ""}'.`]);
+      const id = q.get("accountId");
+      return json(fake.users.filter((u) => !fake.unassignable.has(u.accountId) && (id === null || u.accountId === id)).map(user));
+    }
+
     if (method === "GET" && path === "/rest/api/3/mypermissions") {
       const keys = (q.get("permissions") ?? "").split(",").filter(Boolean);
       if (keys.length === 0) return errors(400, ["The permissions parameter is required."]);
@@ -569,7 +578,7 @@ export function createFakeJira(project = "KEY") {
       if (priority !== undefined && !fake.priorities.some((p) => p.id === priority)) return errors(400, [], { priority: "Specify a valid priority" });
       const assigneeId = (f.assignee as { accountId?: string } | undefined)?.accountId;
       const assignee = assigneeId === undefined ? null : fake.users.find((u) => u.accountId === assigneeId);
-      if (assignee === undefined) return errors(400, [], { assignee: `User '${String(assigneeId)}' cannot be assigned issues.` });
+      if (assignee === undefined || (assignee !== null && fake.unassignable.has(assignee.accountId))) return errors(400, [], { assignee: `User '${String(assigneeId)}' cannot be assigned issues.` });
       const me = fake.me as FakeUser;
       const issue = fake.add({
         summary: String(f.summary ?? ""),
