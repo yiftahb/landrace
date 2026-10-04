@@ -28,6 +28,7 @@ import { identityOf, placedByState } from "#core/locate.js";
 import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
 import type { Condition, EligibilityRule, LoadedWorkflow, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
+import { routeEffects } from "#runner/step.js";
 
 export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
   const problems: Problem[] = [];
@@ -294,12 +295,17 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     for (const pointer of retiredPointers(step?.prompt ?? "")) {
       problems.push({ rule: "placeholder", message: `step ${stage.step}'s prompt names a placeholder the rename retired; ${pointer}` });
     }
-    const effects = [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).map((r) => r.effect)];
+    const routes = step?.output?.routes ?? [];
+    // `from` in a route's `effects` is not the record's: it names the output
+    // field the effect's body is, and the runner strips it (runner/step.ts).
+    const fed = new Set(routes.flatMap((r) => r.effects ?? []));
+    const effects = [...(stage.on_enter ?? []), ...routes.flatMap(routeEffects)];
     for (const effect of effects) {
       // And `head`, the commit a step started at, which a merge guarded by
       // `reviewedBy` holds the head it merges to: a record the workflow could
       // stamp with one would vouch for a commit no review saw.
       for (const field of ["goto", "from", "head"]) {
+        if (field === "from" && fed.has(effect)) continue;
         if (field in effect) {
           problems.push({ rule: "reserved-field", message: `stage "${stage.id}" has an effect with a "${field}" field, which only the engine writes` });
         }
@@ -342,7 +348,7 @@ function mergePlacementProblems(w: Workflow, steps: Map<string, Step>): Problem[
     const step = stage.step ? steps.get(stage.step) : undefined;
     for (const route of step?.output?.routes ?? []) {
       const which = `step ${stage.step}'s route for ${JSON.stringify(route.when)}`;
-      if (route.effect.type === PULL_MERGE_EFFECT) {
+      if (routeEffects(route).some((e) => e.type === PULL_MERGE_EFFECT)) {
         problems.push({
           rule: "merge-placement",
           message: `${which} merges a pull request; a merge belongs in a stage's on_enter, entered by the workflow's triggers, never in what a step answers`,
@@ -380,7 +386,7 @@ function itemBranchProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
       problems.push({ rule: "branch", message: `stage "${stage.id}" works on branch "${stage.branch}"; it must be ${ITEM_BRANCH}: ${why}` });
     }
     const step = stage.step ? steps.get(stage.step) : undefined;
-    for (const effect of [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).map((r) => r.effect)]) {
+    for (const effect of [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).flatMap(routeEffects)]) {
       if (!BRANCHED_EFFECTS.has(effect.type) || effect.branch === ITEM_BRANCH) continue;
       problems.push({
         rule: "branch",
@@ -1210,7 +1216,8 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
       continue;
     }
     const producesOwnOutput = step.output.routes.some((route) => {
-      if (route.effect.type !== RECORD_EFFECT) return true;
+      // A route with `effects` is always followed by the record the runner writes.
+      if (route.effect === undefined || route.effect.type !== RECORD_EFFECT) return true;
       const kind = route.effect.kind;
       const target = route.effect.stage;
       return (kind === undefined || kind === OUTPUT_KIND) && (target === undefined || target === stage.id);

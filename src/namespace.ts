@@ -355,6 +355,13 @@ export interface Stage {
    * from Zod.
    */
   note?: string | undefined;
+  /**
+   * `run`: a closed item may enter this stage by one trigger, and its step
+   * runs there once; nothing leaves it while the item stays closed. Absent,
+   * a closed item is never moved to it and no step runs on one. `| undefined`:
+   * fed from Zod.
+   */
+  closed?: "run" | undefined;
 }
 
 export interface EligibilityRule {
@@ -514,6 +521,9 @@ export interface ParsedStep {
 export interface Step extends StepFrontMatter {
   prompt: string;
 }
+
+/** One route of a step's output: `effect` or `effects`, never both (the schema refuses either other way). */
+export type Route = NonNullable<StepFrontMatter["output"]>["routes"][number];
 
 /**
  * `runValidate` must report a broken workflow as a `Problem`, not let an

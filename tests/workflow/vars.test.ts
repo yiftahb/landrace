@@ -166,7 +166,7 @@ Write the spec for {item.title}, for the {vars.team} team.
     expect(workflow.stages[0]?.on_enter?.[0]?.body).toBe("ann is on this, round {round}.");
     const step = steps.get("steps/spec.md");
     expect(step?.prompt.trim()).toBe("Write the spec for {item.title}, for the platform team.");
-    expect(step?.output?.routes[0]?.effect.label).toBe("platform");
+    expect(step?.output?.routes[0]?.effect?.label).toBe("platform");
   });
 
   it("refuses a reference no var defines, naming the variable, where it was used and what is declared", async () => {
