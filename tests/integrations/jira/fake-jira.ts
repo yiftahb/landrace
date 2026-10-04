@@ -444,6 +444,10 @@ export function createFakeJira(project = "KEY") {
       } else if ((m = /^issuetype = ([0-9]+)$/.exec(clause))) {
         const name = fake.issueTypes.find((t) => t.id === m?.[1])?.name;
         tests.push((i) => i.issuetype === name);
+      } else if ((m = /^\(created >= "([0-9]{4}-[0-9]{2}-[0-9]{2})"\)$/.exec(clause))) {
+        // A `jql` option's clause, as the tracker wraps it.
+        const since = Date.parse(m[1] as string);
+        tests.push((i) => Date.parse(i.created) >= since);
       } else if ((m = /^parent = "([A-Z][A-Z0-9_]*-[0-9]+)"$/.exec(clause))) {
         const parent = m[1] as string;
         tests.push((i) => i.parent === parent);

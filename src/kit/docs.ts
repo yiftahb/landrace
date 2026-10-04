@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { DOCUMENT_KIND, RELATIONS } from "#conventions.js";
 import type {
-  BriefTable, Effect, EffectTable, Graph, HookContext, Node, RelationDecl, RuntimeContext, Snapshot,
+  BriefTable, Effect, EffectTable, Graph, HookContext, Node, PreflightContext, RelationDecl, RuntimeContext, Snapshot,
 } from "#namespace.js";
 
 /**
@@ -116,7 +116,7 @@ export abstract class BaseDocs {
   abstract published(ctx: RuntimeContext): Promise<Set<string>>;
 
   /** Run once at startup, before anything is paid for. */
-  check?(ctx: RuntimeContext): Promise<void>;
+  check?(ctx: PreflightContext): Promise<void>;
 
   relations(): RelationDecl[] {
     return [{ type: RELATIONS.documents, singular: true }];

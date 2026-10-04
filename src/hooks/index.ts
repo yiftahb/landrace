@@ -40,6 +40,7 @@ export type {
   PostHook,
   PreHook,
   Preflight,
+  PreflightContext,
   RelationDecl,
   Relationship,
   RuntimeContext,

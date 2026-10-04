@@ -1,5 +1,5 @@
 import { basename, join, resolve } from "node:path";
-import { copyProblems, repositoryRoot } from "#agent/worktree.js";
+import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
@@ -52,7 +52,7 @@ import { createLogger, scrubberOf } from "#runner/events.js";
 import { createNotify, notifyProblems } from "#runner/notify.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { held } from "#runner/lock.js";
-import { runPreflights } from "#runner/preflight.js";
+import { declaredCapabilities, runPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { itemTag, oneLine } from "#runner/status.js";
@@ -378,7 +378,8 @@ export async function screenerFor(config: RuntimeConfig, registry: Registry, ctx
  * `agent.worktree` is checked here for the same reason: a copy glob matching
  * a tracked file is refused at start, naming the file, not at an item's first
  * write step. With isolation off there is no worktree to copy into or set up,
- * and a `copy` or `setup` that would never run is refused, not ignored.
+ * and a `copy`, `setup` or `lockfiles` that would never be read is refused,
+ * not ignored.
  */
 export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sandbox | null> {
   const { isolation, worktree } = config.agent;
@@ -389,16 +390,18 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
     );
   }
   if (isolation !== "worktree") {
-    if (worktree.copy.length || worktree.setup.length) {
-      throw new Error(`agent.worktree.copy and agent.worktree.setup need agent.isolation: worktree, and it is "${isolation}"`);
+    const set = (["copy", "setup", "lockfiles"] as const).filter((key) => worktree[key]?.length);
+    if (set.length) {
+      throw new Error(`${set.map((key) => `agent.worktree.${key}`).join(" and ")} need${set.length === 1 ? "s" : ""} agent.isolation: worktree, and it is "${isolation}"`);
     }
     return null;
   }
   const root = await repositoryRoot(dir);
-  const problems = await copyProblems(root, worktree.copy);
+  const lockfiles = worktree.lockfiles ?? [...DEFAULT_LOCKFILES];
+  const problems = [...lockfileProblems(lockfiles), ...(await copyProblems(root, worktree.copy))];
   if (problems.length) throw new Error(problems.join("\n"));
   const timeoutMs = durationMs(worktree.setupTimeout) ?? 0;
-  return { root, worktree: { copy: worktree.copy, setup: worktree.setup, timeoutMs } };
+  return { root, worktree: { copy: worktree.copy, setup: worktree.setup, timeoutMs, lockfiles } };
 }
 
 /**
@@ -924,7 +927,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // recorded to show for it. Run from here rather than from the runtime's
   // build so `landrace status`, which builds one the same way, never makes
   // this write while only trying to read.
-  await runPreflights(rt.preflights, rt.ctx);
+  await runPreflights(rt.preflights, { ...rt.ctx, capabilities: declaredCapabilities(rt.workflows.map((w) => w.deps.steps)) });
 
   // The last listing a tick or a Refresh made. The page is shown what
   // `display` makes of it, and finds an item's workflow there; a write also

@@ -1,6 +1,6 @@
 import { definePreflight } from "#hooks/contracts.js";
-import type { Preflight, RuntimeContext } from "#namespace.js";
-import { runPreflights } from "#runner/preflight.js";
+import type { Preflight, RuntimeContext, Step } from "#namespace.js";
+import { declaredCapabilities, runPreflights } from "#runner/preflight.js";
 
 /**
  * The engine's *when* for a permission problem: run every registered
@@ -64,5 +64,18 @@ describe("runPreflights", () => {
     });
     await runPreflights([spy], ctx);
     expect(seen).toEqual([ctx]);
+  });
+});
+
+describe("declaredCapabilities", () => {
+  const step = (capabilities?: string[]): Step => ({ ...(capabilities === undefined ? {} : { capabilities }) }) as Step;
+
+  // What a preflight skips is what no step of any loaded workflow asks for.
+  it("is every capability any step of any workflow declares, and nothing for none", () => {
+    const build = new Map([["build.md", step(["repo:read", "repo:write"])], ["triage.md", step()]]);
+    const breakdown = new Map([["split.md", step(["repo:read", "items:create"])]]);
+    expect([...declaredCapabilities([build, breakdown])].sort()).toEqual(["items:create", "repo:read", "repo:write"]);
+    expect(declaredCapabilities([build]).has("items:create")).toBe(false);
+    expect(declaredCapabilities([]).size).toBe(0);
   });
 });

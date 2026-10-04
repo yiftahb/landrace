@@ -21,6 +21,8 @@ export const runtimeConfigSchema = z.object({
         .object({
           copy: z.array(z.string().min(1)).default([]),
           setup: z.array(z.string().min(1)).default([]),
+          // No default here: one written beside `isolation: none` is refused, and a default is not written.
+          lockfiles: z.array(z.string().min(1)).optional(),
           setupTimeout: z
             .string()
             .refine((t) => (durationMs(t) ?? 0) > 0, { message: 'must be a duration like "15m", above zero' })
