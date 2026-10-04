@@ -1,7 +1,7 @@
-import { chmodSync, copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { claude } from "#landrace/hooks/claude.js";
 import { createClaudeExecutor } from "landrace/integrations/claude";
 import type { Executor, ExecutorContext } from "#namespace.js";
@@ -968,6 +968,69 @@ describe("the create_child tool", () => {
     expect(JSON.parse(argv[argv.indexOf("--settings") + 1] as string)).toEqual({
       enabledPlugins: { "superpowers@claude-plugins-official": true }, env: INSTRUCTIONS,
     });
+  });
+});
+
+/*
+ * A step's own instructions and skills, from the worktree it runs in (#89),
+ * and nothing else of the project's: `--add-dir` also reads the directory's
+ * own `.claude/settings.json` and `.claude/settings.local.json` for the
+ * plugins and marketplaces they name (2.1.289's own source), whatever
+ * `--setting-sources` says — a plugin a step could commit, whose hooks run
+ * outside the sandbox.
+ */
+describe("a step's own instructions and skills", () => {
+  /** A worktree holding these files, under `.claude/` and beside it. */
+  const worktree = (files: Record<string, string>): string => {
+    const cwd = withCfg({ out: "{{ARGV_JSON}}" });
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(cwd, path)), { recursive: true });
+      writeFileSync(join(cwd, path), text);
+    }
+    return cwd;
+  };
+  const stepIn = async (cwd: string, capabilities?: readonly string[]): Promise<string[]> => {
+    const r = await createClaudeExecutor({ bin }).run("p", {
+      round: 1, signal: new AbortController().signal, cwd, ...(capabilities === undefined ? {} : { capabilities }),
+    });
+    return JSON.parse(r.text) as string[];
+  };
+
+  it.each([
+    ["write", ["repo:read", "repo:write"]],
+    ["read-only", ["repo:read"]],
+  ])("refuses a %s step whose worktree's settings enable a plugin, naming the file and the key", async (_, capabilities) => {
+    const cwd = worktree({ ".claude/settings.json": JSON.stringify({ enabledPlugins: { "x@y": true } }) });
+    await expect(stepIn(cwd, capabilities)).rejects.toThrow(/\.claude\/settings\.json[\s\S]*enabledPlugins/);
+  });
+
+  it("refuses a worktree whose local settings name a marketplace", async () => {
+    const cwd = worktree({ ".claude/settings.local.json": JSON.stringify({ extraKnownMarketplaces: { m: {} } }) });
+    await expect(stepIn(cwd, ["repo:read"])).rejects.toThrow(/\.claude\/settings\.local\.json[\s\S]*extraKnownMarketplaces/);
+  });
+
+  // JSON.parse reads `enabledPlugins` as the key the CLI reads; a text search would not.
+  it("reads the settings as JSON, escapes and all", async () => {
+    const cwd = worktree({ ".claude/settings.json": '{"\\u0065nabledPlugins": {"x@y": true}}' });
+    await expect(stepIn(cwd, ["repo:read"])).rejects.toThrow(/enabledPlugins/);
+  });
+
+  it("refuses settings it cannot read as JSON, since it cannot tell what they enable", async () => {
+    const cwd = worktree({ ".claude/settings.json": "{ // a comment\n}" });
+    await expect(stepIn(cwd, ["repo:read"])).rejects.toThrow(/\.claude\/settings\.json[\s\S]*JSON/);
+  });
+
+  // Hooks and permissions in a project's settings never load, under either tier's flags.
+  it("runs beside settings that hold only what never loads", async () => {
+    const cwd = worktree({
+      ".claude/settings.json": JSON.stringify({ hooks: { SessionStart: [] }, permissions: { allow: ["Bash"] } }),
+    });
+    expect(flag(await stepIn(cwd, ["repo:read", "repo:write"]), "--add-dir")).toBe(realpathSync(cwd));
+  });
+
+  it("runs the screener beside them, since it loads nothing of the worktree", async () => {
+    const cwd = worktree({ ".claude/settings.json": JSON.stringify({ enabledPlugins: { "x@y": true } }) });
+    expect(await stepIn(cwd)).not.toContain("--add-dir");
   });
 });
 

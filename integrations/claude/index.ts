@@ -8,7 +8,7 @@
  * that overrides one piece.
  */
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
@@ -99,6 +99,32 @@ async function bringSession(home: string, session: string, here: string): Promis
   return true;
 }
 
+/**
+ * What `--add-dir` loads from a directory's own `.claude/settings.json` and
+ * `.claude/settings.local.json` beside its `CLAUDE.md`, whatever
+ * `--setting-sources` says: the plugins it enables and the marketplaces they
+ * come from (2.1.289's own source). A step could commit either, and a
+ * plugin's hooks run outside the sandbox. Refused, never loaded.
+ */
+async function refuseAddDirSettings(cwd: string): Promise<void> {
+  for (const file of [".claude/settings.json", ".claude/settings.local.json"]) {
+    const text = await readFile(join(cwd, file), "utf8").catch(() => undefined);
+    if (text === undefined) continue;
+    let keys: string[];
+    try {
+      const value: unknown = JSON.parse(text);
+      keys = value !== null && typeof value === "object" ? Object.keys(value) : [];
+    } catch {
+      throw new Error(`refused to run claude where ${file} would load beside it: it is not JSON, so what it enables cannot be told. Fix or remove it on the branch`);
+    }
+    const loaded = keys.filter((k) => k === "enabledPlugins" || k === "extraKnownMarketplaces");
+    if (loaded.length) {
+      throw new Error(`refused to run claude where ${file} would load beside it: the --add-dir that loads the step's CLAUDE.md ` +
+        `also loads its ${loaded.join(" and ")}, and a step could commit them. Name the plugins in agent.plugins and remove them from the branch`);
+    }
+  }
+}
+
 export class Claude extends BaseExecutor<ClaudeExtras> {
   readonly id = "claude";
   /** The levels `claude --effort` takes. */
@@ -126,8 +152,9 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * pairing's checkout, and a later turn resumes it from the item's. Not
    * found, the `--resume` fails as it always did.
    */
-  protected async prepare({ resume, cwd }: RunPlan<ClaudeExtras>): Promise<void> {
+  protected async prepare({ tier, resume, cwd }: RunPlan<ClaudeExtras>): Promise<void> {
     if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, projectDir(this.home, cwd));
+    if (tier !== "screen" && cwd !== undefined) await refuseAddDirSettings(cwd);
   }
 
   protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras }: RunPlan<ClaudeExtras>): string[] {
