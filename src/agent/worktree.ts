@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -18,6 +18,12 @@ const exec = promisify(execFile);
  * removes, so an install in it outlives the run that made it.
  */
 export const keptSlot = (item: string): string => `${item}.write`;
+
+/** The items that have a kept write worktree under this repository's sandbox, by its slot's folder. */
+export async function keptItems(repoRoot: string): Promise<string[]> {
+  const names = await readdir(await rootFor(repoRoot));
+  return names.filter((n) => n.endsWith(".write")).map((n) => n.slice(0, -".write".length));
+}
 
 /** The files whose change means what `setup` installs has changed: the lockfiles at the repository root. */
 const LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"];

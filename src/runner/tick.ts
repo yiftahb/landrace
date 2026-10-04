@@ -1,3 +1,4 @@
+import { keptItems, keptSlot, removeWorktree } from "#agent/worktree.js";
 import { claimItems, eligibilityOfNode, locateNode, placedByState } from "#core/index.js";
 import type {
   Claims,
@@ -5,6 +6,7 @@ import type {
   Graph,
   HookContext,
   ListedWorkflow,
+  LockOptions,
   Logger,
   Node,
   RuntimeContext,
@@ -281,6 +283,40 @@ function noting(runtime: WorkspaceRuntime, workflow: WorkflowRuntime, item: stri
   };
 }
 
+/**
+ * Remove the kept write worktree of every item that is no longer open work:
+ * closed, listed by no source, or at a terminal stage. A converge removes it
+ * as the item reaches the end, but the tick never converges a closed item —
+ * and a merge that closes it with `Closes #n` gets there first — nor one a
+ * crash stopped between its terminal transition and the removal. Left, the
+ * worktree keeps its `node_modules` for good and holds the item's branch.
+ *
+ * Only when every source listed: an item a failed source would have listed is
+ * not known to be finished. Under the item's lock, so a run in flight keeps
+ * its own. One removed too many costs a rebuild and a setup, never work: what
+ * a step committed is on its branch.
+ */
+async function sweepKept(runtime: WorkspaceRuntime, listing: WorkspaceListing, lock: LockOptions | undefined): Promise<void> {
+  if (listing.failed.size > 0) return;
+  const open = new Map(listing.graphs.flatMap((g) => g.nodes).filter(isOpenItem).map((n) => [n.id, n]));
+  const workflows = new Map(runtime.workflows.map((w) => [w.id, w]));
+  const finished = (item: string): boolean => {
+    const node = open.get(item);
+    if (node === undefined) return true;
+    const owner = listing.claims.owner.get(item);
+    const workflow = owner === undefined ? undefined : workflows.get(owner);
+    const at = workflow === undefined ? null : seenAt(workflow, node);
+    return at !== null && workflow?.deps.workflow.stages.find((s) => s.id === at.stage)?.terminal === true;
+  };
+  for (const root of new Set(runtime.workflows.flatMap((w) => w.deps.sandbox?.root ?? []))) {
+    const kept = await keptItems(root).catch(() => []);
+    for (const item of kept.filter((i) => itemIdProblem(i) === null && finished(i))) {
+      // Held is skipped: the run holding it removes its own, or the next tick does.
+      await withLock(item, "tick", () => removeWorktree(item, root, keptSlot(item)), lock).catch(() => undefined);
+    }
+  }
+}
+
 /** A lock held elsewhere is a skip, not a failure: the item will still be there next tick. */
 const isLocked = (e: unknown): boolean =>
   typeof e === "object" && e !== null && (e as { code?: unknown }).code === "ELOCKED";
@@ -520,6 +556,8 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
     const at = arrived.get(node.id);
     if (at) tellIf(runtime, w, node, at, "left");
   }
+
+  await sweepKept(runtime, listing, opts.lock);
 
   // Sorted rather than left in completion order: the same repository in the
   // same state should print the same thing twice running, and completion order

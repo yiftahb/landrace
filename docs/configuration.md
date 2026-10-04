@@ -75,7 +75,7 @@ agent:
 - **Events:** `worktree.setup.started`, `worktree.setup.finished` and `worktree.setup.failed`, each naming the item and the command.
 - `copy` and `setup` need `agent.isolation: worktree`; `landrace start` refuses them otherwise.
 
-A write step's worktree is kept between the item's write steps on the same branch, and removed when the item reaches a terminal stage. On reuse it is reset to the branch's commit: what a step left uncommitted is removed, and what git ignores, such as `node_modules`, stays. `setup` runs again only when its commands, or the lockfiles at the repository root (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`), have changed since it last passed. A worktree that is missing, or on another branch, is rebuilt, and setup runs again.
+A write step's worktree is kept between the item's write steps on the same branch, and removed when the item reaches a terminal stage. The next tick also removes it once the item is closed, for example by its merged pull request. A write step on a stage that names no `branch` gets `copy` and `setup` too, in a worktree removed when the run ends. On reuse it is reset to the branch's commit: what a step left uncommitted is removed, and what git ignores, such as `node_modules`, stays. `setup` runs again only when its commands, or the lockfiles at the repository root (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`), have changed since it last passed. A worktree that is missing, or on another branch, is rebuilt, and setup runs again.
 
 What this exposes to a step is in [Security](security.md#copied-files-and-setup).
 
