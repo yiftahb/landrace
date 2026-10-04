@@ -12,7 +12,8 @@
  * The trailing `<!-- landrace … -->` marker is cut off before any of this
  * and written as its own plain-text paragraph, so no Markdown reading of the
  * body — an unclosed fence, a `*` in the JSON — can reach it, and it reads
- * back byte for byte.
+ * back byte for byte. That is a description's, an origin; a comment's marker
+ * never reaches here, the tracker keeping it in a property (`splitMarker`).
  */
 
 export interface AdfMark {
@@ -69,12 +70,34 @@ const withMark = (marks: AdfMark[], mark: AdfMark): AdfMark[] => (marks.some((m)
 /** Only a link a person can safely follow is made one; anything else stays the text it was written as. */
 const linkable = (url: string): boolean => /^(https?|mailto):/i.test(url) && URL.canParse(url);
 
+/**
+ * `@[<account id or email>]`: a person a comment mentions, as the tracker
+ * resolved them, or null to leave the text as written. Asked of every one
+ * outside code, which reads as it is written; never of a description.
+ */
+export type Mention = (token: string) => AdfNode | null;
+
+const NO_MENTIONS: Mention = () => null;
+
+/** A mention's token: no space, no bracket, so `@[x](url)` is not one and a link's label is never read as one. */
+const MENTION = /@\[([^\]\s[]+)\](?!\()/g;
+
 /** One line's inline nodes; no empty text node, which Jira refuses. Jira takes code beside a link and no other mark. */
-function inline(line: string, marks: AdfMark[] = []): AdfNode[] {
+function inline(line: string, mention: Mention, marks: AdfMark[] = []): AdfNode[] {
   const out: AdfNode[] = [];
   let at = 0;
   const plain = (s: string): void => {
-    if (s) out.push(text(s, marks));
+    if (!s) return;
+    // A mention carries no mark, so it splits the text it sits in.
+    let from = 0;
+    for (const m of s.matchAll(MENTION)) {
+      const node = mention(m[1] as string);
+      if (node === null) continue;
+      if (m.index > from) out.push(text(s.slice(from, m.index), marks));
+      out.push(node);
+      from = m.index + m[0].length;
+    }
+    if (from < s.length) out.push(text(s.slice(from), marks));
   };
   for (const m of masked(line).matchAll(INLINE)) {
     const group = (k: number): string | undefined => {
@@ -89,17 +112,17 @@ function inline(line: string, marks: AdfMark[] = []): AdfNode[] {
       // As CommonMark: one space either side is padding, so a code span can open or close on a backtick.
       const unpadded = /^ (.*[^ ].*) $/.exec(code)?.[1] ?? code;
       out.push(text(unpadded, [...marks.filter((k) => k.type === "link"), { type: "code" }]));
-    } else if (label !== undefined) out.push(...inline(label, withMark(marks, { type: "link", attrs: { href: url } })));
-    else if (strong !== undefined) out.push(...inline(strong, withMark(marks, { type: "strong" })));
-    else out.push(...inline(star ?? under ?? "", withMark(marks, { type: "em" })));
+    } else if (label !== undefined) out.push(...inline(label, NO_MENTIONS, withMark(marks, { type: "link", attrs: { href: url } })));
+    else if (strong !== undefined) out.push(...inline(strong, mention, withMark(marks, { type: "strong" })));
+    else out.push(...inline(star ?? under ?? "", mention, withMark(marks, { type: "em" })));
   }
   plain(line.slice(at));
   return out;
 }
 
 /** Lines as a paragraph's content, a `hardBreak` between each two. */
-const lines = (texts: string[]): AdfNode[] =>
-  texts.flatMap((line, i) => [...(i > 0 ? [{ type: "hardBreak" }] : []), ...inline(line)]);
+const lines = (texts: string[], mention: Mention): AdfNode[] =>
+  texts.flatMap((line, i) => [...(i > 0 ? [{ type: "hardBreak" }] : []), ...inline(line, mention)]);
 
 const indentOf = (line: string): number => line.length - line.trimStart().length;
 
@@ -119,7 +142,7 @@ function listItem(content: AdfNode[]): AdfNode {
  * read as blocks of their own, so a nested list or a code block inside an
  * item is the same Markdown as anywhere else.
  */
-function list(source: string[], start: number): [AdfNode, number] {
+function list(source: string[], start: number, mention: Mention): [AdfNode, number] {
   const first = ITEM.exec(source[start] ?? "");
   const base = first?.[1]?.length ?? 0;
   const ordered = /\d/.test(first?.[2] ?? "");
@@ -147,7 +170,7 @@ function list(source: string[], start: number): [AdfNode, number] {
       else if (own.at(-1) && !opens(line)) own.push(line.trim());
       else break;
     }
-    items.push(listItem(blocks(own)));
+    items.push(listItem(blocks(own, mention)));
     // A blank line between two items of the one list does not end it.
     let next = i;
     while (next < source.length && !source[next]?.trim()) next++;
@@ -159,7 +182,7 @@ function list(source: string[], start: number): [AdfNode, number] {
 }
 
 /** Markdown lines as ADF blocks. */
-function blocks(source: string[]): AdfNode[] {
+function blocks(source: string[], mention: Mention): AdfNode[] {
   const out: AdfNode[] = [];
   let i = 0;
   while (i < source.length) {
@@ -191,13 +214,13 @@ function blocks(source: string[]): AdfNode[] {
     const heading = HEADING.exec(line);
     if (heading) {
       const [, marks = "", title = ""] = heading;
-      out.push({ type: "heading", attrs: { level: marks.length }, content: inline(title) });
+      out.push({ type: "heading", attrs: { level: marks.length }, content: inline(title, mention) });
       i++;
       continue;
     }
 
     if (ITEM.test(line)) {
-      const [node, next] = list(source, i);
+      const [node, next] = list(source, i, mention);
       out.push(node);
       i = next;
       continue;
@@ -205,18 +228,37 @@ function blocks(source: string[]): AdfNode[] {
 
     const paragraph = [line];
     for (i++; i < source.length && source[i]?.trim() && !opens(source[i] ?? ""); i++) paragraph.push(source[i] ?? "");
-    out.push({ type: "paragraph", content: lines(paragraph) });
+    out.push({ type: "paragraph", content: lines(paragraph, mention) });
   }
   return out;
 }
 
-/** Markdown as a document, its trailing marker a plain-text paragraph of its own. */
-export function toAdf(markdown: string): AdfDoc {
+/** A body's text and its trailing `<!-- landrace … -->` marker apart, the marker null when it carries none. */
+export function splitMarker(markdown: string): { text: string; marker: string | null } {
   const marker = MARKER.exec(markdown);
-  const body = marker ? markdown.slice(0, marker.index) : markdown;
-  const content = blocks(body.replace(/\r\n?/g, "\n").split("\n"));
-  if (marker?.[1]) content.push({ type: "paragraph", content: [{ type: "text", text: marker[1] }] });
+  return marker?.[1] ? { text: markdown.slice(0, marker.index), marker: marker[1] } : { text: markdown, marker: null };
+}
+
+/**
+ * Markdown as a document, its trailing marker a plain-text paragraph of its
+ * own. Each `@[…]` outside code is asked of `mention`, and written as the
+ * node it answers; a description is never asked, so none mentions anyone.
+ */
+export function toAdf(markdown: string, mention: Mention = NO_MENTIONS): AdfDoc {
+  const { text: body, marker } = splitMarker(markdown);
+  const content = blocks(body.replace(/\r\n?/g, "\n").split("\n"), mention);
+  if (marker !== null) content.push({ type: "paragraph", content: [{ type: "text", text: marker }] });
   return { type: "doc", version: 1, content: content.length ? content : [{ type: "paragraph", content: [] }] };
+}
+
+/** Every `@[…]` token outside code, as `toAdf` would ask `mention` of it: what a tracker resolves before it writes. */
+export function mentionsIn(markdown: string): string[] {
+  const tokens = new Set<string>();
+  toAdf(markdown, (token) => {
+    tokens.add(token);
+    return null;
+  });
+  return [...tokens];
 }
 
 /**

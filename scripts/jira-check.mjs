@@ -23,7 +23,8 @@
  *
  * It writes, so point it at a project that may hold test issues: one item
  * and one child, created, commented on, labelled and closed — the child as
- * dropped, the item as done. Each check prints `ok` or `FAIL` with what it
+ * dropped, the item as done — and a minute of work logged on the item, which
+ * needs "Work on issues" and time tracking on. Each check prints `ok` or `FAIL` with what it
  * saw; a check whose item was never created is not run. Exits 1 on any
  * failure, and when nothing passed: nothing checked is not a pass.
  *
@@ -182,6 +183,17 @@ if (item) {
     expect(entry.text.includes("&lt;!-- landrace") && !entry.text.includes("<!--"), `text ${JSON.stringify(entry.text)}`);
     expect(hooks.post.satisfied({ ...(await snapshotOf(item.id)), ...observed }, record), "the comment effect does not read as landed");
     return `entry ${entry.stage}/${entry.kind}/${entry.round} as ${observed.tracker.bot}`;
+  });
+
+  const worklog = { type: "tracker.worklog", stage: "check", round: 1, marker: "work:check:1", seconds: 60 };
+  const observedOf = async (id) => ({ ...(await snapshotOf(id)), ...(await hooks.pre.run(on(id))) });
+  await check("log a minute of work, and read it back as landed", async () => {
+    expect(!hooks.post.satisfied(await observedOf(item.id), worklog), "the worklog reads as landed before it was logged");
+    await hooks.post.apply(worklog, on(item.id, await observedOf(item.id)));
+    const after = await observedOf(item.id);
+    const ours = after.tracker.worklogs.filter((w) => w.marker === worklog.marker);
+    expect(ours.length === 1 && ours[0].seconds === 60, `worklogs read back as ${JSON.stringify(after.tracker.worklogs)}`);
+    expect(hooks.post.satisfied(after, worklog), "the worklog effect does not read as landed");
   });
 
   if (field) {
