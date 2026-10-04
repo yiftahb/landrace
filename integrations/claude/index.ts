@@ -14,7 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
 import type {
-  AgentSettings, EventReading, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings,
+  AgentSettings, EventReading, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings, StepKey,
 } from "landrace/kit";
 import type { Executor, HandoffArg } from "landrace/hooks";
 
@@ -23,9 +23,9 @@ export { ARG_SHAPE, mcpRedactionValues, resolveStepServers } from "landrace/kit"
 /** This integration's own `agent:` key. */
 export interface ClaudeExtras {
   /**
-   * Plugin ids (`name@marketplace`) enabled for every declared run.
-   * `--restricted` ignores the operator's own settings, and with them every
-   * plugin enabled there, so a read-only step would otherwise have none.
+   * Plugin ids (`name@marketplace`) enabled for every declared run whose step
+   * lists none of its own. No step reads the operator's own settings, and
+   * with them every plugin enabled there, so it would otherwise have none.
    */
   plugins: readonly string[];
 }
@@ -190,7 +190,7 @@ async function buildInstructions(cwd: string, dir: string): Promise<void> {
  * The front-matter keys a project skill may hold: what it says, when it
  * applies, and tools it gives up. Any other is refused, by name, since the
  * CLI reads many that change what its step may do — a skill's hooks run as
- * the CLI's own hooks do, outside the sandbox (what `--setting-sources user`
+ * the CLI's own hooks do, outside the sandbox (what `--setting-sources ""`
  * exists to keep from a committed settings file); its allowed-tools approve
  * a tool the step never declared; and `model`, `context`, `agent`,
  * `mcpServers` and the rest bill, run or start what the step did not ask for.
@@ -262,8 +262,11 @@ const builtOf = (cwd: string): string =>
  * Landrace reads each SKILL.md outside the sandbox, so the skills folder, a
  * skill's folder or its SKILL.md leading out of the worktree is refused, by
  * name, before anything is read: a link to a key would hand the agent the key.
+ *
+ * Given `only`, the step's own `skills:`, a skill it does not name is never
+ * read or copied, so never loads.
  */
-async function buildPluginDir(cwd: string, dir: string): Promise<void> {
+async function buildPluginDir(cwd: string, dir: string, only: readonly string[] | undefined): Promise<void> {
   const root = join(cwd, ".claude", "skills");
   const tree = await realpath(cwd);
   const refuseOut = async (path: string): Promise<void> => {
@@ -277,6 +280,7 @@ async function buildPluginDir(cwd: string, dir: string): Promise<void> {
   await mkdir(join(dir, "skills"));
   // As the CLI's plugin loader reads a skills folder: one SKILL.md per entry.
   for (const name of await readdir(root)) {
+    if (only !== undefined && !only.includes(name)) continue;
     const from = join(root, name);
     await refuseOut(`.claude/skills/${name}`);
     await refuseOut(`.claude/skills/${name}/SKILL.md`);
@@ -298,6 +302,8 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
   /** The levels `claude --effort` takes. */
   readonly efforts = ["low", "medium", "high", "xhigh", "max"];
   readonly pairings: readonly PairingKind[] = ["take", "continue", "fork"];
+  /** A step's `skills:` is the plugin `prepare` makes; its `plugins:`, what `--settings` enables. */
+  override readonly stepKeys: readonly StepKey[] = ["skills", "plugins"];
   /** Whose `~/.claude` a session is looked up in. The operator's own, but for a test. */
   private readonly home: string;
 
@@ -314,6 +320,16 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
       : { extras: { plugins: [] }, problems: ['agent.plugins must be a list of plugin ids, like "name@marketplace"'] };
   }
 
+  /** A skill is a folder of `.claude/skills` holding a SKILL.md, as `buildPluginDir` reads it. */
+  protected async skillProblems(root: string, listed: readonly string[]): Promise<string[]> {
+    const skills = join(root, ".claude", "skills");
+    // Among the folder's own entries, so a name like `../x` is never a path.
+    const names = new Set(await readdir(skills).catch(() => [] as string[]));
+    return listed
+      .filter((name) => !names.has(name) || !existsSync(join(skills, name, "SKILL.md")))
+      .map((name) => `lists skill ${JSON.stringify(name)}, which no .claude/skills/*/SKILL.md defines`);
+  }
+
   /**
    * The CLI finds a session only under the directory it ran in, and the one
    * resumed may have run elsewhere: a pairing's hand-in forks in the
@@ -323,18 +339,19 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * A step's own instructions and skills are checked and copied into the
    * directories `argv` names, rebuilt on every run: the screener gets neither.
    */
-  protected async prepare({ tier, resume, cwd }: RunPlan<ClaudeExtras>): Promise<void> {
+  protected async prepare({ tier, resume, cwd, skills }: RunPlan<ClaudeExtras>): Promise<void> {
     if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, projectDir(this.home, cwd));
     if (tier === "screen" || cwd === undefined) return;
     const built = builtOf(cwd);
     await rm(built, { recursive: true, force: true });
     await buildInstructions(cwd, join(built, "instructions"));
-    if (existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd, join(built, "plugin"));
+    // A step that lists no skill gets no plugin at all.
+    if (skills?.length !== 0 && existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd, join(built, "plugin"), skills);
   }
 
-  protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras }: RunPlan<ClaudeExtras>): string[] {
+  protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras, plugins: own }: RunPlan<ClaudeExtras>): string[] {
     const declared = tier !== "screen";
-    // A step's own instructions and skills: `--setting-sources user` and
+    // A step's own instructions and skills: `--setting-sources ""` and
     // `--restricted` each keep the CLI from reading the worktree's
     // `CLAUDE.md` and `.claude/skills` as the project's (live on 2.1.289).
     // So they come from copies `prepare` checked and made outside the
@@ -364,17 +381,21 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // that, for a read-only step, and `--tools ""` removes every built-in
     // tool for the screener. The same live check refused a write attempted
     // under the read-only step's flags. A step that may write keeps all of
-    // them, and the operator's settings with them — every command it runs
-    // confined by the sandbox (see `sandboxSettings`).
+    // them — every command it runs confined by the sandbox (see
+    // `sandboxSettings`).
     if (!mayWrite) args.push("--restricted");
     // A write run is not `--restricted`, so without this its own worktree's
-    // `.claude/settings.json`/`.claude/settings.local.json` would load beside
-    // the operator's — live on 2.1.283, a committed settings file's
-    // SessionStart hook ran under plain `acceptEdits`, outside the sandbox
-    // entirely (full HOME, network, the forge token), the moment a later
-    // write step touched that branch. This keeps a write run to the
-    // operator's own user settings only, same as the plugins and sandbox.
-    if (mayWrite) args.push("--setting-sources", "user");
+    // `.claude/settings.json`/`.claude/settings.local.json` would load — live
+    // on 2.1.283, a committed settings file's SessionStart hook ran under
+    // plain `acceptEdits`, outside the sandbox entirely (full HOME, network,
+    // the forge token), the moment a later write step touched that branch.
+    // Nor the operator's own: `user` loaded every plugin they enabled for
+    // themselves into the step (live on 2.1.289), and one that speaks at
+    // session start put its persona or its compressed replies into the
+    // step's work and its review-thread replies. With none, only the CLI's
+    // built-in plugins load, and the run still works; what it needs comes
+    // through `--settings` below, as a read-only step's does.
+    if (mayWrite) args.push("--setting-sources", "");
     // A run that declares nothing is the screener's, and it reads
     // attacker-reachable text for a living: no built-in tool at all, not
     // even Read. Variadic, and the empty list must not swallow what follows
@@ -390,11 +411,13 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // One `--settings` element holding the JSON, or none. Plugins are for
     // steps and turns, never the screener: a plugin that speaks up at session
     // start would be speaking to the one agent whose only job is to judge a
-    // prompt — and `--restricted` ignores the operator's own settings file,
-    // so this is the only way a plugin enabled there reaches a read-only step
-    // at all. The sandbox is for a run that may write: the only one with Bash.
+    // prompt — and no step reads the operator's own settings file, so this
+    // is the only way a plugin enabled there reaches a step at all: the
+    // step's own `plugins:`, else `agent.plugins`. The sandbox is for a run
+    // that may write: the only one with Bash.
+    const plugins = own ?? extras.plugins;
     const settings = {
-      ...(declared && extras.plugins.length ? { enabledPlugins: Object.fromEntries(extras.plugins.map((id) => [id, true])) } : {}),
+      ...(declared && plugins.length ? { enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) } : {}),
       ...(mayWrite ? sandboxSettings(sandbox, built) : {}),
       ...(built !== undefined ? { env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" } } : {}),
     };
