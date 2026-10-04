@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **GitLab checks combine every pipeline on the merge request's head.** The pipeline GitLab makes of tools' commit statuses — a scanner's, an AI reviewer's — no longer stands in for the head's other pipelines by being the newest: it counts beside them. Any failed pipeline is `failure`, any still running is `pending`, and a page of 100 the head's pipelines fill never reads `success`. The CI failures a prompt reads list the failed jobs and failed commit statuses of every pipeline on the head. Tools' commit statuses count as CI unless the new `reviewers` option names them.
+
 ## [1.1.0] - 2026-10-03
 
 ### Added

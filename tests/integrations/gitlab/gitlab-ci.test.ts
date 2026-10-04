@@ -41,7 +41,8 @@ describe("a merge request's checks", () => {
     const asked = gl.requests.filter((r) => r.path.endsWith("/pipelines"));
     expect(asked).toHaveLength(1);
     expect(asked[0]?.path).toBe(`/projects/${encodeURIComponent(PROJECT)}/merge_requests/${mr.iid}/pipelines`);
-    expect(asked[0]?.query.get("per_page")).toBe("1");
+    expect(asked[0]?.query.get("per_page")).toBe("100");
+    expect(asked[0]?.query.get("page")).toBe("1");
   });
 
   it("reads a merge request with no pipeline as none", async () => {
@@ -50,7 +51,7 @@ describe("a merge request's checks", () => {
     expect(await forgeOver(gl).checks(recordOf(mr), gl.ctx())).toBe("none");
   });
 
-  it("reads the newest pipeline, and an older one's verdict on an older sha is not the head's: pending", async () => {
+  it("an older pipeline's verdict on an older sha is not the head's: pending, until the head has its own", async () => {
     const gl = createFakeGitLab();
     const mr = gl.open({ source_branch: "landrace/1", sha: "new", pipelines: [{ id: 1, sha: "old", status: "success" }] });
     expect(await forgeOver(gl).checks(recordOf(mr), gl.ctx())).toBe("pending");
@@ -103,13 +104,13 @@ describe("a merge request's checks", () => {
 describe("a merge request's failed checks", () => {
   const failing = (gl: FakeGitLab, extra: Partial<FakeMr> = {}) => gl.open({
     source_branch: "landrace/1", sha: "abc", iid: 5,
-    pipelines: [{ id: 1, sha: "abc", status: "success" }, { id: 2, sha: "abc", status: "failed" }],
+    pipelines: [{ id: 1, sha: "older", status: "failed" }, { id: 2, sha: "abc", status: "failed" }],
     failedJobs: new Map([[2, [{ id: 20, name: "unit" }, { id: 21, name: "lint" }]], [1, [{ id: 10, name: "stale" }]]]),
     traces: new Map([[20, "FAIL a.test.ts"], [21, "lint log"]]),
     ...extra,
   });
 
-  it("lists the newest pipeline's failed jobs, each with its trace as text", async () => {
+  it("lists the failed jobs of every pipeline on the head, each with its trace as text", async () => {
     const gl = createFakeGitLab();
     const mr = failing(gl);
     expect(await forgeOver(gl).failedChecks(recordOf(mr), gl.ctx())).toEqual([
@@ -122,6 +123,7 @@ describe("a merge request's failed checks", () => {
     expect(gl.requests.map((r) => r.path.split("/").slice(-3).join("/"))).toEqual(
       expect.arrayContaining(["jobs/20/trace", "jobs/21/trace"]),
     );
+    expect(gl.requests.some((r) => r.path.endsWith("/pipelines/1/jobs"))).toBe(false);
   });
 
   it("names a job whose trace GitLab will not give, with a null log", async () => {
@@ -168,6 +170,162 @@ describe("a merge request's failed checks", () => {
     expect(ci).toContain("THE END");
     expect(ci).not.toContain("x".repeat(4500));
     expect(ci).toMatch(/#### lint\n\n\(log unavailable\)/);
+  });
+});
+
+describe("every pipeline on the head, combined", () => {
+  type Seed = NonNullable<FakeMr["pipelines"]>[number];
+  const onHead = (gl: FakeGitLab, pipelines: Seed[], extra: Partial<FakeMr> = {}) =>
+    gl.open({ source_branch: "landrace/1", iid: 9, sha: "head", pipelines, ...extra });
+  const checks = (gl: FakeGitLab, mr: FakeMr, reviewers?: string[]) =>
+    new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git: noGit, reviewers }).checks(recordOf(mr), gl.ctx());
+  const failedChecks = (gl: FakeGitLab, mr: FakeMr, reviewers?: string[]) =>
+    new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git: noGit, reviewers }).failedChecks(recordOf(mr), gl.ctx());
+
+  /** What a real project's head carries: its own two-hour pipeline, and one external pipeline of every status posted on the head. */
+  const scanned = (merge: string, scanner: string, reviewer: string): Seed[] => [
+    { id: 1, sha: "head", status: merge },
+    {
+      id: 2, sha: "head", source: "external", status: scanner === "failed" || reviewer === "failed" ? "failed" : reviewer,
+      statuses: [{ name: "sast", status: scanner }, { name: "secret-detection", status: "success" }, { name: "ai-review", status: reviewer }],
+    },
+  ];
+
+  it("an external status that finished is not the head's CI while its own pipeline still runs", async () => {
+    const gl = createFakeGitLab();
+    expect(await checks(gl, onHead(gl, scanned("running", "success", "success")))).toBe("pending");
+  });
+
+  it.each([
+    ["success", "success", "success", "success"],
+    ["success", "failed", "success", "failure"],
+    ["failed", "success", "success", "failure"],
+    ["success", "success", "running", "pending"],
+    ["running", "failed", "success", "failure"],
+  ] as const)("counts external statuses as CI by default: pipeline %s, scanner %s, reviewer %s read %s", async (merge, scanner, reviewer, expected) => {
+    const gl = createFakeGitLab();
+    expect(await checks(gl, onHead(gl, scanned(merge, scanner, reviewer)))).toBe(expected);
+    expect(gl.requests.some((r) => r.path.endsWith("/statuses"))).toBe(false);
+  });
+
+  it.each([
+    ["success", "success", "running", "success"],
+    ["success", "success", "failed", "success"],
+    ["success", "failed", "running", "failure"],
+    ["running", "success", "success", "pending"],
+  ] as const)("leaves out only the statuses named as reviewers: pipeline %s, scanner %s, reviewer %s read %s", async (merge, scanner, reviewer, expected) => {
+    const gl = createFakeGitLab();
+    expect(await checks(gl, onHead(gl, scanned(merge, scanner, reviewer)), ["ai-review"])).toBe(expected);
+    const read = gl.requests.filter((r) => r.path.endsWith("/statuses"));
+    expect(read.map((r) => [r.path.split("/").at(-2), r.query.get("pipeline_id")])).toEqual([["head", "2"]]);
+  });
+
+  it("reads an external pipeline whose every status is a reviewer's as counting nothing: the head waits for its CI", async () => {
+    const gl = createFakeGitLab();
+    const mr = onHead(gl, [{ id: 2, sha: "head", source: "external", status: "success", statuses: [{ name: "ai-review", status: "success" }] }]);
+    expect(await checks(gl, mr, ["ai-review"])).toBe("pending");
+    expect(await checks(gl, mr)).toBe("success");
+  });
+
+  it("does not count a failed status a tool allowed to fail", async () => {
+    const gl = createFakeGitLab();
+    const mr = onHead(gl, [
+      { id: 1, sha: "head", status: "success" },
+      { id: 2, sha: "head", source: "external", status: "success", statuses: [{ name: "sast", status: "failed", allow_failure: true }] },
+    ]);
+    expect(await checks(gl, mr, ["ai-review"])).toBe("success");
+    expect(await failedChecks(gl, mr)).toEqual([]);
+  });
+
+  it("combines several pipelines of its own on the head, and leaves an older head's out", async () => {
+    const gl = createFakeGitLab();
+    const mr = onHead(gl, [
+      { id: 1, sha: "older", status: "failed" },
+      { id: 2, sha: "head", status: "success" },
+      { id: 3, sha: "head", status: "skipped" },
+      { id: 4, sha: "head", status: "success" },
+    ]);
+    expect(await checks(gl, mr)).toBe("success");
+    mr.pipelines?.push({ id: 5, sha: "head", status: "manual" });
+    expect(await checks(gl, mr)).toBe("pending");
+  });
+
+  it("reads every pipeline skipped as none", async () => {
+    const gl = createFakeGitLab();
+    expect(await checks(gl, onHead(gl, [{ id: 1, sha: "head", status: "skipped" }]))).toBe("none");
+  });
+
+  // One page, newest first: a page the head's pipelines fill may have more of them past it.
+  const many = (n: number, status = "success"): Seed[] =>
+    Array.from({ length: n }, (_, i) => ({ id: i + 1, sha: "head", status: i === 0 ? status : "success" }));
+
+  it("reads a page the head's pipelines did not fill to its end: 99 green is success", async () => {
+    const gl = createFakeGitLab();
+    expect(await checks(gl, onHead(gl, many(99)))).toBe("success");
+  });
+
+  it("never reads a page the head's pipelines filled as success, nor asks for the next", async () => {
+    const gl = createFakeGitLab();
+    const mr = onHead(gl, many(101));
+    expect(await checks(gl, mr)).toBe("pending");
+    const asked = gl.requests.filter((r) => r.path.endsWith("/merge_requests/9/pipelines"));
+    expect(asked.map((r) => r.query.get("page"))).toEqual(["1"]);
+    mr.pipelines?.splice(100);
+    expect(await checks(gl, mr)).toBe("pending");
+  });
+
+  it("still reads a failure on a page the head's pipelines filled", async () => {
+    const gl = createFakeGitLab();
+    // The newest, id 100, is on the page; the oldest, id 1, is past it.
+    const mr = onHead(gl, many(101).map((p) => (p.id === 100 ? { ...p, status: "failed" } : p)));
+    expect(await checks(gl, mr)).toBe("failure");
+  });
+
+  it("reads a full page that reaches past the head's pipelines as read to their end", async () => {
+    const gl = createFakeGitLab();
+    const mr = onHead(gl, [...many(150).map((p) => (p.id <= 60 ? { ...p, sha: "older" } : p))]);
+    expect(await checks(gl, mr)).toBe("success");
+  });
+
+  it("fails a status it does not know on an external pipeline, rather than read it green", async () => {
+    const gl = createFakeGitLab();
+    const mr = onHead(gl, [{ id: 2, sha: "head", source: "external", status: "success", statuses: [{ name: "sast", status: "exploded" }] }]);
+    await expect(checks(gl, mr, ["ai-review"])).rejects.toThrow(/"exploded".*!9/);
+  });
+
+  it("never answers green when the statuses cannot be read", async () => {
+    const gl = createFakeGitLab();
+    const mr = onHead(gl, scanned("success", "success", "success"));
+    gl.breakNext(({ path }) => path.endsWith("/statuses"), 403);
+    await expect(checks(gl, mr, ["ai-review"])).rejects.toThrow(/token needs the "api" scope/);
+  });
+
+  it("lists the failed jobs of every pipeline on the head, and the failed statuses of an external one, never a reviewer's", async () => {
+    const gl = createFakeGitLab();
+    const mr = onHead(gl, [
+      { id: 1, sha: "older", status: "failed" },
+      { id: 2, sha: "head", status: "failed" },
+      {
+        id: 3, sha: "head", source: "external", status: "failed",
+        statuses: [
+          { name: "sast", status: "failed", description: "2 critical findings", target_url: "https://scanner.example/r/1" },
+          { name: "iac", status: "failed", allow_failure: true },
+          { name: "secret-detection", status: "success" },
+          { name: "ai-review", status: "failed", description: "changes requested" },
+        ],
+      },
+      { id: 4, sha: "head", status: "failed" },
+    ], {
+      failedJobs: new Map([[1, [{ id: 10, name: "stale" }]], [2, [{ id: 20, name: "unit" }]], [4, [{ id: 40, name: "e2e" }]]]),
+      traces: new Map([[20, "FAIL a.test.ts"], [40, "e2e log"]]),
+    });
+    expect(await failedChecks(gl, mr, ["ai-review"])).toEqual([
+      { name: "e2e", log: "e2e log" },
+      { name: "sast", log: "2 critical findings\nhttps://scanner.example/r/1" },
+      { name: "unit", log: "FAIL a.test.ts" },
+    ]);
+    expect(gl.requests.some((r) => r.path.endsWith("/pipelines/1/jobs") || r.path.endsWith("/pipelines/3/jobs"))).toBe(false);
+    expect(await failedChecks(gl, mr)).toContainEqual({ name: "ai-review", log: "changes requested" });
   });
 });
 

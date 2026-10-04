@@ -37,12 +37,26 @@ interface MergeRequest {
   updated_at?: string | null;
 }
 
-/** A pipeline as REST lists one: the commit and ref it ran on, and where it stands. */
+/**
+ * A pipeline as REST lists one: the commit and ref it ran on, where it
+ * stands, and what started it — `external` for the one GitLab makes of every
+ * commit status tools post on a commit, a scanner's and a reviewer's alike.
+ */
 interface Pipeline {
   id: number;
   sha: string;
   ref: string;
   status: string;
+  source?: string;
+}
+
+/** One commit status a tool posted, the latest of its name. */
+interface Status {
+  name: string;
+  status: string;
+  allow_failure?: boolean;
+  description?: string | null;
+  target_url?: string | null;
 }
 
 const PIPELINE_STATES: Record<string, CheckState> = {
@@ -271,6 +285,12 @@ export interface GitLabOptions {
   /** git in the operator's checkout; the repository of the file that constructs this when absent. */
   git?: Git | undefined;
   fetchImpl?: typeof fetch | undefined;
+  /**
+   * The names of commit statuses that are a reviewer's verdict, not CI — an
+   * AI reviewer's "review in progress / complete". Every other status a tool
+   * posts on the head, a security scanner's, counts as CI.
+   */
+  reviewers?: string[] | undefined;
 }
 
 export class GitLab extends BaseForge {
@@ -288,10 +308,13 @@ export class GitLab extends BaseForge {
    */
   private readonly parents = new Map<string, string[]>();
 
-  constructor({ project, git, fetchImpl }: GitLabOptions) {
+  private readonly reviewers: Set<string>;
+
+  constructor({ project, git, fetchImpl, reviewers }: GitLabOptions) {
     super();
     this.project = project;
     this.fetchImpl = fetchImpl;
+    this.reviewers = new Set(reviewers);
     if (git) {
       this.git = git;
     } else {
@@ -421,50 +444,97 @@ export class GitLab extends BaseForge {
   }
 
   /**
-   * The merge request's newest pipeline, on its head. A pipeline of an older
-   * commit says nothing of this head — the head's has not started — so that
-   * reads `pending`, never the old verdict. A merged results pipeline runs on
-   * the merge of the head into its target, a commit that is never the head:
-   * it is the head's when it is on this merge request's merge ref and the
-   * head is one of that commit's parents. No pipeline at all is nothing
-   * configured to check it, or nothing registered yet: `none`. A status this
-   * does not know is not read, and so is not green.
+   * Every pipeline on the merge request's head, combined: any failed is
+   * `failure`, any still running `pending`, otherwise `success` — or `none`
+   * when every one was skipped. A tool's commit statuses are CI too, the
+   * `external` pipeline GitLab makes of them, except those `reviewers` names:
+   * with any named, that pipeline is read status by status, since one holds
+   * every tool's. A head with nothing counted — its pipelines not started, or
+   * only a reviewer's status — is `pending`, never an older head's verdict.
+   * No pipeline at all is nothing configured to check it, or nothing
+   * registered yet: `none`. A page the head's pipelines fill, or a full page
+   * of statuses, was not read to its end, so it is never `success`. A status
+   * this does not know is not read, and so is not green.
    */
   async checks(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState> {
-    const newest = await this.newestPipeline(pull, ctx);
-    if (newest === null) return "none";
-    if (!(await this.onHead(newest, pull, ctx))) return "pending";
-    const known = PIPELINE_STATES[newest.status];
-    if (known === undefined) throw new Error(`GitLab answered a pipeline status "${newest.status}" for !${pull.number}, which landrace does not know how to read`);
+    const { listed, kept, cut } = await this.headPipelines(pull, ctx);
+    if (listed === 0) return "none";
+    const states: CheckState[] = [];
+    let short = cut;
+    for (const p of kept) {
+      if (p.source !== "external" || this.reviewers.size === 0) {
+        states.push(this.stateOf(p.status, pull));
+        continue;
+      }
+      const { items, more } = await this.statuses(p, ctx);
+      short ||= more;
+      for (const s of items) {
+        if (!this.reviewers.has(s.name)) states.push(s.allow_failure === true && s.status === "failed" ? "success" : this.stateOf(s.status, pull));
+      }
+    }
+    if (states.includes("failure")) return "failure";
+    if (short || states.length === 0 || states.includes("pending")) return "pending";
+    return states.includes("success") ? "success" : "none";
+  }
+
+  /**
+   * The failed jobs of every pipeline on the head, each with its trace — a
+   * trace that cannot be had is `null`, the job still named — and the failed
+   * commit statuses of an external one, each with what its tool said and
+   * where, never a reviewer's. A head whose pipelines have not started has no
+   * failures to name.
+   *
+   * ponytail: one page of 100 failed jobs or statuses a pipeline; more than that is not worth paging for.
+   */
+  async failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]> {
+    const gl = this.gl(ctx);
+    const failed: FailedCheck[] = [];
+    for (const p of (await this.headPipelines(pull, ctx)).kept) {
+      if (p.source === "external") {
+        for (const s of (await this.statuses(p, ctx)).items) {
+          if (s.status !== "failed" || s.allow_failure === true || this.reviewers.has(s.name)) continue;
+          failed.push({ name: s.name, log: [s.description, s.target_url].filter((t) => !!t).join("\n") || null });
+        }
+        continue;
+      }
+      let jobs: Array<{ id: number; name: string }>;
+      try {
+        jobs = await gl.get(`/pipelines/${p.id}/jobs?scope[]=failed&per_page=${PER_PAGE}`);
+      } catch (e) {
+        throw this.tokenRefusal(e, true);
+      }
+      for (const job of jobs) failed.push({ name: job.name, log: await gl.text(`/jobs/${job.id}/trace`).catch(() => null) });
+    }
+    return failed;
+  }
+
+  private stateOf(status: string, pull: PullRecord): CheckState {
+    const known = PIPELINE_STATES[status];
+    if (known === undefined) throw new Error(`GitLab answered a pipeline status "${status}" for !${pull.number}, which landrace does not know how to read`);
     return known;
   }
 
   /**
-   * The head's pipeline's failed jobs, each with its trace: a trace that
-   * cannot be had is `null` — the job is still named. A head whose pipeline
-   * has not started has no failures to name.
-   *
-   * ponytail: one page of 100 failed jobs; more than that is not worth paging for.
+   * One page of the merge request's pipelines, newest first, and those on
+   * its head. A page the head's fill may have more of them past it: `cut`.
    */
-  async failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]> {
-    const gl = this.gl(ctx);
-    const newest = await this.newestPipeline(pull, ctx);
-    if (newest === null || !(await this.onHead(newest, pull, ctx))) return [];
-    let jobs: Array<{ id: number; name: string }>;
+  private async headPipelines(pull: PullRecord, ctx: RuntimeContext): Promise<{ listed: number; kept: Pipeline[]; cut: boolean }> {
+    if (pull.headSha === "") throw new Error(`!${pull.number} has no head commit to read checks on`);
+    let page: { items: Pipeline[]; more: boolean };
     try {
-      jobs = await gl.get(`/pipelines/${newest.id}/jobs?scope[]=failed&per_page=${PER_PAGE}`);
+      page = await this.gl(ctx).pages<Pipeline>(`/merge_requests/${pull.number}/pipelines`, 1);
     } catch (e) {
       throw this.tokenRefusal(e, true);
     }
-    const failed: FailedCheck[] = [];
-    for (const job of jobs) failed.push({ name: job.name, log: await gl.text(`/jobs/${job.id}/trace`).catch(() => null) });
-    return failed;
+    const kept: Pipeline[] = [];
+    for (const p of page.items) if (await this.onHead(p, pull, ctx)) kept.push(p);
+    return { listed: page.items.length, kept, cut: page.more && kept.length === page.items.length };
   }
 
-  private async newestPipeline(pull: PullRecord, ctx: RuntimeContext): Promise<Pipeline | null> {
-    if (pull.headSha === "") throw new Error(`!${pull.number} has no head commit to read checks on`);
+  /** One page of the commit statuses in an external pipeline, the latest of each name. */
+  private async statuses(p: Pipeline, ctx: RuntimeContext): Promise<{ items: Status[]; more: boolean }> {
     try {
-      return (await this.gl(ctx).get<Pipeline[]>(`/merge_requests/${pull.number}/pipelines?per_page=1`))[0] ?? null;
+      return await this.gl(ctx).pages<Status>(`/repository/commits/${encodeURIComponent(p.sha)}/statuses?pipeline_id=${p.id}`, 1);
     } catch (e) {
       throw this.tokenRefusal(e, true);
     }
