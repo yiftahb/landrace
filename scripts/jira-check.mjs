@@ -9,6 +9,11 @@
  * `JIRA_OPTIONS`, optional, is JSON spread into `new Jira({ project })` —
  * `{"childType":"Sub-task","transitions":{"dropped":"Cancelled"}}`. The
  * imports resolve by package self-reference to dist/, hence the build.
+ * `JIRA_ASSIGNEE`, optional, is the `jiraAssignee` secret: an account id or
+ * an email. Set, the item and child are created assigned to that account,
+ * and two more checks list the project through the scoped open and Done
+ * queries and find each there, assigned to that account: an email the script
+ * looks up on its own, an account id it compares as given.
  *
  * It writes, so point it at a project that may hold test issues: one item
  * and one child, created, commented on, labelled and closed — the child as
@@ -31,7 +36,7 @@ import { Jira } from "landrace/integrations/jira";
 import { compose } from "landrace/kit";
 import { MemoryDocs, MemoryForge } from "landrace/testing";
 
-const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT, JIRA_OPTIONS, JIRA_CHECK_LINKS, JIRA_LINK_KEYS } = process.env;
+const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT, JIRA_OPTIONS, JIRA_CHECK_LINKS, JIRA_LINK_KEYS, JIRA_ASSIGNEE } = process.env;
 const unset = Object.entries({ JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT }).filter(([, v]) => !v).map(([k]) => k);
 if (unset.length > 0) {
   console.error(`jira-check: set ${unset.join(", ")}`);
@@ -47,7 +52,10 @@ try {
 
 const ctx = {
   config: {},
-  secrets: new Map([["jiraBaseUrl", JIRA_BASE_URL], ["jiraEmail", JIRA_EMAIL], ["jiraToken", JIRA_TOKEN]]),
+  secrets: new Map([
+    ["jiraBaseUrl", JIRA_BASE_URL], ["jiraEmail", JIRA_EMAIL], ["jiraToken", JIRA_TOKEN],
+    ...(JIRA_ASSIGNEE ? [["jiraAssignee", JIRA_ASSIGNEE]] : []),
+  ]),
   signal: new AbortController().signal,
   log: (event, data) => console.error(`${event} ${JSON.stringify(data ?? {})}`),
 };
@@ -72,6 +80,49 @@ const expect = (holds, what) => {
   if (!holds) throw new Error(what);
 };
 const on = (item, snapshot = {}) => ({ ...ctx, item, snapshot });
+/** Tries `run` until it holds, for a search Jira's index has not caught up with yet: a read by key needs no wait, a listing does. */
+const eventually = async (run, tries = 10) => {
+  for (let i = 1; ; i++) {
+    try {
+      return await run();
+    } catch (e) {
+      if (i >= tries) throw e;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+};
+
+const site = JIRA_BASE_URL.trim().replace(/\/$/, "");
+/** Jira's own answers, unread by the integration. */
+const raw = async (path) => {
+  const res = await fetch(`${site}${path}`, {
+    headers: { Authorization: `Basic ${Buffer.from(`${JIRA_EMAIL}:${JIRA_TOKEN}`).toString("base64")}`, Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`GET ${path} → ${res.status} ${await res.text()}`);
+  return res.json();
+};
+const assignee = JIRA_ASSIGNEE?.trim() ?? "";
+// This script's own requests carry the token too: to the same sites the integration's client takes, and no other.
+const siteOk = Boolean(JIRA_CHECK_LINKS || JIRA_LINK_KEYS || assignee.includes("@")) && await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
+  expect(/^https:\/\/[a-z0-9][a-z0-9-]*\.atlassian\.net$/i.test(site), `got ${JSON.stringify(site)}`);
+});
+/** The account `JIRA_ASSIGNEE` names, looked up by this script rather than the integration, so the two are compared, not one read twice. */
+let account = assignee.includes("@") ? null : assignee;
+if (assignee.includes("@") && siteOk) {
+  await check(`JIRA_ASSIGNEE ${assignee} is one Jira account`, async () => {
+    const users = (await raw(`/rest/api/3/user/search?query=${encodeURIComponent(assignee)}`)).filter((u) => u.accountType === "atlassian" && u.accountId);
+    expect(users.length === 1, `${users.length} users match: ${users.map((u) => u.accountId).join(", ")}`);
+    account = users[0].accountId;
+    return account;
+  });
+}
+/** The listing's node for `id`, assigned to the account and nobody else, or a refusal saying what was listed. */
+const listedAssigned = async (id) => {
+  const node = (await hooks.source.list(ctx)).nodes.find((n) => n.id === id);
+  expect(node, `${id} is not in the listing`);
+  expect(JSON.stringify(node.state.assignees) === JSON.stringify([account]), `${id} is listed assigned to ${JSON.stringify(node.state.assignees)}, not ["${account}"]`);
+  return node;
+};
 const snapshotOf = async (id) => {
   const graph = await hooks.source.read(id, ctx);
   return { graph, node: graph.nodes.find((n) => n.id === id) };
@@ -141,6 +192,14 @@ if (item) {
     return child.link;
   });
 
+  if (child && account) {
+    await check(`the scoped listing holds ${item.id} and ${child.id}, each assigned to ${account}`, () =>
+      eventually(async () => {
+        await listedAssigned(item.id);
+        await listedAssigned(child.id);
+      }));
+  }
+
   if (child) {
     await check("drop the child", async () => {
       const close = { type: "nodes.close", ids: [child.id] };
@@ -156,18 +215,21 @@ if (item) {
     const { node } = await snapshotOf(item.id);
     expect(node.closed === "done", `${item.id} reads back as ${node.closed}`);
   });
+
+  if (account) {
+    await check(`the scoped Done lane holds ${item.id}, assigned to ${account}`, () =>
+      eventually(async () => {
+        const node = await listedAssigned(item.id);
+        expect(node.closed === "done", `${item.id} is listed as ${node.closed}`);
+      }));
+  }
 }
 
 if (JIRA_CHECK_LINKS || JIRA_LINK_KEYS) {
   const linkType = options.blockedByLinkType ?? "Blocks";
-  const site = JIRA_BASE_URL.trim().replace(/\/$/, "");
   const scratch = [];
   let blocked;
   let blocker;
-  // This script's own requests carry the token too: to the same sites the integration's client takes, and no other.
-  const siteOk = await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
-    expect(/^https:\/\/[a-z0-9][a-z0-9-]*\.atlassian\.net$/i.test(site), `got ${JSON.stringify(site)}`);
-  });
   if (siteOk && JIRA_LINK_KEYS) {
     const keys = JIRA_LINK_KEYS.split(",").map((k) => k.trim());
     await check("JIRA_LINK_KEYS names two issues, the blocked one first and the project's own", async () => {
@@ -190,14 +252,6 @@ if (JIRA_CHECK_LINKS || JIRA_LINK_KEYS) {
   const blockersOf = async (id) =>
     (await hooks.source.read(id, ctx)).relationships.filter((r) => r.type === "blocked-by" && r.from === id).map((r) => r.to);
 
-  /** Jira's own answers, unread by the integration. */
-  const raw = async (path) => {
-    const res = await fetch(`${site}${path}`, {
-      headers: { Authorization: `Basic ${Buffer.from(`${JIRA_EMAIL}:${JIRA_TOKEN}`).toString("base64")}`, Accept: "application/json" },
-    });
-    if (!res.ok) throw new Error(`GET ${path} → ${res.status} ${await res.text()}`);
-    return res.json();
-  };
   /** An issue's links of the type to `to`, as Jira answers them: what its UI shows. */
   const linksBetween = async (id, to) => ((await raw(`/rest/api/3/issue/${encodeURIComponent(id)}?fields=issuelinks`)).fields?.issuelinks ?? [])
     .filter((l) => l?.type?.name === linkType && (l.inwardIssue?.key === to || l.outwardIssue?.key === to));
