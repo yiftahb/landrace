@@ -364,7 +364,7 @@ plugins: []
 
 ### A route with several effects
 
-A route with one `effect` sends the step's prose to one place. A route with `effects` sends one answer to several. Here a support desk's diagnosis posts a public reply and an internal note, and files an engineering bug, all in one round:
+A route with one `effect` sends the step's prose to one place. A route with `effects` sends one answer to several. Here a support desk's diagnosis posts a reply and a note, and files an engineering bug, all in one round. Both are ordinary comments, visible to whoever can see the item: no tracker here posts an internal comment.
 
 ```yaml
 output:
