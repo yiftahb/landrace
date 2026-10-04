@@ -244,7 +244,7 @@ describe("reading items", () => {
     expect(Date.parse(comments[0]?.created_at ?? "")).toBe(Date.parse(issue.comments[0]?.created ?? ""));
   });
 
-  it("reads a person's formatted comment as its text", async () => {
+  it("reads a person's formatted comment as Markdown, and any other node as its text", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
     fake.say(issue.key, PERSON, {
@@ -257,44 +257,150 @@ describe("reading items", () => {
           ] }] },
         ] },
         { type: "paragraph", content: [{ type: "text", text: "see " }, { type: "inlineCard", attrs: { url: "https://x.example/1" } }] },
+        { type: "panel", attrs: { panelType: "info" }, content: [
+          { type: "paragraph", content: [{ type: "text", text: "struck", marks: [{ type: "strike" }] }, { type: "text", text: " out" }] },
+        ] },
+        { type: "codeBlock", attrs: { language: "ts" }, content: [{ type: "text", text: "const x = 1;\nconst y = 2;" }] },
       ],
     });
-    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe("Findings\n\none\n\n@landrace two\n\nsee https://x.example/1");
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(
+      "## Findings\n\n- one\n- @landrace two\n\nsee https://x.example/1\n\nstruck out\n\n```ts\nconst x = 1;\nconst y = 2;\n```",
+    );
+  });
+
+  it("reads a person's description as Markdown, its code block whole", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    fake.edit(issue.key, PERSON, {
+      type: "doc", version: 1, content: [
+        { type: "paragraph", content: [{ type: "text", text: "Run " }, { type: "text", text: "make", marks: [{ type: "code" }] }] },
+        { type: "codeBlock", attrs: { language: "sh" }, content: [{ type: "text", text: "make\n\nmake test" }] },
+      ],
+    });
+    expect((await jira.item(issue.key, ctx)).body).toBe("Run `make`\n\n```sh\nmake\n\nmake test\n```");
   });
 });
 
 describe("comments as ADF", () => {
-  it("posts a paragraph per blank-line block and a hard break per line, text verbatim", async () => {
+  const text = (t: string, ...marks: Array<Record<string, unknown>>) => (marks.length ? { type: "text", text: t, marks } : { type: "text", text: t });
+  const para = (...content: unknown[]) => ({ type: "paragraph", content });
+  const item = (...content: unknown[]) => ({ type: "listItem", content });
+
+  it("posts Markdown as rich ADF: headings, lists, code, marks and links", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
-    await jira.comment(issue.key, "one\ntwo\n\nthree {x} \\ *not bold*", ctx);
-    const doc = issue.comments[0]?.body as Adf;
-    expect(doc).toEqual({
+    await jira.comment(issue.key, [
+      "## Plan", "",
+      "Do **this**, then *that*,\nwith `pnpm test` and [the docs](https://example.com/d).", "",
+      "- one\n  - nested\n- two", "",
+      "3. three\n4. four", "",
+      "```ts\nconst a = 1;\n\nconst b = 2;\n```",
+    ].join("\n"), ctx);
+    expect(issue.comments[0]?.body).toEqual({
       type: "doc", version: 1, content: [
-        { type: "paragraph", content: [{ type: "text", text: "one" }, { type: "hardBreak" }, { type: "text", text: "two" }] },
-        { type: "paragraph", content: [{ type: "text", text: "three {x} \\ *not bold*" }] },
+        { type: "heading", attrs: { level: 2 }, content: [text("Plan")] },
+        para(
+          text("Do "), text("this", { type: "strong" }), text(", then "), text("that", { type: "em" }), text(","),
+          { type: "hardBreak" },
+          text("with "), text("pnpm test", { type: "code" }), text(" and "),
+          text("the docs", { type: "link", attrs: { href: "https://example.com/d" } }), text("."),
+        ),
+        { type: "bulletList", content: [
+          item(para(text("one")), { type: "bulletList", content: [item(para(text("nested")))] }),
+          item(para(text("two"))),
+        ] },
+        { type: "orderedList", attrs: { order: 3 }, content: [item(para(text("three"))), item(para(text("four")))] },
+        { type: "codeBlock", attrs: { language: "ts" }, content: [text("const a = 1;\n\nconst b = 2;")] },
       ],
     });
   });
 
+  /** Every node and mark type in a document, each written as its path from the root: `bulletList/listItem/paragraph/text+strong`. */
+  const shapes = (node: Adf, path = ""): string[] => {
+    const here = `${path}${node.type}${(node.marks ?? []).map((m) => `+${m.type}`).join("")}`;
+    return [here, ...(node.content ?? []).flatMap((c) => shapes(c, node.type === "doc" ? "" : `${here}/`))];
+  };
+
   it.each([
-    "", "a", "a\nb", "a\n\n\nb", "a\n\n\n\nb", "\n\nx\n", "x\n\n", "  indented\n\ttab",
-    `report${renderMarker({ stage: "spec", kind: "output", round: 2, output: { path: "C:\\x", note: "{x} \"q\"\n" } })}`,
-  ])("reads %j back exactly as it was posted", async (text) => {
+    ["a paragraph", "plain {x} \\ text", "paragraph/text"],
+    ["a hard break", "one\ntwo", "paragraph/hardBreak"],
+    ["each heading level", "# 1\n\n## 2\n\n### 3\n\n#### 4\n\n##### 5\n\n###### 6", "heading/text"],
+    ["a bullet list", "- one\n- two", "bulletList/listItem/paragraph/text"],
+    ["an ordered list", "1. one\n2. two", "orderedList/listItem/paragraph/text"],
+    ["an ordered list from 9", "9. nine\n10. ten", "orderedList/listItem/paragraph/text"],
+    ["nested lists", "- outer\n  1. inner\n  2. more\n- next", "bulletList/listItem/orderedList/listItem/paragraph/text"],
+    ["a list item of two lines", "- one\n  more", "bulletList/listItem/paragraph/hardBreak"],
+    ["a code block in a list item", "- run\n\n  ```sh\n  make\n  ```", "bulletList/listItem/codeBlock/text"],
+    ["a fenced code block with its language", "```ts\nconst a = 1;\n\n  indented\n```", "codeBlock/text"],
+    ["a fenced code block without one", "```\nplain\n```", "codeBlock/text"],
+    ["a fence inside a code block", "````md\n```js\nx\n```\n````", "codeBlock/text"],
+    ["inline code", "use `pnpm test` now", "paragraph/text+code"],
+    ["inline code holding a backtick", "the `` a`b `` tick", "paragraph/text+code"],
+    ["bold", "**bold** text", "paragraph/text+strong"],
+    ["italic", "_italic_ text", "paragraph/text+em"],
+    ["bold italic", "**_both_** text", "paragraph/text+strong+em"],
+    ["a link", "[the docs](https://example.com/a?b=c)", "paragraph/text+link"],
+    ["a bold link", "[**bold**](https://example.com)", "paragraph/text+link+strong"],
+    ["a coded link", "[`code`](https://example.com)", "paragraph/text+link+code"],
+    ["a mix", "## Title\n\nSome **bold** text.\n\n- a\n- b\n\n```\nx\n```\n\nend", "codeBlock/text"],
+  ])("writes %s as ADF and reads it back as it was posted", async (_, markdown, shape) => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
-    await jira.comment(issue.key, text, ctx);
-    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(text);
+    await jira.comment(issue.key, markdown, ctx);
+    expect(shapes(issue.comments[0]?.body as Adf)).toContain(shape);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(markdown);
   });
 
-  it("puts the marker last, as its own visible paragraph, and reads it back verbatim", async () => {
+  it("writes text that is not Markdown as one plain paragraph, and reads it back as it was posted", async () => {
     const { fake, jira, ctx } = setup();
     const issue = fake.add();
-    const marker = renderMarker({ stage: "spec", kind: "output", round: 1, output: { a: "\\{b}" } });
-    await jira.comment(issue.key, `done${marker}`, ctx);
-    expect(paragraphTexts(issue.comments[0]?.body ?? null).at(-1)).toBe(marker.trim());
+    const plain = "3 * 4 * 5, a_b_c, [not](a link), ** spaced **, # no";
+    await jira.comment(issue.key, plain, ctx);
+    expect(issue.comments[0]?.body?.content).toEqual([para(text(plain))]);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(plain);
+  });
+
+  it("makes no link of a URL that is not http, https or mailto", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.comment(issue.key, "[click](javascript:alert%281%29) [**file**](file:///etc/passwd) [mail](mailto:a@b.example)", ctx);
+    expect(issue.comments[0]?.body?.content?.[0]?.content).toEqual([
+      text("[click](javascript:alert%281%29) [**file**](file:///etc/passwd) "),
+      text("mail", { type: "link", attrs: { href: "mailto:a@b.example" } }),
+    ]);
+  });
+
+  it.each([
+    ["after prose", "report"],
+    ["after Markdown", "## Done\n\n- **one**\n\n```\ncode\n```"],
+    ["after a fence left open", "```\nnever closed"],
+    ["alone", ""],
+  ])("puts the marker last %s, as its own plain-text paragraph, and reads it back byte for byte", async (_, before) => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    const output = { path: "C:\\x", note: "{x} \"q\"\n# not a heading\n- **not** `marks` [x](https://x.example)" };
+    const marker = renderMarker({ stage: "spec", kind: "output", round: 2, output });
+    await jira.comment(issue.key, `${before}${marker}`, ctx);
+    expect(issue.comments[0]?.body?.content?.at(-1)).toEqual(para(text(marker.trim())));
     const [read] = await jira.comments(issue.key, ctx);
-    expect(parseMarker(read?.body ?? "")).toEqual({ stage: "spec", kind: "output", round: 1, output: { a: "\\{b}" } });
+    expect(read?.body.endsWith(marker.trim())).toBe(true);
+    expect(parseMarker(read?.body ?? "")).toEqual({ stage: "spec", kind: "output", round: 2, output });
+  });
+
+  it("reads a Markdown body with its marker back exactly as it was posted", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    const body = `## Spec\n\n- one${renderMarker({ stage: "spec", kind: "output", round: 1 })}`;
+    await jira.comment(issue.key, body, ctx);
+    expect((await jira.comments(issue.key, ctx))[0]?.body).toBe(body);
+  });
+
+  it("writes a description as the same rich ADF", async () => {
+    const { fake, jira, ctx } = setup();
+    const issue = fake.add();
+    await jira.update(issue.key, { body: "# Title\n\n- item" }, ctx);
+    expect(issue.description?.content?.map((n) => n.type)).toEqual(["heading", "bulletList"]);
+    expect((await jira.item(issue.key, ctx)).body).toBe("# Title\n\n- item");
   });
 
   it("refuses a body past Jira's 32,767 characters before the request", async () => {
