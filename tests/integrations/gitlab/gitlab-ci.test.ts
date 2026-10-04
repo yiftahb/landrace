@@ -220,6 +220,36 @@ describe("every pipeline on the head, combined", () => {
     expect(read.map((r) => [r.path.split("/").at(-2), r.query.get("pipeline_id")])).toEqual([["head", "2"]]);
   });
 
+  it.each([
+    ["missing", null, 1],
+    ["pending", "pending", 1],
+    ["running", "running", 1],
+    ["success", "success", 0],
+    ["failed", "failed", 0],
+    ["canceled", "canceled", 0],
+  ] as const)("reads a reviewer's status %s on the head as reviewPending %s", async (_said, status, pending) => {
+    const gl = createFakeGitLab();
+    const statuses = [{ name: "sast", status: "running" }, ...(status === null ? [] : [{ name: "CodeRabbit", status }])];
+    gl.open({ source_branch: "landrace/1", iid: 9, sha: "head", pipelines: [
+      { id: 1, sha: "older", source: "external", status: "success", statuses: [{ name: "CodeRabbit", status: "success" }] },
+      { id: 2, sha: "head", source: "external", status: "running", statuses },
+    ] });
+    const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "1", title: "t" }] }), forge: named(gl, ["CodeRabbit"]) });
+    const graph = await hooks.source.read("1", gl.ctx());
+    expect(graph.nodes.find((n) => n.id === "pr-9")?.state).toMatchObject({ reviewPending: pending });
+    const read = gl.requests.filter((r) => r.path.endsWith("/statuses") && !r.query.has("pipeline_id"));
+    expect(read.map((r) => r.path.split("/").at(-2))).toEqual(["head"]);
+  });
+
+  it("asks nothing of a reviewer's status when none is named", async () => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/1", iid: 9, sha: "head", pipelines: [{ id: 1, sha: "head", status: "success" }] });
+    const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "1", title: "t" }] }), forge: named(gl) });
+    const graph = await hooks.source.read("1", gl.ctx());
+    expect(graph.nodes.find((n) => n.id === "pr-9")?.state).toMatchObject({ reviewPending: 0 });
+    expect(gl.requests.some((r) => r.path.endsWith("/statuses"))).toBe(false);
+  });
+
   it("reads an external pipeline whose every status is a reviewer's as counting nothing: the head waits for its CI", async () => {
     const gl = createFakeGitLab();
     const mr = onHead(gl, [{ id: 2, sha: "head", source: "external", status: "success", statuses: [{ name: "ai-review", status: "success" }] }]);
