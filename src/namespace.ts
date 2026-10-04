@@ -944,6 +944,9 @@ export interface KitSettings {
  */
 export type Tier = "screen" | "read" | "write";
 
+/** Per MCP server, the tools a run may call on it, or null for every tool it has. */
+export type AllowedTools = Record<string, readonly string[] | null>;
+
 /** The step front-matter keys an integration enforces itself, and declares it can; the kit enforces a step's `mcp`. */
 export type StepKey = "skills" | "plugins";
 
@@ -974,7 +977,7 @@ export interface RunPlan<E = unknown> {
   /** The servers the run loads, by name: the allowlisted ones for a step or turn, then the engine's bound one. */
   servers: Record<string, McpServerConfig>;
   /** Per server in `servers`, the tools the run may call on it, or null for every tool it has. */
-  allowed: Record<string, readonly string[] | null>;
+  allowed: AllowedTools;
   /** The only project skills the run may load, by name; absent, every one. */
   skills?: readonly string[];
   /** The step's own plugins, in place of the integration's default; absent, that default. */

@@ -20,6 +20,7 @@ import { CAPABILITIES, CHILD_SERVER_NAME, mayCreateItems, mayWriteRepo, retiredC
 import { defineExecutor } from "#hooks/contracts.js";
 import type {
   AgentSettings,
+  AllowedTools,
   EventReading,
   Executor,
   ExecutorContext,
@@ -381,20 +382,17 @@ export function mcpRedactionValues(servers: Readonly<Record<string, McpServerCon
   return [...values];
 }
 
-/** Per server, the tools a run may call on it, or null for every tool it has. */
-type Allowed = Record<string, readonly string[] | null>;
-
 /**
  * A step's `mcp` over what `agent.mcp` allows (`known`): the servers the step
  * loads and the tools on each, or why it cannot. It narrows and never
  * widens: a server or a tool outside `known` is refused, never added.
  */
-function narrowMcp(entries: readonly McpEntry[], known: Readonly<Allowed>): { allowed: Allowed; problems: string[] } {
+function narrowMcp(entries: readonly McpEntry[], known: Readonly<AllowedTools>): { allowed: AllowedTools; problems: string[] } {
   const names = entries.map((e) => (typeof e === "string" ? e : e.name));
   // Two entries for one server could disagree about its tools.
   const repeated = new Set(names.filter((name, i) => names.indexOf(name) !== i));
   const problems = [...repeated].map((name) => `names MCP server "${name}" more than once`);
-  const allowed: Allowed = {};
+  const allowed: AllowedTools = {};
   for (const entry of entries) {
     const name = typeof entry === "string" ? entry : entry.name;
     const listed = typeof entry === "string" ? undefined : entry.tools;
@@ -631,7 +629,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     const { settings, problems } = this.read(ctx.config.agent as Record<string, unknown>);
     // What `agent.mcp` allows, from its entries as written: a step's own is
     // checked against it here whether or not `.mcp.json` resolves.
-    const known: Allowed = Object.fromEntries((Array.isArray(settings.mcp) ? settings.mcp as unknown[] : []).flatMap((e): Array<[string, readonly string[] | null]> =>
+    const known: AllowedTools = Object.fromEntries((Array.isArray(settings.mcp) ? settings.mcp as unknown[] : []).flatMap((e): Array<[string, readonly string[] | null]> =>
       typeof e === "string" ? [[e, null]]
       : typeof e === "object" && e !== null && Array.isArray((e as { tools?: unknown }).tools) ? [[(e as { name: string }).name, (e as { tools: string[] }).tools]]
       : []));
@@ -734,8 +732,8 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
           throw new Error(`refused ${key}: the ${this.id} executor cannot enforce a step's own ${key}`);
         }
       }
-      const known: Allowed = Object.fromEntries(Object.keys(mcpServers).map((name) => [name, mcpTools[name] ?? null]));
-      let stepAllowed: Allowed = declared ? known : {};
+      const known: AllowedTools = Object.fromEntries(Object.keys(mcpServers).map((name) => [name, mcpTools[name] ?? null]));
+      let stepAllowed: AllowedTools = declared ? known : {};
       if (declared && stepMcp !== undefined) {
         const narrowed = narrowMcp(stepMcp, known);
         if (narrowed.problems.length) throw new Error(`refused the step's mcp: ${narrowed.problems.join("; ")}`);
@@ -765,7 +763,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       // A server whose entry listed tools allows exactly those; one named bare
       // allows every tool it has — which, for a server that can index or
       // delete, is a lot more than reading.
-      const allowed: Allowed = Object.fromEntries(Object.keys(servers).map((name) =>
+      const allowed: AllowedTools = Object.fromEntries(Object.keys(servers).map((name) =>
         [name, name === server?.name ? server.tools : stepAllowed[name] ?? null]));
 
       const plan: RunPlan<E> = {
