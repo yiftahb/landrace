@@ -7,9 +7,10 @@
  * A project's hook is `export const claude = new Claude();`, or a subclass
  * that overrides one piece.
  */
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { copyFile, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
 import type {
@@ -125,6 +126,88 @@ async function refuseAddDirSettings(cwd: string): Promise<void> {
   }
 }
 
+/**
+ * The front-matter keys a project skill may not declare, and why: a skill's
+ * hooks run as the CLI's own hooks do, outside the sandbox — what
+ * `--setting-sources user` exists to keep from a committed settings file —
+ * and its allowed-tools approve a tool the step never declared.
+ */
+const REFUSED_SKILL_KEYS = new Map([
+  ["hooks", "hooks, which would run outside the sandbox"],
+  ["allowed-tools", "allowed-tools, which would let the agent use a tool its step did not declare"],
+]);
+
+/**
+ * Why a SKILL.md cannot load, or undefined. The CLI reads its front matter as
+ * YAML, where a key can be quoted, escaped, explicit or merged in; this reads
+ * only the plain `key:` at the start of a line that a skill writes, and
+ * refuses any other line at that level rather than guess what it spells. The
+ * block runs to the first line that is `---`, or to the end: never shorter
+ * than the CLI's own, which ends at the first `---` anywhere.
+ */
+function skillProblem(text: string): string | undefined {
+  const body = text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const open = /^\s*---\s*\n/.exec(body);
+  if (open === null) return undefined;
+  const rest = body.slice(open[0].length);
+  const end = rest.search(/^---[ \t]*$/m);
+  let first = true;
+  for (const [i, line] of (end < 0 ? rest : rest.slice(0, end)).split("\n").entries()) {
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    // Indented under a key: its value. Before any key, it would make every
+    // key below it the indented one.
+    if (!first && line.startsWith(" ")) continue;
+    const key = /^([A-Za-z0-9_-]+)[ \t]*:(?:[ \t]|$)/.exec(line)?.[1];
+    if (key === undefined) {
+      return `has front matter whose line ${i + 1}, ${JSON.stringify(line)}, is not a plain key, so whether it declares hooks or allowed-tools cannot be told`;
+    }
+    const why = REFUSED_SKILL_KEYS.get(key);
+    if (why !== undefined) return `declares ${why}`;
+    first = false;
+  }
+  return undefined;
+}
+
+/**
+ * Where a worktree's skills load from: outside it, so a step cannot shadow
+ * the plugin, at a path derived from it, so a run after a crash rebuilds the
+ * same one rather than leave another.
+ */
+const pluginDirOf = (cwd: string): string =>
+  join(tmpdir(), "landrace-claude", createHash("sha256").update(cwd).digest("hex").slice(0, 16));
+
+/**
+ * The worktree's `.claude/skills` as a plugin of its own for `--plugin-dir`,
+ * since neither tier's flags load a project's skills: its manifest and
+ * `skills/`, and nothing else — no hooks, commands or servers. Each skill's
+ * SKILL.md is the copy read and checked here, beside links to the rest of its
+ * folder: the CLI reloads skills mid-run, and a link to the worktree's file
+ * would load whatever a step wrote there since. The plugin loads them as
+ * `project:<name>`.
+ */
+async function buildPluginDir(cwd: string): Promise<void> {
+  const root = join(cwd, ".claude", "skills");
+  const dir = pluginDirOf(cwd);
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(join(dir, ".claude-plugin"), { recursive: true });
+  await writeFile(join(dir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "project" }));
+  await mkdir(join(dir, "skills"));
+  // As the CLI's plugin loader reads a skills folder: one SKILL.md per entry.
+  for (const name of await readdir(root)) {
+    const from = join(root, name);
+    const text = await readFile(join(from, "SKILL.md"), "utf8").catch(() => undefined);
+    if (text === undefined) continue;
+    const problem = skillProblem(text);
+    if (problem !== undefined) {
+      throw new Error(`refused to load the project's skills: .claude/skills/${name}/SKILL.md ${problem}. Remove it from the branch`);
+    }
+    const to = join(dir, "skills", name);
+    await mkdir(to);
+    await writeFile(join(to, "SKILL.md"), text);
+    for (const entry of await readdir(from)) if (entry !== "SKILL.md") await symlink(join(from, entry), join(to, entry));
+  }
+}
+
 export class Claude extends BaseExecutor<ClaudeExtras> {
   readonly id = "claude";
   /** The levels `claude --effort` takes. */
@@ -151,18 +234,26 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * resumed may have run elsewhere: a pairing's hand-in forks in the
    * pairing's checkout, and a later turn resumes it from the item's. Not
    * found, the `--resume` fails as it always did.
+   *
+   * A step's own directory is checked before it is added, and its skills made
+   * into the plugin `argv` names: the screener gets neither.
    */
   protected async prepare({ tier, resume, cwd }: RunPlan<ClaudeExtras>): Promise<void> {
     if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, projectDir(this.home, cwd));
-    if (tier !== "screen" && cwd !== undefined) await refuseAddDirSettings(cwd);
+    if (tier === "screen" || cwd === undefined) return;
+    await refuseAddDirSettings(cwd);
+    if (existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd);
   }
 
   protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras }: RunPlan<ClaudeExtras>): string[] {
     const declared = tier !== "screen";
-    // A step's own instructions: `--setting-sources user` and `--restricted`
-    // each keep the CLI from reading the worktree's `CLAUDE.md` as the
-    // project's (live on 2.1.289), so it is added as a directory of its own,
-    // which loads one only with the setting below. Never the screener's.
+    // A step's own instructions and skills: `--setting-sources user` and
+    // `--restricted` each keep the CLI from reading the worktree's
+    // `CLAUDE.md` and `.claude/skills` as the project's (live on 2.1.289).
+    // So the worktree is added as a directory of its own, which loads its
+    // root `CLAUDE.md` only with the setting below, and its skills come as a
+    // plugin `prepare` made of them; `prepare` has refused whatever else
+    // either would load. Never the screener's.
     const instructions = declared && cwd !== undefined;
     const mayWrite = tier === "write";
     // Not plan mode, which is what a read-only step and the screener ran in
@@ -218,8 +309,9 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
       ...(instructions ? { env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" } } : {}),
     };
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
-    // Variadic: `--mcp-config`, always pushed below, ends it.
+    // Variadic, both: `--mcp-config`, always pushed below, ends them.
     if (instructions) args.push("--add-dir", cwd);
+    if (instructions && existsSync(join(cwd, ".claude", "skills"))) args.push("--plugin-dir", pluginDirOf(cwd));
     // Inline JSON rather than a config file: there is no path for the
     // agent's worktree to shadow and nothing to clean up after a crash.
     // Strict always, for every run and with nothing to allow as much as with

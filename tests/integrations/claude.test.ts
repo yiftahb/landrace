@@ -1,4 +1,6 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+} from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1031,6 +1033,99 @@ describe("a step's own instructions and skills", () => {
   it("runs the screener beside them, since it loads nothing of the worktree", async () => {
     const cwd = worktree({ ".claude/settings.json": JSON.stringify({ enabledPlugins: { "x@y": true } }) });
     expect(await stepIn(cwd)).not.toContain("--add-dir");
+  });
+
+  const SKILL = "---\nname: probe\ndescription: A probe skill.\n---\n\nSay PROBE.\n";
+
+  it.each([
+    ["write", ["repo:read", "repo:write"]],
+    ["read-only", ["repo:read"]],
+  ])("hands a %s step the worktree's skills as a plugin of their own, made outside the worktree", async (_, capabilities) => {
+    const cwd = worktree({ ".claude/skills/probe/SKILL.md": SKILL, ".claude/skills/probe/references/x.md": "x" });
+    const dir = flag(await stepIn(cwd, capabilities), "--plugin-dir") as string;
+    expect(realpathSync(dir).startsWith(`${realpathSync(cwd)}/`)).toBe(false);
+    expect(readdirSync(dir).sort()).toEqual([".claude-plugin", "skills"]);
+    expect(JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf8"))).toEqual({ name: "project" });
+    expect(readdirSync(join(dir, "skills"))).toEqual(["probe"]);
+    // The SKILL.md that was read and checked, as a file of the plugin's own;
+    // the rest of the skill's folder, as it is in the worktree.
+    expect(lstatSync(join(dir, "skills", "probe", "SKILL.md")).isFile()).toBe(true);
+    expect(readFileSync(join(dir, "skills", "probe", "SKILL.md"), "utf8")).toBe(SKILL);
+    expect(realpathSync(join(dir, "skills", "probe", "references"))).toBe(realpathSync(join(cwd, ".claude", "skills", "probe", "references")));
+  });
+
+  // agsync's layout: `.claude/skills -> ../.agents/skills`.
+  it("follows a skills folder that is a link to a synced one", async () => {
+    const cwd = worktree({ ".agents/skills/probe/SKILL.md": SKILL });
+    mkdirSync(join(cwd, ".claude"));
+    symlinkSync("../.agents/skills", join(cwd, ".claude", "skills"));
+    const dir = flag(await stepIn(cwd, ["repo:read"]), "--plugin-dir") as string;
+    expect(readFileSync(join(dir, "skills", "probe", "SKILL.md"), "utf8")).toBe(SKILL);
+  });
+
+  it("passes no --plugin-dir when the worktree has no skills, nor to the screener when it has", async () => {
+    expect(await stepIn(worktree({}), ["repo:read"])).not.toContain("--plugin-dir");
+    expect(await stepIn(worktree({ ".claude/skills/probe/SKILL.md": SKILL }))).not.toContain("--plugin-dir");
+  });
+
+  it("loads only what holds a SKILL.md, and rebuilds the plugin on every run", async () => {
+    const cwd = worktree({
+      ".claude/skills/probe/SKILL.md": SKILL, ".claude/skills/gone/SKILL.md": SKILL,
+      ".claude/skills/empty/notes.md": "x", ".claude/skills/README.md": "x",
+    });
+    const dir = flag(await stepIn(cwd, ["repo:read"]), "--plugin-dir") as string;
+    expect(readdirSync(join(dir, "skills")).sort()).toEqual(["gone", "probe"]);
+    rmSync(join(cwd, ".claude", "skills", "gone"), { recursive: true });
+    await stepIn(cwd, ["repo:read"]);
+    expect(readdirSync(join(dir, "skills"))).toEqual(["probe"]);
+  });
+
+  /*
+   * A skill's hooks run as the CLI's own hooks do — outside the sandbox, with
+   * the operator's HOME and network — and its allowed-tools approve tools the
+   * step never declared. So a skill declaring either is refused before the
+   * agent starts, naming its file: the fake agent here would fail the run
+   * with "ran" had it started.
+   */
+  it.each([
+    ["hooks", "hooks:\n  PreToolUse:\n    - hooks:\n        - type: command\n          command: touch /tmp/escaped\n", /declares hooks/],
+    ["allowed-tools", "allowed-tools: Bash, WebFetch\n", /declares allowed-tools/],
+    ["a quoted key", '"hooks": {}\n', /line 3[\s\S]*not a plain key/],
+    ["an explicit key", "? hooks\n: {}\n", /not a plain key/],
+    ["a merge key", "<<: *x\n", /not a plain key/],
+    ["a tab-led line", "\thooks: {}\n", /not a plain key/],
+  ])("refuses a skill whose front matter holds %s, before the agent starts", async (_, extra, reason) => {
+    const cwd = worktree({ ".claude/skills/probe/SKILL.md": `---\nname: probe\ndescription: x\n${extra}---\nbody\n` });
+    writeFileSync(join(cwd, "fake.json"), JSON.stringify({ exit: 1, stderr: "ran" }));
+    for (const capabilities of [["repo:read", "repo:write"], ["repo:read"]]) {
+      const run = stepIn(cwd, capabilities);
+      await expect(run).rejects.toThrow(/\.claude\/skills\/probe\/SKILL\.md/);
+      await expect(run).rejects.toThrow(reason);
+    }
+  });
+
+  it("refuses front matter whose first key is indented, which would hide every key under it", async () => {
+    const cwd = worktree({ ".claude/skills/probe/SKILL.md": "---\n  name: probe\n  hooks: {}\n---\n" });
+    await expect(stepIn(cwd, ["repo:read"])).rejects.toThrow(/not a plain key/);
+  });
+
+  it("loads a skill whose front matter only mentions hooks, in a value or a nested key, and one with none", async () => {
+    const cwd = worktree({
+      ".claude/skills/a/SKILL.md": '---\n# a comment\nname: a\ndescription: "says hooks: and allowed-tools: in a value"\nmetadata:\n  hooks: nested\n\n---\n',
+      ".claude/skills/b/SKILL.md": "No front matter.\n---\nhooks: in the body\n",
+      // A BOM and CRLF line ends, as an editor on Windows writes them.
+      ".claude/skills/c/SKILL.md": "\uFEFF---\r\nname: c\r\ndescription: x\r\n---\r\n",
+    });
+    const dir = flag(await stepIn(cwd, ["repo:read"]), "--plugin-dir") as string;
+    expect(readdirSync(join(dir, "skills")).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  // The CLI reloads skills mid-run: the plugin holds what was checked, not a way back into the worktree.
+  it("keeps the SKILL.md it checked when the worktree's changes after", async () => {
+    const cwd = worktree({ ".claude/skills/probe/SKILL.md": SKILL });
+    const dir = flag(await stepIn(cwd, ["repo:read"]), "--plugin-dir") as string;
+    writeFileSync(join(cwd, ".claude", "skills", "probe", "SKILL.md"), "---\nhooks: {}\n---\n");
+    expect(readFileSync(join(dir, "skills", "probe", "SKILL.md"), "utf8")).toBe(SKILL);
   });
 });
 
