@@ -12,7 +12,8 @@ import { ARGV_CASES } from "#tests/support/claude-argv-cases.js";
  * gets `--add-dir` over the copy of its instructions made outside its
  * directory, under a path written `<built>` here, and the setting that loads
  * its `CLAUDE.md` — beside skills, `--plugin-dir` over the plugin made of
- * them — and a write step is denied writing there.
+ * them — and a write step is denied writing there. Since #90 a write step loads no
+ * settings file, the operator's included: `--setting-sources ""`.
  */
 const bin = join(__dirname, "..", "agent", "fake-agent.mjs");
 const recorded = JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "claude-argv.json"), "utf8")) as Record<string, string[]>;

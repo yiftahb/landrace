@@ -879,6 +879,19 @@ describe("the shipped write steps merge, test, commit and push their own branch"
   });
 
   /*
+   * #88: a repository whose commitlint `commit-msg` hook asks for
+   * `type(KEY-1): subject` rejected the retro's fixed subject, and the commit
+   * failed inside the step. Every write step, in both workflows, finds the
+   * repository's commit conventions and follows them.
+   */
+  it.each(["full-cycle", "fastlane"].flatMap((wf) => ["build", "fix-review", "retro"].map((id) => [wf, id])))(
+    "%s's %s follows the repository's commit conventions", async (wf, id) => {
+      const { workspace } = await loadShipped();
+      const prose = (workspace.workflows.find((w) => w.id === wf)?.steps.get(`steps/${id}.md`)?.prompt ?? "").replace(/\s+/g, " ");
+      expect(prose).toMatch(/commit conventions — a commitlint configuration, a `commit-msg` hook, a contributing guide — and follow them/);
+    });
+
+  /*
    * #31: a pushback in the round's summary was lost, and a person's thread
    * the fixer answered still read as open. The fixer answers each thread in
    * its json instead, and pull.review posts each answer where it was raised.
@@ -1153,7 +1166,10 @@ describe("the shipped workflow learns from a corrected item before a person revi
       expect(prompt).toContain(".agsync/skills/");
       expect(prompt).toMatch(/never touch any workflow's `workflow\.yaml` — every `\.landrace\/workflows\/\*\/workflow\.yaml`, this workflow's and every other's — nor `\.landrace\/landrace\.yaml`, `\.landrace\/hooks\/`, `src\/`/i);
       expect(prompt).toMatch(/never edit\s+`CLAUDE\.md` or `AGENTS\.md`/i);
-      expect(prompt).toContain("git log --grep '^retro:'");
+      // Found by the line, subject or body, since the conventions may change the subject (#88).
+      expect(prompt).toContain("git log --grep '^retro: lessons from #'");
+      expect(prompt.replace(/\s+/g, " ")).toMatch(
+        /The subject is `retro: lessons from #\{node\.id\}` unless they say otherwise; when they do, write the subject they ask for, and end the message's body with the line `retro: lessons from #\{node\.id\}`/);
       // A step file's front matter is its permissions and its routing.
       // Prose, asked of the words and not of where the lines wrap.
       const prose = prompt.replace(/\s+/g, " ");

@@ -306,6 +306,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
                 ...(step.model === undefined ? {} : { model: step.model }),
                 // Its effort too: a turn must not run cheaper than its step.
                 ...(step.effort === undefined ? {} : { effort: step.effort }),
+                // Nor reach a server, skill or plugin its step was kept from.
+                ...(step.mcp === undefined ? {} : { mcp: step.mcp }),
+                ...(step.skills === undefined ? {} : { skills: step.skills }),
+                ...(step.plugins === undefined ? {} : { plugins: step.plugins }),
                 // And its time limit: a turn on a two-hour build's session, held
                 // to the operator's default, is killed long before the build
                 // would have been. Every run gets one — the step's own, else

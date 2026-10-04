@@ -69,9 +69,9 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
     await expect(loadWorkflow(wf({ description: "d", admit: [""] }))).rejects.toThrow(/admit/);
   });
 
-  it("refuses a step declaring skills: plugins come from agent.plugins for every step, never from front matter", () => {
-    expect(() => parseStep("---\nskills: [superpowers:brainstorming]\n---\nbody"))
-      .toThrow(/skills/);
+  it("refuses a step's skills in any shape but a list of names", () => {
+    expect(() => parseStep("---\nskills: developer\n---\nbody")).toThrow(/skills/);
+    expect(() => parseStep("---\nskills: [\"\"]\n---\nbody")).toThrow(/skills/);
   });
 
   it("still accepts the front matter fields the engine does read", () => {
@@ -203,6 +203,19 @@ describe("a step file that extends another", () => {
     expect(step?.prompt).toContain("Item.");
     expect(step?.prompt).not.toContain("Spec.");
     expect(step?.prompt).toContain("## Rules");
+  });
+
+  it("reads a step's own skills, mcp and plugins, and refuses one in another shape", async () => {
+    put("workflows/own/steps/build.md",
+      "---\nskills: [developer]\nmcp:\n  - graph\n  - name: memory\n    tools: [search_graph]\nplugins: []\n---\nBuild.\n");
+    flow("own", "steps/build.md");
+    const { steps } = await loadWorkflow(join(ws, "workflows/own"), new Map(), { workspace: ws });
+    expect(steps.get("steps/build.md")).toMatchObject({
+      skills: ["developer"], mcp: ["graph", { name: "memory", tools: ["search_graph"] }], plugins: [],
+    });
+    put("workflows/bad/steps/build.md", "---\nmcp:\n  - name: memory\n    tool: [x]\n---\nBuild.\n");
+    flow("bad", "steps/build.md");
+    await expect(loadWorkflow(join(ws, "workflows/bad"), new Map(), { workspace: ws })).rejects.toThrow(/mcp/);
   });
 
   it("refuses an extends loop, naming the files", async () => {

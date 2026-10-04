@@ -374,6 +374,17 @@ describe("the Codex integration", () => {
         .rejects.toThrow(/agent\.plugins is not a setting the codex executor reads/);
     });
 
+    // Codex loads no project skills and no plugins, so a step's own list of either is a limit it cannot keep.
+    it("refuses a step's skills or plugins, naming the step", async () => {
+      const loaded = await loadConfig(".landrace");
+      const { steps } = await loadShipped(loaded.vars);
+      const spec = steps.get("steps/spec.md");
+      if (!spec) throw new Error("the shipped workflow has no steps/spec.md");
+      const asking = new Map([...steps, ["steps/spec.md", { ...spec, skills: ["developer"], plugins: [] }]]);
+      await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }, asking))).rejects.toThrow(
+        "steps/spec.md lists skills:, which the codex executor cannot enforce\nsteps/spec.md lists plugins:, which the codex executor cannot enforce");
+    });
+
     it("takes every shipped step's effort", async () => {
       const loaded = await loadConfig(".landrace");
       const { steps } = await loadShipped(loaded.vars);

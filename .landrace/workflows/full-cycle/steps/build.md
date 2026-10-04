@@ -78,7 +78,9 @@ Technical design. The plan is for this session; do not commit it.
 **Step 4 — Implement the plan, committing as you go.** Work through it with
 `superpowers:executing-plans`, test first wherever behaviour changes.
 Commit as you go: this worktree is removed when the step ends, and anything you did not
-commit is lost with it.
+commit is lost with it. Before the first commit, find this repository's commit
+conventions — a commitlint configuration, a `commit-msg` hook, a contributing
+guide — and follow them: a message they reject fails the commit.
 
 **Step 5 — Verify: install, tests, lint.** Install dependencies as needed
 (`pnpm install`), and run the test suite and the lint checks in the foreground,

@@ -338,6 +338,17 @@ describe("finishing a pairing", () => {
     expect(finished).toEqual({ stage: "spec", round: 1, discarded: [] });
     expect(await run()).toMatchObject({ pairing: null, lastOutputBy: "pair" });
     expect(existsSync(started.cwd)).toBe(false);
+  });
+
+  it("holds the closing turn to the step's own mcp, skills and plugins", async () => {
+    const a = agent();
+    const seen: Array<Record<string, unknown>> = [];
+    const spy: Executor = { ...a.executor, run: (prompt, o) => { seen.push(o as unknown as Record<string, unknown>); return a.executor.run(prompt, o); } };
+    const narrowed = new Map(steps).set("spec", { ...specStep, mcp: ["memory"], skills: ["developer"], plugins: [] });
+    const { deps } = owed(spy, { steps: narrowed });
+    await startPair(deps, "29", "spec");
+    await finishPair(deps, "29", "ship it");
+    expect(seen).toEqual([expect.objectContaining({ mcp: ["memory"], skills: ["developer"], plugins: [] })]);
     expect(existsSync(a.handoffs[0]?.promptFile ?? "")).toBe(false);
   });
 

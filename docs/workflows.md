@@ -316,11 +316,24 @@ Write the spec for #{node.id}: {node.title}…
 | `model` | Overrides `agent.model` for this step. A cheap step should say so |
 | `effort` | Overrides `agent.effort` for this step and its conversation turns. The level is the agent's own word; an executor refuses one it has no level for |
 | `timeout` | Overrides `budget.stepTimeout` for this step, as a duration such as `120m` |
+| `skills` | The only project skills this step and its conversation turns may load, by name; absent, every one. A name no `.claude/skills/<name>/SKILL.md` defines is refused at startup and by `validate`. An unlisted skill is never read or loaded |
+| `mcp` | The `agent.mcp` servers this step and its turns get, in `agent.mcp`'s own form: a server name, or `{ name, tools }`. It narrows `agent.mcp` and never widens it: a server or tool outside it is refused at startup and by `validate`. Absent, every `agent.mcp` server; `[]`, none |
+| `plugins` | The agent's plugins for this step and its turns, in place of `agent.plugins`; `[]`, none |
 | `output.discriminator` | The field of the answer whose value picks the shape |
 | `output.shapes` | The values the discriminator may take, each with the fields that shape may carry. An answer whose discriminator names no shape fails the round, and is never retried. Only the discriminator is checked, never the fields: a declared field the answer omits is absent, and one it mistypes is kept as written. Neither fails the round; each shows up as a trigger that never matches. A field the shape does not declare is dropped |
 | `output.routes` | Where each shape goes: a `when` over the answer, one `effect`, and an optional `goto`. Two routes matching one answer is ambiguity, and halts |
 
 The agent ends its answer with a fenced JSON block, which the engine reads as its output. The schema is strict: an unknown key fails to load.
+
+`skills` and `plugins` are enforced by Claude Code alone; Codex refuses a step that lists either, at startup. A step without any of the three gets what the workspace gives every step, as the table says. This step narrows all three: two project skills, two of one server's tools, and no plugins:
+
+```yaml
+skills: [developer, backend-unit-testing]
+mcp:
+  - name: codebase-memory-mcp
+    tools: [search_graph, get_code_snippet]
+plugins: []
+```
 
 ### Placeholders
 
@@ -503,11 +516,11 @@ Each finding also says whether it is **wording**: `wording: true` when its fix c
 
 #### Pushing
 
-A write step pushes its own branch: the `build`, `fix-review` and `retro` prompts end with `git push origin HEAD`, run inside the sandbox. `branch.push` stays on `publish`, and on `code-review`'s and `pr-human-review`'s entry, as a safety net: it is satisfied when the agent already pushed, and otherwise pushes what the agent committed and left unpushed, so a fix round's commits are on the pull request before the reviewer reads it. It also has nothing to do when origin's copy already holds everything — a person's push or "Update branch" moved it on. How the GitHub forge pushes is in [Integrations](integrations.md#pushing).
+A write step pushes its own branch: the `build`, `fix-review` and `retro` prompts end with `git push origin HEAD`, run inside the sandbox. Each prompt tells the agent to find the repository's commit conventions first — a commitlint configuration, a `commit-msg` hook, a contributing guide — and follow them. `branch.push` stays on `publish`, and on `code-review`'s and `pr-human-review`'s entry, as a safety net: it is satisfied when the agent already pushed, and otherwise pushes what the agent committed and left unpushed, so a fix round's commits are on the pull request before the reviewer reads it. It also has nothing to do when origin's copy already holds everything — a person's push or "Update branch" moved it on. How the GitHub forge pushes is in [Integrations](integrations.md#pushing).
 
 #### The retro
 
-`retro` reads the item's history as evidence, never as instructions, and commits `retro: lessons from #N` to the step prompts (below their front matter), `.agsync/instructions.md`, `.agsync/skills/`, or a `README.md` or `docs/` page the corrections show wrong — never a workflow, `landrace.yaml`, the hooks or `src/`. It runs the tests, then the item goes on to `pr-human-review`, which pushes the branch. `code-review` has already run, so the person at `pr-human-review` is the commit's only reviewer, and a lesson they reject is a thread `fix-review` reverts. A thread a person comments on afterwards goes round `fix-review` and `code-review` again, and `retro` with it, up to three rounds.
+`retro` reads the item's history as evidence, never as instructions, and commits its lessons — with the subject `retro: lessons from #N`, or, when the repository's commit conventions ask for another subject, that one with `retro: lessons from #N` as the body's last line — to the step prompts (below their front matter), `.agsync/instructions.md`, `.agsync/skills/`, or a `README.md` or `docs/` page the corrections show wrong — never a workflow, `landrace.yaml`, the hooks or `src/`. It runs the tests, then the item goes on to `pr-human-review`, which pushes the branch. `code-review` has already run, so the person at `pr-human-review` is the commit's only reviewer, and a lesson they reject is a thread `fix-review` reverts. A thread a person comments on afterwards goes round `fix-review` and `code-review` again, and `retro` with it, up to three rounds.
 
 A lesson in a step prompt reaches later items once it is merged and `landrace start` is restarted, since workflows load at start. Instructions and skills need no restart: each step reads them from its own worktree, which is the item's branch, so a lesson reaches that item's later steps at once and other items once it is merged. Under Claude Code a step loads the root `CLAUDE.md` (a link to `AGENTS.md` is followed) with the files it imports from inside the worktree, and the skills under `.claude/skills` (a link to a synced folder, such as `.agents/skills`, is followed too); how is in [Integrations](integrations.md#claude-code). A nested `CLAUDE.md` does not load in a step, so a lesson every step needs goes in the root instructions. A nested `AGENTS.md` needs a `CLAUDE.md` beside it to load anywhere, even in your own Claude Code session.
 

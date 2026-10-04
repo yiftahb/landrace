@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claude } from "#landrace/hooks/claude.js";
 import { createClaudeExecutor } from "landrace/integrations/claude";
-import type { Executor, ExecutorContext } from "#namespace.js";
+import type { Executor, ExecutorContext, Step } from "#namespace.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 
 afterAll(removeRepos);
@@ -62,6 +62,7 @@ const argvOf = async (
     capabilities?: readonly string[];
     model?: string;
     effort?: string;
+    plugins?: readonly string[];
     child?: { parent: string; stage: string; round: number; server?: typeof SERVER };
   },
 ): Promise<string[]> => {
@@ -480,9 +481,13 @@ describe("claude executor", () => {
     const controller = new AbortController();
     const started = createClaudeExecutor({ bin }).run("x", { round: 1, cwd: dir, signal: controller.signal, timeoutMs: 5_000 });
 
+    // A read can land between the file's truncation and its write: "" is
+    // pid 0, and `kill(0, 0)` signals this test's own group, so it never
+    // "dies" — which is how this failed on CI.
     const pid = await until(() => {
       try {
-        return Number(readFileSync(join(dir, "grandchild.pid"), "utf8"));
+        const got = Number(readFileSync(join(dir, "grandchild.pid"), "utf8"));
+        return Number.isInteger(got) && got > 0 ? got : null;
       } catch {
         return null;
       }
@@ -759,6 +764,15 @@ describe("plugins and MCP servers", () => {
     expect(argv.filter((a) => a === "--settings")).toHaveLength(1);
   });
 
+  it("enables a step's own plugins in place of the operator's, and none for a step that lists none, at either tier", async () => {
+    for (const capabilities of [["repo:read"], ["repo:read", "repo:write"]]) {
+      const own = await argvOf(createClaudeExecutor({ bin, ...tools }), { capabilities, plugins: ["mine@market"] });
+      expect(JSON.parse(flag(own, "--settings") as string).enabledPlugins).toEqual({ "mine@market": true });
+      const none = await argvOf(createClaudeExecutor({ bin, ...tools }), { capabilities, plugins: [] });
+      expect(JSON.parse(flag(none, "--settings") as string)).not.toHaveProperty("enabledPlugins");
+    }
+  });
+
   it("passes only the setting that loads the step's CLAUDE.md when no plugin is configured", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
     expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ env: INSTRUCTIONS });
@@ -993,9 +1007,10 @@ describe("a step's own instructions and skills", () => {
     }
     return cwd;
   };
-  const stepIn = async (cwd: string, capabilities?: readonly string[]): Promise<string[]> => {
+  const stepIn = async (cwd: string, capabilities?: readonly string[], skills?: readonly string[]): Promise<string[]> => {
     const r = await createClaudeExecutor({ bin }).run("p", {
       round: 1, signal: new AbortController().signal, cwd, ...(capabilities === undefined ? {} : { capabilities }),
+      ...(skills === undefined ? {} : { skills }),
     });
     return JSON.parse(r.text) as string[];
   };
@@ -1202,6 +1217,21 @@ describe("a step's own instructions and skills", () => {
     expect(readdirSync(join(dir, "skills"))).toEqual(["probe"]);
   });
 
+  /*
+   * A step's `skills:` is the plugin's whole content: an unlisted skill is
+   * never copied, so never loads, and is never read — one whose front matter
+   * would refuse the run does not, when the step leaves it out.
+   */
+  it.each(TIERS)("copies only the skills a %s step lists, and none of an unlisted one", async (_, capabilities) => {
+    const cwd = worktree({
+      ".claude/skills/probe/SKILL.md": SKILL, ".claude/skills/other/SKILL.md": SKILL,
+      ".claude/skills/hooked/SKILL.md": "---\nname: hooked\nhooks: {}\n---\n",
+    });
+    const dir = flag(await stepIn(cwd, capabilities, ["probe"]), "--plugin-dir") as string;
+    expect(readdirSync(join(dir, "skills"))).toEqual(["probe"]);
+    expect(await stepIn(cwd, capabilities, [])).not.toContain("--plugin-dir");
+  });
+
   it("passes no --plugin-dir when the worktree has no skills, nor to the screener when it has", async () => {
     expect(await stepIn(worktree({}), ["repo:read"])).not.toContain("--plugin-dir");
     expect(await stepIn(worktree({ ".claude/skills/probe/SKILL.md": SKILL }))).not.toContain("--plugin-dir");
@@ -1325,10 +1355,17 @@ describe("a writing step's sandbox", () => {
    * sandbox entirely, live-checked on 2.1.283 against a plain `acceptEdits`
    * run with no `--setting-sources`.
    */
-  it("limits a write run's settings to the operator's own, never the worktree's", async () => {
+  /*
+   * Nor the operator's: their user settings enable the plugins they use
+   * themselves, and a SessionStart hook in one (a persona, compressed
+   * replies) would shape the step's work and its replies on review threads,
+   * which then depends on who runs Landrace. The step's plugins come through
+   * `--settings`, as a read-only step's do.
+   */
+  it("loads no settings file into a write run, neither the worktree's nor the operator's", async () => {
     const writing = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read", "repo:write"] });
     expect(writing.filter((a) => a === "--setting-sources")).toHaveLength(1);
-    expect(flag(writing, "--setting-sources")).toBe("user");
+    expect(flag(writing, "--setting-sources")).toBe("");
     const readOnly = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
     expect(readOnly).not.toContain("--setting-sources");
   });
@@ -1389,6 +1426,28 @@ describe("a writing step's sandbox", () => {
  * not threaded through) has something to fail it, not just the constructor
  * it delegates to.
  */
+describe("a step's own skills, at startup", () => {
+  const ctxIn = (dir: string, steps: Map<string, Step>): ExecutorContext => ({
+    config: { agent: { adapter: "claude" } } as unknown as ExecutorContext["config"],
+    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir, redact: () => {}, steps,
+  });
+
+  it("refuses a skill no .claude/skills/*/SKILL.md defines, naming the step and the skill", async () => {
+    const root = await gitRepo();
+    await mkdir(join(root, ".claude", "skills", "developer"), { recursive: true });
+    await writeFile(join(root, ".claude", "skills", "developer", "SKILL.md"), "---\nname: developer\n---\n");
+    await mkdir(join(root, ".claude", "skills", "notes"), { recursive: true });
+    const dir = join(root, ".landrace");
+    await mkdir(dir);
+    const fine = new Map<string, Step>([["steps/build.md", { skills: ["developer"], plugins: [], prompt: "" } as Step]]);
+    await expect(claude.create(ctxIn(dir, fine))).resolves.toBeDefined();
+    const unknown = new Map<string, Step>([["steps/build.md", { skills: ["developer", "notes", "ghost"], prompt: "" } as Step]]);
+    await expect(claude.create(ctxIn(dir, unknown))).rejects.toThrow(
+      'steps/build.md lists skill "notes", which no .claude/skills/*/SKILL.md defines\n' +
+      'steps/build.md lists skill "ghost", which no .claude/skills/*/SKILL.md defines');
+  });
+});
+
 describe("the factory's wiring, end to end", () => {
   it("carries the model, plugins and an allowlisted server's tools through a real run's argv", async () => {
     const root = await gitRepo();

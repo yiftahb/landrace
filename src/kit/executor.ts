@@ -20,6 +20,7 @@ import { CAPABILITIES, CHILD_SERVER_NAME, INHERITED_ENV_KEYS, mayCreateItems, ma
 import { defineExecutor } from "#hooks/contracts.js";
 import type {
   AgentSettings,
+  AllowedTools,
   EventReading,
   Executor,
   ExecutorContext,
@@ -34,11 +35,12 @@ import type {
   ResolvedMcp,
   RunPlan,
   SandboxSettings,
+  StepKey,
   Tier,
 } from "#namespace.js";
 
 export type {
-  AgentSettings, EventReading, HandoffPlan, HookLog, KitSettings, McpEntry, McpServerConfig, PairingKind, ResolvedMcp, RunPlan, SandboxSettings, Tier,
+  AgentSettings, EventReading, HandoffPlan, HookLog, KitSettings, McpEntry, McpServerConfig, PairingKind, ResolvedMcp, RunPlan, SandboxSettings, StepKey, Tier,
 } from "#namespace.js";
 
 /** A thrown value's message, whatever was thrown. */
@@ -363,6 +365,41 @@ export function mcpRedactionValues(servers: Readonly<Record<string, McpServerCon
   return [...values];
 }
 
+/**
+ * A step's `mcp` over what `agent.mcp` allows (`known`): the servers the step
+ * loads and the tools on each, or why it cannot. It narrows and never
+ * widens: a server or a tool outside `known` is refused, never added.
+ */
+function narrowMcp(entries: readonly McpEntry[], known: Readonly<AllowedTools>): { allowed: AllowedTools; problems: string[] } {
+  const names = entries.map((e) => (typeof e === "string" ? e : e.name));
+  // Two entries for one server could disagree about its tools.
+  const repeated = new Set(names.filter((name, i) => names.indexOf(name) !== i));
+  const problems = [...repeated].map((name) => `names MCP server "${name}" more than once`);
+  const allowed: AllowedTools = {};
+  for (const entry of entries) {
+    const name = typeof entry === "string" ? entry : entry.name;
+    const listed = typeof entry === "string" ? undefined : entry.tools;
+    const has = Object.hasOwn(known, name) ? known[name] : undefined;
+    if (repeated.has(name)) continue;
+    if (has === undefined) {
+      problems.push(`asks for MCP server "${name}", which agent.mcp does not name`);
+    } else if (listed?.length === 0) {
+      problems.push(`names MCP server "${name}" with no tools; leave it out to give the step none of it`);
+    } else {
+      // A server agent.mcp names bare allows every tool, so the step's names
+      // meet no list there; they still reach argv, where "x Bash" would allow
+      // a tool nobody listed.
+      const badShape = (listed ?? []).filter((tool) => !ARG_SHAPE.test(tool));
+      problems.push(...badShape.map((tool) =>
+        `asks for tool ${JSON.stringify(tool)} on MCP server "${name}", which does not match the allowed shape for a command-line argument`));
+      const outside = has === null ? [] : (listed ?? []).filter((tool) => ARG_SHAPE.test(tool) && !has.includes(tool));
+      problems.push(...outside.map((tool) => `asks for tool "${tool}" on MCP server "${name}", which agent.mcp does not allow on it`));
+      allowed[name] = listed === undefined ? has : [...new Set(listed)];
+    }
+  }
+  return { allowed, problems };
+}
+
 /** The keys of `agent:` the kit reads for every integration, the engine's own three among them. */
 const KIT_KEYS = ["adapter", "isolation", "worktree", "model", "effort", "mcp", "sandbox"];
 /** The keys of `agent.sandbox`. */
@@ -421,6 +458,12 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
   abstract readonly pairings: readonly PairingKind[];
   /** Environment variables the agent needs beyond the kit's own few, passed through by name. Never a credential. */
   readonly envKeys: readonly string[] = [];
+  /**
+   * The step front-matter keys the integration enforces, in `RunPlan`. A step
+   * naming any other is refused, at startup and on its run: one the agent
+   * ignored would read as a limit the step does not have.
+   */
+  readonly stepKeys: readonly StepKey[] = [];
 
   constructor(readonly bin: string) {
     defineExecutor(this);
@@ -455,6 +498,13 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    * startup, never run without. Absent, the agent enforces all of it.
    */
   protected sandboxProblems?(sandbox: SandboxSettings): string[];
+
+  /**
+   * Why skills a step lists are not ones the repository at `root` defines,
+   * one sentence each, read after the step's path. Asked at startup, once per
+   * step that lists any. Absent, nothing is checked.
+   */
+  protected skillProblems?(root: string, listed: readonly string[]): Promise<string[]>;
 
   private extrasOf(agent: Record<string, unknown>): { extras: E; problems: string[] } {
     return this.readExtras?.(agent) ?? { extras: {} as E, problems: [] };
@@ -566,9 +616,29 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     }
 
     const { settings, problems } = this.read(ctx.config.agent as Record<string, unknown>);
+    // What `agent.mcp` allows, from its entries as written: a step's own is
+    // checked against it here whether or not `.mcp.json` resolves.
+    const known: AllowedTools = Object.fromEntries((Array.isArray(settings.mcp) ? settings.mcp as unknown[] : []).flatMap((e): Array<[string, readonly string[] | null]> =>
+      typeof e === "string" ? [[e, null]]
+      : typeof e === "object" && e !== null && Array.isArray((e as { tools?: unknown }).tools) ? [[(e as { name: string }).name, (e as { tools: string[] }).tools]]
+      : []));
+    const skilled: Array<[string, readonly string[]]> = [];
     for (const [path, step] of ctx.steps ?? []) {
       if (step.effort !== undefined && !this.efforts.includes(step.effort)) {
         problems.push(`${path} asks for effort ${JSON.stringify(step.effort)}, which the ${this.id} executor does not take: ${this.efforts.join(", ")}`);
+      }
+      for (const key of ["skills", "plugins"] as const) {
+        if (step[key] !== undefined && !this.stepKeys.includes(key)) problems.push(`${path} lists ${key}:, which the ${this.id} executor cannot enforce`);
+      }
+      if (step.mcp !== undefined) problems.push(...narrowMcp(step.mcp, known).problems.map((p) => `${path} ${p}`));
+      if (step.skills?.length && this.stepKeys.includes("skills")) skilled.push([path, step.skills]);
+    }
+    if (skilled.length && this.skillProblems) {
+      try {
+        const root = await repositoryRoot(ctx.dir);
+        for (const [path, skills] of skilled) problems.push(...(await this.skillProblems(root, skills)).map((p) => `${path} ${p}`));
+      } catch (e) {
+        problems.push(`the steps' skills could not be checked: ${messageOf(e)}`);
       }
     }
     if (problems.length) throw new Error(problems.join("\n"));
@@ -594,7 +664,10 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     } = settings;
     const extras = settings as unknown as E;
 
-    const run: Executor["run"] = async (prompt, { round, resume, fork, cwd, capabilities, model: stepModel, effort: stepEffort, timeoutMs: stepTimeoutMs, child: binding, onActivity, signal }) => {
+    const run: Executor["run"] = async (prompt, {
+      round, resume, fork, cwd, capabilities, model: stepModel, effort: stepEffort, mcp: stepMcp, skills, plugins,
+      timeoutMs: stepTimeoutMs, child: binding, onActivity, signal,
+    }) => {
       if (signal.aborted) {
         // Nothing checked this before `spawn` in the first cut, so a run
         // cancelled before it started launched the (paid) agent anyway.
@@ -641,11 +714,26 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       if (resume !== undefined) assertArgShape("resume", resume);
       const resolvedCwd = cwd !== undefined ? await assertCwd(cwd) : undefined;
 
+      // The step's own, refused rather than dropped where this agent cannot
+      // keep them, and the screener's never.
+      for (const [key, value] of [["skills", skills], ["plugins", plugins]] as const) {
+        if (declared && value !== undefined && !this.stepKeys.includes(key)) {
+          throw new Error(`refused ${key}: the ${this.id} executor cannot enforce a step's own ${key}`);
+        }
+      }
+      const known: AllowedTools = Object.fromEntries(Object.keys(mcpServers).map((name) => [name, mcpTools[name] ?? null]));
+      let stepAllowed: AllowedTools = declared ? known : {};
+      if (declared && stepMcp !== undefined) {
+        const narrowed = narrowMcp(stepMcp, known);
+        if (narrowed.problems.length) throw new Error(`refused the step's mcp: ${narrowed.problems.join("; ")}`);
+        stepAllowed = narrowed.allowed;
+      }
+
       const server = bound?.server;
       if (bound && server === undefined) {
         throw new Error("cannot give this step create_child: the engine handed no server to start for it");
       }
-      const servers: Record<string, McpServerConfig> = declared ? { ...mcpServers } : {};
+      const servers: Record<string, McpServerConfig> = Object.fromEntries(Object.keys(stepAllowed).map((name) => [name, mcpServers[name] as McpServerConfig]));
       if (server) {
         // An allowlisted server under the engine's own name would either be
         // silently replaced below — losing whichever of the two the operator
@@ -664,11 +752,13 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       // A server whose entry listed tools allows exactly those; one named bare
       // allows every tool it has — which, for a server that can index or
       // delete, is a lot more than reading.
-      const allowed = Object.fromEntries(Object.keys(servers).map((name) =>
-        [name, name === server?.name ? server.tools : mcpTools[name] ?? null])) as Record<string, readonly string[] | null>;
+      const allowed: AllowedTools = Object.fromEntries(Object.keys(servers).map((name) =>
+        [name, name === server?.name ? server.tools : stepAllowed[name] ?? null]));
 
       const plan: RunPlan<E> = {
         tier, fork: fork === true, servers, allowed, sandbox, extras,
+        ...(declared && skills !== undefined ? { skills } : {}),
+        ...(declared && plugins !== undefined ? { plugins } : {}),
         ...(chosenModel === undefined ? {} : { model: chosenModel }),
         ...(chosenEffort === undefined ? {} : { effort: chosenEffort }),
         ...(resume === undefined ? {} : { resume }),

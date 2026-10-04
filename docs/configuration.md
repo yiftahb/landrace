@@ -38,10 +38,10 @@ Both shipped executors, Claude Code and Codex, read these `agent.*` keys and ref
 |---|---|---|
 | `agent.model` | the agent's own default | The model every step and turn asks for. A step's own `model` wins |
 | `agent.effort` | the agent's own default | How hard the agent thinks, for every step and turn (never the screener). A step's own `effort` wins. Claude takes `low`, `medium`, `high`, `xhigh` or `max`; Codex takes `none`, `low`, `medium`, `high` or `xhigh` |
-| `agent.mcp` | `[]` | The MCP servers a step or turn may use. Each entry is a server name, or `{ name, tools }` to allow only some of its tools |
+| `agent.mcp` | `[]` | The MCP servers a step or turn may use. Each entry is a server name, or `{ name, tools }` to allow only some of its tools. A step's own `mcp` narrows it — see [Workflows](workflows.md#step-files) |
 | `agent.sandbox.hosts` | `[]` | The only hosts a write step's commands may reach |
 | `agent.sandbox.deny` | `[~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc]` | Paths under your home that a write step may not read. A list you write replaces the default |
-| `agent.plugins` | `[]` | Claude Code only: the plugins a step runs with. Codex refuses it |
+| `agent.plugins` | `[]` | Claude Code only: the plugins a step runs with, unless it lists its own `plugins`. No step loads the plugins you enabled for yourself. Codex refuses it |
 
 What these keys do to a run — which servers a step gets, what the sandbox allows and refuses — is in [Security](security.md#mcp-servers-a-step-may-hold) and [Security](security.md#a-write-steps-sandbox); how each executor applies them is in [Integrations](integrations.md#claude-code).
 
