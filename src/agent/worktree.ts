@@ -1,14 +1,29 @@
-import { execFile } from "node:child_process";
-import { mkdir, realpath, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { copyFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import type { WorktreeBranch, WorktreeState } from "#namespace.js";
+import { childEnv } from "#kit/executor.js";
+import type { WorktreeBranch, WorktreePreparation, WorktreeState } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
 import { messageOf } from "#runner/errors.js";
 
 const exec = promisify(execFile);
+
+/**
+ * The slot a write step's worktree is kept in between steps, until the item
+ * ends: beside the item's own, which every converge and conversation cuts and
+ * removes, so an install in it outlives the run that made it.
+ */
+export const keptSlot = (item: string): string => `${item}.write`;
+
+/** The files whose change means what `setup` installs has changed: the lockfiles at the repository root. */
+const LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"];
+
+/** How much of a failed setup command's output its reason carries. */
+const SETUP_TAIL = 2000;
 
 /**
  * `$TMPDIR/landrace/<repo>/worktrees/`, beside that repository's locks.
@@ -176,8 +191,12 @@ export async function ensureWorktree(
   const all = registered(await git(["worktree", "list", "--porcelain"], repoRoot, what));
 
   // Started from origin's head when origin has moved the branch on: a step
-  // sent back because the head moved must read the head that moved.
-  const holder = on === undefined ? undefined : all.find((w) => w.branch === on.branch && w.path !== path);
+  // sent back because the head moved must read the head that moved. The
+  // item's own kept worktree holds no one's work but a step's commits, so it
+  // is never a reason to leave the branch behind; it is reset onto the branch
+  // when it is next reused.
+  const kept = await pathFor(keptSlot(item), repoRoot);
+  const holder = on === undefined ? undefined : all.find((w) => w.branch === on.branch && w.path !== path && w.path !== kept);
   const local = on === undefined ? null : await commitOf(`refs/heads/${on.branch}`, repoRoot, what);
   const tip = on === undefined || local === null || holder ? local : await caughtUp(on.branch, local, repoRoot, what);
   const attach = on?.write ? on.branch : null;
@@ -195,14 +214,29 @@ export async function ensureWorktree(
         "the item carries on.",
       );
     }
+    // The item's kept worktree is ours to give up: another of its slots — a
+    // pairing, a conversation's turn — needs the branch, and the kept one is
+    // rebuilt when a write step next wants it.
+    if (path !== kept && all.some((w) => w.path === kept && w.branch === attach)) {
+      await removeWorktree(item, repoRoot, keptSlot(item));
+    }
   }
 
-  // Re-used as it stands when it is already on what this step needs: a run
-  // that crashed mid-step left it registered, and git refuses to add a second
-  // worktree at the same path anyway. On the branch, at the commit the branch
-  // names now: one moved forward under it is rebuilt there.
+  // Re-used when it is already on what this step needs: a run that crashed
+  // mid-step left it registered, git refuses to add a second worktree at the
+  // same path anyway, and a write step's install is what reuse is for. On the
+  // branch, it is reset to the commit the branch names now — one moved forward
+  // under it, by origin or by a read-only step's catch-up — and what a
+  // previous step left uncommitted is cleaned away, as a rebuild would; what
+  // git ignores, `node_modules` and the copied files, stays. Detached, as it
+  // stands, at the commit it needs.
   const mine = all.find((w) => w.path === path);
-  if (mine && (attach !== null ? mine.branch === attach && mine.head === tip : mine.branch === null && mine.head === detach)) return path;
+  if (mine && attach !== null && mine.branch === attach) {
+    await git(["reset", "--hard", "-q", tip ?? "HEAD"], path, what);
+    await git(["clean", "-fdq"], path, what);
+    return path;
+  }
+  if (mine && attach === null && mine.branch === null && mine.head === detach) return path;
 
   // Anything else is rebuilt rather than switched: the worktree is disposable
   // and a commit lives on a branch, so what a previous step left uncommitted
@@ -300,4 +334,146 @@ export function changedSince(before: WorktreeState, after: WorktreeState): strin
     ...(before.head === after.head ? [] : [`a commit (${before.head.slice(0, 8)} → ${after.head.slice(0, 8)})`]),
     ...changes,
   ];
+}
+
+/** The files `glob` matches in the checkout at `root`, among those `flags` select for `git ls-files`. */
+async function filesMatching(root: string, glob: string, flags: string[]): Promise<string[]> {
+  const out = await git(["ls-files", "-z", ...flags, "--", `:(glob)${glob}`], root, `could not read the files agent.worktree.copy "${glob}" matches`);
+  return out.split("\0").filter((f) => f.length > 0);
+}
+
+/**
+ * What is wrong with `agent.worktree.copy`, one line per glob and per file:
+ * a glob that is absolute or climbs out with `..`, and every tracked file a
+ * glob matches — copying one over the worktree would mask the branch's own
+ * version of it. Asked at start and again before every copy, because a file
+ * can be committed in between.
+ */
+export async function copyProblems(root: string, globs: readonly string[]): Promise<string[]> {
+  const problems: string[] = [];
+  for (const glob of globs) {
+    if (isAbsolute(glob) || glob.startsWith("/")) {
+      problems.push(`agent.worktree.copy "${glob}" is an absolute path; a glob is read from the repository root`);
+    } else if (glob.split(/[\\/]/).includes("..")) {
+      problems.push(`agent.worktree.copy "${glob}" climbs out of the repository with ".."`);
+    } else {
+      for (const file of await filesMatching(root, glob, [])) {
+        problems.push(`agent.worktree.copy "${glob}" matches ${file}, which git tracks; only untracked or ignored files are copied`);
+      }
+    }
+  }
+  return problems;
+}
+
+/**
+ * The untracked and ignored files the globs match, copied from the checkout
+ * into the worktree at the same paths. A link that leads outside the
+ * repository is not followed — it would hand the agent whatever it points at
+ * — and a destination whose folder leads outside the worktree, through a
+ * link the item's branch committed, is refused rather than written through.
+ */
+async function copyInto(path: string, root: string, globs: readonly string[]): Promise<void> {
+  const problems = await copyProblems(root, globs);
+  if (problems.length) throw new Error(problems.join("; "));
+  for (const glob of globs) {
+    const files = [
+      ...(await filesMatching(root, glob, ["--others", "--exclude-standard"])),
+      ...(await filesMatching(root, glob, ["--others", "--ignored", "--exclude-standard"])),
+    ];
+    for (const file of files) {
+      const from = await containedPath(root, file);
+      if (!from.ok) continue;
+      // ponytail: folders made before the check below are left if it refuses; they are empty.
+      await mkdir(join(path, dirname(file)), { recursive: true });
+      const into = await containedPath(path, dirname(file));
+      if (!into.ok) throw new Error(`agent.worktree.copy will not copy ${file}: its folder in the worktree ${into.reason}`);
+      const to = join(into.path, basename(file));
+      // A link already at the path would be written through.
+      await rm(to, { force: true });
+      await copyFile(from.path, to);
+    }
+  }
+}
+
+/** What setup's last run was for: its commands and the root lockfiles, as the worktree holds them now. */
+async function setupHash(path: string, commands: readonly string[]): Promise<string> {
+  const hash = createHash("sha256").update(JSON.stringify(commands));
+  for (const file of LOCKFILES) {
+    hash.update(`\0${file}\0`);
+    hash.update(await readFile(join(path, file)).catch(() => "\0absent"));
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * One setup command, in the worktree, through the shell — it is the
+ * operator's own line, trusted like `landrace.yaml` — with the agent's
+ * minimal environment, never the engine's: an install script must not see the
+ * forge token. Its whole process group is killed at the timeout or an abort.
+ * Null when it passed, or why not with the tail of its output.
+ */
+function runSetup(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
+  return new Promise((done) => {
+    let tail = "";
+    let stopped: string | null = null;
+    const child = spawn(command, { cwd, env: childEnv([]), shell: true, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const keep = (chunk: Buffer): void => {
+      tail = (tail + chunk.toString()).slice(-SETUP_TAIL);
+    };
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
+    const stop = (why: string): void => {
+      stopped = why;
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    };
+    const timer = setTimeout(() => stop(`timed out after ${timeoutMs}ms`), timeoutMs);
+    const onAbort = (): void => stop("was stopped: the run was aborted");
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const finish = (failure: string | null): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      const said = tail.trim();
+      done(failure === null ? null : `${failure}${said ? `:\n${said}` : ", and printed nothing"}`);
+    };
+    child.on("error", (e) => finish(`could not start: ${messageOf(e)}`));
+    child.on("close", (code, sig) => {
+      if (stopped !== null) finish(stopped);
+      else if (code === 0) finish(null);
+      else finish(code === null ? `was killed by ${String(sig)}` : `exited ${code}`);
+    });
+  });
+}
+
+/**
+ * A write step's worktree made ready for its agent: `copy`, then `setup` when
+ * its commands or the root lockfiles have changed since it last passed here.
+ *
+ * What it last passed for is recorded in the worktree's own git folder, so a
+ * rebuilt worktree has none and runs setup again, and a record that is
+ * missing or unreadable runs it too: reuse is an optimisation, never a source
+ * of truth. A failure throws the command's tail, before the agent is paid for.
+ */
+export async function prepareWorktree({ item, path, root, setup, log, signal }: WorktreePreparation): Promise<void> {
+  await copyInto(path, root, setup.copy);
+  if (setup.setup.length === 0) return;
+  const what = `could not set up #${item}'s worktree`;
+  const record = resolve(path, (await git(["rev-parse", "--git-path", "landrace-setup"], path, what)).trim());
+  if ((await readFile(record, "utf8").catch(() => null)) === (await setupHash(path, setup.setup))) return;
+  await rm(record, { force: true });
+  for (const command of setup.setup) {
+    log("worktree.setup.started", { item, command });
+    const started = Date.now();
+    const failure = await runSetup(command, path, setup.timeoutMs, signal);
+    if (failure !== null) {
+      log("worktree.setup.failed", { item, command, reason: failure });
+      throw new Error(`#${item}'s worktree setup "${command}" ${failure}`);
+    }
+    log("worktree.setup.finished", { item, command, ms: Date.now() - started });
+  }
+  // Hashed after, so a setup that rewrites a lockfile is not run again for its own change.
+  await writeFile(record, await setupHash(path, setup.setup));
 }

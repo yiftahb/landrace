@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -784,5 +784,89 @@ describe("converge and a stage's branch", () => {
     expect(await git(root, "ls-tree", "--name-only", "api/1")).not.toMatch(/ui\.ts/);
     expect(await git(root, "ls-tree", "--name-only", "ui/1")).not.toMatch(/api\.ts/);
     expect(await sandboxes(root)).toEqual([]);
+  });
+
+  /** The write stage, then a stage that waits: the item is not finished, so its worktree is not either. */
+  const waiting: Workflow = {
+    ...branched("landrace/{item}"),
+    stages: [
+      ...branched("landrace/{item}").stages.filter((s) => s.id === "spec"),
+      { id: "review", triggers: [{ when: { "run.outputs.spec": { $exists: true } } }], on_enter: [{ type: "tracker.status", value: "review" }] },
+    ],
+  };
+
+  it("keeps a write step's worktree while the item waits, so its next write step reuses it", async () => {
+    const root = await repo();
+    const made: string[] = [];
+
+    const r = await converge("1", deps(world(), {
+      workflow: waiting,
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: committer(made),
+      sandbox: { root },
+    }));
+
+    expect(r.settled).toBe("wait");
+    const kept = (await sandboxes(root)).map((line) => line.slice("worktree ".length));
+    expect(kept.map((p) => p.split("/").pop())).toEqual(["1.write"]);
+    expect(await git(kept[0] as string, "symbolic-ref", "--short", "HEAD")).toBe("landrace/1");
+    await removeWorktree("1", root, "1.write");
+  });
+
+  it("copies and runs setup before a write step, and halts before the agent when setup fails", async () => {
+    const root = await repo();
+    await writeFile(join(root, "local.env"), "TOKEN=1\n");
+    const seen: string[] = [];
+    const looker: Executor = {
+      id: "looker",
+      run: async (_p, { cwd }) => {
+        seen.push(await readFile(join(cwd as string, "ready.txt"), "utf8"));
+        return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
+      },
+    };
+    const worktree = { copy: ["*.env"], setup: ["cat local.env > ready.txt"], timeoutMs: 60_000 };
+
+    const ok = await converge("1", deps(world(), {
+      workflow: branched("landrace/{item}"),
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: looker,
+      sandbox: { root, worktree },
+    }));
+    expect(ok.settled).toBe("terminal");
+    expect(seen).toEqual(["TOKEN=1\n"]);
+
+    const w = world();
+    const failed = await converge("2", deps(w, {
+      workflow: branched("landrace/{item}"),
+      steps: new Map<string, Step>([["spec", writing]]),
+      executor: looker,
+      sandbox: { root, worktree: { ...worktree, setup: ["echo 'no registry' >&2; exit 1"] } },
+    }));
+    expect(failed.settled).toBe("halt");
+    expect(failed.why).toMatch(/no registry/);
+    expect(seen).toHaveLength(1);
+    // An outage, not a verdict: nothing recorded, and the round is still owed.
+    expect(w.entries.filter((e) => ["output", "malformed", "refused"].includes(String(e.kind)))).toEqual([]);
+    await removeWorktree("2", root, "2.write");
+  });
+
+  it("neither copies nor sets up for a read-only step", async () => {
+    const root = await repo();
+    await writeFile(join(root, "local.env"), "TOKEN=1\n");
+    const seen: boolean[] = [];
+    const looker: Executor = {
+      id: "looker",
+      run: async (_p, { cwd }) => {
+        seen.push(existsSync(join(cwd as string, "local.env")) || existsSync(join(cwd as string, "ready.txt")));
+        return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
+      },
+    };
+
+    await converge("1", deps(world(), {
+      workflow: branched("landrace/{item}"),
+      executor: looker,
+      sandbox: { root, worktree: { copy: ["*.env"], setup: ["touch ready.txt"], timeoutMs: 60_000 } },
+    }));
+    expect(seen).toEqual([false]);
   });
 });

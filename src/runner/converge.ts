@@ -1,4 +1,4 @@
-import { ensureWorktree, removeWorktree, worktreeHead } from "#agent/worktree.js";
+import { ensureWorktree, keptSlot, prepareWorktree, removeWorktree, worktreeHead } from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
 import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
@@ -64,15 +64,30 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
   // worktree on something else: triage reads HEAD, then build writes its
   // branch, then code-review reads that branch detached. Marked entered before
   // the call, so a worktree half-made by a call that threw is removed too.
+  //
+  // Except a write step's on a branch, which is kept in a slot of its own
+  // until the item ends: what `agent.worktree.setup` installed there is what
+  // the item's next write step needs, and a review between the two reads the
+  // branch in the item's own slot rather than rebuilding this one. Kept is
+  // not stored state: it is reset onto the branch whenever it is reused, and
+  // rebuilt when it is missing or on anything else.
   const enter = root === undefined
     ? null
     : async (on?: WorktreeBranch): Promise<string> => {
-        entered = true;
-        return ensureWorktree(item, root, on);
+        if (!on?.write) {
+          entered = true;
+          return ensureWorktree(item, root, on);
+        }
+        const path = await ensureWorktree(item, root, on, keptSlot(item));
+        const setup = deps.sandbox?.worktree;
+        if (setup) await prepareWorktree({ item, path, root, setup, log: deps.log, signal: deps.ctx.signal });
+        return path;
       };
 
   try {
-    return await converging(item, deps, enter);
+    const result = await converging(item, deps, enter);
+    if (result.settled === "terminal" && root !== undefined) await removeWorktree(item, root, keptSlot(item));
+    return result;
   } finally {
     if (entered && root !== undefined) await removeWorktree(item, root);
   }

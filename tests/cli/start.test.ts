@@ -28,9 +28,13 @@ import {
   parseInterval,
   parsePort,
   repoWorkspace,
+  sandboxFor,
   sourceReaders,
   startUi,
 } from "#cli/start.js";
+import { gitRepo, removeRepos } from "#tests/support/repo.js";
+
+afterAll(removeRepos);
 
 // Counts the SDK being loaded, and otherwise is the SDK.
 let mockSdkLoads = 0;
@@ -89,6 +93,33 @@ describe("parseInterval", () => {
     for (const bad of ["60", "", "2 m", "0.5m", "2d", "-1s", "s"]) {
       expect(() => parseInterval(bad)).toThrow(/interval/);
     }
+  });
+});
+
+describe("agent.worktree", () => {
+  const config = (agent: Record<string, unknown>) => runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake", ...agent } });
+
+  it("defaults to nothing to copy or set up, with a 15 minute setup timeout", async () => {
+    const root = await gitRepo();
+    expect(await sandboxFor(config({}), root)).toMatchObject({ worktree: { copy: [], setup: [], timeoutMs: 900_000 } });
+  });
+
+  it("is refused at start when a copy glob matches a tracked file, naming it", async () => {
+    const root = await gitRepo();
+    await expect(sandboxFor(config({ worktree: { copy: ["src/**"] } }), root)).rejects.toThrow(/src\/a\.ts/);
+  });
+
+  it("is refused when there is no worktree to copy into or set up", async () => {
+    const root = await gitRepo();
+    await expect(sandboxFor(config({ isolation: "none", worktree: { setup: ["pnpm install"] } }), root))
+      .rejects.toThrow(/agent\.isolation: worktree/);
+    expect(await sandboxFor(config({ isolation: "none" }), root)).toBeNull();
+  });
+
+  it("refuses a setupTimeout that is not a duration, and a key it does not read", () => {
+    expect(() => config({ worktree: { setupTimeout: "soon" } })).toThrow(/duration/);
+    expect(() => config({ worktree: { setupTimeout: "0m" } })).toThrow(/duration/);
+    expect(() => config({ worktree: { install: ["x"] } })).toThrow(/install/);
   });
 });
 

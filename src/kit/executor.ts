@@ -130,7 +130,8 @@ const INHERITED_ENV_KEYS = [
   "SystemRoot", "SystemDrive",
 ];
 
-function childEnv(extra: readonly string[]): NodeJS.ProcessEnv {
+/** The agent's environment: the keys above and `extra`, from this process. A worktree's setup commands get the same. */
+export function childEnv(extra: readonly string[]): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of [...INHERITED_ENV_KEYS, ...extra]) {
     const value = process.env[key];
@@ -380,8 +381,8 @@ export function mcpRedactionValues(servers: Readonly<Record<string, McpServerCon
   return [...values];
 }
 
-/** The keys of `agent:` the kit reads for every integration, the engine's own two among them. */
-const KIT_KEYS = ["adapter", "isolation", "model", "effort", "mcp", "sandbox"];
+/** The keys of `agent:` the kit reads for every integration, the engine's own three among them. */
+const KIT_KEYS = ["adapter", "isolation", "worktree", "model", "effort", "mcp", "sandbox"];
 /** The keys of `agent.sandbox`. */
 const SANDBOX_KEYS = new Set(["hosts", "deny"]);
 
