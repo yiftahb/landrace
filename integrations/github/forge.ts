@@ -12,7 +12,7 @@ import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
   ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
-  type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type Git, type MergeAnswer, type PullRecord,
+  type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
 import { type Client, clientFor, issueNumber, MAX_COMMENT_CHARS, tokenRejected, unseen } from "./client.js";
@@ -464,8 +464,8 @@ export class GitHubForge extends BaseForge {
   private readonly git: Git;
   private readonly closingRefs: boolean;
 
-  constructor({ closingRefs = false, client, git }: { closingRefs?: boolean; client?: Client; git?: Git } = {}) {
-    super();
+  constructor({ closingRefs = false, client, git, reviewers, pull }: { closingRefs?: boolean; client?: Client; git?: Git } & ForgeOptions = {}) {
+    super({ reviewers, pull });
     this.client = client;
     this.closingRefs = closingRefs;
     if (git) {
@@ -610,15 +610,18 @@ export class GitHubForge extends BaseForge {
     return (await this.gh(ctx).listReviews(pull)).map((r) => r.body ?? "");
   }
 
-  async openPull({ item, branch, title }: { item: string; branch: string; title: string }, ctx: RuntimeContext): Promise<void> {
+  async openPull(
+    { item, branch, title, description }: { item: string; branch: string; title: string; description?: string }, ctx: RuntimeContext,
+  ): Promise<void> {
     const gh = this.gh(ctx);
+    // So the merge closes the issue. It ties nothing: see the class.
+    const body = [description, this.closingRefs ? `Closes #${issueNumber(item)}` : undefined].filter((t) => t !== undefined).join("\n\n");
     try {
       await gh.openPull({
         head: branch,
         base: await gh.defaultBranch(),
         title,
-        // So the merge closes the issue. It ties nothing: see the class.
-        ...(this.closingRefs ? { body: `Closes #${issueNumber(item)}` } : {}),
+        ...(body === "" ? {} : { body }),
       });
     } catch (e) {
       // GitHub's own way of saying what the push check says.
@@ -640,6 +643,7 @@ export class GitHubForge extends BaseForge {
    * not read at all, and so is not green.
    */
   async checks(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState> {
+    if (this.reviewers.size > 0) return this.checksBesideReviewers(pull, ctx);
     noHead(pull);
     const gh = this.gh(ctx);
     let data: { repository: { object: { statusCheckRollup?: { state?: string } | null } | null } | null };
@@ -658,6 +662,20 @@ export class GitHubForge extends BaseForge {
   }
 
   /**
+   * The rollup folds a reviewer's run or status in with the rest, so with
+   * `reviewers` named the head's runs and statuses are read one by one and
+   * combined without them: any failed is `failure`, any running — or a list
+   * GitHub did not give whole — `pending`, nothing left `none`.
+   */
+  private async checksBesideReviewers(pull: PullRecord, ctx: RuntimeContext): Promise<CheckState> {
+    const { contexts, complete } = await this.contexts(pull, ctx);
+    const states = contexts.filter((c) => !this.reviewers.has(c.name)).map((c) => c.state);
+    if (states.includes("failure")) return "failure";
+    if (!complete || states.includes("pending")) return "pending";
+    return states.length === 0 ? "none" : "success";
+  }
+
+  /**
    * Each failed check run and each failed status on the head, with the log
    * GitHub will give: an Actions job's own log, or the text another app wrote
    * on its run. A log that cannot be had is `null` — the check is still named.
@@ -666,6 +684,28 @@ export class GitHubForge extends BaseForge {
    * checks than that is not a case worth paging for.
    */
   async failedChecks(pull: PullRecord, ctx: RuntimeContext): Promise<FailedCheck[]> {
+    const { gh, runs, statuses } = await this.onHead(pull, ctx);
+    const failed: FailedCheck[] = [];
+    for (const run of (runs.check_runs ?? []).filter((r) => r.conclusion !== null && FAILED_CONCLUSIONS.has(r.conclusion) && !this.reviewers.has(r.name))) {
+      let log: string | null;
+      if (run.app?.slug === "github-actions") {
+        // The log is optional: a 403 (no "Actions: Read"), a 404 or a 410 (expired) leaves the check named without it.
+        log = await gh.jobLog(run.id).catch(() => null);
+      } else {
+        log = run.output?.text ?? run.output?.summary ?? null;
+      }
+      failed.push({ name: run.name, log });
+    }
+    for (const status of (statuses.statuses ?? []).filter((s) => (s.state === "failure" || s.state === "error") && !this.reviewers.has(s.context))) {
+      failed.push({ name: status.context, log: status.description ?? null });
+    }
+    return failed;
+  }
+
+  /** The head's check runs, one page of 100, and its commit statuses, the latest of each context. */
+  private async onHead(pull: PullRecord, ctx: RuntimeContext): Promise<{
+    gh: Client; runs: Awaited<ReturnType<Client["checkRuns"]>>; statuses: Awaited<ReturnType<Client["commitStatus"]>>;
+  }> {
     noHead(pull);
     const gh = this.gh(ctx);
     let runs: Awaited<ReturnType<Client["checkRuns"]>>;
@@ -680,22 +720,54 @@ export class GitHubForge extends BaseForge {
     } catch (e) {
       throw ciReadFailure(e, "Commit statuses: Read", gh.repo);
     }
+    return { gh, runs, statuses };
+  }
 
-    const failed: FailedCheck[] = [];
-    for (const run of (runs.check_runs ?? []).filter((r) => r.conclusion !== null && FAILED_CONCLUSIONS.has(r.conclusion))) {
-      let log: string | null;
-      if (run.app?.slug === "github-actions") {
-        // The log is optional: a 403 (no "Actions: Read"), a 404 or a 410 (expired) leaves the check named without it.
-        log = await gh.jobLog(run.id).catch(() => null);
-      } else {
-        log = run.output?.text ?? run.output?.summary ?? null;
-      }
-      failed.push({ name: run.name, log });
+  /**
+   * Every check run and commit status on the head, each by its name and
+   * where it stands — a run not completed is pending, one that ended in a
+   * failed conclusion is a failure, any other ending passed — and whether
+   * GitHub listed all of them.
+   */
+  private async contexts(pull: PullRecord, ctx: RuntimeContext): Promise<{ contexts: Array<{ name: string; state: CheckState }>; complete: boolean }> {
+    const { runs, statuses } = await this.onHead(pull, ctx);
+    const contexts: Array<{ name: string; state: CheckState }> = [];
+    for (const run of runs.check_runs ?? []) {
+      const state: CheckState = run.status !== undefined && run.status !== "completed" || run.conclusion === null
+        ? "pending"
+        : FAILED_CONCLUSIONS.has(run.conclusion) ? "failure" : "success";
+      contexts.push({ name: run.name, state });
     }
-    for (const status of (statuses.statuses ?? []).filter((s) => s.state === "failure" || s.state === "error")) {
-      failed.push({ name: status.context, log: status.description ?? null });
+    for (const status of statuses.statuses ?? []) {
+      const state = CHECK_STATES[status.state.toUpperCase()];
+      if (state === undefined) throw new Error(`GitHub answered a commit status "${status.state}" for ${pull.headSha}, which landrace does not know how to read`);
+      contexts.push({ name: status.context, state });
     }
-    return failed;
+    const listed = (total: number | undefined, read: number): boolean => total === undefined || total <= read;
+    return {
+      contexts,
+      complete: listed(runs.total_count, runs.check_runs?.length ?? 0) && listed(statuses.total_count, statuses.statuses?.length ?? 0),
+    };
+  }
+
+  /**
+   * The named reviewers whose check run or commit status on the head is
+   * over, whatever it concluded. One missing from a list GitHub did not give
+   * to its end may be past it, so that is refused, never read as not posted.
+   */
+  override async finishedReviewers(pull: PullRecord, ctx: RuntimeContext): Promise<ReadonlySet<string>> {
+    const { contexts, complete } = await this.contexts(pull, ctx);
+    const running = new Set(contexts.filter((c) => c.state === "pending").map((c) => c.name));
+    const finished = new Set(contexts.filter((c) => this.reviewers.has(c.name) && !running.has(c.name)).map((c) => c.name));
+    const unseen = [...this.reviewers].filter((name) => !contexts.some((c) => c.name === name));
+    if (!complete && unseen.length > 0) {
+      throw new Error(`GitHub listed only part of the checks on ${pull.headSha}, so ${unseen.join(", ")} cannot be read as not posted`);
+    }
+    return finished;
+  }
+
+  protected override async root(): Promise<string> {
+    return (await this.git(["rev-parse", "--show-toplevel"])).trim();
   }
 
   /**

@@ -42,6 +42,7 @@ log:
 - Built with no client, each role builds one from `tracker.repo`, the `githubToken` secret and `tracker.bot` — one per configuration, shared by all three, so one `GET /user` resolves the login they post as.
 - The forge runs git in the repository of the file that constructs it, never the directory the process was started from.
 - `closingRefs` says the tracker beside the forge is GitHub's own issues. On, a pull request it opens says `Closes #n`, so the merge closes the issue. Off — beside another vendor's tracker, where `#7` would be somebody else's GitHub issue — it writes none. Either way it reads none: the `landrace/{item}` branch is the only tie between a pull request and an item.
+- `reviewers` and `pull` are the [forge options](#forge-options) both forges take. With `reviewers` named, the checks are read from the head's check runs (one page of 100) and commit statuses instead of GitHub's rollup, which would count a reviewer's. A list GitHub did not give whole never reads as `success`, and a reviewer missing from one is refused, never read as not posted.
 
 ### What it reads
 
@@ -133,13 +134,13 @@ agent:
 
 **Checks.** A merge request's checks combine every pipeline on its head, read from one page of 100 of its pipelines, newest first. A branch or merge request pipeline runs at the head's sha. A [merged results pipeline](https://docs.gitlab.com/ci/pipelines/merged_results_pipelines/) runs at a merge commit, and counts when the head is one of that commit's parents. Any failed pipeline makes the checks `failure`. Otherwise any pipeline still running or pending makes them `pending`, and the rest is `success`. A head with no pipeline yet reads as pending, never as an older head's result. A merge request with no pipeline at all has no checks. A page that fills with the head's pipelines was not read to its end, so it never reads as `success`. The CI failures a prompt reads, `{brief.project.ci}`, list the failed jobs of every pipeline on the head, and the failed commit statuses of its `external` one.
 
-GitLab puts every commit status that tools post on the head, such as a security scanner's or an AI reviewer's, into one `external` pipeline. Those statuses count as CI. To leave a reviewer's status out, name it:
+GitLab puts every commit status that tools post on the head, such as a security scanner's or an AI reviewer's, into one `external` pipeline. Those statuses count as CI. To leave a reviewer's status out, and wait for it instead, name it in `reviewers` — see [Forge options](#forge-options):
 
 ```ts
-new GitLab({ project: "group/app", reviewers: ["ai-review"] })
+new GitLab({ project: "group/app", reviewers: [{ status: "CodeRabbit" }] })
 ```
 
-With `reviewers` set, the external pipeline is read status by status, and a named status never counts. A head whose only status is a reviewer's reads as pending. A failed status reaches `{brief.project.ci}` with its tool's description and link, unless it is a reviewer's or its tool allowed it to fail.
+On GitLab a reviewer is a commit status by its name. With `reviewers` set, the external pipeline is read status by status, and a named status never counts. A head whose only status is a reviewer's reads as pending. A failed status reaches `{brief.project.ci}` with its tool's description and link, unless it is a reviewer's or its tool allowed it to fail. `reviewPending` asks for each reviewer's latest status on the head's commit by its name. More than 100 of one name is refused, never read as not posted.
 
 **Limits.** CI/CD must be enabled on the project. The forge needs GitLab 16.4 or later, for a finding on a file.
 
@@ -147,7 +148,7 @@ With `reviewers` set, the external pipeline is read status by status, and a name
 
 - An item's work is a merge request from `landrace/{item}` into the project's default branch, its node `pr-{iid}`. A fork's merge request is never an item's.
 - A review's findings become diff discussions — on an added line by its new number, on a context line by both, and on the file when the line is outside every hunk — and its prose a plain note, which nobody can resolve and no count includes. Only a resolvable discussion somebody started is a thread.
-- Everything it posts is made inert to GitLab's quick actions first: a line starting `/close` or `/merge` in a finding or a reply is an agent's text, and GitLab would run it as the token's user. A backslash before the slash renders as the slash alone.
+- Everything it posts is made inert to GitLab's quick actions first: a line starting `/close` or `/merge` in a finding, a reply or a merge request's description is an agent's or an item's text, and GitLab would run it as the token's user. A backslash before the slash renders as the slash alone.
 - A round's note is recognised by both the token's login and its marker, so a marker pasted into somebody else's note cannot skip one.
 - It pushes as GitHub's forge does, from the repository of the file that constructs it: the token goes as an `oauth2:` basic header only when origin's push URL is exactly `{gitlabBaseUrl}/{project}`, with or without `.git`. Any other origin is pushed with your own credentials.
 
@@ -158,6 +159,73 @@ pnpm build && GITLAB_TOKEN=… GITLAB_PROJECT=group/app node scripts/gitlab-chec
 ```
 
 Off gitlab.com, set `GITLAB_BASE_URL` too.
+
+## Forge options
+
+Both forges, GitHub's and GitLab's, take two options from the kit's `BaseForge`: `reviewers` and `pull`.
+
+### reviewers
+
+`reviewers` names the external reviewers a workflow waits on, such as an AI reviewer that runs on every push, by the status each posts on the pull request's head. On GitLab that is a commit status's name. On GitHub it is a check run's name or a commit status's context.
+
+```ts
+new GitLab({ project: "group/app", reviewers: [{ status: "CodeRabbit" }] })
+```
+
+- The pull request node gains `reviewPending`: `1` while any named reviewer's status on the current head is missing or still running, and `0` once every one has finished, whatever it concluded. With no reviewers named it is always `0`. A merged or closed pull request reads `0`.
+- A named status is left out of the checks and out of the CI failures a prompt reads, so it neither passes nor blocks CI.
+- `landrace start` refuses a reviewer with no status, and `reviewers` on a forge that cannot read one.
+
+`reviewPending` sums like `ciPending`. A fastlane without a review step of its own can wait for the reviewer and then route on its threads. Below, `reviewing` is a stage with no step that every push lands in, and each trigger is limited to the stages it leaves. No two fire together: the review routes differ on `awaitingFix` and both need `ciFailed` at `0`, which `build` needs above it. Both review routes need a pull request, since a sum over none is `0`:
+
+```yaml
+- id: reviewing
+  triggers:
+    - name: a push landed
+      when:
+        "run.stage": { $in: [publish, fix-review, build] }
+        "run.lastOutputValid": null
+- id: fix-review
+  triggers:
+    - name: the reviewer finished and left threads to fix
+      when:
+        "run.stage": { $in: [reviewing, human-review] }
+        "rel.implements.in.total": { $gt: 0 }
+        "rel.implements.in.sum.reviewPending": 0
+        "rel.implements.in.sum.ciFailed": { $not: { $gt: 0 } }
+        "rel.implements.in.sum.awaitingFix": { $gt: 0 }
+- id: human-review
+  triggers:
+    - name: the reviewer finished and nothing awaits a fix
+      when:
+        "run.stage": reviewing
+        "rel.implements.in.total": { $gt: 0 }
+        "rel.implements.in.sum.reviewPending": 0
+        "rel.implements.in.sum.ciFailed": { $not: { $gt: 0 } }
+        "rel.implements.in.sum.awaitingFix": 0
+- id: build
+  triggers:
+    - name: the checks failed
+      when:
+        "run.stage": { $in: [reviewing, human-review] }
+        "rel.implements.in.sum.ciFailed": { $gt: 0 }
+```
+
+A reviewer's answers can land after its status already says it finished. A workflow that moves on at `reviewPending: 0` keeps a route back to its fix stage for a thread that starts awaiting a fix later, as it would for a person's late comment.
+
+### pull
+
+`pull` sets the text a pull request opens with. Unset, it opens with the item's title and no description.
+
+```ts
+new GitLab({ project: "group/app", pull: { title: "{item}: {title}", description: ".landrace/templates/pull.md" } })
+```
+
+- `title` formats `{item}`, the item's id, and `{title}`, its title.
+- `description` is a template file under `.landrace/`, as a path from the project's root. It is filled with `{item}`, `{link}`, the item's link, and `{spec}`, the link of the item's spec page, empty when it has none. On GitHub with `closingRefs` on, `Closes #n` follows it.
+- Text from the item is escaped as everywhere else, so it cannot carry Landrace's markers.
+- The title and description are set when the pull request opens, and never rewritten: a person's later edits stay.
+- Another placeholder in either is refused: in `title` when the hook file loads, in the template by `landrace start`, which also refuses a template it cannot read or one a link takes outside `.landrace/`.
 
 ## Jira
 
