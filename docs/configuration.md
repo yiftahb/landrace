@@ -13,6 +13,9 @@ Every key, with its default:
 | `version` | — (required) | Always `1` |
 | `agent.adapter` | — (required) | The executor that runs steps and conversation turns: an id a hook registers with `defineExecutor`. The shipped ones are `claude` and `codex` — see [Integrations](integrations.md#claude-code) |
 | `agent.isolation` | `worktree` | How the engine prepares the folder a step runs in: `worktree`, or `none` to run the agent in this checkout. A stage that names a `branch` needs `worktree`. The schema also accepts `container`, but it is not implemented: `landrace start` and `landrace mcp` refuse it |
+| `agent.worktree.copy` | `[]` | Untracked or ignored files copied from your checkout into a write step's worktree, as globs from the repository root — see [A write step's worktree](#a-write-steps-worktree) |
+| `agent.worktree.setup` | `[]` | Commands run in a write step's worktree before its agent, when the lockfiles have changed — see [A write step's worktree](#a-write-steps-worktree) |
+| `agent.worktree.setupTimeout` | `15m` | How long each setup command may run, as a [duration](#durations) |
 | `agent.*` (any other key) | — | Passed unread to the executor `agent.adapter` names. The shipped executors' keys are below |
 | `tracker.*` | `{}` | Passed unread to the hooks. The GitHub integration reads `tracker.repo` and `tracker.bot` — see [Integrations](integrations.md#github) |
 | `tick.interval` | `60s` | How often a tick runs, as a [duration](#durations) |
@@ -53,6 +56,28 @@ agent:
 ```
 
 `landrace start` and `landrace mcp` refuse to start — and `landrace validate` reports the same — when `agent.mcp` names a server but the repository root has no `.mcp.json`, when a name is not in it (the refusal lists the names it does define), or when a name is Landrace's own operator server. `landrace status` runs no step and needs no `.mcp.json`.
+
+### A write step's worktree
+
+A step runs in a fresh checkout under the temporary folder, which holds tracked files only. `agent.worktree` gives a write step's worktree what your project needs to build and test that git does not track:
+
+```yaml
+agent:
+  worktree:
+    copy: ["**/.npmrc", "**/.env"]
+    setup: ["pnpm install --frozen-lockfile --prefer-offline"]
+    setupTimeout: 15m
+```
+
+- **`copy`** copies the files each glob matches from your checkout into the worktree, at the same paths, before every write step. Only untracked or ignored files are copied. A glob that matches a tracked file, an absolute path or one with `..` is refused at start, naming the file. A file the item's branch tracks is refused before the step, too, so the branch's own version is never replaced. A link that leads outside the repository is not followed.
+- **`setup`** runs each command, in order, in the worktree, after `copy` and before the agent. It runs through your shell, outside the agent and its sandbox, with the same minimal environment the agent gets. A private registry's token reaches it through a copied file such as `.npmrc`.
+- **A failure or a timeout** stops the item before the agent runs, with the end of the command's output as the reason. Nothing is recorded, so the next tick tries again.
+- **Events:** `worktree.setup.started`, `worktree.setup.finished` and `worktree.setup.failed`, each naming the item and the command.
+- `copy` and `setup` need `agent.isolation: worktree`; `landrace start` refuses them otherwise.
+
+A write step's worktree is kept between the item's write steps on the same branch, and removed when the item reaches a terminal stage. The next tick also removes it once the item is closed, for example by its merged pull request. A write step on a stage that names no `branch` gets `copy` and `setup` too, in a worktree removed when the run ends. Between runs the kept worktree is detached from the branch, so you can check the item's branch out in your own checkout while the item waits; switch back off it before the item's next write step, which halts while the branch is checked out elsewhere. On reuse it is put back on the branch and reset to the branch's commit: what a step left uncommitted is removed, and what git ignores, such as `node_modules`, stays. `setup` runs again only when its commands, or the lockfiles at the repository root (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`), have changed since it last passed. A worktree that is missing, or on another branch, is rebuilt, and setup runs again.
+
+What this exposes to a step is in [Security](security.md#copied-files-and-setup).
 
 ### notify
 
@@ -145,7 +170,7 @@ The reference is resolved at load, from `.env` first and then your shell — a p
 
 ## Telemetry
 
-Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to an OpenTelemetry collector as a **log record**, the way Claude Code exports its own events.
+Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, `worktree.setup.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to an OpenTelemetry collector as a **log record**, the way Claude Code exports its own events.
 
 - The record's body and its `event.name` attribute are the event's name.
 - Every other field becomes an attribute prefixed `landrace.` (`landrace.item`; an agent's parsed output in `landrace.event`, and a line of it that was not JSON in `landrace.raw`), JSON-encoded unless it is a string, number or boolean.

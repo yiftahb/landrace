@@ -1,6 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ensureWorktree, keptSlot, removeWorktree } from "#agent/worktree.js";
 import { defineNotifier } from "#hooks/contracts.js";
 import type {
   Executor, ExternalState, HookContext, LandraceEvent, NotifyEvent, RuntimeContext, Source, Step, Workflow, WorkflowRuntime,
@@ -13,6 +14,7 @@ import { createLogger } from "#runner/events.js";
 import { held } from "#runner/lock.js";
 import { tickWorkspace } from "#runner/tick.js";
 import { loadWorkflow } from "#workflow/load.js";
+import { gitRepo, removeRepos, worktreesOf as sandboxes } from "#tests/support/repo.js";
 
 /**
  * Two workflows in one loop: `main` takes what carries `lr:auto`, `fast` what
@@ -588,5 +590,40 @@ describe("a notifier two workflows share", () => {
 
     expect(sent.map((e) => [e.item, e.workflow, e.workflowName]).sort()).toEqual([["1", "main", "Main"], ["2", "fast", "Fastlane"]]);
     expect(a.runs).toEqual([]);
+  });
+});
+
+/*
+ * A converge removes an item's kept write worktree as it reaches a terminal
+ * stage, but a merge that closes the item first is never converged there: the
+ * tick does not converge a closed item. Nor is one a person closed, or one a
+ * crash stopped between the terminal transition and the removal.
+ */
+describe("an item's kept write worktree", () => {
+  afterAll(removeRepos);
+
+  it("is removed once the item is closed, unlisted or at a terminal stage, and kept while it is open work", async () => {
+    const repo = await gitRepo();
+    const state = createExternalState({
+      items: [
+        { id: "5", labels: ["lr:auto"], closed: "done" },
+        { id: "6", labels: ["lr:other"] },
+        { id: "1", labels: ["lr:auto"] },
+      ],
+    });
+    const a = agents();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main")]]);
+    for (const wf of w.runtime.workflows) wf.deps.sandbox = { root: repo };
+    // Item 1 reaches its terminal stage on this tick, and its run removes its own.
+    await w.once();
+    expect(state.stage("1")).toBe("done");
+
+    for (const item of ["1", "5", "6", "7"]) {
+      await ensureWorktree(item, repo, { branch: `landrace/${item}`, write: true }, keptSlot(item));
+    }
+    await w.once();
+
+    expect((await sandboxes(repo)).map((line) => line.split("/").pop()).sort()).toEqual(["6.write"]);
+    await removeWorktree("6", repo, keptSlot("6"));
   });
 });

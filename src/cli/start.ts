@@ -1,5 +1,5 @@
 import { basename, join, resolve } from "node:path";
-import { repositoryRoot } from "#agent/worktree.js";
+import { copyProblems, repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
@@ -12,6 +12,7 @@ import type {
   BuildOptions,
   ConversationDeps,
   ConversationLine,
+  Sandbox,
   EventName,
   Executor,
   ExecutorContext,
@@ -373,16 +374,31 @@ export async function screenerFor(config: RuntimeConfig, registry: Registry, ctx
  * declared capabilities, and the sandbox is what makes those capabilities
  * checkable at all — two answers to "is there one" would mean one of the two
  * invocations running loose in the operator's own checkout.
+ *
+ * `agent.worktree` is checked here for the same reason: a copy glob matching
+ * a tracked file is refused at start, naming the file, not at an item's first
+ * write step. With isolation off there is no worktree to copy into or set up,
+ * and a `copy` or `setup` that would never run is refused, not ignored.
  */
-export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<{ root: string } | null> {
-  const { isolation } = config.agent;
+export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sandbox | null> {
+  const { isolation, worktree } = config.agent;
   if (isolation === "container") {
     throw new Error(
       'agent.isolation: container is not implemented in v1. Use "worktree" for filesystem ' +
       'isolation, or "none" to run the agent in this checkout.',
     );
   }
-  return isolation === "worktree" ? { root: await repositoryRoot(dir) } : null;
+  if (isolation !== "worktree") {
+    if (worktree.copy.length || worktree.setup.length) {
+      throw new Error(`agent.worktree.copy and agent.worktree.setup need agent.isolation: worktree, and it is "${isolation}"`);
+    }
+    return null;
+  }
+  const root = await repositoryRoot(dir);
+  const problems = await copyProblems(root, worktree.copy);
+  if (problems.length) throw new Error(problems.join("\n"));
+  const timeoutMs = durationMs(worktree.setupTimeout) ?? 0;
+  return { root, worktree: { copy: worktree.copy, setup: worktree.setup, timeoutMs } };
 }
 
 /**

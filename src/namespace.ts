@@ -1535,6 +1535,7 @@ export type EventName =
   | "item.evaluated" | "item.skipped" | "item.aborted"
   | "step.invoked" | "step.started" | "step.finished" | "step.completed" | "step.rejected" | "step.unchecked"
   | "agent.event"
+  | "worktree.setup.started" | "worktree.setup.finished" | "worktree.setup.failed"
   | "snapshot.built" | "snapshot.failed"
   | "effect.planned" | "effect.applied" | "effect.discarded" | "effect.failed"
   | "lock.acquired" | "lock.released" | "lock.denied" | "lock.stolen"
@@ -1653,7 +1654,7 @@ export interface ConvergeDeps {
    * loop runs — the operator's own checkout — and the capability check has
    * nothing it may judge, because what changed there is not the step's doing.
    */
-  sandbox?: { root: string };
+  sandbox?: Sandbox;
   steps: Map<string, Step>;
   /**
    * The workflow's `budget.stepTimeout`, for a step that names no `timeout` of
@@ -2338,6 +2339,35 @@ export interface WorktreeState {
 export interface WorktreeBranch {
   branch: string;
   write: boolean;
+}
+
+/**
+ * `agent.worktree`, resolved: what a write step's worktree is given before its
+ * agent runs. Operator configuration, trusted like the rest of
+ * `landrace.yaml`, which is why `setup` runs outside the agent's sandbox.
+ */
+export interface WorktreeSetup {
+  /** Globs, from the repository root, of untracked or ignored files copied in from the checkout. */
+  copy: string[];
+  /** Commands run in the worktree, in order, when the lockfiles or the commands have changed since they last passed. */
+  setup: string[];
+  timeoutMs: number;
+}
+
+/** Where steps' worktrees are cut from, and what a write step's is given. */
+export interface Sandbox {
+  root: string;
+  worktree?: WorktreeSetup;
+}
+
+/** What `prepareWorktree` is handed: the worktree, the checkout it copies from, and where its events go. */
+export interface WorktreePreparation {
+  item: string;
+  path: string;
+  root: string;
+  setup: WorktreeSetup;
+  log: (event: EventName, data?: Record<string, unknown>) => void;
+  signal?: AbortSignal;
 }
 
 /* ------------------------------------------------ conversation (§12, §7) -- */
