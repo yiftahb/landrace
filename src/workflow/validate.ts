@@ -8,6 +8,7 @@ import {
   LABEL_EFFECT,
   LABELS,
   STATUS_EFFECT,
+  TRACKER_CREATE_EFFECT,
   mayCreateItems,
   NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
@@ -26,7 +27,7 @@ import { gotoTargetsOf } from "#core/goto.js";
 import { fillTemplate, isNoteField, noteFields, pathsNoNodeCarries } from "#core/index.js";
 import { identityOf, placedByState } from "#core/locate.js";
 import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
-import type { Condition, EligibilityRule, LoadedWorkflow, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
+import type { Condition, EligibilityRule, LoadedWorkflow, PostHook, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { routeEffects } from "#runner/step.js";
 
@@ -327,8 +328,146 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   problems.push(...entryFirstProblems(w));
   problems.push(...itemBranchProblems(w, steps));
   problems.push(...mergePlacementProblems(w, steps));
+  problems.push(...routeFromProblems(w, steps));
+  problems.push(...createShapeProblems(w, steps));
+  problems.push(...closedRunProblems(w, steps));
 
   return dedupe(problems);
+}
+
+/** The fields an output shape declares, or none for one that declares no object. */
+const fieldsOf = (declared: unknown): string[] =>
+  declared !== null && typeof declared === "object" && !Array.isArray(declared) ? Object.keys(declared) : [];
+
+/**
+ * `route-from`: an effect's `from` names a field of the shape its route
+ * takes, which is the only field that reaches the runner — anything else is
+ * an answer refused as malformed on every round. A route whose shape this
+ * cannot read (`$in`, say) is held to a field some shape declares, rather
+ * than guessed at.
+ */
+function routeFromProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+  const problems: Problem[] = [];
+  for (const stage of w.stages) {
+    const output = stage.step ? steps.get(stage.step)?.output : undefined;
+    if (!output) continue;
+    for (const route of output.routes) {
+      const demanded = route.when[output.discriminator];
+      const shape = typeof demanded === "string" && Object.hasOwn(output.shapes, demanded) ? demanded : null;
+      const fields = shape === null
+        ? new Set(Object.values(output.shapes).flatMap(fieldsOf))
+        : new Set(fieldsOf(output.shapes[shape]));
+      for (const [index, effect] of (route.effects ?? []).entries()) {
+        if (!("from" in effect)) continue;
+        const from = effect.from;
+        if (typeof from === "string" && !isReservedId(from) && fields.has(from)) continue;
+        const which = shape === null ? "no shape of the step declares" : `shape "${shape}" does not declare`;
+        problems.push({
+          rule: "route-from",
+          message: `step ${stage.step}'s route for ${JSON.stringify(route.when)}, effect ${index}, takes its body from ` +
+            `${JSON.stringify(from)}, which ${which} as a field: every such answer would be refused as malformed`,
+        });
+      }
+    }
+  }
+  return problems;
+}
+
+/** Every `tracker.create` a stage plans, where, and whether a route's `effects` marks it. */
+function createsOf(stage: Stage, steps: Map<string, Step>): Array<{ effect: Record<string, unknown>; marked: boolean; where: string }> {
+  const step = stage.step ? steps.get(stage.step) : undefined;
+  const routes = step?.output?.routes ?? [];
+  const route = `step ${stage.step}'s route`;
+  return [
+    ...(stage.on_enter ?? []).map((effect) => ({ effect, marked: false, where: "its on_enter" })),
+    ...routes.flatMap((r) => (r.effect ? [{ effect: r.effect, marked: false, where: route }] : [])),
+    ...routes.flatMap((r) => (r.effects ?? []).map((effect) => ({ effect, marked: true, where: route }))),
+  ].filter(({ effect }) => effect.type === TRACKER_CREATE_EFFECT);
+}
+
+/**
+ * `tracker-create`, from the files: an issue names its project and its
+ * title, and is marked — a route's `effects` marks each one; anywhere else it
+ * names its own `marker`, or its record could never be read back and it
+ * would be filed on every tick.
+ */
+function createShapeProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+  const problems: Problem[] = [];
+  for (const stage of w.stages) {
+    for (const { effect, marked, where } of createsOf(stage, steps)) {
+      if (typeof effect.project !== "string" || effect.project === "") {
+        problems.push({ rule: "tracker-create", message: `stage "${stage.id}" files an issue from ${where} that names no project` });
+      }
+      if (typeof effect.title !== "string" || effect.title.trim() === "") {
+        problems.push({ rule: "tracker-create", message: `stage "${stage.id}" files an issue from ${where} that names no title` });
+      }
+      if (!marked && (typeof effect.marker !== "string" || effect.marker === "")) {
+        problems.push({
+          rule: "tracker-create",
+          message: `stage "${stage.id}" files an issue from ${where} with no marker, so nothing would say it had been filed: ` +
+            "put it in a route's effects, which marks each one, or give it a marker naming {round}",
+        });
+      }
+    }
+  }
+  return problems;
+}
+
+/**
+ * `tracker-create`, against the hooks: an issue is filed only in a project
+ * the tracker opts into (`createIn`), which its post hook reports as
+ * `creates`. Asked by `validate` and refused by `start`, in the same words,
+ * once the hooks are loaded.
+ */
+export function createProblems(w: Workflow, steps: Map<string, Step>, post: readonly PostHook[]): Problem[] {
+  const handlers = post.filter((h) => h.handles.includes(TRACKER_CREATE_EFFECT));
+  const projects = [...new Set(handlers.flatMap((h) => h.creates ?? []))];
+  const where = projects.length === 0 ? "files issues in no other project" : `files issues in ${projects.map((p) => `"${p}"`).join(", ")} only`;
+  const problems: Problem[] = [];
+  for (const stage of w.stages) {
+    for (const { effect } of createsOf(stage, steps)) {
+      if (typeof effect.project === "string" && projects.includes(effect.project)) continue;
+      problems.push({
+        rule: "tracker-create",
+        message: `stage "${stage.id}" files an issue in ${JSON.stringify(effect.project ?? null)}, but its tracker ${where}: ` +
+          "set the tracker's createIn",
+      });
+    }
+  }
+  return problems;
+}
+
+/**
+ * `closed-run`: a stage a closed item enters and runs its step at. The item's
+ * work is over, so it works on no branch and touches no forge — a closed
+ * item's pull request is merged or dropped already — and only a closed item
+ * reaches it, so every trigger into it reads `node.closed`.
+ */
+function closedRunProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+  const problems: Problem[] = [];
+  for (const stage of w.stages) {
+    if (stage.closed !== "run") continue;
+    if (stage.branch !== undefined) {
+      problems.push({ rule: "closed-run", message: `stage "${stage.id}" runs on a closed item, so it works on no branch; drop its branch` });
+    }
+    const step = stage.step ? steps.get(stage.step) : undefined;
+    const effects = [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).flatMap(routeEffects)];
+    for (const type of new Set(effects.map((e) => e.type).filter((t) => BRANCHED_EFFECTS.has(t)))) {
+      problems.push({
+        rule: "closed-run",
+        message: `stage "${stage.id}" runs on a closed item and plans ${type}; a closed item's work is merged or dropped already`,
+      });
+    }
+    for (const [index, t] of (stage.triggers ?? []).entries()) {
+      if (pathsIn(t.when).includes("node.closed")) continue;
+      problems.push({
+        rule: "closed-run",
+        message: `stage "${stage.id}" runs on a closed item, but its trigger ${t.name ? `"${t.name}"` : String(index)} ` +
+          "does not read node.closed, so an open item could enter it too",
+      });
+    }
+  }
+  return problems;
 }
 
 /**
@@ -1125,8 +1264,8 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
   const possible = possibleEdges(w);
   for (const stage of w.stages) {
     // Left when the state that places an item there stops saying so: by a
-    // label coming off, not by a trigger.
-    if (stage.terminal || placedByState(stage)) continue;
+    // label coming off, not by a trigger. A closed item rests where it runs.
+    if (stage.terminal || placedByState(stage) || stage.closed === "run") continue;
     if (!possible.some(([from]) => from === stage.id)) {
       problems.push({ rule: "dead-end", message: `stage "${stage.id}" has no way out and is not terminal` });
     }
@@ -1288,7 +1427,8 @@ export function validateSemantics(w: Workflow, steps: Map<string, Step>, provide
    */
   for (const stage of w.stages) {
     const output = stage.step ? steps.get(stage.step)?.output : undefined;
-    if (!output) continue;
+    // A closed item rests where it ran: nothing leaves that stage while it is closed.
+    if (!output || stage.closed === "run") continue;
     const owned = `run.outputs.${stage.id}`;
     const path = `${owned}.${output.discriminator}`;
     const exits = w.stages
