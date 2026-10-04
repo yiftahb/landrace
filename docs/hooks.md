@@ -44,6 +44,8 @@ A hook that works on one item gets a `HookContext`: the item's id, its snapshot,
 
 A pre hook declares the snapshot paths it fills (`provides`), and a source declares its relationship types. `validate`'s `path-coverage` rule is answered from both, together with what the engine always provides — `now`, `hash`, `run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every declared type (only `out` for an outward-only one) — so a condition can only read what something provides. The rule needs every declaration: if any pre hook leaves `provides` out, or the hooks load no pre hook and no source, `path-coverage` checks nothing in that workflow.
 
+Every pre hook runs for every item on every pass, and one that throws fails that item's read. So a pre hook reads only what every project using it has. A read for a feature that a vendor can turn off, such as Jira's worklogs when time tracking is off, goes in the `apply()` of the one effect that needs it.
+
 The composed GitHub pre hook provides `item` (`item.body`, `item.comments`), `entries` and `tracker.bot` from the tracker, and `git` (`git.local`, `git.remote`, the branch heads) from the forge; the in-memory tracker in `landrace/testing` provides the portable subset (no `tracker.bot`). An item's identity, labels and assignees are not among them: they live on the `node` the source reads, not on something a pre hook fetches a second time.
 
 A source fills every field an `eligible` rule may read — `labels`, and `assignees` as a list, empty rather than absent — because a rule reading a path an item does not carry abstains, and abstaining means eligible.
