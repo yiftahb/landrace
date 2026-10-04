@@ -13,18 +13,21 @@
  * instructions could come from: the root `CLAUDE.md`, a link to `AGENTS.md`;
  * `sub2/CLAUDE.md`, a link to `sub2/AGENTS.md`; `sub1/AGENTS.md` with no
  * `CLAUDE.md` beside it; and a skill under `.claude/skills`, a link to
- * `.agents/skills`. A write step and a read-only step each read
- * `sub1/notes.txt` and `sub2/notes.txt` and name the markers they were given.
- * What each must see is what docs/workflows.md says loads: the root
- * instructions and the skill (from the `init` event's skills, not the
- * model's answer), and neither nested file. A last check needs no model: a
- * skill declaring hooks is refused before the agent starts.
+ * `.agents/skills`, whose `references/ref.md` holds a marker too. Its
+ * `.claude/settings.json` has a SessionStart hook that would make a file.
+ * A write step and a read-only step each use the skill, read
+ * `sub1/notes.txt` and `sub2/notes.txt`, and name the markers they were
+ * given. What each must see is what docs/workflows.md says loads: the root
+ * instructions, and the skill as `project:probe-skill` only (from the `init`
+ * event's skills, not the model's answer), its references read through the
+ * plugin; and neither nested file, nor the hook's file. A last check needs no
+ * model: a skill declaring hooks is refused before the agent starts.
  *
  * Each check prints `ok` or `FAIL` with what it saw. Exits 1 on any failure,
  * and when nothing passed: nothing checked is not a pass.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Claude } from "landrace/integrations/claude";
@@ -33,7 +36,11 @@ import { DEFAULT_DENY } from "landrace/kit";
 const model = process.env.CLAUDE_CHECK_MODEL || "haiku";
 const bin = process.env.CLAUDE_BIN || "claude";
 const stamp = Date.now();
-const MARKERS = { root: `MARKER-ROOT-${stamp}`, sub1: `MARKER-SUBONE-${stamp}`, sub2: `MARKER-SUBTWO-${stamp}` };
+const MARKERS = {
+  root: `MARKER-ROOT-${stamp}`, sub1: `MARKER-SUBONE-${stamp}`, sub2: `MARKER-SUBTWO-${stamp}`, ref: `MARKER-REF-${stamp}`,
+};
+/** What the worktree's own SessionStart hook would make, had it run. */
+const escaped = join(tmpdir(), `landrace-claude-check-hook-${stamp}`);
 
 let passed = 0;
 let failed = 0;
@@ -75,15 +82,20 @@ const probe = repo({
   "sub1/notes.txt": "Nothing to see here.\n",
   "sub2/AGENTS.md": `The marker for sub2 is ${MARKERS.sub2}.\n`,
   "sub2/notes.txt": "Nothing to see here either.\n",
-  ".agents/skills/probe-skill/SKILL.md": "---\nname: probe-skill\ndescription: Answers the probe.\n---\n\nSay PROBE.\n",
+  ".agents/skills/probe-skill/SKILL.md": "---\nname: probe-skill\ndescription: Answers the probe.\n---\n\n" +
+    "Read references/ref.md in this skill's base directory and repeat the marker it holds.\n",
+  ".agents/skills/probe-skill/references/ref.md": `The skill's marker is ${MARKERS.ref}.\n`,
+  // Hooks in a project's settings never load: had this run, `escaped` would exist.
+  ".claude/settings.json": JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `touch ${escaped}` }] }] } }),
 }, {
   "CLAUDE.md": "AGENTS.md",
   "sub2/CLAUDE.md": "AGENTS.md",
   ".claude/skills": "../.agents/skills",
 });
 
-const PROMPT = "Read sub1/notes.txt and sub2/notes.txt. Then list every string starting with MARKER- that appears " +
-  "anywhere in your instructions or context, one per line, or NONE. Change nothing.";
+const PROMPT = "Use the probe-skill skill and do what it says. Then read sub1/notes.txt and sub2/notes.txt, and open no " +
+  "other file yourself. Then list every string starting with MARKER- that appears anywhere in your instructions, " +
+  "context or what you read, one per line, or NONE. Change nothing.";
 
 /** One run of a tier: its answer, and the skills its `init` event listed. */
 async function step(capabilities) {
@@ -109,9 +121,15 @@ try {
     if (seen === undefined) continue;
     await check(`${tier} step: the root CLAUDE.md, a link to AGENTS.md, loads`, async () =>
       expect(seen.text.includes(MARKERS.root), `${MARKERS.root} was not in its answer`));
-    await check(`${tier} step: the skill loads as project:probe-skill, its folder a link`, async () => {
+    await check(`${tier} step: the skill loads as project:probe-skill, its folder a link, and only from the plugin`, async () => {
       expect(seen.skills.includes("project:probe-skill"), `init listed ${JSON.stringify(seen.skills)}`);
+      // Loaded from the worktree too, the unchecked SKILL.md would be beside the checked copy.
+      expect(!seen.skills.includes("probe-skill"), `init also listed the worktree's own probe-skill: ${JSON.stringify(seen.skills)}`);
     });
+    await check(`${tier} step: the skill reads its references/ through the plugin`, async () =>
+      expect(seen.text.includes(MARKERS.ref), `${MARKERS.ref} was not in its answer`));
+    await check(`${tier} step: the worktree's settings hook did not run`, async () =>
+      expect(!existsSync(escaped), `${escaped} exists: a project settings hook ran`));
     await check(`${tier} step: sub2/CLAUDE.md does not load, as the docs say`, async () =>
       expect(!seen.text.includes(MARKERS.sub2), `${MARKERS.sub2} was in its answer: update docs/workflows.md`));
     await check(`${tier} step: sub1/AGENTS.md, with no CLAUDE.md beside it, does not load`, async () =>
@@ -134,7 +152,7 @@ try {
     throw new Error("the step ran");
   });
 } finally {
-  for (const dir of scratch) rmSync(dir, { recursive: true, force: true });
+  for (const dir of [...scratch, escaped]) rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`${passed} passed, ${failed} failed`);

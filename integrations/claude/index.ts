@@ -127,14 +127,21 @@ async function refuseAddDirSettings(cwd: string): Promise<void> {
 }
 
 /**
- * The front-matter keys a project skill may not declare, and why: a skill's
- * hooks run as the CLI's own hooks do, outside the sandbox — what
- * `--setting-sources user` exists to keep from a committed settings file —
- * and its allowed-tools approve a tool the step never declared.
+ * The front-matter keys a project skill may hold: what it says, when it
+ * applies, and tools it gives up. Any other is refused, by name, since the
+ * CLI reads many that change what its step may do — a skill's hooks run as
+ * the CLI's own hooks do, outside the sandbox (what `--setting-sources user`
+ * exists to keep from a committed settings file); its allowed-tools approve
+ * a tool the step never declared; and `model`, `context`, `agent`,
+ * `mcpServers` and the rest bill, run or start what the step did not ask for.
  */
-const REFUSED_SKILL_KEYS = new Map([
-  ["hooks", "hooks, which would run outside the sandbox"],
-  ["allowed-tools", "allowed-tools, which would let the agent use a tool its step did not declare"],
+const SKILL_KEYS = new Set([
+  "name", "description", "when_to_use", "argument-hint", "arguments", "version", "license", "metadata",
+  "user-invocable", "disable-model-invocation", "disallowed-tools", "paths",
+]);
+const REFUSED_WHY = new Map([
+  ["hooks", "which would run outside the sandbox"],
+  ["allowed-tools", "which would let the agent use a tool its step did not declare"],
 ]);
 
 /**
@@ -151,8 +158,15 @@ function skillProblem(text: string): string | undefined {
   if (open === null) return undefined;
   const rest = body.slice(open[0].length);
   const end = rest.search(/^---[ \t]*$/m);
+  const block = end < 0 ? rest : rest.slice(0, end);
+  // YAML 1.1 breaks a line at U+0085, U+2028 and U+2029 too, where splitting
+  // on "\n" would read one line and miss the key after the break.
+  // eslint-disable-next-line no-control-regex -- finding control characters is the point
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x85\u2028\u2029]/.test(block)) {
+    return "has front matter holding a control character or a line break other than a newline, so whether it declares hooks or allowed-tools cannot be told";
+  }
   let first = true;
-  for (const [i, line] of (end < 0 ? rest : rest.slice(0, end)).split("\n").entries()) {
+  for (const [i, line] of block.split("\n").entries()) {
     if (/^\s*(#.*)?$/.test(line)) continue;
     // Indented under a key: its value. Before any key, it would make every
     // key below it the indented one.
@@ -161,8 +175,7 @@ function skillProblem(text: string): string | undefined {
     if (key === undefined) {
       return `has front matter whose line ${i + 1}, ${JSON.stringify(line)}, is not a plain key, so whether it declares hooks or allowed-tools cannot be told`;
     }
-    const why = REFUSED_SKILL_KEYS.get(key);
-    if (why !== undefined) return `declares ${why}`;
+    if (!SKILL_KEYS.has(key)) return `declares ${key}, ${REFUSED_WHY.get(key) ?? "which may change what its step does"}`;
     first = false;
   }
   return undefined;
@@ -252,8 +265,9 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // `CLAUDE.md` and `.claude/skills` as the project's (live on 2.1.289).
     // So the worktree is added as a directory of its own, which loads its
     // root `CLAUDE.md` only with the setting below, and its skills come as a
-    // plugin `prepare` made of them; `prepare` has refused whatever else
-    // either would load. Never the screener's.
+    // plugin `prepare` made of them. `prepare` has refused the settings
+    // `--add-dir` is known to load beside it, and any skill whose front
+    // matter it cannot vouch for. Never the screener's.
     const instructions = declared && cwd !== undefined;
     const mayWrite = tier === "write";
     // Not plan mode, which is what a read-only step and the screener ran in

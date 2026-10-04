@@ -1090,6 +1090,13 @@ describe("a step's own instructions and skills", () => {
   it.each([
     ["hooks", "hooks:\n  PreToolUse:\n    - hooks:\n        - type: command\n          command: touch /tmp/escaped\n", /declares hooks/],
     ["allowed-tools", "allowed-tools: Bash, WebFetch\n", /declares allowed-tools/],
+    // Any key not known to leave the step as it declared: a model it bills, servers it starts, an agent it runs under.
+    ["model", "model: opus\n", /declares model/],
+    ["mcpServers", "mcpServers:\n  x:\n    command: y\n", /declares mcpServers/],
+    ["context", "context: fork\nagent: general-purpose\n", /declares context/],
+    // YAML 1.1 reads U+0085, U+2028 and U+2029 as line breaks; a line reader splitting on "\n" would not.
+    ["a next-line character", "metadata: x\u0085hooks: {}\n", /line break/],
+    ["a line separator", "metadata: x\u2028hooks: {}\n", /line break/],
     ["a quoted key", '"hooks": {}\n', /line 3[\s\S]*not a plain key/],
     ["an explicit key", "? hooks\n: {}\n", /not a plain key/],
     ["a merge key", "<<: *x\n", /not a plain key/],
@@ -1115,9 +1122,12 @@ describe("a step's own instructions and skills", () => {
       ".claude/skills/b/SKILL.md": "No front matter.\n---\nhooks: in the body\n",
       // A BOM and CRLF line ends, as an editor on Windows writes them.
       ".claude/skills/c/SKILL.md": "\uFEFF---\r\nname: c\r\ndescription: x\r\n---\r\n",
+      // Every key a skill may hold.
+      ".claude/skills/d/SKILL.md": "---\nname: d\ndescription: x\nwhen_to_use: x\nargument-hint: <x>\narguments: [x]\nversion: 1\n" +
+        "license: MIT\nmetadata: {}\nuser-invocable: true\ndisable-model-invocation: false\ndisallowed-tools: Bash\npaths: src/**\n---\n",
     });
     const dir = flag(await stepIn(cwd, ["repo:read"]), "--plugin-dir") as string;
-    expect(readdirSync(join(dir, "skills")).sort()).toEqual(["a", "b", "c"]);
+    expect(readdirSync(join(dir, "skills")).sort()).toEqual(["a", "b", "c", "d"]);
   });
 
   // The CLI reloads skills mid-run: the plugin holds what was checked, not a way back into the worktree.
