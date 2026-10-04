@@ -66,7 +66,7 @@ revised, build redone, review finding fixed, lesson reverted — who asked, what
 changed, and why. Done when every correction in the history is on your list.
 
 **Step 2 — Read the lessons already committed from it.** Run
-`git log --grep '^retro:'` on this branch and read the lessons already
+`git log --grep '^retro: lessons from #'` on this branch and read the lessons already
 committed from this item. Do not repeat one; refine it only if the new
 history shows it was wrong or too narrow. A lesson that was rejected — a review
 thread asking to drop it, or a commit reverting it — stays rejected: do not
@@ -114,9 +114,14 @@ server are skipped (jest says so first), and `landrace validate` reports the
 `githubToken` secret and `.mcp.json` missing, since neither is ever in a
 worktree. Anything else that fails is real.
 
-**Step 7 — Commit once and push.** Make every change in one commit, with the
-message `retro: lessons from #{node.id}`. If there is nothing to learn, make no
-commit of your own. Finish with `git push origin HEAD`. If the push is
+**Step 7 — Commit once and push.** Make every change in one commit. First find
+this repository's commit conventions — a commitlint configuration, a
+`commit-msg` hook, a contributing guide — and follow them. The subject is
+`retro: lessons from #{node.id}` unless they say otherwise; when they do, write
+the subject they ask for, and end the message's body with the line
+`retro: lessons from #{node.id}`: it is how the next retro and the code
+reviewer find the commit. If there is nothing to learn, make no commit of your
+own. Finish with `git push origin HEAD`. If the push is
 rejected because the remote branch moved on its own — a person's commit, or
 the forge's "Update branch" — `git fetch origin`, merge the remote copy of the
 branch you are on (`git branch --show-current` names it:

@@ -293,7 +293,8 @@ describe.each([["full-cycle", "blocked"], ["fastlane", "stuck"]])("%s's waiting 
 /** The paragraphs a fastlane lead adds to main's, beside the item. */
 const ADDED: Record<string, RegExp[]> = {
   // A lesson commit changes agent instructions, not the item: judged for what it loosens.
-  "code-review": [/^Commits titled `retro: lessons from #\{node\.id\}` change agent instructions/],
+  // Found by the line, its subject or its body's last, since the repository's conventions may change the subject (#88).
+  "code-review": [/^Commits whose message has the line `retro: lessons from #\{node\.id\}` — as its\ssubject, or as the last line of its body — change agent instructions/],
   "fix-review": [],
   // Every file a lesson goes in is protected (re-review N1): a retro's commit is a person's to merge,
   // unless it fixed only README.md or docs/ (#63).

@@ -69,9 +69,9 @@ describe("a declaration the engine does not read is refused, not ignored", () =>
     await expect(loadWorkflow(wf({ description: "d", admit: [""] }))).rejects.toThrow(/admit/);
   });
 
-  it("refuses a step declaring skills: plugins come from agent.plugins for every step, never from front matter", () => {
-    expect(() => parseStep("---\nskills: [superpowers:brainstorming]\n---\nbody"))
-      .toThrow(/skills/);
+  it("refuses a step's skills in any shape but a list of names", () => {
+    expect(() => parseStep("---\nskills: developer\n---\nbody")).toThrow(/skills/);
+    expect(() => parseStep("---\nskills: [\"\"]\n---\nbody")).toThrow(/skills/);
   });
 
   it("still accepts the front matter fields the engine does read", () => {

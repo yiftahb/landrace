@@ -91,7 +91,10 @@ argued; if it cannot be, say why in your summary.
 
 **Step 4 — Fix the ones you will fix, committing as you go.** Each with a test
 wherever behaviour changes. Commit as you go: this worktree is removed when the
-step ends, and anything you did not commit is lost with it.
+step ends, and anything you did not commit is lost with it. Before the first
+commit, find this repository's commit conventions — a commitlint
+configuration, a `commit-msg` hook, a contributing guide — and follow them: a
+message they reject fails the commit.
 
 **Step 5 — Verify: install, tests, lint.** Install dependencies as needed
 (`pnpm install`), and run the test suite and the lint checks. Done when
