@@ -4,7 +4,7 @@ import { copyFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/prom
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { childEnv } from "#kit/executor.js";
+import { INHERITED_ENV_KEYS } from "#conventions.js";
 import type { WorktreeBranch, WorktreePreparation, WorktreeState } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
@@ -416,7 +416,11 @@ function runSetup(command: string, cwd: string, timeoutMs: number, signal?: Abor
   return new Promise((done) => {
     let tail = "";
     let stopped: string | null = null;
-    const child = spawn(command, { cwd, env: childEnv([]), shell: true, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const env = Object.fromEntries(INHERITED_ENV_KEYS.flatMap((key) => {
+      const value = process.env[key];
+      return value === undefined ? [] : [[key, value]];
+    }));
+    const child = spawn(command, { cwd, env, shell: true, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const keep = (chunk: Buffer): void => {
       tail = (tail + chunk.toString()).slice(-SETUP_TAIL);
     };
