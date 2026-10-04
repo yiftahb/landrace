@@ -711,7 +711,7 @@ describe("the status follows the stage, by statuses", () => {
     const plain = setup();
     plain.fake.add();
     expect(plain.jira.provides()).not.toContain("tracker.status");
-    expect((await plain.jira.observe(on(plain.ctx, "KEY-1"))).tracker).toEqual({ bot: BOT.accountId, worklogs: [] });
+    expect((await plain.jira.observe(on(plain.ctx, "KEY-1"))).tracker).toEqual({ bot: BOT.accountId });
   });
 
   it("refuses a mapping to an empty status name", () => {
@@ -1137,28 +1137,30 @@ describe("a service desk", () => {
       const graph = await hooks.source.read(key, ctx);
       return { graph, node: graph.nodes.find((n) => n.id === key), ...(await hooks.pre.run(on(ctx, key))) };
     };
+    const posts = (fake: FakeJira) => fake.calls.filter((c) => c.method === "POST" && c.path.endsWith("/worklog"));
 
-    it("logs the time once, and is satisfied by its own marker the next tick", async () => {
+    // A route's effect is applied with no reconcile first, so apply is what keeps it from logging twice.
+    it("logs the time once: applied again, it finds its own marker and logs nothing", async () => {
       const { fake, jira, ctx } = setup();
       const { key } = fake.add();
       const hooks = hooksOf(jira);
-      expect(hooks.post.satisfied(await snapshotOf(hooks, ctx, key), worklog)).toBe(false);
+      await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key)));
       await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key)));
       expect(fake.issue(key).worklogs.map((w) => [w.timeSpentSeconds, w.author.accountId])).toEqual([[5400, BOT.accountId]]);
-      expect(hooks.post.satisfied(await snapshotOf(hooks, ctx, key), worklog)).toBe(true);
+      expect(posts(fake)).toHaveLength(1);
     });
 
-    it("reads every page of worklogs, and a person's alone never satisfies it", async () => {
+    it("reads every page of worklogs before logging, and a person's alone does not stop it", async () => {
       const { fake, jira, ctx } = setup();
       fake.pageSize = 2;
       const { key } = fake.add();
       for (let i = 0; i < 5; i++) fake.logWork(key, PERSON, 60);
       const hooks = hooksOf(jira);
-      const snapshot = await snapshotOf(hooks, ctx, key);
-      expect((snapshot.tracker as { worklogs: unknown[] }).worklogs).toHaveLength(5);
-      expect(hooks.post.satisfied(snapshot, worklog)).toBe(false);
-      await hooks.post.apply(worklog, on(ctx, key, snapshot));
-      expect(hooks.post.satisfied(await snapshotOf(hooks, ctx, key), worklog)).toBe(true);
+      await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key)));
+      expect(fake.issue(key).worklogs).toHaveLength(6);
+      // Its own worklog is now on the last of four pages: found there, nothing more is logged.
+      await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key)));
+      expect(posts(fake)).toHaveLength(1);
     });
 
     it("logs nothing over a person's worklog when it says skipIfLogged", async () => {
@@ -1166,7 +1168,19 @@ describe("a service desk", () => {
       const { key } = fake.add();
       fake.logWork(key, PERSON, 1800);
       const hooks = hooksOf(jira);
-      expect(hooks.post.satisfied(await snapshotOf(hooks, ctx, key), { ...worklog, skipIfLogged: true })).toBe(true);
+      await hooks.post.apply({ ...worklog, skipIfLogged: true }, on(ctx, key, await snapshotOf(hooks, ctx, key)));
+      expect(posts(fake)).toEqual([]);
+      expect(fake.issue(key).worklogs).toHaveLength(1);
+    });
+
+    // Jira answers a worklog read with an error where time tracking is off: read every tick, it would fail every item's read.
+    it("reads no worklog on a tick, so a site with time tracking off still reads its items", async () => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      fake.failOn = (method, path) => (method === "GET" && path.endsWith("/worklog") ? 404 : null);
+      const hooks = hooksOf(jira);
+      await expect(snapshotOf(hooks, ctx, key)).resolves.toMatchObject({ node: { id: key } });
+      expect(fake.calls.filter((c) => c.path.endsWith("/worklog"))).toEqual([]);
     });
 
     it("records a worklog Jira forbids as refused, not an outage to pay for again", async () => {
@@ -1177,6 +1191,18 @@ describe("a service desk", () => {
       const failure = await hooks.post.apply(worklog, on(ctx, key, await snapshotOf(hooks, ctx, key))).then(() => null, (e: unknown) => e);
       expect(isEffectRefused(failure)).toBe(true);
       expect(String(failure)).toMatch(/Work on issues/);
+    });
+
+    it("records as refused a worklog whose read Jira answers 404, as it does with time tracking off", async () => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      const hooks = hooksOf(jira);
+      const snapshot = await snapshotOf(hooks, ctx, key);
+      fake.failOn = (method, path) => (method === "GET" && path.endsWith("/worklog") ? 404 : null);
+      const failure = await hooks.post.apply(worklog, on(ctx, key, snapshot)).then(() => null, (e: unknown) => e);
+      expect(isEffectRefused(failure)).toBe(true);
+      expect(String(failure)).toMatch(/time tracking on/);
+      expect(posts(fake)).toEqual([]);
     });
   });
 
@@ -1258,7 +1284,7 @@ describe("composed with a forge and docs", () => {
     const record = { type: "tracker.comment", stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1", body: "Entered spec." };
     await hooks.post.apply(record, on(ctx, "KEY-1", await snapshotOf(hooks, ctx, "KEY-1")));
     const observed = await hooks.pre.run(on(ctx, "KEY-1"));
-    expect(observed.tracker).toEqual({ bot: BOT.accountId, worklogs: [] });
+    expect(observed.tracker).toEqual({ bot: BOT.accountId });
     expect((observed.entries as Array<{ stage: string; kind: string; byAgent: boolean; text: string }>)
       .map((e) => [e.stage, e.kind, e.byAgent, e.text])).toEqual([["spec", "enter", true, "Entered spec."]]);
     expect(hooks.post.satisfied({ ...(await snapshotOf(hooks, ctx, "KEY-1")), ...observed }, record)).toBe(true);

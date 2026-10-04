@@ -151,18 +151,14 @@ function worklogMarker(effect: Effect): string {
 }
 
 /**
- * `tracker.worklog`: a worklog we wrote carrying exactly this marker — or,
- * with `skipIfLogged`, any worklog at all, a person's included, since the
- * time is logged already. Worklogs the snapshot does not hold halt rather
- * than read as none.
+ * `tracker.worklog` is logged already: a worklog we wrote carrying exactly
+ * this marker — or, with `skipIfLogged`, any worklog at all, a person's
+ * included.
  */
-function worklogSatisfied(snapshot: Snapshot, effect: Effect): boolean {
+function worklogLogged(worklogs: WorklogRecord[], effect: Effect, bot: string): boolean {
   const marker = worklogMarker(effect);
-  const worklogs = (snapshot.tracker as { worklogs?: unknown } | undefined)?.worklogs;
-  if (!Array.isArray(worklogs)) throw new Error("the snapshot does not hold the item's worklogs, so whether its time is logged cannot be told");
   if (effect.skipIfLogged === true && worklogs.length > 0) return true;
-  const bot = botLoginOf(snapshot);
-  return (worklogs as WorklogRecord[]).some((w) => typeof w.author === "string" && sameLogin(w.author, bot) && w.marker === marker);
+  return worklogs.some((w) => typeof w.author === "string" && sameLogin(w.author, bot) && w.marker === marker);
 }
 
 /**
@@ -1010,22 +1006,21 @@ export class Jira extends BaseTracker {
   }
 
   /**
-   * `tracker.worklogs`, every worklog on the issue, what `tracker.worklog` is
-   * judged by; and `tracker.status` too, the issue's status by name, when a
-   * stage maps one: what the status effect is judged by.
+   * `tracker.status` too, the issue's status by name, when a stage maps one:
+   * what the status effect is judged by. Worklogs are not observed: Jira
+   * answers their read with an error where time tracking is off, which would
+   * fail every item's read on a site that never logs time.
    */
   override provides(): string[] {
-    const own = [...super.provides(), "tracker.worklogs"];
+    const own = super.provides();
     return this.statuses.size === 0 ? own : [...own, "tracker.status"];
   }
 
   override async observe(ctx: HookContext): Promise<Record<string, unknown>> {
     const observed = await super.observe(ctx);
-    const jira = this.jira(ctx);
-    const key = this.keyOf(ctx.item);
-    const worklogs = await this.worklogs(jira, key);
-    const status = this.statuses.size === 0 ? {} : { status: await this.statusOf(jira, key) };
-    return { ...observed, tracker: { ...(observed.tracker as Record<string, unknown>), worklogs, ...status } };
+    if (this.statuses.size === 0) return observed;
+    const status = await this.statusOf(this.jira(ctx), this.keyOf(ctx.item));
+    return { ...observed, tracker: { ...(observed.tracker as Record<string, unknown>), status } };
   }
 
   /** The issue's status by name, read off the issue rather than search, which lags a transition just made. */
@@ -1045,26 +1040,38 @@ export class Jira extends BaseTracker {
     return {
       ...base,
       [WORKLOG_EFFECT]: {
-        satisfied: worklogSatisfied,
+        // Judged in apply, over the worklogs read there: the snapshot holds
+        // none (see provides), and a route's effect is applied with no
+        // reconcile first, so a check here alone would never stop a POST.
+        satisfied: () => false,
         // A 403 is the account without "Work on issues", or time tracking
-        // off: no retry logs it, so the round is recorded refused rather
-        // than its step paid for again.
+        // off, and so is a 404 on reading the worklogs of an issue this tick
+        // just read: no retry logs it, so the round is recorded refused
+        // rather than its step paid for again.
         apply: async (effect, ctx) => {
           const key = this.keyOf(ctx.item);
           const { seconds } = effect;
           if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds <= 0) {
             throw new Error(`a ${WORKLOG_EFFECT} effect logs a whole number of seconds above zero, not ${JSON.stringify(seconds)}`);
           }
+          const jira = this.jira(ctx);
+          const refused = (e: unknown, statuses: unknown[]): unknown => (!statuses.includes((e as { status?: unknown } | null)?.status) ? e : new EffectRefused(
+            `Jira refused to log time on ${key}: the account needs "Work on issues" on ${this.project}, with time tracking on (Jira answered: ${messageOf(e)})`,
+          ));
+          let worklogs: WorklogRecord[];
           try {
-            await this.jira(ctx).call("POST", `/rest/api/3/issue/${key}/worklog`, {
+            worklogs = await this.worklogs(jira, key);
+          } catch (e) {
+            throw refused(e, [403, 404]);
+          }
+          if (worklogLogged(worklogs, effect, botLoginOf(ctx.snapshot))) return;
+          try {
+            await jira.call("POST", `/rest/api/3/issue/${key}/worklog`, {
               timeSpentSeconds: seconds,
               properties: [{ key: MARKER_PROPERTY, value: { marker: worklogMarker(effect) } }],
             });
           } catch (e) {
-            if ((e as { status?: unknown } | null)?.status !== 403) throw e;
-            throw new EffectRefused(
-              `Jira refused to log time on ${key}: the account needs "Work on issues" on ${this.project}, with time tracking on (Jira answered: ${messageOf(e)})`,
-            );
+            throw refused(e, [403]);
           }
         },
       },

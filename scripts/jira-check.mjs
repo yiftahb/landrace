@@ -112,7 +112,7 @@ const raw = async (path) => {
 };
 const assignee = JIRA_ASSIGNEE?.trim() ?? "";
 // This script's own requests carry the token too: to the same sites the integration's client takes, and no other.
-const siteOk = Boolean(JIRA_CHECK_LINKS || JIRA_LINK_KEYS || assignee.includes("@") || options.statuses) && await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
+const siteOk = await check("JIRA_BASE_URL is an https://<site>.atlassian.net site", async () => {
   expect(/^https:\/\/[a-z0-9][a-z0-9-]*\.atlassian\.net$/i.test(site), `got ${JSON.stringify(site)}`);
 });
 /** The account `JIRA_ASSIGNEE` names, looked up by this script rather than the integration, so the two are compared, not one read twice. */
@@ -187,13 +187,12 @@ if (item) {
 
   const worklog = { type: "tracker.worklog", stage: "check", round: 1, marker: "work:check:1", seconds: 60 };
   const observedOf = async (id) => ({ ...(await snapshotOf(id)), ...(await hooks.pre.run(on(id))) });
-  await check("log a minute of work, and read it back as landed", async () => {
-    expect(!hooks.post.satisfied(await observedOf(item.id), worklog), "the worklog reads as landed before it was logged");
+  if (siteOk) await check("log a minute of work once, applied twice, its marker read back off Jira's own answer", async () => {
     await hooks.post.apply(worklog, on(item.id, await observedOf(item.id)));
-    const after = await observedOf(item.id);
-    const ours = after.tracker.worklogs.filter((w) => w.marker === worklog.marker);
-    expect(ours.length === 1 && ours[0].seconds === 60, `worklogs read back as ${JSON.stringify(after.tracker.worklogs)}`);
-    expect(hooks.post.satisfied(after, worklog), "the worklog effect does not read as landed");
+    await hooks.post.apply(worklog, on(item.id, await observedOf(item.id)));
+    const { worklogs = [] } = await raw(`/rest/api/3/issue/${item.id}/worklog?expand=properties`);
+    const ours = worklogs.filter((w) => (w.properties ?? []).some((p) => p.key === "landrace.marker" && p.value?.marker === worklog.marker));
+    expect(ours.length === 1 && ours[0].timeSpentSeconds === 60, `worklogs read back as ${JSON.stringify(worklogs)}`);
   });
 
   if (field) {
