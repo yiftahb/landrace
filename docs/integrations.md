@@ -161,7 +161,7 @@ Off gitlab.com, set `GITLAB_BASE_URL` too.
 
 ## Jira
 
-`landrace/integrations/jira` is one Jira Cloud project's issues as the tracker, over REST v3, and, optionally, one of their fields as the docs role (see [The spec on the ticket](#the-spec-on-the-ticket)). A hook file composes it beside whatever forge and docs the project has:
+`landrace/integrations/jira` is one Jira Cloud project's issues as the tracker, over REST v3, and, optionally, one of their fields as the docs role (see "The spec on the ticket", below). A hook file composes it beside whatever forge and docs the project has:
 
 ```ts
 // .landrace/hooks/project.ts
@@ -191,7 +191,7 @@ secrets:
 | `transitions.done` | `"Done"` | The transition that closes an item as done |
 | `transitions.dropped` | `"Won't Do"` | The transition that closes one as dropped; a closed issue whose status or resolution has this name reads as dropped |
 | `blockedByLinkType` | `"Blocks"` | The issue link type read and written as `blocked-by`, by its exact name. Its inward side must read "is blocked by", as Jira's "Blocks" does |
-| `statuses` | none | A Jira status for each stage that has one, keyed by the stage's `tracker.status` value, such as `{ build: "In Progress", "mr-human-review": "In Review" }`. See [Status follows the stage](#status-follows-the-stage) |
+| `statuses` | none | A Jira status for each stage that has one, keyed by the stage's `tracker.status` value, such as `{ build: "In Progress", "mr-human-review": "In Review" }`. See "Status follows the stage", below |
 
 **Accounts and ids.** Basic auth carries the account's own token, so `jiraBaseUrl` must be an `https://<site>.atlassian.net` site, and nothing is asked of it before `GET /myself` says who the account is. Logins are `accountId`s. An item's author is its creator (the reporter can be edited), and its editor is whoever last changed the description, read from the changelog. An id is the project's `KEY-<n>` or it is refused before any request; an issue Jira answers under another key has moved, and is refused too.
 
