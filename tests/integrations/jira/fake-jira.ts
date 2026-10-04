@@ -761,6 +761,7 @@ export function createFakeJira(project = "KEY") {
         const doc = b.body as Adf | undefined;
         const problem = adfProblem(doc);
         if (problem) return errors(400, [], { comment: problem });
+        if (!hasContent(doc)) return errors(400, [], { comment: "Comment body can not be empty!" });
         if (JSON.stringify(doc).length > 32_767) {
           return errors(400, [], { comment: "The entered text is too long. It exceeds the allowed limit of 32,767 characters." });
         }
@@ -910,3 +911,7 @@ function adfProblem(doc: Adf | undefined): string | null {
   };
   return check(doc);
 }
+
+/** Whether a document holds anything a person would read: Jira refuses a comment whose paragraphs are all empty. */
+const hasContent = (node: Adf | undefined): boolean =>
+  node !== undefined && (node.type === "mention" || (node.type === "text" && (node.text ?? "").trim() !== "") || (node.content ?? []).some(hasContent));

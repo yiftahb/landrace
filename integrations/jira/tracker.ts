@@ -129,6 +129,14 @@ const MARKER_PROPERTY = "landrace.marker";
 /** Jira Service Management's own property: `{ internal: true }` keeps a comment from the requester. */
 const INTERNAL_PROPERTY = "sd.public.comment";
 
+/**
+ * What a comment says when its marker was its whole body — an agent that
+ * answered with its json block alone. Jira refuses an empty comment with a
+ * 400, which no retry fixes, and the step would be paid for again every
+ * tick; read back beside our marker property, it is read as no text.
+ */
+const NO_TEXT = "(no text)";
+
 /** An entity property as Jira answers one, expanded on a comment or a worklog. */
 interface Property { key?: unknown; value?: unknown }
 
@@ -810,9 +818,10 @@ export class Jira extends BaseTracker {
       all.push(...batch.map((c) => {
         const text = fromAdf(c.body);
         const { found, marker } = propertyMarker(c.properties);
+        const own = marker !== null && text === NO_TEXT ? "" : text;
         return {
           id: c.id,
-          body: !found ? text : `${neutraliseMarkers(text)}${marker === null ? "" : `\n\n${marker}`}`,
+          body: !found ? text : `${neutraliseMarkers(own)}${marker === null ? "" : `\n\n${marker}`}`,
           created_at: iso(c.created) ?? "",
           user: c.author?.accountId ? { login: c.author.accountId } : null,
         };
@@ -840,7 +849,8 @@ export class Jira extends BaseTracker {
     const split = splitMarker(body);
     // What the marker was set apart by goes with it, so the text reads back with the marker exactly as it was.
     const { marker } = split;
-    const text = marker === null ? split.text : split.text.trimEnd();
+    const trimmed = marker === null ? split.text : split.text.trimEnd();
+    const text = marker !== null && trimmed.trim() === "" ? NO_TEXT : trimmed;
     const properties = [
       ...(marker === null ? [] : [{ key: MARKER_PROPERTY, value: { marker } }]),
       ...(type === SERVICE_DESK && visibility !== "public" ? [{ key: INTERNAL_PROPERTY, value: { internal: true } }] : []),

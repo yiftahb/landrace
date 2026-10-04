@@ -1047,6 +1047,21 @@ describe("a service desk", () => {
     expect(hooks.post.satisfied({ graph, node: graph.nodes.find((n) => n.id === key), ...observed }, record())).toBe(true);
   });
 
+  it("posts a record whose text is only its marker, which Jira would refuse empty, and reads its text back empty", async () => {
+    const { fake, jira, ctx } = setup();
+    fake.projectType = "service_desk";
+    const { key } = fake.add();
+    const hooks = hooksOf(jira);
+    await hooks.post.apply(record({ body: "" }), on(ctx, key));
+    expect(fake.issue(key).comments).toHaveLength(1);
+    expect(JSON.stringify((posted(fake)[0]?.body as { body: unknown }).body)).not.toContain("landrace");
+    const observed = await hooks.pre.run(on(ctx, key));
+    expect((observed.entries as Array<{ stage: string; kind: string; round: number; text: string }>).map((e) => [e.stage, e.kind, e.round, e.text]))
+      .toEqual([["triage", "output", 1, ""]]);
+    const graph = await hooks.source.read(key, ctx);
+    expect(hooks.post.satisfied({ graph, node: graph.nodes.find((n) => n.id === key), ...observed }, record({ body: "" }))).toBe(true);
+  });
+
   it("still reads a marker in the body of a comment written before the property", async () => {
     const { fake, jira, ctx } = setup();
     const { key } = fake.add();
