@@ -1,9 +1,13 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hookKindOf } from "#hooks/contracts.js";
 import { BaseExecutor } from "#kit/executor.js";
-import type { EventReading, ExecutorContext, HandoffArg, HandoffPlan, PairingKind, SandboxSettings, Step } from "#namespace.js";
+import type { EventReading, ExecutorContext, HandoffArg, HandoffPlan, PairingKind, RunPlan, SandboxSettings, Step } from "#namespace.js";
+import { gitRepo, removeRepos } from "#tests/support/repo.js";
+
+afterAll(removeRepos);
 
 const dirs: string[] = [];
 const tempDir = (prefix: string): string => {
@@ -24,13 +28,15 @@ class Tiny extends BaseExecutor<{ colour: string }> {
   readonly pairings: readonly PairingKind[];
   prepared: Promise<void> = Promise.resolve();
   entered: () => void = () => {};
+  plans: Array<RunPlan<{ colour: string }>> = [];
 
   constructor(bin: string, pairings: readonly PairingKind[] = ["continue", "fork"]) {
     super(bin);
     this.pairings = pairings;
   }
 
-  protected argv(): string[] {
+  protected argv(plan: RunPlan<{ colour: string }>): string[] {
+    this.plans.push(plan);
     return [];
   }
 
@@ -152,6 +158,106 @@ describe("BaseExecutor", () => {
     it("says nothing of the steps' efforts when it only screens beside another agent", async () => {
       const steps = new Map<string, Step>([["steps/spec.md", { effort: "max", prompt: "" } as Step]]);
       await expect(new Tiny("tiny").create(ctxFor({ adapter: "other", colour: 3 }, steps))).resolves.toBeDefined();
+    });
+
+    it("refuses a step's skills or plugins when the integration cannot enforce them, naming the step and the key", async () => {
+      const steps = new Map<string, Step>([
+        ["steps/build.md", { skills: ["developer"], prompt: "" } as Step],
+        ["steps/retro.md", { plugins: [], prompt: "" } as Step],
+      ]);
+      await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny" }, steps))).rejects.toThrow(
+        /^steps\/build\.md lists skills:, which the tiny executor cannot enforce\nsteps\/retro\.md lists plugins:, which the tiny executor cannot enforce$/);
+    });
+
+    it("refuses a step's MCP server or tool that agent.mcp does not allow, naming the step", async () => {
+      const steps = new Map<string, Step>([
+        ["steps/a.md", { mcp: ["other"], prompt: "" } as Step],
+        ["steps/b.md", { mcp: [{ name: "memory", tools: ["search", "delete"] }], prompt: "" } as Step],
+        ["steps/c.md", { mcp: ["memory", "memory"], prompt: "" } as Step],
+        ["steps/d.md", { mcp: [{ name: "memory", tools: [] }], prompt: "" } as Step],
+      ]);
+      await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny", mcp: [{ name: "memory", tools: ["search", "read"] }] }, steps)))
+        .rejects.toThrow([
+          'steps/a.md asks for MCP server "other", which agent.mcp does not name',
+          'steps/b.md asks for tool "delete" on MCP server "memory", which agent.mcp does not allow on it',
+          'steps/c.md names MCP server "memory" more than once',
+          'steps/d.md names MCP server "memory" with no tools; leave it out to give the step none of it',
+        ].join("\n"));
+    });
+
+    it("lets a step narrow agent.mcp, and asks the integration whether the skills a step lists are defined", async () => {
+      const dir = await gitRepo();
+      writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { memory: { command: "m" } } }));
+      class Skilled extends Tiny {
+        override readonly stepKeys = ["skills", "plugins"] as const;
+        asked: Array<[string, readonly string[]]> = [];
+        protected skillProblems(root: string, listed: readonly string[]): Promise<string[]> {
+          this.asked.push([root, listed]);
+          return Promise.resolve(listed.filter((s) => s !== "developer").map((s) => `lists skill "${s}", which nothing defines`));
+        }
+      }
+      const fine = new Map<string, Step>([["steps/a.md", { mcp: [{ name: "memory", tools: ["search"] }], skills: ["developer"], plugins: [], prompt: "" } as Step]]);
+      const skilled = new Skilled("tiny");
+      await expect(skilled.create({ ...ctxFor({ adapter: "tiny", mcp: ["memory"] }, fine), dir })).resolves.toBeDefined();
+      expect(skilled.asked).toEqual([[await realpath(dir), ["developer"]]]);
+      const unknown = new Map<string, Step>([["steps/b.md", { skills: ["developer", "ghost"], prompt: "" } as Step]]);
+      await expect(new Skilled("tiny").create({ ...ctxFor({ adapter: "tiny" }, unknown), dir }))
+        .rejects.toThrow(/^steps\/b\.md lists skill "ghost", which nothing defines$/);
+    });
+  });
+
+  describe("a step's own MCP servers, skills and plugins, on each run", () => {
+    const MEMORY = { command: "memory" };
+    const GRAPH = { command: "graph" };
+    const withServers = { ...settings, servers: { memory: MEMORY, graph: GRAPH }, tools: { memory: ["search", "read"] } };
+    const runWith = async (tiny: Tiny, opts: Record<string, unknown>) => {
+      await tiny.build(withServers).run("p", {
+        round: 1, cwd: tempDir("tiny-cwd-"), capabilities: ["repo:read"], signal: new AbortController().signal, ...opts,
+      });
+      return tiny.plans.at(-1);
+    };
+
+    it("loads every agent.mcp server when the step names none", async () => {
+      const plan = await runWith(new Tiny(markingBin()), {});
+      expect(plan?.servers).toEqual({ memory: MEMORY, graph: GRAPH });
+      expect(plan?.allowed).toEqual({ memory: ["search", "read"], graph: null });
+    });
+
+    it("loads only the servers the step names, with its tools or else agent.mcp's", async () => {
+      const plan = await runWith(new Tiny(markingBin()), { mcp: [{ name: "memory", tools: ["read"] }, "graph"] });
+      expect(plan?.servers).toEqual({ memory: MEMORY, graph: GRAPH });
+      expect(plan?.allowed).toEqual({ memory: ["read"], graph: null });
+      const bare = await runWith(new Tiny(markingBin()), { mcp: ["memory"] });
+      expect(bare?.servers).toEqual({ memory: MEMORY });
+      expect(bare?.allowed).toEqual({ memory: ["search", "read"] });
+      const none = await runWith(new Tiny(markingBin()), { mcp: [] });
+      expect(none?.servers).toEqual({});
+    });
+
+    it("refuses a step's server or tool outside agent.mcp, before it starts", async () => {
+      const cwd = tempDir("tiny-cwd-");
+      const go = (mcp: unknown) => new Tiny(markingBin()).build(withServers).run("p", {
+        round: 1, cwd, capabilities: ["repo:read"], mcp, signal: new AbortController().signal,
+      } as Parameters<ReturnType<Tiny["build"]>["run"]>[1]);
+      await expect(go(["other"])).rejects.toThrow('asks for MCP server "other", which agent.mcp does not name');
+      await expect(go([{ name: "memory", tools: ["delete"] }])).rejects.toThrow('asks for tool "delete" on MCP server "memory", which agent.mcp does not allow on it');
+      expect(existsSync(join(cwd, "spawned"))).toBe(false);
+    });
+
+    it("refuses a step's skills or plugins the integration cannot enforce, and hands them on when it can", async () => {
+      await expect(runWith(new Tiny(markingBin()), { skills: ["developer"] }))
+        .rejects.toThrow("refused skills: the tiny executor cannot enforce a step's own skills");
+      await expect(runWith(new Tiny(markingBin()), { plugins: [] }))
+        .rejects.toThrow("refused plugins: the tiny executor cannot enforce a step's own plugins");
+      class Skilled extends Tiny {
+        override readonly stepKeys = ["skills", "plugins"] as const;
+      }
+      const plan = await runWith(new Skilled(markingBin()), { skills: ["developer"], plugins: [] });
+      expect(plan?.skills).toEqual(["developer"]);
+      expect(plan?.plugins).toEqual([]);
+      const absent = await runWith(new Skilled(markingBin()), {});
+      expect(absent).not.toHaveProperty("skills");
+      expect(absent).not.toHaveProperty("plugins");
     });
   });
 });

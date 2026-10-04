@@ -752,6 +752,16 @@ export interface Executor {
        */
       effort?: string;
       /**
+       * The step's own `mcp`, `skills` and `plugins`, each only when it named
+       * it: absent is "what the workspace gives every step". `mcp` narrows
+       * the operator's `agent.mcp` and never widens it; an executor that
+       * cannot enforce `skills` or `plugins` must refuse a run that carries
+       * it. The screener's run never has one.
+       */
+      mcp?: readonly McpEntry[];
+      skills?: readonly string[];
+      plugins?: readonly string[];
+      /**
        * How long this run may take, in milliseconds. Always present: the
        * step's own `timeout`, else the workflow's `budget.stepTimeout`, else
        * the engine's default, and the screening run gets the workflow's. The
@@ -934,6 +944,9 @@ export interface KitSettings {
  */
 export type Tier = "screen" | "read" | "write";
 
+/** The step front-matter keys an integration enforces itself, and declares it can; the kit enforces a step's `mcp`. */
+export type StepKey = "skills" | "plugins";
+
 /**
  * The three ways a person can pair with an integration's agent. `take`: a
  * session of their own under the id the engine gives, seeded with the step.
@@ -962,6 +975,10 @@ export interface RunPlan<E = unknown> {
   servers: Record<string, McpServerConfig>;
   /** Per server in `servers`, the tools the run may call on it, or null for every tool it has. */
   allowed: Record<string, readonly string[] | null>;
+  /** The only project skills the run may load, by name; absent, every one. */
+  skills?: readonly string[];
+  /** The step's own plugins, in place of the integration's default; absent, that default. */
+  plugins?: readonly string[];
   sandbox: SandboxSettings;
   /** The integration's own settings. */
   extras: E;

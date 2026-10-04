@@ -89,6 +89,17 @@ export const stepFrontMatterSchema = z.object({
   timeout: z.string()
     .refine((t) => (durationMs(t) ?? 0) > 0, { message: 'must be a duration like "30m" or "2h", above zero and at most 596h' })
     .optional(),
+  /**
+   * What this step's agent may use, narrower than the workspace gives every
+   * step. `skills`: the project skills it may load, by name; absent, all.
+   * `mcp`: the `agent.mcp` servers it loads, in `agent.mcp`'s own form, never
+   * one outside it; absent, all of them. `plugins`: the agent's plugins in
+   * place of `agent.plugins`. Opaque here: the executor checks each against
+   * what it can enforce, at startup.
+   */
+  skills: z.array(z.string().min(1)).optional(),
+  mcp: z.array(z.union([z.string().min(1), z.object({ name: z.string().min(1), tools: z.array(z.string().min(1)) }).strict()])).optional(),
+  plugins: z.array(z.string().min(1)).optional(),
   output: z.object({
     discriminator: z.string(),
     shapes: z.record(z.unknown()),
