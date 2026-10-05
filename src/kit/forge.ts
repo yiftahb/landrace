@@ -107,10 +107,13 @@ export function commentableLines(patch: string | undefined): Set<number> {
  * Where each of a review's findings can go, by what a forge accepts: a
  * finding on a line the diff shows is a line thread; one elsewhere in a
  * changed file is a thread on the file, naming the line; one in a file the
- * pull request does not touch cannot be threaded at all, and is listed in the
- * review's text instead. A malformed finding is listed the same way rather
- * than failing the step — the engine checks an output's fields, not what is
- * inside them.
+ * pull request does not touch is a thread on the changed path that sorts
+ * first, opening with its own `path:line`. Listed in the review's text
+ * instead, as it once was, it counted toward nothing awaiting a fix, and the
+ * review read as clean (#120). With no changed file to put it on, the review
+ * is refused rather than posted without it. A malformed finding is listed in
+ * the review's text rather than failing the step — the engine checks an
+ * output's fields, not what is inside them.
  *
  * `commentChars` is the forge's own bound on one comment: each body is cut
  * a thousand under it, room for its marker.
@@ -126,6 +129,8 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
   unplaced: string[];
 } {
   const lines = new Map(changed.map((f) => [f.path, commentableLines(f.patch)]));
+  // Sorted, not the first listed: the same anchor whatever order the forge pages them in.
+  const anchor = changed.map((f) => f.path).sort()[0];
   const onLines: Array<{ path: string; line: number; body: string }> = [];
   const onFiles: Array<{ path: string; body: string }> = [];
   const unplaced: string[] = [];
@@ -137,11 +142,19 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
     const tail = renderMarker({
       stage, kind: FINDING_KIND, round, marker: `${FINDING_KIND}:${stage}:${round}:${i}`, ...(f.wording === true ? { wording: true } : {}),
     });
-    const text = neutraliseMarkers(cut(f.body.trim(), commentChars - 1_000));
     const shown = lines.get(f.file);
-    if (shown?.has(f.line)) onLines.push({ path: f.file, line: f.line, body: text + tail });
-    else if (shown) onFiles.push({ path: f.file, body: `line ${f.line}: ${text}${tail}` });
-    else unplaced.push(`- \`${f.file}:${f.line}\` — ${text}`);
+    if (shown === undefined) {
+      if (anchor === undefined) {
+        throw new EffectRefused(
+          neutraliseMarkers(`the pull request lists no changed file to put the finding on \`${cut(f.file, BRIEF_BODY_CHARS)}:${f.line}\` (${cut(f.body.trim(), BRIEF_BODY_CHARS)}), so the review is not posted without it`),
+        );
+      }
+      onFiles.push({ path: anchor, body: neutraliseMarkers(cut(`\`${f.file}:${f.line}\` — ${f.body.trim()}`, commentChars - 1_000)) + tail });
+      return;
+    }
+    const text = neutraliseMarkers(cut(f.body.trim(), commentChars - 1_000));
+    if (shown.has(f.line)) onLines.push({ path: f.file, line: f.line, body: text + tail });
+    else onFiles.push({ path: f.file, body: `line ${f.line}: ${text}${tail}` });
   });
   return { onLines, onFiles, unplaced };
 }
@@ -1241,7 +1254,17 @@ export abstract class BaseForge {
 
     const posted = (await this.reviews(number, ctx)).some((body) => parseMarker(body)?.marker === marker);
     if (!posted) {
-      const { onLines, onFiles, unplaced } = placeFindings(findings, (await this.changedFiles(number, ctx)).files, stage, round, this.commentChars);
+      const changed = await this.changedFiles(number, ctx);
+      let placed: ReturnType<typeof placeFindings>;
+      try {
+        placed = placeFindings(findings, changed.files, stage, round, this.commentChars);
+      } catch (e) {
+        // A forge still working out a just-opened pull request's diff may
+        // list a file next tick: not a refusal, which would halt the item.
+        if (changed.settling !== true) throw e;
+        throw new Error(`will not post the review on ${pr.id} for #${ctx.item} yet: the forge is still working out its changed files, so the next tick reads them again`);
+      }
+      const { onLines, onFiles, unplaced } = placed;
       const listed = unplaced.length === 0 ? "" : `\n\nFindings that cannot be placed on this pull request's diff:\n\n${unplaced.join("\n")}`;
       const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, this.commentChars - 1_000) +
         renderMarker({ stage, kind, round, marker });

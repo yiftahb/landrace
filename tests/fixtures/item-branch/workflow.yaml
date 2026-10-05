@@ -1,0 +1,35 @@
+version: 1
+name: item-branch
+description: test
+
+# A workflow on a configured item branch, `lr-{item}`, as a project whose CI
+# takes no `/` in a branch name writes it: the pull request publish opens is
+# the item's only when the context configures that branch
+# (tests/testing/harness.test.ts).
+stages:
+  - id: build
+    entry: true
+    step: steps/build.md
+    branch: "lr-{item}"
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Building, round {round}." }
+      - { type: tracker.status, value: build }
+
+  - id: publish
+    triggers:
+      - name: built
+        when: { "run.stage": build, "run.outputs.build.kind": done }
+    on_enter:
+      - { type: pull.open, branch: "lr-{item}" }
+      - { type: tracker.status, value: publish }
+
+  - id: done
+    terminal: true
+    triggers:
+      - name: proposed
+        when: { "run.stage": publish, "rel.implements.in.total": { $gt: 0 } }
+    on_enter:
+      - { type: tracker.status, value: done }

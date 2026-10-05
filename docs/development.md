@@ -66,8 +66,19 @@ An integration under `integrations/` keeps its vendor's own shapes — the wire 
 
 `landrace/testing` exports what this repository's own tests use:
 
-- `createExternalState` — `compose` over `MemoryTracker`, `MemoryForge` and `MemoryDocs`, an in-memory tracker, forge and docs built on the kit's bases. With `readOnly: true`, every tracker write throws `this tracker is read-only: <operation> was asked of <what>`, where `<what>` is `#<id>`, or `a new item` (`a new item under #<n>`) for a create, or `an issue in <project> for #<id>` for a `tracker.create`; the state's `writes()` lists every tracker write attempted, refused ones included. Only the tracker is read-only: the forge and docs still take pushes, pull requests and publishes, and `writes()` does not list them — the forge's show in `pushes()` and `pull(<id>)`. With `createIn: ["ENG"]`, the tracker takes `tracker.create` in those projects, and `filed()` lists every issue it filed there, keyed `ENG-<n>`, with the `fields` it was filed with. Those issues are never among its items.
-- `createHarness` — drives an item through a workflow and records what happened: the stages it passed through, and each step it called. It brings no tracker of its own; you hand it the hooks.
+- `createExternalState` — `compose` over `MemoryTracker`, `MemoryForge` and `MemoryDocs`, an in-memory tracker, forge and docs built on the kit's bases. With `readOnly: true`, every tracker write throws `this tracker is read-only: <operation> was asked of <what>`, where `<what>` is `#<id>`, or `a new item` (`a new item under #<n>`) for a create, or `an issue in <project> for #<id>` for a `tracker.create`; the state's `writes()` lists every tracker write attempted, refused ones included. Only the tracker is read-only: the forge and docs still take pushes, pull requests and publishes, and `writes()` does not list them — the forge's show in `pushes()` and `pull(<id>)`. With `createIn: ["ENG"]`, the tracker takes `tracker.create` in those projects, and `filed()` lists every issue it filed there, keyed `ENG-<n>`, with the `fields` it was filed with. Those issues are never among its items. With `config: { branch: "lr-{item}" }`, a pull request `openPull` seeds without naming a branch is opened from `lr-<id>`; without it, from `landrace/<id>`.
+- `createHarness` — drives an item through a workflow and records what happened: the stages it passed through, and each step it called. It brings no tracker of its own; you hand it the hooks. Its `config` is the context's configuration, as `landrace.yaml` gives it. A workflow on a configured item branch passes `branch` to it, or the pull request its `pull.open` opens never ties to the item. A test that seeds pull requests passes the same `config` to `createExternalState` too.
+
+  In the example, `workflow` and `steps` are your loaded workflow: its `Workflow` and a `Map` of its steps by stage. This repository's tests load them with `loadWorkflow` from `#workflow/load.js`, which `landrace/testing` does not export. `answers` gives each stage that runs a step the output it answers with, here a `build` stage:
+
+  ```ts
+  const config = { branch: "lr-{item}" };
+  const answers = { build: '```json\n{"kind":"done"}\n```' };
+  const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }], config });
+  const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers, config });
+  const { result } = await run.converge();
+  ```
+
 - `scriptedExecutor` — an executor that answers with canned output per stage instead of running an agent, so every branch of a workflow can be reached on demand.
 
 The workflow fixtures under `tests/fixtures/` are worked examples. Each integration's live check is in [Integrations](integrations.md).

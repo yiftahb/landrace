@@ -3,7 +3,7 @@ import {
   EffectRefused,
   effectBranch,
   entriesFromComments,
-  ITEM_BRANCH,
+  parseMarker,
   PULL_OPEN_EFFECT,
   PULL_REQUEST_KIND,
   PULL_REVIEW_EFFECT,
@@ -15,7 +15,7 @@ import {
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
-import { BaseForge, itemBranchOf, prBranch } from "#kit/forge.js";
+import { BaseForge, isFinding, itemBranchOf, placeFindings, prBranch } from "#kit/forge.js";
 import { BaseTracker, commentSatisfied, createdSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
@@ -40,6 +40,7 @@ import type {
   PullRecord,
   RelationDecl,
   ReviewThread,
+  RuntimeConfig,
   RuntimeContext,
   Source,
   ThreadCounts,
@@ -380,17 +381,21 @@ export class MemoryForge extends BaseForge {
   checkCalls = 0;
   /** The directory `pull.description` is a path from: none unless a test says, so the option is refused. */
   private readonly projectRoot: string | undefined;
+  /** The item branch template a seed is opened from: `branch` as landrace.yaml would set it, `landrace/{item}` unless a test says. */
+  private readonly seedBranch: string;
 
-  constructor({ root, ...options }: ForgeOptions & { root?: string } = {}) {
+  constructor({ root, branch, ...options }: ForgeOptions & { root?: string; branch?: string | undefined } = {}) {
     super(options);
     this.projectRoot = root;
+    this.seedBranch = itemBranchOf({ branch });
   }
 
   /**
    * Open a pull request for `item`, numbered from 1 in creation order, from
-   * the item's own `landrace/{item}` branch unless the test names another —
-   * which ties it to nothing, unless `items` says or the test's context
-   * configures that branch as `config.branch`. Merged means closed as
+   * the item's own branch — the template the forge was given, or
+   * `landrace/{item}` — unless the test names another, which ties it to
+   * nothing, unless `items` says or the test's context configures that
+   * branch as `config.branch`. Merged means closed as
    * done unless `closed` says otherwise, and `awaitingFix` defaults to
    * `openThreads`: a thread nobody answered awaits a fix — a behaviour fix,
    * `awaitingWordingFix` being 0 unless the test says. Its head is
@@ -401,7 +406,7 @@ export class MemoryForge extends BaseForge {
     const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
     const pull: ExternalPull = {
       id: `pr-${number}`, number, item, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, awaitingWordingFix: 0,
-      headSha: `sha-${number}`, checks: "none", failed: [], branch: prBranch(item, ITEM_BRANCH), ...pr, closed,
+      headSha: `sha-${number}`, checks: "none", failed: [], branch: prBranch(item, this.seedBranch), ...pr, closed,
     };
     this.rows.set(pull.id, pull);
     return pull.id;
@@ -587,8 +592,8 @@ export class MemoryForge extends BaseForge {
   }
 
   /*
-   * A review, as what it does to the counts: each well-formed finding opens a
-   * thread awaiting a fix — a wording fix too, when it is flagged
+   * A review, as what it does to the counts: each finding the kit threads
+   * opens a thread awaiting a fix — a wording fix too, when it is flagged
    * `wording: true`; each reply from a `fix` round hands one to the
    * person and each other reply hands one back; and each id a review lists as
    * resolved closes one the reviewer raised — never more than it raised, since
@@ -611,10 +616,16 @@ export class MemoryForge extends BaseForge {
     const marker = String(effect.marker);
     if ((pull.reviews ?? []).includes(marker)) return;
     const fix = marker.split(":")[0] === FIX_KIND;
-    const findings = (Array.isArray(out.findings) ? out.findings : []).filter((f): f is { wording?: unknown } => {
-      const x = f as { file?: unknown; line?: unknown; body?: unknown } | null;
-      return typeof x === "object" && x !== null && typeof x.file === "string" && Number.isInteger(x.line) && typeof x.body === "string";
-    });
+    const all = Array.isArray(out.findings) ? out.findings : [];
+    // Placed as a real forge places them, once a test says what the pull
+    // request changes: a finding the kit lists rather than threads opens
+    // nothing. Said nothing, every well-formed finding is a thread.
+    const findings = pull.files === undefined
+      ? all.filter(isFinding)
+      : (() => {
+        const placed = placeFindings(all, pull.files, "", 0, this.commentChars);
+        return [...placed.onLines, ...placed.onFiles].map((t) => ({ wording: parseMarker(t.body)?.wording }));
+      })();
     const opened = findings.length;
     const replied = (Array.isArray(out.replies) ? out.replies : []).filter((r) => {
       const x = r as { thread?: unknown; body?: unknown } | null;
@@ -678,10 +689,10 @@ export class MemoryDocs extends BaseDocs {
  * `readOnly` makes the tracker refuse every write (see `MemoryTracker`).
  */
 export function createExternalState(
-  seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean; createIn?: string[] } = {},
+  seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean; createIn?: string[]; config?: Partial<RuntimeConfig> } = {},
 ): ExternalState {
   const tracker = new MemoryTracker(seed);
-  const forge = new MemoryForge();
+  const forge = new MemoryForge({ branch: seed.config?.branch });
   const docs = new MemoryDocs();
 
   return {

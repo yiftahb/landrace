@@ -1,4 +1,4 @@
-import { renderMarker } from "#conventions.js";
+import { isEffectRefused, renderMarker } from "#conventions.js";
 import {
   answered, BRIEF_DIFF_CHARS, BRIEF_HISTORY_ITEMS, BRIEF_THREADS, checkCounts, ciBrief, commentableLines, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
   isFinding, isReply, itemBranchOf, itemsNamedBy, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
@@ -108,7 +108,7 @@ describe("placeFindings", () => {
   const tail = (i: number): string =>
     renderMarker({ stage: "review", kind: FINDING_KIND, round: 1, marker: `${FINDING_KIND}:review:1:${i}` });
 
-  it("threads a finding on a line the diff shows, on the file when it is elsewhere in it, and lists the rest", () => {
+  it("threads a finding on a line the diff shows, on the file when it is elsewhere in it, and lists a malformed one", () => {
     const bad = { file: "src/a.ts", line: 1.5, body: "bad line" };
     const placed = placeFindings(
       [
@@ -125,9 +125,48 @@ describe("placeFindings", () => {
     );
     expect(placed).toEqual({
       onLines: [{ path: "src/a.ts", line: 2, body: `on the diff${tail(0)}` }],
-      onFiles: [{ path: "src/a.ts", body: `line 9: off the diff${tail(1)}` }],
-      unplaced: ["- `other.ts:1` — not in the pull request", `- ${JSON.stringify(bad)}`, "- just prose"],
+      onFiles: [
+        { path: "src/a.ts", body: `line 9: off the diff${tail(1)}` },
+        { path: "src/a.ts", body: `\`other.ts:1\` — not in the pull request${tail(2)}` },
+      ],
+      unplaced: [`- ${JSON.stringify(bad)}`, "- just prose"],
     });
+  });
+
+  /*
+   * #120: a finding on src/testing/harness.ts, which the pull request did not
+   * touch, was only listed in the review's text. Nothing counted it, the
+   * review read as clean, and the item went on to merge.
+   */
+  it("threads a finding on an untouched file on the changed path that sorts first, naming its real path:line", () => {
+    const listed = [
+      { path: "src/z.ts", status: "modified", additions: 1, deletions: 0 },
+      { path: "docs/b.md", status: "added", additions: 4, deletions: 0 },
+      { path: "src/a.ts", status: "modified", additions: 1, deletions: 0 },
+    ];
+    const placed = placeFindings([{ file: "src/testing/harness.ts", line: 125, body: "Still fills the default branch." }], listed, "review", 1, 65_536);
+    expect(placed).toEqual({
+      onLines: [],
+      onFiles: [{ path: "docs/b.md", body: `\`src/testing/harness.ts:125\` — Still fills the default branch.${tail(0)}` }],
+      unplaced: [],
+    });
+    // Whatever order the forge lists them in.
+    expect(placeFindings([{ file: "x.ts", line: 1, body: "y" }], [...listed].reverse(), "review", 1, 65_536).onFiles[0]?.path).toBe("docs/b.md");
+    // And it is a thread awaiting a fix, as the reviewer's own.
+    const opening = said(placed.onFiles[0]?.body ?? "");
+    expect(threadCounts([thread({ first: opening, last: opening })], BOT)).toEqual({ openThreads: 1, awaitingFix: 1, awaitingBehaviourFix: 1 });
+  });
+
+  it("refuses a finding when the pull request changes no file to put it on, naming it, and lists a malformed one as before", () => {
+    let thrown: unknown;
+    try {
+      placeFindings([{ file: "src/b.ts", line: 4, body: "Off by one." }], [], "review", 1, 65_536);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(isEffectRefused(thrown)).toBe(true);
+    expect(String(thrown)).toContain("src/b.ts:4");
+    expect(placeFindings(["just prose"], [], "review", 1, 65_536)).toEqual({ onLines: [], onFiles: [], unplaced: ["- just prose"] });
   });
 
   it("cuts a finding's body under the comment bound it is given, its marker kept", () => {

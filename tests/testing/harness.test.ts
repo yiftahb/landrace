@@ -1,6 +1,6 @@
 import { createExternalState, createHarness, scriptedExecutor } from "#testing/index.js";
 import { loadWorkflow } from "#workflow/load.js";
-import type { Harness, ScriptedAnswer } from "#namespace.js";
+import type { Harness, PostHook, ScriptedAnswer } from "#namespace.js";
 
 /**
  * The harness itself, asked the questions a workflow author would trip over
@@ -73,6 +73,44 @@ describe("what the harness writes down", () => {
     expect(first.trail).toEqual(["spec", "done"]);
     expect(second.trail).toEqual([]);
     expect(run.trail()).toEqual(["spec", "done"]);
+  });
+});
+
+/*
+ * #120: the harness handed converge `config: {}`, so a project on
+ * `branch: "lr-{item}"` got a `pull.open` on lr-<id> that never tied to the
+ * item — never satisfied, and applied again on every pass.
+ */
+describe("a configured item branch", () => {
+  const config = { branch: "lr-{item}" };
+  const BUILT = '```json\n{"kind":"done"}\n```';
+
+  it("drives a workflow naming lr-{item}: its pull.open is applied once, then satisfied", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }], config });
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/item-branch");
+    let opens = 0;
+    const post: PostHook = {
+      ...state.post,
+      apply: async (effect, ctx) => {
+        if (effect.type === "pull.open") opens++;
+        return state.post.apply(effect, ctx);
+      },
+    };
+    const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [post], answers: { build: BUILT }, config });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "done"]);
+    expect(r.result.settled).toBe("terminal");
+    expect(opens).toBe(1);
+    expect(state.pull("pr-1").branch).toBe("lr-1");
+    expect(() => state.pull("pr-2")).toThrow();
+  });
+
+  it("seeds a pull request on the configured branch, and on landrace/{item} with none", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }], config });
+    expect(state.pull(state.openPull("1")).branch).toBe("lr-1");
+    const plain = createExternalState({ items: [{ id: "1" }] });
+    expect(plain.pull(plain.openPull("1")).branch).toBe("landrace/1");
   });
 });
 
