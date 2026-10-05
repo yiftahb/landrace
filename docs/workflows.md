@@ -320,7 +320,7 @@ Four route fields name fields of the step's answer, and the engine reads them, s
 - `spentFrom` names the answer field holding the time spent, as hours and minutes: `45m`, `2h`, `1h30m`. It becomes the worklog's seconds.
 - `titleFrom` names the answer field holding the new issue's title, one line of text. It replaces `title`: a `tracker.create` takes exactly one of them. The title is escaped, and a tracker with a bound on titles cuts it to fit (Jira: 255 characters).
 - `fieldsFrom` maps a field id of the target project to an answer field. The keys are written in the workflow, never taken from the answer. Each value is written to that field when the issue is filed, in the same request; one the answer left empty is not written. Jira takes text and textarea fields, and checks them at start ([Jira](integrations.md#jira)).
-- An answer field that is missing, a label outside `allowed`, a time that is not a duration, is zero, or is over `max`, a title that is empty or more than one line, or a `fieldsFrom` value that is not text fails the round as a broken contract. Nothing is trimmed to fit, nothing is written, and the round is not run again.
+- An answer field that is missing, a label outside `allowed`, a time that is not a duration, is zero, or is over `max`, a title that is empty or more than one line, or a `fieldsFrom` value that is not text fails the round as a broken contract. Nothing is written, and the round is not run again. Nothing is trimmed to fit but the title, the one exception: it is cut to the tracker's bound, never refused for its length.
 - All four are route fields: `on_enter` has no answer to read them from.
 
 ### The merge's three guards
